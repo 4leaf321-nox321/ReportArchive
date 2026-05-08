@@ -1,0 +1,178 @@
+import * as React from 'react'
+import { Check, ChevronDown, Building2 } from 'lucide-react'
+import { Button } from '@/shared/components/ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/shared/components/ui/popover'
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/shared/components/ui/command'
+import { cn } from '@/shared/lib/utils'
+
+/**
+ * Searchable workspace picker. Uses Popover + cmdk Command so the user
+ * can type to filter when there are many workspaces.
+ *
+ * Self-contained — takes the workspace list as a prop instead of pulling
+ * from WorkspaceContext, so it works on the public signup page (where
+ * the user isn't logged in yet).
+ *
+ * Each workspace is rendered with its full path (본부 / 팀) so the user
+ * can disambiguate teams that share a name.
+ *
+ *   workspaces: [{ slug, name, parent_slug? }]
+ *   value:      currently selected slug | ''
+ *   onChange:   (slug) => void
+ */
+export function WorkspaceCombobox({
+  workspaces,
+  value,
+  onChange,
+  placeholder = '소속 부서 선택...',
+  searchPlaceholder = '부서명으로 검색...',
+  emptyMessage = '일치하는 부서가 없습니다.',
+  disabled = false,
+  id,
+}) {
+  const [open, setOpen] = React.useState(false)
+
+  const selected = React.useMemo(
+    () => workspaces.find((w) => w.slug === value) ?? null,
+    [workspaces, value]
+  )
+
+  // Build tree-traversal order with depth so children appear under parents
+  // and indent reflects hierarchy.
+  const ordered = React.useMemo(() => buildOrderedTree(workspaces), [workspaces])
+
+  // Map slug → full path string ("개발본부 / 플랫폼팀") for the trigger label
+  // and search matching.
+  const pathBySlug = React.useMemo(() => {
+    const bySlug = new Map(workspaces.map((w) => [w.slug, w]))
+    function getPath(slug) {
+      const segments = []
+      let cur = slug
+      const seen = new Set()
+      while (cur && !seen.has(cur)) {
+        seen.add(cur)
+        const node = bySlug.get(cur)
+        if (!node) break
+        segments.unshift(node.name)
+        cur = node.parent_slug
+      }
+      return segments.join(' / ')
+    }
+    const out = new Map()
+    for (const w of workspaces) out.set(w.slug, getPath(w.slug))
+    return out
+  }, [workspaces])
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          id={id}
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          disabled={disabled}
+          className="w-full justify-between font-normal"
+        >
+          {selected ? (
+            <span className="flex items-center gap-2 min-w-0">
+              <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="truncate text-left">
+                <span>{selected.name}</span>
+                {pathBySlug.get(selected.slug) !== selected.name && (
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    {pathBySlug.get(selected.slug)}
+                  </span>
+                )}
+              </span>
+            </span>
+          ) : (
+            <span className="text-muted-foreground">{placeholder}</span>
+          )}
+          <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        className="p-0"
+        align="start"
+        style={{ width: 'var(--radix-popover-trigger-width)' }}
+      >
+        <Command
+          // We compute our own filter (slug + name + path) so substring
+          // matches across the path work — cmdk's default filter only sees
+          // the value string we pass per item.
+          filter={(value, search) => {
+            return value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0
+          }}
+        >
+          <CommandInput placeholder={searchPlaceholder} />
+          <CommandList className="max-h-[280px]">
+            <CommandEmpty>{emptyMessage}</CommandEmpty>
+            <CommandGroup>
+              {ordered.map((opt) => {
+                const path = pathBySlug.get(opt.slug) ?? opt.name
+                const searchValue = `${opt.slug} ${opt.name} ${path}`
+                return (
+                  <CommandItem
+                    key={opt.slug}
+                    value={searchValue}
+                    onSelect={() => {
+                      onChange(opt.slug)
+                      setOpen(false)
+                    }}
+                    className="cursor-pointer"
+                  >
+                    <span
+                      className="flex items-center gap-1 min-w-0 flex-1"
+                      style={{ paddingLeft: opt.depth * 12 }}
+                    >
+                      <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <div className="flex flex-col min-w-0">
+                        <span className="truncate text-sm">{opt.name}</span>
+                        {opt.depth > 0 && (
+                          <span className="truncate text-[10px] text-muted-foreground">
+                            {path}
+                          </span>
+                        )}
+                      </div>
+                    </span>
+                    {value === opt.slug && (
+                      <Check className="h-4 w-4 text-primary shrink-0" />
+                    )}
+                  </CommandItem>
+                )
+              })}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function buildOrderedTree(list) {
+  const byParent = new Map()
+  for (const w of list) {
+    const arr = byParent.get(w.parent_slug ?? null) ?? []
+    arr.push(w)
+    byParent.set(w.parent_slug ?? null, arr)
+  }
+  const out = []
+  function walk(parentSlug, depth) {
+    const children = byParent.get(parentSlug ?? null) ?? []
+    for (const c of children) {
+      out.push({ slug: c.slug, name: c.name, depth })
+      walk(c.slug, depth + 1)
+    }
+  }
+  walk(null, 0)
+  return out
+}

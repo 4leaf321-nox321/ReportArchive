@@ -1,0 +1,99 @@
+"""Report models — instances of templated documents.
+
+Each report is bound to a specific template version (so it stays renderable
+even when the template evolves). `content` is the JSON document conforming
+to the template's JSON Schema; only the envelope fields (workspace, status,
+period, owner) are promoted to columns for easy filtering.
+
+Workspace scoping is enforced at the service / RLS layer via `workspace_slug`.
+A leaf workspace owns its reports; queries on a non-leaf workspace pull all
+descendants via the workspace tree helper.
+"""
+from __future__ import annotations
+
+import enum
+from datetime import datetime
+
+from sqlalchemy import (
+    DateTime,
+    Enum,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    String,
+    Text,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.database import Base
+
+
+class ReportStatus(str, enum.Enum):
+    draft = "draft"
+    in_review = "in_review"
+    approved = "approved"
+    archived = "archived"
+
+
+class Report(Base):
+    __tablename__ = "reports"
+    __table_args__ = (
+        # Composite FK to (templates.template_id, templates.version) so a
+        # report can never reference a non-existent template version.
+        ForeignKeyConstraint(
+            ["template_id", "template_version"],
+            ["templates.template_id", "templates.version"],
+            name="fk_reports_template_version",
+            ondelete="RESTRICT",
+        ),
+        Index("ix_reports_workspace", "workspace_slug"),
+        Index("ix_reports_template", "template_id", "template_version"),
+        Index("ix_reports_status", "status"),
+        Index("ix_reports_owner", "owner_user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    workspace_slug: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("workspaces.slug", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    template_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    template_version: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[ReportStatus] = mapped_column(
+        Enum(ReportStatus, name="report_status_enum"),
+        default=ReportStatus.draft,
+        nullable=False,
+    )
+    period: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+
+    owner_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Free-form tags — small flat list. Will become a dedicated table once
+    # entity extraction lands (개발계획.md §1-4 Phase 1).
+    tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=list, nullable=False)
+
+    # The actual report content as JSON, conforming to the bound template's
+    # schema. Validated on write in the service layer.
+    content: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
+    # Per-report layout overrides keyed by template block id:
+    #   { "<block_id>": { "row": int, "col_span": int, "row_span": int }, ... }
+    # When a block id is absent here, the template's layout is used. Reports
+    # cannot add/remove blocks via this field — only resize/reposition the
+    # ones the template already declared.
+    layout_overrides: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )

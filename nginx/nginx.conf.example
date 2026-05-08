@@ -1,0 +1,80 @@
+# Example nginx configuration for the project.
+#
+# Two patterns are shown:
+#
+#   1. Single-host: nginx serves the React build and reverse-proxies /api/*
+#      to the FastAPI backend running on the same machine.
+#
+#   2. Split-host: this nginx is in front of the frontend only; /api/* is
+#      proxied to a backend on another server.
+#
+# Pick the server block that matches your deployment.
+
+# --- Backend upstream ---------------------------------------------------------
+# Change the address to wherever uvicorn is listening.
+upstream report_automation_backend {
+    server 127.0.0.1:5174;
+    # Split-host example: server backend.internal:5174;
+    keepalive 32;
+}
+
+# --- 1) Single-host: serve frontend dist + proxy /api ------------------------
+server {
+    listen 80;
+    server_name _;
+
+    client_max_body_size 1024m;
+
+    root /var/www/report-automation/frontend/dist;
+    index index.html;
+
+    # Static assets with long cache (Vite hashes filenames)
+    location /assets/ {
+        access_log off;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    # API + docs go to the backend
+    location /api/ {
+        proxy_pass http://report_automation_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+
+        # Streaming-friendly defaults (SSE, large downloads)
+        proxy_buffering off;
+        proxy_cache off;
+    }
+
+    # SPA fallback - any unknown path returns index.html so React Router
+    # can handle it.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+# --- 2) Split-host (frontend-only nginx) -------------------------------------
+# server {
+#     listen 80;
+#     server_name app.example.com;
+#     root /var/www/report-automation/frontend/dist;
+#     index index.html;
+#
+#     location / {
+#         try_files $uri $uri/ /index.html;
+#     }
+#
+#     # If you prefer to keep the same-origin pattern from the frontend,
+#     # proxy /api/* to the remote backend here as well:
+#     # location /api/ {
+#     #     proxy_pass https://api.example.com;
+#     #     proxy_set_header Host api.example.com;
+#     #     ...
+#     # }
+# }

@@ -501,8 +501,11 @@ function BlockEditorCard({ block, content, active, readOnly, showDragHandle, onA
     )
   }
 
+  // Drag handle is an absolute overlay so it doesn't shrink the inner
+  // content area. Both modes therefore share an identical block size and
+  // layout — the handle just floats on top of the card in edit mode.
   const dragHandle = showDragHandle ? (
-    <div className="block-drag-handle cursor-move px-2 py-1 border-b bg-muted/40 flex items-center gap-2 shrink-0">
+    <div className="block-drag-handle absolute inset-x-0 top-0 z-10 cursor-move px-2 py-0.5 bg-muted/60 backdrop-blur-sm border-b flex items-center gap-2 rounded-t-md">
       <GripVertical className="h-3 w-3 text-muted-foreground" />
       <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
         {block.type}
@@ -510,40 +513,24 @@ function BlockEditorCard({ block, content, active, readOnly, showDragHandle, onA
     </div>
   ) : null
 
-  // Heading renders inline (no card chrome) so it actually looks like
-  // a section heading in the page flow. In edit-with-resize mode we still
-  // need a draggable wrapper, so the heading gets a thin handle bar
-  // above it; in plain view mode it stays bare.
+  // Heading renders inside the same wrapper in both modes so its visual
+  // size and placement are identical. The drag handle in edit mode is an
+  // absolute overlay (above) and so it does not change the heading's
+  // position inside the cell.
   if (block.type === 'heading') {
     const { Editor: HE } = renderer
-    if (showDragHandle) {
-      return (
-        <div
-          id={`block-${block.id}`}
-          onClick={onActivate}
-          className={`h-full overflow-hidden rounded-md border bg-card flex flex-col ${
-            active && !readOnly ? 'ring-2 ring-primary/30' : ''
-          }`}
-        >
-          {dragHandle}
-          <div className="p-3 flex-1 min-h-0 flex items-center">
-            <HE props={block.props} content={content} onChange={onChange} readOnly={readOnly} />
-          </div>
-        </div>
-      )
-    }
     return (
       <div
         id={`block-${block.id}`}
         onClick={onActivate}
-        className={active && !readOnly ? 'ring-2 ring-primary/30 rounded-md' : ''}
+        className={`relative h-full flex items-center ${
+          active && !readOnly ? 'ring-2 ring-primary/30 rounded-md' : ''
+        }`}
       >
-        <HE
-          props={block.props}
-          content={content}
-          onChange={onChange}
-          readOnly={readOnly}
-        />
+        {dragHandle}
+        <div className="w-full min-w-0">
+          <HE props={block.props} content={content} onChange={onChange} readOnly={readOnly} />
+        </div>
       </div>
     )
   }
@@ -558,7 +545,7 @@ function BlockEditorCard({ block, content, active, readOnly, showDragHandle, onA
     <Card
       id={`block-${block.id}`}
       onClick={onActivate}
-      className={`h-full overflow-hidden flex flex-col ${
+      className={`relative h-full overflow-hidden flex flex-col ${
         active && !readOnly ? 'ring-2 ring-primary/30' : ''
       }`}
     >
@@ -595,6 +582,16 @@ const REPORT_ROW_GAP = 12
 /**
  * Translate blocks + effective layouts into the {i, x, y, w, h} shape RGL
  * wants. Missing layouts default to a full-width row appended at the end.
+ *
+ * `row` in the saved layout is a sequential index (1, 2, 3…) — `handleLayoutChange`
+ * compresses unique y values into row numbers, throwing away the actual y
+ * distances which encode `row_span` of earlier rows. So `y = row - 1` here
+ * can produce colliding items (e.g. row 2 wants y=1 but row 1 has h=4 and
+ * occupies y=0–3). Edit-mode RGL fixes this with vertical compaction, but
+ * view mode marks items `static: true` and RGL leaves static items alone,
+ * causing widgets to render overlapped at their literal y. To keep both
+ * modes pixel-identical we mirror RGL's vertical-compact algorithm here so
+ * the y values are already correct before they reach GridLayout.
  */
 function buildRglItems(blocks, effectiveLayouts) {
   // Group block ids by row so we can pack x positions left-to-right.
@@ -625,7 +622,47 @@ function buildRglItems(blocks, effectiveLayouts) {
       minH: 1,
     })
   }
-  return items
+  return compactVerticalLayout(items)
+}
+
+/**
+ * Mirror of react-grid-layout v2's vertical-compact algorithm: iterate
+ * items in (y, x) order and place each at the smallest y where it doesn't
+ * collide with already-placed items. Preserves the input array order in
+ * the output so React keys (and thus draggable handles) stay stable.
+ */
+function compactVerticalLayout(rawItems) {
+  const sortedIndices = rawItems.map((_, idx) => idx)
+  sortedIndices.sort((a, b) => {
+    const dy = rawItems[a].y - rawItems[b].y
+    if (dy !== 0) return dy
+    return rawItems[a].x - rawItems[b].x
+  })
+  const out = new Array(rawItems.length)
+  const placedSoFar = []
+  for (const idx of sortedIndices) {
+    const item = rawItems[idx]
+    let y = 0
+    while (collidesWithAny(item, y, placedSoFar)) y += 1
+    const compacted = { ...item, y }
+    out[idx] = compacted
+    placedSoFar.push(compacted)
+  }
+  return out
+}
+
+function collidesWithAny(item, candidateY, others) {
+  for (const o of others) {
+    if (
+      item.x < o.x + o.w &&
+      item.x + item.w > o.x &&
+      candidateY < o.y + o.h &&
+      candidateY + item.h > o.y
+    ) {
+      return true
+    }
+  }
+  return false
 }
 
 /**
@@ -638,10 +675,11 @@ function buildRglItems(blocks, effectiveLayouts) {
  */
 function ResizableGrid({ items, onLayoutChange, children, isStatic = false }) {
   const { containerRef, width, mounted } = useContainerWidth({ measureBeforeMount: true })
-  // RGL v2 honors per-item `static: true` more reliably than the
-  // grid-level isDraggable/isResizable in some cases, so we lock both.
-  // The `key` on GridLayout also forces a remount when the mode flips,
-  // clearing any stale interaction state.
+  // RGL v2 moved cols / rowHeight / margin into `gridConfig`, and the
+  // drag / resize toggles into `dragConfig` / `resizeConfig`. Passing
+  // them at the top level silently no-ops to RGL's defaults
+  // (rowHeight: 150, margin: [10, 10]) — that was the source of the
+  // mysterious 150-px minimum widget height.
   const finalItems = isStatic ? items.map((it) => ({ ...it, static: true })) : items
   return (
     <div ref={containerRef} className="w-full">
@@ -650,16 +688,20 @@ function ResizableGrid({ items, onLayoutChange, children, isStatic = false }) {
           key={isStatic ? 'static' : 'editable'}
           className="layout"
           layout={finalItems}
-          cols={REPORT_GRID_COLS}
-          rowHeight={REPORT_ROW_HEIGHT}
-          margin={[REPORT_ROW_GAP, REPORT_ROW_GAP]}
-          onLayoutChange={onLayoutChange}
-          draggableHandle=".block-drag-handle"
-          compactType="vertical"
-          preventCollision={false}
           width={width}
-          isDraggable={!isStatic}
-          isResizable={!isStatic}
+          gridConfig={{
+            cols: REPORT_GRID_COLS,
+            rowHeight: REPORT_ROW_HEIGHT,
+            margin: [REPORT_ROW_GAP, REPORT_ROW_GAP],
+          }}
+          dragConfig={{
+            enabled: !isStatic,
+            handle: '.block-drag-handle',
+          }}
+          resizeConfig={{
+            enabled: !isStatic,
+          }}
+          onLayoutChange={onLayoutChange}
         >
           {children}
         </GridLayout>

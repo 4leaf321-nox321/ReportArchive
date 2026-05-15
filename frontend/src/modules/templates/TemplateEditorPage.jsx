@@ -585,14 +585,14 @@ function MeasuredGrid({ items, onLayoutChange, children }) {
         <GridLayout
           className="layout"
           layout={items}
-          cols={GRID_COLS}
-          rowHeight={ROW_HEIGHT}
-          margin={[8, 8]}
-          onLayoutChange={onLayoutChange}
-          draggableHandle=".block-drag-handle"
-          compactType="vertical"
-          preventCollision={false}
           width={width}
+          gridConfig={{
+            cols: GRID_COLS,
+            rowHeight: ROW_HEIGHT,
+            margin: [8, 8],
+          }}
+          dragConfig={{ handle: '.block-drag-handle' }}
+          onLayoutChange={onLayoutChange}
         >
           {children}
         </GridLayout>

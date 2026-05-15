@@ -108,11 +108,35 @@ def _rich_text_content(props: dict) -> dict:
         md_schema["minLength"] = props["min_length"]
     if "max_length" in props:
         md_schema["maxLength"] = props["max_length"]
+    # New structured form: an outline of items {depth, text, relation?}.
+    # `relation` is a free-form slug validated only for shape — the actual
+    # vocabulary lives in the widget_relations table so admins can add or
+    # rename entries without a schema migration.
+    item_schema = {
+        "type": "object",
+        "properties": {
+            "depth": {"type": "integer", "minimum": 0, "maximum": 5},
+            "text": {"type": "string", "maxLength": 2000},
+            "relation": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32,
+                "pattern": r"^[a-z0-9][a-z0-9_-]*$",
+            },
+        },
+        "required": ["depth", "text"],
+        "additionalProperties": False,
+    }
     return {
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            # Legacy single-blob field — still accepted for backward
+            # compatibility. The frontend parses it into `items` on load
+            # and writes back as `items`. Validators that need the body
+            # length should look at either field.
             "markdown": md_schema,
+            "items": {"type": "array", "items": item_schema},
         },
         # Body fields are intentionally optional during draft state — the
         # report writer can fill caption first, body later.

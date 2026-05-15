@@ -22,7 +22,7 @@ const ID_RE = /^[a-z][a-z0-9_]{0,63}$/
 /** Per-widget initial sizing for the editor's grid. row_span is editor-only
  *  visual fidelity; the rendered report sizes itself from content. */
 const DEFAULT_BLOCK_SIZE = {
-  heading: { col_span: 12, row_span: 2 },
+  heading: { col_span: 12, row_span: 1 },
   rich_text: { col_span: 12, row_span: 4 },
   key_value: { col_span: 12, row_span: 3 },
   bulleted_list: { col_span: 12, row_span: 3 },

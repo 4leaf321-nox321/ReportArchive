@@ -21,6 +21,7 @@ from app.modules.template_categories import models as _categories_models  # noqa
 from app.modules.templates import models as _templates_models  # noqa: F401
 from app.modules.reports import models as _reports_models  # noqa: F401
 from app.modules.files import models as _files_models  # noqa: F401
+from app.modules.widget_relations import models as _widget_relations_models  # noqa: F401
 # auth/members modules don't have their own models — they reuse users + workspace_members
 
 config = context.config

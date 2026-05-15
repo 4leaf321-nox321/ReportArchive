@@ -492,6 +492,46 @@ def test_validate_content_rejects_extra_field_in_heading():
         validate_report_content(template, content)
 
 
+def test_validate_content_accepts_rich_text_items_outline():
+    """The structured outline form (items array) is the new primary shape
+    for rich_text content."""
+    template = _full_template()
+    content = {
+        "summary": {
+            "caption": "주간 요약",
+            "items": [
+                {"depth": 0, "text": "매출 성장세 회복"},
+                {"depth": 1, "text": "신제품 A 런칭", "relation": "cause"},
+                {"depth": 1, "text": "분기 매출 +12%", "relation": "effect"},
+            ],
+        }
+    }
+    validate_report_content(template, content)
+
+
+def test_validate_content_rejects_rich_text_invalid_relation_slug():
+    """`relation` must be a slug-shaped string — capitals or whitespace rejected."""
+    template = _full_template()
+    content = {
+        "summary": {
+            "items": [{"depth": 0, "text": "x", "relation": "Bad Relation"}],
+        }
+    }
+    with pytest.raises(ValueError, match="summary"):
+        validate_report_content(template, content)
+
+
+def test_validate_content_rejects_rich_text_depth_above_max():
+    template = _full_template()
+    content = {
+        "summary": {
+            "items": [{"depth": 99, "text": "x"}],
+        }
+    }
+    with pytest.raises(ValueError, match="summary"):
+        validate_report_content(template, content)
+
+
 def test_validate_content_rejects_legacy_schema():
     legacy = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

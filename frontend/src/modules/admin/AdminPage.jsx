@@ -11,6 +11,7 @@ import {
   ChevronUp,
   ChevronDown,
   Move,
+  Workflow,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
@@ -47,6 +48,13 @@ import {
   deleteWorkspace,
   getWorkspaceDependents,
 } from '@/shared/api/workspaces'
+import {
+  listWidgetRelations,
+  createWidgetRelation,
+  updateWidgetRelation,
+  deleteWidgetRelation,
+} from '@/shared/api/widgetRelations'
+import { invalidateWidgetRelationsCache } from '@/shared/hooks/useWidgetRelations'
 import { WorkspaceTreeDnD } from './WorkspaceTreeDnD'
 
 export default function AdminPage() {
@@ -87,6 +95,10 @@ export default function AdminPage() {
             <Tags className="mr-1 h-3 w-3" />
             템플릿 카테고리
           </TabsTrigger>
+          <TabsTrigger value="relations">
+            <Workflow className="mr-1 h-3 w-3" />
+            관계 라벨
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="workspaces">
@@ -94,6 +106,9 @@ export default function AdminPage() {
         </TabsContent>
         <TabsContent value="categories">
           <CategoriesSection />
+        </TabsContent>
+        <TabsContent value="relations">
+          <RelationsSection />
         </TabsContent>
       </Tabs>
     </div>
@@ -1010,4 +1025,357 @@ function collectDescendants(workspaces, slug) {
     }
   }
   return out
+}
+
+// =========================================================================
+// 관계 라벨 (rich_text 위젯 아웃라인 항목의 부모 대비 역할)
+// =========================================================================
+function RelationsSection() {
+  const { data: relations, loading, error, reload } = useAsync(
+    () => listWidgetRelations(),
+    [],
+  )
+  const [editingSlug, setEditingSlug] = useState(null)
+  const [confirmDelete, setConfirmDelete] = useState(null)
+  const [creating, setCreating] = useState(false)
+
+  function refresh() {
+    invalidateWidgetRelationsCache()
+    reload()
+  }
+
+  async function handleDelete(slug) {
+    try {
+      await deleteWidgetRelation(slug)
+      toast.success('관계가 삭제되었습니다.')
+      refresh()
+    } catch (err) {
+      toast.error(err.message || '삭제 실패')
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Workflow className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">관계 라벨</CardTitle>
+          </div>
+          <Button size="sm" onClick={() => setCreating(true)}>
+            <Plus className="mr-1 h-3 w-3" />
+            추가
+          </Button>
+        </div>
+        <CardDescription>
+          긴 글 위젯의 아웃라인 항목이 부모 항목에 대해 가지는 역할 라벨입니다 (예: 원인, 결과, 예시).
+          빌트인 라벨은 이름·정렬·키워드만 수정할 수 있고 삭제는 불가합니다.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <Skeleton className="h-32" />
+        ) : error ? (
+          <ErrorState description={error.message} onRetry={refresh} />
+        ) : (relations ?? []).length === 0 ? (
+          <p className="text-sm text-muted-foreground py-4">관계가 없습니다.</p>
+        ) : (
+          <ul className="divide-y">
+            {(relations ?? []).map((r) => (
+              <RelationRow
+                key={r.slug}
+                relation={r}
+                editing={editingSlug === r.slug}
+                onStartEdit={() => setEditingSlug(r.slug)}
+                onCancel={() => setEditingSlug(null)}
+                onSaved={() => {
+                  setEditingSlug(null)
+                  refresh()
+                }}
+                onDelete={() => setConfirmDelete(r)}
+              />
+            ))}
+          </ul>
+        )}
+      </CardContent>
+
+      <RelationCreateDialog
+        open={creating}
+        onOpenChange={setCreating}
+        onCreated={() => {
+          setCreating(false)
+          refresh()
+        }}
+      />
+
+      <ConfirmDialog
+        open={Boolean(confirmDelete)}
+        onOpenChange={() => setConfirmDelete(null)}
+        title="관계 삭제"
+        description={
+          confirmDelete
+            ? `'${confirmDelete.name}' (${confirmDelete.slug}) 관계를 삭제하시겠습니까? 기존 보고서에 저장된 슬러그는 그대로 남지만 표시 라벨이 사라집니다.`
+            : ''
+        }
+        confirmLabel="삭제"
+        variant="destructive"
+        onConfirm={() => confirmDelete && handleDelete(confirmDelete.slug)}
+      />
+    </Card>
+  )
+}
+
+function RelationRow({ relation, editing, onStartEdit, onCancel, onSaved, onDelete }) {
+  const [name, setName] = useState(relation.name)
+  const [description, setDescription] = useState(relation.description ?? '')
+  const [keywords, setKeywords] = useState((relation.hint_keywords ?? []).join(', '))
+  const [sortOrder, setSortOrder] = useState(relation.sort_order)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setName(relation.name)
+    setDescription(relation.description ?? '')
+    setKeywords((relation.hint_keywords ?? []).join(', '))
+    setSortOrder(relation.sort_order)
+  }, [relation])
+
+  async function onSave() {
+    setSaving(true)
+    try {
+      await updateWidgetRelation(relation.slug, {
+        name,
+        description: description || null,
+        hintKeywords: keywords
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+        sortOrder: Number(sortOrder),
+      })
+      toast.success('수정되었습니다.')
+      onSaved()
+    } catch (err) {
+      toast.error(err.message || '수정 실패')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (editing) {
+    return (
+      <li className="grid grid-cols-12 gap-2 items-start py-3">
+        <Badge variant="outline" className="font-mono col-span-3 justify-center mt-1">
+          {relation.slug}
+        </Badge>
+        <div className="col-span-7 space-y-1.5">
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="h-9"
+            placeholder="이름 (한국어)"
+          />
+          <Input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            className="h-9 text-xs"
+            placeholder="설명 (선택)"
+          />
+          <Input
+            value={keywords}
+            onChange={(e) => setKeywords(e.target.value)}
+            className="h-9 text-xs"
+            placeholder="자동 감지 키워드 (쉼표 구분, 선택)"
+          />
+          <Input
+            type="number"
+            value={sortOrder}
+            onChange={(e) => setSortOrder(e.target.value)}
+            className="h-9 text-xs"
+            placeholder="정렬"
+          />
+        </div>
+        <div className="col-span-2 flex justify-end gap-1">
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8"
+            onClick={onSave}
+            disabled={saving}
+          >
+            <Save className="h-3.5 w-3.5" />
+          </Button>
+          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={onCancel}>
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      </li>
+    )
+  }
+
+  return (
+    <li className="flex items-center gap-3 py-3">
+      <Badge variant="outline" className="font-mono shrink-0">
+        {relation.slug}
+      </Badge>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="font-medium">{relation.name}</span>
+          {relation.is_builtin && (
+            <Badge variant="secondary" className="text-[10px]">
+              빌트인
+            </Badge>
+          )}
+        </div>
+        {relation.description && (
+          <div className="text-xs text-muted-foreground truncate">{relation.description}</div>
+        )}
+        {(relation.hint_keywords ?? []).length > 0 && (
+          <div className="text-[10px] text-muted-foreground font-mono truncate">
+            힌트: {relation.hint_keywords.join(' · ')}
+          </div>
+        )}
+      </div>
+      <span className="text-xs text-muted-foreground">정렬: {relation.sort_order}</span>
+      <Button size="icon" variant="ghost" className="h-8 w-8" onClick={onStartEdit}>
+        <Pencil className="h-3.5 w-3.5" />
+      </Button>
+      <Button
+        size="icon"
+        variant="ghost"
+        className="h-8 w-8 text-destructive disabled:opacity-30"
+        onClick={onDelete}
+        disabled={relation.is_builtin}
+        title={relation.is_builtin ? '빌트인 관계는 삭제할 수 없습니다' : '삭제'}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </Button>
+    </li>
+  )
+}
+
+function RelationCreateDialog({ open, onOpenChange, onCreated }) {
+  const [slug, setSlug] = useState('')
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [keywords, setKeywords] = useState('')
+  const [sortOrder, setSortOrder] = useState(100)
+  const [submitting, setSubmitting] = useState(false)
+  const [errorMsg, setErrorMsg] = useState(null)
+
+  useEffect(() => {
+    if (!open) {
+      setSlug('')
+      setName('')
+      setDescription('')
+      setKeywords('')
+      setSortOrder(100)
+      setErrorMsg(null)
+    }
+  }, [open])
+
+  async function onSubmit(e) {
+    e.preventDefault()
+    setErrorMsg(null)
+    setSubmitting(true)
+    try {
+      await createWidgetRelation({
+        slug,
+        name,
+        description: description || undefined,
+        hintKeywords: keywords
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+        sortOrder: Number(sortOrder),
+      })
+      toast.success('관계가 추가되었습니다.')
+      onCreated()
+    } catch (err) {
+      setErrorMsg(err.message || '생성 실패')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>새 관계 라벨</DialogTitle>
+          <DialogDescription>
+            슬러그는 콘텐츠에 그대로 저장되므로 발행 후 변경 불가합니다.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="rel-slug">슬러그</Label>
+            <Input
+              id="rel-slug"
+              value={slug}
+              onChange={(e) => setSlug(e.target.value.toLowerCase())}
+              placeholder="hypothesis"
+              pattern="^[a-z0-9][a-z0-9_-]*$"
+              required
+              className="font-mono"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              영문 소문자/숫자/하이픈/언더스코어. 예: <code>hypothesis</code>
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="rel-name">이름 (한국어)</Label>
+            <Input
+              id="rel-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="가설"
+              required
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="rel-desc">설명 (선택)</Label>
+            <Input
+              id="rel-desc"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="검증 대상 가정"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="rel-keywords">자동 감지 키워드 (선택)</Label>
+            <Input
+              id="rel-keywords"
+              value={keywords}
+              onChange={(e) => setKeywords(e.target.value)}
+              placeholder="가정하면, 만약, 추정컨대"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              쉼표로 구분. 향후 자동 제안 힌트에 사용됩니다.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="rel-sort">정렬 순서</Label>
+            <Input
+              id="rel-sort"
+              type="number"
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value)}
+            />
+          </div>
+          {errorMsg && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {errorMsg}
+            </div>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              취소
+            </Button>
+            <Button type="submit" disabled={submitting}>
+              {submitting ? '추가 중...' : '추가'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
 }

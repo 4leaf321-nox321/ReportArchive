@@ -1,0 +1,34 @@
+[Unit]
+Description=Report Archive Backend (FastAPI in Apptainer)
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=reportarchive
+Group=reportarchive
+WorkingDirectory=/opt/reportarchive
+
+# Bind-mount layout:
+#   .env           → read-only into the container's backend root
+#   uploads/, logs/→ writable, host-side persistence
+ExecStart=/usr/bin/apptainer run \
+    --bind /opt/reportarchive/.env:/opt/app/backend/.env:ro \
+    --bind /opt/reportarchive/uploads:/data/uploads \
+    --bind /opt/reportarchive/logs:/data/logs \
+    /opt/reportarchive/app.sif
+
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+
+# Light hardening — Apptainer is already rootless / namespace-isolated,
+# these add belt-and-suspenders against host filesystem writes.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

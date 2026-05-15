@@ -1,0 +1,56 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+# Build:  (run from repo root)
+#   apptainer build deploy/app.sif deploy/apptainer.def
+#
+# %files paths are resolved relative to the build context (the directory
+# you invoke `apptainer build` from), so this file assumes repo-root cwd.
+# frontend/dist/ must already exist (build it first via `npm run build`).
+
+%files
+    backend /opt/app/backend
+    frontend/dist /opt/app/frontend/dist
+
+%post
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        python3.12 \
+        python3.12-venv \
+        python3-pip \
+        libpq5 \
+        ca-certificates
+    rm -rf /var/lib/apt/lists/*
+
+    # Freeze a venv inside the image — image is read-only at runtime,
+    # so all deps must be resolved here, not at first run.
+    python3.12 -m venv /opt/app/venv
+    /opt/app/venv/bin/pip install --no-cache-dir --upgrade pip
+    /opt/app/venv/bin/pip install --no-cache-dir -r /opt/app/backend/requirements.txt
+
+    # Bind-mount targets — paths must exist inside the image for the
+    # operator's --bind options to land somewhere.
+    mkdir -p /data/uploads /data/logs
+
+    find /opt/app -type d -name __pycache__ -prune -exec rm -rf {} + || true
+
+%environment
+    export APP_ENV=production
+    export PYTHONUNBUFFERED=1
+    export PATH=/opt/app/venv/bin:$PATH
+
+%runscript
+    cd /opt/app/backend
+    exec /opt/app/venv/bin/python run.py
+
+%startscript
+    cd /opt/app/backend
+    exec /opt/app/venv/bin/python run.py
+
+%labels
+    Maintainer ReportArchive
+    BaseOS ubuntu-24.04
+    Python 3.12

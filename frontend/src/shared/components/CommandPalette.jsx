@@ -4,10 +4,8 @@ import {
   Building2,
   FileText,
   FileCode2,
-  Hash,
   LayoutDashboard,
   Plus,
-  Sparkles,
   Sun,
   Moon,
 } from 'lucide-react'
@@ -143,14 +141,6 @@ function Palette({ open, onOpenChange }) {
               <CommandItem value="템플릿 templates" onSelect={() => go('/templates')}>
                 <FileCode2 className="h-4 w-4" />
                 템플릿 관리
-              </CommandItem>
-              <CommandItem value="엔티티 태그 entities" onSelect={() => go('/entities')}>
-                <Hash className="h-4 w-4" />
-                엔티티 / 태그
-              </CommandItem>
-              <CommandItem value="ai 작업" onSelect={() => go('/ai-jobs')}>
-                <Sparkles className="h-4 w-4" />
-                AI 작업
               </CommandItem>
             </CommandGroup>
             <CommandSeparator />

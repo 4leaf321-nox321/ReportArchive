@@ -19,8 +19,6 @@ import ReportDetailPage from '@/modules/reports/ReportDetailPage'
 import DashboardPage from '@/modules/dashboard/DashboardPage'
 import TemplatesPage from '@/modules/templates/TemplatesPage'
 import TemplateEditorPage from '@/modules/templates/TemplateEditorPage'
-import EntitiesPage from '@/modules/entities/EntitiesPage'
-import AIJobsPage from '@/modules/ai/AIJobsPage'
 import AdminPage from '@/modules/admin/AdminPage'
 import MembersPage from '@/modules/members/MembersPage'
 
@@ -88,8 +86,6 @@ export default function App() {
               <Route path="/templates" element={<TemplatesPage />} />
               <Route path="/templates/new" element={<TemplateEditorPage />} />
               <Route path="/templates/:templateId/edit" element={<TemplateEditorPage />} />
-              <Route path="/entities" element={<EntitiesPage />} />
-              <Route path="/ai-jobs" element={<AIJobsPage />} />
               <Route path="/admin" element={<AdminPage />} />
 
               <Route path="*" element={<NotFoundPage />} />

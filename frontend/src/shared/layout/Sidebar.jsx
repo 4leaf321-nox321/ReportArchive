@@ -3,8 +3,6 @@ import {
   LayoutDashboard,
   FileText,
   FileCode2,
-  Network,
-  Sparkles,
   Settings,
   Home,
   Users,
@@ -36,8 +34,6 @@ const GLOBAL_MENU = [
     icon: Users,
     requireAdmin: true,
   },
-  { to: '/entities', label: '엔티티 / 태그', icon: Network },
-  { to: '/ai-jobs', label: 'AI 작업', icon: Sparkles },
   { to: '/admin', label: '관리자', icon: Settings, requireAdmin: true },
 ]
 

@@ -173,7 +173,7 @@ cmd_install() {
 [OK] Install complete.
   Logs:    sudo journalctl -u $SERVICE_NAME -f
   Health:  curl http://localhost:3000/api/health
-  Seed login: admin@example.com / admin1234  (change immediately)
+  Seed login: admin / 32167  (change immediately)
 MSG
 }
 
@@ -250,7 +250,7 @@ SQL
     cat <<MSG
 
 [OK] Factory reset complete.
-  Seed login: admin@example.com / admin1234  (change immediately)
+  Seed login: admin / 32167  (change immediately)
 MSG
 }
 

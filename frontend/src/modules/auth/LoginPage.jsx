@@ -50,14 +50,14 @@ export default function LoginPage() {
         <CardContent>
           <form onSubmit={onSubmit} className="space-y-4">
             <div className="space-y-1.5">
-              <Label htmlFor="email">이메일</Label>
+              <Label htmlFor="email">아이디</Label>
               <Input
                 id="email"
-                type="email"
+                type="text"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                autoComplete="email"
+                placeholder="admin"
+                autoComplete="username"
                 required
                 autoFocus
               />
@@ -90,15 +90,6 @@ export default function LoginPage() {
               <Link to="/signup" className="text-primary hover:underline">
                 회원가입
               </Link>
-            </div>
-
-            <div className="rounded-md border bg-muted/40 p-3 text-[11px] text-muted-foreground">
-              <div className="font-semibold mb-1">테스트 계정</div>
-              <ul className="space-y-0.5 font-mono">
-                <li>admin@example.com / admin1234 (관리자)</li>
-                <li>manager@example.com / manager1234 (매니저)</li>
-                <li>user@example.com / user1234 (사용자)</li>
-              </ul>
             </div>
           </form>
         </CardContent>

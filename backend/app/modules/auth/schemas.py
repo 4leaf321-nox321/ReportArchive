@@ -5,7 +5,10 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    # Plain str (not EmailStr) so short admin-style logins work — the DB
+    # column is just text and self-signed-up users still happen to use
+    # real emails because RegisterRequest enforces EmailStr separately.
+    email: str = Field(..., min_length=1, max_length=255)
     password: str = Field(..., min_length=1)
 
 

@@ -26,7 +26,7 @@ API = "http://localhost:3000/api"
 def login() -> str:
     r = requests.post(
         f"{API}/auth/login",
-        json={"email": "admin@example.com", "password": "admin1234"},
+        json={"email": "admin", "password": "32167"},
         timeout=5,
     )
     r.raise_for_status()

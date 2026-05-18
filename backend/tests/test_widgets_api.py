@@ -11,7 +11,7 @@ from app.modules.auth.services import create_access_token
 
 
 def _token_for_seeded_admin() -> str:
-    """The seed creates user id=1 (admin@example.com). Tests assume seed
+    """The seed creates user id=1 (login id "admin"). Tests assume seed
     has run; if not, this token is still valid JWT-wise but the endpoint
     will 401 on the user lookup."""
     return create_access_token(1)

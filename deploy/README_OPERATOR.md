@@ -52,7 +52,7 @@ sudo ./deploy.sh install
 - `app.sif` → `<INSTALL_DIR>/app.sif`
 - `.env`가 없으면 자동 생성 — `.env.example`을 베이스로 **랜덤 SECRET_KEY/JWT_SECRET_KEY + 새 DB 비밀번호**를 채워 넣음 (Postgres 역할 비밀번호도 동시에 갱신)
 - 마이그레이션 (`setup_and_upgrade_db.py`)
-- 시드 (`seed_initial_data.py` — `dx` 부서 + `admin@example.com / admin1234`)
+- 시드 (`seed_initial_data.py` — `dx` 부서 + `admin / 32167`)
 - systemd 유닛 렌더링 (`@@USER@@`, `@@INSTALL_DIR@@` 치환) → enable + start
 
 검증:
@@ -62,7 +62,7 @@ curl http://localhost:3000/api/health
 sudo journalctl -u reportarchive -f
 ```
 
-> **최초 로그인 후 즉시 admin1234 비밀번호 변경**.
+> **최초 로그인 (`admin` / `32167`) 후 즉시 비밀번호 변경**.
 > `.env`의 CORS_ORIGINS는 운영 도메인에 맞춰 한 번 손보고 `sudo systemctl restart reportarchive`.
 
 ---

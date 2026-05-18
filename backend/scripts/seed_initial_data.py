@@ -3,7 +3,7 @@ Idempotent seed for initial application data.
 
 Run after `setup_and_upgrade_db.py`. Creates:
   - Workspace tree (DX 부문 루트 + 공통 _global 가상 노드)
-  - Seed admin user (admin@example.com) with admin role on dx
+  - Seed admin user (id "admin", password "32167") with admin role on dx
   - System templates (widget-v1)
 
 Re-running is safe: existing rows are skipped (matched by primary key).
@@ -52,10 +52,12 @@ WORKSPACES = [
 ]
 
 SEED_USERS = [
+    # Seed administrator. `email` column doubles as the login id — short
+    # value lets operators log in by typing just "admin".
     {
-        "email": "admin@example.com",
+        "email": "admin",
         "name": "관리자",
-        "password": "admin1234",
+        "password": "32167",
         "memberships": [("dx", Role.admin)],
     },
 ]

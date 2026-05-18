@@ -3,7 +3,7 @@
 Each report is bound to a specific template version (so it stays renderable
 even when the template evolves). `content` is the JSON document conforming
 to the template's JSON Schema; only the envelope fields (workspace, status,
-period, owner) are promoted to columns for easy filtering.
+report_date, owner) are promoted to columns for easy filtering.
 
 Workspace scoping is enforced at the service / RLS layer via `workspace_slug`.
 A leaf workspace owns its reports; queries on a non-leaf workspace pull all
@@ -73,8 +73,6 @@ class Report(Base):
         default=ReportStatus.draft,
         nullable=False,
     )
-    period: Mapped[str] = mapped_column(String(32), default="", nullable=False)
-
     owner_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

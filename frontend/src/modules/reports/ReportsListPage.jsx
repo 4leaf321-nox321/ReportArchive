@@ -78,7 +78,6 @@ export default function ReportsListPage() {
       sortable: true,
       render: (r) => <Badge variant={STATUS_VARIANT[r.status]}>{STATUS_LABEL[r.status]}</Badge>,
     },
-    { key: 'period', header: '기간', sortable: true },
     {
       key: 'owner_name',
       header: '작성자',
@@ -109,6 +108,16 @@ export default function ReportsListPage() {
         </span>
       ),
     },
+    {
+      key: 'report_date',
+      header: '보고 기준일',
+      sortable: true,
+      render: (r) => (
+        <span className="text-xs text-muted-foreground whitespace-nowrap font-mono">
+          {r.report_date ?? '—'}
+        </span>
+      ),
+    },
   ]
 
   return (
@@ -136,7 +145,7 @@ export default function ReportsListPage() {
         <DataTable
           columns={columns}
           data={list}
-          searchableKeys={['title', 'template_id', 'workspace_slug', 'workspace_name', 'period', 'owner_name', 'owner_email']}
+          searchableKeys={['title', 'template_id', 'workspace_slug', 'workspace_name', 'owner_name', 'owner_email']}
           searchPlaceholder="제목, 템플릿, 부서, 작성자 검색"
           onRowClick={(r) => navigate(`/w/${slug}/reports/${r.id}`)}
         />

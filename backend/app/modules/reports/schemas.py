@@ -36,7 +36,7 @@ def _flatten_user_refs(obj: Any) -> Any:
         key: getattr(obj, key)
         for key in (
             "id", "workspace_slug", "template_id", "template_version",
-            "title", "status", "period", "report_date",
+            "title", "status", "report_date",
             "owner_user_id", "updated_by_user_id",
             "tags", "content", "layout_overrides", "props_overrides", "pages",
             "created_at", "updated_at",
@@ -85,7 +85,6 @@ class ReportRead(BaseModel):
     template_version: int
     title: str
     status: ReportStatus
-    period: str
     report_date: date
     owner_user_id: Optional[int]
     # Joined display fields — flattened so the frontend doesn't need a
@@ -134,7 +133,6 @@ class ReportSummary(BaseModel):
     template_version: int
     title: str
     status: ReportStatus
-    period: str
     report_date: date
     owner_user_id: Optional[int]
     owner_name: Optional[str] = None
@@ -162,7 +160,6 @@ class ReportCreate(BaseModel):
     template_id: str = Field(..., min_length=1, max_length=64)
     template_version: int = Field(..., ge=1)
     title: str = Field(..., min_length=1, max_length=255)
-    period: str = ""
     # Aggregation reference date. Omit to default to today on the server.
     report_date: Optional[date] = None
     tags: list[str] = []
@@ -178,7 +175,6 @@ class ReportCreate(BaseModel):
 class ReportUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=255)
     status: Optional[ReportStatus] = None
-    period: Optional[str] = None
     report_date: Optional[date] = None
     tags: Optional[list[str]] = None
     # Legacy single-page fields — when supplied, applied to page 0 (and the

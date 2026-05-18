@@ -93,7 +93,7 @@ export default function WorkspaceHomePage() {
                 <div className="flex-1 min-w-0">
                   <div className="font-medium truncate">{r.title}</div>
                   <div className="text-xs text-muted-foreground">
-                    {templateName(r.template_id)} v{r.template_version} · {r.workspace_slug} · {r.period || '—'}
+                    {templateName(r.template_id)} v{r.template_version} · {r.workspace_slug} · {r.report_date ?? '—'}
                   </div>
                 </div>
                 <Badge variant={STATUS_VARIANT[r.status]}>{STATUS_LABEL[r.status]}</Badge>

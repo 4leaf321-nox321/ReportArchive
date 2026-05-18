@@ -166,7 +166,6 @@ def create_report(
         template_id=page0.template_id,
         template_version=page0.template_version,
         title=payload.title,
-        period=payload.period,
         tags=list(payload.tags or []),
     )
     # Only pass report_date when the client explicitly supplied one;
@@ -244,7 +243,7 @@ def update_report(
         report.pages = _pages_to_jsonb(new_pages)
 
     # Apply non-page scalar fields.
-    for key in ("title", "status", "period", "report_date", "tags"):
+    for key in ("title", "status", "report_date", "tags"):
         if key in data:
             setattr(report, key, data[key])
 

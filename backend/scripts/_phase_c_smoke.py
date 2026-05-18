@@ -61,7 +61,6 @@ def main() -> int:
             "template_id": "weekly-dev",
             "template_version": 1,
             "title": "Phase C smoke",
-            "period": "2026-W19",
             "tags": ["smoke"],
             "content": valid_content,
         },

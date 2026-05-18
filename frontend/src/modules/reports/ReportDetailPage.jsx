@@ -101,7 +101,6 @@ export default function ReportDetailPage() {
     if (isNew && seedTemplate) {
       setDraft({
         title: '새 보고서',
-        period: '',
         report_date: todayIsoDate(),
         tags: [],
         pages: [
@@ -134,7 +133,6 @@ export default function ReportDetailPage() {
       setDraft({
         id: existingReport.id,
         title: existingReport.title,
-        period: existingReport.period ?? '',
         report_date: existingReport.report_date ?? todayIsoDate(),
         tags: existingReport.tags ?? [],
         status: existingReport.status,
@@ -433,7 +431,6 @@ export default function ReportDetailPage() {
       const first = draft.pages[0]
       const payload = {
         title: draft.title,
-        period: draft.period || '',
         report_date: draft.report_date || null,
         tags: draft.tags ?? [],
         pages: draft.pages,
@@ -484,7 +481,6 @@ export default function ReportDetailPage() {
       setDraft({
         id: existingReport.id,
         title: existingReport.title,
-        period: existingReport.period ?? '',
         report_date: existingReport.report_date ?? todayIsoDate(),
         tags: existingReport.tags ?? [],
         status: existingReport.status,
@@ -506,10 +502,10 @@ export default function ReportDetailPage() {
   }
 
   // Local snapshot export — downloads the current working draft (title +
-  // period + tags + pages) as a JSON file. The `id` and `status` columns
-  // are deliberately omitted: the snapshot is meant to be portable across
-  // reports, not to round-trip server identity. A version tag lets the
-  // importer reject unrelated JSON.
+  // report_date + tags + pages) as a JSON file. The `id` and `status`
+  // columns are deliberately omitted: the snapshot is meant to be portable
+  // across reports, not to round-trip server identity. A version tag lets
+  // the importer reject unrelated JSON.
   function handleLocalSave() {
     if (!draft) return
     // Audit fields — informational only. They describe the server-side
@@ -533,7 +529,7 @@ export default function ReportDetailPage() {
       _type: 'report_archive_draft_v1',
       saved_at: new Date().toISOString(),
       title: draft.title ?? '',
-      period: draft.period ?? '',
+      report_date: draft.report_date ?? '',
       tags: draft.tags ?? [],
       pages: draft.pages ?? [],
       meta,
@@ -570,7 +566,10 @@ export default function ReportDetailPage() {
       setDraft((d) => ({
         ...(d ?? {}),
         title: typeof obj.title === 'string' ? obj.title : (d?.title ?? ''),
-        period: typeof obj.period === 'string' ? obj.period : (d?.period ?? ''),
+        report_date:
+          typeof obj.report_date === 'string' && obj.report_date
+            ? obj.report_date
+            : (d?.report_date ?? todayIsoDate()),
         tags: Array.isArray(obj.tags) ? obj.tags : (d?.tags ?? []),
         pages: obj.pages.map(normalizePage),
       }))

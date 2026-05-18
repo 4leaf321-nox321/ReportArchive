@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
+  ChevronDown,
+  ChevronRight,
   Layers,
   Pencil,
   Plus,
@@ -27,6 +29,7 @@ import {
 } from '@/shared/api/composites'
 import { KIND_LABEL, KIND_VARIANT, KINDS } from './constants'
 import { ItemPickerDialog } from './ItemPickerDialog'
+import { InlineCompositeView, InlineReportView } from './InlineReportView'
 
 export default function CompositeDetailPage() {
   const { compositeId } = useParams()
@@ -42,6 +45,9 @@ export default function CompositeDetailPage() {
   const [draft, setDraft] = useState(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  // Per-item expansion state, keyed by row index. Reset when the draft is
+  // rebuilt so newly-added items start collapsed.
+  const [expanded, setExpanded] = useState(new Set())
 
   // Snapshot existing → draft when the row loads or after a successful save.
   useEffect(() => {
@@ -246,19 +252,46 @@ export default function CompositeDetailPage() {
 
       <Card>
         <CardContent className="pt-5 space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
             <div>
               <div className="text-sm font-semibold">포함된 안건</div>
               <div className="text-[11px] text-muted-foreground">
                 보고서 또는 다른 종합보고를 선택해 추가
               </div>
             </div>
-            {isEditing && (
-              <Button size="sm" variant="outline" onClick={() => setPickerOpen(true)}>
-                <Plus className="mr-1 h-3 w-3" />
-                안건 추가
-              </Button>
-            )}
+            <div className="flex items-center gap-2">
+              {draft.items.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setExpanded((prev) =>
+                      prev.size === draft.items.length
+                        ? new Set()
+                        : new Set(draft.items.map((_, i) => i)),
+                    )
+                  }}
+                >
+                  {expanded.size === draft.items.length ? (
+                    <>
+                      <ChevronRight className="mr-1 h-3 w-3" />
+                      모두 접기
+                    </>
+                  ) : (
+                    <>
+                      <ChevronDown className="mr-1 h-3 w-3" />
+                      모두 펼치기
+                    </>
+                  )}
+                </Button>
+              )}
+              {isEditing && (
+                <Button size="sm" variant="outline" onClick={() => setPickerOpen(true)}>
+                  <Plus className="mr-1 h-3 w-3" />
+                  안건 추가
+                </Button>
+              )}
+            </div>
           </div>
           {draft.items.length === 0 ? (
             <p className="text-sm text-muted-foreground py-6 text-center">
@@ -272,6 +305,15 @@ export default function CompositeDetailPage() {
                   item={it}
                   index={idx}
                   editing={isEditing}
+                  expanded={expanded.has(idx)}
+                  onToggleExpand={() => {
+                    setExpanded((prev) => {
+                      const next = new Set(prev)
+                      if (next.has(idx)) next.delete(idx)
+                      else next.add(idx)
+                      return next
+                    })
+                  }}
                   workspaceName={workspaceName}
                   onMoveUp={() => moveItem(idx, -1)}
                   onMoveDown={() => moveItem(idx, +1)}
@@ -345,6 +387,8 @@ function ItemRow({
   index,
   total,
   editing,
+  expanded,
+  onToggleExpand,
   workspaceName,
   onMoveUp,
   onMoveDown,
@@ -355,77 +399,98 @@ function ItemRow({
   const isReport = Boolean(item.ref_report_id)
   const ref = isReport ? item._display?.ref_report : item._display?.ref_composite
   return (
-    <li className="py-3 flex items-start gap-3">
-      <span className="text-xs text-muted-foreground w-5 tabular-nums pt-0.5">
-        {index + 1}.
-      </span>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Badge variant="outline" className="text-[10px]">
-            {isReport ? '보고서' : '종합'}
-          </Badge>
-          <button
-            type="button"
-            onClick={onOpen}
-            className="font-medium text-sm hover:underline text-left truncate"
-          >
-            {ref?.title ?? (isReport ? `report #${item.ref_report_id}` : `composite #${item.ref_composite_id}`)}
-          </button>
+    <li className="py-3">
+      <div className="flex items-start gap-2">
+        <button
+          type="button"
+          onClick={onToggleExpand}
+          className="mt-0.5 shrink-0 rounded hover:bg-muted h-5 w-5 flex items-center justify-center text-muted-foreground"
+          aria-label={expanded ? '접기' : '펼치기'}
+          aria-expanded={expanded}
+        >
+          {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+        </button>
+        <span className="text-xs text-muted-foreground w-5 tabular-nums pt-0.5 shrink-0">
+          {index + 1}.
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge variant="outline" className="text-[10px]">
+              {isReport ? '보고서' : '종합'}
+            </Badge>
+            <button
+              type="button"
+              onClick={onOpen}
+              className="font-medium text-sm hover:underline text-left truncate"
+            >
+              {ref?.title ?? (isReport ? `report #${item.ref_report_id}` : `composite #${item.ref_composite_id}`)}
+            </button>
+          </div>
+          <div className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
+            {ref?.workspace_slug && <span>{workspaceName(ref.workspace_slug)}</span>}
+            {isReport && ref?.report_date && <span>· 기준 {ref.report_date}</span>}
+            {!isReport && ref?.period_date && <span>· 기준 {ref.period_date}</span>}
+            {ref?.owner_name && <span>· {ref.owner_name}</span>}
+          </div>
+          {(editing || item.note) && (
+            <div className="mt-2">
+              {editing ? (
+                <Input
+                  value={item.note}
+                  onChange={(e) => onChangeNote(e.target.value)}
+                  placeholder="이 안건에 대한 메모 (선택)"
+                  className="h-8 text-xs"
+                />
+              ) : (
+                <div className="text-xs text-muted-foreground italic">
+                  메모: {item.note}
+                </div>
+              )}
+            </div>
+          )}
         </div>
-        <div className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
-          {ref?.workspace_slug && <span>{workspaceName(ref.workspace_slug)}</span>}
-          {isReport && ref?.report_date && <span>· 기준 {ref.report_date}</span>}
-          {!isReport && ref?.period_date && <span>· 기준 {ref.period_date}</span>}
-          {ref?.owner_name && <span>· {ref.owner_name}</span>}
-        </div>
-        {(editing || item.note) && (
-          <div className="mt-2">
-            {editing ? (
-              <Input
-                value={item.note}
-                onChange={(e) => onChangeNote(e.target.value)}
-                placeholder="이 안건에 대한 메모 (선택)"
-                className="h-8 text-xs"
-              />
-            ) : (
-              <div className="text-xs text-muted-foreground italic">
-                메모: {item.note}
-              </div>
-            )}
+        {editing && (
+          <div className="flex items-center gap-0.5 shrink-0">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={onMoveUp}
+              disabled={index === 0}
+              aria-label="위로"
+            >
+              ↑
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={onMoveDown}
+              disabled={index === total - 1}
+              aria-label="아래로"
+            >
+              ↓
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-destructive"
+              onClick={onRemove}
+              aria-label="제거"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
           </div>
         )}
       </div>
-      {editing && (
-        <div className="flex items-center gap-0.5 shrink-0">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            onClick={onMoveUp}
-            disabled={index === 0}
-            aria-label="위로"
-          >
-            ↑
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            onClick={onMoveDown}
-            disabled={index === total - 1}
-            aria-label="아래로"
-          >
-            ↓
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-destructive"
-            onClick={onRemove}
-            aria-label="제거"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
+
+      {expanded && (
+        <div className="mt-3 ml-12 pl-4 border-l-2">
+          {isReport && item.ref_report_id ? (
+            <InlineReportView reportId={item.ref_report_id} />
+          ) : item.ref_composite_id ? (
+            <InlineCompositeView compositeId={item.ref_composite_id} />
+          ) : null}
         </div>
       )}
     </li>

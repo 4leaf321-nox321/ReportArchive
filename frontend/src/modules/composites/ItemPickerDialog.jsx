@@ -19,6 +19,17 @@ import { listReports } from '@/modules/reports/api'
 import { listComposites } from '@/shared/api/composites'
 import { KIND_LABEL, KIND_VARIANT } from './constants'
 
+/** Inclusive YYYY-MM-DD range check. `value` may be null (theme composites
+ *  have no period_date) — when a date range is active, those are dropped
+ *  since they have no date to compare. */
+function inDateRange(value, from, to) {
+  if (!from && !to) return true
+  if (!value) return false
+  if (from && value < from) return false
+  if (to && value > to) return false
+  return true
+}
+
 /** Item picker for the composite detail page. Two tabs (보고서 / 종합) —
  *  each lists candidates from the API and lets the user multi-select via
  *  checkboxes. Already-selected items are pre-checked and dimmed so users
@@ -127,15 +138,20 @@ function ReportPickerList({ open, selected, existingKeys, onToggle }) {
     return (s) => map.get(s) ?? s
   }, [workspaces])
   const [query, setQuery] = useState('')
-  const filtered = (data ?? []).filter((r) => {
-    if (!query.trim()) return true
-    const q = query.toLowerCase()
-    return (
-      r.title.toLowerCase().includes(q) ||
-      (r.owner_name ?? '').toLowerCase().includes(q) ||
-      workspaceName(r.workspace_slug).toLowerCase().includes(q)
-    )
-  })
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+
+  const filtered = (data ?? [])
+    .filter((r) => inDateRange(r.report_date, dateFrom, dateTo))
+    .filter((r) => {
+      if (!query.trim()) return true
+      const q = query.toLowerCase()
+      return (
+        r.title.toLowerCase().includes(q) ||
+        (r.owner_name ?? '').toLowerCase().includes(q) ||
+        workspaceName(r.workspace_slug).toLowerCase().includes(q)
+      )
+    })
   if (loading) return <Skeleton className="h-48" />
   if (error) return <div className="text-sm text-destructive">{error.message}</div>
   return (
@@ -143,6 +159,11 @@ function ReportPickerList({ open, selected, existingKeys, onToggle }) {
       items={filtered}
       query={query}
       setQuery={setQuery}
+      dateFrom={dateFrom}
+      setDateFrom={setDateFrom}
+      dateTo={dateTo}
+      setDateTo={setDateTo}
+      dateLabel="보고 기준일"
       keyOf={(r) => `r:${r.id}`}
       isExisting={(r) => existingKeys.has(`r:${r.id}`)}
       isSelected={(r) => selected.has(`r:${r.id}`)}
@@ -170,9 +191,15 @@ function CompositePickerList({ open, excludeId, selected, existingKeys, onToggle
     return (s) => map.get(s) ?? s
   }, [workspaces])
   const [query, setQuery] = useState('')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+
   // Drop the composite itself so the picker can't self-reference.
+  // Date filter targets period_date — theme composites (no period_date)
+  // fall out of the result when a date range is active, by design.
   const filtered = (data ?? [])
     .filter((c) => c.id !== excludeId)
+    .filter((c) => inDateRange(c.period_date, dateFrom, dateTo))
     .filter((c) => {
       if (!query.trim()) return true
       const q = query.toLowerCase()
@@ -189,6 +216,11 @@ function CompositePickerList({ open, excludeId, selected, existingKeys, onToggle
       items={filtered}
       query={query}
       setQuery={setQuery}
+      dateFrom={dateFrom}
+      setDateFrom={setDateFrom}
+      dateTo={dateTo}
+      setDateTo={setDateTo}
+      dateLabel="기준일"
       keyOf={(c) => `c:${c.id}`}
       isExisting={(c) => existingKeys.has(`c:${c.id}`)}
       isSelected={(c) => selected.has(`c:${c.id}`)}
@@ -212,6 +244,11 @@ function PickerBody({
   items,
   query,
   setQuery,
+  dateFrom,
+  setDateFrom,
+  dateTo,
+  setDateTo,
+  dateLabel,
   keyOf,
   isExisting,
   isSelected,
@@ -219,6 +256,7 @@ function PickerBody({
   placeholder,
   renderMeta,
 }) {
+  const dateFilterActive = Boolean(dateFrom || dateTo)
   return (
     <div className="space-y-2">
       <div className="relative">
@@ -229,6 +267,33 @@ function PickerBody({
           placeholder={placeholder}
           className="pl-8"
         />
+      </div>
+      <div className="flex items-center gap-2 flex-wrap text-xs">
+        <span className="text-muted-foreground shrink-0">{dateLabel ?? '날짜'}:</span>
+        <Input
+          type="date"
+          value={dateFrom}
+          onChange={(e) => setDateFrom(e.target.value)}
+          className="h-8 w-[150px] text-xs font-mono"
+          aria-label="시작일"
+        />
+        <span className="text-muted-foreground">~</span>
+        <Input
+          type="date"
+          value={dateTo}
+          onChange={(e) => setDateTo(e.target.value)}
+          className="h-8 w-[150px] text-xs font-mono"
+          aria-label="종료일"
+        />
+        {dateFilterActive && (
+          <button
+            type="button"
+            onClick={() => { setDateFrom(''); setDateTo('') }}
+            className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+          >
+            지우기
+          </button>
+        )}
       </div>
       <div className="border rounded-md max-h-[360px] overflow-y-auto divide-y">
         {items.length === 0 ? (

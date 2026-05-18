@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app.modules.auth.routes import router as auth_router
+from app.modules.composites.routes import router as composites_router
 from app.modules.files.routes import router as files_router
 from app.modules.members.routes import router as members_router
 from app.modules.reports.routes import router as reports_router
@@ -38,4 +39,5 @@ def register_routers(app: FastAPI) -> None:
         tags=["widget-relations"],
     )
     app.include_router(reports_router, prefix="/api/reports", tags=["reports"])
+    app.include_router(composites_router, prefix="/api/composites", tags=["composites"])
     app.include_router(files_router, prefix="/api/files", tags=["files"])

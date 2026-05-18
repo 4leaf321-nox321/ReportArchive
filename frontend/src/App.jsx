@@ -19,6 +19,8 @@ import ReportDetailPage from '@/modules/reports/ReportDetailPage'
 import DashboardPage from '@/modules/dashboard/DashboardPage'
 import TemplatesPage from '@/modules/templates/TemplatesPage'
 import TemplateEditorPage from '@/modules/templates/TemplateEditorPage'
+import CompositesListPage from '@/modules/composites/CompositesListPage'
+import CompositeDetailPage from '@/modules/composites/CompositeDetailPage'
 import AdminPage from '@/modules/admin/AdminPage'
 import MembersPage from '@/modules/members/MembersPage'
 
@@ -79,6 +81,8 @@ export default function App() {
               />
               <Route path="/w/:workspace/reports/:reportId" element={<ReportDetailPage />} />
               <Route path="/w/:workspace/dashboard" element={<DashboardPage />} />
+              <Route path="/w/:workspace/composites" element={<CompositesListPage />} />
+              <Route path="/w/:workspace/composites/:compositeId" element={<CompositeDetailPage />} />
               <Route path="/w/:workspace/members" element={<MembersPage />} />
 
               {/* 공통 (부서 횡단) */}

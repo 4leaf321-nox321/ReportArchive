@@ -85,7 +85,9 @@ def update_report(
     ):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
     try:
-        report = services.update_report(db, report, payload)
+        report = services.update_report(
+            db, report, payload, updated_by_user_id=actor.user.id
+        )
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return success_response(data=ReportRead.model_validate(report))

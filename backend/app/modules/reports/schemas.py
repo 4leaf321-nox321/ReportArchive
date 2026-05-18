@@ -2,11 +2,48 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.modules.reports.models import ReportStatus
+
+
+def _flatten_user_refs(obj: Any) -> Any:
+    """Pre-validator that copies joined user info from the ORM model into
+    flat string fields so frontend consumers don't need a second lookup.
+    Idempotent for dict inputs (used by JSON round-trips) — only walks the
+    relationship attributes when given an ORM Report.
+    """
+    if obj is None or isinstance(obj, dict):
+        return obj
+    extras: dict[str, Any] = {}
+    owner = getattr(obj, "owner", None)
+    if owner is not None:
+        extras["owner_name"] = owner.name
+        extras["owner_email"] = owner.email
+    updated_by = getattr(obj, "updated_by", None)
+    if updated_by is not None:
+        extras["updated_by_name"] = updated_by.name
+        extras["updated_by_email"] = updated_by.email
+    if not extras:
+        return obj
+    # Build a dict so Pydantic stops walking the ORM (otherwise it'd try to
+    # find owner_name as an attribute on the row and fail). We carry every
+    # field through that the consumer schemas declare; the rest get the
+    # default from_attributes pull via __dict__.
+    base: dict[str, Any] = {
+        key: getattr(obj, key)
+        for key in (
+            "id", "workspace_slug", "template_id", "template_version",
+            "title", "status", "period", "owner_user_id", "updated_by_user_id",
+            "tags", "content", "layout_overrides", "props_overrides", "pages",
+            "created_at", "updated_at",
+        )
+        if hasattr(obj, key)
+    }
+    base.update(extras)
+    return base
 
 
 class ReportPage(BaseModel):
@@ -49,6 +86,15 @@ class ReportRead(BaseModel):
     status: ReportStatus
     period: str
     owner_user_id: Optional[int]
+    # Joined display fields — flattened so the frontend doesn't need a
+    # separate /api/users lookup for every report row. workspace_slug above
+    # doubles as "작성자가 작성 시점에 속해 있던 부서" (no separate snapshot
+    # column because reports don't currently move between workspaces).
+    owner_name: Optional[str] = None
+    owner_email: Optional[str] = None
+    updated_by_user_id: Optional[int] = None
+    updated_by_name: Optional[str] = None
+    updated_by_email: Optional[str] = None
     tags: list[str]
     content: dict
     layout_overrides: Optional[dict] = None
@@ -56,6 +102,11 @@ class ReportRead(BaseModel):
     pages: list[ReportPage] = []
     created_at: datetime
     updated_at: datetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flatten(cls, obj: Any) -> Any:
+        return _flatten_user_refs(obj)
 
 
 class ReportPagePreview(BaseModel):
@@ -83,6 +134,11 @@ class ReportSummary(BaseModel):
     status: ReportStatus
     period: str
     owner_user_id: Optional[int]
+    owner_name: Optional[str] = None
+    owner_email: Optional[str] = None
+    updated_by_user_id: Optional[int] = None
+    updated_by_name: Optional[str] = None
+    updated_by_email: Optional[str] = None
     tags: list[str]
     # Per-page template bindings. Pydantic pulls this from the JSONB
     # `pages` column and discards the heavy fields (content, layouts)
@@ -90,6 +146,11 @@ class ReportSummary(BaseModel):
     pages: list[ReportPagePreview] = []
     created_at: datetime
     updated_at: datetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flatten(cls, obj: Any) -> Any:
+        return _flatten_user_refs(obj)
 
 
 class ReportCreate(BaseModel):

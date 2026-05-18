@@ -66,6 +66,36 @@ export default function ReportsListPage() {
       render: (r) => <Badge variant={STATUS_VARIANT[r.status]}>{STATUS_LABEL[r.status]}</Badge>,
     },
     { key: 'period', header: '기간', sortable: true },
+    {
+      key: 'owner_name',
+      header: '작성자',
+      sortable: true,
+      render: (r) => (
+        <span
+          className="text-xs text-muted-foreground"
+          title={r.owner_email ? `${r.owner_name} (${r.owner_email})` : undefined}
+        >
+          {r.owner_name ?? '—'}
+        </span>
+      ),
+    },
+    {
+      key: 'updated_at',
+      header: '수정일',
+      sortable: true,
+      render: (r) => (
+        <span
+          className="text-xs text-muted-foreground whitespace-nowrap"
+          title={
+            r.updated_by_name
+              ? `${r.updated_by_name} · ${formatDateTime(r.updated_at)}`
+              : formatDateTime(r.updated_at)
+          }
+        >
+          {formatDate(r.updated_at)}
+        </span>
+      ),
+    },
   ]
 
   return (
@@ -93,8 +123,8 @@ export default function ReportsListPage() {
         <DataTable
           columns={columns}
           data={list}
-          searchableKeys={['title', 'template_id', 'workspace_slug', 'period']}
-          searchPlaceholder="제목, 템플릿, 부서 검색"
+          searchableKeys={['title', 'template_id', 'workspace_slug', 'period', 'owner_name', 'owner_email']}
+          searchPlaceholder="제목, 템플릿, 부서, 작성자 검색"
           onRowClick={(r) => navigate(`/w/${slug}/reports/${r.id}`)}
         />
       )}
@@ -111,6 +141,23 @@ function makeTemplateNameLookup(templates) {
     if (id.length > 16) return `${id.slice(0, 8)}…`
     return id
   }
+}
+
+/** "2026-05-18" — compact, sortable, no time component. */
+function formatDate(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toISOString().slice(0, 10)
+}
+
+/** "2026-05-18 09:10" — full datetime for tooltip. */
+function formatDateTime(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 /** Distinct `(template_id, template_version)` pairs across a report's pages,

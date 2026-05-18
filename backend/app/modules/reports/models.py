@@ -25,9 +25,10 @@ from sqlalchemy import (
     Text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.modules.users.models import User
 
 
 class ReportStatus(str, enum.Enum):
@@ -75,6 +76,12 @@ class Report(Base):
     owner_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # Tracks who last modified the report (touched on every successful
+    # update_report() call). Snapshot only — full history lives in journald
+    # if needed; an audit-log table would be overkill at this scale.
+    updated_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Free-form tags — small flat list. Will become a dedicated table once
     # entity extraction lands (개발계획.md §1-4 Phase 1).
@@ -111,4 +118,14 @@ class Report(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    # Eagerly load the two user joins — every read of a Report needs the
+    # owner / last-editor display info, so paying one JOIN beats N+1 lookups
+    # in the route layer.
+    owner: Mapped["User | None"] = relationship(
+        "User", foreign_keys=[owner_user_id], lazy="joined"
+    )
+    updated_by: Mapped["User | None"] = relationship(
+        "User", foreign_keys=[updated_by_user_id], lazy="joined"
     )

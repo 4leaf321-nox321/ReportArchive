@@ -173,6 +173,10 @@ def create_report(
         props_overrides=_sanitize_props_overrides(page0.props_overrides),
         pages=_pages_to_jsonb(pages),
         owner_user_id=owner_user_id,
+        # On a fresh report the creator is also the last editor — keeps
+        # the column non-null so the UI never has to render "수정인: —"
+        # for never-edited rows.
+        updated_by_user_id=owner_user_id,
     )
     db.add(report)
     db.commit()
@@ -180,7 +184,13 @@ def create_report(
     return report
 
 
-def update_report(db: Session, report: Report, payload: ReportUpdate) -> Report:
+def update_report(
+    db: Session,
+    report: Report,
+    payload: ReportUpdate,
+    *,
+    updated_by_user_id: Optional[int] = None,
+) -> Report:
     data = payload.model_dump(exclude_unset=True)
 
     # Resolve the new page list. Either the client sent the full `pages`
@@ -230,6 +240,11 @@ def update_report(db: Session, report: Report, payload: ReportUpdate) -> Report:
     for key in ("title", "status", "period", "tags"):
         if key in data:
             setattr(report, key, data[key])
+
+    # Stamp the last-editor. Done on every successful update path; routes
+    # always pass the actor id so this never silently goes None.
+    if updated_by_user_id is not None:
+        report.updated_by_user_id = updated_by_user_id
 
     db.commit()
     db.refresh(report)

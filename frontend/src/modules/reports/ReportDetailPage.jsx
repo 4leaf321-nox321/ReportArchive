@@ -508,6 +508,23 @@ export default function ReportDetailPage() {
   // importer reject unrelated JSON.
   function handleLocalSave() {
     if (!draft) return
+    // Audit fields — informational only. They describe the server-side
+    // state of the report at export time so the JSON is self-explanatory
+    // when archived offline. They don't round-trip back through import.
+    const meta = existingReport
+      ? {
+          workspace_slug: existingReport.workspace_slug,
+          owner_user_id: existingReport.owner_user_id,
+          owner_name: existingReport.owner_name,
+          owner_email: existingReport.owner_email,
+          updated_by_user_id: existingReport.updated_by_user_id,
+          updated_by_name: existingReport.updated_by_name,
+          updated_by_email: existingReport.updated_by_email,
+          created_at: existingReport.created_at,
+          updated_at: existingReport.updated_at,
+          status: existingReport.status,
+        }
+      : null
     const payload = {
       _type: 'report_archive_draft_v1',
       saved_at: new Date().toISOString(),
@@ -515,6 +532,7 @@ export default function ReportDetailPage() {
       period: draft.period ?? '',
       tags: draft.tags ?? [],
       pages: draft.pages ?? [],
+      meta,
     }
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
       type: 'application/json',
@@ -579,7 +597,7 @@ export default function ReportDetailPage() {
                 {draft.title || <span className="text-muted-foreground">(제목 없음)</span>}
               </div>
             )}
-            <div className="mt-0.5 text-xs text-muted-foreground flex items-center gap-2">
+            <div className="mt-0.5 text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
               <span>
                 {currentTemplate?.name ?? <span className="italic">템플릿 불러오는 중…</span>}
               </span>
@@ -593,6 +611,17 @@ export default function ReportDetailPage() {
                 <Badge variant={STATUS_VARIANT[draft.status]}>{STATUS_LABEL[draft.status]}</Badge>
               )}
             </div>
+            {!isNew && existingReport && (
+              <ReportMetaLine
+                ownerName={existingReport.owner_name}
+                ownerEmail={existingReport.owner_email}
+                workspaceSlug={existingReport.workspace_slug}
+                createdAt={existingReport.created_at}
+                updatedByName={existingReport.updated_by_name}
+                updatedByEmail={existingReport.updated_by_email}
+                updatedAt={existingReport.updated_at}
+              />
+            )}
           </div>
 
           <ViewModeToggle value={viewMode} onChange={setViewMode} />
@@ -783,6 +812,58 @@ export default function ReportDetailPage() {
 // --------------------------------------------------------------------------- //
 // View-mode toggle + page navigation                                          //
 // --------------------------------------------------------------------------- //
+
+/**
+ * One-line metadata strip under the report title: who wrote it (and in which
+ * workspace), when it was created, and who last touched it. Sits between the
+ * header chips (template/status) and the toolbar so the audit trail is always
+ * visible without opening a separate panel.
+ */
+function ReportMetaLine({
+  ownerName,
+  ownerEmail,
+  workspaceSlug,
+  createdAt,
+  updatedByName,
+  updatedByEmail,
+  updatedAt,
+}) {
+  const wroteSameAsEdited =
+    ownerName && updatedByName && ownerName === updatedByName
+  const createdSameAsUpdated =
+    createdAt && updatedAt && Math.abs(new Date(createdAt) - new Date(updatedAt)) < 60_000
+
+  return (
+    <div className="mt-1 flex items-center gap-x-3 gap-y-1 flex-wrap text-[11px] text-muted-foreground">
+      <span title={ownerEmail ? `${ownerName ?? '?'} <${ownerEmail}>` : undefined}>
+        작성{' '}
+        <span className="text-foreground/80">{ownerName ?? '—'}</span>
+        {workspaceSlug && <span className="text-muted-foreground/70"> · {workspaceSlug}</span>}
+        {createdAt && <span className="text-muted-foreground/70"> · {formatMetaDate(createdAt)}</span>}
+      </span>
+      {!createdSameAsUpdated && updatedAt && (
+        <span title={updatedByEmail ? `${updatedByName ?? '?'} <${updatedByEmail}>` : undefined}>
+          최근 수정{' '}
+          {!wroteSameAsEdited && (
+            <>
+              <span className="text-foreground/80">{updatedByName ?? '—'}</span>
+              <span className="text-muted-foreground/70"> · </span>
+            </>
+          )}
+          <span className="text-muted-foreground/70">{formatMetaDate(updatedAt)}</span>
+        </span>
+      )}
+    </div>
+  )
+}
+
+function formatMetaDate(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
 
 function ViewModeToggle({ value, onChange }) {
   return (

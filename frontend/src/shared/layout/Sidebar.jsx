@@ -106,7 +106,7 @@ function SidebarBody({ onNavigate }) {
       </nav>
 
       <div className="border-t p-3 text-[11px] text-muted-foreground">
-        Report Automation · Phase 0
+        Report Archive · Phase 0
       </div>
     </>
   )

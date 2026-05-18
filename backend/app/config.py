@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     # --- App ---
     app_env: str = Field(default="development")
-    app_name: str = Field(default="ReportAutomation")
+    app_name: str = Field(default="ReportArchive")
     app_host: str = Field(default="0.0.0.0")
     app_port: int = Field(default=5174)
 

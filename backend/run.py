@@ -30,7 +30,7 @@ def main() -> None:
 
     banner = f"""
     ================================================================
-    |             Report Automation Backend (FastAPI)              |
+    |              Report Archive Backend (FastAPI)                |
     ================================================================
     |  Environment: {env:<46}|
     |  Host:        {host:<46}|

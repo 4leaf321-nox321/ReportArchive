@@ -1,4 +1,4 @@
-# Report Automation
+# Report Archive
 
 FastAPI 백엔드 + React (Vite) 프론트엔드 + PostgreSQL 데이터베이스.
 크로스 플랫폼(Windows / Linux / macOS) 빌드와, 두 컴포넌트의 독립

@@ -40,7 +40,7 @@ export function Header({ onOpenMobileSidebar }) {
       </Button>
 
       <Link to="/" className="text-base font-bold tracking-tight">
-        Report Automation
+        Report Archive
       </Link>
 
       {/* 검색 트리거 — 클릭 시 명령 팔레트 */}

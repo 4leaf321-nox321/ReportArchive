@@ -44,7 +44,7 @@ export default function LoginPage() {
           <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
             <LogIn className="h-5 w-5 text-primary" />
           </div>
-          <CardTitle className="text-xl">Report Automation</CardTitle>
+          <CardTitle className="text-xl">Report Archive</CardTitle>
           <CardDescription>로그인하여 부서 보고서에 접근하세요.</CardDescription>
         </CardHeader>
         <CardContent>

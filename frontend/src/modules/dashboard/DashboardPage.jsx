@@ -50,7 +50,7 @@ const PALETTE = [
 
 export default function DashboardPage() {
   const { workspace, slug, all: workspaces, getDescendantsInclusive } = useWorkspace()
-  const period = usePeriodFilter('month')
+  const period = usePeriodFilter('week')
   const unit = period.meta.unit
 
   const { data: reports, loading, error, reload } = useAsync(

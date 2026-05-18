@@ -26,7 +26,7 @@ export default function CompositesListPage() {
   const { slug, workspace, all: workspaces } = useWorkspace()
   const navigate = useNavigate()
   const [newOpen, setNewOpen] = useState(false)
-  const period = usePeriodFilter('month')
+  const period = usePeriodFilter('week')
 
   const { data: items, loading, error, reload } = useAsync(
     () => (slug ? listComposites() : Promise.resolve([])),

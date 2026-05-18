@@ -25,14 +25,19 @@ import { cn } from '@/shared/lib/utils'
  * the workspace×template stacked-bar panel is the main comparison view
  * for any single-period (week/month) inspection.
  */
+// Each option locks its own bucket unit — week/month is implied by the
+// period kind itself, so the page doesn't expose a separate 주별/월별
+// toggle. Aggregation uses report_date (server-side aggregation reference,
+// editable on each report) instead of created_at so back-dated rows still
+// land in the correct bucket.
 const PERIOD_OPTIONS = [
-  { value: 'week',          label: '특정 주',     mode: 'point' },
-  { value: 'month',         label: '특정 월',     mode: 'point' },
-  { value: 'last-4-weeks',  label: '최근 4주',    mode: 'range', defaultUnit: 'week' },
-  { value: 'last-12-weeks', label: '최근 12주',   mode: 'range', defaultUnit: 'week' },
-  { value: 'last-6-months', label: '최근 6개월',  mode: 'range', defaultUnit: 'month' },
-  { value: 'last-12-months',label: '최근 12개월', mode: 'range', defaultUnit: 'month' },
-  { value: 'all',           label: '전체 기간',   mode: 'range', defaultUnit: 'month' },
+  { value: 'week',           label: '주별',        mode: 'point', unit: 'week'  },
+  { value: 'month',          label: '월별',        mode: 'point', unit: 'month' },
+  { value: 'last-4-weeks',   label: '최근 4주',    mode: 'range', unit: 'week'  },
+  { value: 'last-12-weeks',  label: '최근 12주',   mode: 'range', unit: 'week'  },
+  { value: 'last-6-months',  label: '최근 6개월',  mode: 'range', unit: 'month' },
+  { value: 'last-12-months', label: '최근 12개월', mode: 'range', unit: 'month' },
+  { value: 'all',            label: '전체 기간',   mode: 'range', unit: 'month' },
 ]
 
 // Fixed palette for the stacked bar — cycled by template index so colors
@@ -47,10 +52,10 @@ const PALETTE = [
 export default function DashboardPage() {
   const { workspace, slug, all: workspaces, getDescendantsInclusive } = useWorkspace()
   const [periodKind, setPeriodKind] = useState('month')
-  const [anchor, setAnchor] = useState(() => new Date())  // for week/month modes
-  const [unit, setUnit] = useState('week')                 // for the trend chart bucket size
+  const [anchor, setAnchor] = useState(() => new Date())   // for week/month modes
 
   const periodMeta = PERIOD_OPTIONS.find((o) => o.value === periodKind) ?? PERIOD_OPTIONS[1]
+  const unit = periodMeta.unit
 
   const { data: reports, loading, error, reload } = useAsync(
     () => (slug ? listReports() : Promise.resolve([])),
@@ -73,7 +78,7 @@ export default function DashboardPage() {
     const all = reports ?? []
     if (!range.from) return all
     return all.filter((r) => {
-      const t = parseUtcIso(r.created_at)
+      const t = parseReportDate(r)
       return t && t >= range.from && t <= range.to
     })
   }, [reports, range])
@@ -149,12 +154,9 @@ export default function DashboardPage() {
     setPeriodKind(next)
     const meta = PERIOD_OPTIONS.find((o) => o.value === next)
     if (meta?.mode === 'point') {
-      // Reset to "current week/month" when entering point mode and pick
-      // the only useful sub-resolution for a single month (weekly bars).
+      // Snap back to "current week/month" when entering point mode so
+      // the user isn't dropped into whatever anchor was last viewed.
       setAnchor(new Date())
-      setUnit('week')
-    } else if (meta?.defaultUnit) {
-      setUnit(meta.defaultUnit)
     }
   }
   function stepAnchor(direction) {
@@ -184,7 +186,6 @@ export default function DashboardPage() {
                 onNext={() => stepAnchor(+1)}
               />
             )}
-            {periodKind !== 'week' && <UnitToggle value={unit} onChange={setUnit} />}
           </div>
         }
       />
@@ -272,26 +273,6 @@ function PointNavigator({ label, onPrev, onNext }) {
       <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onNext} aria-label="다음">
         <ChevronRight className="h-4 w-4" />
       </Button>
-    </div>
-  )
-}
-
-function UnitToggle({ value, onChange }) {
-  return (
-    <div className="inline-flex rounded-md border bg-background overflow-hidden h-9">
-      {['week', 'month'].map((u) => (
-        <button
-          key={u}
-          type="button"
-          onClick={() => onChange(u)}
-          className={cn(
-            'px-3 text-sm transition-colors',
-            value === u ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:bg-muted',
-          )}
-        >
-          {u === 'week' ? '주별' : '월별'}
-        </button>
-      ))}
     </div>
   )
 }
@@ -480,7 +461,7 @@ function bucketizeReports(filtered, unit, range, allReports) {
   const buckets = enumerateBuckets(from, to, unit)
   for (const b of buckets) counts.set(b.key, { ...b, count: 0 })
   for (const r of filtered) {
-    const d = parseUtcIso(r.created_at)
+    const d = parseReportDate(r)
     if (!d) continue
     const key = unit === 'week' ? isoWeekKey(d) : monthKey(d)
     const cell = counts.get(key)
@@ -492,11 +473,23 @@ function bucketizeReports(filtered, unit, range, allReports) {
 function earliestCreatedAt(reports) {
   let min = null
   for (const r of reports) {
-    const d = parseUtcIso(r.created_at)
+    const d = parseReportDate(r)
     if (!d) continue
     if (!min || d < min) min = d
   }
   return min
+}
+
+/** Pull the aggregation date for a report. Prefers report_date (the
+ *  editable aggregation reference) and falls back to created_at for any
+ *  legacy row that somehow lacks it. report_date is a plain date string
+ *  ("YYYY-MM-DD"); created_at is a naive UTC datetime. */
+function parseReportDate(r) {
+  if (r?.report_date) {
+    const d = new Date(`${r.report_date}T00:00:00Z`)
+    if (!Number.isNaN(d.getTime())) return d
+  }
+  return parseUtcIso(r?.created_at)
 }
 
 function enumerateBuckets(from, to, unit) {

@@ -102,6 +102,7 @@ export default function ReportDetailPage() {
       setDraft({
         title: '새 보고서',
         period: '',
+        report_date: todayIsoDate(),
         tags: [],
         pages: [
           {
@@ -134,6 +135,7 @@ export default function ReportDetailPage() {
         id: existingReport.id,
         title: existingReport.title,
         period: existingReport.period ?? '',
+        report_date: existingReport.report_date ?? todayIsoDate(),
         tags: existingReport.tags ?? [],
         status: existingReport.status,
         pages,
@@ -432,6 +434,7 @@ export default function ReportDetailPage() {
       const payload = {
         title: draft.title,
         period: draft.period || '',
+        report_date: draft.report_date || null,
         tags: draft.tags ?? [],
         pages: draft.pages,
       }
@@ -482,6 +485,7 @@ export default function ReportDetailPage() {
         id: existingReport.id,
         title: existingReport.title,
         period: existingReport.period ?? '',
+        report_date: existingReport.report_date ?? todayIsoDate(),
         tags: existingReport.tags ?? [],
         status: existingReport.status,
         pages,
@@ -610,6 +614,11 @@ export default function ReportDetailPage() {
               {!isNew && draft.status && (
                 <Badge variant={STATUS_VARIANT[draft.status]}>{STATUS_LABEL[draft.status]}</Badge>
               )}
+              <ReportDateField
+                editing={isEditing}
+                value={draft.report_date ?? ''}
+                onChange={(v) => setDraft({ ...draft, report_date: v })}
+              />
             </div>
             {!isNew && existingReport && (
               <ReportMetaLine
@@ -876,6 +885,34 @@ function formatMetaDate(iso) {
   if (Number.isNaN(d.getTime())) return ''
   const pad = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** Inline 보고 기준일 chip. Read-only badge when not editing; switches to a
+ *  native date input in edit mode so the user can back-date or schedule the
+ *  report. Used by the dashboard's period filters instead of created_at,
+ *  so changing it moves the report between weeks/months in the trend chart. */
+function ReportDateField({ editing, value, onChange }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-[11px]">
+      <span className="text-muted-foreground">보고 기준일</span>
+      {editing ? (
+        <input
+          type="date"
+          value={value || ''}
+          onChange={(e) => onChange(e.target.value)}
+          className="h-6 rounded border border-input bg-background px-1.5 text-[11px] font-mono"
+        />
+      ) : (
+        <span className="text-foreground/80 font-mono">{value || '—'}</span>
+      )}
+    </span>
+  )
+}
+
+function todayIsoDate() {
+  const d = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
 function ViewModeToggle({ value, onChange }) {

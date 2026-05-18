@@ -161,13 +161,20 @@ def create_report(
     _validate_pages(db, pages)
 
     page0 = pages[0]
-    report = Report(
+    init_kwargs: dict = dict(
         workspace_slug=workspace_slug,
         template_id=page0.template_id,
         template_version=page0.template_version,
         title=payload.title,
         period=payload.period,
         tags=list(payload.tags or []),
+    )
+    # Only pass report_date when the client explicitly supplied one;
+    # leaving it out lets the column's CURRENT_DATE default fill in.
+    if payload.report_date is not None:
+        init_kwargs["report_date"] = payload.report_date
+    report = Report(
+        **init_kwargs,
         content=page0.content or {},
         layout_overrides=_normalize_overrides(page0.layout_overrides),
         props_overrides=_sanitize_props_overrides(page0.props_overrides),
@@ -237,7 +244,7 @@ def update_report(
         report.pages = _pages_to_jsonb(new_pages)
 
     # Apply non-page scalar fields.
-    for key in ("title", "status", "period", "tags"):
+    for key in ("title", "status", "period", "report_date", "tags"):
         if key in data:
             setattr(report, key, data[key])
 

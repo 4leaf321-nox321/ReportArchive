@@ -12,9 +12,10 @@ descendants via the workspace tree helper.
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
+    Date,
     DateTime,
     Enum,
     ForeignKey,
@@ -23,6 +24,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -118,6 +120,14 @@ class Report(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    # Aggregation reference date — used by the dashboard's period filters
+    # instead of created_at, so reports that are filled in retroactively
+    # can still be bucketed against the period they actually describe.
+    # Defaults to today on insert; editable from the report form.
+    report_date: Mapped[date] = mapped_column(
+        Date, nullable=False, server_default=func.current_date()
     )
 
     # Eagerly load the two user joins — every read of a Report needs the

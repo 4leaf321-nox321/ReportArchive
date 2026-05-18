@@ -1,0 +1,43 @@
+name: Build release bundle
+
+# Two trigger paths:
+#   - push a `v*` tag → builds and attaches the .tar.gz to a GitHub Release
+#   - manual "Run workflow" button → builds and uploads as a workflow artifact
+#     (no Release created — useful for dry-runs or ad-hoc dev bundles)
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write  # required to publish Release assets
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install apptainer + node toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            apptainer nodejs npm
+
+      - name: Build bundle (deploy/build_bundle.sh)
+        run: ./deploy/build_bundle.sh
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reportarchive-bundle
+          path: release/*.tar.gz
+          retention-days: 30
+
+      - name: Attach to GitHub Release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.tar.gz
+          generate_release_notes: true

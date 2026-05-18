@@ -364,6 +364,314 @@ export function FieldMetaEditor({ value, onChange }) {
   )
 }
 
+// --------------------------------------------------------------------------- //
+// Text styling — designer-time controls + render-time className mapping        //
+//                                                                              //
+// Every text-bearing widget carries an optional `props.text_style` object       //
+// declared in backend/app/widgets/registry.py. Render-time we translate it      //
+// to Tailwind utility classes; missing fields = inherit (no class emitted).     //
+// CRITICAL: do NOT build class strings via interpolation — Tailwind purges      //
+// unseen patterns. Every literal must appear in the source, hence the lookups.  //
+// --------------------------------------------------------------------------- //
+
+const _SIZE_CLASS = {
+  xs: 'text-xs',
+  sm: 'text-sm',
+  base: 'text-base',
+  lg: 'text-lg',
+  xl: 'text-xl',
+  '2xl': 'text-2xl',
+}
+const _FONT_CLASS = {
+  sans: 'font-sans',
+  serif: 'font-serif',
+  mono: 'font-mono',
+}
+const _ALIGN_CLASS = {
+  left: 'text-left',
+  center: 'text-center',
+  right: 'text-right',
+  justify: 'text-justify',
+}
+const _WEIGHT_CLASS = {
+  normal: 'font-normal',
+  medium: 'font-medium',
+  semibold: 'font-semibold',
+  bold: 'font-bold',
+}
+
+/**
+ * Map a text_style object to a Tailwind class string. Unset fields produce
+ * no class so the parent's CSS keeps applying (heading levels, default
+ * card text size, etc.).
+ */
+export function textStyleToClassName(style) {
+  if (!style || typeof style !== 'object') return ''
+  return [
+    _SIZE_CLASS[style.size],
+    _FONT_CLASS[style.font_family],
+    _ALIGN_CLASS[style.align],
+    _WEIGHT_CLASS[style.weight],
+  ]
+    .filter(Boolean)
+    .join(' ')
+}
+
+const _SIZE_OPTIONS = [
+  { value: '', label: '기본' },
+  { value: 'xs', label: '아주 작게' },
+  { value: 'sm', label: '작게' },
+  { value: 'base', label: '보통' },
+  { value: 'lg', label: '크게' },
+  { value: 'xl', label: '아주 크게' },
+  { value: '2xl', label: '특대' },
+]
+const _FONT_OPTIONS = [
+  { value: '', label: '기본' },
+  { value: 'sans', label: '산세리프 (Sans)' },
+  { value: 'serif', label: '세리프 (Serif)' },
+  { value: 'mono', label: '고정폭 (Mono)' },
+]
+const _ALIGN_OPTIONS = [
+  { value: '', label: '기본' },
+  { value: 'left', label: '왼쪽' },
+  { value: 'center', label: '가운데' },
+  { value: 'right', label: '오른쪽' },
+  { value: 'justify', label: '양쪽' },
+]
+const _WEIGHT_OPTIONS = [
+  { value: '', label: '기본' },
+  { value: 'normal', label: '보통' },
+  { value: 'medium', label: '약간 굵게' },
+  { value: 'semibold', label: '굵게' },
+  { value: 'bold', label: '아주 굵게' },
+]
+
+/**
+ * Designer-time text-style editor. Renders inside a `<details>` so it
+ * stays out of the way for templates that don't customize typography.
+ * Sets each field to `undefined` when "기본" is picked so the saved
+ * `text_style` object stays sparse (and is pruned to `undefined` entirely
+ * when every field is empty).
+ */
+export function TextStyleField({ value, onChange }) {
+  const style = value ?? {}
+  function patch(p) {
+    const merged = { ...style, ...p }
+    // Drop empty string / undefined entries so we don't ship noise.
+    const cleaned = {}
+    for (const [k, v] of Object.entries(merged)) {
+      if (v === '' || v === undefined || v === null) continue
+      cleaned[k] = v
+    }
+    onChange(Object.keys(cleaned).length === 0 ? undefined : cleaned)
+  }
+  // Preview text reflects the current selection so the designer can see
+  // the combination without saving and switching to the report editor.
+  const previewClass = textStyleToClassName(style) || 'text-sm text-muted-foreground'
+
+  return (
+    <details className="rounded-md border bg-muted/10 px-3 py-2">
+      <summary className="cursor-pointer text-xs font-medium select-none">
+        텍스트 스타일
+        {Object.keys(style).length > 0 && (
+          <span className="ml-2 text-[10px] text-muted-foreground">
+            ({Object.keys(style).length}개 항목 설정됨)
+          </span>
+        )}
+      </summary>
+      <div className="mt-2 space-y-2">
+        <div className="grid grid-cols-2 gap-2">
+          <_TextStyleSelect
+            label="글자 크기"
+            value={style.size ?? ''}
+            options={_SIZE_OPTIONS}
+            onChange={(v) => patch({ size: v })}
+          />
+          <_TextStyleSelect
+            label="글꼴"
+            value={style.font_family ?? ''}
+            options={_FONT_OPTIONS}
+            onChange={(v) => patch({ font_family: v })}
+          />
+          <_TextStyleSelect
+            label="정렬"
+            value={style.align ?? ''}
+            options={_ALIGN_OPTIONS}
+            onChange={(v) => patch({ align: v })}
+          />
+          <_TextStyleSelect
+            label="굵기"
+            value={style.weight ?? ''}
+            options={_WEIGHT_OPTIONS}
+            onChange={(v) => patch({ weight: v })}
+          />
+        </div>
+        <div className="rounded border bg-background p-2">
+          <div className="text-[10px] uppercase text-muted-foreground mb-1">
+            미리보기
+          </div>
+          <div className={previewClass}>가나다 ABC 123 — 텍스트 스타일 미리보기</div>
+        </div>
+      </div>
+    </details>
+  )
+}
+
+/**
+ * Designer-time editor for per-depth text style overrides used by the
+ * RichText widget. Exposes only the three buckets actually rendered with
+ * distinct prefix glyphs (□ / – / ·); depths 3+ inherit the depth-2 style.
+ *
+ * Stored shape: `{ "0"?: TextStyle, "1"?: TextStyle, "2"?: TextStyle }`.
+ * Each depth value is itself a sparse object — empty fields fall through
+ * to the base `text_style`. When every depth has every field empty, we
+ * call onChange(undefined) so the parent props stay sparse.
+ *
+ * NOTE: `value` here is the `depth_styles` map, not a flat TextStyle.
+ */
+const _DEPTH_LABELS = [
+  { key: '0', glyph: '□', name: '대표 문장 (depth 0)' },
+  { key: '1', glyph: '–', name: '상세 (depth 1)' },
+  { key: '2', glyph: '·', name: '깊은 설명 (depth 2+)' },
+]
+
+export function DepthStyleField({ value, onChange }) {
+  const map = value ?? {}
+  const setCount = _DEPTH_LABELS.reduce(
+    (n, d) => n + (map[d.key] && Object.keys(map[d.key]).length > 0 ? 1 : 0),
+    0,
+  )
+
+  function patchDepth(depthKey, style) {
+    const next = { ...map }
+    if (!style || Object.keys(style).length === 0) {
+      delete next[depthKey]
+    } else {
+      next[depthKey] = style
+    }
+    onChange(Object.keys(next).length === 0 ? undefined : next)
+  }
+
+  return (
+    <details className="rounded-md border bg-muted/10 px-3 py-2">
+      <summary className="cursor-pointer text-xs font-medium select-none">
+        깊이별 스타일
+        {setCount > 0 && (
+          <span className="ml-2 text-[10px] text-muted-foreground">
+            ({setCount}개 깊이 설정됨)
+          </span>
+        )}
+      </summary>
+      <p className="mt-1 text-[10px] text-muted-foreground">
+        깊이별로 텍스트 스타일을 따로 지정합니다. 비어 있는 항목은 위의 기본
+        텍스트 스타일을 따릅니다. depth 3 이상은 depth 2의 스타일을 상속.
+      </p>
+      <div className="mt-2 space-y-2">
+        {_DEPTH_LABELS.map((d) => (
+          <_DepthRow
+            key={d.key}
+            depthKey={d.key}
+            glyph={d.glyph}
+            name={d.name}
+            style={map[d.key]}
+            onChange={(s) => patchDepth(d.key, s)}
+          />
+        ))}
+      </div>
+    </details>
+  )
+}
+
+function _DepthRow({ depthKey, glyph, name, style, onChange }) {
+  const cur = style ?? {}
+  function patch(p) {
+    const merged = { ...cur, ...p }
+    const cleaned = {}
+    for (const [k, v] of Object.entries(merged)) {
+      if (v === '' || v === undefined || v === null) continue
+      cleaned[k] = v
+    }
+    onChange(Object.keys(cleaned).length === 0 ? undefined : cleaned)
+  }
+  const previewClass = textStyleToClassName(cur) || 'text-sm text-muted-foreground'
+  return (
+    <div className="rounded border bg-background p-2 space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-sm w-4 text-center text-muted-foreground">
+          {glyph}
+        </span>
+        <span className="text-xs text-muted-foreground">{name}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <_TextStyleSelect
+          label="글자 크기"
+          value={cur.size ?? ''}
+          options={_SIZE_OPTIONS}
+          onChange={(v) => patch({ size: v })}
+        />
+        <_TextStyleSelect
+          label="굵기"
+          value={cur.weight ?? ''}
+          options={_WEIGHT_OPTIONS}
+          onChange={(v) => patch({ weight: v })}
+        />
+        <_TextStyleSelect
+          label="글꼴"
+          value={cur.font_family ?? ''}
+          options={_FONT_OPTIONS}
+          onChange={(v) => patch({ font_family: v })}
+        />
+        <_TextStyleSelect
+          label="정렬"
+          value={cur.align ?? ''}
+          options={_ALIGN_OPTIONS}
+          onChange={(v) => patch({ align: v })}
+        />
+      </div>
+      <div className={`px-1 ${previewClass}`}>{glyph} 미리보기 — 가나다 ABC</div>
+    </div>
+  )
+}
+
+/**
+ * Compute the effective class string for a given depth, layering:
+ *   1. base `text_style` (always applied)
+ *   2. `depth_styles[min(depth, 2)]` overlay (overrides base on shared keys)
+ *
+ * Tailwind purge concern: every class string emitted here goes through
+ * `textStyleToClassName`, which reads from literal lookup tables. So all
+ * classes appear in source and survive the purge.
+ */
+export function depthBodyClassName(textStyle, depthStyles, depth) {
+  // Bucket: 0, 1, or 2 — depths 3+ collapse into "2".
+  const bucket = String(Math.min(Math.max(depth | 0, 0), 2))
+  const overlay = depthStyles?.[bucket]
+  // If the bucket has no override, the depth inherits the base unchanged.
+  // Buckets are independent — leaving "1" empty doesn't pull in "0".
+  const merged = { ...(textStyle ?? {}), ...(overlay ?? {}) }
+  return textStyleToClassName(merged)
+}
+
+function _TextStyleSelect({ label, value, options, onChange }) {
+  return (
+    <div>
+      <Label className="text-[10px] uppercase">{label}</Label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="mt-0.5 flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
 /**
  * Shared block-level caption input used by every non-heading widget's
  * Editor. Renders inline as a heading-styled text field. When empty, the

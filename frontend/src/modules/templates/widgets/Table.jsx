@@ -1,6 +1,6 @@
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { CaptionInput, FieldItemListEditor, LabelField, PreviewLabel } from './_shared'
+import { CaptionInput, FieldItemListEditor, LabelField, PreviewLabel, TextStyleField, textStyleToClassName } from './_shared'
 
 export function TablePropsPanel({ props, onChange }) {
   return (
@@ -54,6 +54,10 @@ export function TablePropsPanel({ props, onChange }) {
           />
         </div>
       </div>
+      <TextStyleField
+        value={props.text_style}
+        onChange={(text_style) => onChange({ ...props, text_style })}
+      />
     </div>
   )
 }
@@ -70,6 +74,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   const cols = Array.isArray(overrideCols) ? overrideCols : templateCols
   const caption = content?.caption ?? ''
   const rows = content?.rows ?? []
+  const bodyTextClass = textStyleToClassName(props.text_style)
 
   function patch(next) {
     const merged = {
@@ -93,7 +98,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
       <div className="space-y-2">
         <CaptionInput value={caption} readOnly />
         {rows.length > 0 && cols.length > 0 && (
-          <div className="overflow-x-auto rounded-md border">
+          <div className={`overflow-x-auto rounded-md border ${bodyTextClass}`}>
             {/* No trailing column here — edit mode reserves an action column
                 for row buttons, but in view mode that would just leave a
                 blank ~80px gap on the right. Data columns fill the full
@@ -296,7 +301,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
         onChange={(v) => patch({ caption: v })}
         placeholder={props.label}
       />
-      <div className="overflow-x-auto rounded-md border">
+      <div className={`overflow-x-auto rounded-md border ${bodyTextClass}`}>
         {/* Edit mode: same column structure as the read-only render. Row
             action buttons (move/delete) and per-column delete render as
             hover overlays inside the existing cells, so neither view nor

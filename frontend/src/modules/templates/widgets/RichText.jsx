@@ -1,9 +1,44 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import DOMPurify from 'dompurify'
 import { AlertTriangle, X } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { useWidgetRelations } from '@/shared/hooks/useWidgetRelations'
-import { CaptionInput, LabelField, PreviewLabel } from './_shared'
+import {
+  CaptionInput,
+  DepthStyleField,
+  LabelField,
+  PreviewLabel,
+  TextStyleField,
+  depthBodyClassName,
+} from './_shared'
+import {
+  RichTextRowEditor,
+  RichTextFormatToolbarBody,
+  RICH_TEXT_TOOLBAR_CLASS,
+} from './RichTextRowEditor'
+
+// HTML coming back from the editor is already constrained to TipTap's
+// configured marks (bold/italic/underline/text style + color/size), but
+// content can also arrive through API PATCHes that bypass the editor. We
+// sanitize on render too so a malicious payload can't cross into the DOM.
+// `style` is allowed for inline color/font-size from TextStyle marks —
+// DOMPurify runs its own CSS sanitizer on the value, blocking url(),
+// expression(), and other vectors.
+const SANITIZE_OPTIONS = {
+  ALLOWED_TAGS: ['p', 'span', 'strong', 'em', 'u', 's', 'del', 'br'],
+  ALLOWED_ATTR: ['style'],
+}
+
+function sanitizeRowHtml(html, fallbackText) {
+  if (typeof html === 'string' && html.length > 0) {
+    return DOMPurify.sanitize(html, SANITIZE_OPTIONS)
+  }
+  if (typeof fallbackText === 'string' && fallbackText.length > 0) {
+    return `<p>${escapeHtml(fallbackText)}</p>`
+  }
+  return ''
+}
 
 // --------------------------------------------------------------------------- //
 // PropsPanel — template-time configuration
@@ -71,6 +106,17 @@ export function RichTextPropsPanel({ props, onChange }) {
         키보드로 선택할 수 있습니다 (← → 이동, Enter 적용, Esc 취소). 문장 중간에는
         동작하지 않으며 일반 텍스트로 입력됩니다.
       </p>
+      <TextStyleField
+        value={props.text_style}
+        onChange={(text_style) => onChange({ ...props, text_style })}
+      />
+      <DepthStyleField
+        value={props.depth_styles}
+        onChange={(depth_styles) => onChange({ ...props, depth_styles })}
+      />
+      <p className="text-[10px] text-muted-foreground">
+        스타일은 본문 텍스트에만 적용됩니다. 깊이 기호(□ – ·)와 들여쓰기, 관계 칩은 가독성을 위해 고정 크기로 유지됩니다.
+      </p>
     </div>
   )
 }
@@ -135,18 +181,127 @@ function coerceRichTextItems(content) {
     return content.items.map(normalizeItem)
   }
   if (typeof content?.markdown === 'string' && content.markdown.length > 0) {
-    return parseMarkdownToItems(content.markdown)
+    return parseMarkdownToItems(content.markdown).map(normalizeItem)
   }
-  return [{ depth: 0, text: '' }]
+  return [normalizeItem({ depth: 0, text: '' })]
 }
 
 function normalizeItem(it) {
   const depth = clamp(Math.floor(Number(it?.depth) || 0), 0, MAX_DEPTH)
   const text = typeof it?.text === 'string' ? it.text : ''
-  const out = { depth, text }
+  // Legacy rows have only `text` (plain string). On-the-fly conversion:
+  // wrap as `<p>{escaped}</p>` so the rich-text editor can load it. Once
+  // the row is touched in the editor, `html` is written back alongside
+  // the derived `text` and the migration is permanent for that row.
+  const html =
+    typeof it?.html === 'string' && it.html.length > 0
+      ? it.html
+      : text
+        ? `<p>${escapeHtml(text)}</p>`
+        : '<p></p>'
+  const out = { depth, text, html }
   if (typeof it?.relation === 'string' && it.relation && it.relation !== DEFAULT_RELATION) {
     out.relation = it.relation
   }
+  return out
+}
+
+function escapeHtml(s) {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+// Strip the outer <p> wrapper so two rows can be concatenated as a single
+// paragraph during mergeWithPrevious. Non-<p> input falls through unchanged.
+function unwrapParagraph(html) {
+  if (typeof html !== 'string') return ''
+  const m = html.match(/^\s*<p[^>]*>([\s\S]*)<\/p>\s*$/)
+  return m ? m[1] : html
+}
+
+// Read whether the first text run of a row's html is wrapped in `tag` (so
+// the cross-row toolbar can pick a sensible "currently active" state — we
+// look at the first row in the range as the representative).
+function rowFirstRunHasTag(html, tag) {
+  if (typeof html !== 'string' || !html || typeof DOMParser === 'undefined') {
+    return false
+  }
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const p = doc.body.firstElementChild
+  if (!p) return false
+  let cur = p.firstChild
+  while (cur) {
+    if (cur.nodeType === 3 /* TEXT_NODE */) return false
+    if (cur.nodeType !== 1) {
+      cur = cur.nextSibling
+      continue
+    }
+    if (cur.tagName.toLowerCase() === tag) return true
+    cur = cur.firstChild
+  }
+  return false
+}
+
+// Read the marks + inline style applied to the *first* text run inside the
+// row's html. We use this to style the leading prefix glyph (□ / – / ·)
+// so it visually matches whatever formatting the writer applied to the
+// start of the row — bold body text gets a bold bullet, a 24px first
+// run gets a 24px bullet, etc.
+//
+// Walks down the first descendant chain until it hits a text node,
+// collecting Tailwind class names (purge-safe — all literals here) for
+// recognized marks and capturing color / font-size from inline style.
+const _FIRST_RUN_TAG_TO_CLASS = {
+  strong: 'font-bold',
+  b: 'font-bold',
+  em: 'italic',
+  i: 'italic',
+  u: 'underline',
+  s: 'line-through',
+  del: 'line-through',
+  strike: 'line-through',
+}
+function firstRunFormatting(html) {
+  const out = { className: '', style: undefined }
+  if (typeof html !== 'string' || html.length === 0 || typeof DOMParser === 'undefined') {
+    return out
+  }
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const p = doc.body.firstElementChild
+  if (!p) return out
+  const classes = []
+  const style = {}
+  let cur = p.firstChild
+  while (cur) {
+    if (cur.nodeType === 3 /* TEXT_NODE */) {
+      if (cur.nodeValue && cur.nodeValue.length > 0) break
+      cur = cur.nextSibling
+      continue
+    }
+    if (cur.nodeType !== 1 /* ELEMENT_NODE */) {
+      cur = cur.nextSibling
+      continue
+    }
+    const tag = cur.tagName.toLowerCase()
+    const cls = _FIRST_RUN_TAG_TO_CLASS[tag]
+    if (cls) classes.push(cls)
+    if (tag === 'span') {
+      const inline = cur.getAttribute('style') || ''
+      const cm = inline.match(/(^|;)\s*color\s*:\s*([^;]+)/i)
+      const fm = inline.match(/(^|;)\s*font-size\s*:\s*([^;]+)/i)
+      if (cm) style.color = cm[2].trim()
+      if (fm) style.fontSize = fm[2].trim()
+    }
+    // Descend into the first child; if none, advance to next sibling.
+    if (cur.firstChild) cur = cur.firstChild
+    else cur = cur.nextSibling
+  }
+  out.className = classes.join(' ')
+  if (Object.keys(style).length > 0) out.style = style
   return out
 }
 
@@ -184,6 +339,45 @@ function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n))
 }
 
+// Selection ranges return text nodes for endpoints; rowFromNode walks up to
+// the nearest element so we can use Element.closest('[data-row-index]') to
+// locate which paragraph row a drag started/ended in.
+function elementOf(node) {
+  if (!node) return null
+  return node.nodeType === 1 ? node : node.parentElement
+}
+
+// Locate the first / last text node we can anchor a Selection range to. Used
+// by the Ctrl+A handler: empty rows have no text nodes at all so we fall
+// back to the row element itself (offset 0 / childCount).
+function firstSelectableInside(rowEl) {
+  if (!rowEl) return null
+  const walker = document.createTreeWalker(rowEl, NodeFilter.SHOW_TEXT, null)
+  return walker.nextNode() ?? rowEl
+}
+function lastSelectableInside(rowEl) {
+  if (!rowEl) return null
+  const walker = document.createTreeWalker(rowEl, NodeFilter.SHOW_TEXT, null)
+  let last = null
+  let node
+  while ((node = walker.nextNode())) last = node
+  return last ?? rowEl
+}
+
+// Quick check used during mouseup to decide whether a takeover was actually
+// useful — if the user's drag collapsed back into one row before release,
+// we want to restore editability instead of pinning the outline in
+// non-editable mode.
+function stillSpansMultipleRows(sel, container) {
+  if (!sel || sel.rangeCount === 0) return false
+  const range = sel.getRangeAt(0)
+  const startEl = elementOf(range.startContainer)?.closest?.('[data-row-index]')
+  const endEl = elementOf(range.endContainer)?.closest?.('[data-row-index]')
+  if (!startEl || !endEl) return false
+  if (!container.contains(startEl) || !container.contains(endEl)) return false
+  return startEl.getAttribute('data-row-index') !== endEl.getAttribute('data-row-index')
+}
+
 // --------------------------------------------------------------------------- //
 // Editor entrypoint — branches into the outline editor (write) or viewer
 // --------------------------------------------------------------------------- //
@@ -211,12 +405,21 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
     onChange(merged)
   }
 
+  // Body-text styling — depth-aware. Each row asks for its class via this
+  // function so the bucketed `depth_styles` overlay can win on a single
+  // line without affecting the others. Structural marks (prefix glyphs,
+  // indent width, relation chips) deliberately stay un-styled.
+  const bodyClassFor = useCallback(
+    (d) => depthBodyClassName(props.text_style, props.depth_styles, d),
+    [props.text_style, props.depth_styles],
+  )
+
   if (readOnly) {
     const hasBody = items.some((it) => (it.text ?? '').trim() !== '')
     return (
       <div className="space-y-2">
         <CaptionInput value={caption} readOnly />
-        {hasBody && <OutlineView items={items} />}
+        {hasBody && <OutlineView items={items} bodyClassFor={bodyClassFor} />}
       </div>
     )
   }
@@ -232,6 +435,7 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
         items={items}
         onChange={patchItems}
         placeholder={props.placeholder || '대표 문장을 입력하고 Tab으로 상세를 들여쓰세요.'}
+        bodyClassFor={bodyClassFor}
       />
       {(min || max) && (
         <p className="text-[10px] text-muted-foreground text-right">
@@ -245,24 +449,49 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
 // --------------------------------------------------------------------------- //
 // View mode — read-only structured render
 // --------------------------------------------------------------------------- //
-function OutlineView({ items }) {
+function OutlineView({ items, bodyClassFor }) {
+  // The wrapper keeps a sensible default (text-sm) — bodyClassFor returns
+  // *only* the designer-selected overrides for the row's depth, so an
+  // empty style leaves the original rendering untouched.
+  const classFor = bodyClassFor ?? (() => '')
   return (
     <div className="space-y-0.5 text-sm">
       {items.map((it, i) => {
-        if (!(it.text ?? '').trim()) return null
+        const hasContent = (it.text ?? '').trim().length > 0
+        if (!hasContent) return null
         const depth = clamp(it.depth ?? 0, 0, MAX_DEPTH)
+        // Inline rich text persists as `html`; legacy items have only
+        // `text`. sanitizeRowHtml accepts both — for plain rows it falls
+        // back to escaping the text inside a `<p>`.
+        const safeHtml = sanitizeRowHtml(it.html, it.text)
+        const prefixFmt = firstRunFormatting(it.html)
+        // Width and padding scale in `em` so the column always matches the
+        // prefix's own font-size — a 48px □ reserves ~48px, a 12px · reserves
+        // ~12px. Baseline alignment keeps the glyph sitting on the body
+        // text's baseline regardless of which font size is larger.
+        const prefixStyle = {
+          ...prefixFmt.style,
+          minWidth: '1.25em',
+          paddingRight: '0.4em',
+        }
         return (
           <div
             key={i}
-            className="flex items-start gap-2"
+            className="flex items-baseline gap-1"
             style={{ paddingLeft: `${depth * INDENT_PX_PER_DEPTH}px` }}
           >
-            <span className="select-none text-muted-foreground shrink-0 leading-6 w-4 text-center">
+            <span
+              className={`select-none shrink-0 text-center ${
+                prefixFmt.style?.color ? '' : 'text-muted-foreground'
+              } ${prefixFmt.className}`}
+              style={prefixStyle}
+            >
               {DEPTH_PREFIX[depth]}
             </span>
-            <span className="flex-1 min-w-0 leading-6 whitespace-pre-wrap break-words">
-              {it.text}
-            </span>
+            <span
+              className={`flex-1 min-w-0 break-words [&_p]:leading-[1.4] ${classFor(depth)}`}
+              dangerouslySetInnerHTML={{ __html: safeHtml }}
+            />
             <RelationChipStatic relation={it.relation} />
           </div>
         )
@@ -286,8 +515,9 @@ function RelationChipStatic({ relation }) {
 // --------------------------------------------------------------------------- //
 // Edit mode — outline with Tab depth, auto-prefix, inline relation picker
 // --------------------------------------------------------------------------- //
-function OutlineEditor({ items, onChange, placeholder }) {
-  // Each input row gets a stable ref slot. Map<index, HTMLInputElement>.
+function OutlineEditor({ items, onChange, placeholder, bodyClassFor }) {
+  // Each row exposes an imperative handle ({focus, setCaret, getCaret,
+  // getTextLength, isAtStart, isAtEnd}) provided by RichTextRowEditor.
   const inputRefs = useRef(new Map())
   // After an edit operation we may want to refocus a particular row at a
   // particular caret position. Recorded here and applied in a layout effect.
@@ -295,6 +525,313 @@ function OutlineEditor({ items, onChange, placeholder }) {
   // The row that currently has focus. Drives the inline relation picker
   // strip below the input — only the focused, indented row shows it.
   const [focusedIndex, setFocusedIndex] = useState(null)
+
+  // Cross-row text selection support. Each row is its own TipTap editor, so
+  // browser-native drag selection visually spans multiple rows but no single
+  // ProseMirror instance can format across them. We listen on the document
+  // for mouseup, read window.getSelection(), and if the range spans 2+ rows
+  // within our container we pop a floating toolbar to apply font-size in
+  // bulk. Captured selection is held in state so the user can interact with
+  // the toolbar without losing context.
+  const containerRef = useRef(null)
+  const toolbarRef = useRef(null)
+  const [crossRowSelection, setCrossRowSelection] = useState(null)
+
+  const captureCrossRowSelection = useCallback(() => {
+    const sel = typeof window !== 'undefined' ? window.getSelection() : null
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+      setCrossRowSelection(null)
+      return
+    }
+    const range = sel.getRangeAt(0)
+    const startEl = elementOf(range.startContainer)?.closest?.('[data-row-index]')
+    const endEl = elementOf(range.endContainer)?.closest?.('[data-row-index]')
+    const container = containerRef.current
+    if (!startEl || !endEl || !container) {
+      setCrossRowSelection(null)
+      return
+    }
+    if (!container.contains(startEl) || !container.contains(endEl)) {
+      setCrossRowSelection(null)
+      return
+    }
+    // The DOM Range is always in document order, so startEl <= endEl.
+    const fromRow = Number(startEl.getAttribute('data-row-index'))
+    const toRow = Number(endEl.getAttribute('data-row-index'))
+    if (!Number.isFinite(fromRow) || !Number.isFinite(toRow) || fromRow === toRow) {
+      // Single-row text selection is handled by the per-row bubble menu.
+      setCrossRowSelection(null)
+      return
+    }
+    const fromEd = inputRefs.current.get(fromRow)
+    const toEd = inputRefs.current.get(toRow)
+    const fromOffset = fromEd?.charOffsetFromDOM?.(range.startContainer, range.startOffset) ?? 0
+    const toOffsetRaw = toEd?.charOffsetFromDOM?.(range.endContainer, range.endOffset)
+    const toLen = toEd?.getTextLength?.() ?? 0
+    const toOffset = toOffsetRaw == null ? toLen : toOffsetRaw
+    const rect = range.getBoundingClientRect()
+    setCrossRowSelection({
+      fromRow,
+      fromOffset,
+      toRow,
+      toOffset,
+      rect: { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right },
+    })
+  }, [])
+
+  // Drag-based cross-row selection.
+  //
+  // Each row is its own TipTap editor, so native text selection clamps to
+  // whichever row the user mousedowned in — drags into a sibling row look
+  // like nothing happened. Workaround: once a drag crosses into another
+  // row, flip every editor in this outline to non-editable (via TipTap's
+  // setEditable) and drive window.getSelection() ourselves with
+  // caretRangeFromPoint until mouseup. Non-editable text is still natively
+  // selectable so the visible highlight follows the cursor across
+  // paragraphs.
+  //
+  // We deliberately KEEP everyone non-editable past mouseup. Restoring
+  // editability immediately triggers ProseMirror's internal selection sync,
+  // which collapses the cross-row DOM range back to a single row and wipes
+  // the visible highlight. Instead the takenOver state is recorded in
+  // a ref and only restored when the user dismisses the toolbar (clear
+  // button, click outside, applying a format, or component unmount).
+  const tookOverRef = useRef(false)
+  const setRowsEditable = useCallback((on) => {
+    inputRefs.current.forEach((ed) => ed?.setEditable?.(on))
+  }, [])
+  const restoreEditable = useCallback(() => {
+    if (!tookOverRef.current) return
+    setRowsEditable(true)
+    tookOverRef.current = false
+  }, [setRowsEditable])
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    let drag = null
+    function caretAt(x, y) {
+      if (document.caretRangeFromPoint) {
+        const r = document.caretRangeFromPoint(x, y)
+        if (r) return { node: r.startContainer, offset: r.startOffset }
+      }
+      if (document.caretPositionFromPoint) {
+        const p = document.caretPositionFromPoint(x, y)
+        if (p) return { node: p.offsetNode, offset: p.offset }
+      }
+      return null
+    }
+    function rowOf(target) {
+      return elementOf(target)?.closest?.('[data-row-index]')
+    }
+    function onMouseDown(e) {
+      if (e.button !== 0) return
+      const rowEl = rowOf(e.target)
+      if (!rowEl) {
+        drag = null
+        return
+      }
+      const caret = caretAt(e.clientX, e.clientY)
+      drag = {
+        startNode: caret?.node ?? null,
+        startOffset: caret?.offset ?? 0,
+        startRow: Number(rowEl.getAttribute('data-row-index')),
+        takenOver: false,
+      }
+    }
+    function onMouseMove(e) {
+      if (!drag) return
+      if ((e.buttons & 1) === 0) {
+        drag = null
+        return
+      }
+      if (!drag.takenOver) {
+        const overEl = document.elementFromPoint(e.clientX, e.clientY)
+        const overRow = rowOf(overEl)
+        const overRowIdx = overRow ? Number(overRow.getAttribute('data-row-index')) : null
+        if (overRowIdx === null || overRowIdx === drag.startRow) return
+        drag.takenOver = true
+        tookOverRef.current = true
+        setRowsEditable(false)
+      }
+      const caret = caretAt(e.clientX, e.clientY)
+      if (!caret || !drag.startNode) return
+      const sel = window.getSelection()
+      if (!sel) return
+      try {
+        sel.setBaseAndExtent(drag.startNode, drag.startOffset, caret.node, caret.offset)
+      } catch (_err) {
+        // setBaseAndExtent throws on disconnected nodes — ignore.
+      }
+      e.preventDefault()
+    }
+    function onMouseUp(e) {
+      drag = null
+      // Toolbar clicks must not re-evaluate or restore — that would clear
+      // the captured selection mid-pick.
+      if (toolbarRef.current?.contains(e.target)) return
+      if (!container.contains(e.target)) {
+        // Outside our outline entirely → close toolbar AND restore editability
+        setCrossRowSelection(null)
+        restoreEditable()
+        return
+      }
+      captureCrossRowSelection()
+      // Inside the outline but a single-row or collapsed selection means no
+      // cross-row pick — restore so the user can keep editing normally.
+      if (!tookOverRef.current) return
+      // captureCrossRowSelection schedules a state update; we can read the
+      // current DOM selection to decide whether to keep takeover live.
+      const sel = typeof window !== 'undefined' ? window.getSelection() : null
+      const hasCross =
+        sel && !sel.isCollapsed && sel.rangeCount > 0 && stillSpansMultipleRows(sel, container)
+      if (!hasCross) restoreEditable()
+    }
+    // Ctrl/Cmd+A: select every row's content in one DOM range rather than
+    // letting the focused row's TipTap eat the keystroke and select-all
+    // within just that paragraph. Single-row outlines are left alone — the
+    // native behavior already covers the whole widget there.
+    function onKeyDown(e) {
+      if (!((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A'))) return
+      if (e.shiftKey || e.altKey) return
+      const active = document.activeElement
+      if (!active || !container.contains(active)) return
+      const rowEls = Array.from(container.querySelectorAll('[data-row-index]'))
+      if (rowEls.length < 2) return
+      rowEls.sort(
+        (a, b) =>
+          Number(a.getAttribute('data-row-index')) -
+          Number(b.getAttribute('data-row-index')),
+      )
+      const firstEnd = firstSelectableInside(rowEls[0])
+      const lastEnd = lastSelectableInside(rowEls[rowEls.length - 1])
+      if (!firstEnd || !lastEnd) return
+      e.preventDefault()
+      e.stopPropagation()
+      // Same takeover dance as a cross-row drag: TipTap can't model a
+      // selection that spans separate editors, so we suspend editability and
+      // drive the DOM range ourselves.
+      if (!tookOverRef.current) {
+        tookOverRef.current = true
+        setRowsEditable(false)
+      }
+      const sel = typeof window !== 'undefined' ? window.getSelection() : null
+      if (!sel) return
+      try {
+        const startOffset = 0
+        const endOffset =
+          lastEnd.nodeType === 3 ? lastEnd.nodeValue.length : lastEnd.childNodes.length
+        sel.setBaseAndExtent(firstEnd, startOffset, lastEnd, endOffset)
+      } catch (_err) {
+        return
+      }
+      captureCrossRowSelection()
+    }
+    container.addEventListener('mousedown', onMouseDown)
+    container.addEventListener('keydown', onKeyDown, true)
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+    return () => {
+      container.removeEventListener('mousedown', onMouseDown)
+      container.removeEventListener('keydown', onKeyDown, true)
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+      restoreEditable()
+    }
+  }, [captureCrossRowSelection, restoreEditable, setRowsEditable])
+
+  // Drop stale indices when rows are added/removed/merged.
+  useEffect(() => {
+    setCrossRowSelection((cur) => {
+      if (!cur) return cur
+      if (cur.toRow > items.length - 1) return null
+      return cur
+    })
+  }, [items.length])
+
+  // Esc dismisses the cross-row toolbar and restores editability.
+  useEffect(() => {
+    if (!crossRowSelection) return undefined
+    function onKey(e) {
+      if (e.key === 'Escape') {
+        setCrossRowSelection(null)
+        if (typeof window !== 'undefined') {
+          window.getSelection()?.removeAllRanges?.()
+        }
+        restoreEditable()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [crossRowSelection, restoreEditable])
+
+  function clearCrossRowSelection() {
+    setCrossRowSelection(null)
+    if (typeof window !== 'undefined') {
+      window.getSelection()?.removeAllRanges?.()
+    }
+    restoreEditable()
+  }
+
+  // Apply a per-row TipTap chain to the exact char range covered by the
+  // cross-row selection. Each row gets its own `from`/`to` (in ProseMirror
+  // positions, 1-based) clipped to the selection bounds, so partial first
+  // and last rows aren't styled outside the actual selection. `applyAndCapture`
+  // collects each editor's resulting html without firing the per-editor
+  // onUpdate, so we can flush all rows in one batched `onChange`.
+  function applyCommandToCrossRowRange(commandFor) {
+    if (!crossRowSelection) return
+    const { fromRow, fromOffset, toRow, toOffset } = crossRowSelection
+    const collected = new Map()
+    for (let i = fromRow; i <= toRow; i++) {
+      const ed = inputRefs.current.get(i)
+      if (!ed?.applyAndCapture) continue
+      const len = ed.getTextLength?.() ?? 0
+      const startChar = i === fromRow ? fromOffset : 0
+      const endChar = i === toRow ? toOffset : len
+      if (startChar >= endChar) continue
+      const result = ed.applyAndCapture((editor) => {
+        commandFor(editor, startChar + 1, endChar + 1)
+      })
+      collected.set(i, result)
+    }
+    if (collected.size === 0) return
+    const next = items.map((it, i) => {
+      if (!collected.has(i)) return it
+      const r = collected.get(i)
+      return { ...it, html: r.html, text: r.text }
+    })
+    onChange(next)
+  }
+
+  // Read the "currently active" format from the first selected row. Cross-
+  // row state is intrinsically ambiguous (rows can disagree), so we treat
+  // the first row as the representative — same heuristic the OutlineView
+  // uses for prefix styling.
+  const crossRowFormat = useMemo(() => {
+    if (!crossRowSelection) return null
+    const firstHtml = items[crossRowSelection.fromRow]?.html ?? ''
+    const fmt = firstRunFormatting(firstHtml)
+    return {
+      bold:
+        rowFirstRunHasTag(firstHtml, 'strong') ||
+        rowFirstRunHasTag(firstHtml, 'b') ||
+        fmt.className.includes('font-bold'),
+      italic:
+        rowFirstRunHasTag(firstHtml, 'em') ||
+        rowFirstRunHasTag(firstHtml, 'i') ||
+        fmt.className.includes('italic'),
+      underline:
+        rowFirstRunHasTag(firstHtml, 'u') || fmt.className.includes('underline'),
+      strike:
+        rowFirstRunHasTag(firstHtml, 's') ||
+        rowFirstRunHasTag(firstHtml, 'del') ||
+        rowFirstRunHasTag(firstHtml, 'strike') ||
+        fmt.className.includes('line-through'),
+      fontSize: fmt.style?.fontSize ?? '',
+      color: fmt.style?.color ?? null,
+    }
+  }, [crossRowSelection, items])
 
   useEffect(() => {
     const target = pendingFocus.current
@@ -304,11 +841,7 @@ function OutlineEditor({ items, onChange, placeholder }) {
     if (!el) return
     el.focus()
     if (typeof target.caret === 'number') {
-      try {
-        el.setSelectionRange(target.caret, target.caret)
-      } catch {
-        /* setSelectionRange not supported on some types — ignore */
-      }
+      el.setCaret(target.caret)
     }
   }, [items])
 
@@ -322,8 +855,11 @@ function OutlineEditor({ items, onChange, placeholder }) {
     onChange(nextItems)
   }
 
-  function updateText(idx, text) {
-    const next = items.map((it, i) => (i === idx ? { ...it, text } : it))
+  function updateRowContent(idx, html, text) {
+    // Editor-driven updates carry both fields. We persist `html` (canonical)
+    // and `text` (used for plain-text logic upstream: prefix detection,
+    // char counts, AI prompts).
+    const next = items.map((it, i) => (i === idx ? { ...it, html, text } : it))
     onChange(next)
   }
 
@@ -333,7 +869,7 @@ function OutlineEditor({ items, onChange, placeholder }) {
     const clamped = clamp(depth, 0, maxAllowed)
     if (clamped === items[idx].depth) return
     const next = items.map((it, i) => (i === idx ? { ...it, depth: clamped } : it))
-    replace(next, { index: idx, caret: inputRefs.current.get(idx)?.selectionStart })
+    replace(next, { index: idx, caret: inputRefs.current.get(idx)?.getCaret() })
   }
 
   function setRelation(idx, relation) {
@@ -374,7 +910,7 @@ function OutlineEditor({ items, onChange, placeholder }) {
   }
 
   function insertAfter(idx, depth) {
-    const newItem = { depth: clamp(depth, 0, MAX_DEPTH), text: '' }
+    const newItem = normalizeItem({ depth: clamp(depth, 0, MAX_DEPTH), text: '' })
     const next = [...items.slice(0, idx + 1), newItem, ...items.slice(idx + 1)]
     replace(next, { index: idx + 1, caret: 0 })
   }
@@ -382,7 +918,7 @@ function OutlineEditor({ items, onChange, placeholder }) {
   function removeAt(idx) {
     if (items.length === 1) {
       // Never go below one row; just clear it.
-      replace([{ depth: 0, text: '' }], { index: 0, caret: 0 })
+      replace([normalizeItem({ depth: 0, text: '' })], { index: 0, caret: 0 })
       return
     }
     const next = items.filter((_, i) => i !== idx)
@@ -396,13 +932,16 @@ function OutlineEditor({ items, onChange, placeholder }) {
     const prev = items[idx - 1]
     const cur = items[idx]
     const mergedText = (prev.text ?? '') + (cur.text ?? '')
-    const merged = { ...prev, text: mergedText }
+    // Concatenate the inner contents so spans/marks on either side
+    // survive. Each row's html is normalized to `<p>...</p>`.
+    const mergedHtml = `<p>${unwrapParagraph(prev.html)}${unwrapParagraph(cur.html)}</p>`
+    const merged = { ...prev, text: mergedText, html: mergedHtml }
     const next = [...items.slice(0, idx - 1), merged, ...items.slice(idx + 1)]
     replace(next, { index: idx - 1, caret: prev.text?.length ?? 0 })
   }
 
   return (
-    <div className="rounded-md border bg-background p-2 space-y-0.5">
+    <div ref={containerRef} className="rounded-md border bg-background p-2 space-y-0.5">
       {items.map((it, i) => (
         <OutlineRow
           key={i}
@@ -423,7 +962,7 @@ function OutlineEditor({ items, onChange, placeholder }) {
               setFocusedIndex((cur) => (cur === i ? null : cur))
             }, 0)
           }}
-          onTextChange={(text) => updateText(i, text)}
+          onContentChange={(html, text) => updateRowContent(i, html, text)}
           onDepthChange={(d) => setDepth(i, d)}
           onRelationChange={(r) => setRelation(i, r)}
           onPatch={(p) => patchRow(i, p)}
@@ -436,12 +975,9 @@ function OutlineEditor({ items, onChange, placeholder }) {
             const el = inputRefs.current.get(prev)
             if (!el) return
             el.focus()
-            const target = clamp(caret ?? prev.text?.length ?? 0, 0, el.value.length)
-            try {
-              el.setSelectionRange(target, target)
-            } catch {
-              /* ignore */
-            }
+            const len = el.getTextLength()
+            const target = clamp(caret ?? len, 0, len)
+            el.setCaret(target)
           }}
           onFocusNext={(caret) => {
             const nxt = i + 1
@@ -449,15 +985,66 @@ function OutlineEditor({ items, onChange, placeholder }) {
             const el = inputRefs.current.get(nxt)
             if (!el) return
             el.focus()
-            const target = clamp(caret ?? 0, 0, el.value.length)
-            try {
-              el.setSelectionRange(target, target)
-            } catch {
-              /* ignore */
-            }
+            const len = el.getTextLength()
+            const target = clamp(caret ?? 0, 0, len)
+            el.setCaret(target)
           }}
+          bodyClassFor={bodyClassFor}
         />
       ))}
+      {crossRowSelection && crossRowFormat && (
+        <CrossRowToolbarShell
+          ref={toolbarRef}
+          rect={crossRowSelection.rect}
+          format={crossRowFormat}
+          onToggleBold={() => {
+            const turnOn = !crossRowFormat.bold
+            applyCommandToCrossRowRange((editor, from, to) => {
+              const chain = editor.chain().setTextSelection({ from, to })
+              if (turnOn) chain.setBold().run()
+              else chain.unsetBold().run()
+            })
+          }}
+          onToggleItalic={() => {
+            const turnOn = !crossRowFormat.italic
+            applyCommandToCrossRowRange((editor, from, to) => {
+              const chain = editor.chain().setTextSelection({ from, to })
+              if (turnOn) chain.setItalic().run()
+              else chain.unsetItalic().run()
+            })
+          }}
+          onToggleUnderline={() => {
+            const turnOn = !crossRowFormat.underline
+            applyCommandToCrossRowRange((editor, from, to) => {
+              const chain = editor.chain().setTextSelection({ from, to })
+              if (turnOn) chain.setUnderline().run()
+              else chain.unsetUnderline().run()
+            })
+          }}
+          onToggleStrike={() => {
+            const turnOn = !crossRowFormat.strike
+            applyCommandToCrossRowRange((editor, from, to) => {
+              const chain = editor.chain().setTextSelection({ from, to })
+              if (turnOn) chain.setStrike().run()
+              else chain.unsetStrike().run()
+            })
+          }}
+          onSetFontSize={(v) => {
+            applyCommandToCrossRowRange((editor, from, to) => {
+              const chain = editor.chain().setTextSelection({ from, to })
+              if (v) chain.setFontSize(v).run()
+              else chain.unsetFontSize().run()
+            })
+          }}
+          onSetColor={(c) => {
+            applyCommandToCrossRowRange((editor, from, to) => {
+              const chain = editor.chain().setTextSelection({ from, to })
+              if (c) chain.setColor(c).run()
+              else chain.unsetColor().run()
+            })
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -472,7 +1059,7 @@ function OutlineRow({
   setInputRef,
   onFocus,
   onBlur,
-  onTextChange,
+  onContentChange,
   onDepthChange,
   onRelationChange,
   onPatch,
@@ -481,11 +1068,13 @@ function OutlineRow({
   onMergeWithPrev,
   onFocusPrev,
   onFocusNext,
+  bodyClassFor,
 }) {
   const depth = clamp(item.depth ?? 0, 0, MAX_DEPTH)
   const showWarning = depth >= WARN_DEPTH
   const relation = item.relation && item.relation !== DEFAULT_RELATION ? item.relation : null
   const rowText = item.text ?? ''
+  const rowHtml = item.html ?? ''
   // Picker strip appears only on indented rows — depth 0 has no parent, so
   // a "child role relative to parent" relation makes no sense there.
   const showPicker = isFocused && depth >= 1
@@ -532,10 +1121,17 @@ function OutlineRow({
   // in place. Both fields update atomically — separate text + relation
   // callbacks would race on the same stale items snapshot, leaving the
   // "//" behind.
+  //
+  // The combo trigger is plain text typed at the very start of a row, so
+  // any pre-existing formatting on those characters is from regular
+  // typing (no rich formatting on `//token`). Rebuilding html from the
+  // surviving plain text is therefore safe and lossless in practice.
   function applyCombo(slug) {
     const m = rowText.match(/^\/\/\S*\s?(.*)$/)
+    const rest = m ? m[1] : ''
     onPatch({
-      text: m ? m[1] : '',
+      text: rest,
+      html: rest ? `<p>${escapeHtml(rest)}</p>` : '<p></p>',
       relation: slug === DEFAULT_RELATION ? null : slug,
     })
   }
@@ -548,14 +1144,16 @@ function OutlineRow({
     else onRelationChange(slug === DEFAULT_RELATION ? null : slug)
   }
 
-  function handleChange(e) {
-    const next = e.target.value
+  // Called by the rich editor with (html, text) on every change. We run
+  // plain-text logic on `text` (prefix detection, combo) and rebuild the
+  // html only when a special-case strip happens (rare, intentional).
+  function handleContent(html, text) {
     // Legacy text shortcut (`//원인 ` with trailing space) — apply
     // immediately when the full slug or Korean name matches exactly.
     // Combo navigation handles the partial / prefix path; this is for
     // power users who type the whole thing in one go. Atomic patch so
     // text + relation update together.
-    const m = next.match(/^\/\/([^\s/]+)\s(.*)$/)
+    const m = text.match(/^\/\/([^\s/]+)\s(.*)$/)
     if (m) {
       const token = m[1]
       const rest = m[2]
@@ -563,6 +1161,7 @@ function OutlineRow({
       if (matched) {
         onPatch({
           text: rest,
+          html: rest ? `<p>${escapeHtml(rest)}</p>` : '<p></p>',
           relation: matched.slug === DEFAULT_RELATION ? null : matched.slug,
         })
         return
@@ -571,21 +1170,30 @@ function OutlineRow({
     // Auto-prefix conversion: if the text starts with a recognized prefix
     // followed by a space, strip it and remap depth. Only fires when the
     // line is starting fresh (i.e. user is at the start of a new line).
-    // Atomic patch (depth + text) avoids the same race.
-    if (next.length >= 2 && next[1] === ' ') {
-      const target = PREFIX_TO_DEPTH[next[0]]
+    // Atomic patch (depth + text + html) avoids the same race.
+    if (text.length >= 2 && text[1] === ' ') {
+      const target = PREFIX_TO_DEPTH[text[0]]
       if (target !== undefined && target !== depth) {
-        const stripped = next.slice(2)
+        const stripped = text.slice(2)
         const maxAllowed = isFirst ? 0 : Math.min(MAX_DEPTH, (parentDepth ?? 0) + 1)
         const newDepth = clamp(target, 0, maxAllowed)
-        onPatch({ depth: newDepth, text: stripped })
+        onPatch({
+          depth: newDepth,
+          text: stripped,
+          html: stripped ? `<p>${escapeHtml(stripped)}</p>` : '<p></p>',
+        })
         return
       }
     }
-    onTextChange(next)
+    onContentChange(html, text)
   }
 
-  function handleKeyDown(e) {
+  // Returns true when we consumed the key so ProseMirror won't run its
+  // own handlers (Enter inserting a paragraph, Tab inserting whitespace,
+  // arrow keys moving the caret out, etc.). ctx is provided by
+  // RichTextRowEditor and exposes caret/text/atStart/atEnd derived from
+  // the editor's selection.
+  function handleKeyDown(e, ctx) {
     // Combo navigation takes priority over everything else when active.
     if (comboActive && relations.length > 0) {
       if (
@@ -595,23 +1203,23 @@ function OutlineRow({
       ) {
         e.preventDefault()
         setHoverIdx((i) => (i - 1 + relations.length) % relations.length)
-        return
+        return true
       }
       if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'Tab') {
         e.preventDefault()
         setHoverIdx((i) => (i + 1) % relations.length)
-        return
+        return true
       }
       if (e.key === 'Enter' && !e.isComposing) {
         e.preventDefault()
         const target = relations[hoverIdx]
         if (target) applyCombo(target.slug)
-        return
+        return true
       }
       if (e.key === 'Escape') {
         e.preventDefault()
         setComboDismissed(true)
-        return
+        return true
       }
       // Other keys (letters, backspace) fall through to normal text edit
       // — the filter updates naturally on the next onChange.
@@ -620,64 +1228,83 @@ function OutlineRow({
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault()
       onNewLine()
-      return
+      return true
     }
     if (e.key === 'Tab') {
       e.preventDefault()
       onDepthChange(e.shiftKey ? depth - 1 : depth + 1)
-      return
+      return true
     }
-    const caret = e.target.selectionStart ?? 0
-    const end = e.target.selectionEnd ?? caret
-    if (e.key === 'Backspace' && caret === 0 && end === 0) {
+    if (e.key === 'Backspace' && ctx?.atStart) {
       // Indented row → outdent first. One Backspace = one level up,
       // mirroring how Notion/Workflowy outliners behave. The text on the
       // row stays intact.
       if (depth > 0) {
         e.preventDefault()
         onDepthChange(depth - 1)
-        return
+        return true
       }
       // depth === 0 (□ row): empty → delete entire row;
-      // non-empty → merge into the previous row (preserves text).
-      if (rowText.length === 0) {
+      // non-empty → merge into the previous row (preserves text + html).
+      if ((ctx?.text ?? '').length === 0) {
         e.preventDefault()
         onDeleteEmpty()
-        return
+        return true
       }
       e.preventDefault()
       onMergeWithPrev()
-      return
+      return true
     }
-    if (e.key === 'ArrowUp' && caret === 0) {
+    if (e.key === 'ArrowUp' && ctx?.atStart) {
       e.preventDefault()
-      onFocusPrev(caret)
-      return
+      onFocusPrev(ctx.caret ?? 0)
+      return true
     }
-    if (e.key === 'ArrowDown' && caret === rowText.length) {
+    if (e.key === 'ArrowDown' && ctx?.atEnd) {
       e.preventDefault()
-      onFocusNext(caret)
-      return
+      onFocusNext(ctx.caret ?? 0)
+      return true
     }
+    return false
   }
 
+  const prefixFmt = firstRunFormatting(rowHtml)
+  // Same baseline alignment as OutlineView — the prefix column widens to
+  // match its own font size, and `em`-based padding keeps a consistent
+  // visual gap whether the first run is 10px or 48px.
+  const prefixStyle = {
+    ...prefixFmt.style,
+    minWidth: '1.25em',
+    paddingRight: '0.4em',
+  }
   return (
-    <div style={{ paddingLeft: `${depth * INDENT_PX_PER_DEPTH}px` }}>
-      <div className="flex items-start gap-2 group">
-        <span className="select-none text-muted-foreground shrink-0 leading-8 w-4 text-center">
+    <div
+      data-row-index={index}
+      style={{ paddingLeft: `${depth * INDENT_PX_PER_DEPTH}px` }}
+    >
+      <div className="flex items-baseline gap-1 group">
+        <span
+          className={`select-none shrink-0 text-center ${
+            prefixFmt.style?.color ? '' : 'text-muted-foreground'
+          } ${prefixFmt.className}`}
+          style={prefixStyle}
+        >
           {DEPTH_PREFIX[depth]}
         </span>
-        <input
-          ref={(el) => setInputRef(index, el)}
-          type="text"
-          value={rowText}
-          placeholder={placeholder}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          onFocus={onFocus}
-          onBlur={onBlur}
-          className="flex-1 min-w-0 bg-transparent border-0 outline-none focus:ring-0 placeholder:text-muted-foreground/50 text-sm py-1 leading-6"
-        />
+        <div className="flex-1 min-w-0 outline-rich-row">
+          <RichTextRowEditor
+            ref={(el) => setInputRef(index, el)}
+            html={rowHtml}
+            placeholder={placeholder}
+            onChange={handleContent}
+            onKeyDown={handleKeyDown}
+            onFocus={onFocus}
+            onBlur={onBlur}
+            className={`min-w-0 text-sm py-1 [&_p]:leading-[1.4] focus:outline-none ${
+              bodyClassFor ? bodyClassFor(depth) : ''
+            }`}
+          />
+        </div>
         <RelationChip relation={relation} onChange={onRelationChange} />
         {showWarning && <DepthWarning depth={depth} />}
       </div>
@@ -692,6 +1319,53 @@ function OutlineRow({
     </div>
   )
 }
+
+/**
+ * Floating chrome around the shared `RichTextFormatToolbarBody`. Sits above
+ * the cross-row selection rect and uses the same className as the per-row
+ * bubble menu, so a user dragging within a paragraph vs. across paragraphs
+ * sees the identical toolbar.
+ *
+ * Forward-refs the wrapping div so the OutlineEditor can check
+ * `toolbarRef.current.contains(e.target)` from its document mouseup
+ * listener and skip evaluating clicks on the toolbar itself.
+ */
+const CrossRowToolbarShell = forwardRef(function CrossRowToolbarShell(
+  {
+    rect,
+    format,
+    onToggleBold,
+    onToggleItalic,
+    onToggleUnderline,
+    onToggleStrike,
+    onSetFontSize,
+    onSetColor,
+  },
+  ref,
+) {
+  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1024
+  const top = Math.max(8, rect.top - 40)
+  const left = Math.max(8, Math.min(viewportWidth - 320, rect.left))
+  return (
+    <div
+      ref={ref}
+      style={{ position: 'fixed', top, left }}
+      className={RICH_TEXT_TOOLBAR_CLASS}
+    >
+      <RichTextFormatToolbarBody
+        state={format}
+        actions={{
+          toggleBold: onToggleBold,
+          toggleItalic: onToggleItalic,
+          toggleUnderline: onToggleUnderline,
+          toggleStrike: onToggleStrike,
+          setFontSize: onSetFontSize,
+          setColor: onSetColor,
+        }}
+      />
+    </div>
+  )
+})
 
 /**
  * Horizontal chip strip with every relation in the workspace's vocabulary.

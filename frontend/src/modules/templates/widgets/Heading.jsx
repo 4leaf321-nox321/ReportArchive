@@ -1,5 +1,6 @@
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
+import { TextStyleField, textStyleToClassName } from './_shared'
 
 export function HeadingPropsPanel({ props, onChange }) {
   return (
@@ -30,6 +31,10 @@ export function HeadingPropsPanel({ props, onChange }) {
           제목 텍스트는 보고서 작성 시 입력됩니다. 기본값은 작성자가 수정 가능.
         </p>
       </div>
+      <TextStyleField
+        value={props.text_style}
+        onChange={(text_style) => onChange({ ...props, text_style })}
+      />
     </div>
   )
 }
@@ -43,10 +48,9 @@ function levelClass(level) {
 export function HeadingPreview({ props }) {
   const text = props.default_text || '(보고서에서 입력)'
   const isPlaceholder = !props.default_text
-  const cls = levelClass(props.level ?? 2)
-  // Centering is handled by the BlockCard's CardContent — for heading
-  // it sets `flex items-center` so this element auto-centers vertically
-  // without depending on an h-full chain.
+  // `text_style` overrides win when set; defaults from `levelClass` only
+  // fill in the slots the designer left untouched.
+  const cls = `${levelClass(props.level ?? 2)} ${textStyleToClassName(props.text_style)}`
   return (
     <div
       className={`px-2 ${cls} ${isPlaceholder ? 'text-muted-foreground italic' : ''}`}
@@ -58,7 +62,7 @@ export function HeadingPreview({ props }) {
 
 export function HeadingEditor({ props, content, onChange, readOnly }) {
   const value = content?.text ?? ''
-  const cls = levelClass(props.level ?? 2)
+  const cls = `${levelClass(props.level ?? 2)} ${textStyleToClassName(props.text_style)}`
   if (readOnly) {
     if (!value) return null
     return <div className={`px-2 py-1 ${cls}`}>{value}</div>

@@ -69,3 +69,24 @@
     grid-column: 1 / -1 !important;
   }
 }
+
+/* RichText widget — TipTap row editor.
+   ProseMirror produces a `<p>` per row; we keep its layout flush with the
+   surrounding outline (no margin, single-line height) and add a CSS-based
+   placeholder that matches the look of the previous <input>. */
+.outline-rich-row .ProseMirror {
+  outline: none;
+  min-height: 1.5rem;
+}
+.outline-rich-row .ProseMirror > p {
+  margin: 0;
+  padding: 0;
+  min-height: 1.5rem;
+}
+.outline-rich-row .ProseMirror > p.is-empty::before {
+  content: attr(data-placeholder);
+  color: hsl(var(--muted-foreground) / 0.5);
+  pointer-events: none;
+  float: left;
+  height: 0;
+}

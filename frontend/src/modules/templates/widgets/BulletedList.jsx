@@ -1,6 +1,6 @@
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { CaptionInput, LabelField, PreviewLabel } from './_shared'
+import { CaptionInput, LabelField, PreviewLabel, TextStyleField, textStyleToClassName } from './_shared'
 
 export function BulletedListPropsPanel({ props, onChange }) {
   return (
@@ -49,6 +49,10 @@ export function BulletedListPropsPanel({ props, onChange }) {
           />
         </div>
       </div>
+      <TextStyleField
+        value={props.text_style}
+        onChange={(text_style) => onChange({ ...props, text_style })}
+      />
     </div>
   )
 }
@@ -59,6 +63,7 @@ import { Button } from '@/shared/components/ui/button'
 export function BulletedListEditor({ props, content, onChange, readOnly }) {
   const caption = content?.caption ?? ''
   const items = content?.items ?? []
+  const bodyTextClass = textStyleToClassName(props.text_style)
 
   function patch(next) {
     const merged = { caption, items, ...next }
@@ -90,7 +95,7 @@ export function BulletedListEditor({ props, content, onChange, readOnly }) {
       <div className="space-y-2">
         <CaptionInput value={caption} readOnly />
         {filled.length > 0 && (
-          <ul className="text-sm list-disc pl-5 space-y-1">
+          <ul className={`text-sm list-disc pl-5 space-y-1 ${bodyTextClass}`}>
             {filled.map((it, i) => (
               <li key={i}>{it}</li>
             ))}
@@ -117,7 +122,7 @@ export function BulletedListEditor({ props, content, onChange, readOnly }) {
             value={item ?? ''}
             onChange={(e) => update(idx, e.target.value)}
             placeholder={props.placeholder || '항목 입력'}
-            className="h-8 flex-1"
+            className={`h-8 flex-1 ${bodyTextClass}`}
           />
           <Button
             variant="ghost"

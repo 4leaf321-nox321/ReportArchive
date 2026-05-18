@@ -1,6 +1,6 @@
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { CaptionInput, LabelField, PreviewLabel } from './_shared'
+import { CaptionInput, LabelField, PreviewLabel, TextStyleField, textStyleToClassName } from './_shared'
 
 const FORMATS = [
   { value: 'number', label: '숫자' },
@@ -74,6 +74,10 @@ export function KpiCardPropsPanel({ props, onChange }) {
           메모 입력 허용
         </label>
       </div>
+      <TextStyleField
+        value={props.text_style}
+        onChange={(text_style) => onChange({ ...props, text_style })}
+      />
     </div>
   )
 }
@@ -82,6 +86,9 @@ import { Textarea } from '@/shared/components/ui/textarea'
 
 export function KpiCardEditor({ props, content, onChange, readOnly }) {
   const data = content ?? {}
+  // KPI's big number already uses text-3xl by default; the override class
+  // only kicks in when the designer explicitly picks a size/font/etc.
+  const bodyTextClass = textStyleToClassName(props.text_style)
 
   function update(patch) {
     const next = { ...data, ...patch }
@@ -99,7 +106,7 @@ export function KpiCardEditor({ props, content, onChange, readOnly }) {
         <CaptionInput value={data.caption ?? ''} readOnly />
         {hasValue && (
           <div className="space-y-0.5">
-            <div className="text-3xl font-semibold">
+            <div className={`text-3xl font-semibold ${bodyTextClass}`}>
               {formatValue(data.value, props)}
             </div>
             {(data.delta !== undefined || data.note) && (

@@ -1,6 +1,6 @@
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { CaptionInput, FieldItemListEditor, LabelField, PreviewLabel } from './_shared'
+import { CaptionInput, FieldItemListEditor, LabelField, PreviewLabel, TextStyleField, textStyleToClassName } from './_shared'
 
 export function KeyValuePropsPanel({ props, onChange }) {
   return (
@@ -22,6 +22,10 @@ export function KeyValuePropsPanel({ props, onChange }) {
           addLabel="항목 추가"
         />
       </div>
+      <TextStyleField
+        value={props.text_style}
+        onChange={(text_style) => onChange({ ...props, text_style })}
+      />
     </div>
   )
 }
@@ -86,6 +90,9 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
     }
   }
 
+  // Designer-supplied typography for both keys and values.
+  const bodyTextClass = textStyleToClassName(props.text_style)
+
   if (readOnly) {
     const filledItems = items.filter((item) => data[item.key] !== undefined && data[item.key] !== '')
     if (!caption && filledItems.length === 0) return null
@@ -93,7 +100,7 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
       <div className="space-y-2">
         <CaptionInput value={caption} readOnly />
         {filledItems.length > 0 && (
-          <div className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 items-baseline text-sm">
+          <div className={`grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 items-baseline text-sm ${bodyTextClass}`}>
             {filledItems.map((item, i) => (
               <div key={i} className="contents">
                 <span className="text-muted-foreground">
@@ -115,7 +122,7 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
         onChange={(v) => patch({ caption: v })}
         placeholder={props.label}
       />
-      <div className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-2 items-center">
+      <div className={`grid grid-cols-[max-content_1fr] gap-x-3 gap-y-2 items-center ${bodyTextClass}`}>
         {items.map((item, i) => (
           <div key={i} className="contents">
             <Label className="text-sm text-muted-foreground">

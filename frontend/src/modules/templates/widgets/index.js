@@ -17,14 +17,13 @@
  *   2. Create <Widget>.jsx here exporting PropsPanel + Preview + (optional) Editor
  *   3. Register the components below
  */
-import { Heading1, Type, ListOrdered, Table2, BarChart3, Image, LineChart, Paperclip, AlignLeft } from 'lucide-react'
+import { Heading1, Type, ListOrdered, Table2, Image, LineChart, Paperclip, AlignLeft } from 'lucide-react'
 
 import { HeadingPropsPanel, HeadingPreview, HeadingEditor } from './Heading'
 import { RichTextPropsPanel, RichTextPreview, RichTextEditor } from './RichText'
 import { KeyValuePropsPanel, KeyValuePreview, KeyValueEditor } from './KeyValue'
 import { BulletedListPropsPanel, BulletedListPreview, BulletedListEditor } from './BulletedList'
 import { TablePropsPanel, TablePreview, TableEditor } from './Table'
-import { KpiCardPropsPanel, KpiCardPreview, KpiCardEditor } from './KpiCard'
 import { ImagePropsPanel, ImagePreview, ImageEditor } from './Image'
 import { AttachmentPropsPanel, AttachmentPreview, AttachmentEditor } from './Attachment'
 import { ChartPropsPanel, ChartPreview, ChartEditor } from './Chart'
@@ -59,12 +58,6 @@ export const WIDGET_RENDERERS = {
     PropsPanel: TablePropsPanel,
     Preview: TablePreview,
     Editor: TableEditor,
-  },
-  kpi_card: {
-    Icon: BarChart3,
-    PropsPanel: KpiCardPropsPanel,
-    Preview: KpiCardPreview,
-    Editor: KpiCardEditor,
   },
   image: {
     Icon: Image,

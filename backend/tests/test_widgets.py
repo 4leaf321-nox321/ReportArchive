@@ -23,7 +23,6 @@ def test_registry_has_all_widgets():
         "key_value",
         "bulleted_list",
         "table",
-        "kpi_card",
         "image",
         "attachment",
         "chart",
@@ -346,11 +345,6 @@ def _full_template():
                     ],
                 },
             },
-            {
-                "id": "kpi",
-                "type": "kpi_card",
-                "props": {"label": "매출", "allow_delta": True, "allow_note": True},
-            },
         ],
     }
 
@@ -362,7 +356,6 @@ def test_validate_content_happy_path():
         "summary": {"markdown": "이번 주는..."},
         "todos": {"items": ["기능 출시", "문서 작성"]},
         "issues": {"rows": [{"title": "장애 대응", "owner": "홍길동"}]},
-        "kpi": {"value": 12.3, "delta": 0.5, "note": "전주 대비"},
     }
     validate_report_content(template, content)  # should not raise
 
@@ -399,7 +392,6 @@ def test_validate_content_accepts_caption_only():
         "summary": {"caption": "요약"},
         "todos": {"caption": "할 일"},
         "issues": {"caption": "이슈"},
-        "kpi": {"caption": "지표"},
     }
     validate_report_content(template, content)
 
@@ -459,22 +451,6 @@ def test_validate_content_rejects_min_items_violation():
     template = _full_template()
     content = {"todos": {"items": []}}  # min_items=1
     with pytest.raises(ValueError, match="todos"):
-        validate_report_content(template, content)
-
-
-def test_validate_content_rejects_kpi_with_disallowed_field():
-    template = {
-        "version": "widget-v1",
-        "blocks": [
-            {
-                "id": "k",
-                "type": "kpi_card",
-                "props": {"label": "x"},  # allow_delta=False, allow_note=False
-            }
-        ],
-    }
-    content = {"k": {"value": 1, "delta": 2}}  # delta not allowed
-    with pytest.raises(ValueError, match="k"):
         validate_report_content(template, content)
 
 

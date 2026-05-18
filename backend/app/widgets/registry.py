@@ -96,6 +96,9 @@ _FIELD_ITEM_PROPS_SCHEMA = {
         "type": {"type": "string", "enum": list(_KV_FIELD_TYPES)},
         "options": {"type": "array", "items": {"type": "string", "minLength": 1}},
         "required": {"type": "boolean"},
+        # When true (key_value only — ignored by table cells), the content
+        # value is a list of entries instead of a single scalar.
+        "multi": {"type": "boolean"},
         # Optional ontology / linking hints — see validation.META_SCHEMA.
         "meta": {"type": "object"},
     },
@@ -234,7 +237,14 @@ def _key_value_content(props: dict) -> dict:
     items = props.get("items", [])
     properties = {"caption": _CAPTION_FIELD}
     for item in items:
-        properties[item["key"]] = _kv_field_value_schema(item)
+        scalar = _kv_field_value_schema(item)
+        # `multi=True` items hold an array of values per key — lets one
+        # field carry multiple entries (e.g. several defect types under
+        # the single "불량 종류" key) without forking off another widget.
+        if item.get("multi"):
+            properties[item["key"]] = {"type": "array", "items": scalar}
+        else:
+            properties[item["key"]] = scalar
     return {
         "type": "object",
         "properties": properties,
@@ -266,9 +276,16 @@ KEY_VALUE: WidgetDescriptor = {
     "content_schema_for": _key_value_content,
     "default_props": {
         "label": "메타정보",
+        # 신뢰성·시뮬레이션 분야 보고서가 공통으로 채우는 식별 필드. 어떤
+        # 필드든 한 보고서에 여러 항목이 걸릴 수 있어 multi=True로 둠.
         "items": [
-            {"key": "period", "label": "보고 기간", "type": "text", "required": True},
-            {"key": "owner", "label": "작성자", "type": "text", "required": True},
+            {"key": "model_name", "label": "모델 이름", "type": "text", "multi": True},
+            {"key": "part_name", "label": "부품 이름", "type": "text", "multi": True},
+            {"key": "bom_code", "label": "BOM Code", "type": "text", "multi": True},
+            {"key": "dev_stage", "label": "개발 단계", "type": "text", "multi": True},
+            {"key": "defect_type", "label": "불량 종류", "type": "text", "multi": True},
+            {"key": "reliability_test", "label": "신뢰성 시험", "type": "text", "multi": True},
+            {"key": "simulation_type", "label": "시뮬레이션 종류", "type": "text", "multi": True},
         ],
     },
 }
@@ -382,49 +399,6 @@ TABLE: WidgetDescriptor = {
             {"key": "value", "label": "값", "type": "text"},
         ],
     },
-}
-
-
-# --------------------------------------------------------------------------- #
-# 6. kpi_card — 헤드라인 지표
-# --------------------------------------------------------------------------- #
-def _kpi_card_content(props: dict) -> dict:
-    schema: dict[str, Any] = {
-        "type": "object",
-        "properties": {
-            "caption": _CAPTION_FIELD,
-            "value": {"type": "number"},
-        },
-        "additionalProperties": False,
-    }
-    if props.get("allow_delta"):
-        schema["properties"]["delta"] = {"type": "number"}
-    if props.get("allow_note"):
-        schema["properties"]["note"] = {"type": "string", "maxLength": 500}
-    return schema
-
-
-KPI_CARD: WidgetDescriptor = {
-    "type": "kpi_card",
-    "label": "KPI 카드",
-    "description": "단일 헤드라인 지표 (값 + 단위 + 선택적 증감/메모)",
-    "has_content": True,
-    "props_schema": {
-        "type": "object",
-        "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
-            "unit": {"type": "string", "maxLength": 32},
-            "format": {"type": "string", "enum": ["number", "percent", "currency"]},
-            "target": {"type": "number"},
-            "allow_delta": {"type": "boolean"},
-            "allow_note": {"type": "boolean"},
-            "text_style": _TEXT_STYLE_SCHEMA,
-        },
-        "required": ["label"],
-        "additionalProperties": False,
-    },
-    "content_schema_for": _kpi_card_content,
-    "default_props": {"label": "지표", "format": "number", "allow_delta": True, "allow_note": False},
 }
 
 
@@ -631,7 +605,6 @@ WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
         KEY_VALUE,
         BULLETED_LIST,
         TABLE,
-        KPI_CARD,
         IMAGE,
         ATTACHMENT,
         CHART,

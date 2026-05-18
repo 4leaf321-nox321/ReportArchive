@@ -1,3 +1,5 @@
+import { Plus, X } from 'lucide-react'
+import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { CaptionInput, FieldItemListEditor, LabelField, PreviewLabel, TextStyleField, textStyleToClassName } from './_shared'
@@ -94,7 +96,7 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
   const bodyTextClass = textStyleToClassName(props.text_style)
 
   if (readOnly) {
-    const filledItems = items.filter((item) => data[item.key] !== undefined && data[item.key] !== '')
+    const filledItems = items.filter((item) => isFilled(item, data[item.key]))
     if (!caption && filledItems.length === 0) return null
     return (
       <div className="space-y-2">
@@ -141,12 +143,100 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
   )
 }
 
+function isFilled(item, value) {
+  if (value === undefined || value === null) return false
+  if (item.multi) return Array.isArray(value) && value.some((v) => v !== '' && v != null)
+  return value !== ''
+}
+
 function formatKvValue(item, value) {
   if (value === undefined || value === '' || value === null) return ''
+  if (item.multi && Array.isArray(value)) {
+    return value.filter((v) => v !== '' && v != null).map(String).join(', ')
+  }
   return String(value)
 }
 
 function KvFieldInput({ item, value, onChange }) {
+  if (item.multi) {
+    return <MultiValueInput item={item} value={value} onChange={onChange} />
+  }
+  return <SingleValueInput item={item} value={value} onChange={onChange} />
+}
+
+/** Repeatable input list for `multi=true` items — defect types, reliability
+ *  tests, etc. Stores the value as an array; one row per entry with ✕ and a
+ *  "추가" button to append. Skipping the multi=true flag falls back to the
+ *  scalar input below so existing single-value templates stay unchanged. */
+function MultiValueInput({ item, value, onChange }) {
+  const list = Array.isArray(value) ? value : []
+  function setAt(idx, v) {
+    const next = list.map((x, i) => (i === idx ? v : x))
+    commit(next)
+  }
+  function removeAt(idx) {
+    commit(list.filter((_, i) => i !== idx))
+  }
+  function add() {
+    commit([...list, item.type === 'number' || item.type === 'integer' ? undefined : ''])
+  }
+  function commit(next) {
+    const cleaned = next.filter((v) => v !== '' && v !== undefined && v !== null)
+    if (cleaned.length === 0) onChange(undefined)
+    else onChange(next)
+  }
+  if (list.length === 0) {
+    return (
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={add}
+        className="h-9 text-xs"
+      >
+        <Plus className="mr-1 h-3 w-3" />
+        값 추가
+      </Button>
+    )
+  }
+  return (
+    <div className="space-y-1.5">
+      {list.map((v, idx) => (
+        <div key={idx} className="flex items-center gap-1">
+          <div className="flex-1">
+            <SingleValueInput
+              item={item}
+              value={v}
+              onChange={(nv) => setAt(idx, nv)}
+            />
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
+            onClick={() => removeAt(idx)}
+            aria-label="값 제거"
+          >
+            <X className="h-3 w-3" />
+          </Button>
+        </div>
+      ))}
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        onClick={add}
+        className="h-7 text-xs text-muted-foreground hover:text-foreground"
+      >
+        <Plus className="mr-1 h-3 w-3" />
+        값 추가
+      </Button>
+    </div>
+  )
+}
+
+function SingleValueInput({ item, value, onChange }) {
   const t = item.type
   if (t === 'select') {
     return (

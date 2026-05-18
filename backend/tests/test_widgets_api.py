@@ -32,7 +32,7 @@ def test_widgets_endpoint_returns_full_catalog() -> None:
     assert types == sorted(
         [
             "heading", "rich_text", "key_value", "bulleted_list",
-            "table", "kpi_card", "image", "attachment", "chart",
+            "table", "image", "attachment", "chart",
         ]
     )
     # Each entry must include the fields the frontend needs to build a

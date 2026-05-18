@@ -117,10 +117,6 @@ TEMPLATES = [
                     {"key": "owner", "label": "작성자", "type": "text", "required": True},
                 ],
             }},
-            {"id": "kpi_pipeline", "type": "kpi_card", "props": {
-                "label": "파이프라인 총액", "unit": "억원", "format": "number",
-                "allow_delta": True, "allow_note": True,
-            }},
             {"id": "pipeline", "type": "table", "props": {
                 "label": "주요 파이프라인",
                 "columns": [
@@ -153,18 +149,6 @@ TEMPLATES = [
                     {"key": "period", "label": "월", "type": "text", "required": True},
                     {"key": "team", "label": "부서", "type": "text", "required": True},
                 ],
-            }},
-            # KPI 카드 2개를 같은 행에 6/6 배치 — layout 데모
-            {"id": "kpi_revenue", "type": "kpi_card",
-             "layout": {"row": 2, "col_span": 6, "row_span": 2},
-             "props": {
-                "label": "매출", "unit": "억원", "format": "number",
-                "allow_delta": True, "allow_note": True,
-            }},
-            {"id": "kpi_count", "type": "kpi_card",
-             "layout": {"row": 2, "col_span": 6, "row_span": 2},
-             "props": {
-                "label": "주요 건수", "format": "number", "allow_delta": True,
             }},
             {"id": "achievements", "type": "rich_text",
              "layout": {"row": 3, "col_span": 12, "row_span": 4},

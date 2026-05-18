@@ -52,7 +52,7 @@ export function FieldItemListEditor({ items, onChange, addLabel = '항목 추가
                 placeholder="period"
               />
             </div>
-            <div className="col-span-4">
+            <div className="col-span-3">
               <Label className="text-[10px] uppercase">라벨</Label>
               <Input
                 value={item.label ?? ''}
@@ -83,6 +83,19 @@ export function FieldItemListEditor({ items, onChange, addLabel = '항목 추가
                   onChange={(e) => update(idx, { required: e.target.checked })}
                 />
                 필수
+              </label>
+            </div>
+            <div className="col-span-1 flex items-center justify-center pt-4">
+              <label
+                className="flex items-center gap-1 text-[10px]"
+                title="여러 값을 입력할 수 있음 (key_value 전용 — table 열에는 영향 없음)"
+              >
+                <input
+                  type="checkbox"
+                  checked={!!item.multi}
+                  onChange={(e) => update(idx, { multi: e.target.checked })}
+                />
+                다중값
               </label>
             </div>
             <div className="col-span-2 flex items-start gap-1 pt-4 justify-end">

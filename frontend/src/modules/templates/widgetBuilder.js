@@ -27,7 +27,6 @@ const DEFAULT_BLOCK_SIZE = {
   key_value: { col_span: 12, row_span: 3 },
   bulleted_list: { col_span: 12, row_span: 3 },
   table: { col_span: 12, row_span: 4 },
-  kpi_card: { col_span: 4, row_span: 2 },
   image: { col_span: 6, row_span: 4 },
   attachment: { col_span: 12, row_span: 3 },
   chart: { col_span: 6, row_span: 6 },

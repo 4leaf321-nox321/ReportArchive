@@ -76,11 +76,15 @@ TEMPLATES = [
         "description": "팀 단위 주간 진행상황 / 이슈 / 다음 주 계획",
         "blocks": [
             {"id": "meta", "type": "key_value", "props": {
-                "label": "보고 정보",
+                "label": "메타정보",
                 "items": [
-                    {"key": "period", "label": "보고 기간", "type": "text", "required": True},
-                    {"key": "team", "label": "팀", "type": "text", "required": True},
-                    {"key": "owner", "label": "작성자", "type": "text", "required": True},
+                    {"key": "model_name", "label": "모델 이름", "type": "text", "multi": True},
+                    {"key": "part_name", "label": "부품 이름", "type": "text", "multi": True},
+                    {"key": "bom_code", "label": "BOM Code", "type": "text", "multi": True},
+                    {"key": "dev_stage", "label": "개발 단계", "type": "text", "multi": True},
+                    {"key": "defect_type", "label": "불량 종류", "type": "text", "multi": True},
+                    {"key": "reliability_test", "label": "신뢰성 시험", "type": "text", "multi": True},
+                    {"key": "simulation_type", "label": "시뮬레이션 종류", "type": "text", "multi": True},
                 ],
             }},
             {"id": "summary", "type": "rich_text", "props": {

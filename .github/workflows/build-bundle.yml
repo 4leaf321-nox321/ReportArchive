@@ -19,13 +19,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install apptainer + node toolchain
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install apptainer (via official PPA)
+        # apptainer isn't in Ubuntu noble's default repos — pull it from
+        # the upstream PPA so the version matches what production runs.
         run: |
+          sudo add-apt-repository -y ppa:apptainer/ppa
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            apptainer nodejs npm
+          sudo apt-get install -y --no-install-recommends apptainer
 
       - name: Build bundle (deploy/build_bundle.sh)
+        # GHA's `runner` user has no subuid/subgid mappings, so apptainer
+        # build can't run unprivileged. The script honors this env var by
+        # prefixing the build with sudo.
+        env:
+          USE_SUDO_APPTAINER: '1'
         run: ./deploy/build_bundle.sh
 
       - name: Upload as workflow artifact

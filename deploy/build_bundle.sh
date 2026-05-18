@@ -33,7 +33,14 @@ echo
 echo "==> [2/4] Building Apptainer SIF (5-10 min on first build)"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
-apptainer build --force "$STAGE/app.sif" deploy/apptainer.def
+# GitHub Actions runners have no subuid/subgid mapping for the `runner`
+# user, so unprivileged apptainer build fails there. Opt-in via env var
+# so local dev keeps building without sudo.
+APPTAINER_BUILD=(apptainer build --force)
+if [[ "${USE_SUDO_APPTAINER:-0}" == "1" ]]; then
+    APPTAINER_BUILD=(sudo apptainer build --force)
+fi
+"${APPTAINER_BUILD[@]}" "$STAGE/app.sif" deploy/apptainer.def
 
 # --- 3. Stage scripts + docs ---
 echo

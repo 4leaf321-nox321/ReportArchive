@@ -13,7 +13,7 @@ present must match its schema.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Optional
 
 import jsonschema
 
@@ -344,13 +344,18 @@ def _check_unique_keys(block_id: str, items: list[dict], where: str) -> None:
 # --------------------------------------------------------------------------- #
 # Report content validation
 # --------------------------------------------------------------------------- #
-def validate_report_content(template_schema: dict, content: dict) -> None:
-    """Validates a report's content against a widget-v1 template.
+def validate_report_content(
+    template_schema: dict,
+    content: dict,
+    extra_blocks: Optional[list[dict]] = None,
+) -> None:
+    """Validates a report's content against a widget-v1 template plus any
+    extra blocks the report added at write time.
 
     Partial drafts are allowed: missing block_ids are skipped. But any
     block_id that *is* present must satisfy its widget's content schema,
-    and any extra keys in content (not declared by the template) are
-    rejected.
+    and any extra keys in content (not declared by either the template
+    or the page's extra_blocks list) are rejected.
     """
     if not is_widget_v1(template_schema):
         raise ValueError(
@@ -359,12 +364,18 @@ def validate_report_content(template_schema: dict, content: dict) -> None:
     if not isinstance(content, dict):
         raise ValueError("Report content must be an object.")
 
-    blocks_by_id = {b["id"]: b for b in template_schema.get("blocks", [])}
+    template_blocks = {b["id"]: b for b in template_schema.get("blocks", [])}
+    extra = extra_blocks or []
+    _validate_extra_blocks_shape(extra, reserved_ids=set(template_blocks))
+    extra_by_id = {b["id"]: b for b in extra}
 
-    extras = set(content) - set(blocks_by_id)
-    if extras:
+    blocks_by_id = {**template_blocks, **extra_by_id}
+
+    unknown = set(content) - set(blocks_by_id)
+    if unknown:
         raise ValueError(
-            f"Report content has unknown block ids not in the template: {sorted(extras)}"
+            f"Report content has unknown block ids not in the template or extra blocks: "
+            f"{sorted(unknown)}"
         )
 
     for block_id, block in blocks_by_id.items():
@@ -383,3 +394,28 @@ def validate_report_content(template_schema: dict, content: dict) -> None:
             path = "/".join(str(p) for p in exc.absolute_path)
             where = f"{block_id}/{path}" if path else block_id
             raise ValueError(f"Content invalid at {where}: {exc.message}") from exc
+
+
+def _validate_extra_blocks_shape(extra_blocks: list[dict], reserved_ids: set) -> None:
+    """Per-page extra block sanity check — type known to the registry, ids
+    unique within the page, and no collisions with the template's block ids
+    (template wins, extras can't shadow)."""
+    seen: set[str] = set()
+    for block in extra_blocks:
+        if not isinstance(block, dict):
+            raise ValueError("Each extra block must be an object.")
+        block_id = block.get("id")
+        if not isinstance(block_id, str) or not block_id:
+            raise ValueError("Extra block missing a string `id`.")
+        if block_id in reserved_ids:
+            raise ValueError(
+                f"Extra block id {block_id!r} collides with a template block id."
+            )
+        if block_id in seen:
+            raise ValueError(f"Duplicate extra block id {block_id!r}.")
+        seen.add(block_id)
+        type_ = block.get("type")
+        if not isinstance(type_, str) or not type_:
+            raise ValueError(f"Extra block {block_id!r} missing a string `type`.")
+        # Triggers KeyError → caller surfaces as a 400.
+        get_widget(type_)

@@ -26,6 +26,7 @@ import { ScrollArea } from '@/shared/components/ui/scroll-area'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { Input } from '@/shared/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog'
+import { Popover, PopoverContent, PopoverTrigger } from '@/shared/components/ui/popover'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,6 +39,7 @@ import { PageWidthToggle, usePageWidth } from '@/shared/components/PageWidthTogg
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { usePersistedState } from '@/shared/hooks/usePersistedState'
+import { useWidgetCatalog } from '@/shared/hooks/useWidgetCatalog'
 import { getReport, createReport, updateReport, deleteReport } from './api'
 import { getTemplateVersion } from '@/shared/api/templates'
 import { STATUSES, STATUS_LABEL, STATUS_VARIANT } from './constants'
@@ -113,6 +115,7 @@ export default function ReportDetailPage() {
             content: seedContentFromTemplate(seedTemplate),
             layout_overrides: null,
             props_overrides: null,
+            extra_blocks: [],
           },
         ],
       })
@@ -305,6 +308,7 @@ export default function ReportDetailPage() {
         content: seedContentFromTemplate(template),
         layout_overrides: null,
         props_overrides: null,
+        extra_blocks: [],
       }
       const next = [...d.pages, newPage]
       return { ...d, pages: next }
@@ -328,6 +332,57 @@ export default function ReportDetailPage() {
     updatePage(idx, { name: trimmed === '' ? null : trimmed })
   }
 
+  /** Append a new ad-hoc widget to a page. `widgetType` is the registry key
+   *  (e.g. 'rich_text', 'table'); `defaultProps` comes from the catalog so
+   *  the new block has a usable starting state. The generated id is unique
+   *  within the page so layout overrides / content keys stay clean. */
+  function addExtraBlock(pageIdx, widgetType, defaultProps = {}) {
+    setDraft((d) => {
+      if (!d) return d
+      const page = d.pages[pageIdx]
+      if (!page) return d
+      const existingIds = new Set([
+        ...Object.keys(page.content ?? {}),
+        ...(page.extra_blocks ?? []).map((b) => b.id),
+      ])
+      const id = freshExtraId(widgetType, existingIds)
+      const newBlock = {
+        id,
+        type: widgetType,
+        props: { ...defaultProps },
+      }
+      const nextPages = d.pages.map((p, i) =>
+        i === pageIdx
+          ? { ...p, extra_blocks: [...(p.extra_blocks ?? []), newBlock] }
+          : p,
+      )
+      return { ...d, pages: nextPages }
+    })
+  }
+
+  function removeExtraBlock(pageIdx, blockId) {
+    setDraft((d) => {
+      if (!d) return d
+      const nextPages = d.pages.map((p, i) => {
+        if (i !== pageIdx) return p
+        const nextContent = { ...(p.content ?? {}) }
+        delete nextContent[blockId]
+        const nextOverrides = { ...(p.layout_overrides ?? {}) }
+        delete nextOverrides[blockId]
+        const nextPropsOverrides = { ...(p.props_overrides ?? {}) }
+        delete nextPropsOverrides[blockId]
+        return {
+          ...p,
+          extra_blocks: (p.extra_blocks ?? []).filter((b) => b.id !== blockId),
+          content: nextContent,
+          layout_overrides: Object.keys(nextOverrides).length ? nextOverrides : null,
+          props_overrides: Object.keys(nextPropsOverrides).length ? nextPropsOverrides : null,
+        }
+      })
+      return { ...d, pages: nextPages }
+    })
+  }
+
   // RGL layout-change handler scoped to one page. Diffs against that page's
   // template defaults to keep `layout_overrides` lean. `auto_fit` defaults to
   // true; we only persist it when the user has explicitly disabled it (so the
@@ -342,7 +397,7 @@ export default function ReportDetailPage() {
     const page = draft.pages[pageIdx]
     const tpl = getCachedTemplate(pageTemplateMap, page)
     if (!tpl) return
-    const blocks = extractBlocks(tpl.schema)
+    const blocks = combinedBlocks(tpl, page)
     const curOverrides = page?.layout_overrides ?? {}
     const pageContentHeights = contentHeightsByPage[pageIdx] ?? {}
 
@@ -397,7 +452,7 @@ export default function ReportDetailPage() {
       const page = d.pages[pageIdx]
       const tpl = getCachedTemplate(pageTemplateMap, page)
       if (!tpl) return d
-      const blocks = extractBlocks(tpl.schema)
+      const blocks = combinedBlocks(tpl, page)
       const block = blocks.find((b) => b.id === blockId)
       if (!block) return d
       const cur = page.layout_overrides?.[blockId]
@@ -762,6 +817,8 @@ export default function ReportDetailPage() {
                     }
                     onRename={(name) => renamePage(idx, name)}
                     showPageHeader={pageCount > 1}
+                    onAddExtraBlock={(type, defaults) => addExtraBlock(idx, type, defaults)}
+                    onRemoveExtraBlock={(blockId) => removeExtraBlock(idx, blockId)}
                   />
                 ))
               : (
@@ -791,6 +848,12 @@ export default function ReportDetailPage() {
                     }
                     onRename={(name) => renamePage(safeCurrent, name)}
                     showPageHeader={pageCount > 1}
+                    onAddExtraBlock={(type, defaults) =>
+                      addExtraBlock(safeCurrent, type, defaults)
+                    }
+                    onRemoveExtraBlock={(blockId) =>
+                      removeExtraBlock(safeCurrent, blockId)
+                    }
                   />
                 )}
 
@@ -1187,8 +1250,10 @@ function PageSection({
   contentHeights,
   onRename,
   showPageHeader,
+  onAddExtraBlock,
+  onRemoveExtraBlock,
 }) {
-  const blocks = useMemo(() => extractBlocks(template?.schema), [template])
+  const blocks = useMemo(() => combinedBlocks(template, page), [template, page])
 
   // Edit-GUI heights live here (mode-local — only consulted when editing).
   // The visible Editor in edit mode often needs more room than the read-only
@@ -1320,6 +1385,7 @@ function PageSection({
                   readOnly={!isEditing}
                   showDragHandle={isEditing}
                   autoFit={autoFit}
+                  isExtra={block.source === 'extra'}
                   onActivate={() => onActivate(block.id)}
                   onChange={(value) => onChangeContent(block.id, value)}
                   onChangePropsOverride={(patch) =>
@@ -1328,6 +1394,11 @@ function PageSection({
                   onToggleAutoFit={
                     isEditing
                       ? (enabled) => onToggleAutoFit?.(block.id, enabled)
+                      : undefined
+                  }
+                  onRemove={
+                    isEditing && block.source === 'extra' && onRemoveExtraBlock
+                      ? () => onRemoveExtraBlock(block.id)
                       : undefined
                   }
                   onMeasureContentHeight={(px) =>
@@ -1339,6 +1410,10 @@ function PageSection({
             )
           })}
         </ResizableGrid>
+      )}
+
+      {isEditing && onAddExtraBlock && (
+        <AddWidgetBar onAdd={onAddExtraBlock} />
       )}
     </section>
   )
@@ -1411,12 +1486,15 @@ function normalizePage(p) {
     content: p.content ?? {},
     layout_overrides: p.layout_overrides ?? null,
     props_overrides: p.props_overrides ?? null,
+    extra_blocks: Array.isArray(p.extra_blocks) ? p.extra_blocks : [],
   }
 }
 
 /**
  * Reads blocks from a widget-v1 template schema. Each block becomes a
- * navigable card in the report editor.
+ * navigable card in the report editor. Annotated with `source='template'`
+ * so callers can tell template-defined blocks apart from per-page
+ * `extra_blocks` added at write time.
  */
 function extractBlocks(schema) {
   const blocks = Array.isArray(schema?.blocks) ? schema.blocks : []
@@ -1426,7 +1504,86 @@ function extractBlocks(schema) {
     type: b.type,
     props: b.props ?? {},
     layout: b.layout,
+    source: 'template',
   }))
+}
+
+/** Page-level "위젯 추가" toolbar. Shown only in edit mode. Pulls the
+ *  widget catalog and lets the user pick a type; on click, hands the
+ *  type + default_props back to the parent to push onto extra_blocks. */
+function AddWidgetBar({ onAdd }) {
+  const { catalog, loading } = useWidgetCatalog()
+  const [open, setOpen] = useState(false)
+  if (loading) return null
+  const widgets = catalog?.widgets ?? []
+  return (
+    <div className="pt-3 border-t">
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button variant="outline" size="sm" className="text-xs">
+            <Plus className="mr-1 h-3 w-3" />
+            위젯 추가
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-[320px] p-2">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-2 pb-1">
+            위젯 종류
+          </div>
+          <div className="grid grid-cols-2 gap-1">
+            {widgets.map((w) => {
+              const meta = getRenderer(w.type)
+              const Icon = meta?.Icon
+              return (
+                <button
+                  key={w.type}
+                  type="button"
+                  className="flex items-start gap-2 px-2 py-2 rounded-md text-left hover:bg-muted transition-colors"
+                  onClick={() => {
+                    onAdd(w.type, w.default_props ?? {})
+                    setOpen(false)
+                  }}
+                >
+                  {Icon && <Icon className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />}
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">{w.label}</div>
+                    <div className="text-[10px] text-muted-foreground line-clamp-2">
+                      {w.description}
+                    </div>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </PopoverContent>
+      </Popover>
+    </div>
+  )
+}
+
+/** Pick a unique id for a new extra block. Tries `<type>_1`, `<type>_2`,
+ *  … until it lands on one that doesn't clash with the page's existing
+ *  ids (either template or extra). */
+function freshExtraId(type, existingIds) {
+  let n = 1
+  while (existingIds.has(`${type}_${n}`)) n += 1
+  return `${type}_${n}`
+}
+
+/** Combined template + page.extra_blocks list, in render order. Extras
+ *  inherit the same shape so the rest of the editor (layouts, content
+ *  validation, etc.) treats them as peers — only the `source` flag
+ *  changes how the UI presents them (e.g. a "추가" badge + remove button). */
+function combinedBlocks(template, page) {
+  const tplBlocks = extractBlocks(template?.schema)
+  const extra = (page?.extra_blocks ?? []).map((b) => ({
+    id: b.id,
+    title: b.props?.label || b.props?.default_text || b.id,
+    type: b.type,
+    props: b.props ?? {},
+    layout: b.layout,
+    source: 'extra',
+  }))
+  return [...tplBlocks, ...extra]
 }
 
 /**
@@ -1458,10 +1615,12 @@ function BlockEditorCard({
   readOnly,
   showDragHandle,
   autoFit,
+  isExtra,
   onActivate,
   onChange,
   onChangePropsOverride,
   onToggleAutoFit,
+  onRemove,
   onMeasureContentHeight,
   onMeasureEditHeight,
 }) {
@@ -1562,6 +1721,11 @@ function BlockEditorCard({
       <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
         {block.type}
       </span>
+      {isExtra && (
+        <Badge variant="secondary" className="text-[9px] h-3.5 px-1">
+          추가
+        </Badge>
+      )}
       {onToggleAutoFit && (
         <label
           className={cn(
@@ -1583,6 +1747,24 @@ function BlockEditorCard({
           <Maximize2 className="h-3 w-3" />
           자동 맞춤
         </label>
+      )}
+      {onRemove && (
+        <button
+          type="button"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation()
+            onRemove()
+          }}
+          className={cn(
+            'rounded p-0.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10',
+            !onToggleAutoFit && 'ml-auto',
+          )}
+          title="이 위젯 제거"
+          aria-label="이 위젯 제거"
+        >
+          <Trash2 className="h-3 w-3" />
+        </button>
       )}
     </div>
   ) : null

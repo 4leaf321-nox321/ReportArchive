@@ -46,16 +46,34 @@ def is_visible_to(db: Session, report: Report, workspace_slug: str) -> bool:
 
 
 def _validate_page(db: Session, page: ReportPage) -> None:
-    """Validate a single page's content + layout against its own template."""
+    """Validate a single page's content + layout against its own template
+    plus any per-page extra blocks the report added."""
     template = template_services.get_template(db, page.template_id, page.template_version)
     if not template:
         raise ValueError(
             f"Template not found: {page.template_id}@{page.template_version}"
         )
     if page.content:
-        _validate_widget_v1_content(template.schema, page.content)
+        _validate_widget_v1_content(
+            template.schema, page.content, extra_blocks=page.extra_blocks
+        )
     if page.layout_overrides:
-        _validate_layout_overrides(template.schema, page.layout_overrides)
+        # Layout overrides may reference extra-block ids too; pass them
+        # through as a synthetic schema so the validator accepts them.
+        combined = _schema_with_extras(template.schema, page.extra_blocks)
+        _validate_layout_overrides(combined, page.layout_overrides)
+
+
+def _schema_with_extras(template_schema: dict, extra_blocks: list[dict]) -> dict:
+    """Returns a synthetic widget-v1 schema with the template's blocks +
+    the page's extra_blocks. Used by validators that only know how to look
+    up blocks by id on a single schema document."""
+    if not extra_blocks:
+        return template_schema
+    return {
+        **template_schema,
+        "blocks": [*template_schema.get("blocks", []), *extra_blocks],
+    }
 
 
 def _validate_pages(db: Session, pages: Iterable[ReportPage]) -> None:
@@ -116,6 +134,7 @@ def _pages_to_jsonb(pages: list[ReportPage]) -> list[dict]:
             "content": p.content or {},
             "layout_overrides": _normalize_overrides(p.layout_overrides),
             "props_overrides": _sanitize_props_overrides(p.props_overrides),
+            "extra_blocks": list(p.extra_blocks or []),
         }
         for p in pages
     ]

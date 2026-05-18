@@ -71,6 +71,13 @@ class ReportPage(BaseModel):
     # structural props (items, min_length, ...) stay locked because the
     # content schema is derived from them.
     props_overrides: Optional[dict] = None
+    # Ad-hoc blocks added at report-write time. Shape mirrors a template
+    # block: { id, type, props, layout? }. They sit alongside the
+    # template's blocks at render time; content for each is stored in the
+    # same `content` dict keyed by block.id. Validation combines template
+    # blocks + extra_blocks before checking content shape, so unknown
+    # content keys still get rejected.
+    extra_blocks: list[dict] = []
 
 
 class ReportRead(BaseModel):

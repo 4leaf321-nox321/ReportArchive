@@ -2,11 +2,12 @@
 Idempotent seed for initial application data.
 
 Run after `setup_and_upgrade_db.py`. Creates:
-  - Workspace tree (개발본부 + 사업본부 + 공통 _global)
-  - Guest user with admin membership in 'dev'
-  - 8 system templates (the same set the frontend used as mock)
+  - Workspace tree (DX 부문 루트 + 공통 _global 가상 노드)
+  - Seed admin user (admin@example.com) with admin role on dx
+  - System templates (widget-v1)
 
 Re-running is safe: existing rows are skipped (matched by primary key).
+하위 부서는 시드에 두지 않고 관리자 UI(/admin)에서 추가.
 """
 from __future__ import annotations
 
@@ -39,14 +40,7 @@ TEMPLATE_CATEGORIES = [
 
 
 WORKSPACES = [
-    {"slug": "dev", "name": "개발본부", "parent_slug": None, "color": "#3b82f6"},
-    {"slug": "dev-platform", "name": "플랫폼팀", "parent_slug": "dev", "color": "#60a5fa"},
-    {"slug": "dev-product", "name": "제품팀", "parent_slug": "dev", "color": "#60a5fa"},
-    {"slug": "dev-data", "name": "데이터팀", "parent_slug": "dev", "color": "#60a5fa"},
-    {"slug": "dev-devops", "name": "인프라팀", "parent_slug": "dev", "color": "#60a5fa"},
-    {"slug": "biz", "name": "사업본부", "parent_slug": None, "color": "#10b981"},
-    {"slug": "biz-sales", "name": "영업팀", "parent_slug": "biz", "color": "#34d399"},
-    {"slug": "biz-marketing", "name": "마케팅팀", "parent_slug": "biz", "color": "#34d399"},
+    {"slug": "dx", "name": "DX 부문", "parent_slug": None, "color": "#3b82f6"},
     {
         "slug": "_global",
         "name": "공통",
@@ -58,24 +52,11 @@ WORKSPACES = [
 ]
 
 SEED_USERS = [
-    # An admin in the dev tree — also a viewer in biz to demo cross-workspace access.
     {
         "email": "admin@example.com",
         "name": "관리자",
         "password": "admin1234",
-        "memberships": [("dev", Role.admin), ("biz", Role.user)],
-    },
-    {
-        "email": "manager@example.com",
-        "name": "매니저",
-        "password": "manager1234",
-        "memberships": [("dev-platform", Role.manager)],
-    },
-    {
-        "email": "user@example.com",
-        "name": "사용자",
-        "password": "user1234",
-        "memberships": [("dev-product", Role.user)],
+        "memberships": [("dx", Role.admin)],
     },
 ]
 

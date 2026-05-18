@@ -1409,7 +1409,12 @@ function PageSection({
               activeBlock?.pageIdx === pageIdx && activeBlock?.blockId === block.id
             const autoFit = effectiveLayouts[block.id]?.auto_fit !== false
             const isExtraBlock = block.source === 'extra'
-            const canEditProps = isEditing && isExtraBlock && onChangeExtraBlockProps
+            // Every block in edit mode is configurable: extras write back
+            // to their own props, template blocks pile their changes onto
+            // the page-level props_overrides for that block id.
+            const canEditProps = isEditing && (
+              isExtraBlock ? !!onChangeExtraBlockProps : !!onChangePropsOverride
+            )
             return (
               <div
                 key={block.id}
@@ -1477,13 +1482,33 @@ function PageSection({
 
       {propsEditingId && (() => {
         const block = blocks.find((b) => b.id === propsEditingId)
-        if (!block || block.source !== 'extra') {
-          return null
-        }
+        if (!block) return null
+        const isExtraBlock = block.source === 'extra'
+        // For template blocks, the dialog edits the effective (template
+        // ∪ override) props and saves the full result back as the
+        // page-level override for that block. Extras write back to their
+        // own props directly.
+        const override = page?.props_overrides?.[block.id] ?? null
+        const effective = isExtraBlock
+          ? block.props
+          : { ...(block.props ?? {}), ...(override ?? {}) }
         return (
-          <ExtraBlockPropsDialog
+          <BlockPropsDialog
             block={block}
-            onChange={(newProps) => onChangeExtraBlockProps?.(block.id, newProps)}
+            initialProps={effective}
+            isExtra={isExtraBlock}
+            onChange={(newProps) => {
+              if (isExtraBlock) {
+                onChangeExtraBlockProps?.(block.id, newProps)
+              } else {
+                // Replace the entire override for this template block.
+                // PropsPanel hands back the complete next props object,
+                // so any subset of fields that match the template stays
+                // in the override too — that's fine, the backend's
+                // sanitizer only prunes empty dicts.
+                onChangePropsOverride?.(block.id, newProps)
+              }
+            }}
             onClose={() => setPropsEditingId(null)}
           />
         )
@@ -1617,12 +1642,20 @@ function BlockContextMenu({ x, y, onClose, onEditProps }) {
 
 /** Modal that surfaces the widget's PropsPanel — the same component the
  *  template editor uses — so users can configure structural props (table
- *  columns, KV items, KPI label/unit, etc.) on an ad-hoc widget inside
- *  the report writer. Calls onChange with the complete next props object
- *  on every edit, matching PropsPanel's contract. */
-function ExtraBlockPropsDialog({ block, onChange, onClose }) {
+ *  columns, KV items, KPI label/unit, etc.) per-report. Works for both
+ *  flavors of block:
+ *   - extra blocks: edits write straight to extra_blocks[i].props
+ *   - template blocks: edits write to page.props_overrides[block.id] as a
+ *     full props snapshot (the backend folds it back over the template
+ *     props at content-validation time)
+ *  The caller picks where to route via the `onChange` it hands in. */
+function BlockPropsDialog({ block, initialProps, isExtra, onChange, onClose }) {
   const renderer = getRenderer(block.type)
   const PropsPanel = renderer?.PropsPanel
+  // Local working copy — PropsPanel hands back full props on every edit,
+  // and we mirror it here so the panel remains responsive even though
+  // the parent only re-reads on close.
+  const [draft, setDraft] = useState(initialProps ?? {})
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
@@ -1630,13 +1663,29 @@ function ExtraBlockPropsDialog({ block, onChange, onClose }) {
           <DialogTitle className="flex items-center gap-2">
             <Settings2 className="h-4 w-4" />
             위젯 속성 — {block.type}
+            {!isExtra && (
+              <Badge variant="outline" className="text-[10px] ml-1">
+                템플릿 블록
+              </Badge>
+            )}
           </DialogTitle>
         </DialogHeader>
         {PropsPanel ? (
-          <PropsPanel props={block.props ?? {}} onChange={onChange} />
+          <PropsPanel
+            props={draft}
+            onChange={(nextProps) => {
+              setDraft(nextProps)
+              onChange?.(nextProps)
+            }}
+          />
         ) : (
           <p className="text-sm text-muted-foreground py-4">
             이 위젯 종류는 편집 가능한 속성이 없습니다.
+          </p>
+        )}
+        {!isExtra && (
+          <p className="text-[11px] text-muted-foreground border-t pt-2">
+            이 변경은 이 보고서에만 적용됩니다. 원본 템플릿은 그대로 유지됩니다.
           </p>
         )}
       </DialogContent>

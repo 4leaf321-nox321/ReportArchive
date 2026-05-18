@@ -348,14 +348,21 @@ def validate_report_content(
     template_schema: dict,
     content: dict,
     extra_blocks: Optional[list[dict]] = None,
+    props_overrides: Optional[dict] = None,
 ) -> None:
     """Validates a report's content against a widget-v1 template plus any
-    extra blocks the report added at write time.
+    extra blocks the report added at write time, with per-block prop
+    overrides folded in before computing content shape.
 
     Partial drafts are allowed: missing block_ids are skipped. But any
     block_id that *is* present must satisfy its widget's content schema,
     and any extra keys in content (not declared by either the template
     or the page's extra_blocks list) are rejected.
+
+    props_overrides is the report's per-block override map. For each
+    template block, the effective props used to derive the content schema
+    are `{...template_block_props, ...override}` so an override that
+    e.g. adds a table column actually affects what content shape passes.
     """
     if not is_widget_v1(template_schema):
         raise ValueError(
@@ -366,6 +373,7 @@ def validate_report_content(
 
     template_blocks = {b["id"]: b for b in template_schema.get("blocks", [])}
     extra = extra_blocks or []
+    overrides = props_overrides or {}
     _validate_extra_blocks_shape(extra, reserved_ids=set(template_blocks))
     extra_by_id = {b["id"]: b for b in extra}
 
@@ -387,7 +395,12 @@ def validate_report_content(
                 f"Block {block_id!r} ({block['type']}) has no content slot but "
                 f"content was provided."
             )
-        content_schema = widget["content_schema_for"](block.get("props", {}))
+        # Extras own their props outright; template blocks pick up any
+        # report-level override on top of their template props.
+        base_props = block.get("props", {})
+        override = overrides.get(block_id) if block_id in template_blocks else None
+        effective_props = {**base_props, **(override or {})}
+        content_schema = widget["content_schema_for"](effective_props)
         try:
             jsonschema.validate(instance=content[block_id], schema=content_schema)
         except jsonschema.ValidationError as exc:

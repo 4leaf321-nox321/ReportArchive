@@ -55,7 +55,10 @@ def _validate_page(db: Session, page: ReportPage) -> None:
         )
     if page.content:
         _validate_widget_v1_content(
-            template.schema, page.content, extra_blocks=page.extra_blocks
+            template.schema,
+            page.content,
+            extra_blocks=page.extra_blocks,
+            props_overrides=page.props_overrides,
         )
     if page.layout_overrides:
         # Layout overrides may reference extra-block ids too; pass them
@@ -91,19 +94,18 @@ def _normalize_overrides(overrides: dict | None) -> dict | None:
     return overrides
 
 
-# Per-report props can only override a small set of visual-style keys.
-# Anything else (items, min_length, required, etc.) is silently dropped
-# because the content schema is derived from those — overriding them on
-# a report would invalidate existing content.
-_ALLOWED_OVERRIDE_KEYS = ("text_style", "depth_styles")
-
-
 def _sanitize_props_overrides(overrides: dict | None) -> dict | None:
-    """Strip non-whitelisted keys and prune empties.
+    """Per-report prop overrides applied on top of the template's blocks.
+    Previously locked to visual-style keys (text_style / depth_styles)
+    only; now accepts any prop dict so the report writer can configure
+    structural settings (table columns, KV items, etc.) on a per-report
+    basis. The content validator below uses the effective (template ∪
+    override) props when checking shape, so a structural override that
+    invalidates existing content surfaces as a 400 at save time.
 
-    Shape in: { "<block_id>": { any keys }, ... }
-    Shape out: { "<block_id>": { "text_style": {...} | "depth_styles": {...} } }
-    Blocks that end up with no whitelisted keys are dropped entirely.
+    Shape in/out: { "<block_id>": { any prop keys }, ... }
+    Empty per-block dicts are pruned; an entirely empty result collapses
+    to None to keep DB rows lean.
     """
     if not overrides or not isinstance(overrides, dict):
         return None
@@ -111,14 +113,8 @@ def _sanitize_props_overrides(overrides: dict | None) -> dict | None:
     for block_id, raw in overrides.items():
         if not isinstance(block_id, str) or not isinstance(raw, dict):
             continue
-        cleaned: dict = {}
-        for key in _ALLOWED_OVERRIDE_KEYS:
-            value = raw.get(key)
-            if value in (None, "", {}, []):
-                continue
-            cleaned[key] = value
-        if cleaned:
-            out[block_id] = cleaned
+        if raw:
+            out[block_id] = raw
     return out or None
 
 

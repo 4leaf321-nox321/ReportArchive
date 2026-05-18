@@ -125,6 +125,37 @@ def update_role(db: Session, member: WorkspaceMember, role: Role) -> WorkspaceMe
     return member
 
 
+def move_member(
+    db: Session, member: WorkspaceMember, new_workspace_slug: str
+) -> WorkspaceMember:
+    """Reassigns a membership row to a different workspace.
+
+    Caller (route) is responsible for verifying scope — that the target
+    workspace is one the actor is allowed to move members into.
+
+    If the user already has a membership on the target workspace, raises
+    ValueError; callers should surface that as a 409 so the admin can
+    delete the duplicate first.
+    """
+    if member.workspace_slug == new_workspace_slug:
+        return member
+    duplicate = db.execute(
+        select(WorkspaceMember).where(
+            WorkspaceMember.user_id == member.user_id,
+            WorkspaceMember.workspace_slug == new_workspace_slug,
+        )
+    ).scalar_one_or_none()
+    if duplicate is not None:
+        raise ValueError(
+            f"이미 {new_workspace_slug} 부서의 멤버입니다. "
+            "그쪽 멤버십을 먼저 제거하세요."
+        )
+    member.workspace_slug = new_workspace_slug
+    db.commit()
+    db.refresh(member)
+    return member
+
+
 def remove_member(db: Session, member: WorkspaceMember) -> None:
     db.delete(member)
     db.commit()

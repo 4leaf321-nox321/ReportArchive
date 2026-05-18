@@ -45,5 +45,18 @@ class AddMemberRequest(BaseModel):
     role: Role
 
 
-class UpdateRoleRequest(BaseModel):
-    role: Role
+class UpdateMemberRequest(BaseModel):
+    """Update an existing membership.
+
+    Either field can be omitted; at least one must be set. When
+    `workspace_slug` differs from the row's current workspace, the row is
+    reassigned (subject to scope validation in the route). The target
+    workspace must be the URL workspace or one of its descendants.
+    """
+
+    role: Optional[Role] = None
+    workspace_slug: Optional[str] = None
+
+
+# Kept as an alias for backwards compatibility with older imports.
+UpdateRoleRequest = UpdateMemberRequest

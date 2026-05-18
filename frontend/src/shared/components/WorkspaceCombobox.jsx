@@ -36,6 +36,8 @@ export function WorkspaceCombobox({
   emptyMessage = '일치하는 부서가 없습니다.',
   disabled = false,
   id,
+  className,
+  compact = false,
 }) {
   const [open, setOpen] = React.useState(false)
 
@@ -80,14 +82,18 @@ export function WorkspaceCombobox({
           role="combobox"
           aria-expanded={open}
           disabled={disabled}
-          className="w-full justify-between font-normal"
+          className={cn(
+            'justify-between font-normal',
+            compact ? 'h-9 text-sm' : 'w-full',
+            className,
+          )}
         >
           {selected ? (
             <span className="flex items-center gap-2 min-w-0">
               <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" />
               <span className="truncate text-left">
                 <span>{selected.name}</span>
-                {pathBySlug.get(selected.slug) !== selected.name && (
+                {!compact && pathBySlug.get(selected.slug) !== selected.name && (
                   <span className="ml-2 text-xs text-muted-foreground">
                     {pathBySlug.get(selected.slug)}
                   </span>

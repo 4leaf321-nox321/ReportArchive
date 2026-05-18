@@ -18,7 +18,7 @@ from app.modules.members.schemas import (
     AddMemberRequest,
     MemberRead,
     MemberSource,
-    UpdateRoleRequest,
+    UpdateMemberRequest,
 )
 from app.modules.users.models import User, WorkspaceMember
 from app.modules.workspaces import services as ws_services
@@ -114,16 +114,58 @@ def add_member(
 
 
 @router.patch("/{workspace_slug}/members/{member_id}")
-def update_member_role(
+def update_member(
     workspace_slug: str,
     member_id: int,
-    payload: UpdateRoleRequest,
+    payload: UpdateMemberRequest,
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(require_admin),
 ):
+    """Change a membership's role and/or its workspace assignment.
+
+    Reassigning to a different workspace is only allowed when the target
+    is the URL workspace itself or one of its descendants — never an
+    ancestor or unrelated tree (no upward / lateral privilege escalation).
+    """
+    if payload.role is None and payload.workspace_slug is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "변경할 항목이 없습니다 (role 또는 workspace_slug)."
+        )
+
     _resolve_target_workspace(db, workspace_slug)
     member = _resolve_member_in_scope(db, workspace_slug, member_id)
-    services.update_role(db, member, payload.role)
+    accessible = set(ws_services.get_descendants_inclusive(db, workspace_slug))
+
+    if payload.workspace_slug is not None and payload.workspace_slug != member.workspace_slug:
+        if payload.workspace_slug not in accessible:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "이 부서 또는 하위 부서로만 이동할 수 있습니다.",
+            )
+        target_ws = db.get(Workspace, payload.workspace_slug)
+        if not target_ws:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"부서를 찾을 수 없습니다: {payload.workspace_slug}",
+            )
+        if target_ws.virtual:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "가상 부서로는 멤버를 이동할 수 없습니다.",
+            )
+        if member.user_id == actor.user.id:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "본인의 소속 부서는 직접 변경할 수 없습니다 (다른 관리자에게 요청하세요).",
+            )
+        try:
+            services.move_member(db, member, payload.workspace_slug)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+    if payload.role is not None and member.role != payload.role:
+        services.update_role(db, member, payload.role)
+
     return success_response(data=_to_read(db, member, workspace_slug))
 
 

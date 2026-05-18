@@ -19,13 +19,14 @@ import { Skeleton } from '@/shared/components/ui/skeleton'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
+import { WorkspaceCombobox } from '@/shared/components/WorkspaceCombobox'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import {
   listMembers,
   addMember,
-  updateMemberRole,
+  updateMember,
   removeMember,
 } from '@/shared/api/members'
 import { adminSetUserPassword } from '@/shared/api/me'
@@ -41,7 +42,7 @@ const ROLE_VARIANT = { admin: 'default', manager: 'secondary', user: 'outline' }
 
 export default function MembersPage() {
   const { me } = useAuth()
-  const { workspace, slug, getPath } = useWorkspace()
+  const { workspace, slug, getPath, getDescendantsInclusive, all } = useWorkspace()
   const [addOpen, setAddOpen] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState(null)
   const [resetPwdMember, setResetPwdMember] = useState(null)
@@ -52,6 +53,12 @@ export default function MembersPage() {
   )
 
   const isAdmin = me?.role === 'admin'
+
+  // Workspaces an admin in `slug` is allowed to assign members into:
+  // self + every non-virtual descendant of the current workspace.
+  const assignableWorkspaces = (slug ? getDescendantsInclusive(slug) : [])
+    .map((s) => all.find((w) => w.slug === s))
+    .filter((w) => w && !w.virtual)
 
   if (!workspace) return null
 
@@ -91,11 +98,21 @@ export default function MembersPage() {
 
   async function handleChangeRole(memberId, newRole) {
     try {
-      await updateMemberRole(slug, memberId, { role: newRole })
+      await updateMember(slug, memberId, { role: newRole })
       toast.success('역할이 변경되었습니다.')
       reload()
     } catch (err) {
       toast.error(err.message || '역할 변경 실패')
+    }
+  }
+
+  async function handleChangeWorkspace(memberId, targetSlug) {
+    try {
+      await updateMember(slug, memberId, { targetWorkspaceSlug: targetSlug })
+      toast.success('소속 부서가 변경되었습니다.')
+      reload()
+    } catch (err) {
+      toast.error(err.message || '부서 변경 실패')
     }
   }
 
@@ -109,15 +126,20 @@ export default function MembersPage() {
     }
   }
 
-  const direct = (members ?? []).filter((m) => m.source === 'direct')
+  // Merge "direct on this workspace" + "direct on a descendant" into one
+  // editable roster — the distinction wasn't useful in practice.
+  const inScope = (members ?? []).filter(
+    (m) => m.source === 'direct' || m.source === 'descendant',
+  )
   const inherited = (members ?? []).filter((m) => m.source === 'inherited')
-  const descendants = (members ?? []).filter((m) => m.source === 'descendant')
 
   return (
     <div className="p-6 space-y-6">
       <PageHeader
         title="멤버"
-        description={`${workspace.name} — 직접 ${direct.length}명, 상속 ${inherited.length}명, 하위 부서 ${descendants.length}명`}
+        description={`${workspace.name} 및 하위 부서 — ${inScope.length}명${
+          inherited.length ? ` (상위 상속 ${inherited.length}명)` : ''
+        }`}
         breadcrumbs={breadcrumb}
         actions={
           <Button onClick={() => setAddOpen(true)}>
@@ -136,21 +158,23 @@ export default function MembersPage() {
           <Card>
             <CardContent className="pt-6">
               <SectionHeading
-                title="이 부서의 직접 멤버"
-                hint={`${workspace.name}에 직접 등록된 사용자`}
+                title="멤버 명단"
+                hint={`${workspace.name} 자체 + 모든 하위 부서의 멤버. 부서·역할 드롭다운으로 즉시 변경.`}
               />
-              {direct.length === 0 ? (
+              {inScope.length === 0 ? (
                 <p className="text-sm text-muted-foreground py-4">
-                  이 부서에 직접 등록된 멤버가 없습니다.
+                  이 부서와 하위 부서에 등록된 멤버가 없습니다.
                 </p>
               ) : (
                 <ul className="divide-y">
-                  {direct.map((m) => (
+                  {inScope.map((m) => (
                     <MemberRow
                       key={m.id}
                       member={m}
                       isSelf={me.user.id === m.user_id}
+                      assignableWorkspaces={assignableWorkspaces}
                       onChangeRole={(role) => handleChangeRole(m.id, role)}
+                      onChangeWorkspace={(ws) => handleChangeWorkspace(m.id, ws)}
                       onRemove={() => setConfirmRemove(m)}
                       onResetPassword={() => setResetPwdMember(m)}
                     />
@@ -165,35 +189,11 @@ export default function MembersPage() {
               <CardContent className="pt-6">
                 <SectionHeading
                   title="상위 부서에서 상속됨"
-                  hint="상위 부서에서 관리됨 — 여기서는 수정 불가"
+                  hint="상위 부서에서 관리됨 — 여기서는 수정 불가. 변경하려면 해당 상위 부서로 이동."
                 />
                 <ul className="divide-y">
                   {inherited.map((m) => (
                     <MemberRow key={m.id} member={m} readonly />
-                  ))}
-                </ul>
-              </CardContent>
-            </Card>
-          )}
-
-          {descendants.length > 0 && (
-            <Card>
-              <CardContent className="pt-6">
-                <SectionHeading
-                  title="하위 부서 멤버"
-                  hint="산하 팀에 직접 등록된 사용자 — 관리자 권한이 트리로 상속되어 여기서도 수정 가능"
-                />
-                <ul className="divide-y">
-                  {descendants.map((m) => (
-                    <MemberRow
-                      key={m.id}
-                      member={m}
-                      isSelf={me.user.id === m.user_id}
-                      onChangeRole={(role) => handleChangeRole(m.id, role)}
-                      onRemove={() => setConfirmRemove(m)}
-                      onResetPassword={() => setResetPwdMember(m)}
-                      showAssignedWorkspace
-                    />
                   ))}
                 </ul>
               </CardContent>
@@ -209,8 +209,8 @@ export default function MembersPage() {
           setAddOpen(false)
           reload()
         }}
-        workspaceSlug={slug}
-        workspaceName={workspace.name}
+        defaultWorkspaceSlug={slug}
+        assignableWorkspaces={assignableWorkspaces}
       />
 
       <ConfirmDialog
@@ -249,15 +249,16 @@ function SectionHeading({ title, hint }) {
 function MemberRow({
   member,
   isSelf,
+  assignableWorkspaces = [],
   onChangeRole,
+  onChangeWorkspace,
   onRemove,
   onResetPassword,
   readonly,
-  showAssignedWorkspace,
 }) {
   return (
-    <li className="flex items-center gap-3 py-3">
-      <div className="rounded-full bg-muted h-8 w-8 flex items-center justify-center text-xs font-medium">
+    <li className="flex items-center gap-3 py-3 flex-wrap sm:flex-nowrap">
+      <div className="rounded-full bg-muted h-8 w-8 flex items-center justify-center text-xs font-medium shrink-0">
         {member.name.charAt(0)}
       </div>
       <div className="flex-1 min-w-0">
@@ -270,24 +271,29 @@ function MemberRow({
               상속: {member.source_workspace_slug}
             </Badge>
           )}
-          {showAssignedWorkspace && (
-            <Badge variant="secondary" className="text-[10px]">
-              소속: {member.source_workspace_slug}
-            </Badge>
-          )}
         </div>
-        <div className="text-xs text-muted-foreground">{member.email}</div>
+        <div className="text-xs text-muted-foreground truncate">{member.email}</div>
       </div>
 
       {readonly ? (
         <Badge variant={ROLE_VARIANT[member.role]}>{ROLE_LABEL[member.role]}</Badge>
       ) : (
         <>
+          <WorkspaceCombobox
+            workspaces={assignableWorkspaces}
+            value={member.source_workspace_slug}
+            onChange={(s) => s && s !== member.source_workspace_slug && onChangeWorkspace?.(s)}
+            disabled={isSelf || assignableWorkspaces.length <= 1}
+            compact
+            className="min-w-[160px] max-w-[220px]"
+            placeholder="부서"
+          />
           <select
             value={member.role}
             disabled={isSelf}
             onChange={(e) => onChangeRole(e.target.value)}
             className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+            title={isSelf ? '본인 역할은 변경 불가' : '역할 변경'}
           >
             {ROLES.map((r) => (
               <option key={r.value} value={r.value}>
@@ -422,16 +428,28 @@ function ResetPasswordDialog({ member, onOpenChange }) {
   )
 }
 
-function AddMemberDialog({ open, onOpenChange, onAdded, workspaceSlug, workspaceName }) {
+function AddMemberDialog({
+  open,
+  onOpenChange,
+  onAdded,
+  defaultWorkspaceSlug,
+  assignableWorkspaces = [],
+}) {
   const [email, setEmail] = useState('')
   const [role, setRole] = useState('user')
+  const [targetSlug, setTargetSlug] = useState(defaultWorkspaceSlug)
   const [submitting, setSubmitting] = useState(false)
+
+  // Reset target slug whenever the dialog (re)opens for a new viewing context.
+  useEffect(() => {
+    if (open) setTargetSlug(defaultWorkspaceSlug)
+  }, [open, defaultWorkspaceSlug])
 
   async function onSubmit(e) {
     e.preventDefault()
     setSubmitting(true)
     try {
-      await addMember(workspaceSlug, { email, role })
+      await addMember(targetSlug, { email, role })
       toast.success('멤버가 추가되었습니다.')
       setEmail('')
       setRole('user')
@@ -447,9 +465,9 @@ function AddMemberDialog({ open, onOpenChange, onAdded, workspaceSlug, workspace
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{workspaceName}에 멤버 추가</DialogTitle>
+          <DialogTitle>멤버 추가</DialogTitle>
           <DialogDescription>
-            등록된 사용자의 이메일을 입력하세요. 사용자 계정은 별도로 생성되어 있어야 합니다.
+            등록된 사용자의 이메일·소속 부서·역할을 지정. 계정 자체는 사전에 생성돼 있어야 합니다.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={onSubmit} className="space-y-4">
@@ -464,6 +482,20 @@ function AddMemberDialog({ open, onOpenChange, onAdded, workspaceSlug, workspace
               required
               autoFocus
             />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="member-workspace">소속 부서</Label>
+            <WorkspaceCombobox
+              id="member-workspace"
+              workspaces={assignableWorkspaces}
+              value={targetSlug}
+              onChange={(s) => s && setTargetSlug(s)}
+              placeholder="부서 선택"
+              searchPlaceholder="부서 검색 (이름·슬러그·경로)"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              현재 부서 또는 하위 부서 중 하나를 선택. 부서가 많으면 입력해서 검색.
+            </p>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="member-role">역할</Label>

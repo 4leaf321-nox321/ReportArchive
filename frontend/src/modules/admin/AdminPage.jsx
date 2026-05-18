@@ -724,10 +724,20 @@ function WorkspaceCreateDialog({ open, onOpenChange, workspaces, onCreated }) {
               pattern="^[a-z0-9][a-z0-9\-]*$"
               required
               className="font-mono"
+              title="영문 소문자·숫자·하이픈(-)만 사용. 첫 글자는 영문 소문자나 숫자여야 합니다. 언더스코어(_)·공백·대문자·한글은 사용할 수 없습니다."
             />
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              영문 소문자·숫자·하이픈(<code>-</code>)만. 첫 글자는 영문/숫자.
+              <br />
+              <span className="text-emerald-600">OK</span>: <code>dx</code>, <code>division-mx</code>, <code>biz2</code>
+              {' · '}
+              <span className="text-destructive">NG</span>: <code>division_mx</code>, <code>Division</code>, <code>-dx</code>, <code>사업부</code>
+              <br />
+              URL과 DB에 그대로 저장되며 <strong>생성 후 변경 불가</strong>합니다.
+            </p>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="ws-name">이름</Label>
+            <Label htmlFor="ws-name">이름 (화면 표시용)</Label>
             <Input
               id="ws-name"
               value={name}
@@ -735,6 +745,9 @@ function WorkspaceCreateDialog({ open, onOpenChange, workspaces, onCreated }) {
               placeholder="모바일팀"
               required
             />
+            <p className="text-[11px] text-muted-foreground">
+              UI에 보이는 라벨 — 한글·기호 자유. 나중에 수정 가능.
+            </p>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="ws-parent">상위 부서 (없으면 본부 = 루트)</Label>

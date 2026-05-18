@@ -685,15 +685,19 @@ export function ChartEditor({ props, content, onChange, readOnly }) {
  * last size change, so the chart only repaints once the user lets go.
  */
 function ChartCanvas({ chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle, className = '' }) {
-  // We used to debounce repaints behind a ResizeObserver gate to avoid
-  // thrashing recharts during RGL drag-resize. In practice the gate flipped
-  // the chart in/out of the DOM on every parent resize — and the block's
-  // own auto-fit measurer reports a smaller height when the chart is
-  // hidden, which shrinks the cell, which fires the observer again, which
-  // hides the chart, … ad infinitum. recharts' ResponsiveContainer already
-  // handles parent resizes on its own, so just render it directly.
+  // ResponsiveContainer needs a parent with a definite (non-`auto`) size
+  // to render anything. Using `flex-1 min-h-[…]` is brittle here because
+  // the chart can sit inside a cell whose height is itself measured from
+  // its children (auto-fit), creating a "parent depends on child, child
+  // depends on parent" loop that resolves to 0×0 — leaving recharts
+  // silently painting nothing while the surrounding chrome (caption,
+  // toolbar) still appears.
+  //
+  // Lock the canvas to a fixed 18rem height. Users who want a taller
+  // chart drag-resize the cell up; the chart fills its own block but
+  // doesn't try to stretch when the cell happens to be taller.
   return (
-    <div className={`flex-1 min-h-[16rem] w-full ${className}`}>
+    <div className={`w-full ${className}`} style={{ height: '18rem' }}>
       <ResponsiveContainer width="100%" height="100%">
         {renderChart(chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle)}
       </ResponsiveContainer>

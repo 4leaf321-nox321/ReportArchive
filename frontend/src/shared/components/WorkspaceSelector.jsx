@@ -41,20 +41,29 @@ export function WorkspaceSelector() {
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="outline" className="w-full justify-between h-auto py-2">
-          <div className="flex flex-col items-start min-w-0 text-left">
-            <div className="flex items-center gap-2 min-w-0">
+        <Button
+          variant="outline"
+          className="w-full justify-between h-auto py-2"
+          title={breadcrumb ? `${breadcrumb} / ${workspace.name}` : workspace.name}
+        >
+          {/* flex-1 + min-w-0 lets the column actually shrink inside the
+              flex button; without them the trigger expands to fit a long
+              breadcrumb and overflows the sidebar. */}
+          <div className="flex-1 min-w-0 flex flex-col items-start text-left">
+            <div className="flex items-center gap-2 w-full min-w-0">
               <span
                 className="h-2 w-2 rounded-full shrink-0"
                 style={{ backgroundColor: workspace.color }}
               />
-              <span className="truncate text-sm">{workspace.name}</span>
+              <span className="flex-1 min-w-0 truncate text-sm">{workspace.name}</span>
               {workspace.virtual && (
                 <span className="text-[10px] text-muted-foreground shrink-0">(횡단)</span>
               )}
             </div>
             {breadcrumb && (
-              <span className="truncate text-[11px] text-muted-foreground pl-4">{breadcrumb}</span>
+              <span className="block w-full truncate text-[11px] text-muted-foreground pl-4">
+                {breadcrumb}
+              </span>
             )}
           </div>
           <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />

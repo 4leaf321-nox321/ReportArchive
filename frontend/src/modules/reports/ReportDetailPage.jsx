@@ -59,7 +59,7 @@ import { toast } from 'sonner'
 export default function ReportDetailPage() {
   const { reportId, templateId, version } = useParams()
   const navigate = useNavigate()
-  const { slug } = useWorkspace()
+  const { slug, all: workspaces } = useWorkspace()
   const isNew = Boolean(templateId)
 
   // 'paginated' = show one page at a time with prev/next controls
@@ -616,6 +616,10 @@ export default function ReportDetailPage() {
                 ownerName={existingReport.owner_name}
                 ownerEmail={existingReport.owner_email}
                 workspaceSlug={existingReport.workspace_slug}
+                workspaceName={
+                  workspaces?.find((w) => w.slug === existingReport.workspace_slug)?.name
+                  ?? existingReport.workspace_slug
+                }
                 createdAt={existingReport.created_at}
                 updatedByName={existingReport.updated_by_name}
                 updatedByEmail={existingReport.updated_by_email}
@@ -823,6 +827,7 @@ function ReportMetaLine({
   ownerName,
   ownerEmail,
   workspaceSlug,
+  workspaceName,
   createdAt,
   updatedByName,
   updatedByEmail,
@@ -832,13 +837,21 @@ function ReportMetaLine({
     ownerName && updatedByName && ownerName === updatedByName
   const createdSameAsUpdated =
     createdAt && updatedAt && Math.abs(new Date(createdAt) - new Date(updatedAt)) < 60_000
+  const wsDisplay = workspaceName ?? workspaceSlug
 
   return (
     <div className="mt-1 flex items-center gap-x-3 gap-y-1 flex-wrap text-[11px] text-muted-foreground">
       <span title={ownerEmail ? `${ownerName ?? '?'} <${ownerEmail}>` : undefined}>
         작성{' '}
         <span className="text-foreground/80">{ownerName ?? '—'}</span>
-        {workspaceSlug && <span className="text-muted-foreground/70"> · {workspaceSlug}</span>}
+        {wsDisplay && (
+          <span
+            className="text-muted-foreground/70"
+            title={workspaceSlug !== wsDisplay ? workspaceSlug : undefined}
+          >
+            {' · '}{wsDisplay}
+          </span>
+        )}
         {createdAt && <span className="text-muted-foreground/70"> · {formatMetaDate(createdAt)}</span>}
       </span>
       {!createdSameAsUpdated && updatedAt && (

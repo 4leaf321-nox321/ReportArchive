@@ -13,7 +13,7 @@ import { listTemplates } from '@/shared/api/templates'
 import { STATUS_LABEL, STATUS_VARIANT } from './constants'
 
 export default function ReportsListPage() {
-  const { slug, workspace } = useWorkspace()
+  const { slug, workspace, all: workspaces } = useWorkspace()
   const navigate = useNavigate()
   const { data: reports, loading, error, reload } = useAsync(
     () => (slug ? listReports() : Promise.resolve([])),
@@ -24,8 +24,14 @@ export default function ReportsListPage() {
     [slug]
   )
   const templateName = makeTemplateNameLookup(templates)
+  const workspaceName = makeWorkspaceNameLookup(workspaces)
 
-  const list = reports ?? []
+  // Annotate each row with the resolved 부서명 so DataTable's substring
+  // search hits the Korean name too (it only inspects the row's own keys).
+  const list = (reports ?? []).map((r) => ({
+    ...r,
+    workspace_name: workspaceName(r.workspace_slug),
+  }))
 
   const columns = [
     { key: 'title', header: '제목', sortable: true, cellClassName: 'font-medium' },
@@ -57,7 +63,14 @@ export default function ReportsListPage() {
       key: 'workspace_slug',
       header: '부서',
       sortable: true,
-      render: (r) => <span className="text-xs text-muted-foreground">{r.workspace_slug}</span>,
+      render: (r) => (
+        <span
+          className="text-xs text-muted-foreground"
+          title={r.workspace_slug}
+        >
+          {workspaceName(r.workspace_slug)}
+        </span>
+      ),
     },
     {
       key: 'status',
@@ -123,7 +136,7 @@ export default function ReportsListPage() {
         <DataTable
           columns={columns}
           data={list}
-          searchableKeys={['title', 'template_id', 'workspace_slug', 'period', 'owner_name', 'owner_email']}
+          searchableKeys={['title', 'template_id', 'workspace_slug', 'workspace_name', 'period', 'owner_name', 'owner_email']}
           searchPlaceholder="제목, 템플릿, 부서, 작성자 검색"
           onRowClick={(r) => navigate(`/w/${slug}/reports/${r.id}`)}
         />
@@ -140,6 +153,14 @@ function makeTemplateNameLookup(templates) {
     if (name) return name
     if (id.length > 16) return `${id.slice(0, 8)}…`
     return id
+  }
+}
+
+function makeWorkspaceNameLookup(workspaces) {
+  const map = new Map((workspaces ?? []).map((w) => [w.slug, w.name]))
+  return (slug) => {
+    if (!slug) return ''
+    return map.get(slug) ?? slug
   }
 }
 

@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/components/ui/card'
 import { Badge } from '@/shared/components/ui/badge'
+import { Button } from '@/shared/components/ui/button'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { ErrorState } from '@/shared/components/ErrorState'
@@ -13,26 +15,42 @@ import { cn } from '@/shared/lib/utils'
 /**
  * Dashboard for the currently-selected workspace and its descendants.
  *
- * The reports API already scopes results to (workspace + descendants), so
- * all aggregation here is pure client-side counting over that list. A
- * date-range filter and a week/month bucket toggle drive the trend chart;
- * everything else (per-workspace, per-template counts) reflects the same
- * filtered set so the panels stay consistent.
+ * Two period modes:
+ *   - Point  (kind='week'|'month') — inspect one specific ISO week or
+ *     calendar month, navigable with ←/→ arrows. anchor is a Date inside
+ *     the selected unit.
+ *   - Range  (kind='last-N-…'|'all') — sliding window ending at now.
+ *
+ * The trend chart only shows when the active range spans multiple buckets;
+ * the workspace×template stacked-bar panel is the main comparison view
+ * for any single-period (week/month) inspection.
  */
 const PERIOD_OPTIONS = [
-  { value: 'this-week', label: '이번 주', defaultUnit: 'week' },
-  { value: 'this-month', label: '이번 달', defaultUnit: 'week' },
-  { value: 'last-4-weeks', label: '최근 4주', defaultUnit: 'week' },
-  { value: 'last-12-weeks', label: '최근 12주', defaultUnit: 'week' },
-  { value: 'last-6-months', label: '최근 6개월', defaultUnit: 'month' },
-  { value: 'last-12-months', label: '최근 12개월', defaultUnit: 'month' },
-  { value: 'all', label: '전체 기간', defaultUnit: 'month' },
+  { value: 'week',          label: '특정 주',     mode: 'point' },
+  { value: 'month',         label: '특정 월',     mode: 'point' },
+  { value: 'last-4-weeks',  label: '최근 4주',    mode: 'range', defaultUnit: 'week' },
+  { value: 'last-12-weeks', label: '최근 12주',   mode: 'range', defaultUnit: 'week' },
+  { value: 'last-6-months', label: '최근 6개월',  mode: 'range', defaultUnit: 'month' },
+  { value: 'last-12-months',label: '최근 12개월', mode: 'range', defaultUnit: 'month' },
+  { value: 'all',           label: '전체 기간',   mode: 'range', defaultUnit: 'month' },
+]
+
+// Fixed palette for the stacked bar — cycled by template index so colors
+// stay stable across renders. Tailwind-friendly hexes that work on both
+// light and dark backgrounds.
+const PALETTE = [
+  '#3b82f6', '#10b981', '#f59e0b', '#ef4444',
+  '#8b5cf6', '#14b8a6', '#ec4899', '#64748b',
+  '#0ea5e9', '#84cc16', '#f97316', '#a855f7',
 ]
 
 export default function DashboardPage() {
   const { workspace, slug, all: workspaces, getDescendantsInclusive } = useWorkspace()
-  const [period, setPeriod] = useState('last-12-weeks')
-  const [unit, setUnit] = useState('week')
+  const [periodKind, setPeriodKind] = useState('month')
+  const [anchor, setAnchor] = useState(() => new Date())  // for week/month modes
+  const [unit, setUnit] = useState('week')                 // for the trend chart bucket size
+
+  const periodMeta = PERIOD_OPTIONS.find((o) => o.value === periodKind) ?? PERIOD_OPTIONS[1]
 
   const { data: reports, loading, error, reload } = useAsync(
     () => (slug ? listReports() : Promise.resolve([])),
@@ -46,7 +64,10 @@ export default function DashboardPage() {
   const templateName = useMemo(() => makeTemplateNameLookup(templates), [templates])
   const workspaceName = useMemo(() => makeWorkspaceNameLookup(workspaces), [workspaces])
 
-  const range = useMemo(() => periodRange(period), [period])
+  const range = useMemo(
+    () => periodRange(periodKind, anchor),
+    [periodKind, anchor],
+  )
 
   const inRange = useMemo(() => {
     const all = reports ?? []
@@ -57,53 +78,49 @@ export default function DashboardPage() {
     })
   }, [reports, range])
 
-  // Restrict the per-workspace breakdown to direct descendants of the
-  // currently viewed workspace (incl. itself). The API already scopes to
-  // this tree but exposing the lookup explicitly lets us list zero-count
-  // sub-departments too — empty cells are signal in a dashboard.
   const scopedSlugs = useMemo(() => {
-    if (!slug) return new Set()
-    return new Set(getDescendantsInclusive(slug))
-  }, [slug, getDescendantsInclusive])
+    if (!slug) return []
+    return getDescendantsInclusive(slug).filter((s) => {
+      const w = workspaces?.find((x) => x.slug === s)
+      return w && !w.virtual
+    })
+  }, [slug, workspaces, getDescendantsInclusive])
 
-  const byWorkspace = useMemo(() => {
+  // Workspace × template cross-tab — counts[wsSlug][templateId] = N.
+  // A multi-page report contributes once per distinct template it uses.
+  const crosstab = useMemo(() => {
     const counts = new Map()
-    for (const ws of scopedSlugs) counts.set(ws, 0)
+    const templateUsage = new Map()  // for legend ordering by usage
+    for (const wsSlug of scopedSlugs) counts.set(wsSlug, new Map())
     for (const r of inRange) {
-      if (!scopedSlugs.has(r.workspace_slug)) continue
-      counts.set(r.workspace_slug, (counts.get(r.workspace_slug) ?? 0) + 1)
-    }
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-  }, [scopedSlugs, inRange])
-
-  // Template column: count distinct templates used per report (so a 5-page
-  // report that mixes weekly-dev + monthly-summary counts once for each,
-  // matching the list view's behavior).
-  const byTemplate = useMemo(() => {
-    const counts = new Map()
-    for (const r of inRange) {
-      const ids = uniqueTemplateIds(r)
-      for (const id of ids) {
-        counts.set(id, (counts.get(id) ?? 0) + 1)
+      if (!counts.has(r.workspace_slug)) continue
+      const tplIds = uniqueTemplateIds(r)
+      const inner = counts.get(r.workspace_slug)
+      for (const id of tplIds) {
+        inner.set(id, (inner.get(id) ?? 0) + 1)
+        templateUsage.set(id, (templateUsage.get(id) ?? 0) + 1)
       }
     }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1])
-  }, [inRange])
+    const orderedTemplates = [...templateUsage.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([id]) => id)
+    const colorOf = new Map(orderedTemplates.map((id, i) => [id, PALETTE[i % PALETTE.length]]))
+    return { counts, orderedTemplates, colorOf }
+  }, [inRange, scopedSlugs])
 
   const trend = useMemo(
     () => bucketizeReports(inRange, unit, range, reports ?? []),
     [inRange, unit, range, reports],
   )
 
-  // KPI strip values.
+  // KPI strip values
   const totalReports = inRange.length
   const distinctAuthors = useMemo(() => {
     const ids = new Set()
     for (const r of inRange) if (r.owner_user_id != null) ids.add(r.owner_user_id)
     return ids.size
   }, [inRange])
-  const distinctTemplates = byTemplate.length
+  const distinctTemplates = crosstab.orderedTemplates.length
 
   // ── loading / error ───────────────────────────────────────────────────
   if (loading) {
@@ -116,10 +133,7 @@ export default function DashboardPage() {
           <Skeleton className="h-24" />
         </div>
         <Skeleton className="h-56" />
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <Skeleton className="h-64" />
-          <Skeleton className="h-64" />
-        </div>
+        <Skeleton className="h-64" />
       </div>
     )
   }
@@ -129,6 +143,26 @@ export default function DashboardPage() {
         <ErrorState description={error.message} onRetry={reload} />
       </div>
     )
+  }
+
+  function changePeriod(next) {
+    setPeriodKind(next)
+    const meta = PERIOD_OPTIONS.find((o) => o.value === next)
+    if (meta?.mode === 'point') {
+      // Reset to "current week/month" when entering point mode and pick
+      // the only useful sub-resolution for a single month (weekly bars).
+      setAnchor(new Date())
+      setUnit('week')
+    } else if (meta?.defaultUnit) {
+      setUnit(meta.defaultUnit)
+    }
+  }
+  function stepAnchor(direction) {
+    if (periodMeta.mode !== 'point') return
+    const next = new Date(anchor)
+    if (periodKind === 'week') next.setDate(next.getDate() + direction * 7)
+    else next.setMonth(next.getMonth() + direction)
+    setAnchor(next)
   }
 
   return (
@@ -142,14 +176,15 @@ export default function DashboardPage() {
         }
         actions={
           <div className="flex items-center gap-2 flex-wrap">
-            <PeriodSelect value={period} onChange={(v) => {
-              setPeriod(v)
-              // Auto-pick the sensible bucket size for the chosen range so
-              // a year-range view doesn't render 52 micro-bars by default.
-              const opt = PERIOD_OPTIONS.find((o) => o.value === v)
-              if (opt?.defaultUnit) setUnit(opt.defaultUnit)
-            }} />
-            <UnitToggle value={unit} onChange={setUnit} />
+            <PeriodSelect value={periodKind} onChange={changePeriod} />
+            {periodMeta.mode === 'point' && (
+              <PointNavigator
+                label={pointLabel(periodKind, anchor)}
+                onPrev={() => stepAnchor(-1)}
+                onNext={() => stepAnchor(+1)}
+              />
+            )}
+            {periodKind !== 'week' && <UnitToggle value={unit} onChange={setUnit} />}
           </div>
         }
       />
@@ -160,66 +195,56 @@ export default function DashboardPage() {
         <KPI label="사용된 템플릿" value={distinctTemplates} />
       </div>
 
+      {trend.length > 1 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">
+              추세 · {unit === 'week' ? '주별' : '월별'}
+            </CardTitle>
+            <CardDescription>
+              {range.from
+                ? `${formatDate(range.from)} – ${formatDate(range.to)} 동안 생성된 보고서`
+                : '전체 기간 동안 생성된 보고서'}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <TrendChart buckets={trend} />
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">
-            추세 · {unit === 'week' ? '주별' : '월별'}
-          </CardTitle>
+        <CardHeader>
+          <CardTitle className="text-base">부서 × 템플릿</CardTitle>
           <CardDescription>
-            {range.from
-              ? `${formatDate(range.from)} – ${formatDate(range.to)} 동안 생성된 보고서`
-              : '전체 기간 동안 생성된 보고서'}
+            각 부서의 보고서를 사용된 템플릿별로 누적 비교
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <TrendChart buckets={trend} />
+          {totalReports === 0 ? (
+            <p className="text-sm text-muted-foreground py-3">기간 내 보고서 없음</p>
+          ) : (
+            <>
+              <Legend
+                templates={crosstab.orderedTemplates}
+                colorOf={crosstab.colorOf}
+                templateName={templateName}
+              />
+              <StackedBarChart
+                workspaceSlugs={scopedSlugs}
+                workspaceName={workspaceName}
+                crosstab={crosstab}
+                templateName={templateName}
+              />
+            </>
+          )}
         </CardContent>
       </Card>
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">하위 부서별</CardTitle>
-            <CardDescription>현재 부서 트리 내 보고서 수</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {byWorkspace.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-3">데이터 없음</p>
-            ) : (
-              byWorkspace.map(([slug, n]) => (
-                <BarRow
-                  key={slug}
-                  label={workspaceName(slug)}
-                  hint={slug}
-                  value={n}
-                  max={totalReports}
-                />
-              ))
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">템플릿별</CardTitle>
-            <CardDescription>어떤 양식이 가장 많이 쓰였나 (보고서 1건이 여러 템플릿을 쓰면 각각 카운트)</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {byTemplate.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-3">데이터 없음</p>
-            ) : (
-              byTemplate.map(([id, n]) => (
-                <BarRow key={id} label={templateName(id)} hint={id} value={n} max={totalReports} />
-              ))
-            )}
-          </CardContent>
-        </Card>
-      </div>
     </div>
   )
 }
 
-// ───────────────────────── UI subcomponents ──────────────────────────────
+// ───────────────────────── header controls ──────────────────────────────
 function PeriodSelect({ value, onChange }) {
   return (
     <select
@@ -232,6 +257,22 @@ function PeriodSelect({ value, onChange }) {
         <option key={o.value} value={o.value}>{o.label}</option>
       ))}
     </select>
+  )
+}
+
+function PointNavigator({ label, onPrev, onNext }) {
+  return (
+    <div className="inline-flex items-center gap-1 h-9 rounded-md border bg-background px-1">
+      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onPrev} aria-label="이전">
+        <ChevronLeft className="h-4 w-4" />
+      </Button>
+      <span className="text-sm font-medium min-w-[7rem] text-center tabular-nums">
+        {label}
+      </span>
+      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onNext} aria-label="다음">
+        <ChevronRight className="h-4 w-4" />
+      </Button>
+    </div>
   )
 }
 
@@ -255,6 +296,7 @@ function UnitToggle({ value, onChange }) {
   )
 }
 
+// ───────────────────────── KPI ──────────────────────────────────────────
 function KPI({ label, value }) {
   return (
     <Card>
@@ -266,32 +308,11 @@ function KPI({ label, value }) {
   )
 }
 
-function BarRow({ label, hint, value, max }) {
-  const pct = max > 0 ? Math.round((value / max) * 100) : 0
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between gap-2 text-xs">
-        <span className="truncate" title={hint ? `${label} · ${hint}` : label}>
-          {label}
-        </span>
-        <Badge variant="outline" className="shrink-0">{value}</Badge>
-      </div>
-      <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-        <div className="h-full bg-primary" style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  )
-}
-
+// ───────────────────────── Trend (vertical bars) ────────────────────────
 function TrendChart({ buckets }) {
-  if (buckets.length === 0) {
-    return <p className="text-sm text-muted-foreground py-4">표시할 구간이 없습니다.</p>
-  }
   const max = Math.max(1, ...buckets.map((b) => b.count))
   const BAR_BUDGET_PX = 120
   return (
-    // items-end so each bucket sits flush with the chart's bottom edge;
-    // bars then visually grow upward as their bucket gets taller.
     <div className="flex items-end gap-1.5 h-40">
       {buckets.map((b) => {
         const heightPx = b.count === 0 ? 2 : Math.max(4, (b.count / max) * BAR_BUDGET_PX)
@@ -305,10 +326,7 @@ function TrendChart({ buckets }) {
               <div className="text-[10px] text-foreground/70 leading-none mb-0.5">{b.count}</div>
             )}
             <div
-              className={cn(
-                'w-full rounded-t',
-                b.count > 0 ? 'bg-primary' : 'bg-muted',
-              )}
+              className={cn('w-full rounded-t', b.count > 0 ? 'bg-primary' : 'bg-muted')}
               style={{ height: `${heightPx}px` }}
             />
             <div className="mt-1 text-[10px] text-muted-foreground truncate w-full text-center">
@@ -317,6 +335,71 @@ function TrendChart({ buckets }) {
           </div>
         )
       })}
+    </div>
+  )
+}
+
+// ───────────────────────── Stacked bar (workspace × template) ───────────
+function Legend({ templates, colorOf, templateName }) {
+  if (templates.length === 0) return null
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3 text-xs">
+      {templates.map((id) => (
+        <span key={id} className="inline-flex items-center gap-1.5">
+          <span
+            className="h-2.5 w-2.5 rounded-sm shrink-0"
+            style={{ backgroundColor: colorOf.get(id) }}
+          />
+          <span className="text-foreground/80">{templateName(id)}</span>
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function StackedBarChart({ workspaceSlugs, workspaceName, crosstab, templateName }) {
+  // Per-workspace totals (used for sorting + scaling). Sort by total desc
+  // so the most-active sub-orgs surface at the top; trailing zeros stay
+  // visible so missing departments aren't silently dropped.
+  const rows = workspaceSlugs.map((ws) => {
+    const inner = crosstab.counts.get(ws) ?? new Map()
+    const total = [...inner.values()].reduce((a, b) => a + b, 0)
+    return { ws, inner, total }
+  })
+  rows.sort((a, b) => b.total - a.total || a.ws.localeCompare(b.ws))
+
+  const globalMax = Math.max(1, ...rows.map((r) => r.total))
+
+  return (
+    <div className="space-y-2">
+      {rows.map(({ ws, inner, total }) => (
+        <div key={ws} className="grid grid-cols-[10rem_1fr_2.5rem] gap-3 items-center">
+          <span
+            className="text-xs truncate"
+            title={`${workspaceName(ws)} · ${ws}`}
+          >
+            {workspaceName(ws)}
+          </span>
+          <div className="h-6 rounded bg-muted/40 overflow-hidden flex">
+            {/* Each segment is a template's slice within this workspace.
+                Widths are % of globalMax so workspace bars stay comparable
+                across the chart instead of each re-normalizing to itself. */}
+            {crosstab.orderedTemplates.map((tplId) => {
+              const n = inner.get(tplId) ?? 0
+              if (n === 0) return null
+              const widthPct = (n / globalMax) * 100
+              return (
+                <div
+                  key={tplId}
+                  style={{ width: `${widthPct}%`, backgroundColor: crosstab.colorOf.get(tplId) }}
+                  title={`${templateName(tplId)} · ${n}건`}
+                />
+              )
+            })}
+          </div>
+          <span className="text-xs tabular-nums text-right text-muted-foreground">{total}</span>
+        </div>
+      ))}
     </div>
   )
 }
@@ -338,8 +421,6 @@ function makeWorkspaceNameLookup(workspaces) {
   return (slug) => map.get(slug) ?? slug
 }
 
-/** Distinct template_ids referenced anywhere in the report (pages array
- *  takes precedence; falls back to the top-level binding for legacy rows). */
 function uniqueTemplateIds(report) {
   const out = new Set()
   const pages = Array.isArray(report.pages) ? report.pages : []
@@ -353,59 +434,43 @@ function uniqueTemplateIds(report) {
   return out
 }
 
-function periodRange(option) {
+/** Compute [from, to] for the active period. For point modes the range
+ *  is the boundaries of the selected week / month; for range modes it's
+ *  N units ending at "now". */
+function periodRange(kind, anchor) {
   const now = new Date()
   const to = endOfDay(now)
-  let from = null
-  switch (option) {
-    case 'this-week': {
-      const d = new Date(now)
-      const day = d.getDay() || 7   // make Monday=1, Sunday=7
-      d.setDate(d.getDate() - day + 1)
-      from = startOfDay(d)
-      break
+  switch (kind) {
+    case 'week': {
+      const monday = startOfIsoWeek(anchor)
+      const sunday = endOfDay(addDays(monday, 6))
+      return { from: monday, to: sunday }
     }
-    case 'this-month':
-      from = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0)
-      break
-    case 'last-4-weeks':
-      from = startOfDay(daysAgo(now, 28))
-      break
-    case 'last-12-weeks':
-      from = startOfDay(daysAgo(now, 84))
-      break
-    case 'last-6-months':
-      from = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate(), 0, 0, 0, 0)
-      break
-    case 'last-12-months':
-      from = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate(), 0, 0, 0, 0)
-      break
+    case 'month': {
+      const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1, 0, 0, 0, 0)
+      const last = endOfDay(new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0))
+      return { from: first, to: last }
+    }
+    case 'last-4-weeks':   return { from: startOfDay(daysAgo(now, 28)), to }
+    case 'last-12-weeks':  return { from: startOfDay(daysAgo(now, 84)), to }
+    case 'last-6-months':  return { from: startOfDay(monthsAgo(now, 6)), to }
+    case 'last-12-months': return { from: startOfDay(monthsAgo(now, 12)), to }
     case 'all':
-    default:
-      from = null
+    default:               return { from: null, to }
   }
-  return { from, to }
 }
 
-function daysAgo(d, n) {
-  const out = new Date(d)
-  out.setDate(out.getDate() - n)
-  return out
-}
-function startOfDay(d) {
-  const out = new Date(d)
-  out.setHours(0, 0, 0, 0)
-  return out
-}
-function endOfDay(d) {
-  const out = new Date(d)
-  out.setHours(23, 59, 59, 999)
-  return out
+function pointLabel(kind, anchor) {
+  if (kind === 'week') {
+    const monday = startOfIsoWeek(anchor)
+    return `${isoWeekKey(monday)} (${formatShortDate(monday)} – ${formatShortDate(addDays(monday, 6))})`
+  }
+  if (kind === 'month') {
+    return `${anchor.getFullYear()}년 ${anchor.getMonth() + 1}월`
+  }
+  return ''
 }
 
-/** Enumerate every week/month bucket between `from` and `to` so empty
- *  periods show as zero bars (not silently dropped). When period=all and
- *  `from` is null, walks from the earliest report's created_at instead. */
 function bucketizeReports(filtered, unit, range, allReports) {
   const from = range.from ?? earliestCreatedAt(allReports)
   if (!from) return []
@@ -434,40 +499,55 @@ function earliestCreatedAt(reports) {
   return min
 }
 
-/** Backend emits naive UTC ISO ("2026-05-18T07:28:26.264452"). JS's
- *  default `new Date()` reads that as local time, which throws all
- *  week/month bucketing off by the local UTC offset. Force-anchor to UTC. */
-function parseUtcIso(iso) {
-  if (!iso) return null
-  const s = /[Zz]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`
-  const d = new Date(s)
-  return Number.isNaN(d.getTime()) ? null : d
-}
-
 function enumerateBuckets(from, to, unit) {
   const out = []
   if (unit === 'week') {
-    const cur = new Date(from)
-    const day = cur.getDay() || 7
-    cur.setDate(cur.getDate() - day + 1)  // snap to Monday
-    cur.setHours(0, 0, 0, 0)
+    const cur = startOfIsoWeek(from)
     while (cur <= to) {
-      const key = isoWeekKey(cur)
-      out.push({ key, label: weekShortLabel(cur) })
+      out.push({ key: isoWeekKey(cur), label: `W${isoWeekKey(cur).split('-W')[1]}` })
       cur.setDate(cur.getDate() + 7)
     }
   } else {
     const cur = new Date(from.getFullYear(), from.getMonth(), 1)
     while (cur <= to) {
-      out.push({ key: monthKey(cur), label: monthShortLabel(cur) })
+      out.push({ key: monthKey(cur), label: `${cur.getMonth() + 1}월` })
       cur.setMonth(cur.getMonth() + 1)
     }
   }
   return out
 }
 
-/** ISO 8601 week key — "2026-W18". Weeks start Monday; the week is owned
- *  by the year that contains its Thursday. */
+// ── date primitives ─────────────────────────────────────────────────────
+function startOfIsoWeek(d) {
+  const out = new Date(d)
+  const day = out.getDay() || 7    // make Sunday=7
+  out.setDate(out.getDate() - day + 1)
+  out.setHours(0, 0, 0, 0)
+  return out
+}
+function addDays(d, n) {
+  const out = new Date(d)
+  out.setDate(out.getDate() + n)
+  return out
+}
+function daysAgo(d, n)  { return addDays(d, -n) }
+function monthsAgo(d, n) {
+  const out = new Date(d)
+  out.setMonth(out.getMonth() - n)
+  return out
+}
+function startOfDay(d) {
+  const out = new Date(d)
+  out.setHours(0, 0, 0, 0)
+  return out
+}
+function endOfDay(d) {
+  const out = new Date(d)
+  out.setHours(23, 59, 59, 999)
+  return out
+}
+
+/** ISO 8601 week key — "2026-W18". */
 function isoWeekKey(d) {
   const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
   const day = date.getUTCDay() || 7
@@ -476,21 +556,25 @@ function isoWeekKey(d) {
   const weekNum = Math.ceil(((date - yearStart) / 86400000 + 1) / 7)
   return `${date.getUTCFullYear()}-W${String(weekNum).padStart(2, '0')}`
 }
-
 function monthKey(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-}
-
-function weekShortLabel(monday) {
-  // e.g. "W18" — short for the chart axis; full ISO week is in the tooltip.
-  return `W${isoWeekKey(monday).split('-W')[1]}`
-}
-function monthShortLabel(firstOfMonth) {
-  return `${String(firstOfMonth.getMonth() + 1)}월`
 }
 
 function formatDate(d) {
   if (!d) return ''
   const pad = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+function formatShortDate(d) {
+  if (!d) return ''
+  return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
+/** Backend emits naive UTC ISO. Force-anchor to UTC so week/month bucketing
+ *  doesn't drift by the local TZ offset. */
+function parseUtcIso(iso) {
+  if (!iso) return null
+  const s = /[Zz]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`
+  const d = new Date(s)
+  return Number.isNaN(d.getTime()) ? null : d
 }

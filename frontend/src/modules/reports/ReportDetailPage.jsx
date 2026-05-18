@@ -14,19 +14,15 @@ import {
   Plus,
   Rows,
   Save,
-  Sparkles,
   Trash2,
   Upload,
   X,
-  PanelRightOpen,
-  PanelRightClose,
 } from 'lucide-react'
 import GridLayout, { useContainerWidth } from 'react-grid-layout'
 import { Button } from '@/shared/components/ui/button'
 import { Badge } from '@/shared/components/ui/badge'
 import { Card, CardContent } from '@/shared/components/ui/card'
 import { ScrollArea } from '@/shared/components/ui/scroll-area'
-import { Sheet, SheetContent, SheetTrigger } from '@/shared/components/ui/sheet'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { Input } from '@/shared/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog'
@@ -36,7 +32,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/shared/components/ui/dropdown-menu'
-import { AIDock } from '@/shared/components/AIDock'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
@@ -67,7 +62,6 @@ export default function ReportDetailPage() {
   const { slug } = useWorkspace()
   const isNew = Boolean(templateId)
 
-  const [aiOpen, setAiOpen] = usePersistedState('ra:ai-dock-open:v1', true)
   // 'paginated' = show one page at a time with prev/next controls
   // 'all'       = stack every page vertically (scroll through them)
   const [viewMode, setViewMode] = usePersistedState(
@@ -178,17 +172,6 @@ export default function ReportDetailPage() {
       }
     })
   }, [])
-
-  // AIDock still wants `sections` ({id, title}). Derived from the page the
-  // user is currently looking at. Computed here (before early returns) so
-  // hook order stays stable across the loading→ready transition.
-  const aiSections = useMemo(() => {
-    const pages = draft?.pages ?? []
-    if (pages.length === 0) return []
-    const idx = clamp(currentPage, 0, pages.length - 1)
-    const tpl = getCachedTemplate(pageTemplateMap, pages[idx])
-    return tpl ? extractBlocks(tpl.schema) : []
-  }, [draft?.pages, currentPage, pageTemplateMap])
 
   // Keyboard nav between pages (paginated view only). Ignored while focus
   // is in a text input so the arrow keys still move the caret as expected.
@@ -677,33 +660,6 @@ export default function ReportDetailPage() {
             onChange={handleLocalLoad}
             className="hidden"
           />
-
-          <Button
-            variant={aiOpen ? 'secondary' : 'default'}
-            size="sm"
-            onClick={() => setAiOpen((v) => !v)}
-            className="hidden lg:inline-flex"
-            aria-pressed={aiOpen}
-          >
-            {aiOpen ? (
-              <PanelRightClose className="mr-1 h-3 w-3" />
-            ) : (
-              <Sparkles className="mr-1 h-3 w-3" />
-            )}
-            AI
-          </Button>
-
-          <Sheet>
-            <SheetTrigger asChild>
-              <Button size="sm" className="lg:hidden">
-                <Sparkles className="mr-1 h-3 w-3" />
-                AI
-              </Button>
-            </SheetTrigger>
-            <SheetContent side="right" className="w-full max-w-md p-0">
-              <AIDock sections={aiSections} className="h-full" />
-            </SheetContent>
-          </Sheet>
         </div>
 
         {/* Page strip — chips that select the active page (paginated mode).
@@ -799,28 +755,6 @@ export default function ReportDetailPage() {
           />
         )}
       </div>
-
-      {aiOpen ? (
-        <aside className="hidden lg:flex w-[360px] shrink-0 border-l">
-          <AIDock sections={aiSections} className="w-full" onClose={() => setAiOpen(false)} />
-        </aside>
-      ) : (
-        <aside className="hidden lg:flex w-10 shrink-0 border-l flex-col items-center bg-card">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-10 w-10 rounded-none"
-            onClick={() => setAiOpen(true)}
-            aria-label="AI 도크 열기"
-          >
-            <PanelRightOpen className="h-4 w-4" />
-          </Button>
-          <div className="mt-2 flex flex-col items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground [writing-mode:vertical-rl] rotate-180 py-2">
-            <Sparkles className="h-3 w-3" />
-            <span>AI 도크</span>
-          </div>
-        </aside>
-      )}
 
       <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
         <DialogContent className="max-w-5xl max-h-[80vh] overflow-hidden flex flex-col">

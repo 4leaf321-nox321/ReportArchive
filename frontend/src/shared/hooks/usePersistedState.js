@@ -5,7 +5,7 @@ import * as React from 'react'
  * theme, recent searches, etc. Falls back to initial value if storage is
  * unavailable (private mode, quota) or the stored value can't be parsed.
  *
- *   const [open, setOpen] = usePersistedState('ra:ai-dock-open:v1', true)
+ *   const [mode, setMode] = usePersistedState('ra:report-view-mode:v1', 'paginated')
  */
 export function usePersistedState(key, initial) {
   const [value, setValue] = React.useState(() => {

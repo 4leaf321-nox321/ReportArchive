@@ -1,3 +1,4 @@
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
@@ -6,6 +7,7 @@ import { DataTable } from '@/shared/components/DataTable'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { Skeleton } from '@/shared/components/ui/skeleton'
+import { useAuth } from '@/shared/auth/AuthContext'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { listReports } from './api'
@@ -13,8 +15,13 @@ import { listTemplates } from '@/shared/api/templates'
 import { STATUS_LABEL, STATUS_VARIANT } from './constants'
 
 export default function ReportsListPage() {
-  const { slug, workspace, all: workspaces } = useWorkspace()
+  const { slug, workspace, all: workspaces, getAncestors, getDescendantsInclusive } = useWorkspace()
+  const { me } = useAuth()
   const navigate = useNavigate()
+  const [onlyMine, setOnlyMine] = useState(false)
+  // null = "사용 안 함". 0 = my home workspace exactly, 1 = my parent's
+  // subtree, 2 = grandparent's subtree, etc.
+  const [scopeLevel, setScopeLevel] = useState(null)
   const { data: reports, loading, error, reload } = useAsync(
     () => (slug ? listReports() : Promise.resolve([])),
     [slug]
@@ -26,12 +33,36 @@ export default function ReportsListPage() {
   const templateName = makeTemplateNameLookup(templates)
   const workspaceName = makeWorkspaceNameLookup(workspaces)
 
+  const myUserId = me?.user?.id
+  const myHomeSlug = me?.memberships?.[0]?.workspace_slug
+
+  // Ancestor chain for the user's home workspace, leaf-first:
+  //   [home, parent, grandparent, …, root]
+  // Used to label and resolve the "내 소속" scope levels.
+  const ancestorChain = useMemo(() => {
+    if (!myHomeSlug) return []
+    return [myHomeSlug, ...getAncestors(myHomeSlug).map((a) => a.slug).reverse()]
+  }, [myHomeSlug, getAncestors])
+
+  // Pre-computed set of workspace slugs to keep when 내 소속 is active.
+  // null means "no scope filter".
+  const scopedSet = useMemo(() => {
+    if (scopeLevel == null || ancestorChain.length === 0) return null
+    const idx = Math.min(scopeLevel, ancestorChain.length - 1)
+    return new Set(getDescendantsInclusive(ancestorChain[idx]))
+  }, [scopeLevel, ancestorChain, getDescendantsInclusive])
+
   // Annotate each row with the resolved 부서명 so DataTable's substring
   // search hits the Korean name too (it only inspects the row's own keys).
-  const list = (reports ?? []).map((r) => ({
-    ...r,
-    workspace_name: workspaceName(r.workspace_slug),
-  }))
+  // Filter `onlyMine` / `scopedSet` here so the visible total and the
+  // table contents stay consistent.
+  const list = (reports ?? [])
+    .filter((r) => !onlyMine || r.owner_user_id === myUserId)
+    .filter((r) => !scopedSet || scopedSet.has(r.workspace_slug))
+    .map((r) => ({
+      ...r,
+      workspace_name: workspaceName(r.workspace_slug),
+    }))
 
   const columns = [
     { key: 'title', header: '제목', sortable: true, cellClassName: 'font-medium' },
@@ -137,6 +168,16 @@ export default function ReportsListPage() {
         }
       />
 
+      <FilterBar
+        onlyMine={onlyMine}
+        onToggleMine={() => setOnlyMine((v) => !v)}
+        ancestorChain={ancestorChain}
+        scopeLevel={scopeLevel}
+        onScopeLevel={setScopeLevel}
+        workspaceName={workspaceName}
+        myUserId={myUserId}
+      />
+
       {error ? (
         <ErrorState description={error.message} onRetry={reload} />
       ) : loading ? (
@@ -149,6 +190,60 @@ export default function ReportsListPage() {
           searchPlaceholder="제목, 템플릿, 부서, 작성자 검색"
           onRowClick={(r) => navigate(`/w/${slug}/reports/${r.id}`)}
         />
+      )}
+    </div>
+  )
+}
+
+/** Toolbar with "내 보고서만" toggle + "내 소속" scope dropdown.
+ *  Hidden when the user has no membership (e.g. admin with empty
+ *  memberships array) — there's nothing meaningful to scope against. */
+function FilterBar({
+  onlyMine,
+  onToggleMine,
+  ancestorChain,
+  scopeLevel,
+  onScopeLevel,
+  workspaceName,
+  myUserId,
+}) {
+  const hasMembership = ancestorChain.length > 0
+  const canFilterByOwner = myUserId != null
+  if (!canFilterByOwner && !hasMembership) return null
+
+  return (
+    <div className="flex items-center gap-3 flex-wrap text-xs">
+      {canFilterByOwner && (
+        <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={onlyMine}
+            onChange={onToggleMine}
+            className="h-3.5 w-3.5"
+          />
+          <span>내 보고서만</span>
+        </label>
+      )}
+      {hasMembership && (
+        <label className="inline-flex items-center gap-1.5">
+          <span className="text-muted-foreground">내 소속:</span>
+          <select
+            value={scopeLevel ?? ''}
+            onChange={(e) =>
+              onScopeLevel(e.target.value === '' ? null : Number(e.target.value))
+            }
+            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+            aria-label="내 소속 범위"
+          >
+            <option value="">사용 안 함</option>
+            {ancestorChain.map((slug, i) => (
+              <option key={slug} value={i}>
+                {workspaceName(slug)}
+                {i === 0 ? ' (현재 소속)' : ' (산하 전체)'}
+              </option>
+            ))}
+          </select>
+        </label>
       )}
     </div>
   )

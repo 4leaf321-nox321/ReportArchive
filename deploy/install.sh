@@ -47,4 +47,4 @@ systemctl --no-pager --lines=5 status reportarchive || true
 echo
 echo "[OK] Install complete."
 echo "  Logs:    journalctl -u reportarchive -f"
-echo "  Health:  curl http://localhost:5174/api/health"
+echo "  Health:  curl http://localhost:3000/api/health"

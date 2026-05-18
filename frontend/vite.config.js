@@ -5,7 +5,7 @@ import path from 'node:path'
 /**
  * Vite config.
  *
- * - In dev, /api is proxied to the FastAPI backend (default :5174) so the
+ * - In dev, /api is proxied to the FastAPI backend (default :3000) so the
  *   frontend can call relative URLs like fetch('/api/reports') without CORS.
  * - In prod, the build output goes to dist/. The frontend can either be
  *   hosted as static assets (e.g. behind nginx) or copied to the backend
@@ -15,7 +15,7 @@ import path from 'node:path'
  */
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const apiTarget = env.VITE_API_PROXY_TARGET || 'http://localhost:5174'
+  const apiTarget = env.VITE_API_PROXY_TARGET || 'http://localhost:3000'
 
   return {
     plugins: [react()],

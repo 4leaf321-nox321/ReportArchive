@@ -13,8 +13,8 @@
 # --- Backend upstream ---------------------------------------------------------
 # Change the address to wherever uvicorn is listening.
 upstream report_automation_backend {
-    server 127.0.0.1:5174;
-    # Split-host example: server backend.internal:5174;
+    server 127.0.0.1:3000;
+    # Split-host example: server backend.internal:3000;
     keepalive 32;
 }
 

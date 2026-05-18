@@ -45,7 +45,7 @@ source venv/bin/activate
 python run.py
 ```
 
-The dev server listens on `http://0.0.0.0:5174` and exposes:
+The dev server listens on `http://0.0.0.0:3000` and exposes:
 
 - `GET  /api/health` — health probe
 - `GET  /api/docs`   — Swagger UI

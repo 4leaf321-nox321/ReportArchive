@@ -89,7 +89,7 @@ sudo ./install.sh
 검증:
 ```bash
 sudo systemctl status reportarchive
-curl http://localhost:5174/api/health
+curl http://localhost:3000/api/health
 sudo journalctl -u reportarchive -f
 ```
 

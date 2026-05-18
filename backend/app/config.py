@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     app_env: str = Field(default="development")
     app_name: str = Field(default="ReportArchive")
     app_host: str = Field(default="0.0.0.0")
-    app_port: int = Field(default=5174)
+    app_port: int = Field(default=3000)
 
     # --- Security ---
     secret_key: str = Field(default="dev-secret-key-change-me")
@@ -49,7 +49,7 @@ class Settings(BaseSettings):
 
     # --- CORS ---
     cors_origins: str = Field(
-        default="http://localhost:3000,http://localhost:5173,http://localhost:5174"
+        default="http://localhost:3000,http://localhost:5173"
     )
 
     # --- Frontend serving (combined deployment) ---

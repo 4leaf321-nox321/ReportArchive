@@ -45,7 +45,7 @@ The API client (`src/shared/api/client.js`) reads `VITE_API_BASE_URL`:
 
 | Scenario | `VITE_API_BASE_URL` | How requests get to the backend |
 | --- | --- | --- |
-| Dev | empty | Vite proxies `/api/*` to `VITE_API_PROXY_TARGET` (default `http://localhost:5174`). |
+| Dev | empty | Vite proxies `/api/*` to `VITE_API_PROXY_TARGET` (default `http://localhost:3000`). |
 | Combined deploy | empty | Backend serves the build, so `/api/*` is on the same origin. |
 | Independent deploy | `https://api.example.com` | Frontend calls the backend host directly (CORS must be open on the backend). |
 

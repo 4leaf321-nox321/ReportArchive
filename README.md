@@ -111,9 +111,9 @@ git commit -am "schema: add author column"
 이 후 운영 배포 명령어는 동일하게 `python scripts/setup_and_upgrade_db.py`
 한 줄입니다.
 
-- API : http://localhost:5174/api
-- 헬스: http://localhost:5174/api/health
-- 문서: http://localhost:5174/api/docs
+- API : http://localhost:3000/api
+- 헬스: http://localhost:3000/api/health
+- 문서: http://localhost:3000/api/docs
 
 ### 3) 프론트엔드
 
@@ -123,7 +123,7 @@ npm install
 npm run dev          # http://localhost:5173
 ```
 
-`/api/*` 호출은 Vite가 백엔드(`:5174`)로 프록시한다.
+`/api/*` 호출은 Vite가 백엔드(`:3000`)로 프록시한다.
 
 ## 배포 시나리오
 

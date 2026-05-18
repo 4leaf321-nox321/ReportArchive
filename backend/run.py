@@ -25,7 +25,7 @@ def main() -> None:
 
     env = os.environ.get("APP_ENV", "development")
     host = os.environ.get("APP_HOST", "0.0.0.0")
-    port = int(os.environ.get("APP_PORT", "5174"))
+    port = int(os.environ.get("APP_PORT", "3000"))
     workers = int(os.environ.get("UVICORN_WORKERS", "4"))
 
     banner = f"""

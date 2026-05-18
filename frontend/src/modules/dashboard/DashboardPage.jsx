@@ -92,13 +92,45 @@ export default function DashboardPage() {
     })
   }, [reports, range])
 
+  // The workspace × template panel only shows the current workspace plus
+  // its direct children — going one more level deep tends to drown the
+  // chart in single-team rows. Reports filed under grandchildren get
+  // rolled up to whichever direct child owns them so no data is lost.
   const scopedSlugs = useMemo(() => {
     if (!slug) return []
-    return getDescendantsInclusive(slug).filter((s) => {
-      const w = workspaces?.find((x) => x.slug === s)
-      return w && !w.virtual
-    })
-  }, [slug, workspaces, getDescendantsInclusive])
+    const wsMap = new Map((workspaces ?? []).map((w) => [w.slug, w]))
+    const self = wsMap.get(slug)
+    if (!self || self.virtual) return []
+    const out = [slug]
+    for (const w of workspaces ?? []) {
+      if (w.parent_slug === slug && !w.virtual) out.push(w.slug)
+    }
+    return out
+  }, [slug, workspaces])
+
+  // Map every visible report's workspace to a scoped row (self or direct
+  // child). Walks up parent_slug until it lands inside scopedSlugs, so a
+  // 3-deep report still gets attributed to the right level-1 bucket.
+  const rollupForReport = useMemo(() => {
+    const wsMap = new Map((workspaces ?? []).map((w) => [w.slug, w]))
+    const scopedSet = new Set(scopedSlugs)
+    const cache = new Map()
+    return (reportWsSlug) => {
+      if (cache.has(reportWsSlug)) return cache.get(reportWsSlug)
+      let cur = reportWsSlug
+      const seen = new Set()
+      while (cur && !seen.has(cur)) {
+        if (scopedSet.has(cur)) {
+          cache.set(reportWsSlug, cur)
+          return cur
+        }
+        seen.add(cur)
+        cur = wsMap.get(cur)?.parent_slug ?? null
+      }
+      cache.set(reportWsSlug, null)
+      return null
+    }
+  }, [workspaces, scopedSlugs])
 
   // Workspace × template cross-tab — counts[wsSlug][templateId] = N.
   // A multi-page report contributes once per distinct template it uses.
@@ -107,9 +139,10 @@ export default function DashboardPage() {
     const templateUsage = new Map()  // for legend ordering by usage
     for (const wsSlug of scopedSlugs) counts.set(wsSlug, new Map())
     for (const r of inRange) {
-      if (!counts.has(r.workspace_slug)) continue
+      const bucket = rollupForReport(r.workspace_slug)
+      if (!bucket) continue
       const tplIds = uniqueTemplateIds(r)
-      const inner = counts.get(r.workspace_slug)
+      const inner = counts.get(bucket)
       for (const id of tplIds) {
         inner.set(id, (inner.get(id) ?? 0) + 1)
         templateUsage.set(id, (templateUsage.get(id) ?? 0) + 1)
@@ -247,7 +280,7 @@ export default function DashboardPage() {
         <CardHeader>
           <CardTitle className="text-base">부서 × 템플릿</CardTitle>
           <CardDescription>
-            각 부서의 보고서를 사용된 템플릿별로 누적 비교
+            현재 부서 + 한 단계 아래 부서. 더 깊은 하위 부서의 보고서는 그 직속 자식 부서로 합산
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -413,15 +446,21 @@ function Legend({ templates, colorOf, templateName }) {
 }
 
 function StackedBarChart({ workspaceSlugs, workspaceName, crosstab, templateName }) {
-  // Per-workspace totals (used for sorting + scaling). Sort by total desc
-  // so the most-active sub-orgs surface at the top; trailing zeros stay
-  // visible so missing departments aren't silently dropped.
+  // workspaceSlugs[0] is always the currently-selected workspace (self).
+  // Keep it pinned at the top so it stays an obvious reference row; the
+  // rest are direct children sorted by total desc so the busiest sub-org
+  // surfaces first, with empty rows kept visible to make absences obvious.
+  const selfSlug = workspaceSlugs[0]
   const rows = workspaceSlugs.map((ws) => {
     const inner = crosstab.counts.get(ws) ?? new Map()
     const total = [...inner.values()].reduce((a, b) => a + b, 0)
     return { ws, inner, total }
   })
-  rows.sort((a, b) => b.total - a.total || a.ws.localeCompare(b.ws))
+  rows.sort((a, b) => {
+    if (a.ws === selfSlug) return -1
+    if (b.ws === selfSlug) return 1
+    return b.total - a.total || a.ws.localeCompare(b.ws)
+  })
 
   const globalMax = Math.max(1, ...rows.map((r) => r.total))
 

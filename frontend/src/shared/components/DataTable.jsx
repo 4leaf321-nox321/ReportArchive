@@ -27,6 +27,10 @@ export function DataTable({
   onRowClick,
   emptyState,
   className,
+  // Optional inline slot rendered between the search input and the count
+  // pill so per-page filters can share the toolbar row instead of stacking
+  // on top of it.
+  toolbarExtras,
 }) {
   const [query, setQuery] = React.useState('')
   const [sort, setSort] = React.useState({ key: null, dir: 'asc' })
@@ -73,8 +77,8 @@ export function DataTable({
 
   return (
     <div className={cn('space-y-3', className)}>
-      <div className="flex items-center gap-2">
-        <div className="relative flex-1 max-w-sm">
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative flex-1 max-w-sm min-w-[200px]">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
             value={query}
@@ -86,6 +90,7 @@ export function DataTable({
             className="pl-8"
           />
         </div>
+        {toolbarExtras}
         <span className="ml-auto text-xs text-muted-foreground">{sorted.length}건</span>
       </div>
 

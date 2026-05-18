@@ -168,16 +168,6 @@ export default function ReportsListPage() {
         }
       />
 
-      <FilterBar
-        onlyMine={onlyMine}
-        onToggleMine={() => setOnlyMine((v) => !v)}
-        ancestorChain={ancestorChain}
-        scopeLevel={scopeLevel}
-        onScopeLevel={setScopeLevel}
-        workspaceName={workspaceName}
-        myUserId={myUserId}
-      />
-
       {error ? (
         <ErrorState description={error.message} onRetry={reload} />
       ) : loading ? (
@@ -189,6 +179,17 @@ export default function ReportsListPage() {
           searchableKeys={['title', 'template_id', 'workspace_slug', 'workspace_name', 'owner_name', 'owner_email']}
           searchPlaceholder="제목, 템플릿, 부서, 작성자 검색"
           onRowClick={(r) => navigate(`/w/${slug}/reports/${r.id}`)}
+          toolbarExtras={
+            <FilterBar
+              onlyMine={onlyMine}
+              onToggleMine={() => setOnlyMine((v) => !v)}
+              ancestorChain={ancestorChain}
+              scopeLevel={scopeLevel}
+              onScopeLevel={setScopeLevel}
+              workspaceName={workspaceName}
+              myUserId={myUserId}
+            />
+          }
         />
       )}
     </div>

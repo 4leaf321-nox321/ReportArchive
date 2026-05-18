@@ -25,6 +25,53 @@ _KV_FIELD_TYPES = ("text", "number", "integer", "date", "select")
 _CAPTION_FIELD = {"type": "string", "maxLength": 200}
 
 
+# Reusable text-style sub-schema. Mixed into every text-bearing widget's
+# props_schema so designers can override the visual treatment per block.
+# Every field is optional — missing values inherit from the parent CSS so
+# the rendered output is unchanged for templates that pre-date this field.
+# Applies to body / value text only; structural marks (RichText's depth
+# prefix □/–/·, depth indent, relation chips) deliberately stay fixed so
+# the outline conventions remain consistent across reports.
+_TEXT_STYLE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "size": {
+            "type": "string",
+            "enum": ["xs", "sm", "base", "lg", "xl", "2xl"],
+        },
+        "font_family": {
+            "type": "string",
+            "enum": ["sans", "serif", "mono"],
+        },
+        "align": {
+            "type": "string",
+            "enum": ["left", "center", "right", "justify"],
+        },
+        "weight": {
+            "type": "string",
+            "enum": ["normal", "medium", "semibold", "bold"],
+        },
+    },
+    "additionalProperties": False,
+}
+
+
+# RichText only — per-depth overlay on top of `text_style`. Keys are
+# the depth string ("0".."2"); depths 3+ inherit "2" (or the base
+# `text_style` if "2" is absent). Each value is a sparse text-style
+# object with the same shape as _TEXT_STYLE_SCHEMA, so missing fields
+# fall through to the base style.
+_DEPTH_STYLES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "0": _TEXT_STYLE_SCHEMA,
+        "1": _TEXT_STYLE_SCHEMA,
+        "2": _TEXT_STYLE_SCHEMA,
+    },
+    "additionalProperties": False,
+}
+
+
 def _kv_field_value_schema(item: dict) -> dict:
     """Maps a key_value/table item declaration to a JSON Schema value node."""
     t = item["type"]
@@ -83,6 +130,7 @@ HEADING: WidgetDescriptor = {
         "properties": {
             "level": {"type": "integer", "enum": [1, 2, 3]},
             "default_text": {"type": "string", "maxLength": 200},
+            "text_style": _TEXT_STYLE_SCHEMA,
         },
         "required": ["level"],
         "additionalProperties": False,
@@ -108,7 +156,13 @@ def _rich_text_content(props: dict) -> dict:
         md_schema["minLength"] = props["min_length"]
     if "max_length" in props:
         md_schema["maxLength"] = props["max_length"]
-    # New structured form: an outline of items {depth, text, relation?}.
+    # New structured form: an outline of items {depth, text, html?, relation?}.
+    # `text` is the plain-text mirror of `html` (used for AI prompts and
+    # search). `html` is the canonical rich-text representation written by
+    # the TipTap editor — wraps text in a single <p> with optional
+    # bold/italic/underline marks and `<span style="...">` for color /
+    # font-size. Sanitized on render via DOMPurify; the maxLength here
+    # bounds the worst-case markup overhead vs. the 2000-char text.
     # `relation` is a free-form slug validated only for shape — the actual
     # vocabulary lives in the widget_relations table so admins can add or
     # rename entries without a schema migration.
@@ -117,6 +171,7 @@ def _rich_text_content(props: dict) -> dict:
         "properties": {
             "depth": {"type": "integer", "minimum": 0, "maximum": 5},
             "text": {"type": "string", "maxLength": 2000},
+            "html": {"type": "string", "maxLength": 8000},
             "relation": {
                 "type": "string",
                 "minLength": 1,
@@ -161,6 +216,8 @@ RICH_TEXT: WidgetDescriptor = {
             # scroll) and the rendered grid item's row height is content-
             # driven instead of clamped to layout.row_span.
             "expand_with_content": {"type": "boolean"},
+            "text_style": _TEXT_STYLE_SCHEMA,
+            "depth_styles": _DEPTH_STYLES_SCHEMA,
         },
         "required": ["label"],
         "additionalProperties": False,
@@ -201,6 +258,7 @@ KEY_VALUE: WidgetDescriptor = {
                 "minItems": 1,
                 "items": _FIELD_ITEM_PROPS_SCHEMA,
             },
+            "text_style": _TEXT_STYLE_SCHEMA,
         },
         "required": ["items"],
         "additionalProperties": False,
@@ -248,6 +306,7 @@ BULLETED_LIST: WidgetDescriptor = {
             "placeholder": {"type": "string", "maxLength": 200},
             "min_items": {"type": "integer", "minimum": 0},
             "max_items": {"type": "integer", "minimum": 1},
+            "text_style": _TEXT_STYLE_SCHEMA,
         },
         "required": ["label"],
         "additionalProperties": False,
@@ -310,6 +369,7 @@ TABLE: WidgetDescriptor = {
             },
             "min_rows": {"type": "integer", "minimum": 0},
             "max_rows": {"type": "integer", "minimum": 1},
+            "text_style": _TEXT_STYLE_SCHEMA,
         },
         "required": ["label", "columns"],
         "additionalProperties": False,
@@ -358,6 +418,7 @@ KPI_CARD: WidgetDescriptor = {
             "target": {"type": "number"},
             "allow_delta": {"type": "boolean"},
             "allow_note": {"type": "boolean"},
+            "text_style": _TEXT_STYLE_SCHEMA,
         },
         "required": ["label"],
         "additionalProperties": False,

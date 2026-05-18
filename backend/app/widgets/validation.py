@@ -32,6 +32,10 @@ _LAYOUT_PROPS_SCHEMA = {
         "row": {"type": "integer", "minimum": 1},
         "col_span": {"type": "integer", "minimum": 1, "maximum": GRID_COLS},
         "row_span": {"type": "integer", "minimum": 1},
+        # When true, the renderer auto-fits row_span to the widget's natural
+        # content height (both edit and view mode). row_span still gets
+        # persisted so server-side renders / list views stay deterministic.
+        "auto_fit": {"type": "boolean"},
     },
     "required": ["row", "col_span"],
     "additionalProperties": False,

@@ -69,3 +69,18 @@ def test_legacy_template_rejected():
     legacy = {"properties": {"a": {"type": "string"}}}
     with pytest.raises(ValueError, match="not widget-v1"):
         validate_layout_overrides(legacy, {"a": {"row": 1, "col_span": 12, "row_span": 1}})
+
+
+def test_auto_fit_flag_accepted():
+    """auto_fit toggles content-driven row_span — must be allowed alongside the
+    persisted row_span baseline so non-JS renderers stay deterministic."""
+    overrides = {
+        "c": {"row": 2, "col_span": 12, "row_span": 4, "auto_fit": True},
+    }
+    validate_layout_overrides(_template(), overrides)
+
+
+def test_auto_fit_must_be_boolean():
+    overrides = {"c": {"row": 2, "col_span": 12, "row_span": 4, "auto_fit": "yes"}}
+    with pytest.raises(ValueError, match="auto_fit"):
+        validate_layout_overrides(_template(), overrides)

@@ -170,20 +170,21 @@ function KvFieldInput({ item, value, onChange }) {
  *  scalar input below so existing single-value templates stay unchanged. */
 function MultiValueInput({ item, value, onChange }) {
   const list = Array.isArray(value) ? value : []
+  // The user's editing state owns the array: empty entries are kept
+  // verbatim until the user removes them with the ✕ button. (Earlier
+  // versions auto-pruned empties on every change, which made "값 추가"
+  // appear to do nothing — the new empty entry got filtered away before
+  // the next render.) The whole array is only dropped from the parent's
+  // content when the LAST entry is removed.
   function setAt(idx, v) {
-    const next = list.map((x, i) => (i === idx ? v : x))
-    commit(next)
+    onChange(list.map((x, i) => (i === idx ? v : x)))
   }
   function removeAt(idx) {
-    commit(list.filter((_, i) => i !== idx))
+    const next = list.filter((_, i) => i !== idx)
+    onChange(next.length === 0 ? undefined : next)
   }
   function add() {
-    commit([...list, item.type === 'number' || item.type === 'integer' ? undefined : ''])
-  }
-  function commit(next) {
-    const cleaned = next.filter((v) => v !== '' && v !== undefined && v !== null)
-    if (cleaned.length === 0) onChange(undefined)
-    else onChange(next)
+    onChange([...list, ''])
   }
   if (list.length === 0) {
     return (

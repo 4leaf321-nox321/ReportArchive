@@ -1,4 +1,5 @@
-import { Plus, X } from 'lucide-react'
+import { useEffect, useRef } from 'react'
+import { X } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
@@ -165,83 +166,121 @@ function KvFieldInput({ item, value, onChange }) {
 }
 
 /** Repeatable input list for `multi=true` items — defect types, reliability
- *  tests, etc. Stores the value as an array; one row per entry with ✕ and a
- *  "추가" button to append. Skipping the multi=true flag falls back to the
- *  scalar input below so existing single-value templates stay unchanged. */
+ *  tests, etc. Always renders at least one input row (so the user can start
+ *  typing without clicking anything first). Enter on the last row appends a
+ *  fresh empty row and auto-focuses it; Enter on an earlier row just moves
+ *  focus to the next one (browser-style Tab). ✕ removes a real entry; if
+ *  the last real entry goes away the array is dropped from content so the
+ *  read-only render filters the field out cleanly. */
 function MultiValueInput({ item, value, onChange }) {
   const list = Array.isArray(value) ? value : []
-  // The user's editing state owns the array: empty entries are kept
-  // verbatim until the user removes them with the ✕ button. (Earlier
-  // versions auto-pruned empties on every change, which made "값 추가"
-  // appear to do nothing — the new empty entry got filtered away before
-  // the next render.) The whole array is only dropped from the parent's
-  // content when the LAST entry is removed.
+  // We always render `max(1, list.length)` rows — when list is empty,
+  // the first row is a "virtual" entry that becomes index 0 the moment
+  // the user types into it (setAt pads the array up to that index).
+  const rowCount = Math.max(1, list.length)
+  const inputRefs = useRef([])
+  const pendingFocusIdx = useRef(null)
+
+  useEffect(() => {
+    if (pendingFocusIdx.current != null) {
+      const idx = pendingFocusIdx.current
+      pendingFocusIdx.current = null
+      const el = inputRefs.current[idx]
+      if (el && typeof el.focus === 'function') el.focus()
+    }
+  })
+
   function setAt(idx, v) {
-    onChange(list.map((x, i) => (i === idx ? v : x)))
+    const next = list.slice()
+    // Pad with empties so the virtual trailing row can receive a value
+    // (e.g. typing into the only row when list is []).
+    while (next.length <= idx) next.push('')
+    next[idx] = v
+    onChange(next)
   }
+
   function removeAt(idx) {
+    if (idx >= list.length) return // virtual row — nothing to remove
     const next = list.filter((_, i) => i !== idx)
     onChange(next.length === 0 ? undefined : next)
   }
-  function add() {
-    onChange([...list, ''])
+
+  function handleEnter(idx) {
+    if (idx === rowCount - 1) {
+      // Last row: materialize any virtual cells and append a new empty
+      // row to focus.
+      const next = list.slice()
+      while (next.length < rowCount) next.push('')
+      next.push('')
+      pendingFocusIdx.current = next.length - 1
+      onChange(next)
+    } else {
+      // Mid-list: jump focus to the next row, same as Tab.
+      const nextEl = inputRefs.current[idx + 1]
+      if (nextEl && typeof nextEl.focus === 'function') nextEl.focus()
+    }
   }
-  if (list.length === 0) {
-    return (
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={add}
-        className="h-9 text-xs"
-      >
-        <Plus className="mr-1 h-3 w-3" />
-        값 추가
-      </Button>
-    )
-  }
+
+  // Keep the refs array tight; drop tails when rows shrink.
+  inputRefs.current.length = rowCount
+
   return (
     <div className="space-y-1.5">
-      {list.map((v, idx) => (
-        <div key={idx} className="flex items-center gap-1">
-          <div className="flex-1">
-            <SingleValueInput
-              item={item}
-              value={v}
-              onChange={(nv) => setAt(idx, nv)}
-            />
+      {Array.from({ length: rowCount }).map((_, idx) => {
+        const v = list[idx]
+        const hasRealEntry = idx < list.length
+        return (
+          <div key={idx} className="flex items-center gap-1">
+            <div className="flex-1">
+              <SingleValueInput
+                item={item}
+                value={v}
+                onChange={(nv) => setAt(idx, nv)}
+                inputRef={(el) => {
+                  inputRefs.current[idx] = el
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    handleEnter(idx)
+                  }
+                }}
+              />
+            </div>
+            {hasRealEntry ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
+                onClick={() => removeAt(idx)}
+                aria-label="값 제거"
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            ) : (
+              // Spacer so the virtual row aligns with the ones that do
+              // have a remove button (avoids the input shifting width on
+              // first keystroke).
+              <span className="h-7 w-7 shrink-0" aria-hidden />
+            )}
           </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
-            onClick={() => removeAt(idx)}
-            aria-label="값 제거"
-          >
-            <X className="h-3 w-3" />
-          </Button>
-        </div>
-      ))}
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        onClick={add}
-        className="h-7 text-xs text-muted-foreground hover:text-foreground"
-      >
-        <Plus className="mr-1 h-3 w-3" />
-        값 추가
-      </Button>
+        )
+      })}
+      <p className="text-[10px] text-muted-foreground pl-0.5">
+        Enter로 항목 추가 · Tab으로 이동
+      </p>
     </div>
   )
 }
 
-function SingleValueInput({ item, value, onChange }) {
+function SingleValueInput({ item, value, onChange, inputRef, onKeyDown }) {
   const t = item.type
   if (t === 'select') {
     return (
       <select
+        ref={inputRef}
+        onKeyDown={onKeyDown}
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value || undefined)}
         className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-sm"
@@ -258,6 +297,8 @@ function SingleValueInput({ item, value, onChange }) {
   if (t === 'date') {
     return (
       <Input
+        ref={inputRef}
+        onKeyDown={onKeyDown}
         type="date"
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value || undefined)}
@@ -268,6 +309,8 @@ function SingleValueInput({ item, value, onChange }) {
   if (t === 'number' || t === 'integer') {
     return (
       <Input
+        ref={inputRef}
+        onKeyDown={onKeyDown}
         type="number"
         step={t === 'integer' ? 1 : 'any'}
         value={value ?? ''}
@@ -280,6 +323,8 @@ function SingleValueInput({ item, value, onChange }) {
   }
   return (
     <Input
+      ref={inputRef}
+      onKeyDown={onKeyDown}
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value || undefined)}
       className="h-9"

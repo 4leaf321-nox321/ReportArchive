@@ -34,6 +34,7 @@ import {
 } from '@/shared/components/ui/dropdown-menu'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { ErrorState } from '@/shared/components/ErrorState'
+import { PageWidthToggle, usePageWidth } from '@/shared/components/PageWidthToggle'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { usePersistedState } from '@/shared/hooks/usePersistedState'
@@ -68,6 +69,7 @@ export default function ReportDetailPage() {
     'ra:report-view-mode:v1',
     'paginated'
   )
+  const [pageWidth, setPageWidth] = usePageWidth()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [isEditing, setIsEditing] = useState(isNew)
@@ -642,6 +644,8 @@ export default function ReportDetailPage() {
 
           <ViewModeToggle value={viewMode} onChange={setViewMode} />
 
+          <PageWidthToggle value={pageWidth} onChange={setPageWidth} />
+
           <Button
             variant="ghost"
             size="sm"
@@ -728,7 +732,12 @@ export default function ReportDetailPage() {
         />
 
         <ScrollArea className="flex-1">
-          <div className="p-6 space-y-8">
+          <div
+            className={cn(
+              'p-6 space-y-8',
+              pageWidth === 'narrow' && 'max-w-5xl mx-auto w-full',
+            )}
+          >
             {viewMode === 'all'
               ? pages.map((p, idx) => (
                   <PageSection

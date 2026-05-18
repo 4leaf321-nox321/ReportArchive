@@ -38,6 +38,10 @@ export function WorkspaceCombobox({
   id,
   className,
   compact = false,
+  // When set, the popover gets a "(none)" item at the top that calls
+  // onChange('') so the caller can model an "unset" state.
+  allowNone = false,
+  noneLabel = '선택 없음',
 }) {
   const [open, setOpen] = React.useState(false)
 
@@ -123,6 +127,19 @@ export function WorkspaceCombobox({
           <CommandList className="max-h-[280px]">
             <CommandEmpty>{emptyMessage}</CommandEmpty>
             <CommandGroup>
+              {allowNone && (
+                <CommandItem
+                  value={`__none ${noneLabel}`}
+                  onSelect={() => {
+                    onChange('')
+                    setOpen(false)
+                  }}
+                  className="cursor-pointer text-muted-foreground"
+                >
+                  <span className="flex-1">{noneLabel}</span>
+                  {!value && <Check className="h-4 w-4 text-primary shrink-0" />}
+                </CommandItem>
+              )}
               {ordered.map((opt) => {
                 const path = pathBySlug.get(opt.slug) ?? opt.name
                 const searchValue = `${opt.slug} ${opt.name} ${path}`

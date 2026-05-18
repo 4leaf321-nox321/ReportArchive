@@ -6,7 +6,7 @@
   4. Read it back, verify content shape
   5. Cleanup (delete report, file, template)
 
-Run with backend up on :5174.
+Run with backend up on :3000.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 import requests
 
-API = "http://localhost:5174/api"
+API = "http://localhost:3000/api"
 
 
 def login() -> str:

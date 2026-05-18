@@ -120,7 +120,7 @@ git commit -am "schema: add author column"
 ```bash
 cd frontend
 npm install
-npm run dev          # http://localhost:5173
+npm run dev          # http://localhost:3001
 ```
 
 `/api/*` 호출은 Vite가 백엔드(`:3000`)로 프록시한다.

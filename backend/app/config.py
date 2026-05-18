@@ -49,7 +49,7 @@ class Settings(BaseSettings):
 
     # --- CORS ---
     cors_origins: str = Field(
-        default="http://localhost:3000,http://localhost:5173"
+        default="http://localhost:3000,http://localhost:3001"
     )
 
     # --- Frontend serving (combined deployment) ---

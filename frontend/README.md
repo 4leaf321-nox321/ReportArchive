@@ -36,7 +36,7 @@ frontend/
 ```bash
 cd frontend
 npm install
-npm run dev          # http://localhost:5173
+npm run dev          # http://localhost:3001
 ```
 
 ## Connecting to the backend

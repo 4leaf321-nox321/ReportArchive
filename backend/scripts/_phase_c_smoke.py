@@ -2,7 +2,7 @@
 seeded weekly-dev template, post valid + invalid content payloads, verify
 the API rejects bad content with a useful error message.
 
-Run with backend already up on :5174:
+Run with backend already up on :3000:
     python scripts/_phase_c_smoke.py
 
 Exits 0 on success, prints diagnostics on failure.
@@ -18,7 +18,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 import requests
 
-API = "http://localhost:5174/api"
+API = "http://localhost:3000/api"
 
 
 def login() -> str:

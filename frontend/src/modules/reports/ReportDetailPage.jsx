@@ -14,6 +14,7 @@ import {
   Plus,
   Rows,
   Save,
+  Settings2,
   Trash2,
   Upload,
   X,
@@ -356,6 +357,24 @@ export default function ReportDetailPage() {
           ? { ...p, extra_blocks: [...(p.extra_blocks ?? []), newBlock] }
           : p,
       )
+      return { ...d, pages: nextPages }
+    })
+  }
+
+  /** Replace the entire props object for an extra block. PropsPanel hands
+   *  back a complete props object (e.g. `{ ...prev, items: [...] }`), so we
+   *  just assign — no merge — to keep behavior consistent with the
+   *  template editor's data flow. */
+  function setExtraBlockProps(pageIdx, blockId, newProps) {
+    setDraft((d) => {
+      if (!d) return d
+      const nextPages = d.pages.map((p, i) => {
+        if (i !== pageIdx) return p
+        const nextExtras = (p.extra_blocks ?? []).map((b) =>
+          b.id === blockId ? { ...b, props: newProps } : b,
+        )
+        return { ...p, extra_blocks: nextExtras }
+      })
       return { ...d, pages: nextPages }
     })
   }
@@ -819,6 +838,9 @@ export default function ReportDetailPage() {
                     showPageHeader={pageCount > 1}
                     onAddExtraBlock={(type, defaults) => addExtraBlock(idx, type, defaults)}
                     onRemoveExtraBlock={(blockId) => removeExtraBlock(idx, blockId)}
+                    onChangeExtraBlockProps={(blockId, newProps) =>
+                      setExtraBlockProps(idx, blockId, newProps)
+                    }
                   />
                 ))
               : (
@@ -853,6 +875,9 @@ export default function ReportDetailPage() {
                     }
                     onRemoveExtraBlock={(blockId) =>
                       removeExtraBlock(safeCurrent, blockId)
+                    }
+                    onChangeExtraBlockProps={(blockId, newProps) =>
+                      setExtraBlockProps(safeCurrent, blockId, newProps)
                     }
                   />
                 )}
@@ -1252,7 +1277,15 @@ function PageSection({
   showPageHeader,
   onAddExtraBlock,
   onRemoveExtraBlock,
+  onChangeExtraBlockProps,
 }) {
+  // Per-page state for "edit widget props" — null when no panel is open,
+  // otherwise the extra block's id. Lives here (not on each card) so a
+  // right-click on one block closes any other open panel cleanly.
+  const [propsEditingId, setPropsEditingId] = useState(null)
+  // Context menu coords + target. Right-click on an extra block pops a
+  // small menu here; click outside / Esc dismisses.
+  const [contextMenu, setContextMenu] = useState(null)
   const blocks = useMemo(() => combinedBlocks(template, page), [template, page])
 
   // Edit-GUI heights live here (mode-local — only consulted when editing).
@@ -1375,8 +1408,21 @@ function PageSection({
             const isActive =
               activeBlock?.pageIdx === pageIdx && activeBlock?.blockId === block.id
             const autoFit = effectiveLayouts[block.id]?.auto_fit !== false
+            const isExtraBlock = block.source === 'extra'
+            const canEditProps = isEditing && isExtraBlock && onChangeExtraBlockProps
             return (
-              <div key={block.id} className="min-w-0 h-full">
+              <div
+                key={block.id}
+                className="min-w-0 h-full"
+                onContextMenu={
+                  canEditProps
+                    ? (e) => {
+                        e.preventDefault()
+                        setContextMenu({ x: e.clientX, y: e.clientY, blockId: block.id })
+                      }
+                    : undefined
+                }
+              >
                 <BlockEditorCard
                   block={block}
                   content={page?.content?.[block.id]}
@@ -1385,7 +1431,7 @@ function PageSection({
                   readOnly={!isEditing}
                   showDragHandle={isEditing}
                   autoFit={autoFit}
-                  isExtra={block.source === 'extra'}
+                  isExtra={isExtraBlock}
                   onActivate={() => onActivate(block.id)}
                   onChange={(value) => onChangeContent(block.id, value)}
                   onChangePropsOverride={(patch) =>
@@ -1397,10 +1443,11 @@ function PageSection({
                       : undefined
                   }
                   onRemove={
-                    isEditing && block.source === 'extra' && onRemoveExtraBlock
+                    isEditing && isExtraBlock && onRemoveExtraBlock
                       ? () => onRemoveExtraBlock(block.id)
                       : undefined
                   }
+                  onOpenProps={canEditProps ? () => setPropsEditingId(block.id) : undefined}
                   onMeasureContentHeight={(px) =>
                     onMeasureContentHeight?.(block.id, px)
                   }
@@ -1415,6 +1462,32 @@ function PageSection({
       {isEditing && onAddExtraBlock && (
         <AddWidgetBar onAdd={onAddExtraBlock} />
       )}
+
+      {contextMenu && (
+        <BlockContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onEditProps={() => {
+            setPropsEditingId(contextMenu.blockId)
+            setContextMenu(null)
+          }}
+        />
+      )}
+
+      {propsEditingId && (() => {
+        const block = blocks.find((b) => b.id === propsEditingId)
+        if (!block || block.source !== 'extra') {
+          return null
+        }
+        return (
+          <ExtraBlockPropsDialog
+            block={block}
+            onChange={(newProps) => onChangeExtraBlockProps?.(block.id, newProps)}
+            onClose={() => setPropsEditingId(null)}
+          />
+        )
+      })()}
     </section>
   )
 }
@@ -1506,6 +1579,69 @@ function extractBlocks(schema) {
     layout: b.layout,
     source: 'template',
   }))
+}
+
+/** Floating right-click menu for an extra block. Positioned at the
+ *  triggering mouse coords; dismisses on any click outside or Esc.
+ *  Kept as a vanilla div + portal-less render — radix-ui doesn't ship
+ *  a context-menu primitive in this project and a single item doesn't
+ *  warrant pulling one in. */
+function BlockContextMenu({ x, y, onClose, onEditProps }) {
+  useEffect(() => {
+    function handleClick() { onClose() }
+    function handleKey(e) { if (e.key === 'Escape') onClose() }
+    window.addEventListener('mousedown', handleClick)
+    window.addEventListener('keydown', handleKey)
+    return () => {
+      window.removeEventListener('mousedown', handleClick)
+      window.removeEventListener('keydown', handleKey)
+    }
+  }, [onClose])
+  return (
+    <div
+      className="fixed z-50 min-w-[180px] rounded-md border bg-popover py-1 shadow-md"
+      style={{ left: x, top: y }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        onClick={onEditProps}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-muted text-left"
+      >
+        <Settings2 className="h-3.5 w-3.5" />
+        속성 편집
+      </button>
+    </div>
+  )
+}
+
+/** Modal that surfaces the widget's PropsPanel — the same component the
+ *  template editor uses — so users can configure structural props (table
+ *  columns, KV items, KPI label/unit, etc.) on an ad-hoc widget inside
+ *  the report writer. Calls onChange with the complete next props object
+ *  on every edit, matching PropsPanel's contract. */
+function ExtraBlockPropsDialog({ block, onChange, onClose }) {
+  const renderer = getRenderer(block.type)
+  const PropsPanel = renderer?.PropsPanel
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Settings2 className="h-4 w-4" />
+            위젯 속성 — {block.type}
+          </DialogTitle>
+        </DialogHeader>
+        {PropsPanel ? (
+          <PropsPanel props={block.props ?? {}} onChange={onChange} />
+        ) : (
+          <p className="text-sm text-muted-foreground py-4">
+            이 위젯 종류는 편집 가능한 속성이 없습니다.
+          </p>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 /** Page-level "위젯 추가" toolbar. Shown only in edit mode. Pulls the
@@ -1621,6 +1757,7 @@ function BlockEditorCard({
   onChangePropsOverride,
   onToggleAutoFit,
   onRemove,
+  onOpenProps,
   onMeasureContentHeight,
   onMeasureEditHeight,
 }) {
@@ -1748,6 +1885,24 @@ function BlockEditorCard({
           자동 맞춤
         </label>
       )}
+      {onOpenProps && (
+        <button
+          type="button"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation()
+            onOpenProps()
+          }}
+          className={cn(
+            'rounded p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted',
+            !onToggleAutoFit && !onRemove && 'ml-auto',
+          )}
+          title="속성 편집 (또는 우클릭)"
+          aria-label="속성 편집"
+        >
+          <Settings2 className="h-3 w-3" />
+        </button>
+      )}
       {onRemove && (
         <button
           type="button"
@@ -1758,7 +1913,7 @@ function BlockEditorCard({
           }}
           className={cn(
             'rounded p-0.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10',
-            !onToggleAutoFit && 'ml-auto',
+            !onToggleAutoFit && !onOpenProps && 'ml-auto',
           )}
           title="이 위젯 제거"
           aria-label="이 위젯 제거"

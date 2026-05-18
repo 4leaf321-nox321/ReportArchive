@@ -8,6 +8,11 @@ import { DataTable } from '@/shared/components/DataTable'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { Skeleton } from '@/shared/components/ui/skeleton'
+import {
+  PeriodFilterControls,
+  usePeriodFilter,
+} from '@/shared/components/PeriodFilterControls'
+import { dateInPeriodRange, formatRangeLabel } from '@/shared/lib/period'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { listComposites } from '@/shared/api/composites'
@@ -21,6 +26,7 @@ export default function CompositesListPage() {
   const { slug, workspace, all: workspaces } = useWorkspace()
   const navigate = useNavigate()
   const [newOpen, setNewOpen] = useState(false)
+  const period = usePeriodFilter('month')
 
   const { data: items, loading, error, reload } = useAsync(
     () => (slug ? listComposites() : Promise.resolve([])),
@@ -32,10 +38,15 @@ export default function CompositesListPage() {
     return (s) => map.get(s) ?? s
   }, [workspaces])
 
-  const list = (items ?? []).map((r) => ({
-    ...r,
-    workspace_name: workspaceName(r.workspace_slug),
-  }))
+  // Period filter targets period_date — applies to recurring composites
+  // only. Theme composites have no date, so they fall out of the list
+  // when a range is active (by design, mirroring the picker dialog).
+  const list = (items ?? [])
+    .filter((r) => dateInPeriodRange(r.period_date, period.range))
+    .map((r) => ({
+      ...r,
+      workspace_name: workspaceName(r.workspace_slug),
+    }))
 
   const columns = [
     { key: 'title', header: '제목', sortable: true, cellClassName: 'font-medium' },
@@ -108,16 +119,19 @@ export default function CompositesListPage() {
         title="종합보고"
         description={
           workspace
-            ? `${workspace.name} 및 하위 부서 — ${list.length}건${workspace.virtual ? ' (횡단)' : ''}`
+            ? `${workspace.name} 및 하위 부서${workspace.virtual ? ' (횡단)' : ''} — ${list.length}건 · ${formatRangeLabel(period.range)}`
             : ''
         }
         actions={
-          !workspace?.virtual && (
-            <Button onClick={() => setNewOpen(true)}>
-              <Plus className="mr-2 h-4 w-4" />
-              새 종합보고
-            </Button>
-          )
+          <div className="flex items-center gap-2 flex-wrap">
+            <PeriodFilterControls period={period} />
+            {!workspace?.virtual && (
+              <Button onClick={() => setNewOpen(true)}>
+                <Plus className="mr-2 h-4 w-4" />
+                새 종합보고
+              </Button>
+            )}
+          </div>
         }
       />
 

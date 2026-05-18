@@ -1,11 +1,16 @@
-import { useMemo, useState } from 'react'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { useMemo } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/components/ui/card'
 import { Badge } from '@/shared/components/ui/badge'
-import { Button } from '@/shared/components/ui/button'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { ErrorState } from '@/shared/components/ErrorState'
+import { PeriodFilterControls, usePeriodFilter } from '@/shared/components/PeriodFilterControls'
+import {
+  isoWeekKey,
+  monthKey,
+  parseUtcIso,
+  startOfIsoWeek,
+} from '@/shared/lib/period'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { listReports } from '@/modules/reports/api'
@@ -34,21 +39,6 @@ const STATUS_COLORS = {
  * the workspace×template stacked-bar panel is the main comparison view
  * for any single-period (week/month) inspection.
  */
-// Each option locks its own bucket unit — week/month is implied by the
-// period kind itself, so the page doesn't expose a separate 주별/월별
-// toggle. Aggregation uses report_date (server-side aggregation reference,
-// editable on each report) instead of created_at so back-dated rows still
-// land in the correct bucket.
-const PERIOD_OPTIONS = [
-  { value: 'week',           label: '주별',        mode: 'point', unit: 'week'  },
-  { value: 'month',          label: '월별',        mode: 'point', unit: 'month' },
-  { value: 'last-4-weeks',   label: '최근 4주',    mode: 'range', unit: 'week'  },
-  { value: 'last-12-weeks',  label: '최근 12주',   mode: 'range', unit: 'week'  },
-  { value: 'last-6-months',  label: '최근 6개월',  mode: 'range', unit: 'month' },
-  { value: 'last-12-months', label: '최근 12개월', mode: 'range', unit: 'month' },
-  { value: 'all',            label: '전체 기간',   mode: 'range', unit: 'month' },
-]
-
 // Fixed palette for the stacked bar — cycled by template index so colors
 // stay stable across renders. Tailwind-friendly hexes that work on both
 // light and dark backgrounds.
@@ -60,11 +50,8 @@ const PALETTE = [
 
 export default function DashboardPage() {
   const { workspace, slug, all: workspaces, getDescendantsInclusive } = useWorkspace()
-  const [periodKind, setPeriodKind] = useState('month')
-  const [anchor, setAnchor] = useState(() => new Date())   // for week/month modes
-
-  const periodMeta = PERIOD_OPTIONS.find((o) => o.value === periodKind) ?? PERIOD_OPTIONS[1]
-  const unit = periodMeta.unit
+  const period = usePeriodFilter('month')
+  const unit = period.meta.unit
 
   const { data: reports, loading, error, reload } = useAsync(
     () => (slug ? listReports() : Promise.resolve([])),
@@ -78,10 +65,7 @@ export default function DashboardPage() {
   const templateName = useMemo(() => makeTemplateNameLookup(templates), [templates])
   const workspaceName = useMemo(() => makeWorkspaceNameLookup(workspaces), [workspaces])
 
-  const range = useMemo(
-    () => periodRange(periodKind, anchor),
-    [periodKind, anchor],
-  )
+  const range = period.range
 
   const inRange = useMemo(() => {
     const all = reports ?? []
@@ -202,23 +186,6 @@ export default function DashboardPage() {
     )
   }
 
-  function changePeriod(next) {
-    setPeriodKind(next)
-    const meta = PERIOD_OPTIONS.find((o) => o.value === next)
-    if (meta?.mode === 'point') {
-      // Snap back to "current week/month" when entering point mode so
-      // the user isn't dropped into whatever anchor was last viewed.
-      setAnchor(new Date())
-    }
-  }
-  function stepAnchor(direction) {
-    if (periodMeta.mode !== 'point') return
-    const next = new Date(anchor)
-    if (periodKind === 'week') next.setDate(next.getDate() + direction * 7)
-    else next.setMonth(next.getMonth() + direction)
-    setAnchor(next)
-  }
-
   return (
     <div className="p-6 space-y-6">
       <PageHeader
@@ -228,18 +195,7 @@ export default function DashboardPage() {
             ? `${workspace.name}${workspace.virtual ? ' (횡단)' : ''} 및 하위 부서`
             : ''
         }
-        actions={
-          <div className="flex items-center gap-2 flex-wrap">
-            <PeriodSelect value={periodKind} onChange={changePeriod} />
-            {periodMeta.mode === 'point' && (
-              <PointNavigator
-                label={pointLabel(periodKind, anchor)}
-                onPrev={() => stepAnchor(-1)}
-                onNext={() => stepAnchor(+1)}
-              />
-            )}
-          </div>
-        }
+        actions={<PeriodFilterControls period={period} />}
       />
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -303,38 +259,6 @@ export default function DashboardPage() {
           )}
         </CardContent>
       </Card>
-    </div>
-  )
-}
-
-// ───────────────────────── header controls ──────────────────────────────
-function PeriodSelect({ value, onChange }) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-      aria-label="기간"
-    >
-      {PERIOD_OPTIONS.map((o) => (
-        <option key={o.value} value={o.value}>{o.label}</option>
-      ))}
-    </select>
-  )
-}
-
-function PointNavigator({ label, onPrev, onNext }) {
-  return (
-    <div className="inline-flex items-center gap-1 h-9 rounded-md border bg-background px-1">
-      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onPrev} aria-label="이전">
-        <ChevronLeft className="h-4 w-4" />
-      </Button>
-      <span className="text-sm font-medium min-w-[7rem] text-center tabular-nums">
-        {label}
-      </span>
-      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onNext} aria-label="다음">
-        <ChevronRight className="h-4 w-4" />
-      </Button>
     </div>
   )
 }
@@ -528,43 +452,6 @@ function uniqueTemplateIds(report) {
   return out
 }
 
-/** Compute [from, to] for the active period. For point modes the range
- *  is the boundaries of the selected week / month; for range modes it's
- *  N units ending at "now". */
-function periodRange(kind, anchor) {
-  const now = new Date()
-  const to = endOfDay(now)
-  switch (kind) {
-    case 'week': {
-      const monday = startOfIsoWeek(anchor)
-      const sunday = endOfDay(addDays(monday, 6))
-      return { from: monday, to: sunday }
-    }
-    case 'month': {
-      const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1, 0, 0, 0, 0)
-      const last = endOfDay(new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0))
-      return { from: first, to: last }
-    }
-    case 'last-4-weeks':   return { from: startOfDay(daysAgo(now, 28)), to }
-    case 'last-12-weeks':  return { from: startOfDay(daysAgo(now, 84)), to }
-    case 'last-6-months':  return { from: startOfDay(monthsAgo(now, 6)), to }
-    case 'last-12-months': return { from: startOfDay(monthsAgo(now, 12)), to }
-    case 'all':
-    default:               return { from: null, to }
-  }
-}
-
-function pointLabel(kind, anchor) {
-  if (kind === 'week') {
-    const monday = startOfIsoWeek(anchor)
-    return `${isoWeekKey(monday)} (${formatShortDate(monday)} – ${formatShortDate(addDays(monday, 6))})`
-  }
-  if (kind === 'month') {
-    return `${anchor.getFullYear()}년 ${anchor.getMonth() + 1}월`
-  }
-  return ''
-}
-
 function bucketizeReports(filtered, unit, range, allReports) {
   const from = range.from ?? earliestCreatedAt(allReports)
   if (!from) return []
@@ -623,64 +510,8 @@ function enumerateBuckets(from, to, unit) {
   return out
 }
 
-// ── date primitives ─────────────────────────────────────────────────────
-function startOfIsoWeek(d) {
-  const out = new Date(d)
-  const day = out.getDay() || 7    // make Sunday=7
-  out.setDate(out.getDate() - day + 1)
-  out.setHours(0, 0, 0, 0)
-  return out
-}
-function addDays(d, n) {
-  const out = new Date(d)
-  out.setDate(out.getDate() + n)
-  return out
-}
-function daysAgo(d, n)  { return addDays(d, -n) }
-function monthsAgo(d, n) {
-  const out = new Date(d)
-  out.setMonth(out.getMonth() - n)
-  return out
-}
-function startOfDay(d) {
-  const out = new Date(d)
-  out.setHours(0, 0, 0, 0)
-  return out
-}
-function endOfDay(d) {
-  const out = new Date(d)
-  out.setHours(23, 59, 59, 999)
-  return out
-}
-
-/** ISO 8601 week key — "2026-W18". */
-function isoWeekKey(d) {
-  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
-  const day = date.getUTCDay() || 7
-  date.setUTCDate(date.getUTCDate() + 4 - day)
-  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1))
-  const weekNum = Math.ceil(((date - yearStart) / 86400000 + 1) / 7)
-  return `${date.getUTCFullYear()}-W${String(weekNum).padStart(2, '0')}`
-}
-function monthKey(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-}
-
 function formatDate(d) {
   if (!d) return ''
   const pad = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
-function formatShortDate(d) {
-  if (!d) return ''
-  return `${d.getMonth() + 1}/${d.getDate()}`
-}
-
-/** Backend emits naive UTC ISO. Force-anchor to UTC so week/month bucketing
- *  doesn't drift by the local TZ offset. */
-function parseUtcIso(iso) {
-  if (!iso) return null
-  const s = /[Zz]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`
-  const d = new Date(s)
-  return Number.isNaN(d.getTime()) ? null : d
 }

@@ -91,6 +91,21 @@ class Report(Base):
     # ones the template already declared.
     layout_overrides: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # Per-report widget-props overrides keyed by template block id:
+    #   { "<block_id>": { "text_style": {...}, "depth_styles": {...} }, ... }
+    # Only visual-style keys are accepted (see services._sanitize_props_overrides);
+    # structural props (items, min_length, etc.) cannot be overridden per report
+    # because the content schema is derived from them.
+    props_overrides: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # Ordered list of pages for multi-page reports. Each entry is shaped:
+    #   {template_id, template_version, content, layout_overrides, props_overrides}
+    # `pages[0]` is mirrored into the top-level columns above so the FK
+    # constraint and list-view fields remain authoritative for the *primary*
+    # template. Subsequent pages reference their template only via id+version
+    # inside this JSON blob (no DB-level FK).
+    pages: Mapped[list[dict]] = mapped_column(JSONB, default=list, nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )

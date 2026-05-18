@@ -335,7 +335,7 @@ function CategoryCreateDialog({ open, onOpenChange, onCreated }) {
               value={slug}
               onChange={(e) => setSlug(e.target.value.toLowerCase())}
               placeholder="weekly-report"
-              pattern="^[a-z0-9][a-z0-9-]*$"
+              pattern="^[a-z0-9][a-z0-9\-]*$"
               required
               className="font-mono"
             />
@@ -721,7 +721,7 @@ function WorkspaceCreateDialog({ open, onOpenChange, workspaces, onCreated }) {
               value={slug}
               onChange={(e) => setSlug(e.target.value.toLowerCase())}
               placeholder="dev-mobile"
-              pattern="^[a-z0-9][a-z0-9-]*$"
+              pattern="^[a-z0-9][a-z0-9\-]*$"
               required
               className="font-mono"
             />
@@ -1313,7 +1313,7 @@ function RelationCreateDialog({ open, onOpenChange, onCreated }) {
               value={slug}
               onChange={(e) => setSlug(e.target.value.toLowerCase())}
               placeholder="hypothesis"
-              pattern="^[a-z0-9][a-z0-9_-]*$"
+              pattern="^[a-z0-9][a-z0-9_\-]*$"
               required
               className="font-mono"
             />

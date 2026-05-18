@@ -1,10 +1,9 @@
 import { Link } from 'react-router-dom'
-import { FileText, Plus, TrendingUp, Clock } from 'lucide-react'
+import { FileText, Plus } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/components/ui/card'
 import { Button } from '@/shared/components/ui/button'
 import { Badge } from '@/shared/components/ui/badge'
 import { PageHeader } from '@/shared/components/PageHeader'
-import { KPICard } from '@/shared/components/KPICard'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
@@ -30,11 +29,6 @@ export default function WorkspaceHomePage() {
     return (
       <div className="p-6 space-y-6">
         <Skeleton className="h-8 w-48" />
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-          <Skeleton className="h-24" />
-          <Skeleton className="h-24" />
-          <Skeleton className="h-24" />
-        </div>
         <Skeleton className="h-64" />
       </div>
     )
@@ -49,15 +43,23 @@ export default function WorkspaceHomePage() {
   }
 
   const list = reports ?? []
-  const inReview = list.filter((r) => r.status === 'in_review').length
-  const approved = list.filter((r) => r.status === 'approved').length
   const recent = [...list].sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 5)
+
+  // Status-based KPIs (검토 중 / 승인 완료) used to live here but there is
+  // no workflow that ever transitions a report off `draft` — no submit /
+  // approve UI, no API for it — so those tiles always read 0. Removed
+  // until a real review process exists; the status enum on the model is
+  // kept so adding the workflow later is non-destructive.
 
   return (
     <div className="p-6 space-y-6">
       <PageHeader
         title={`${workspace.name}`}
-        description={workspace.description || '부서 활동 요약'}
+        description={
+          [workspace.description, `보고서 ${list.length}건`]
+            .filter(Boolean)
+            .join(' · ')
+        }
         actions={
           !workspace.virtual && (
             <Button asChild>
@@ -69,12 +71,6 @@ export default function WorkspaceHomePage() {
           )
         }
       />
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <KPICard icon={FileText} label="전체 보고서" value={list.length} />
-        <KPICard icon={Clock} label="검토 중" value={inReview} accent="text-amber-600" />
-        <KPICard icon={TrendingUp} label="승인 완료" value={approved} accent="text-emerald-600" />
-      </div>
 
       <Card>
         <CardHeader>

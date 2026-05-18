@@ -296,7 +296,7 @@ def _bulleted_list_content(props: dict) -> dict:
 
 BULLETED_LIST: WidgetDescriptor = {
     "type": "bulleted_list",
-    "label": "글머리 리스트",
+    "label": "항목 리스트",
     "description": "한 줄짜리 항목 여러 개 (이번주 한 일, 다음주 계획 등)",
     "has_content": True,
     "props_schema": {

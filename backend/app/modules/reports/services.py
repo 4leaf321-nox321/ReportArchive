@@ -172,6 +172,8 @@ def create_report(
     # leaving it out lets the column's CURRENT_DATE default fill in.
     if payload.report_date is not None:
         init_kwargs["report_date"] = payload.report_date
+    if payload.status is not None:
+        init_kwargs["status"] = payload.status
     report = Report(
         **init_kwargs,
         content=page0.content or {},

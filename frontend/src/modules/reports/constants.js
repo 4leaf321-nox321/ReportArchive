@@ -1,16 +1,13 @@
-export const STATUS_LABEL = {
-  draft: '작성 중',
-  in_review: '검토 중',
-  approved: '승인됨',
-  archived: '보관',
-}
+// Order matters for the dashboard's status panel and the in-report
+// dropdown — kept here as the single source of truth.
+export const STATUSES = [
+  { value: 'draft',       label: '작성 중',   variant: 'secondary' },
+  { value: 'in_progress', label: '진행 업무', variant: 'default'   },
+  { value: 'completed',   label: '완료 업무', variant: 'outline'   },
+]
 
-export const STATUS_VARIANT = {
-  draft: 'secondary',
-  in_review: 'default',
-  approved: 'outline',
-  archived: 'outline',
-}
+export const STATUS_LABEL = Object.fromEntries(STATUSES.map((s) => [s.value, s.label]))
+export const STATUS_VARIANT = Object.fromEntries(STATUSES.map((s) => [s.value, s.variant]))
 
 /**
  * Build a (slug → display name) lookup from the API-fetched category list.

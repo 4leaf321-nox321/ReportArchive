@@ -39,7 +39,7 @@ import { useAsync } from '@/shared/hooks/useAsync'
 import { usePersistedState } from '@/shared/hooks/usePersistedState'
 import { getReport, createReport, updateReport, deleteReport } from './api'
 import { getTemplateVersion } from '@/shared/api/templates'
-import { STATUS_LABEL, STATUS_VARIANT } from './constants'
+import { STATUSES, STATUS_LABEL, STATUS_VARIANT } from './constants'
 import { getRenderer } from '@/modules/templates/widgets'
 import { DepthStyleField, TextStyleField } from '@/modules/templates/widgets/_shared'
 import { TemplatePicker } from './TemplatePicker'
@@ -102,6 +102,7 @@ export default function ReportDetailPage() {
       setDraft({
         title: '새 보고서',
         report_date: todayIsoDate(),
+        status: 'draft',
         tags: [],
         pages: [
           {
@@ -432,6 +433,7 @@ export default function ReportDetailPage() {
       const payload = {
         title: draft.title,
         report_date: draft.report_date || null,
+        status: draft.status,
         tags: draft.tags ?? [],
         pages: draft.pages,
       }
@@ -610,9 +612,11 @@ export default function ReportDetailPage() {
                   {pageCount}개 페이지
                 </Badge>
               )}
-              {!isNew && draft.status && (
-                <Badge variant={STATUS_VARIANT[draft.status]}>{STATUS_LABEL[draft.status]}</Badge>
-              )}
+              <StatusField
+                editing={isEditing}
+                value={draft.status ?? 'draft'}
+                onChange={(v) => setDraft({ ...draft, status: v })}
+              />
               <ReportDateField
                 editing={isEditing}
                 value={draft.report_date ?? ''}
@@ -884,6 +888,27 @@ function formatMetaDate(iso) {
   if (Number.isNaN(d.getTime())) return ''
   const pad = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** Inline 상태 chip. Read-only badge when viewing; switches to a small
+ *  select in edit mode so users can flip between 작성 중 / 진행 업무 /
+ *  완료 업무. Status is part of the dashboard's status panel aggregation. */
+function StatusField({ editing, value, onChange }) {
+  if (!editing) {
+    return <Badge variant={STATUS_VARIANT[value] ?? 'secondary'}>{STATUS_LABEL[value] ?? value}</Badge>
+  }
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="h-6 rounded border border-input bg-background px-1.5 text-[11px]"
+      aria-label="상태"
+    >
+      {STATUSES.map((s) => (
+        <option key={s.value} value={s.value}>{s.label}</option>
+      ))}
+    </select>
+  )
 }
 
 /** Inline 보고 기준일 chip. Read-only badge when not editing; switches to a

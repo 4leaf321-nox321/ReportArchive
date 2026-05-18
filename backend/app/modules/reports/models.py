@@ -34,10 +34,17 @@ from app.modules.users.models import User
 
 
 class ReportStatus(str, enum.Enum):
-    draft = "draft"
-    in_review = "in_review"
-    approved = "approved"
-    archived = "archived"
+    """Work-state status for the report's underlying task.
+
+    Earlier values (in_review / approved / archived) modelled an approval
+    workflow that was never wired up — the labels now describe whether
+    the work the report covers is still being written, actively in
+    progress, or wrapped up.
+    """
+
+    draft = "draft"               # 작성 중 — 보고서 자체가 작성 중
+    in_progress = "in_progress"   # 진행 업무 — 다루는 업무가 진행 중
+    completed = "completed"       # 완료 업무 — 다루는 업무가 완료됨
 
 
 class Report(Base):

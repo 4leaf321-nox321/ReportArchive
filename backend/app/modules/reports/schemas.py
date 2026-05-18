@@ -162,6 +162,8 @@ class ReportCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
     # Aggregation reference date. Omit to default to today on the server.
     report_date: Optional[date] = None
+    # Work-state status. Omit to land in `draft` (작성 중).
+    status: Optional[ReportStatus] = None
     tags: list[str] = []
     # Legacy single-page fields — applied to page 0 when `pages` is None.
     content: dict = {}

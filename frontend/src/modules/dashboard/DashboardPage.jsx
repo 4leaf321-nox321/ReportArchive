@@ -10,7 +10,16 @@ import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { listReports } from '@/modules/reports/api'
 import { listTemplates } from '@/shared/api/templates'
+import { STATUSES } from '@/modules/reports/constants'
 import { cn } from '@/shared/lib/utils'
+
+// Stable color slots for the three report statuses on the dashboard's
+// status panel — match the StatusField badge tones visually.
+const STATUS_COLORS = {
+  draft:       '#94a3b8', // slate-400 — 작성 중
+  in_progress: '#3b82f6', // blue-500  — 진행 업무
+  completed:   '#10b981', // emerald-500 — 완료 업무
+}
 
 /**
  * Dashboard for the currently-selected workspace and its descendants.
@@ -127,6 +136,16 @@ export default function DashboardPage() {
   }, [inRange])
   const distinctTemplates = crosstab.orderedTemplates.length
 
+  // Status breakdown — keep a fixed enum order so the bar layout doesn't
+  // reshuffle just because counts change.
+  const statusCounts = useMemo(() => {
+    const counts = new Map(STATUSES.map((s) => [s.value, 0]))
+    for (const r of inRange) {
+      if (counts.has(r.status)) counts.set(r.status, counts.get(r.status) + 1)
+    }
+    return counts
+  }, [inRange])
+
   // ── loading / error ───────────────────────────────────────────────────
   if (loading) {
     return (
@@ -195,6 +214,16 @@ export default function DashboardPage() {
         <KPI label="작성자" value={distinctAuthors} />
         <KPI label="사용된 템플릿" value={distinctTemplates} />
       </div>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">상태별</CardTitle>
+          <CardDescription>업무 진행 상태 분포</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <StatusBreakdown counts={statusCounts} total={totalReports} />
+        </CardContent>
+      </Card>
 
       {trend.length > 1 && (
         <Card>
@@ -316,6 +345,51 @@ function TrendChart({ buckets }) {
           </div>
         )
       })}
+    </div>
+  )
+}
+
+// ───────────────────────── Status breakdown ────────────────────────────
+function StatusBreakdown({ counts, total }) {
+  if (total === 0) {
+    return <p className="text-sm text-muted-foreground py-3">기간 내 보고서 없음</p>
+  }
+  return (
+    <div className="space-y-3">
+      {/* Single proportional bar so the eye can compare relative weight
+          immediately; tabular rows below for exact counts + percentages. */}
+      <div className="flex h-3 w-full overflow-hidden rounded-full bg-muted/60">
+        {STATUSES.map((s) => {
+          const n = counts.get(s.value) ?? 0
+          if (n === 0) return null
+          return (
+            <div
+              key={s.value}
+              style={{ width: `${(n / total) * 100}%`, backgroundColor: STATUS_COLORS[s.value] }}
+              title={`${s.label} · ${n}건 (${Math.round((n / total) * 100)}%)`}
+            />
+          )
+        })}
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        {STATUSES.map((s) => {
+          const n = counts.get(s.value) ?? 0
+          const pct = total > 0 ? Math.round((n / total) * 100) : 0
+          return (
+            <div key={s.value} className="flex items-center gap-2">
+              <span
+                className="h-2.5 w-2.5 rounded-sm shrink-0"
+                style={{ backgroundColor: STATUS_COLORS[s.value] }}
+              />
+              <span className="text-xs text-muted-foreground">{s.label}</span>
+              <span className="ml-auto text-xs tabular-nums">
+                {n}
+                <span className="text-muted-foreground/70"> · {pct}%</span>
+              </span>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

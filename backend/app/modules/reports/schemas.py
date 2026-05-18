@@ -58,6 +58,18 @@ class ReportRead(BaseModel):
     updated_at: datetime
 
 
+class ReportPagePreview(BaseModel):
+    """Slim per-page entry shipped with list responses so the templates
+    column can show every page's binding, not just page 0. content +
+    overrides are deliberately omitted to keep the list payload light."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    template_id: str
+    template_version: int
+    name: Optional[str] = None
+
+
 class ReportSummary(BaseModel):
     """Lightweight version for list endpoints — content omitted."""
 
@@ -72,6 +84,10 @@ class ReportSummary(BaseModel):
     period: str
     owner_user_id: Optional[int]
     tags: list[str]
+    # Per-page template bindings. Pydantic pulls this from the JSONB
+    # `pages` column and discards the heavy fields (content, layouts)
+    # via ReportPagePreview's extra="ignore".
+    pages: list[ReportPagePreview] = []
     created_at: datetime
     updated_at: datetime
 

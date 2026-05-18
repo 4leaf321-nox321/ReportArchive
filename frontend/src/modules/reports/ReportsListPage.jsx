@@ -33,12 +33,25 @@ export default function ReportsListPage() {
       key: 'template_id',
       header: '템플릿',
       sortable: true,
-      render: (r) => (
-        <span className="text-xs text-muted-foreground">
-          {templateName(r.template_id)}{' '}
-          <span className="opacity-60">v{r.template_version}</span>
-        </span>
-      ),
+      render: (r) => {
+        // Multi-page reports may bind a different template per page. Show
+        // every distinct (template_id, version) pair so the list reflects
+        // the actual makeup. Falls back to the top-level binding when the
+        // pages array is empty (legacy single-page rows).
+        const pairs = uniqueTemplatePairs(r)
+        const labels = pairs.map(
+          ([id, ver]) => `${templateName(id)} v${ver}`,
+        )
+        const fullText = labels.join(', ')
+        return (
+          <span
+            className="block truncate text-xs text-muted-foreground max-w-[260px]"
+            title={fullText}
+          >
+            {fullText}
+          </span>
+        )
+      },
     },
     {
       key: 'workspace_slug',
@@ -98,4 +111,23 @@ function makeTemplateNameLookup(templates) {
     if (id.length > 16) return `${id.slice(0, 8)}…`
     return id
   }
+}
+
+/** Distinct `(template_id, template_version)` pairs across a report's pages,
+ *  in first-seen order. Falls back to the legacy top-level binding when the
+ *  report has no pages payload (e.g. legacy rows pre-multi-page). */
+function uniqueTemplatePairs(report) {
+  const pages = Array.isArray(report.pages) ? report.pages : []
+  if (pages.length === 0) {
+    return [[report.template_id, report.template_version]]
+  }
+  const seen = new Set()
+  const out = []
+  for (const p of pages) {
+    const key = `${p.template_id}@${p.template_version}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push([p.template_id, p.template_version])
+  }
+  return out
 }

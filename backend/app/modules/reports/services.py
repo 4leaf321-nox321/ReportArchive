@@ -65,6 +65,21 @@ def _validate_page(db: Session, page: ReportPage) -> None:
         # through as a synthetic schema so the validator accepts them.
         combined = _schema_with_extras(template.schema, page.extra_blocks)
         _validate_layout_overrides(combined, page.layout_overrides)
+    if page.blocks_order:
+        template_ids = {b["id"] for b in template.schema.get("blocks", [])}
+        extra_ids = {b["id"] for b in page.extra_blocks or []}
+        known = template_ids | extra_ids
+        seen: set[str] = set()
+        for bid in page.blocks_order:
+            if not isinstance(bid, str):
+                raise ValueError("blocks_order entries must be strings.")
+            if bid not in known:
+                raise ValueError(
+                    f"blocks_order references unknown block id: {bid!r}"
+                )
+            if bid in seen:
+                raise ValueError(f"blocks_order has duplicate id: {bid!r}")
+            seen.add(bid)
 
 
 def _schema_with_extras(template_schema: dict, extra_blocks: list[dict]) -> dict:
@@ -131,6 +146,7 @@ def _pages_to_jsonb(pages: list[ReportPage]) -> list[dict]:
             "layout_overrides": _normalize_overrides(p.layout_overrides),
             "props_overrides": _sanitize_props_overrides(p.props_overrides),
             "extra_blocks": list(p.extra_blocks or []),
+            "blocks_order": list(p.blocks_order or []),
         }
         for p in pages
     ]

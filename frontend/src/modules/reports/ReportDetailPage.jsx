@@ -117,6 +117,7 @@ export default function ReportDetailPage() {
             layout_overrides: null,
             props_overrides: null,
             extra_blocks: [],
+            blocks_order: [],
           },
         ],
       })
@@ -310,6 +311,7 @@ export default function ReportDetailPage() {
         layout_overrides: null,
         props_overrides: null,
         extra_blocks: [],
+        blocks_order: [],
       }
       const next = [...d.pages, newPage]
       return { ...d, pages: next }
@@ -352,9 +354,21 @@ export default function ReportDetailPage() {
         type: widgetType,
         props: { ...defaultProps },
       }
+      // When blocks_order is already materialized (user has removed or
+      // reordered blocks at least once on this page), append the new
+      // extra to it so it actually renders. If blocks_order is empty,
+      // combinedBlocks falls back to "template then extras" and the new
+      // entry shows up implicitly.
+      const nextOrder = page.blocks_order?.length
+        ? [...page.blocks_order, id]
+        : page.blocks_order ?? []
       const nextPages = d.pages.map((p, i) =>
         i === pageIdx
-          ? { ...p, extra_blocks: [...(p.extra_blocks ?? []), newBlock] }
+          ? {
+              ...p,
+              extra_blocks: [...(p.extra_blocks ?? []), newBlock],
+              blocks_order: nextOrder,
+            }
           : p,
       )
       return { ...d, pages: nextPages }
@@ -379,25 +393,64 @@ export default function ReportDetailPage() {
     })
   }
 
-  function removeExtraBlock(pageIdx, blockId) {
+  /** Removes a block from a page regardless of whether it came from the
+   *  template or from extras. For extras, the block definition itself
+   *  disappears; for template blocks, the page just stops listing the
+   *  id in blocks_order so the template stays untouched.
+   *  Either way, content / layout / props overrides scoped to that id
+   *  get cleaned out so the saved page stays tight. */
+  function removeBlockFromPage(pageIdx, blockId) {
     setDraft((d) => {
       if (!d) return d
-      const nextPages = d.pages.map((p, i) => {
-        if (i !== pageIdx) return p
-        const nextContent = { ...(p.content ?? {}) }
-        delete nextContent[blockId]
-        const nextOverrides = { ...(p.layout_overrides ?? {}) }
-        delete nextOverrides[blockId]
-        const nextPropsOverrides = { ...(p.props_overrides ?? {}) }
-        delete nextPropsOverrides[blockId]
-        return {
+      const page = d.pages[pageIdx]
+      if (!page) return d
+      const tpl = getCachedTemplate(pageTemplateMap, page)
+      const allBlocks = combinedBlocks(tpl, page)
+      // Materialize the implicit order into blocks_order on the first
+      // edit so subsequent removes / reorders compose cleanly.
+      const order = page.blocks_order?.length
+        ? page.blocks_order
+        : allBlocks.map((b) => b.id)
+      const nextOrder = order.filter((id) => id !== blockId)
+      const nextExtras = (page.extra_blocks ?? []).filter((b) => b.id !== blockId)
+      const nextContent = { ...(page.content ?? {}) }
+      delete nextContent[blockId]
+      const nextLayout = { ...(page.layout_overrides ?? {}) }
+      delete nextLayout[blockId]
+      const nextPropsOverrides = { ...(page.props_overrides ?? {}) }
+      delete nextPropsOverrides[blockId]
+      const nextPages = d.pages.map((p, i) =>
+        i !== pageIdx ? p : {
           ...p,
-          extra_blocks: (p.extra_blocks ?? []).filter((b) => b.id !== blockId),
+          blocks_order: nextOrder,
+          extra_blocks: nextExtras,
           content: nextContent,
-          layout_overrides: Object.keys(nextOverrides).length ? nextOverrides : null,
+          layout_overrides: Object.keys(nextLayout).length ? nextLayout : null,
           props_overrides: Object.keys(nextPropsOverrides).length ? nextPropsOverrides : null,
-        }
-      })
+        },
+      )
+      return { ...d, pages: nextPages }
+    })
+  }
+
+  /** Reorder a block within a page by absolute index. Materializes
+   *  blocks_order on first call (same trick as removal). */
+  function reorderBlock(pageIdx, blockId, newIndex) {
+    setDraft((d) => {
+      if (!d) return d
+      const page = d.pages[pageIdx]
+      if (!page) return d
+      const tpl = getCachedTemplate(pageTemplateMap, page)
+      const allBlocks = combinedBlocks(tpl, page)
+      const baseOrder = page.blocks_order?.length
+        ? page.blocks_order
+        : allBlocks.map((b) => b.id)
+      const without = baseOrder.filter((id) => id !== blockId)
+      const clamped = Math.max(0, Math.min(newIndex, without.length))
+      const nextOrder = [...without.slice(0, clamped), blockId, ...without.slice(clamped)]
+      const nextPages = d.pages.map((p, i) =>
+        i !== pageIdx ? p : { ...p, blocks_order: nextOrder },
+      )
       return { ...d, pages: nextPages }
     })
   }
@@ -837,7 +890,7 @@ export default function ReportDetailPage() {
                     onRename={(name) => renamePage(idx, name)}
                     showPageHeader={pageCount > 1}
                     onAddExtraBlock={(type, defaults) => addExtraBlock(idx, type, defaults)}
-                    onRemoveExtraBlock={(blockId) => removeExtraBlock(idx, blockId)}
+                    onRemoveBlock={(blockId) => removeBlockFromPage(idx, blockId)}
                     onChangeExtraBlockProps={(blockId, newProps) =>
                       setExtraBlockProps(idx, blockId, newProps)
                     }
@@ -873,8 +926,8 @@ export default function ReportDetailPage() {
                     onAddExtraBlock={(type, defaults) =>
                       addExtraBlock(safeCurrent, type, defaults)
                     }
-                    onRemoveExtraBlock={(blockId) =>
-                      removeExtraBlock(safeCurrent, blockId)
+                    onRemoveBlock={(blockId) =>
+                      removeBlockFromPage(safeCurrent, blockId)
                     }
                     onChangeExtraBlockProps={(blockId, newProps) =>
                       setExtraBlockProps(safeCurrent, blockId, newProps)
@@ -1276,7 +1329,7 @@ function PageSection({
   onRename,
   showPageHeader,
   onAddExtraBlock,
-  onRemoveExtraBlock,
+  onRemoveBlock,
   onChangeExtraBlockProps,
 }) {
   // Per-page state for "edit widget props" — null when no panel is open,
@@ -1411,16 +1464,19 @@ function PageSection({
             const isExtraBlock = block.source === 'extra'
             // Every block in edit mode is configurable: extras write back
             // to their own props, template blocks pile their changes onto
-            // the page-level props_overrides for that block id.
+            // the page-level props_overrides for that block id. The
+            // context menu is offered for any block in edit mode so users
+            // can also reach 위젯 제거 via right-click.
             const canEditProps = isEditing && (
               isExtraBlock ? !!onChangeExtraBlockProps : !!onChangePropsOverride
             )
+            const showContextMenu = isEditing && (canEditProps || !!onRemoveBlock)
             return (
               <div
                 key={block.id}
                 className="min-w-0 h-full"
                 onContextMenu={
-                  canEditProps
+                  showContextMenu
                     ? (e) => {
                         e.preventDefault()
                         setContextMenu({ x: e.clientX, y: e.clientY, blockId: block.id })
@@ -1448,8 +1504,8 @@ function PageSection({
                       : undefined
                   }
                   onRemove={
-                    isEditing && isExtraBlock && onRemoveExtraBlock
-                      ? () => onRemoveExtraBlock(block.id)
+                    isEditing && onRemoveBlock
+                      ? () => onRemoveBlock(block.id)
                       : undefined
                   }
                   onOpenProps={canEditProps ? () => setPropsEditingId(block.id) : undefined}
@@ -1477,6 +1533,14 @@ function PageSection({
             setPropsEditingId(contextMenu.blockId)
             setContextMenu(null)
           }}
+          onRemove={
+            onRemoveBlock
+              ? () => {
+                  onRemoveBlock(contextMenu.blockId)
+                  setContextMenu(null)
+                }
+              : undefined
+          }
         />
       )}
 
@@ -1585,6 +1649,7 @@ function normalizePage(p) {
     layout_overrides: p.layout_overrides ?? null,
     props_overrides: p.props_overrides ?? null,
     extra_blocks: Array.isArray(p.extra_blocks) ? p.extra_blocks : [],
+    blocks_order: Array.isArray(p.blocks_order) ? p.blocks_order : [],
   }
 }
 
@@ -1611,7 +1676,7 @@ function extractBlocks(schema) {
  *  Kept as a vanilla div + portal-less render — radix-ui doesn't ship
  *  a context-menu primitive in this project and a single item doesn't
  *  warrant pulling one in. */
-function BlockContextMenu({ x, y, onClose, onEditProps }) {
+function BlockContextMenu({ x, y, onClose, onEditProps, onRemove }) {
   useEffect(() => {
     function handleClick() { onClose() }
     function handleKey(e) { if (e.key === 'Escape') onClose() }
@@ -1636,6 +1701,16 @@ function BlockContextMenu({ x, y, onClose, onEditProps }) {
         <Settings2 className="h-3.5 w-3.5" />
         속성 편집
       </button>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-destructive/10 text-destructive text-left"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+          위젯 제거
+        </button>
+      )}
     </div>
   )
 }
@@ -1757,10 +1832,17 @@ function freshExtraId(type, existingIds) {
 /** Combined template + page.extra_blocks list, in render order. Extras
  *  inherit the same shape so the rest of the editor (layouts, content
  *  validation, etc.) treats them as peers — only the `source` flag
- *  changes how the UI presents them (e.g. a "추가" badge + remove button). */
+ *  changes how the UI presents them.
+ *
+ *  When `page.blocks_order` is non-empty it overrides the default
+ *  (template-order then extras) sequence: the page picks which blocks
+ *  are visible and in what order. Template block ids omitted from
+ *  blocks_order are dropped from the render, so users can remove
+ *  template-defined blocks from a specific report without touching
+ *  the template itself. */
 function combinedBlocks(template, page) {
   const tplBlocks = extractBlocks(template?.schema)
-  const extra = (page?.extra_blocks ?? []).map((b) => ({
+  const extras = (page?.extra_blocks ?? []).map((b) => ({
     id: b.id,
     title: b.props?.label || b.props?.default_text || b.id,
     type: b.type,
@@ -1768,7 +1850,24 @@ function combinedBlocks(template, page) {
     layout: b.layout,
     source: 'extra',
   }))
-  return [...tplBlocks, ...extra]
+  const order = Array.isArray(page?.blocks_order) ? page.blocks_order : []
+  if (order.length === 0) {
+    return [...tplBlocks, ...extras]
+  }
+  const byId = new Map()
+  for (const b of tplBlocks) byId.set(b.id, b)
+  for (const b of extras) byId.set(b.id, b)
+  const out = []
+  const seen = new Set()
+  for (const id of order) {
+    if (seen.has(id)) continue
+    const b = byId.get(id)
+    if (b) {
+      out.push(b)
+      seen.add(id)
+    }
+  }
+  return out
 }
 
 /**

@@ -78,6 +78,13 @@ class ReportPage(BaseModel):
     # blocks + extra_blocks before checking content shape, so unknown
     # content keys still get rejected.
     extra_blocks: list[dict] = []
+    # Authoritative per-page block sequence — when non-empty, fully
+    # replaces the implicit (template-order + extras) ordering. Each
+    # entry is a block id that must exist either in the template's
+    # blocks or in extra_blocks. Template block ids missing from the
+    # list are hidden, so removing template-defined blocks from a
+    # specific report is just "exclude that id from blocks_order".
+    blocks_order: list[str] = []
 
 
 class ReportRead(BaseModel):

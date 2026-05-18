@@ -157,7 +157,7 @@ def workspace_blockers(db: Session, slug: str) -> dict:
     templates = (
         db.execute(
             select(func.count(Template.template_id)).where(
-                Template.owner_workspace_slug == slug
+                Template.owner_workspace_slugs.contains([slug])
             )
         ).scalar()
         or 0

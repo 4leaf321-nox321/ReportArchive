@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { CaptionInput, LabelField, PreviewLabel, TextStyleField, textStyleToClassName } from './_shared'
@@ -57,26 +58,49 @@ export function BulletedListPropsPanel({ props, onChange }) {
   )
 }
 
-import { ChevronDown, ChevronUp, Plus, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, X } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 
 export function BulletedListEditor({ props, content, onChange, readOnly }) {
   const caption = content?.caption ?? ''
   const items = content?.items ?? []
   const bodyTextClass = textStyleToClassName(props.text_style)
+  const maxItems = props.max_items
+  // Same "always at least one row, last row is virtual when array is empty"
+  // pattern that key_value's multi-value input uses. Enter on the last row
+  // appends + focuses a fresh empty entry; Enter mid-list jumps focus
+  // forward (browser-style Tab also works since we render native inputs).
+  const rowCount = Math.max(1, items.length)
+  const inputRefs = useRef([])
+  const pendingFocusIdx = useRef(null)
+
+  useEffect(() => {
+    if (pendingFocusIdx.current != null) {
+      const idx = pendingFocusIdx.current
+      pendingFocusIdx.current = null
+      const el = inputRefs.current[idx]
+      if (el && typeof el.focus === 'function') el.focus()
+    }
+  })
+  inputRefs.current.length = rowCount
 
   function patch(next) {
     const merged = { caption, items, ...next }
     if (!merged.caption) delete merged.caption
     onChange(merged)
   }
-  function update(idx, value) {
-    patch({ items: items.map((it, i) => (i === idx ? value : it)) })
+  function setAt(idx, value) {
+    const next = items.slice()
+    while (next.length <= idx) next.push('')
+    next[idx] = value
+    patch({ items: next })
   }
   function remove(idx) {
+    if (idx >= items.length) return // virtual row
     patch({ items: items.filter((_, i) => i !== idx) })
   }
   function move(idx, dir) {
+    if (idx >= items.length) return // virtual row can't move
     const newIdx = idx + dir
     if (newIdx < 0 || newIdx >= items.length) return
     const next = [...items]
@@ -84,8 +108,19 @@ export function BulletedListEditor({ props, content, onChange, readOnly }) {
     next.splice(newIdx, 0, item)
     patch({ items: next })
   }
-  function add() {
-    patch({ items: [...items, ''] })
+  function handleEnter(idx) {
+    if (idx === rowCount - 1) {
+      // Append + focus a new empty row — unless max_items would be exceeded.
+      if (maxItems != null && items.length >= maxItems) return
+      const next = items.slice()
+      while (next.length < rowCount) next.push('')
+      next.push('')
+      pendingFocusIdx.current = next.length - 1
+      patch({ items: next })
+    } else {
+      const nextEl = inputRefs.current[idx + 1]
+      if (nextEl && typeof nextEl.focus === 'function') nextEl.focus()
+    }
   }
 
   if (readOnly) {
@@ -112,55 +147,73 @@ export function BulletedListEditor({ props, content, onChange, readOnly }) {
         onChange={(v) => patch({ caption: v })}
         placeholder={props.label}
       />
-      {items.length === 0 && (
-        <p className="text-xs text-muted-foreground italic">아직 항목이 없습니다.</p>
-      )}
-      {items.map((item, idx) => (
-        <div key={idx} className="flex items-center gap-1">
-          <span className="text-muted-foreground text-sm w-3">·</span>
-          <Input
-            value={item ?? ''}
-            onChange={(e) => update(idx, e.target.value)}
-            placeholder={props.placeholder || '항목 입력'}
-            className={`h-8 flex-1 ${bodyTextClass}`}
-          />
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            disabled={idx === 0}
-            onClick={() => move(idx, -1)}
-          >
-            <ChevronUp className="h-3 w-3" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            disabled={idx === items.length - 1}
-            onClick={() => move(idx, 1)}
-          >
-            <ChevronDown className="h-3 w-3" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-destructive"
-            onClick={() => remove(idx)}
-          >
-            <X className="h-3 w-3" />
-          </Button>
-        </div>
-      ))}
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={add}
-        disabled={props.max_items != null && items.length >= props.max_items}
-      >
-        <Plus className="mr-1 h-3 w-3" />
-        항목 추가
-      </Button>
+      {Array.from({ length: rowCount }).map((_, idx) => {
+        const hasRealEntry = idx < items.length
+        const value = items[idx]
+        const atMax = maxItems != null && items.length >= maxItems
+        return (
+          <div key={idx} className="flex items-center gap-1">
+            <span className="text-muted-foreground text-sm w-3">·</span>
+            <Input
+              ref={(el) => {
+                inputRefs.current[idx] = el
+              }}
+              value={value ?? ''}
+              onChange={(e) => setAt(idx, e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  handleEnter(idx)
+                }
+              }}
+              placeholder={props.placeholder || '항목 입력'}
+              className={`h-8 flex-1 ${bodyTextClass}`}
+            />
+            {hasRealEntry ? (
+              <>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  disabled={idx === 0}
+                  onClick={() => move(idx, -1)}
+                >
+                  <ChevronUp className="h-3 w-3" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  disabled={idx === items.length - 1}
+                  onClick={() => move(idx, 1)}
+                >
+                  <ChevronDown className="h-3 w-3" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-destructive"
+                  onClick={() => remove(idx)}
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              </>
+            ) : (
+              // Spacers so the virtual row's width matches real rows
+              // (avoids the input shifting on first keystroke).
+              <span className="h-7 w-[5.25rem] shrink-0" aria-hidden />
+            )}
+            {idx === rowCount - 1 && atMax && hasRealEntry && (
+              <span className="text-[10px] text-muted-foreground pl-2">
+                최대 {maxItems}개
+              </span>
+            )}
+          </div>
+        )
+      })}
+      <p className="text-[10px] text-muted-foreground pl-4">
+        Enter로 항목 추가 · Tab으로 이동
+      </p>
     </div>
   )
 }

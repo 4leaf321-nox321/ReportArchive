@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useDeferredValue, useMemo, useState } from 'react'
 import {
   Bar,
   BarChart,
@@ -685,46 +685,18 @@ export function ChartEditor({ props, content, onChange, readOnly }) {
  * last size change, so the chart only repaints once the user lets go.
  */
 function ChartCanvas({ chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle, className = '' }) {
-  const containerRef = useRef(null)
-  const [stable, setStable] = useState(true)
-
-  useEffect(() => {
-    const node = containerRef.current
-    if (!node) return undefined
-    let timer = null
-    let isFirst = true
-    const obs = new ResizeObserver(() => {
-      // Skip the initial fire so the chart paints immediately on mount.
-      if (isFirst) {
-        isFirst = false
-        return
-      }
-      setStable(false)
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(() => setStable(true), 150)
-    })
-    obs.observe(node)
-    return () => {
-      obs.disconnect()
-      if (timer) clearTimeout(timer)
-    }
-  }, [])
-
+  // We used to debounce repaints behind a ResizeObserver gate to avoid
+  // thrashing recharts during RGL drag-resize. In practice the gate flipped
+  // the chart in/out of the DOM on every parent resize — and the block's
+  // own auto-fit measurer reports a smaller height when the chart is
+  // hidden, which shrinks the cell, which fires the observer again, which
+  // hides the chart, … ad infinitum. recharts' ResponsiveContainer already
+  // handles parent resizes on its own, so just render it directly.
   return (
-    <div ref={containerRef} className={`flex-1 min-h-[16rem] w-full ${className}`}>
-      {stable ? (
-        <ResponsiveContainer width="100%" height="100%">
-          {renderChart(chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle)}
-        </ResponsiveContainer>
-      ) : (
-        <div className="h-full w-full flex items-center justify-center bg-muted/10 rounded text-muted-foreground">
-          {chartType === 'line' ? (
-            <LineIcon className="h-8 w-8 opacity-40" />
-          ) : (
-            <BarChart3 className="h-8 w-8 opacity-40" />
-          )}
-        </div>
-      )}
+    <div className={`flex-1 min-h-[16rem] w-full ${className}`}>
+      <ResponsiveContainer width="100%" height="100%">
+        {renderChart(chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle)}
+      </ResponsiveContainer>
     </div>
   )
 }

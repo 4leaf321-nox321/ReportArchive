@@ -4,7 +4,7 @@
 # Runs on the developer's build machine (WSL Ubuntu 24.04 is fine).
 # Output: release/reportarchive-<version>.tar.gz
 #
-# Transport that tarball to the production server, untar, run install.sh.
+# Transport that tarball to the production server, untar, run ./deploy.sh.
 
 set -euo pipefail
 
@@ -45,12 +45,10 @@ fi
 # --- 3. Stage scripts + docs ---
 echo
 echo "==> [3/4] Staging install scripts"
-cp deploy/prepare_server.sh        "$STAGE/"
-cp deploy/install.sh               "$STAGE/"
-cp deploy/update.sh                "$STAGE/"
-cp deploy/reportarchive.service    "$STAGE/"
-cp deploy/.env.production.example  "$STAGE/.env.example"
-cp deploy/README_OPERATOR.md       "$STAGE/README.md"
+cp deploy/deploy.sh                          "$STAGE/"
+cp deploy/reportarchive.service.template     "$STAGE/"
+cp deploy/.env.production.example            "$STAGE/.env.example"
+cp deploy/README_OPERATOR.md                 "$STAGE/README.md"
 echo "$VERSION" > "$STAGE/VERSION"
 chmod +x "$STAGE"/*.sh
 

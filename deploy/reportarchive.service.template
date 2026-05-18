@@ -6,28 +6,28 @@ Requires=postgresql.service
 
 [Service]
 Type=simple
-User=reportarchive
-Group=reportarchive
-WorkingDirectory=/opt/reportarchive
+User=@@USER@@
+Group=@@USER@@
+WorkingDirectory=@@INSTALL_DIR@@
 
 # Bind-mount layout:
 #   .env           → read-only into the container's backend root
 #   uploads/, logs/→ writable, host-side persistence
 ExecStart=/usr/bin/apptainer run \
-    --bind /opt/reportarchive/.env:/opt/app/backend/.env:ro \
-    --bind /opt/reportarchive/uploads:/data/uploads \
-    --bind /opt/reportarchive/logs:/data/logs \
-    /opt/reportarchive/app.sif
+    --bind @@INSTALL_DIR@@/.env:/opt/app/backend/.env:ro \
+    --bind @@INSTALL_DIR@@/uploads:/data/uploads \
+    --bind @@INSTALL_DIR@@/logs:/data/logs \
+    @@INSTALL_DIR@@/app.sif
 
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=30
 
-# Light hardening — Apptainer is already rootless / namespace-isolated,
-# these add belt-and-suspenders against host filesystem writes.
+# Light hardening — Apptainer is already rootless / namespace-isolated.
+# ProtectHome is OFF because the install dir lives under /home/<operator>.
 NoNewPrivileges=true
 ProtectSystem=full
-ProtectHome=true
+ProtectHome=false
 PrivateTmp=true
 
 [Install]

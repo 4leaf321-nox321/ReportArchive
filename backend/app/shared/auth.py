@@ -9,8 +9,8 @@ up the workspace tree, so a 본부 admin implicitly has admin on all 팀들.
 
 Roles:
     admin   — manage members + base data (categories, workspaces); + manager rights
-    manager — write/edit/delete reports + create/edit templates
-    user    — read reports
+    manager — manage templates (create/edit/delete) + writer rights
+    user    — write/edit/delete reports and composite reports within own workspace
 """
 from __future__ import annotations
 
@@ -45,7 +45,10 @@ class CurrentUser:
 
     @property
     def can_write_reports(self) -> bool:
-        return self.role in (Role.admin, Role.manager)
+        # All authenticated workspace members (admin/manager/user) can edit
+        # reports + composite reports. Writes in virtual aggregate views
+        # (e.g. _global) are still rejected by require_writer.
+        return self.role in (Role.admin, Role.manager, Role.user)
 
 
 # --------------------------------------------------------------------------- #
@@ -183,4 +186,21 @@ def require_role(*allowed: Role):
 
 require_admin = require_role(Role.admin)
 require_manager = require_role(Role.admin, Role.manager)
-require_writer = require_manager  # alias for "can write reports"
+
+
+def require_writer(actor: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """Allow any authenticated workspace member to write reports / composites,
+    but reject virtual aggregate workspaces (e.g. `_global`) — those are
+    read-only views and writes there would have no meaningful target.
+    """
+    if actor.workspace.virtual:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "가상(통합) 부서에서는 쓰기 작업을 할 수 없습니다. 실제 부서를 선택하세요.",
+        )
+    if actor.role not in (Role.admin, Role.manager, Role.user):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"권한 부족 (현재: {actor.role.value})",
+        )
+    return actor

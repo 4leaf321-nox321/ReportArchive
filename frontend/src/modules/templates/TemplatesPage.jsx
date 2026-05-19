@@ -20,10 +20,10 @@ import { toast } from 'sonner'
 export default function TemplatesPage() {
   const { me } = useAuth()
   const { slug } = useWorkspace()
-  // Templates are author-able by manager+ (admin or manager). user is read-only.
+  // Template lifecycle (create / publish / delete) is the manager role's
+  // responsibility. Regular users can view templates but can't author them.
   const canManageTemplates = me?.role === 'admin' || me?.role === 'manager'
-  // Deletion is destructive and admin-only on the backend.
-  const canDeleteTemplates = me?.role === 'admin'
+  const canDeleteTemplates = canManageTemplates
   // Gate on `slug` so we don't fire the request before WorkspaceProvider
   // has set the X-Workspace-Slug header on the API client.
   const { data: templates, loading, error, reload } = useAsync(

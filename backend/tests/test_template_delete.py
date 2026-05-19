@@ -2,9 +2,13 @@
 
 Covers:
   - admin can delete a template with no reports
+  - manager can delete a template (template lifecycle = manager's job)
   - 409 when reports reference the template
-  - non-admin (manager) gets 403
   - 404 for unknown template_id
+
+NOTE: these tests assume user ids 2 (admin) and 3 (manager) exist in
+the test DB. They predate the current seed (which only creates id=1)
+and rely on an external fixture not yet checked in.
 """
 import io
 import uuid
@@ -108,12 +112,17 @@ def test_delete_refuses_when_reports_reference_template():
         _force_delete(tid)
 
 
-def test_delete_requires_admin():
+def test_manager_can_delete_template():
+    """Template lifecycle (create / publish / delete) is the manager
+    role's responsibility. Admin retains the right transitively."""
     client = TestClient(app)
     tid = _seed_template()
     try:
         res = client.delete(f"/api/templates/{tid}", headers=_manager_headers())
-        assert res.status_code == 403, res.text
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["success"] is True
+        assert body["data"]["deleted_versions"] == 1
     finally:
         _force_delete(tid)
 

@@ -12,7 +12,7 @@ from app.modules.templates.schemas import (
     TemplateRead,
     TemplateVersionSummary,
 )
-from app.shared.auth import CurrentUser, get_current_user, require_admin, require_manager
+from app.shared.auth import CurrentUser, get_current_user, require_manager
 from app.shared.responses import created_response, not_found_response, success_response
 
 router = APIRouter()
@@ -98,12 +98,12 @@ def create_template(
 def delete_template(
     template_id: str,
     db: Session = Depends(get_db),
-    actor: CurrentUser = Depends(require_admin),
+    actor: CurrentUser = Depends(require_manager),
 ):
-    """Deletes ALL versions of a template. Admin-only because templates
-    are shared infrastructure — manager-level edits are limited to
-    publishing new versions, not destruction. Refuses if any reports
-    still reference the template (409)."""
+    """Deletes ALL versions of a template. Manager-and-up: template
+    lifecycle (create / publish / delete) is the manager role's
+    responsibility. Refuses if any reports still reference the
+    template (409)."""
     latest = services.get_latest_version(db, template_id)
     if not latest or not services.is_visible(db, latest, actor.workspace.slug):
         return not_found_response(f"Template not found: {template_id}")

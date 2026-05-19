@@ -1,12 +1,13 @@
 """Business logic for reports — workspace scoping + widget-v1 validation."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from app.modules.reports.models import Report
+from app.modules.reports.models import Report, ReportEditLock
 from app.modules.reports.schemas import ReportCreate, ReportPage, ReportUpdate
 from app.modules.templates import services as template_services
 from app.modules.workspaces import services as ws_services
@@ -14,6 +15,51 @@ from app.widgets import (
     validate_layout_overrides as _validate_layout_overrides,
     validate_report_content as _validate_widget_v1_content,
 )
+
+# How long a lock survives without a heartbeat. Pairs with the frontend's
+# 30s heartbeat (4x margin so a single dropped beat doesn't lose the lock).
+LOCK_TTL = timedelta(seconds=120)
+
+
+# --------------------------------------------------------------------------- #
+# Edit-lock errors                                                            #
+# --------------------------------------------------------------------------- #
+
+
+class LockError(Exception):
+    """Base class so the route layer can map any lock failure to 409.
+    Subclasses carry a stable `code` string for the JSON error body — the
+    frontend dispatches on this to choose the right UX (takeover dialog,
+    refresh prompt, etc.)."""
+
+    code: str = "lock_error"
+
+    def __init__(self, message: str, *, holder: Optional[ReportEditLock] = None):
+        super().__init__(message)
+        self.holder = holder
+
+
+class LockHeldByOtherError(LockError):
+    """acquire_lock found a live lock owned by a different user. Caller can
+    retry with `force=True` to take over."""
+
+    code = "lock_held_by_other"
+
+
+class LockNotHeldError(LockError):
+    """The caller doesn't currently hold a live lock — either it expired,
+    it was never acquired, or someone else took it over. Surfaces on
+    heartbeat / release / save attempts."""
+
+    code = "lock_not_held"
+
+
+class RevisionMismatchError(LockError):
+    """Caller's `expected_revision` doesn't match the row. Used as the
+    optimistic safety net for the narrow window between forced takeover
+    and the prior holder's stale save."""
+
+    code = "revision_mismatch"
 
 
 def list_reports_in_workspace(
@@ -237,13 +283,138 @@ def create_report(
     return report
 
 
+# --------------------------------------------------------------------------- #
+# Edit lock — pessimistic, per-report, with TTL                               #
+# --------------------------------------------------------------------------- #
+
+
+def get_active_lock(
+    db: Session, report: Report, *, now: Optional[datetime] = None
+) -> Optional[ReportEditLock]:
+    """Returns the lock row only if it's still live (not past expires_at).
+    Returns None when there's no row, or the row exists but has expired —
+    callers should treat both cases identically (no current holder).
+    """
+    now = now or datetime.utcnow()
+    lock = report.edit_lock
+    if lock is None:
+        return None
+    if lock.expires_at <= now:
+        return None
+    return lock
+
+
+def acquire_lock(
+    db: Session,
+    report: Report,
+    user_id: int,
+    *,
+    force: bool = False,
+) -> ReportEditLock:
+    """Claim the edit lock for `user_id`. Idempotent for the current holder
+    (just refreshes the TTL), takes over expired locks automatically, and
+    rejects live locks held by a different user unless `force=True`.
+
+    Returns the (live) lock row. Caller is responsible for committing the
+    session — this function flushes so the lock row is visible inside the
+    same transaction as any follow-up reads.
+    """
+    now = datetime.utcnow()
+    expires = now + LOCK_TTL
+    existing = report.edit_lock
+    if existing is not None and existing.expires_at > now and existing.user_id != user_id and not force:
+        raise LockHeldByOtherError(
+            "Report is currently being edited by another user.",
+            holder=existing,
+        )
+    if existing is None:
+        lock = ReportEditLock(
+            report_id=report.id,
+            user_id=user_id,
+            acquired_at=now,
+            expires_at=expires,
+        )
+        db.add(lock)
+        report.edit_lock = lock
+    else:
+        # Same user refreshing, or force-takeover, or expired-and-reclaimed
+        # — all three converge on "rewrite the row in place".
+        existing.user_id = user_id
+        existing.acquired_at = now
+        existing.expires_at = expires
+        lock = existing
+    db.flush()
+    return lock
+
+
+def heartbeat_lock(
+    db: Session, report: Report, user_id: int
+) -> ReportEditLock:
+    """Extend the TTL of an already-held lock. Fails if the caller doesn't
+    own a live lock — that's the signal to the frontend that someone took
+    over or the session expired, and the user should bail out of edit mode."""
+    now = datetime.utcnow()
+    lock = report.edit_lock
+    if lock is None or lock.expires_at <= now or lock.user_id != user_id:
+        raise LockNotHeldError(
+            "Edit lock is no longer held by this user.",
+            holder=lock if (lock is not None and lock.expires_at > now) else None,
+        )
+    lock.expires_at = now + LOCK_TTL
+    db.flush()
+    return lock
+
+
+def release_lock(db: Session, report: Report, user_id: int) -> None:
+    """Drop the lock if (and only if) `user_id` currently holds it. No-op
+    when the lock is absent, expired, or held by someone else — releases
+    must not be able to clobber another editor's session."""
+    lock = report.edit_lock
+    if lock is None:
+        return
+    now = datetime.utcnow()
+    if lock.user_id != user_id or lock.expires_at <= now:
+        return
+    db.delete(lock)
+    report.edit_lock = None
+    db.flush()
+
+
+def _require_lock_for_update(
+    report: Report, user_id: int
+) -> None:
+    """Pre-check for update_report: caller must currently hold the lock.
+    Raised before any DB mutation so a forced takeover (or expired lock)
+    bails out without a partial write."""
+    now = datetime.utcnow()
+    lock = report.edit_lock
+    if lock is None or lock.expires_at <= now or lock.user_id != user_id:
+        raise LockNotHeldError(
+            "You no longer hold the edit lock for this report. "
+            "Reload to see the current state.",
+            holder=lock if (lock is not None and lock.expires_at > now) else None,
+        )
+
+
 def update_report(
     db: Session,
     report: Report,
     payload: ReportUpdate,
     *,
     updated_by_user_id: Optional[int] = None,
+    expected_revision: Optional[int] = None,
+    require_lock: bool = True,
 ) -> Report:
+    # Concurrency gates — both must pass before we touch anything. Lock
+    # check first because a takeover invalidates revision assumptions too.
+    if require_lock and updated_by_user_id is not None:
+        _require_lock_for_update(report, updated_by_user_id)
+    if expected_revision is not None and report.revision != expected_revision:
+        raise RevisionMismatchError(
+            f"Report has been modified by someone else "
+            f"(client revision {expected_revision}, server revision {report.revision}).",
+        )
+
     data = payload.model_dump(exclude_unset=True)
 
     # Resolve the new page list. Either the client sent the full `pages`
@@ -298,6 +469,11 @@ def update_report(
     # always pass the actor id so this never silently goes None.
     if updated_by_user_id is not None:
         report.updated_by_user_id = updated_by_user_id
+
+    # Bump optimistic-concurrency counter. Every successful save advances
+    # this, so any in-flight PATCH from a stale tab will hit
+    # RevisionMismatchError on its next attempt.
+    report.revision = (report.revision or 1) + 1
 
     db.commit()
     db.refresh(report)

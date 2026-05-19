@@ -127,6 +127,16 @@ class Report(Base):
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )
 
+    # Optimistic-concurrency counter. Bumped on every successful
+    # update_report() call; PATCH callers must echo back the revision they
+    # fetched, otherwise the service raises a revision_mismatch 409. Pairs
+    # with the pessimistic ReportEditLock below as a belt-and-suspenders
+    # safety net (matters specifically right after a forced takeover, when
+    # the prior holder may still try to save before they notice).
+    revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+
     # Aggregation reference date — used by the dashboard's period filters
     # instead of created_at, so reports that are filled in retroactively
     # can still be bucketed against the period they actually describe.
@@ -144,3 +154,43 @@ class Report(Base):
     updated_by: Mapped["User | None"] = relationship(
         "User", foreign_keys=[updated_by_user_id], lazy="joined"
     )
+    # Current edit lock, if any. Eager-loaded so the report GET can include
+    # "who's editing" without a second query. The lock row may exist but be
+    # expired — the service layer decides what counts as live.
+    edit_lock: Mapped["ReportEditLock | None"] = relationship(
+        "ReportEditLock",
+        back_populates="report",
+        uselist=False,
+        cascade="all, delete-orphan",
+        lazy="joined",
+    )
+
+
+class ReportEditLock(Base):
+    """Pessimistic edit lock — at most one row per report (report_id is PK).
+
+    Acquired when a user enters edit mode; refreshed by periodic heartbeats
+    while editing; released on save/cancel/page-leave. The TTL (`expires_at`)
+    lets abandoned sessions auto-release: any acquire call past that point
+    treats the row as orphaned and upserts the new holder.
+
+    Reads of this row should *always* compare `expires_at` against `now` in
+    the service layer — never trust mere existence. See
+    services.get_active_lock().
+    """
+
+    __tablename__ = "report_edit_locks"
+
+    report_id: Mapped[int] = mapped_column(
+        ForeignKey("reports.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    acquired_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    report: Mapped["Report"] = relationship(
+        "Report", back_populates="edit_lock"
+    )
+    user: Mapped["User"] = relationship("User", lazy="joined")

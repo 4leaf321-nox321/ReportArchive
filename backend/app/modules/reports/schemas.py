@@ -1,12 +1,24 @@
 """Pydantic schemas for reports."""
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import Any, Optional
+from datetime import date, datetime, timezone
+from typing import Annotated, Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
 
 from app.modules.reports.models import ReportStatus
+
+
+def _serialize_utc(dt: datetime) -> str:
+    # Naive datetimes coming out of the DB are UTC (we write them with
+    # datetime.utcnow()). Stamp the offset on the way out so JS clients
+    # don't parse the ISO string as local wallclock.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+UtcDatetime = Annotated[datetime, PlainSerializer(_serialize_utc, return_type=str)]
 
 
 def _flatten_user_refs(obj: Any) -> Any:
@@ -26,6 +38,20 @@ def _flatten_user_refs(obj: Any) -> Any:
     if updated_by is not None:
         extras["updated_by_name"] = updated_by.name
         extras["updated_by_email"] = updated_by.email
+    # Flatten the live edit-lock (if any) into a small inline dict so the
+    # GET /reports/{id} consumer can render "현재 OO 편집 중" without a
+    # second roundtrip. We deliberately walk the eager-loaded relationship
+    # here and let LockInfo's model_validator drop expired rows.
+    lock = getattr(obj, "edit_lock", None)
+    if lock is not None:
+        lock_user = getattr(lock, "user", None)
+        extras["edit_lock"] = {
+            "user_id": lock.user_id,
+            "user_name": getattr(lock_user, "name", None),
+            "user_email": getattr(lock_user, "email", None),
+            "acquired_at": lock.acquired_at,
+            "expires_at": lock.expires_at,
+        }
     if not extras:
         return obj
     # Build a dict so Pydantic stops walking the ORM (otherwise it'd try to
@@ -39,12 +65,25 @@ def _flatten_user_refs(obj: Any) -> Any:
             "title", "status", "report_date",
             "owner_user_id", "updated_by_user_id",
             "tags", "content", "layout_overrides", "props_overrides", "pages",
-            "created_at", "updated_at",
+            "created_at", "updated_at", "revision",
         )
         if hasattr(obj, key)
     }
     base.update(extras)
     return base
+
+
+class LockInfo(BaseModel):
+    """Inline lock-state payload — embedded in ReportRead and returned by
+    the dedicated POST/heartbeat lock endpoints. `expires_at` is the wall
+    clock the client should treat as the deadline (the server's clock).
+    """
+
+    user_id: int
+    user_name: Optional[str] = None
+    user_email: Optional[str] = None
+    acquired_at: UtcDatetime
+    expires_at: UtcDatetime
 
 
 class ReportPage(BaseModel):
@@ -121,8 +160,16 @@ class ReportRead(BaseModel):
     layout_overrides: Optional[dict] = None
     props_overrides: Optional[dict] = None
     pages: list[ReportPage] = []
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
+    # Optimistic-concurrency token. Clients echo this back in PATCH bodies
+    # via `expected_revision`; the server bumps it on every successful save.
+    revision: int = 1
+    # Current edit-lock holder, when one is live. None when no lock row
+    # exists OR the row has expired (the schema layer trusts the service
+    # to clear stale rows; if it didn't, the timestamp here lets the
+    # frontend decide cosmetically).
+    edit_lock: Optional[LockInfo] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -165,8 +212,8 @@ class ReportSummary(BaseModel):
     # `pages` column and discards the heavy fields (content, layouts)
     # via ReportPagePreview's extra="ignore".
     pages: list[ReportPagePreview] = []
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
 
     @model_validator(mode="before")
     @classmethod
@@ -206,3 +253,9 @@ class ReportUpdate(BaseModel):
     layout_overrides: Optional[dict] = None
     props_overrides: Optional[dict] = None
     pages: Optional[list[ReportPage]] = None
+    # Optimistic-concurrency token: the revision the client thinks is
+    # current. The service compares against the server's value and rejects
+    # the PATCH with revision_mismatch if they differ. Optional so the
+    # field can roll out without breaking older clients, but the frontend
+    # is expected to send it on every save.
+    expected_revision: Optional[int] = Field(default=None, ge=1)

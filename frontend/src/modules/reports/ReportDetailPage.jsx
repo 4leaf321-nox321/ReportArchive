@@ -3,6 +3,7 @@ import { useParams, useNavigate, useLocation, Link } from 'react-router-dom'
 import {
   ArrowLeft,
   Bookmark,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -44,10 +45,18 @@ import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { PageWidthToggle, usePageWidth } from '@/shared/components/PageWidthToggle'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
+import { useAuth } from '@/shared/auth/AuthContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { usePersistedState } from '@/shared/hooks/usePersistedState'
 import { useWidgetCatalog } from '@/shared/hooks/useWidgetCatalog'
-import { getReport, createReport, updateReport, deleteReport } from './api'
+import {
+  getReport,
+  createReport,
+  updateReport,
+  deleteReport,
+  LockConflictError,
+} from './api'
+import { useReportLock } from './useReportLock'
 import { getTemplateVersion, createTemplate } from '@/shared/api/templates'
 import { listTemplateCategories } from '@/shared/api/templateCategories'
 import { STATUSES, STATUS_LABEL, STATUS_VARIANT } from './constants'
@@ -74,6 +83,8 @@ export default function ReportDetailPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const { slug, all: workspaces } = useWorkspace()
+  const { me } = useAuth()
+  const currentUserId = me?.user?.id ?? null
   const isNew = Boolean(templateId)
   // When the previous page handed us `state.startEditing` (the "복사"
   // flow does this so the new copy lands directly in edit mode), we
@@ -92,6 +103,12 @@ export default function ReportDetailPage() {
   const [copyOpen, setCopyOpen] = useState(false)
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
   const [aiPromptOpen, setAiPromptOpen] = useState(false)
+  const [aiPromptV2Open, setAiPromptV2Open] = useState(false)
+  // Takeover prompt — holds the LockConflictError.holder payload when
+  // the user tried to acquire a lock that someone else holds. Driving
+  // the dialog open state by the holder object (vs a separate bool) lets
+  // the dialog read the latest info directly.
+  const [takeoverPrompt, setTakeoverPrompt] = useState(null)
   const [pasteJsonOpen, setPasteJsonOpen] = useState(false)
   const [isEditing, setIsEditing] = useState(isNew || startEditingFromState)
   const [currentPage, setCurrentPage] = useState(0)
@@ -123,6 +140,20 @@ export default function ReportDetailPage() {
 
   const loading = isNew ? tplLoading : rptLoading
   const error = isNew ? tplError : rptError
+
+  // Pessimistic edit lock — inert for new reports (no id yet). Heartbeats
+  // every 30s while held; auto-releases on unmount. If a heartbeat ever
+  // fails (typically because someone forced a takeover), we exit edit
+  // mode and reload to surface their changes.
+  const lock = useReportLock(isNew ? null : reportId, {
+    onLost: () => {
+      toast.warning(
+        '다른 사용자가 편집을 강제로 가져갔습니다. 보기 모드로 전환합니다.'
+      )
+      setIsEditing(false)
+      if (!isNew) reloadReport()
+    },
+  })
 
   // Local working copy of the report. `pages` is the source of truth for
   // template binding + content + layout_overrides; the top-level fields
@@ -171,6 +202,10 @@ export default function ReportDetailPage() {
         report_date: existingReport.report_date ?? todayIsoDate(),
         tags: existingReport.tags ?? [],
         status: existingReport.status,
+        // Optimistic-concurrency token. We send this back as
+        // `expected_revision` on save; the server rejects with 409 if
+        // someone else's save landed between our load and our save.
+        revision: existingReport.revision ?? 1,
         pages,
       })
       setCurrentPage((p) => clamp(p, 0, pages.length - 1))
@@ -672,12 +707,36 @@ export default function ReportDetailPage() {
         setIsEditing(false)
         navigate(`/w/${slug}/reports/${created.id}`, { replace: true })
       } else {
-        await updateReport(draft.id, payload)
+        // Echo the revision we loaded so the server can detect a stale
+        // save (covers the brief window where a forced takeover doesn't
+        // yet show up in our heartbeat).
+        await updateReport(draft.id, {
+          ...payload,
+          expected_revision: draft.revision,
+        })
         toast.success('저장되었습니다.')
+        await lock.release()
         reloadReport()
         setIsEditing(false)
       }
     } catch (err) {
+      // Lock / revision conflicts: keep the editor open with the user's
+      // changes intact so they can copy the diff manually before
+      // reloading. Generic failures fall through to the same toast.
+      if (err instanceof LockConflictError) {
+        if (err.code === 'revision_mismatch') {
+          toast.error(
+            '다른 사용자가 먼저 저장했습니다. 변경사항을 보존하려면 복사 후 새로고침하세요.'
+          )
+        } else if (err.code === 'lock_not_held') {
+          toast.error(
+            '편집 권한이 없습니다 (인계되었거나 만료됨). 변경사항을 복사 후 새로고침하세요.'
+          )
+        } else {
+          toast.error(err.message || '저장 실패')
+        }
+        return
+      }
       toast.error(err.message || '저장 실패')
     }
   }
@@ -687,6 +746,10 @@ export default function ReportDetailPage() {
       navigate(`/w/${slug}/reports`)
       return
     }
+    // Drop the lock immediately so another user doesn't wait for the TTL.
+    // Fire-and-forget — the hook also releases on unmount and best-effort
+    // on tab close.
+    lock.release().catch(() => {})
     if (existingReport) {
       // Re-seed from the server snapshot.
       const pages =
@@ -712,6 +775,28 @@ export default function ReportDetailPage() {
       setCurrentPage((p) => clamp(p, 0, pages.length - 1))
     }
     setIsEditing(false)
+  }
+
+  /** Acquire the edit lock and flip into edit mode. On 409
+   *  lock_held_by_other, surface a takeover dialog with the holder info;
+   *  the user can then either back out or force the lock. New reports
+   *  skip the lock entirely — they don't have a server id yet. */
+  async function onEnterEdit({ force = false } = {}) {
+    if (isNew) {
+      setIsEditing(true)
+      return
+    }
+    try {
+      await lock.acquire({ force })
+      setTakeoverPrompt(null)
+      setIsEditing(true)
+    } catch (err) {
+      if (err instanceof LockConflictError && err.code === 'lock_held_by_other') {
+        setTakeoverPrompt(err.holder)
+        return
+      }
+      toast.error(err.message || '편집 모드 진입 실패')
+    }
   }
 
   async function onDelete() {
@@ -960,10 +1045,14 @@ export default function ReportDetailPage() {
           layout_overrides: null,
           props_overrides: null,
           blocks_order: [],
-          block_sections: {},
+          block_sections: {
+            '<block_id_1>': '<단락 구분 item code>',
+          },
         },
       ],
     }
+
+    const sectionTaxonomyBlock = renderSectionTaxonomy(sectionCategories)
 
     const widgetCatalogBlock = widgets.length === 0
       ? '(위젯 카탈로그를 아직 불러오지 못했습니다. 잠시 후 다시 열어보세요.)'
@@ -1033,9 +1122,22 @@ export default function ReportDetailPage() {
       '3. `block_id` 는 정규식 `^[a-z][a-z0-9_]{0,63}$` 를 만족해야 합니다. 영문 소문자로 시작, 숫자·언더스코어 가능, 페이지 내 유일.',
       '4. 각 페이지의 `template_id` / `template_version` 은 위 골격에 채워둔 값을 그대로 유지하세요 (직접 수정 금지).',
       '5. 주제가 길거나 분리된다면 `pages` 에 페이지를 추가해도 됩니다. 같은 template_id / version 을 그대로 복사해 사용하세요.',
-      '6. `layout_overrides`, `props_overrides`, `blocks_order`, `block_sections` 는 비워두는 것이 안전합니다. (`null` / `[]` / `{}` 그대로)',
-      '7. 모르는 값은 생략하거나 빈 문자열 `""` 로 두세요. 임의의 값(placeholder)을 지어내지 마세요.',
-      '8. `image` / `attachment` 위젯은 시스템에 업로드된 파일을 가리키는 `file_id` 가 필요하므로 절대 만들지 마세요.',
+      '6. `layout_overrides`, `props_overrides`, `blocks_order` 는 비워두는 것이 안전합니다. (`null` / `[]` 그대로)',
+      '7. `block_sections` 은 선택 사항입니다. 단락 구분이 분명한 블록만 아래 “단락 구분 (block_sections)” 절을 참고해 채우세요. 비울 때는 `{}`.',
+      '8. 모르는 값은 생략하거나 빈 문자열 `""` 로 두세요. 임의의 값(placeholder)을 지어내지 마세요.',
+      '9. `image` / `attachment` 위젯은 시스템에 업로드된 파일을 가리키는 `file_id` 가 필요하므로 절대 만들지 마세요.',
+      '',
+      '== 단락 구분 (block_sections) ==',
+      '`pages[].block_sections` 는 `{ "block_id": "item_code" }` 형식의 맵입니다. 각 블록에 "이 블록이 어느 단락(섹션)에 속하는지" 표시하는 메타데이터로, 보고서 화면에서 색상 칩으로 표시됩니다.',
+      '- 키 = 같은 페이지 안에 존재하는 블록 id (template 블록이든 extra 블록이든 OK)',
+      '- 값 = 아래 taxonomy 의 `code` 문자열 (정확히 일치해야 함, label/한글이름 사용 금지)',
+      '- 모든 블록에 달 필요 없음. 단락 구분이 분명한 블록만 태깅.',
+      '- 같은 code 를 여러 블록에 사용 가능 (한 단락에 여러 위젯).',
+      '- 아래 taxonomy 에 없는 code 는 사용 금지. 적절한 항목이 없으면 그 블록은 그냥 생략.',
+      '',
+      '아래는 현재 워크스페이스에 등록된 단락 구분 taxonomy 입니다 (카테고리별 그룹).',
+      '',
+      sectionTaxonomyBlock,
       '',
       '== 절대 하지 말 것 (체크리스트) ==',
       '- bulleted_list 의 items 를 `[{text, depth}, ...]` 객체 배열로 만들기 → 반드시 `["문자열", ...]`',
@@ -1044,6 +1146,8 @@ export default function ReportDetailPage() {
       '- flowchart 를 `nodes` / `edges` 그래프로 표현 → `items: [{label, description?}]` 순차 리스트만 지원',
       '- image / attachment 위젯 생성 → 불가능 (file_id 필요)',
       '- props 에 widget 의 props_schema 에 없는 키 추가 (`additionalProperties: false`)',
+      '- `block_sections` 값에 한글 라벨/카테고리 이름 넣기 → 반드시 `code` 문자열',
+      '- 위 taxonomy 에 없는 임의의 code 만들기 → 적절한 항목이 없으면 그 블록 항목을 생략',
       '',
       '== 위젯 카탈로그 (전체 목록 / props_schema 원본) ==',
       widgetCatalogBlock,
@@ -1052,7 +1156,189 @@ export default function ReportDetailPage() {
       examples,
       '',
       '== 작성 흐름 ==',
-      '① 사용자 입력을 훑어 섹션/표/리스트/수치 등을 식별 → ② 각 조각을 어떤 위젯으로 표현할지 결정 → ③ extra_blocks 에 블록을 선언하고 같은 id 로 content 채움 → ④ JSON 만 출력.',
+      '① 사용자 입력을 훑어 섹션/표/리스트/수치 등을 식별 → ② 각 조각을 어떤 위젯으로 표현할지 결정 → ③ extra_blocks 에 블록을 선언하고 같은 id 로 content 채움 → ④ 단락 구분이 분명한 블록은 block_sections 에 태깅 → ⑤ JSON 만 출력.',
+      '',
+      '== 사용자 입력 ==',
+      '<<여기에 보고서로 만들고 싶은 내용을 붙여 넣으세요>>',
+    ].join('\n')
+  }
+
+  // V2: bakes the current page's template skeleton (already-arranged
+  // widget blocks: id / type / props) into the prompt so the AI is told
+  // to fill those existing blocks first, and only fall back to
+  // `extra_blocks` when the template lacks a needed widget type. None of
+  // the report's user-entered content is included — only the empty
+  // template layout.
+  function buildAiPromptV2() {
+    const widgets = widgetCatalog?.widgets ?? []
+    const firstPage = draft?.pages?.[0]
+    const tplId = firstPage?.template_id ?? 'TEMPLATE_ID_HERE'
+    const tplVer = firstPage?.template_version ?? 1
+    const template = currentTemplate
+    const tplBlocks = Array.isArray(template?.schema?.blocks) ? template.schema.blocks : []
+
+    const contentSkeleton = {}
+    for (const b of tplBlocks) {
+      contentSkeleton[b.id] = `<${b.type} 위젯의 content (아래 위젯별 형식 참고)>`
+    }
+
+    const blockSectionsSkeleton = tplBlocks.length > 0
+      ? { [tplBlocks[0].id]: '<단락 구분 item code>' }
+      : { '<block_id>': '<단락 구분 item code>' }
+
+    const skeleton = {
+      _type: 'report_archive_draft_v1',
+      title: '<보고서 제목>',
+      report_date: '<YYYY-MM-DD>',
+      tags: [],
+      pages: [
+        {
+          template_id: tplId,
+          template_version: tplVer,
+          name: null,
+          extra_blocks: [],
+          content: tplBlocks.length > 0
+            ? contentSkeleton
+            : {
+                '<block_id_1>': { /* extra_blocks 에 추가한 위젯의 content */ },
+              },
+          layout_overrides: null,
+          props_overrides: null,
+          blocks_order: [],
+          block_sections: blockSectionsSkeleton,
+        },
+      ],
+    }
+
+    const sectionTaxonomyBlock = renderSectionTaxonomy(sectionCategories)
+
+    const templateBlocksBlock = tplBlocks.length === 0
+      ? '(현재 페이지에 바인딩된 템플릿을 아직 불러오지 못했거나 비어 있습니다. 잠시 후 다시 열어보세요. 그동안에는 모든 위젯을 `extra_blocks` 에 직접 선언하셔도 됩니다.)'
+      : tplBlocks
+          .map((b, i) => {
+            const propsStr = JSON.stringify(b.props ?? {}, null, 2)
+            return `### [${i + 1}] id="${b.id}"  type=${b.type}\nprops (수정 금지 — 참고용):\n${indent(propsStr, 2)}`
+          })
+          .join('\n\n')
+
+    const widgetCatalogBlock = widgets.length === 0
+      ? '(위젯 카탈로그를 아직 불러오지 못했습니다. 잠시 후 다시 열어보세요.)'
+      : widgets
+          .map((w) => {
+            const schemaStr = JSON.stringify(w.props_schema ?? {}, null, 2)
+            return `### ${w.type} — ${w.label}\n${w.description}\nprops_schema:\n${indent(schemaStr, 2)}`
+          })
+          .join('\n\n')
+
+    const examples = [
+      '※ 모든 예시는 백엔드 스키마와 1:1 로 일치합니다. 키 이름·타입을 절대 변형하지 마세요.',
+      '',
+      '### heading (제목)',
+      'props (required: level) : `{ "level": 2 }`   // 1=대제목, 2=중제목, 3=소제목',
+      'content : `{ "text": "섹션 제목" }`',
+      '',
+      '### rich_text (자유 서술 / 마크다운)',
+      'props : `{}`   // 모든 필드 선택. label 등 없음.',
+      'content (권장: 단순형) : `{ "markdown": "여러 줄 텍스트…\\n- 글머리도 가능" }`',
+      'content (구조형) : `{ "items": [ {"depth":0,"text":"첫째 줄"}, {"depth":1,"text":"하위 항목"} ] }`   // depth 는 0~5 정수',
+      '',
+      '### key_value (키-값 카드)  ★ 자주 틀리는 형식 — 주의 ★',
+      'props (required: items) : `{ "label":"주요 결과", "items":[ {"key":"stress","label":"발생 응력","type":"number"}, {"key":"unit","label":"단위","type":"text"} ] }`',
+      'content : `{ "stress": 100, "unit": "MPa" }`   // ← 각 item.key 가 그대로 top-level 키. `values` 같은 래퍼 절대 금지.',
+      'item.type 은 text | number | integer | date | select 중 하나. `multi: true` 항목의 값은 배열 (예: `"defect_type": ["크랙","변형"]`).',
+      '',
+      '### bulleted_list (글머리 리스트)  ★ 자주 틀리는 형식 — 주의 ★',
+      'props (required: label) : `{ "label": "후속 검토 사항" }`',
+      'content : `{ "items": [ "첫째 항목", "둘째 항목", "셋째 항목" ] }`   // ← 문자열 배열. {text, depth} 객체 절대 금지.',
+      '',
+      '### table (표)',
+      'props (required: label, columns) : `{ "label":"검토 내용", "columns":[ {"key":"category","label":"구분","type":"text"}, {"key":"amount","label":"금액","type":"number"} ] }`',
+      'content : `{ "rows":[ {"category":"배경","amount":1200}, {"category":"결과","amount":3400} ] }`   // 행 객체의 키 = column.key',
+      '',
+      '### chart (차트)',
+      'props (required: label) : `{ "label":"월별 매출", "chart_type":"line", "x_column_key":"month", "columns":[ {"key":"month","label":"월","type":"text"}, {"key":"sales","label":"매출","type":"number"} ] }`',
+      'content : `{ "rows":[ {"month":"1월","sales":120}, {"month":"2월","sales":135} ] }`',
+      '※ x_column_key 가 가리키는 열 외에 모든 열은 type:"number" 여야 합니다.',
+      '',
+      '### milestone (마일스톤)',
+      'props (required: label) : `{ "label":"프로젝트 일정" }`',
+      'content : `{ "items":[ {"date":"2026-01-15","label":"기획","status":"done"}, {"date":"2026-03-01","label":"개발","status":"pending","note":"인력 보강 필요"} ] }`',
+      'status 는 `pending` | `done` | `delayed` 셋 중 하나. (in_progress / planned 등 다른 값 사용 금지)',
+      '',
+      '### flowchart (플로우차트)',
+      'props (required: label) : `{ "label":"검토 흐름", "orientation":"horizontal" }`   // orientation: horizontal | vertical',
+      'content : `{ "items":[ {"label":"요구사항"}, {"label":"설계"}, {"label":"검토","description":"리뷰 미팅"}, {"label":"승인"} ] }`',
+      '※ 순차 흐름만 지원. `nodes` / `edges` 같은 키 사용 금지.',
+      '',
+      '### image / attachment  ★ AI 가 만들지 마세요 ★',
+      '두 위젯의 content 는 시스템에 실제로 업로드된 파일의 `file_id` 를 요구합니다. AI 는 file_id 를 알 수 없으므로 이 위젯들은 `extra_blocks` / `content` 양쪽 모두에서 생성하지 마세요. 이미지·첨부가 필요하다는 점만 본문 rich_text 에 메모해 두세요. (사용자가 보고서를 받은 뒤 직접 추가합니다.)',
+    ].join('\n')
+
+    return [
+      '당신은 ReportArchive 보고서 작성 도우미입니다.',
+      '사용자 입력(자유 텍스트, 메모, 표 등)을 분석해, 아래 위젯들을 자유롭게 조합한 JSON 한 덩어리만 출력합니다.',
+      'JSON 외의 설명·주석·마크다운 코드펜스(```)는 일체 출력하지 마세요. 응답은 반드시 `{` 로 시작해 `}` 로 끝나야 합니다.',
+      '',
+      '== 출력 JSON 전체 구조 ==',
+      'top-level 형식은 아래와 같습니다. `pages[0].content` 의 키는 아래 “템플릿에 이미 배치된 위젯” 섹션의 id 와 1:1 로 대응합니다. 부족할 때만 `extra_blocks` 에 새 위젯을 추가하고, 같은 id 를 `content` 에도 넣으세요.',
+      JSON.stringify(skeleton, null, 2),
+      '',
+      '== 템플릿에 이미 배치된 위젯 (★ 우선 사용 ★) ==',
+      '아래 블록들은 현재 페이지 템플릿에 이미 배치되어 있습니다. **반드시 이 id 들을 그대로 사용해 `content[id]` 를 채우세요.**',
+      '- props 는 템플릿이 정한 값이며, 절대 수정하지 마세요. (`props_overrides` 도 비워두세요.)',
+      '- 사용자 입력의 각 조각을 보고, 의미가 맞는 블록의 content 를 채웁니다.',
+      '- 대응하는 블록이 정말 없을 때만 `extra_blocks` 에 새 위젯을 추가하세요.',
+      '- 이 목록에 있는 블록은 절대 삭제·이름변경하지 마세요. (사용할 내용이 없으면 content 에서 그 id 만 비워 두면 됩니다.)',
+      '',
+      templateBlocksBlock,
+      '',
+      '== 부족한 위젯을 추가하는 방법 (extra_blocks) ==',
+      '템플릿에 없는 위젯이 필요하면 `extra_blocks` 에 `{ id, type, props }` 형식으로 새 블록을 선언하고, 같은 id 를 키로 `content[id]` 에 데이터를 넣으세요.',
+      '- `id` 는 정규식 `^[a-z][a-z0-9_]{0,63}$` 를 만족해야 하며, 위 템플릿 블록 id 와 충돌하지 않아야 합니다.',
+      '- 새 블록의 `props` 는 아래 “위젯 카탈로그”의 `props_schema` 와 정확히 일치해야 합니다 (`additionalProperties: false`).',
+      '- 꼭 필요한 위젯만 추가하세요. 무리하게 만들지 말 것.',
+      '',
+      '== 작성 규칙 ==',
+      '1. 각 페이지의 `template_id` / `template_version` 은 위 골격에 채워둔 값을 그대로 유지하세요 (직접 수정 금지).',
+      '2. `content` 의 키는 (a) 위 “템플릿에 이미 배치된 위젯” 의 id, 또는 (b) 본인이 `extra_blocks` 에 새로 선언한 id 둘 중 하나여야 합니다.',
+      '3. `layout_overrides`, `props_overrides`, `blocks_order` 는 비워두는 것이 안전합니다. (`null` / `[]` 그대로)',
+      '4. `block_sections` 은 선택 사항입니다. 단락 구분이 분명한 블록만 아래 “단락 구분 (block_sections)” 절을 참고해 채우세요. 비울 때는 `{}`.',
+      '5. 주제가 길거나 분리된다면 `pages` 에 페이지를 추가해도 됩니다. 같은 template_id / version 을 그대로 복사해 사용하세요.',
+      '6. 모르는 값은 생략하거나 빈 문자열 `""` 로 두세요. 임의의 값(placeholder)을 지어내지 마세요.',
+      '7. `image` / `attachment` 위젯은 시스템에 업로드된 파일을 가리키는 `file_id` 가 필요하므로 절대 만들지 마세요.',
+      '',
+      '== 단락 구분 (block_sections) ==',
+      '`pages[].block_sections` 는 `{ "block_id": "item_code" }` 형식의 맵입니다. 각 블록에 "이 블록이 어느 단락(섹션)에 속하는지" 표시하는 메타데이터로, 보고서 화면에서 색상 칩으로 표시됩니다.',
+      '- 키 = 같은 페이지 안에 존재하는 블록 id (위 “템플릿에 이미 배치된 위젯” 의 id 또는 본인이 만든 extra id)',
+      '- 값 = 아래 taxonomy 의 `code` 문자열 (정확히 일치해야 함, label/한글이름 사용 금지)',
+      '- 모든 블록에 달 필요 없음. 단락 구분이 분명한 블록만 태깅.',
+      '- 같은 code 를 여러 블록에 사용 가능 (한 단락에 여러 위젯).',
+      '- 아래 taxonomy 에 없는 code 는 사용 금지. 적절한 항목이 없으면 그 블록은 그냥 생략.',
+      '',
+      '아래는 현재 워크스페이스에 등록된 단락 구분 taxonomy 입니다 (카테고리별 그룹).',
+      '',
+      sectionTaxonomyBlock,
+      '',
+      '== 절대 하지 말 것 (체크리스트) ==',
+      '- 템플릿 블록의 id 를 바꾸거나 새로운 id 로 대체하기 → 위 “템플릿에 이미 배치된 위젯” 의 id 를 **그대로** 사용',
+      '- 템플릿 블록을 `extra_blocks` 에 중복으로 다시 선언하기 → 템플릿 블록은 이미 있으므로 `content` 만 채움',
+      '- bulleted_list 의 items 를 `[{text, depth}, ...]` 객체 배열로 만들기 → 반드시 `["문자열", ...]`',
+      '- key_value 의 content 를 `{values: {...}}` 로 감싸기 → 키를 top-level 에 그대로 펼치기',
+      '- milestone 의 status 에 `planned` / `in_progress` 사용 → `pending` / `done` / `delayed` 만 허용',
+      '- flowchart 를 `nodes` / `edges` 그래프로 표현 → `items: [{label, description?}]` 순차 리스트만 지원',
+      '- image / attachment 위젯 생성 → 불가능 (file_id 필요)',
+      '- props 에 widget 의 props_schema 에 없는 키 추가 (`additionalProperties: false`)',
+      '- `block_sections` 값에 한글 라벨/카테고리 이름 넣기 → 반드시 `code` 문자열',
+      '- 위 taxonomy 에 없는 임의의 code 만들기 → 적절한 항목이 없으면 그 블록 항목을 생략',
+      '',
+      '== 위젯 카탈로그 (전체 목록 / props_schema 원본) ==',
+      widgetCatalogBlock,
+      '',
+      '== 위젯별 props / content 예시 ==',
+      examples,
+      '',
+      '== 작성 흐름 ==',
+      '① 사용자 입력을 훑어 섹션/표/리스트/수치 등을 식별 → ② 위 “템플릿에 이미 배치된 위젯” 목록을 보고 각 조각을 어느 블록 id 에 채울지 결정 → ③ 빠진 위젯이 있을 때만 `extra_blocks` 에 새 블록을 선언 → ④ 단락 구분이 분명한 블록은 block_sections 에 태깅 → ⑤ JSON 만 출력.',
       '',
       '== 사용자 입력 ==',
       '<<여기에 보고서로 만들고 싶은 내용을 붙여 넣으세요>>',
@@ -1062,8 +1348,8 @@ export default function ReportDetailPage() {
   return (
     <div className="flex h-full">
       <div className="relative flex-1 min-w-0 flex flex-col">
-        <div className="flex items-center gap-3 border-b bg-background px-6 py-3">
-          <div className="flex-1 min-w-0">
+        <div className="flex flex-wrap items-center gap-3 border-b bg-background px-6 py-3">
+          <div className="flex-1 min-w-[280px]">
             {isEditing ? (
               <Input
                 value={draft.title}
@@ -1096,6 +1382,15 @@ export default function ReportDetailPage() {
                 value={draft.report_date ?? ''}
                 onChange={(v) => setDraft({ ...draft, report_date: v })}
               />
+              {/* "현재 OO 편집 중" — shown in view mode whenever another
+                  user holds the lock. The dedicated GET embeds the latest
+                  holder so this chip stays accurate without polling.
+                  Hidden once I'm editing (the page state is then implied
+                  by the 저장/취소 buttons). */}
+              {!isEditing && existingReport?.edit_lock
+                && existingReport.edit_lock.user_id !== currentUserId && (
+                <LockHolderChip holder={existingReport.edit_lock} />
+              )}
             </div>
             {!isNew && existingReport && (
               <ReportMetaLine
@@ -1114,6 +1409,7 @@ export default function ReportDetailPage() {
             )}
           </div>
 
+          <div className="flex flex-wrap items-center gap-2 ml-auto">
           <ViewModeToggle value={viewMode} onChange={setViewMode} />
 
           <PageWidthToggle value={pageWidth} onChange={setPageWidth} />
@@ -1140,7 +1436,7 @@ export default function ReportDetailPage() {
             </>
           ) : (
             <>
-              <Button variant="outline" size="sm" onClick={() => setIsEditing(true)}>
+              <Button variant="outline" size="sm" onClick={() => onEnterEdit()}>
                 <Pencil className="mr-1 h-3 w-3" />
                 편집
               </Button>
@@ -1172,15 +1468,29 @@ export default function ReportDetailPage() {
             </>
           )}
 
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setAiPromptOpen(true)}
-            title="AI에게 보고서 작성을 맡기기 위한 프롬프트 생성"
-          >
-            <Sparkles className="mr-1 h-3 w-3" />
-            AI
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                title="AI에게 보고서 작성을 맡기기 위한 프롬프트 생성"
+              >
+                <Sparkles className="mr-1 h-3 w-3" />
+                AI
+                <ChevronDown className="ml-1 h-3 w-3 opacity-60" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => setAiPromptOpen(true)}>
+                <Sparkles className="mr-2 h-3.5 w-3.5" />
+                V1 — 빈 골격 프롬프트
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setAiPromptV2Open(true)}>
+                <Sparkles className="mr-2 h-3.5 w-3.5" />
+                V2 — 템플릿 배치 우선
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -1212,6 +1522,7 @@ export default function ReportDetailPage() {
             onChange={handleLocalLoad}
             className="hidden"
           />
+          </div>
         </div>
 
         {/* Page strip — chips that select the active page (paginated mode).
@@ -1377,6 +1688,18 @@ export default function ReportDetailPage() {
         open={aiPromptOpen}
         onOpenChange={setAiPromptOpen}
         getPrompt={buildAiPrompt}
+        widgetCatalog={widgetCatalog}
+        title="AI 프롬프트 V1 — 보고서 JSON 생성 (빈 골격)"
+        description="아래 프롬프트를 AI에 보내고, 보고서 본문을 함께 입력하면 JSON 결과를 받을 수 있습니다. 그 JSON 을 “JSON 데이터 붙여넣기”로 다시 불러오세요."
+      />
+
+      <AiPromptDialog
+        open={aiPromptV2Open}
+        onOpenChange={setAiPromptV2Open}
+        getPrompt={buildAiPromptV2}
+        widgetCatalog={widgetCatalog}
+        title="AI 프롬프트 V2 — 템플릿 배치를 우선해 채우기"
+        description="현재 페이지 템플릿에 배치된 위젯들의 id·props 를 함께 전달합니다. AI 는 이 위젯들을 먼저 채우고, 부족할 때만 새 위젯을 `extra_blocks` 에 추가합니다. (보고서의 기존 내용은 포함되지 않습니다.)"
       />
 
       <PasteJsonDialog
@@ -1386,6 +1709,12 @@ export default function ReportDetailPage() {
           applyImportedDraft(text)
           toast.success('붙여넣은 JSON을 적용했습니다. 저장하려면 “저장” 버튼을 눌러주세요.')
         }}
+      />
+
+      <TakeoverLockDialog
+        holder={takeoverPrompt}
+        onCancel={() => setTakeoverPrompt(null)}
+        onConfirm={() => onEnterEdit({ force: true })}
       />
     </div>
   )
@@ -1462,6 +1791,29 @@ function ReportCopyDialog({ open, onOpenChange, sourceTitle, onConfirm }) {
   )
 }
 
+// Widget types that the AI prompt's hand-written `examples` block
+// explicitly covers (props shape, content shape, common pitfalls).
+// The AiPromptDialog sidebar uses this to flag catalog widgets that
+// are *not* yet covered — so when a new widget type is added to the
+// backend, the developer sees a red "미등록" row and knows to extend
+// both buildAiPrompt() and buildAiPromptV2() with examples for it.
+//
+// !! Keep in sync with the `examples` arrays in buildAiPrompt and
+//    buildAiPromptV2 above. Adding/removing a `### <type>` example
+//    section without updating this set will mis-report coverage.
+const PROMPT_COVERED_WIDGETS = new Set([
+  'heading',
+  'rich_text',
+  'key_value',
+  'bulleted_list',
+  'table',
+  'chart',
+  'milestone',
+  'flowchart',
+  'image',
+  'attachment',
+])
+
 /** Prefix every line of `s` with `n` spaces. Used by buildAiPrompt so
  *  nested JSON renders cleanly under bullet headings. */
 function indent(s, n) {
@@ -1469,10 +1821,37 @@ function indent(s, n) {
   return s.split('\n').map((line) => pad + line).join('\n')
 }
 
+/** Render the admin-managed 단락 구분 taxonomy as a plain-text block
+ *  the AI can read. `categories` is the same `sectionCategories` array
+ *  the page already holds (see useSectionTaxonomy); each entry has a
+ *  name and an ordered `items` list. The output groups items under
+ *  their category and shows `code: label (영문명: en)` per line so the
+ *  AI must use the exact `code` string (not the Korean label) when
+ *  filling `block_sections`. */
+function renderSectionTaxonomy(categories) {
+  const list = Array.isArray(categories) ? categories : []
+  if (list.length === 0) {
+    return '(아직 등록된 단락 구분이 없습니다. `block_sections` 는 `{}` 로 비워두세요.)'
+  }
+  return list
+    .map((cat) => {
+      const items = Array.isArray(cat.items) ? cat.items : []
+      if (items.length === 0) {
+        return `### ${cat.name} (slug=${cat.slug})\n  (등록된 항목 없음)`
+      }
+      const lines = items.map((it) => {
+        const en = it.en ? `  (영문명: ${it.en})` : ''
+        return `  - \`${it.code}\` : ${it.label}${en}`
+      })
+      return `### ${cat.name} (slug=${cat.slug})\n${lines.join('\n')}`
+    })
+    .join('\n\n')
+}
+
 /** Surfaces the generated AI prompt in a read-only textarea with a
  *  "복사" button. The prompt is rebuilt every time the dialog opens so
  *  it reflects the latest draft / catalog state. */
-function AiPromptDialog({ open, onOpenChange, getPrompt }) {
+function AiPromptDialog({ open, onOpenChange, getPrompt, title, description, widgetCatalog }) {
   const [text, setText] = useState('')
   useEffect(() => {
     if (open) setText(getPrompt())
@@ -1487,24 +1866,42 @@ function AiPromptDialog({ open, onOpenChange, getPrompt }) {
     }
   }
 
+  // Bucket the catalog into "covered by the prompt's examples block"
+  // vs "not covered yet" so the sidebar can highlight gaps. Catalog
+  // entries the prompt knows about are listed first; anything else
+  // surfaces in a red 미등록 group so new widget types stand out.
+  const widgetCoverage = (() => {
+    const widgets = widgetCatalog?.widgets ?? []
+    const covered = []
+    const uncovered = []
+    for (const w of widgets) {
+      if (PROMPT_COVERED_WIDGETS.has(w.type)) covered.push(w)
+      else uncovered.push(w)
+    }
+    return { covered, uncovered, total: widgets.length, loading: !widgetCatalog }
+  })()
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[85vh] overflow-hidden flex flex-col">
+      <DialogContent className="max-w-5xl max-h-[85vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Sparkles className="h-4 w-4" />
-            AI 프롬프트 — 보고서 JSON 생성
+            {title ?? 'AI 프롬프트 — 보고서 JSON 생성'}
           </DialogTitle>
         </DialogHeader>
         <p className="text-xs text-muted-foreground">
-          아래 프롬프트를 AI에 보내고, 보고서 본문을 함께 입력하면 JSON 결과를 받을 수 있습니다. 그 JSON 을 “JSON 데이터 붙여넣기”로 다시 불러오세요.
+          {description ?? '아래 프롬프트를 AI에 보내고, 보고서 본문을 함께 입력하면 JSON 결과를 받을 수 있습니다. 그 JSON 을 “JSON 데이터 붙여넣기”로 다시 불러오세요.'}
         </p>
-        <Textarea
-          readOnly
-          value={text}
-          onClick={(e) => e.currentTarget.select()}
-          className="flex-1 min-h-[320px] font-mono text-[11px] leading-relaxed"
-        />
+        <div className="flex-1 min-h-0 flex gap-3">
+          <WidgetCoverageSidebar coverage={widgetCoverage} />
+          <Textarea
+            readOnly
+            value={text}
+            onClick={(e) => e.currentTarget.select()}
+            className="flex-1 min-h-[320px] font-mono text-[11px] leading-relaxed"
+          />
+        </div>
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
             닫기
@@ -1516,6 +1913,76 @@ function AiPromptDialog({ open, onOpenChange, getPrompt }) {
         </div>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** Left-hand sidebar in AiPromptDialog: lists every catalog widget
+ *  with a check (등록됨) or X (미등록) so developers can tell at a
+ *  glance whether a newly-added widget type still needs an example
+ *  section in buildAiPrompt / buildAiPromptV2. */
+function WidgetCoverageSidebar({ coverage }) {
+  const { covered, uncovered, total, loading } = coverage
+  return (
+    <div className="w-60 shrink-0 border rounded-md overflow-auto p-2 text-xs bg-muted/20">
+      <div className="font-medium">위젯 등록 현황</div>
+      <div className="text-[10px] text-muted-foreground mb-2">
+        {loading
+          ? '카탈로그 불러오는 중…'
+          : `등록 ${covered.length} / 전체 ${total}`}
+      </div>
+      {covered.length > 0 && (
+        <div className="space-y-0.5 mb-3">
+          {covered.map((w) => (
+            <WidgetCoverageRow key={w.type} widget={w} covered />
+          ))}
+        </div>
+      )}
+      {uncovered.length > 0 && (
+        <>
+          <div className="font-medium text-destructive mt-2">
+            미등록 ({uncovered.length})
+          </div>
+          <div className="text-[10px] text-muted-foreground mb-1">
+            프롬프트 examples 보강 필요
+          </div>
+          <div className="space-y-0.5">
+            {uncovered.map((w) => (
+              <WidgetCoverageRow key={w.type} widget={w} covered={false} />
+            ))}
+          </div>
+        </>
+      )}
+      {!loading && total === 0 && (
+        <div className="text-[10px] text-muted-foreground italic">
+          위젯 카탈로그가 비어 있습니다.
+        </div>
+      )}
+    </div>
+  )
+}
+
+function WidgetCoverageRow({ widget, covered }) {
+  return (
+    <div
+      className="flex items-start gap-1.5 py-0.5"
+      title={widget.description || widget.label || widget.type}
+    >
+      {covered ? (
+        <Check className="h-3 w-3 mt-0.5 text-emerald-600 shrink-0" />
+      ) : (
+        <X className="h-3 w-3 mt-0.5 text-destructive shrink-0" />
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="font-mono text-[10px] leading-tight truncate">
+          {widget.type}
+        </div>
+        {widget.label && widget.label !== widget.type && (
+          <div className="text-[10px] text-muted-foreground leading-tight truncate">
+            {widget.label}
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -1805,6 +2272,80 @@ function formatMetaDate(iso) {
   if (Number.isNaN(d.getTime())) return ''
   const pad = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** Header chip shown in view mode when someone else is currently editing
+ *  this report. Renders the holder's name + a relative timestamp of when
+ *  they last interacted (acquire / heartbeat). Tooltip carries the email
+ *  for disambiguation when two users share a display name. */
+function LockHolderChip({ holder }) {
+  if (!holder) return null
+  const name = holder.user_name || holder.user_email || `사용자 #${holder.user_id}`
+  const rel = formatRelativeTime(holder.acquired_at)
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full border border-amber-500/60 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-900"
+      title={holder.user_email ? `${name} <${holder.user_email}>` : name}
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+      {name} 편집 중
+      {rel && <span className="text-amber-800/70"> · {rel}</span>}
+    </span>
+  )
+}
+
+function formatRelativeTime(iso) {
+  if (!iso) return ''
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return ''
+  const secs = Math.max(0, Math.floor((Date.now() - t) / 1000))
+  if (secs < 30) return '방금'
+  if (secs < 60) return `${secs}초 전`
+  const mins = Math.floor(secs / 60)
+  if (mins < 60) return `${mins}분 전`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}시간 전`
+  return `${Math.floor(hours / 24)}일 전`
+}
+
+/** Confirmation dialog shown when the user clicks 편집 on a report that
+ *  someone else currently holds. Open is driven by the `holder` prop —
+ *  truthy holder = dialog visible; null = dismissed. Confirming triggers
+ *  a force-takeover acquire (the prior holder will be bounced on their
+ *  next heartbeat or save). */
+function TakeoverLockDialog({ holder, onCancel, onConfirm }) {
+  const open = Boolean(holder)
+  const name = holder?.user_name || holder?.user_email || (holder ? `사용자 #${holder.user_id}` : '')
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onCancel() }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>편집 권한 인계</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm">
+          현재{' '}
+          <span className="font-semibold">{name}</span>
+          {' '}님이 이 보고서를 편집 중입니다
+          {holder?.acquired_at && (
+            <span className="text-muted-foreground"> ({formatRelativeTime(holder.acquired_at)} 시작)</span>
+          )}
+          .
+        </p>
+        <p className="text-xs text-muted-foreground">
+          강제로 인계받으면 현재 편집자는 다음 저장 시 “편집 권한이 없습니다” 안내를 받고
+          보기 모드로 전환됩니다. 그가 작성 중이던 변경사항은 사라질 수 있습니다.
+        </p>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="outline" size="sm" onClick={onCancel}>
+            취소 (그냥 보기)
+          </Button>
+          <Button size="sm" onClick={onConfirm}>
+            강제 인계 후 편집
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 /** Inline 상태 chip. Read-only badge when viewing; switches to a small
@@ -2818,6 +3359,38 @@ function BlockEditorCard({
     )
   }
 
+  // Shared section chip — rendered inline inside the drag-handle bar
+  // in edit mode, and as a floating top-right tag in view mode (see
+  // `viewModeSectionChip` below). Same visual treatment in both spots
+  // so writers and readers see an identical badge.
+  const sectionChip = (sectionItem && sectionCategory) ? (
+    <span
+      className="inline-flex items-center gap-1 rounded-full border px-1.5 h-3.5 text-[9px] font-medium"
+      style={{
+        borderColor: sectionCategory.color,
+        color: sectionCategory.color,
+        backgroundColor: `${sectionCategory.color}1A`,
+      }}
+      title={`${sectionCategory.name} · ${sectionItem.label}`}
+    >
+      <span
+        className="h-1.5 w-1.5 rounded-full"
+        style={{ backgroundColor: sectionCategory.color }}
+      />
+      {sectionItem.label}
+    </span>
+  ) : null
+
+  // View-mode-only floating chip: sits in the top-right corner of the
+  // card so readers can still tell which 단락 each block belongs to
+  // after editing is done. Skipped in edit mode because the drag-handle
+  // bar already shows the chip — rendering both would be redundant.
+  const viewModeSectionChip = (!showDragHandle && sectionChip) ? (
+    <div className="pointer-events-none absolute right-2 top-2 z-10">
+      {sectionChip}
+    </div>
+  ) : null
+
   const dragHandle = showDragHandle ? (
     <div className="block-drag-handle absolute inset-x-0 top-0 z-10 cursor-move px-2 py-0.5 bg-muted/60 backdrop-blur-sm border-b flex items-center gap-2 rounded-t-md">
       <GripVertical className="h-3 w-3 text-muted-foreground" />
@@ -2829,23 +3402,7 @@ function BlockEditorCard({
           추가
         </Badge>
       )}
-      {sectionItem && sectionCategory && (
-        <span
-          className="inline-flex items-center gap-1 rounded-full border px-1.5 h-3.5 text-[9px] font-medium"
-          style={{
-            borderColor: sectionCategory.color,
-            color: sectionCategory.color,
-            backgroundColor: `${sectionCategory.color}1A`,
-          }}
-          title={`${sectionCategory.name} · ${sectionItem.label}`}
-        >
-          <span
-            className="h-1.5 w-1.5 rounded-full"
-            style={{ backgroundColor: sectionCategory.color }}
-          />
-          {sectionItem.label}
-        </span>
-      )}
+      {sectionChip}
       {onToggleAutoFit && (
         <label
           className={cn(
@@ -2916,12 +3473,15 @@ function BlockEditorCard({
         className={cn(
           'relative h-full flex items-center',
           // Reserve space below the absolute drag-handle bar so the heading
-          // text isn't hidden behind it in edit mode.
-          showDragHandle && 'pt-7',
+          // text isn't hidden behind it in edit mode. The view-mode floating
+          // section chip occupies the same top-right zone, so reserve the
+          // same room there to keep the heading from running under it.
+          (showDragHandle || viewModeSectionChip) && 'pt-7',
           active && !readOnly && 'ring-2 ring-primary/30 rounded-md'
         )}
       >
         {dragHandle}
+        {viewModeSectionChip}
         <div className="relative w-full min-w-0">
           {autoFit && (
             // Heading has no Card / padding chrome, so the mirror just
@@ -2960,10 +3520,14 @@ function BlockEditorCard({
       )}
     >
       {dragHandle}
+      {viewModeSectionChip}
       <CardContent
         className={cn(
           'relative pb-4',
-          showDragHandle ? 'pt-9' : 'pt-4',
+          // pt-9 clears the absolute drag-handle bar in edit mode; pt-7
+          // clears the floating section chip in view mode. Without one of
+          // these, content that reaches the top-right runs under the chip.
+          showDragHandle ? 'pt-9' : viewModeSectionChip ? 'pt-7' : 'pt-4',
           // In manual (non-autoFit) mode the cell height is fixed by
           // the user's drag, so we set up a flex-column chain inside
           // the card so widgets that opt into `h-full` / `flex-1`

@@ -13,6 +13,7 @@ from app.modules.composites.routes import router as composites_router
 from app.modules.files.routes import router as files_router
 from app.modules.members.routes import router as members_router
 from app.modules.reports.routes import router as reports_router
+from app.modules.section_taxonomy.routes import router as section_taxonomy_router
 from app.modules.template_categories.routes import router as template_categories_router
 from app.modules.templates.routes import router as templates_router
 from app.modules.users.routes import router as users_router
@@ -41,3 +42,8 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(reports_router, prefix="/api/reports", tags=["reports"])
     app.include_router(composites_router, prefix="/api/composites", tags=["composites"])
     app.include_router(files_router, prefix="/api/files", tags=["files"])
+    app.include_router(
+        section_taxonomy_router,
+        prefix="/api/section-taxonomy",
+        tags=["section-taxonomy"],
+    )

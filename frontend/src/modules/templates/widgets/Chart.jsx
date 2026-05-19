@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Bar,
   BarChart,
@@ -11,7 +11,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { BarChart3, ChevronDown, ChevronUp, LineChart as LineIcon, Plus, Settings, Table2, X } from 'lucide-react'
+import { AlertTriangle, BarChart3, ChevronDown, ChevronUp, Hash, LineChart as LineIcon, Plus, Settings, Table2, Type, X } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
@@ -38,42 +38,15 @@ const SERIES_COLORS = [
 // --------------------------------------------------------------------------- //
 // PropsPanel — template-time configuration
 // --------------------------------------------------------------------------- //
+// Only the chart's overall *label* and its default chart type live here.
+// Column structure (keys / labels / types / X-axis / axis titles) is
+// configured exclusively from the data-entry table in the report
+// editor — that's the single source of truth, so admins and writers
+// don't have to keep two places in sync.
 export function ChartPropsPanel({ props, onChange }) {
-  const cols = props.columns ?? []
-
   function patchProps(next) {
     onChange({ ...props, ...next })
   }
-
-  function addColumn() {
-    const existing = new Set(cols.map((c) => c.key))
-    let n = cols.length + 1
-    while (existing.has(`col_${n}`)) n += 1
-    // Newly-added columns default to 'number' so they can be plotted as
-    // a series. The first column (X axis) is typically text.
-    patchProps({
-      columns: [...cols, { key: `col_${n}`, label: `시리즈 ${n}`, type: 'number' }],
-    })
-  }
-  function updateColumn(idx, patch) {
-    patchProps({
-      columns: cols.map((c, i) => (i === idx ? { ...c, ...patch } : c)),
-    })
-  }
-  function removeColumn(idx) {
-    const removed = cols[idx]
-    const nextCols = cols.filter((_, i) => i !== idx)
-    const next = { ...props, columns: nextCols }
-    // If we just removed the X column, fall back to the first text column or
-    // the first remaining column so the schema stays consistent.
-    if (removed?.key === props.x_column_key) {
-      const newX =
-        nextCols.find((c) => c.type === 'text')?.key ?? nextCols[0]?.key
-      next.x_column_key = newX
-    }
-    onChange(next)
-  }
-
   return (
     <div className="space-y-4">
       <LabelField
@@ -105,100 +78,11 @@ export function ChartPropsPanel({ props, onChange }) {
           보고서에서 작성자가 토글로 변경 가능.
         </p>
       </div>
-      <div>
-        <Label className="text-xs">X축 열</Label>
-        <select
-          value={props.x_column_key ?? ''}
-          onChange={(e) => patchProps({ x_column_key: e.target.value })}
-          className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
-        >
-          {cols.map((c) => (
-            <option key={c.key} value={c.key}>
-              {c.label || c.key} ({c.type})
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <Label className="text-xs">X축 제목 (선택)</Label>
-          <Input
-            value={props.x_axis_title ?? ''}
-            onChange={(e) =>
-              patchProps({ x_axis_title: e.target.value || undefined })
-            }
-            placeholder="분기"
-            className="mt-1 h-9"
-          />
-        </div>
-        <div>
-          <Label className="text-xs">Y축 제목 (선택)</Label>
-          <Input
-            value={props.y_axis_title ?? ''}
-            onChange={(e) =>
-              patchProps({ y_axis_title: e.target.value || undefined })
-            }
-            placeholder="매출 (억원)"
-            className="mt-1 h-9"
-          />
-        </div>
-      </div>
-      <div>
-        <Label className="text-xs">열</Label>
-        <p className="text-[10px] text-muted-foreground mt-0.5 mb-2">
-          X축 열은 텍스트, 시리즈는 숫자 타입이어야 합니다.
-        </p>
-        <div className="space-y-2">
-          {cols.map((c, i) => (
-            <div key={i} className="rounded-md border p-2 bg-muted/20 space-y-1">
-              <div className="grid grid-cols-12 gap-1 items-end">
-                <div className="col-span-4">
-                  <Label className="text-[10px] uppercase">키</Label>
-                  <Input
-                    value={c.key}
-                    onChange={(e) => updateColumn(i, { key: e.target.value.toLowerCase() })}
-                    className="mt-0.5 h-8 text-xs font-mono"
-                  />
-                </div>
-                <div className="col-span-4">
-                  <Label className="text-[10px] uppercase">라벨</Label>
-                  <Input
-                    value={c.label}
-                    onChange={(e) => updateColumn(i, { label: e.target.value })}
-                    className="mt-0.5 h-8 text-xs"
-                  />
-                </div>
-                <div className="col-span-3">
-                  <Label className="text-[10px] uppercase">타입</Label>
-                  <select
-                    value={c.type}
-                    onChange={(e) => updateColumn(i, { type: e.target.value })}
-                    className="mt-0.5 flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
-                  >
-                    <option value="text">텍스트</option>
-                    <option value="number">숫자</option>
-                  </select>
-                </div>
-                <div className="col-span-1 flex justify-end">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-destructive"
-                    onClick={() => removeColumn(i)}
-                    disabled={cols.length <= 2}
-                    title="열 삭제"
-                  >
-                    <X className="h-3 w-3" />
-                  </Button>
-                </div>
-              </div>
-            </div>
-          ))}
-          <Button variant="outline" size="sm" onClick={addColumn}>
-            <Plus className="mr-1 h-3 w-3" />
-            열 추가
-          </Button>
-        </div>
+      <div className="rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground leading-relaxed">
+        열·X축·축 제목 등 차트 구조는 보고서 작성 화면의{' '}
+        <strong>데이터 표</strong>에서 직접 설정합니다. 행/열을 더하고
+        헤더의 <code className="text-[10px]">#/T</code> 칩으로 타입을
+        바꾸세요.
       </div>
     </div>
   )
@@ -235,8 +119,25 @@ export function ChartPreview({ props }) {
 // --------------------------------------------------------------------------- //
 // Editor — bar/line toggle + chart visualization + Excel-style data entry
 // --------------------------------------------------------------------------- //
-export function ChartEditor({ props, content, onChange, readOnly }) {
-  // Effective config: per-report overrides take precedence over template props.
+/** Keys that describe the chart's *structure* (which columns, which axis,
+ *  chart type, axis labels). These belong in props_overrides so they
+ *  travel with the template definition (and the PropsPanel sees them);
+ *  the remaining keys (rows, caption) are the user's *data* and stay
+ *  in content. Legacy reports may have these structural fields in
+ *  content — we read from content as a fallback and migrate on first
+ *  edit so the two storage locations stay in sync over time. */
+const STRUCTURAL_KEYS = new Set([
+  'columns',
+  'chart_type',
+  'x_column_key',
+  'x_axis_title',
+  'y_axis_title',
+])
+
+export function ChartEditor({ props, content, onChange, onChangePropsOverride, autoFit, readOnly }) {
+  // Structural fields: prefer content (legacy reports) so the user's
+  // inline-built layout doesn't visually reset when this refactor
+  // lands; otherwise fall back to props (= template + override).
   const caption = content?.caption ?? ''
   const cols = Array.isArray(content?.columns) ? content.columns : (props.columns ?? [])
   const xKey = content?.x_column_key ?? props.x_column_key
@@ -252,23 +153,67 @@ export function ChartEditor({ props, content, onChange, readOnly }) {
   const seriesCols = cols.filter((c) => c.key !== xKey && c.type === 'number')
 
   function patch(next) {
-    const merged = {
-      ...(caption ? { caption } : {}),
-      ...(content?.columns ? { columns: content.columns } : {}),
-      ...(content?.chart_type ? { chart_type: content.chart_type } : {}),
-      ...(content?.x_column_key ? { x_column_key: content.x_column_key } : {}),
-      ...(content?.x_axis_title ? { x_axis_title: content.x_axis_title } : {}),
-      ...(content?.y_axis_title ? { y_axis_title: content.y_axis_title } : {}),
-      rows,
-      ...next,
+    // Split incoming patch into structural (→ props_overrides) and
+    // data (→ content). When no override callback is provided (e.g.
+    // template-editor preview path), fall back to writing everything
+    // to content so the legacy behavior still works.
+    const structural = {}
+    const data = {}
+    for (const [k, v] of Object.entries(next)) {
+      if (STRUCTURAL_KEYS.has(k)) structural[k] = v
+      else data[k] = v
     }
-    if (!merged.caption) delete merged.caption
-    if (!merged.columns) delete merged.columns
-    if (!merged.chart_type) delete merged.chart_type
-    if (!merged.x_column_key) delete merged.x_column_key
-    if (!merged.x_axis_title) delete merged.x_axis_title
-    if (!merged.y_axis_title) delete merged.y_axis_title
-    onChange(merged)
+
+    const hasStructural = Object.keys(structural).length > 0
+    const hasData = Object.keys(data).length > 0
+    const canOverride = typeof onChangePropsOverride === 'function'
+
+    if (hasStructural && canOverride) {
+      // Lift any legacy structural fields still sitting in content into
+      // the same override write — once we move structure into props,
+      // content's copies become stale, so we promote them in-place and
+      // then strip them below.
+      const liftFromContent = {}
+      for (const k of STRUCTURAL_KEYS) {
+        if (
+          content?.[k] !== undefined &&
+          structural[k] === undefined
+        ) {
+          liftFromContent[k] = content[k]
+        }
+      }
+      onChangePropsOverride({ ...liftFromContent, ...structural })
+    }
+
+    // Build the next content object. When canOverride, content holds
+    // only data (rows + caption); otherwise it's the union (legacy).
+    const nextContent = {}
+    if (caption) nextContent.caption = caption
+    nextContent.rows = rows
+    if (!canOverride) {
+      // Legacy fallback — keep mirroring structural fields into content
+      // so the template-editor preview still works without an override
+      // callback.
+      if (content?.columns) nextContent.columns = content.columns
+      if (content?.chart_type) nextContent.chart_type = content.chart_type
+      if (content?.x_column_key) nextContent.x_column_key = content.x_column_key
+      if (content?.x_axis_title) nextContent.x_axis_title = content.x_axis_title
+      if (content?.y_axis_title) nextContent.y_axis_title = content.y_axis_title
+      Object.assign(nextContent, structural)
+    }
+    Object.assign(nextContent, data)
+    if (!nextContent.caption) delete nextContent.caption
+    // The structural fallback fields may end up empty after the merge
+    // — drop them so JSON stays tight.
+    for (const k of STRUCTURAL_KEYS) {
+      if (nextContent[k] === undefined || nextContent[k] === '') {
+        delete nextContent[k]
+      }
+    }
+    // Always call onChange so rows/caption updates land — even pure
+    // structural edits trigger this to strip legacy structural keys
+    // from content on the first edit.
+    onChange(nextContent)
   }
 
   function setChartType(t) {
@@ -331,10 +276,14 @@ export function ChartEditor({ props, content, onChange, readOnly }) {
     })
   }
 
-  /** Helpers for paste handlers — both extend `cols` to fit the TSV width
-   *  and produce auto-generated number-type series columns when needed. */
-  function ensureColsFor(neededCols) {
-    const base = Array.isArray(content?.columns) ? content.columns : (props.columns ?? [])
+  /** Helper for paste handlers — extend `cols` to fit the TSV width.
+   *  New columns are added with `type: 'number'` as a placeholder; callers
+   *  re-type them based on actual data via `inferTypeFromValues` before
+   *  patching. */
+  function ensureColsFor(neededCols, baseCols) {
+    const base = baseCols ?? (
+      Array.isArray(content?.columns) ? content.columns : (props.columns ?? [])
+    )
     if (neededCols <= base.length) return base
     const nextCols = [...base]
     const existing = new Set(nextCols.map((c) => c.key))
@@ -351,24 +300,65 @@ export function ChartEditor({ props, content, onChange, readOnly }) {
     return nextCols
   }
 
+  /** After paste lands data into a column, re-evaluate its type from
+   *  what's now in `rows`. Only flips when the column is "new" (label
+   *  empty or auto-generated 시리즈 N) or when the existing type is
+   *  clearly wrong — we don't want to overwrite an intentional user
+   *  choice from an earlier session. */
+  function autoTypeColumnsFromData(cols, rows, affectedKeys) {
+    return cols.map((c) => {
+      if (!affectedKeys.has(c.key)) return c
+      const sample = rows.map((r) => r[c.key])
+      const inferred = inferTypeFromValues(sample)
+      // Only flip if data tells us the current type is wrong. Trusting
+      // explicit text columns even when sample is empty avoids surprises.
+      if (c.type === inferred) return c
+      if (c.type === 'number' && inferred === 'text') return { ...c, type: 'text' }
+      if (c.type === 'text' && inferred === 'number') {
+        // Don't auto-promote text→number — text often has meaning the
+        // user set on purpose (e.g. zero-padded codes). Leave it.
+        return c
+      }
+      return c
+    })
+  }
+
   function pasteGrid(startRow, startCol, text) {
     const grid = parseTsv(text)
     if (grid.length === 0) return
     const incomingWidth = Math.max(...grid.map((r) => r.length))
-    const nextCols = ensureColsFor(startCol + incomingWidth)
+    let nextCols = ensureColsFor(startCol + incomingWidth)
 
     let nextRows = [...rows]
     while (nextRows.length < startRow + grid.length) nextRows.push({})
+    const affectedKeys = new Set()
     for (let r = 0; r < grid.length; r += 1) {
       const target = { ...nextRows[startRow + r] }
       for (let c = 0; c < grid[r].length; c += 1) {
         const col = nextCols[startCol + c]
         if (!col) continue
-        target[col.key] = coerceCellValue(col, grid[r][c])
+        // Stage cell value as a raw string — final coercion happens
+        // after we re-type the column from the full data sample below.
+        target[col.key] = grid[r][c]
+        affectedKeys.add(col.key)
       }
       nextRows[startRow + r] = target
     }
-    patch({ columns: nextCols, rows: nextRows })
+    nextCols = autoTypeColumnsFromData(nextCols, nextRows, affectedKeys)
+    // Re-coerce every affected row now that the types are final.
+    nextRows = nextRows.map((r) => {
+      const next = { ...r }
+      for (const key of affectedKeys) {
+        const col = nextCols.find((c) => c.key === key)
+        if (col) next[key] = coerceCellValue(col, next[key])
+      }
+      return next
+    })
+    patch({
+      columns: nextCols,
+      rows: nextRows,
+      x_column_key: repairXKey(nextCols, xKey),
+    })
   }
 
   /**
@@ -396,17 +386,62 @@ export function ChartEditor({ props, content, onChange, readOnly }) {
     const dataGrid = grid.slice(1)
     let nextRows = [...rows]
     while (nextRows.length < dataGrid.length) nextRows.push({})
+    const affectedKeys = new Set()
     for (let r = 0; r < dataGrid.length; r += 1) {
       const target = { ...nextRows[r] }
       for (let c = 0; c < dataGrid[r].length; c += 1) {
         const col = nextCols[startCol + c]
         if (!col) continue
-        target[col.key] = coerceCellValue(col, dataGrid[r][c])
+        target[col.key] = dataGrid[r][c]
+        affectedKeys.add(col.key)
       }
       nextRows[r] = target
     }
+    nextCols = autoTypeColumnsFromData(nextCols, nextRows, affectedKeys)
+    nextRows = nextRows.map((r) => {
+      const next = { ...r }
+      for (const key of affectedKeys) {
+        const col = nextCols.find((c) => c.key === key)
+        if (col) next[key] = coerceCellValue(col, next[key])
+      }
+      return next
+    })
 
-    patch({ columns: nextCols, rows: nextRows })
+    patch({
+      columns: nextCols,
+      rows: nextRows,
+      x_column_key: repairXKey(nextCols, xKey),
+    })
+  }
+
+  /** Flip a column's type between text and number, then re-coerce all
+   *  the rows so saved data matches the declared type. Used by the
+   *  inline type chip in the data editor header. */
+  function toggleColumnType(idx) {
+    const base = Array.isArray(content?.columns) ? content.columns : (props.columns ?? [])
+    const target = base[idx]
+    if (!target) return
+    const nextType = target.type === 'number' ? 'text' : 'number'
+    const updated = { ...target, type: nextType }
+    const nextCols = base.map((c, i) => (i === idx ? updated : c))
+    const nextRows = recoerceRowsForColumn(rows, updated)
+    patch({
+      columns: nextCols,
+      rows: nextRows,
+      // Type change may invalidate the X-axis pointer (e.g. user flipped
+      // the X column away from text to no-text). repairXKey is a no-op
+      // when the key still resolves.
+      x_column_key: repairXKey(nextCols, xKey),
+    })
+  }
+
+  /** Promote a column to the X-axis. Convenient one-click action from
+   *  the warning chip on text-typed series columns. */
+  function setXColumn(idx) {
+    const base = Array.isArray(content?.columns) ? content.columns : (props.columns ?? [])
+    const target = base[idx]
+    if (!target) return
+    patch({ x_column_key: target.key })
   }
 
   // Recharts wants numeric series values pre-coerced (strings are silently dropped).
@@ -444,6 +479,7 @@ export function ChartEditor({ props, content, onChange, readOnly }) {
             seriesCols={seriesCols}
             xAxisTitle={xAxisTitle}
             yAxisTitle={yAxisTitle}
+            autoFit={autoFit}
           />
         )}
       </div>
@@ -536,6 +572,7 @@ export function ChartEditor({ props, content, onChange, readOnly }) {
           seriesCols={seriesCols}
           xAxisTitle={xAxisTitle}
           yAxisTitle={yAxisTitle}
+          autoFit={autoFit}
         />
       ) : (
         <div className="flex-1 min-h-[16rem] rounded-md border border-dashed bg-muted/20 flex items-center justify-center text-xs text-muted-foreground">
@@ -558,45 +595,120 @@ export function ChartEditor({ props, content, onChange, readOnly }) {
           </colgroup>
           <thead className="bg-muted/40">
             <tr>
-              {cols.map((c, i) => (
-                <th
-                  key={i}
-                  className="px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b group relative"
-                >
-                  <div className="flex items-center justify-center gap-1">
-                    <input
-                      type="text"
-                      value={c.label || ''}
-                      onChange={(e) => renameColumn(i, e.target.value)}
-                      onPaste={(e) => {
-                        const text = e.clipboardData?.getData('text/plain')
-                        if (!text) return
-                        if (text.indexOf('\t') === -1 && text.indexOf('\n') === -1) return
-                        e.preventDefault()
-                        pasteOntoHeader(i, text)
-                      }}
-                      placeholder={c.key}
-                      className="bg-transparent border-0 outline-none focus:ring-1 focus:ring-ring rounded px-1 py-0.5 text-xs text-center w-full min-w-0"
-                    />
-                    {c.key === xKey && (
-                      <span className="text-[10px] uppercase tracking-wide text-primary shrink-0">
-                        X
-                      </span>
-                    )}
-                  </div>
-                  {/* Hover overlay — no reserved space when idle. */}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="absolute right-0.5 top-1/2 -translate-y-1/2 h-5 w-5 opacity-0 group-hover:opacity-100 text-destructive bg-background/90 border shadow-sm"
-                    onClick={() => removeColumn(i)}
-                    disabled={cols.length <= 2}
-                    title={cols.length <= 2 ? '최소 2개 열 필요' : '열 삭제'}
+              {cols.map((c, i) => {
+                const isX = c.key === xKey
+                // Series columns must be number-typed for the chart to
+                // plot them. Flag text-typed non-X columns so the user
+                // sees the problem at design time instead of getting a
+                // validation error at "템플릿으로 저장".
+                const isInvalidSeries = !isX && c.type !== 'number'
+                return (
+                  <th
+                    key={i}
+                    className="px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b group relative"
                   >
-                    <X className="h-3 w-3" />
-                  </Button>
-                </th>
-              ))}
+                    <div className="flex items-center justify-center gap-1">
+                      <input
+                        type="text"
+                        value={c.label || ''}
+                        onChange={(e) => renameColumn(i, e.target.value)}
+                        onPaste={(e) => {
+                          const text = e.clipboardData?.getData('text/plain')
+                          if (!text) return
+                          if (text.indexOf('\t') === -1 && text.indexOf('\n') === -1) return
+                          e.preventDefault()
+                          pasteOntoHeader(i, text)
+                        }}
+                        placeholder={c.key}
+                        className="bg-transparent border-0 outline-none focus:ring-1 focus:ring-ring rounded px-1 py-0.5 text-xs text-center w-full min-w-0"
+                      />
+                      {/* Type toggle chip — click to flip text↔number,
+                          re-coerces existing data automatically. */}
+                      <button
+                        type="button"
+                        onClick={() => toggleColumnType(i)}
+                        title={
+                          c.type === 'number'
+                            ? '숫자 (클릭하여 텍스트로 변경)'
+                            : '텍스트 (클릭하여 숫자로 변경)'
+                        }
+                        className={`shrink-0 h-4 w-4 rounded inline-flex items-center justify-center transition-colors ${
+                          c.type === 'number'
+                            ? 'bg-blue-500/15 text-blue-600 hover:bg-blue-500/25'
+                            : 'bg-amber-500/15 text-amber-600 hover:bg-amber-500/25'
+                        }`}
+                      >
+                        {c.type === 'number' ? (
+                          <Hash className="h-2.5 w-2.5" />
+                        ) : (
+                          <Type className="h-2.5 w-2.5" />
+                        )}
+                      </button>
+                      {isX && (
+                        <span className="text-[10px] uppercase tracking-wide text-primary shrink-0">
+                          X
+                        </span>
+                      )}
+                      {isInvalidSeries && (
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <button
+                              type="button"
+                              title="시리즈는 숫자여야 그래프에 그려집니다"
+                              className="shrink-0 h-4 w-4 rounded inline-flex items-center justify-center bg-destructive/15 text-destructive hover:bg-destructive/25"
+                            >
+                              <AlertTriangle className="h-2.5 w-2.5" />
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent align="center" className="w-56 space-y-2">
+                            <div className="text-xs text-muted-foreground leading-relaxed">
+                              <strong>{c.label || c.key}</strong> 컬럼은 X축이 아니면서
+                              텍스트라 차트에 그려지지 않고, 템플릿으로 저장 시 검증 오류가
+                              납니다.
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => toggleColumnType(i)}
+                              >
+                                숫자로 변경
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setXColumn(i)}
+                              >
+                                X축으로 지정
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-destructive"
+                                onClick={() => removeColumn(i)}
+                                disabled={cols.length <= 2}
+                              >
+                                이 열 삭제
+                              </Button>
+                            </div>
+                          </PopoverContent>
+                        </Popover>
+                      )}
+                    </div>
+                    {/* Hover overlay — no reserved space when idle. */}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="absolute right-0.5 top-1/2 -translate-y-1/2 h-5 w-5 opacity-0 group-hover:opacity-100 text-destructive bg-background/90 border shadow-sm"
+                      onClick={() => removeColumn(i)}
+                      disabled={cols.length <= 2}
+                      title={cols.length <= 2 ? '최소 2개 열 필요' : '열 삭제'}
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </th>
+                )
+              })}
               <th className="border-b" />
             </tr>
           </thead>
@@ -684,23 +796,78 @@ export function ChartEditor({ props, content, onChange, readOnly }) {
  * making the editor feel laggy. We pause rendering for 150ms after the
  * last size change, so the chart only repaints once the user lets go.
  */
-function ChartCanvas({ chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle, className = '' }) {
-  // ResponsiveContainer needs a parent with a definite (non-`auto`) size
-  // to render anything. Using `flex-1 min-h-[…]` is brittle here because
-  // the chart can sit inside a cell whose height is itself measured from
-  // its children (auto-fit), creating a "parent depends on child, child
-  // depends on parent" loop that resolves to 0×0 — leaving recharts
-  // silently painting nothing while the surrounding chrome (caption,
-  // toolbar) still appears.
+function ChartCanvas({ chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle, autoFit, className = '' }) {
+  // Two sizing modes, both giving ResponsiveContainer a *definite*
+  // parent height so it actually renders:
   //
-  // Lock the canvas to a fixed 18rem height. Users who want a taller
-  // chart drag-resize the cell up; the chart fills its own block but
-  // doesn't try to stretch when the cell happens to be taller.
+  //   autoFit (default)
+  //     Use the canvas's own measured width and set height = width →
+  //     a square chart that fills the available horizontal space. The
+  //     surrounding cell's row_span tracks this height via the auto-fit
+  //     measurement pipeline, so the cell grows to wrap the square.
+  //
+  //   manual (autoFit === false)
+  //     The user has fixed the cell height by dragging. The flex chain
+  //     (BlockEditorCard's CardContent + contentRef + ChartEditor's
+  //     `h-full`) gives this `flex: 1` a real height to expand into.
+  //
+  // During an active resize (RGL drag → many ResizeObserver callbacks
+  // per second), Recharts repaints its SVG every frame which lags the
+  // editor noticeably. We mount a lightweight placeholder while the
+  // size is changing and only remount ResponsiveContainer once the
+  // dimensions have been stable for 200ms — so the chart paints once
+  // per drag instead of continuously.
+  const ref = useRef(null)
+  const [measuredWidth, setMeasuredWidth] = useState(0)
+  const [resizing, setResizing] = useState(false)
+  const resizeTimerRef = useRef(null)
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    // ResizeObserver fires once synchronously when we start observing.
+    // Treat that initial call as "no resize in progress" so the chart
+    // paints on first mount instead of starting in placeholder mode.
+    let firstCall = true
+    const measure = () => {
+      const w = el.clientWidth
+      if (autoFit) {
+        // Functional update keeps `measuredWidth` out of the effect
+        // deps, so the ResizeObserver doesn't churn.
+        setMeasuredWidth((prev) => (w > 0 && w !== prev ? w : prev))
+      }
+      if (firstCall) {
+        firstCall = false
+        return
+      }
+      setResizing(true)
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current)
+      resizeTimerRef.current = setTimeout(() => setResizing(false), 200)
+    }
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => {
+      ro.disconnect()
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current)
+    }
+  }, [autoFit])
+
+  // 18rem fallback while the first measurement is in flight (initial
+  // paint, before ResizeObserver fires). Once measured, height = width.
+  const style = autoFit
+    ? { height: measuredWidth > 0 ? `${measuredWidth}px` : '18rem' }
+    : { flex: 1, minHeight: '12rem' }
   return (
-    <div className={`w-full ${className}`} style={{ height: '18rem' }}>
-      <ResponsiveContainer width="100%" height="100%">
-        {renderChart(chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle)}
-      </ResponsiveContainer>
+    <div ref={ref} className={`w-full ${className}`} style={style}>
+      {resizing ? (
+        <div className="w-full h-full flex items-center justify-center text-[11px] text-muted-foreground bg-muted/20 rounded-md">
+          크기 조정 중…
+        </div>
+      ) : (
+        <ResponsiveContainer width="100%" height="100%">
+          {renderChart(chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle)}
+        </ResponsiveContainer>
+      )}
     </div>
   )
 }
@@ -810,4 +977,39 @@ function coerceCellValue(column, raw) {
     return Number.isFinite(n) ? n : s
   }
   return s
+}
+
+/** Guess a column's type from a sample of incoming values. If every
+ *  non-empty value parses cleanly as a finite number, the column is
+ *  `number`; otherwise `text`. Empty samples default to `number`
+ *  because new series columns are almost always numeric — the user
+ *  can flip the chip if needed. */
+function inferTypeFromValues(values) {
+  const nonEmpty = (values ?? []).filter(
+    (v) => v !== undefined && v !== null && String(v).trim() !== '',
+  )
+  if (nonEmpty.length === 0) return 'number'
+  for (const v of nonEmpty) {
+    const n = Number(typeof v === 'string' ? v.trim() : v)
+    if (!Number.isFinite(n)) return 'text'
+  }
+  return 'number'
+}
+
+/** Re-coerce every row's value in the given column according to the new
+ *  type. Used when the user flips T↔# inline so existing data stays
+ *  consistent with the declared type. */
+function recoerceRowsForColumn(rows, column) {
+  return rows.map((r) => {
+    if (!(column.key in r)) return r
+    return { ...r, [column.key]: coerceCellValue(column, r[column.key]) }
+  })
+}
+
+/** Auto-fix x_column_key if it points to a missing column. Prefers a
+ *  text column; falls back to the first remaining column. Returns the
+ *  original key when it's still valid. */
+function repairXKey(cols, currentXKey) {
+  if (cols.some((c) => c.key === currentXKey)) return currentXKey
+  return cols.find((c) => c.type === 'text')?.key ?? cols[0]?.key
 }

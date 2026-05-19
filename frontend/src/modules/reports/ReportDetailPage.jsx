@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useParams, useNavigate, useLocation, Link } from 'react-router-dom'
 import {
   ArrowLeft,
+  Bookmark,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ClipboardPaste,
+  Copy,
   Download,
+  FileBox,
   GripVertical,
   HardDrive,
   Layers,
@@ -15,6 +19,7 @@ import {
   Rows,
   Save,
   Settings2,
+  Sparkles,
   Trash2,
   Upload,
   X,
@@ -26,6 +31,7 @@ import { Card, CardContent } from '@/shared/components/ui/card'
 import { ScrollArea } from '@/shared/components/ui/scroll-area'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { Input } from '@/shared/components/ui/input'
+import { Textarea } from '@/shared/components/ui/textarea'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/components/ui/popover'
 import {
@@ -42,11 +48,14 @@ import { useAsync } from '@/shared/hooks/useAsync'
 import { usePersistedState } from '@/shared/hooks/usePersistedState'
 import { useWidgetCatalog } from '@/shared/hooks/useWidgetCatalog'
 import { getReport, createReport, updateReport, deleteReport } from './api'
-import { getTemplateVersion } from '@/shared/api/templates'
+import { getTemplateVersion, createTemplate } from '@/shared/api/templates'
+import { listTemplateCategories } from '@/shared/api/templateCategories'
 import { STATUSES, STATUS_LABEL, STATUS_VARIANT } from './constants'
 import { getRenderer } from '@/modules/templates/widgets'
 import { DepthStyleField, TextStyleField } from '@/modules/templates/widgets/_shared'
 import { TemplatePicker } from './TemplatePicker'
+import { SectionPickerDialog } from './SectionPickerDialog'
+import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
 import { cn } from '@/shared/lib/utils'
 import { toast } from 'sonner'
 
@@ -63,8 +72,13 @@ import { toast } from 'sonner'
 export default function ReportDetailPage() {
   const { reportId, templateId, version } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
   const { slug, all: workspaces } = useWorkspace()
   const isNew = Boolean(templateId)
+  // When the previous page handed us `state.startEditing` (the "복사"
+  // flow does this so the new copy lands directly in edit mode), we
+  // honor it on first mount only.
+  const startEditingFromState = Boolean(location.state?.startEditing)
 
   // 'paginated' = show one page at a time with prev/next controls
   // 'all'       = stack every page vertically (scroll through them)
@@ -75,8 +89,20 @@ export default function ReportDetailPage() {
   const [pageWidth, setPageWidth] = usePageWidth()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
-  const [isEditing, setIsEditing] = useState(isNew)
+  const [copyOpen, setCopyOpen] = useState(false)
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
+  const [aiPromptOpen, setAiPromptOpen] = useState(false)
+  const [pasteJsonOpen, setPasteJsonOpen] = useState(false)
+  const [isEditing, setIsEditing] = useState(isNew || startEditingFromState)
   const [currentPage, setCurrentPage] = useState(0)
+  // Widget catalog (label/description/props_schema per widget type) is
+  // bundled into the AI prompt so the model knows what shapes it may emit.
+  const { catalog: widgetCatalog } = useWidgetCatalog()
+  // The admin-managed "단락 구분" taxonomy. Cached module-wide so opening
+  // many reports in one session doesn't refetch; the admin page calls
+  // `invalidateSectionTaxonomyCache()` after mutations.
+  const { categories: sectionCategories, itemByCode: sectionItemByCode } =
+    useSectionTaxonomy()
 
   // New-report mode: fetch the seed template directly from the URL params
   // (the existing-report fetch path goes through `existingReport.pages`
@@ -118,6 +144,7 @@ export default function ReportDetailPage() {
             props_overrides: null,
             extra_blocks: [],
             blocks_order: [],
+            block_sections: {},
           },
         ],
       })
@@ -312,6 +339,7 @@ export default function ReportDetailPage() {
         props_overrides: null,
         extra_blocks: [],
         blocks_order: [],
+        block_sections: {},
       }
       const next = [...d.pages, newPage]
       return { ...d, pages: next }
@@ -362,12 +390,21 @@ export default function ReportDetailPage() {
       const nextOrder = page.blocks_order?.length
         ? [...page.blocks_order, id]
         : page.blocks_order ?? []
+      // Pre-tag a few widget types with their most-likely 단락 구분 so
+      // the writer doesn't have to right-click → 단락 구분 every time.
+      // The map only seeds the value at insertion — the user can still
+      // change or clear it via the context menu afterward.
+      const defaultSection = WIDGET_DEFAULT_SECTION_CODE[widgetType]
+      const nextSections = defaultSection
+        ? { ...(page.block_sections ?? {}), [id]: defaultSection }
+        : page.block_sections
       const nextPages = d.pages.map((p, i) =>
         i === pageIdx
           ? {
               ...p,
               extra_blocks: [...(p.extra_blocks ?? []), newBlock],
               blocks_order: nextOrder,
+              ...(defaultSection ? { block_sections: nextSections } : {}),
             }
           : p,
       )
@@ -419,6 +456,8 @@ export default function ReportDetailPage() {
       delete nextLayout[blockId]
       const nextPropsOverrides = { ...(page.props_overrides ?? {}) }
       delete nextPropsOverrides[blockId]
+      const nextSections = { ...(page.block_sections ?? {}) }
+      delete nextSections[blockId]
       const nextPages = d.pages.map((p, i) =>
         i !== pageIdx ? p : {
           ...p,
@@ -427,6 +466,7 @@ export default function ReportDetailPage() {
           content: nextContent,
           layout_overrides: Object.keys(nextLayout).length ? nextLayout : null,
           props_overrides: Object.keys(nextPropsOverrides).length ? nextPropsOverrides : null,
+          block_sections: nextSections,
         },
       )
       return { ...d, pages: nextPages }
@@ -455,6 +495,24 @@ export default function ReportDetailPage() {
     })
   }
 
+  /** Tag a block with a "단락 구분" item code (or clear it when `code` is
+   *  null). The taxonomy itself is admin-managed (section_categories /
+   *  section_items tables); the backend just round-trips the saved code
+   *  as opaque metadata so deletes don't cascade to existing reports. */
+  function setBlockSection(pageIdx, blockId, code) {
+    setDraft((d) => {
+      if (!d) return d
+      const nextPages = d.pages.map((p, i) => {
+        if (i !== pageIdx) return p
+        const next = { ...(p.block_sections ?? {}) }
+        if (code) next[blockId] = code
+        else delete next[blockId]
+        return { ...p, block_sections: next }
+      })
+      return { ...d, pages: nextPages }
+    })
+  }
+
   // RGL layout-change handler scoped to one page. Diffs against that page's
   // template defaults to keep `layout_overrides` lean. `auto_fit` defaults to
   // true; we only persist it when the user has explicitly disabled it (so the
@@ -473,8 +531,33 @@ export default function ReportDetailPage() {
     const curOverrides = page?.layout_overrides ?? {}
     const pageContentHeights = contentHeightsByPage[pageIdx] ?? {}
 
-    const sortedYs = [...new Set(rglLayout.map((it) => it.y))].sort((a, b) => a - b)
-    const yToRow = new Map(sortedYs.map((y, i) => [y, i + 1]))
+    // Group blocks by visual row (RGL y), then assign sequential row
+    // numbers. Within a single y-group, split into multiple logical
+    // rows when col_span sum would exceed GRID_COLS (12) — the
+    // backend's validator rejects rows whose col_span totals more
+    // than the grid, and RGL can transiently land items in the same
+    // y while the user is dragging.
+    const byY = new Map()
+    for (const it of rglLayout) {
+      if (!byY.has(it.y)) byY.set(it.y, [])
+      byY.get(it.y).push(it)
+    }
+    const blockToRow = new Map()
+    let rowCounter = 0
+    for (const y of [...byY.keys()].sort((a, b) => a - b)) {
+      const group = byY.get(y).sort((a, b) => (a.x ?? 0) - (b.x ?? 0))
+      let curRow = ++rowCounter
+      let colSum = 0
+      for (const it of group) {
+        const cs = clamp(it.w ?? 12, 1, 12)
+        if (colSum + cs > 12) {
+          curRow = ++rowCounter
+          colSum = 0
+        }
+        blockToRow.set(it.i, curRow)
+        colSum += cs
+      }
+    }
     const overrides = {}
     for (const it of rglLayout) {
       const block = blocks.find((b) => b.id === it.i)
@@ -492,7 +575,7 @@ export default function ReportDetailPage() {
         )
       }
       const newLayout = {
-        row: yToRow.get(it.y) ?? 1,
+        row: blockToRow.get(it.i) ?? 1,
         col_span: clamp(it.w ?? 12, 1, 12),
         row_span: rowSpan,
       }
@@ -559,12 +642,21 @@ export default function ReportDetailPage() {
       // The first page's template doubles as the report's primary
       // template (backend FK + listing display).
       const first = draft.pages[0]
+      // Safety net: layout_overrides occasionally land with multiple
+      // blocks in the same row whose col_span sums exceed 12 (e.g. a
+      // template was edited to add a new block but RGL hadn't yet been
+      // notified). The backend strictly rejects that, so we normalize
+      // here right before the request goes out.
+      const normalizedPages = draft.pages.map((p) => ({
+        ...p,
+        layout_overrides: normalizeLayoutOverrides(p.layout_overrides),
+      }))
       const payload = {
         title: draft.title,
         report_date: draft.report_date || null,
         status: draft.status,
         tags: draft.tags ?? [],
-        pages: draft.pages,
+        pages: normalizedPages,
       }
       if (isNew) {
         const created = await createReport({
@@ -632,6 +724,121 @@ export default function ReportDetailPage() {
     }
   }
 
+  /** Clone the current report's pages (content + layouts + overrides + extras
+   *  + section tags) into a brand-new draft owned by the current user.
+   *  Title comes from the dialog input; report_date resets to today and the
+   *  backend auto-assigns owner / created_at / updated_by from the request.
+   *  Status drops back to 'draft' since a copy represents fresh work.
+   *  After creation we navigate to the new report's URL with `startEditing`
+   *  in router state so it lands directly in the edit screen. */
+  async function onCopy(newTitle) {
+    if (!draft) return
+    const first = draft.pages[0]
+    try {
+      const created = await createReport({
+        template_id: first.template_id,
+        template_version: first.template_version,
+        title: newTitle,
+        report_date: todayIsoDate(),
+        status: 'draft',
+        tags: draft.tags ?? [],
+        pages: draft.pages,
+      })
+      toast.success('보고서가 복사되었습니다.')
+      setCopyOpen(false)
+      navigate(`/w/${slug}/reports/${created.id}`, {
+        state: { startEditing: true },
+      })
+    } catch (err) {
+      toast.error(err.message || '복사 실패')
+      throw err
+    }
+  }
+
+  /** Snapshot the currently-viewed page's widget layout into a brand-new
+   *  template. Only blocks (id/type/props/layout) are copied — content
+   *  values stay behind because templates have no notion of filled-in
+   *  data. Per-block overrides (props_overrides / layout_overrides) are
+   *  merged so the saved template captures what the user actually sees,
+   *  and extra blocks added at report-write time become first-class
+   *  template blocks. blocks_order is honored so the saved order
+   *  matches the on-screen order. */
+  async function onSaveAsTemplate({ templateId, name, description, category }) {
+    const page = currentPageData
+    const template = currentTemplate
+    if (!page || !template) {
+      toast.error('템플릿 정보를 불러오는 중입니다. 잠시 후 다시 시도하세요.')
+      throw new Error('Template not ready')
+    }
+    const fixupNotes = []
+    const blocks = combinedBlocks(template, page).map((b) => {
+      const propsOverride = page.props_overrides?.[b.id]
+      const layoutOverride = page.layout_overrides?.[b.id]
+      const blockContent = page.content?.[b.id]
+      let mergedProps = { ...(b.props ?? {}), ...(propsOverride ?? {}) }
+      // Chart-specific: structural fields (columns, x_column_key,
+      // chart_type, axis titles) may live in content (legacy / current
+      // ChartEditor behavior). Content is the *user-visible* source of
+      // truth for these — what's drawn on screen — so it must win over
+      // both the template default AND any stale props_overrides left by
+      // an older PropsPanel session. Otherwise the template snapshot
+      // wouldn't match what the user actually sees.
+      if (b.type === 'chart' && blockContent && typeof blockContent === 'object') {
+        for (const key of [
+          'columns',
+          'x_column_key',
+          'chart_type',
+          'x_axis_title',
+          'y_axis_title',
+        ]) {
+          if (blockContent[key] !== undefined && blockContent[key] !== '') {
+            mergedProps[key] = blockContent[key]
+          }
+        }
+        // After resolving content↔overrides, the chart may still
+        // violate the backend's schema rules (X-axis must exist, non-X
+        // columns must be number-typed). normalizeChartPropsForTemplate
+        // applies the same fixes a careful user would: pick a valid
+        // X-axis, promote the lone text column when needed, drop any
+        // remaining text columns from the schema. The user is notified
+        // via a single toast at the end so they know what was tidied.
+        const before = mergedProps
+        mergedProps = normalizeChartPropsForTemplate(mergedProps)
+        const note = describeChartFixup(b.id, before, mergedProps)
+        if (note) fixupNotes.push(note)
+      }
+      const out = {
+        id: b.id,
+        type: b.type,
+        props: mergedProps,
+      }
+      const mergedLayout = { ...(b.layout ?? {}), ...(layoutOverride ?? {}) }
+      if (Object.keys(mergedLayout).length > 0) out.layout = mergedLayout
+      return out
+    })
+    const schema = { version: 'widget-v1', blocks }
+    try {
+      const created = await createTemplate({
+        template_id: templateId,
+        name,
+        description: description || '',
+        category: category || 'misc',
+        schema,
+        // Scope to current workspace so it appears in this workspace's
+        // template picker. Empty/null would make it globally visible.
+        owner_workspace_slugs: slug ? [slug] : null,
+      })
+      toast.success(`템플릿 '${created.name}' 저장됨`)
+      if (fixupNotes.length > 0) {
+        toast.info(`차트 자동 정리: ${fixupNotes.join(' · ')}`)
+      }
+      setSaveTemplateOpen(false)
+    } catch (err) {
+      toast.error(err.message || '템플릿 저장 실패')
+      throw err
+    }
+  }
+
   // Local snapshot export — downloads the current working draft (title +
   // report_date + tags + pages) as a JSON file. The `id` and `status`
   // columns are deliberately omitted: the snapshot is meant to be portable
@@ -681,37 +888,175 @@ export default function ReportDetailPage() {
     URL.revokeObjectURL(url)
     toast.success('JSON 파일로 저장했습니다.')
   }
+  // Shared import path for both the file picker and the paste-JSON dialog.
+  // Throws on schema mismatch so the caller can surface its own toast.
+  function applyImportedDraft(text) {
+    const obj = JSON.parse(text)
+    if (obj?._type !== 'report_archive_draft_v1') {
+      throw new Error('지원하지 않는 형식입니다. (_type=report_archive_draft_v1 이어야 합니다.)')
+    }
+    if (!Array.isArray(obj.pages) || obj.pages.length === 0) {
+      throw new Error('페이지 데이터가 비어 있습니다.')
+    }
+    setDraft((d) => ({
+      ...(d ?? {}),
+      title: typeof obj.title === 'string' ? obj.title : (d?.title ?? ''),
+      report_date:
+        typeof obj.report_date === 'string' && obj.report_date
+          ? obj.report_date
+          : (d?.report_date ?? todayIsoDate()),
+      tags: Array.isArray(obj.tags) ? obj.tags : (d?.tags ?? []),
+      pages: obj.pages.map(normalizePage),
+    }))
+    setCurrentPage(0)
+    // Loaded content is unsaved — switch into edit mode so the user can
+    // review and either save back to the server or discard.
+    setIsEditing(true)
+  }
+
   async function handleLocalLoad(e) {
     const file = e.target.files?.[0]
     e.target.value = '' // reset so the same file can be re-loaded later
     if (!file) return
     try {
       const text = await file.text()
-      const obj = JSON.parse(text)
-      if (obj?._type !== 'report_archive_draft_v1') {
-        throw new Error('지원하지 않는 파일 형식입니다.')
-      }
-      if (!Array.isArray(obj.pages) || obj.pages.length === 0) {
-        throw new Error('페이지 데이터가 비어 있습니다.')
-      }
-      setDraft((d) => ({
-        ...(d ?? {}),
-        title: typeof obj.title === 'string' ? obj.title : (d?.title ?? ''),
-        report_date:
-          typeof obj.report_date === 'string' && obj.report_date
-            ? obj.report_date
-            : (d?.report_date ?? todayIsoDate()),
-        tags: Array.isArray(obj.tags) ? obj.tags : (d?.tags ?? []),
-        pages: obj.pages.map(normalizePage),
-      }))
-      setCurrentPage(0)
-      // Loaded content is unsaved — switch into edit mode so the user can
-      // review and either save back to the server or discard.
-      setIsEditing(true)
+      applyImportedDraft(text)
       toast.success('JSON 파일을 불러왔습니다. 저장하려면 “저장” 버튼을 눌러주세요.')
     } catch (err) {
       toast.error(err.message || '불러오기 실패')
     }
+  }
+
+  // Build the prompt that teaches an external AI ReportArchive's JSON
+  // shape + widget catalog. The prompt is *template-agnostic*: it does
+  // not embed the current report's content or block layout (those tend
+  // to confuse the model). Only the page's template binding
+  // (template_id / template_version) is pre-filled so the round-trip
+  // import + save still works against a real template.
+  function buildAiPrompt() {
+    const widgets = widgetCatalog?.widgets ?? []
+    const firstPage = draft?.pages?.[0]
+    const tplId = firstPage?.template_id ?? 'TEMPLATE_ID_HERE'
+    const tplVer = firstPage?.template_version ?? 1
+
+    const skeleton = {
+      _type: 'report_archive_draft_v1',
+      title: '<보고서 제목>',
+      report_date: '<YYYY-MM-DD>',
+      tags: [],
+      pages: [
+        {
+          template_id: tplId,
+          template_version: tplVer,
+          name: null,
+          extra_blocks: [
+            { id: '<block_id_1>', type: '<widget_type>', props: { /* 위젯 props */ } },
+            { id: '<block_id_2>', type: '<widget_type>', props: { /* 위젯 props */ } },
+          ],
+          content: {
+            '<block_id_1>': { /* 해당 위젯의 content 형식 */ },
+            '<block_id_2>': { /* 해당 위젯의 content 형식 */ },
+          },
+          layout_overrides: null,
+          props_overrides: null,
+          blocks_order: [],
+          block_sections: {},
+        },
+      ],
+    }
+
+    const widgetCatalogBlock = widgets.length === 0
+      ? '(위젯 카탈로그를 아직 불러오지 못했습니다. 잠시 후 다시 열어보세요.)'
+      : widgets
+          .map((w) => {
+            const schemaStr = JSON.stringify(w.props_schema ?? {}, null, 2)
+            return `### ${w.type} — ${w.label}\n${w.description}\nprops_schema:\n${indent(schemaStr, 2)}`
+          })
+          .join('\n\n')
+
+    const examples = [
+      '※ 모든 예시는 백엔드 스키마와 1:1 로 일치합니다. 키 이름·타입을 절대 변형하지 마세요.',
+      '',
+      '### heading (제목)',
+      'props (required: level) : `{ "level": 2 }`   // 1=대제목, 2=중제목, 3=소제목',
+      'content : `{ "text": "섹션 제목" }`',
+      '',
+      '### rich_text (자유 서술 / 마크다운)',
+      'props : `{}`   // 모든 필드 선택. label 등 없음.',
+      'content (권장: 단순형) : `{ "markdown": "여러 줄 텍스트…\\n- 글머리도 가능" }`',
+      'content (구조형) : `{ "items": [ {"depth":0,"text":"첫째 줄"}, {"depth":1,"text":"하위 항목"} ] }`   // depth 는 0~5 정수',
+      '',
+      '### key_value (키-값 카드)  ★ 자주 틀리는 형식 — 주의 ★',
+      'props (required: items) : `{ "label":"주요 결과", "items":[ {"key":"stress","label":"발생 응력","type":"number"}, {"key":"unit","label":"단위","type":"text"} ] }`',
+      'content : `{ "stress": 100, "unit": "MPa" }`   // ← 각 item.key 가 그대로 top-level 키. `values` 같은 래퍼 절대 금지.',
+      'item.type 은 text | number | integer | date | select 중 하나. `multi: true` 항목의 값은 배열 (예: `"defect_type": ["크랙","변형"]`).',
+      '',
+      '### bulleted_list (글머리 리스트)  ★ 자주 틀리는 형식 — 주의 ★',
+      'props (required: label) : `{ "label": "후속 검토 사항" }`',
+      'content : `{ "items": [ "첫째 항목", "둘째 항목", "셋째 항목" ] }`   // ← 문자열 배열. {text, depth} 객체 절대 금지.',
+      '',
+      '### table (표)',
+      'props (required: label, columns) : `{ "label":"검토 내용", "columns":[ {"key":"category","label":"구분","type":"text"}, {"key":"amount","label":"금액","type":"number"} ] }`',
+      'content : `{ "rows":[ {"category":"배경","amount":1200}, {"category":"결과","amount":3400} ] }`   // 행 객체의 키 = column.key',
+      '',
+      '### chart (차트)',
+      'props (required: label) : `{ "label":"월별 매출", "chart_type":"line", "x_column_key":"month", "columns":[ {"key":"month","label":"월","type":"text"}, {"key":"sales","label":"매출","type":"number"} ] }`',
+      'content : `{ "rows":[ {"month":"1월","sales":120}, {"month":"2월","sales":135} ] }`',
+      '※ x_column_key 가 가리키는 열 외에 모든 열은 type:"number" 여야 합니다.',
+      '',
+      '### milestone (마일스톤)',
+      'props (required: label) : `{ "label":"프로젝트 일정" }`',
+      'content : `{ "items":[ {"date":"2026-01-15","label":"기획","status":"done"}, {"date":"2026-03-01","label":"개발","status":"pending","note":"인력 보강 필요"} ] }`',
+      'status 는 `pending` | `done` | `delayed` 셋 중 하나. (in_progress / planned 등 다른 값 사용 금지)',
+      '',
+      '### flowchart (플로우차트)',
+      'props (required: label) : `{ "label":"검토 흐름", "orientation":"horizontal" }`   // orientation: horizontal | vertical',
+      'content : `{ "items":[ {"label":"요구사항"}, {"label":"설계"}, {"label":"검토","description":"리뷰 미팅"}, {"label":"승인"} ] }`',
+      '※ 순차 흐름만 지원. `nodes` / `edges` 같은 키 사용 금지.',
+      '',
+      '### image / attachment  ★ AI 가 만들지 마세요 ★',
+      '두 위젯의 content 는 시스템에 실제로 업로드된 파일의 `file_id` 를 요구합니다. AI 는 file_id 를 알 수 없으므로 이 위젯들은 `extra_blocks` / `content` 양쪽 모두에서 생성하지 마세요. 이미지·첨부가 필요하다는 점만 본문 rich_text 에 메모해 두세요. (사용자가 보고서를 받은 뒤 직접 추가합니다.)',
+    ].join('\n')
+
+    return [
+      '당신은 ReportArchive 보고서 작성 도우미입니다.',
+      '사용자 입력(자유 텍스트, 메모, 표 등)을 분석해, 아래 위젯들을 자유롭게 조합한 JSON 한 덩어리만 출력합니다.',
+      'JSON 외의 설명·주석·마크다운 코드펜스(```)는 일체 출력하지 마세요. 응답은 반드시 `{` 로 시작해 `}` 로 끝나야 합니다.',
+      '',
+      '== 출력 JSON 전체 구조 ==',
+      'top-level 형식은 아래와 같습니다. `pages` 배열에 페이지를 1개 이상 만들고, 각 페이지 안에서는 위젯 블록을 `extra_blocks` 에 선언하고, 같은 `id` 를 키로 `content` 에 데이터를 넣으세요.',
+      JSON.stringify(skeleton, null, 2),
+      '',
+      '== 작성 규칙 ==',
+      '1. 데이터 성격에 맞춰 다양한 위젯을 자유롭게 조합하세요. (제목 → heading, 줄글 → rich_text, 수치 카드 → key_value, 항목 나열 → bulleted_list, 표 데이터 → table, 시계열/추세 → chart 등)',
+      '2. 위젯 블록은 모두 `extra_blocks` 에 정의합니다. 같은 `id` 가 `extra_blocks` 와 `content` 양쪽에 존재해야 합니다. (블록 선언 ↔ 데이터 매핑)',
+      '3. `block_id` 는 정규식 `^[a-z][a-z0-9_]{0,63}$` 를 만족해야 합니다. 영문 소문자로 시작, 숫자·언더스코어 가능, 페이지 내 유일.',
+      '4. 각 페이지의 `template_id` / `template_version` 은 위 골격에 채워둔 값을 그대로 유지하세요 (직접 수정 금지).',
+      '5. 주제가 길거나 분리된다면 `pages` 에 페이지를 추가해도 됩니다. 같은 template_id / version 을 그대로 복사해 사용하세요.',
+      '6. `layout_overrides`, `props_overrides`, `blocks_order`, `block_sections` 는 비워두는 것이 안전합니다. (`null` / `[]` / `{}` 그대로)',
+      '7. 모르는 값은 생략하거나 빈 문자열 `""` 로 두세요. 임의의 값(placeholder)을 지어내지 마세요.',
+      '8. `image` / `attachment` 위젯은 시스템에 업로드된 파일을 가리키는 `file_id` 가 필요하므로 절대 만들지 마세요.',
+      '',
+      '== 절대 하지 말 것 (체크리스트) ==',
+      '- bulleted_list 의 items 를 `[{text, depth}, ...]` 객체 배열로 만들기 → 반드시 `["문자열", ...]`',
+      '- key_value 의 content 를 `{values: {...}}` 로 감싸기 → 키를 top-level 에 그대로 펼치기',
+      '- milestone 의 status 에 `planned` / `in_progress` 사용 → `pending` / `done` / `delayed` 만 허용',
+      '- flowchart 를 `nodes` / `edges` 그래프로 표현 → `items: [{label, description?}]` 순차 리스트만 지원',
+      '- image / attachment 위젯 생성 → 불가능 (file_id 필요)',
+      '- props 에 widget 의 props_schema 에 없는 키 추가 (`additionalProperties: false`)',
+      '',
+      '== 위젯 카탈로그 (전체 목록 / props_schema 원본) ==',
+      widgetCatalogBlock,
+      '',
+      '== 위젯별 props / content 예시 ==',
+      examples,
+      '',
+      '== 작성 흐름 ==',
+      '① 사용자 입력을 훑어 섹션/표/리스트/수치 등을 식별 → ② 각 조각을 어떤 위젯으로 표현할지 결정 → ③ extra_blocks 에 블록을 선언하고 같은 id 로 content 채움 → ④ JSON 만 출력.',
+      '',
+      '== 사용자 입력 ==',
+      '<<여기에 보고서로 만들고 싶은 내용을 붙여 넣으세요>>',
+    ].join('\n')
   }
 
   return (
@@ -802,6 +1147,23 @@ export default function ReportDetailPage() {
               <Button
                 variant="outline"
                 size="sm"
+                onClick={() => setCopyOpen(true)}
+              >
+                <Copy className="mr-1 h-3 w-3" />
+                복사
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSaveTemplateOpen(true)}
+                title="현재 페이지의 위젯 배치를 새 템플릿으로 저장"
+              >
+                <FileBox className="mr-1 h-3 w-3" />
+                템플릿으로 저장
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => setConfirmDelete(true)}
               >
                 <Trash2 className="mr-1 h-3 w-3" />
@@ -809,6 +1171,16 @@ export default function ReportDetailPage() {
               </Button>
             </>
           )}
+
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setAiPromptOpen(true)}
+            title="AI에게 보고서 작성을 맡기기 위한 프롬프트 생성"
+          >
+            <Sparkles className="mr-1 h-3 w-3" />
+            AI
+          </Button>
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -826,6 +1198,10 @@ export default function ReportDetailPage() {
               <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
                 <Upload className="mr-2 h-3.5 w-3.5" />
                 JSON에서 불러오기
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setPasteJsonOpen(true)}>
+                <ClipboardPaste className="mr-2 h-3.5 w-3.5" />
+                JSON 데이터 붙여넣기
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -894,6 +1270,9 @@ export default function ReportDetailPage() {
                     onChangeExtraBlockProps={(blockId, newProps) =>
                       setExtraBlockProps(idx, blockId, newProps)
                     }
+                    onChangeSection={(blockId, code) => setBlockSection(idx, blockId, code)}
+                    sectionCategories={sectionCategories}
+                    sectionItemByCode={sectionItemByCode}
                   />
                 ))
               : (
@@ -932,6 +1311,11 @@ export default function ReportDetailPage() {
                     onChangeExtraBlockProps={(blockId, newProps) =>
                       setExtraBlockProps(safeCurrent, blockId, newProps)
                     }
+                    onChangeSection={(blockId, code) =>
+                      setBlockSection(safeCurrent, blockId, code)
+                    }
+                    sectionCategories={sectionCategories}
+                    sectionItemByCode={sectionItemByCode}
                   />
                 )}
 
@@ -971,7 +1355,390 @@ export default function ReportDetailPage() {
         variant="destructive"
         onConfirm={onDelete}
       />
+
+      <ReportCopyDialog
+        open={copyOpen}
+        onOpenChange={setCopyOpen}
+        sourceTitle={draft?.title ?? ''}
+        onConfirm={onCopy}
+      />
+
+      <SaveAsTemplateDialog
+        open={saveTemplateOpen}
+        onOpenChange={setSaveTemplateOpen}
+        sourceTitle={draft?.title ?? ''}
+        sourceTemplate={currentTemplate}
+        pageCount={pageCount}
+        currentPageIndex={safeCurrent}
+        onConfirm={onSaveAsTemplate}
+      />
+
+      <AiPromptDialog
+        open={aiPromptOpen}
+        onOpenChange={setAiPromptOpen}
+        getPrompt={buildAiPrompt}
+      />
+
+      <PasteJsonDialog
+        open={pasteJsonOpen}
+        onOpenChange={setPasteJsonOpen}
+        onImport={(text) => {
+          applyImportedDraft(text)
+          toast.success('붙여넣은 JSON을 적용했습니다. 저장하려면 “저장” 버튼을 눌러주세요.')
+        }}
+      />
     </div>
+  )
+}
+
+/** Asks the user for the new title before kicking off a copy. Pre-fills
+ *  '{원본} 사본' so the common case is one Enter; trims and rejects empty. */
+function ReportCopyDialog({ open, onOpenChange, sourceTitle, onConfirm }) {
+  const [title, setTitle] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      const base = (sourceTitle ?? '').trim()
+      setTitle(base ? `${base} 사본` : '')
+      setSubmitting(false)
+    }
+  }, [open, sourceTitle])
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    const trimmed = title.trim()
+    if (!trimmed) return
+    setSubmitting(true)
+    try {
+      await onConfirm(trimmed)
+    } catch {
+      // onConfirm surfaces its own toast on failure; keep the dialog
+      // open so the user can retry with the same title.
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>보고서 복사</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <label htmlFor="copy-title" className="text-sm font-medium">
+              새 보고서 제목
+            </label>
+            <Input
+              id="copy-title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="새 제목"
+              autoFocus
+              required
+            />
+            <p className="text-[11px] text-muted-foreground">
+              본문·레이아웃은 그대로 복사되며, 작성인은 현재 사용자, 작성일과
+              보고 기준일은 오늘로 설정됩니다.
+            </p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={submitting}
+            >
+              취소
+            </Button>
+            <Button type="submit" disabled={submitting || !title.trim()}>
+              {submitting ? '복사 중...' : '복사'}
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Prefix every line of `s` with `n` spaces. Used by buildAiPrompt so
+ *  nested JSON renders cleanly under bullet headings. */
+function indent(s, n) {
+  const pad = ' '.repeat(n)
+  return s.split('\n').map((line) => pad + line).join('\n')
+}
+
+/** Surfaces the generated AI prompt in a read-only textarea with a
+ *  "복사" button. The prompt is rebuilt every time the dialog opens so
+ *  it reflects the latest draft / catalog state. */
+function AiPromptDialog({ open, onOpenChange, getPrompt }) {
+  const [text, setText] = useState('')
+  useEffect(() => {
+    if (open) setText(getPrompt())
+  }, [open, getPrompt])
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(text)
+      toast.success('프롬프트를 클립보드에 복사했습니다.')
+    } catch {
+      toast.error('클립보드 복사에 실패했습니다. 직접 선택해 복사해 주세요.')
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-hidden flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4" />
+            AI 프롬프트 — 보고서 JSON 생성
+          </DialogTitle>
+        </DialogHeader>
+        <p className="text-xs text-muted-foreground">
+          아래 프롬프트를 AI에 보내고, 보고서 본문을 함께 입력하면 JSON 결과를 받을 수 있습니다. 그 JSON 을 “JSON 데이터 붙여넣기”로 다시 불러오세요.
+        </p>
+        <Textarea
+          readOnly
+          value={text}
+          onClick={(e) => e.currentTarget.select()}
+          className="flex-1 min-h-[320px] font-mono text-[11px] leading-relaxed"
+        />
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
+            닫기
+          </Button>
+          <Button size="sm" onClick={handleCopy}>
+            <Copy className="mr-1 h-3 w-3" />
+            복사
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Lets the user paste a `report_archive_draft_v1` JSON blob directly
+ *  instead of uploading a file. Validation is delegated to onImport,
+ *  which throws on schema mismatch; we surface the error inline so the
+ *  user can fix the paste without closing the dialog. */
+function PasteJsonDialog({ open, onOpenChange, onImport }) {
+  const [text, setText] = useState('')
+  const [err, setErr] = useState('')
+  useEffect(() => {
+    if (open) {
+      setText('')
+      setErr('')
+    }
+  }, [open])
+
+  function handleApply() {
+    if (!text.trim()) {
+      setErr('붙여넣을 JSON 내용이 비어 있습니다.')
+      return
+    }
+    try {
+      onImport(text)
+      onOpenChange(false)
+    } catch (e) {
+      setErr(e.message || '불러오기 실패')
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl max-h-[85vh] overflow-hidden flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <ClipboardPaste className="h-4 w-4" />
+            JSON 데이터 붙여넣기
+          </DialogTitle>
+        </DialogHeader>
+        <p className="text-xs text-muted-foreground">
+          AI 가 만들어 준 보고서 JSON 또는 다른 보고서에서 내보낸 JSON 을 그대로 붙여 넣으세요.
+          (<code>_type=&quot;report_archive_draft_v1&quot;</code> 형식이어야 합니다.)
+        </p>
+        <Textarea
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value)
+            if (err) setErr('')
+          }}
+          placeholder='{ "_type": "report_archive_draft_v1", ... }'
+          className="flex-1 min-h-[280px] font-mono text-[11px] leading-relaxed"
+        />
+        {err && (
+          <p className="text-xs text-destructive whitespace-pre-wrap">{err}</p>
+        )}
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
+            취소
+          </Button>
+          <Button size="sm" onClick={handleApply}>
+            <Upload className="mr-1 h-3 w-3" />
+            불러오기
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** "템플릿으로 저장" dialog. Captures only the form metadata; the page-to-
+ *  schema conversion (props + layout merging, blocks_order, extras) lives
+ *  in the parent's onSaveAsTemplate handler so it can reach pageTemplate
+ *  caches without prop-drilling. Slug is required (templates use it as
+ *  a permanent id); name + description + category mirror the template
+ *  editor's create dialog. */
+function SaveAsTemplateDialog({
+  open,
+  onOpenChange,
+  sourceTitle,
+  sourceTemplate,
+  pageCount,
+  currentPageIndex,
+  onConfirm,
+}) {
+  // Template id is auto-generated as a UUID on every open, mirroring the
+  // template-editor's "new template" flow. The user never edits it.
+  const [templateId, setTemplateId] = useState('')
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [category, setCategory] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const { data: categories } = useAsync(() => listTemplateCategories(), [])
+  const catList = categories ?? []
+
+  useEffect(() => {
+    if (!open) return
+    setTemplateId(globalThis.crypto?.randomUUID?.() ?? fallbackUuidLocal())
+    // Default the name to the source template's name with a suffix —
+    // the user is most often making a variation of an existing template.
+    const base = sourceTemplate?.name ?? sourceTitle ?? ''
+    setName(base ? `${base} 사본` : '')
+    setDescription('')
+    setCategory(sourceTemplate?.category ?? '')
+    setSubmitting(false)
+  }, [open, sourceTitle, sourceTemplate])
+
+  // Fall back to the first available category once the API responds, so
+  // the dropdown isn't empty when the source template's category was
+  // deleted (or when this is run on a template-less page somehow).
+  useEffect(() => {
+    if (!category && catList.length > 0) setCategory(catList[0].slug)
+  }, [catList, category])
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    if (!templateId.trim() || !name.trim()) return
+    setSubmitting(true)
+    try {
+      await onConfirm({
+        templateId: templateId.trim(),
+        name: name.trim(),
+        description: description.trim(),
+        category: category || 'misc',
+      })
+    } catch {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>템플릿으로 저장</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="rounded-md border bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground leading-relaxed">
+            현재 페이지의 <strong>위젯 배치</strong>만 새 템플릿으로 저장됩니다.
+            입력된 데이터(텍스트·표·차트 값 등)는 포함되지 않습니다.
+            {pageCount > 1 && (
+              <>
+                <br />
+                이 보고서는 {pageCount}페이지입니다 — <strong>페이지 {currentPageIndex + 1}</strong>
+                만 저장됩니다.
+              </>
+            )}
+          </div>
+
+          <div className="space-y-1.5">
+            <label htmlFor="tpl-slug" className="text-sm font-medium">
+              템플릿 ID
+            </label>
+            <Input
+              id="tpl-slug"
+              value={templateId}
+              readOnly
+              className="font-mono text-[11px] bg-muted/40"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              자동 발급된 UUID. 발행 후 변경 불가.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="tpl-name" className="text-sm font-medium">
+              이름
+            </label>
+            <Input
+              id="tpl-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="주간 R&D 보고 (사본)"
+              required
+              autoFocus
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="tpl-desc" className="text-sm font-medium">
+              설명 (선택)
+            </label>
+            <Input
+              id="tpl-desc"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="예: 모바일팀용 주간 보고"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="tpl-cat" className="text-sm font-medium">
+              카테고리
+            </label>
+            <select
+              id="tpl-cat"
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+            >
+              {catList.length === 0 && <option value="">misc</option>}
+              {catList.map((c) => (
+                <option key={c.slug} value={c.slug}>
+                  {c.name} ({c.slug})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={submitting}
+            >
+              취소
+            </Button>
+            <Button
+              type="submit"
+              disabled={submitting || !templateId.trim() || !name.trim()}
+            >
+              {submitting ? '저장 중...' : '저장'}
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -1331,11 +2098,17 @@ function PageSection({
   onAddExtraBlock,
   onRemoveBlock,
   onChangeExtraBlockProps,
+  onChangeSection,
+  sectionCategories,
+  sectionItemByCode,
 }) {
   // Per-page state for "edit widget props" — null when no panel is open,
   // otherwise the extra block's id. Lives here (not on each card) so a
   // right-click on one block closes any other open panel cleanly.
   const [propsEditingId, setPropsEditingId] = useState(null)
+  // Same idea but for the "단락 구분" floating picker — non-null = open
+  // with that block id as the target.
+  const [sectionEditingId, setSectionEditingId] = useState(null)
   // Context menu coords + target. Right-click on an extra block pops a
   // small menu here; click outside / Esc dismisses.
   const [contextMenu, setContextMenu] = useState(null)
@@ -1470,7 +2243,8 @@ function PageSection({
             const canEditProps = isEditing && (
               isExtraBlock ? !!onChangeExtraBlockProps : !!onChangePropsOverride
             )
-            const showContextMenu = isEditing && (canEditProps || !!onRemoveBlock)
+            const showContextMenu =
+              isEditing && (canEditProps || !!onRemoveBlock || !!onChangeSection)
             return (
               <div
                 key={block.id}
@@ -1493,6 +2267,8 @@ function PageSection({
                   showDragHandle={isEditing}
                   autoFit={autoFit}
                   isExtra={isExtraBlock}
+                  sectionCode={page?.block_sections?.[block.id] ?? null}
+                  sectionItemByCode={sectionItemByCode}
                   onActivate={() => onActivate(block.id)}
                   onChange={(value) => onChangeContent(block.id, value)}
                   onChangePropsOverride={(patch) =>
@@ -1533,6 +2309,14 @@ function PageSection({
             setPropsEditingId(contextMenu.blockId)
             setContextMenu(null)
           }}
+          onEditSection={
+            onChangeSection
+              ? () => {
+                  setSectionEditingId(contextMenu.blockId)
+                  setContextMenu(null)
+                }
+              : undefined
+          }
           onRemove={
             onRemoveBlock
               ? () => {
@@ -1541,6 +2325,17 @@ function PageSection({
                 }
               : undefined
           }
+        />
+      )}
+
+      {sectionEditingId && (
+        <SectionPickerDialog
+          open
+          categories={sectionCategories}
+          currentSection={page?.block_sections?.[sectionEditingId] ?? null}
+          onPick={(code) => onChangeSection?.(sectionEditingId, code)}
+          onClear={() => onChangeSection?.(sectionEditingId, null)}
+          onClose={() => setSectionEditingId(null)}
         />
       )}
 
@@ -1650,6 +2445,10 @@ function normalizePage(p) {
     props_overrides: p.props_overrides ?? null,
     extra_blocks: Array.isArray(p.extra_blocks) ? p.extra_blocks : [],
     blocks_order: Array.isArray(p.blocks_order) ? p.blocks_order : [],
+    block_sections:
+      p.block_sections && typeof p.block_sections === 'object'
+        ? { ...p.block_sections }
+        : {},
   }
 }
 
@@ -1676,7 +2475,7 @@ function extractBlocks(schema) {
  *  Kept as a vanilla div + portal-less render — radix-ui doesn't ship
  *  a context-menu primitive in this project and a single item doesn't
  *  warrant pulling one in. */
-function BlockContextMenu({ x, y, onClose, onEditProps, onRemove }) {
+function BlockContextMenu({ x, y, onClose, onEditProps, onEditSection, onRemove }) {
   useEffect(() => {
     function handleClick() { onClose() }
     function handleKey(e) { if (e.key === 'Escape') onClose() }
@@ -1701,6 +2500,16 @@ function BlockContextMenu({ x, y, onClose, onEditProps, onRemove }) {
         <Settings2 className="h-3.5 w-3.5" />
         속성 편집
       </button>
+      {onEditSection && (
+        <button
+          type="button"
+          onClick={onEditSection}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-muted text-left"
+        >
+          <Bookmark className="h-3.5 w-3.5" />
+          단락 구분
+        </button>
+      )}
       {onRemove && (
         <button
           type="button"
@@ -1900,6 +2709,8 @@ function BlockEditorCard({
   showDragHandle,
   autoFit,
   isExtra,
+  sectionCode,
+  sectionItemByCode,
   onActivate,
   onChange,
   onChangePropsOverride,
@@ -1909,6 +2720,13 @@ function BlockEditorCard({
   onMeasureContentHeight,
   onMeasureEditHeight,
 }) {
+  // Resolve the section-marker tag (if any) into its item + category so
+  // the drag handle can show a colored chip. The lookup tolerates
+  // unknown codes (orphaned tags from a deleted taxonomy entry) by
+  // returning undefined → no badge.
+  const sectionEntry = sectionCode ? sectionItemByCode?.[sectionCode] : null
+  const sectionItem = sectionEntry?.item ?? null
+  const sectionCategory = sectionEntry?.category ?? null
   const renderer = getRenderer(block.type)
   // Per-report override fully replaces the matching style key. The
   // backend's _sanitize_props_overrides whitelist guarantees only
@@ -2010,6 +2828,23 @@ function BlockEditorCard({
         <Badge variant="secondary" className="text-[9px] h-3.5 px-1">
           추가
         </Badge>
+      )}
+      {sectionItem && sectionCategory && (
+        <span
+          className="inline-flex items-center gap-1 rounded-full border px-1.5 h-3.5 text-[9px] font-medium"
+          style={{
+            borderColor: sectionCategory.color,
+            color: sectionCategory.color,
+            backgroundColor: `${sectionCategory.color}1A`,
+          }}
+          title={`${sectionCategory.name} · ${sectionItem.label}`}
+        >
+          <span
+            className="h-1.5 w-1.5 rounded-full"
+            style={{ backgroundColor: sectionCategory.color }}
+          />
+          {sectionItem.label}
+        </span>
       )}
       {onToggleAutoFit && (
         <label
@@ -2129,7 +2964,13 @@ function BlockEditorCard({
         className={cn(
           'relative pb-4',
           showDragHandle ? 'pt-9' : 'pt-4',
-          autoFit ? 'overflow-visible' : 'flex-1 min-h-0 overflow-auto'
+          // In manual (non-autoFit) mode the cell height is fixed by
+          // the user's drag, so we set up a flex-column chain inside
+          // the card so widgets that opt into `h-full` / `flex-1`
+          // (like ChartEditor) can actually fill the cell.
+          autoFit
+            ? 'overflow-visible'
+            : 'flex-1 min-h-0 overflow-auto flex flex-col'
         )}
       >
         {autoFit && Editor && (
@@ -2147,16 +2988,28 @@ function BlockEditorCard({
               props={effectiveProps}
               content={content}
               onChange={NO_OP}
+              autoFit={autoFit}
               readOnly={true}
             />
           </div>
         )}
-        <div ref={contentRef}>
+        <div
+          ref={contentRef}
+          className={cn(
+            // Continue the flex-column chain set up on CardContent so
+            // widgets that fill the cell (chart) work in manual mode.
+            // In autoFit mode we leave it as auto-height so the cell
+            // can wrap the widget's natural size.
+            !autoFit && 'flex-1 min-h-0 flex flex-col'
+          )}
+        >
           {Editor ? (
             <Editor
               props={effectiveProps}
               content={content}
               onChange={onChange}
+              onChangePropsOverride={onChangePropsOverride}
+              autoFit={autoFit}
               readOnly={readOnly}
             />
           ) : (
@@ -2348,6 +3201,130 @@ function ResizableGrid({ items, onLayoutChange, children, isStatic = false }) {
 
 function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n))
+}
+
+/** Re-pack layout_overrides so each row's col_span sum fits the grid
+ *  (12 columns). Preserves the original row numbers — only splits a row
+ *  when its blocks would overflow, and shifts subsequent rows by the
+ *  same offset so gaps stay stable. (Renumbering rows from 1 would be
+ *  wrong: overrides only cover *some* of the page's blocks, so a hidden
+ *  template block at row 1 would collide with an override collapsed to
+ *  row 1.) Returns null when the input is null / empty. */
+function normalizeLayoutOverrides(overrides) {
+  if (!overrides || typeof overrides !== 'object') return overrides ?? null
+  const entries = Object.entries(overrides)
+  if (entries.length === 0) return null
+  // Group by current row, preserving each block's id + layout shape.
+  const byRow = new Map()
+  for (const [id, layout] of entries) {
+    const row = layout?.row ?? 1
+    if (!byRow.has(row)) byRow.set(row, [])
+    byRow.get(row).push({ id, layout })
+  }
+  const sortedRows = [...byRow.keys()].sort((a, b) => a - b)
+  const out = {}
+  // Accumulator: how many extra rows we've inserted due to overflow
+  // splits. Applied to every subsequent original row so the relative
+  // ordering survives.
+  let bumpOffset = 0
+  for (const origRow of sortedRows) {
+    const group = byRow.get(origRow)
+    let curRow = origRow + bumpOffset
+    let colSum = 0
+    for (const { id, layout } of group) {
+      const cs = Math.max(1, Math.min(12, layout?.col_span ?? 12))
+      if (colSum + cs > 12) {
+        curRow += 1
+        bumpOffset += 1
+        colSum = 0
+      }
+      out[id] = { ...layout, row: curRow, col_span: cs }
+      colSum += cs
+    }
+  }
+  return out
+}
+
+/** Coerce a chart's effective props into something the backend's widget
+ *  schema validator will accept. Three rules to satisfy:
+ *    1. x_column_key must reference an existing column.
+ *    2. The X column can be any type.
+ *    3. Every other column (the series) must be type='number'.
+ *
+ *  When violated, we apply the same fixes the inline ⚠ chip offers:
+ *    - x_column_key missing → fall back to the first text column, or
+ *      the first column if there's no text column.
+ *    - X is number-typed AND exactly one text column exists elsewhere →
+ *      promote that text column to X-axis (typical "I mixed them up"
+ *      user intent).
+ *    - Any remaining non-X text columns → strip from schema (they have
+ *      no plot role and would block save). */
+function normalizeChartPropsForTemplate(props) {
+  const cols = Array.isArray(props?.columns) ? [...props.columns] : []
+  if (cols.length === 0) return props
+  let xKey = props?.x_column_key
+  // 1. X-axis must exist among the columns.
+  if (!cols.some((c) => c.key === xKey)) {
+    xKey =
+      cols.find((c) => c.type !== 'number')?.key ?? cols[0]?.key
+  }
+  // 2. If X is number-typed AND a single text column exists, promote
+  //    that text column to X (assume user mixed up the assignment).
+  const xCol = cols.find((c) => c.key === xKey)
+  const textCols = cols.filter((c) => c.type !== 'number')
+  if (xCol && xCol.type === 'number' && textCols.length === 1) {
+    xKey = textCols[0].key
+  }
+  // 3. Drop remaining non-X text columns — they fail validation and
+  //    aren't plottable anyway.
+  const finalCols = cols.filter(
+    (c) => c.key === xKey || c.type === 'number',
+  )
+  return { ...props, x_column_key: xKey, columns: finalCols }
+}
+
+/** Diff two chart-props objects and return a short Korean note when the
+ *  normalizer changed something user-meaningful. Returns null when the
+ *  fixup was a no-op (template already valid). */
+function describeChartFixup(blockId, before, after) {
+  const parts = []
+  if (before.x_column_key !== after.x_column_key) {
+    parts.push(
+      `'${blockId}' X축을 '${after.x_column_key}'로 변경`,
+    )
+  }
+  const beforeCols = Array.isArray(before.columns) ? before.columns : []
+  const afterCols = Array.isArray(after.columns) ? after.columns : []
+  if (beforeCols.length !== afterCols.length) {
+    const dropped = beforeCols.length - afterCols.length
+    parts.push(`'${blockId}'에서 텍스트 시리즈 ${dropped}개 제외`)
+  }
+  return parts.length > 0 ? parts.join(', ') : null
+}
+
+/** When a writer inserts a fresh extra block of these types, seed the
+ *  page's `block_sections` with the matching item code so the widget
+ *  arrives already labelled. Codes match entries in the admin-managed
+ *  단락 구분 taxonomy (see backend `section_items` table). The user can
+ *  override or clear the tag at any time via the block's context menu.
+ */
+const WIDGET_DEFAULT_SECTION_CODE = {
+  milestone: 'milestone',
+}
+
+/** RFC 4122 v4 UUID fallback for environments without crypto.randomUUID.
+ *  Mirrors the helper in TemplateEditorPage so the two "create template"
+ *  flows produce identically-shaped ids. */
+function fallbackUuidLocal() {
+  const hex = '0123456789abcdef'
+  const out = new Array(36)
+  for (let i = 0; i < 36; i += 1) {
+    if (i === 8 || i === 13 || i === 18 || i === 23) out[i] = '-'
+    else if (i === 14) out[i] = '4'
+    else if (i === 19) out[i] = hex[(Math.random() * 4) | 0 | 8]
+    else out[i] = hex[(Math.random() * 16) | 0]
+  }
+  return out.join('')
 }
 
 function sameOverrides(a, b) {

@@ -555,6 +555,113 @@ def _chart_content(props: dict) -> dict:
     }
 
 
+def _flowchart_content(props: dict) -> dict:
+    """A flowchart's `items` is an ordered list of steps. The renderer
+    connects them in sequence with arrows and prints the label + optional
+    description inside each step's box. Targets the "PPT-style process
+    diagram" use case — no branching, no per-node shape semantics."""
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "minLength": 1, "maxLength": 200},
+                        "description": {"type": "string", "maxLength": 1000},
+                    },
+                    "required": ["label"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
+FLOWCHART: WidgetDescriptor = {
+    "type": "flowchart",
+    "label": "순서도",
+    "description": "단계별 흐름을 가로 또는 세로로 연결해 표시하는 플로우차트",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "orientation": {
+                "type": "string",
+                "enum": ["horizontal", "vertical"],
+            },
+            "text_style": _TEXT_STYLE_SCHEMA,
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _flowchart_content,
+    "default_props": {
+        "label": "순서도",
+        "orientation": "horizontal",
+    },
+}
+
+
+def _milestone_content(props: dict) -> dict:
+    """Each item is `{date, label, ?status, ?note}`. The widget plots
+    items on a timeline by their `date` value; status drives the marker
+    color (pending/done/delayed); note is optional secondary text. The
+    schema doesn't enforce ordering — the renderer sorts by date."""
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "date": {"type": "string", "format": "date"},
+                        "label": {"type": "string", "minLength": 1, "maxLength": 200},
+                        "note": {"type": "string", "maxLength": 500},
+                        "status": {
+                            "type": "string",
+                            "enum": ["pending", "done", "delayed"],
+                        },
+                    },
+                    "required": ["date", "label"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
+MILESTONE: WidgetDescriptor = {
+    "type": "milestone",
+    "label": "마일스톤",
+    "description": "일정과 항목명으로 타임라인 위에 마커를 표시 (예정/완료/지연 상태)",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            # Optional pinned range — when set, the timeline starts/ends
+            # at these dates regardless of the data. Useful for quarterly /
+            # half-year boards where the X axis should be fixed.
+            "start_date": {"type": "string", "format": "date"},
+            "end_date": {"type": "string", "format": "date"},
+            "text_style": _TEXT_STYLE_SCHEMA,
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _milestone_content,
+    "default_props": {"label": "마일스톤"},
+}
+
+
 CHART: WidgetDescriptor = {
     "type": "chart",
     "label": "그래프",
@@ -608,6 +715,8 @@ WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
         IMAGE,
         ATTACHMENT,
         CHART,
+        MILESTONE,
+        FLOWCHART,
     )
 }
 

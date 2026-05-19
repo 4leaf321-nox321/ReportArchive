@@ -12,6 +12,7 @@ import {
   ChevronDown,
   Move,
   Workflow,
+  Bookmark,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
@@ -55,6 +56,16 @@ import {
   deleteWidgetRelation,
 } from '@/shared/api/widgetRelations'
 import { invalidateWidgetRelationsCache } from '@/shared/hooks/useWidgetRelations'
+import {
+  listSectionCategories,
+  createSectionCategory,
+  updateSectionCategory,
+  deleteSectionCategory,
+  createSectionItem,
+  updateSectionItem,
+  deleteSectionItem,
+} from '@/shared/api/sectionTaxonomy'
+import { invalidateSectionTaxonomyCache } from '@/shared/hooks/useSectionTaxonomy'
 import { WorkspaceTreeDnD } from './WorkspaceTreeDnD'
 
 export default function AdminPage() {
@@ -99,6 +110,10 @@ export default function AdminPage() {
             <Workflow className="mr-1 h-3 w-3" />
             관계 라벨
           </TabsTrigger>
+          <TabsTrigger value="sections">
+            <Bookmark className="mr-1 h-3 w-3" />
+            단락 구분
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="workspaces">
@@ -109,6 +124,9 @@ export default function AdminPage() {
         </TabsContent>
         <TabsContent value="relations">
           <RelationsSection />
+        </TabsContent>
+        <TabsContent value="sections">
+          <SectionsSection />
         </TabsContent>
       </Tabs>
     </div>
@@ -675,8 +693,12 @@ function WorkspaceCreateDialog({ open, onOpenChange, workspaces, onCreated }) {
   const [errorMsg, setErrorMsg] = useState(null)
 
   useEffect(() => {
-    if (!open) {
-      setSlug('')
+    if (open) {
+      // Auto-issue a UUID — slugs are immutable after creation and the
+      // user only cares about the display name (`name` field). UUIDs
+      // start with a hex digit so they satisfy the backend's
+      // `^[a-z0-9][a-z0-9-]*$` pattern automatically.
+      setSlug(globalThis.crypto?.randomUUID?.() ?? fallbackUuid())
       setName('')
       setParentSlug('')
       setColor('#64748b')
@@ -719,21 +741,11 @@ function WorkspaceCreateDialog({ open, onOpenChange, workspaces, onCreated }) {
             <Input
               id="ws-slug"
               value={slug}
-              onChange={(e) => setSlug(e.target.value.toLowerCase())}
-              placeholder="dev-mobile"
-              pattern="^[a-z0-9][a-z0-9\-]*$"
-              required
-              className="font-mono"
-              title="영문 소문자·숫자·하이픈(-)만 사용. 첫 글자는 영문 소문자나 숫자여야 합니다. 언더스코어(_)·공백·대문자·한글은 사용할 수 없습니다."
+              readOnly
+              className="font-mono text-[11px] bg-muted/40"
             />
-            <p className="text-[11px] text-muted-foreground leading-relaxed">
-              영문 소문자·숫자·하이픈(<code>-</code>)만. 첫 글자는 영문/숫자.
-              <br />
-              <span className="text-emerald-600">OK</span>: <code>dx</code>, <code>division-mx</code>, <code>biz2</code>
-              {' · '}
-              <span className="text-destructive">NG</span>: <code>division_mx</code>, <code>Division</code>, <code>-dx</code>, <code>사업부</code>
-              <br />
-              URL과 DB에 그대로 저장되며 <strong>생성 후 변경 불가</strong>합니다.
+            <p className="text-[11px] text-muted-foreground">
+              자동 발급된 UUID. URL·DB에 사용되며 생성 후 변경 불가.
             </p>
           </div>
           <div className="space-y-1.5">
@@ -744,6 +756,7 @@ function WorkspaceCreateDialog({ open, onOpenChange, workspaces, onCreated }) {
               onChange={(e) => setName(e.target.value)}
               placeholder="모바일팀"
               required
+              autoFocus
             />
             <p className="text-[11px] text-muted-foreground">
               UI에 보이는 라벨 — 한글·기호 자유. 나중에 수정 가능.
@@ -1001,6 +1014,22 @@ function BlockerRow({ label, count }) {
 // --------------------------------------------------------------------------- //
 // Tree helpers
 // --------------------------------------------------------------------------- //
+/** RFC 4122 v4 UUID fallback for browsers without crypto.randomUUID
+ *  (very old WebViews). Mirrors the helpers in TemplateEditorPage and
+ *  ReportDetailPage so all "create-by-UUID" flows produce identically
+ *  shaped ids. */
+function fallbackUuid() {
+  const hex = '0123456789abcdef'
+  const out = new Array(36)
+  for (let i = 0; i < 36; i += 1) {
+    if (i === 8 || i === 13 || i === 18 || i === 23) out[i] = '-'
+    else if (i === 14) out[i] = '4'
+    else if (i === 19) out[i] = hex[(Math.random() * 4) | 0 | 8]
+    else out[i] = hex[(Math.random() * 16) | 0]
+  }
+  return out.join('')
+}
+
 function orderTreeWithDepth(workspaces) {
   const byParent = new Map()
   for (const w of workspaces) {
@@ -1369,6 +1398,649 @@ function RelationCreateDialog({ open, onOpenChange, onCreated }) {
             <Label htmlFor="rel-sort">정렬 순서</Label>
             <Input
               id="rel-sort"
+              type="number"
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value)}
+            />
+          </div>
+          {errorMsg && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {errorMsg}
+            </div>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              취소
+            </Button>
+            <Button type="submit" disabled={submitting}>
+              {submitting ? '추가 중...' : '추가'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// =========================================================================
+// 단락 구분 — 보고서 위젯에 우클릭으로 붙이는 'rationale/risk/...' 같은
+// 태그 항목들을 관리. 분류·항목 모두 admin이 자유롭게 추가/수정/삭제할 수
+// 있도록 master-detail 형태로 노출한다.
+// =========================================================================
+function SectionsSection() {
+  const { data: categories, loading, error, reload } = useAsync(
+    () => listSectionCategories(),
+    [],
+  )
+  const list = categories ?? []
+  const [selectedSlug, setSelectedSlug] = useState(null)
+  const selected =
+    list.find((c) => c.slug === selectedSlug) ?? list[0] ?? null
+
+  const [creatingCat, setCreatingCat] = useState(false)
+  const [editingCat, setEditingCat] = useState(null)
+  const [confirmDeleteCat, setConfirmDeleteCat] = useState(null)
+
+  const [creatingItem, setCreatingItem] = useState(false)
+  const [editingItemCode, setEditingItemCode] = useState(null)
+  const [confirmDeleteItem, setConfirmDeleteItem] = useState(null)
+
+  function refresh() {
+    invalidateSectionTaxonomyCache()
+    reload()
+  }
+
+  async function handleDeleteCategory(slug) {
+    try {
+      await deleteSectionCategory(slug)
+      toast.success('분류가 삭제되었습니다.')
+      refresh()
+    } catch (err) {
+      toast.error(err.message || '삭제 실패')
+    }
+  }
+
+  async function handleDeleteItem(code) {
+    try {
+      await deleteSectionItem(code)
+      toast.success('항목이 삭제되었습니다.')
+      refresh()
+    } catch (err) {
+      toast.error(err.message || '삭제 실패')
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Bookmark className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">단락 구분</CardTitle>
+          </div>
+          <Button size="sm" onClick={() => setCreatingCat(true)}>
+            <Plus className="mr-1 h-3 w-3" />
+            분류 추가
+          </Button>
+        </div>
+        <CardDescription>
+          보고서 작성 시 위젯에 우클릭으로 붙이는 단락 구분 태그입니다.
+          분류·항목 모두 자유롭게 추가/수정/삭제 가능하지만 항목 코드는
+          생성 후 변경할 수 없습니다 (저장된 보고서가 코드를 참조하므로).
+          삭제 시 기존 보고서의 태그는 그대로 남고 표시만 사라집니다.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <Skeleton className="h-48" />
+        ) : error ? (
+          <ErrorState description={error.message} onRetry={refresh} />
+        ) : list.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-4">
+            분류가 없습니다. 우측 상단 '분류 추가'로 시작하세요.
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-[280px_1fr] gap-4">
+            <ul className="divide-y border rounded-md">
+              {list.map((cat) => {
+                const isActive = (selected?.slug ?? null) === cat.slug
+                return (
+                  <li
+                    key={cat.slug}
+                    className={`flex items-center gap-2 px-2 py-2 cursor-pointer hover:bg-muted/50 transition-colors ${
+                      isActive ? 'bg-muted' : ''
+                    }`}
+                    onClick={() => setSelectedSlug(cat.slug)}
+                  >
+                    <span
+                      className="h-3 w-3 rounded-full shrink-0 border"
+                      style={{ backgroundColor: cat.color, borderColor: cat.color }}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{cat.name}</div>
+                      <div className="text-[10px] text-muted-foreground font-mono truncate">
+                        {cat.slug} · {cat.items?.length ?? 0}개 항목
+                      </div>
+                    </div>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setEditingCat(cat)
+                      }}
+                      aria-label="분류 편집"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7 text-destructive"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setConfirmDeleteCat(cat)
+                      }}
+                      aria-label="분류 삭제"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </li>
+                )
+              })}
+            </ul>
+
+            <div className="border rounded-md flex flex-col min-h-[24rem]">
+              <div className="flex items-center justify-between px-3 py-2 border-b bg-muted/30">
+                <div className="flex items-center gap-2 min-w-0">
+                  {selected && (
+                    <span
+                      className="h-2.5 w-2.5 rounded-full shrink-0"
+                      style={{ backgroundColor: selected.color }}
+                    />
+                  )}
+                  <div className="text-sm font-semibold truncate">
+                    {selected?.name ?? '분류를 선택하세요'}
+                  </div>
+                  {selected && (
+                    <Badge variant="outline" className="text-[10px]">
+                      {selected.items?.length ?? 0}개
+                    </Badge>
+                  )}
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setCreatingItem(true)}
+                  disabled={!selected}
+                >
+                  <Plus className="mr-1 h-3 w-3" />
+                  항목 추가
+                </Button>
+              </div>
+              {selected ? (
+                (selected.items ?? []).length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-8 text-center">
+                    항목이 없습니다.
+                  </p>
+                ) : (
+                  <ul className="divide-y">
+                    {(selected.items ?? []).map((item) => (
+                      <SectionItemRow
+                        key={item.code}
+                        item={item}
+                        categories={list}
+                        editing={editingItemCode === item.code}
+                        onStartEdit={() => setEditingItemCode(item.code)}
+                        onCancel={() => setEditingItemCode(null)}
+                        onSaved={() => {
+                          setEditingItemCode(null)
+                          refresh()
+                        }}
+                        onDelete={() => setConfirmDeleteItem(item)}
+                      />
+                    ))}
+                  </ul>
+                )
+              ) : (
+                <p className="text-sm text-muted-foreground py-8 text-center">
+                  분류를 먼저 선택하세요.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+      </CardContent>
+
+      <SectionCategoryDialog
+        open={creatingCat}
+        onOpenChange={setCreatingCat}
+        onSaved={() => {
+          setCreatingCat(false)
+          refresh()
+        }}
+      />
+      <SectionCategoryDialog
+        open={Boolean(editingCat)}
+        category={editingCat}
+        onOpenChange={(open) => !open && setEditingCat(null)}
+        onSaved={() => {
+          setEditingCat(null)
+          refresh()
+        }}
+      />
+
+      <SectionItemDialog
+        open={creatingItem}
+        defaultCategorySlug={selected?.slug}
+        categories={list}
+        onOpenChange={setCreatingItem}
+        onSaved={() => {
+          setCreatingItem(false)
+          refresh()
+        }}
+      />
+
+      <ConfirmDialog
+        open={Boolean(confirmDeleteCat)}
+        onOpenChange={() => setConfirmDeleteCat(null)}
+        title="분류 삭제"
+        description={
+          confirmDeleteCat
+            ? `'${confirmDeleteCat.name}' (${confirmDeleteCat.slug}) 분류를 삭제합니다. 이 분류에 속한 ${
+                confirmDeleteCat.items?.length ?? 0
+              }개 항목도 함께 사라지며, 기존 보고서에 저장된 코드는 그대로 남지만 표시되지 않습니다.`
+            : ''
+        }
+        confirmLabel="삭제"
+        variant="destructive"
+        onConfirm={() =>
+          confirmDeleteCat && handleDeleteCategory(confirmDeleteCat.slug)
+        }
+      />
+
+      <ConfirmDialog
+        open={Boolean(confirmDeleteItem)}
+        onOpenChange={() => setConfirmDeleteItem(null)}
+        title="항목 삭제"
+        description={
+          confirmDeleteItem
+            ? `'${confirmDeleteItem.label}' (${confirmDeleteItem.code}) 항목을 삭제합니다. 기존 보고서에 이 코드가 저장되어 있어도 그대로 남지만 표시되지 않습니다.`
+            : ''
+        }
+        confirmLabel="삭제"
+        variant="destructive"
+        onConfirm={() =>
+          confirmDeleteItem && handleDeleteItem(confirmDeleteItem.code)
+        }
+      />
+    </Card>
+  )
+}
+
+/** Inline row that toggles between read-mode and edit-mode. Code is shown
+ *  but locked — changing a code would orphan tags already saved in reports. */
+function SectionItemRow({
+  item,
+  categories,
+  editing,
+  onStartEdit,
+  onCancel,
+  onSaved,
+  onDelete,
+}) {
+  const [label, setLabel] = useState(item.label)
+  const [en, setEn] = useState(item.en ?? '')
+  const [categorySlug, setCategorySlug] = useState(item.category_slug)
+  const [sortOrder, setSortOrder] = useState(item.sort_order)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setLabel(item.label)
+    setEn(item.en ?? '')
+    setCategorySlug(item.category_slug)
+    setSortOrder(item.sort_order)
+  }, [item])
+
+  async function onSave() {
+    setSaving(true)
+    try {
+      await updateSectionItem(item.code, {
+        label,
+        en: en || null,
+        categorySlug,
+        sortOrder: Number(sortOrder),
+      })
+      toast.success('수정되었습니다.')
+      onSaved()
+    } catch (err) {
+      toast.error(err.message || '수정 실패')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (editing) {
+    return (
+      <li className="grid grid-cols-12 gap-2 items-start px-3 py-3">
+        <Badge variant="outline" className="font-mono col-span-3 justify-center mt-1">
+          {item.code}
+        </Badge>
+        <div className="col-span-7 space-y-1.5">
+          <Input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            className="h-9"
+            placeholder="이름 (한국어)"
+          />
+          <Input
+            value={en}
+            onChange={(e) => setEn(e.target.value)}
+            className="h-9 text-xs"
+            placeholder="영문명 (선택)"
+          />
+          <select
+            value={categorySlug}
+            onChange={(e) => setCategorySlug(e.target.value)}
+            className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-xs"
+          >
+            {categories.map((c) => (
+              <option key={c.slug} value={c.slug}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+          <Input
+            type="number"
+            value={sortOrder}
+            onChange={(e) => setSortOrder(e.target.value)}
+            className="h-9 text-xs"
+            placeholder="정렬"
+          />
+        </div>
+        <div className="col-span-2 flex justify-end gap-1">
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8"
+            onClick={onSave}
+            disabled={saving}
+          >
+            <Save className="h-3.5 w-3.5" />
+          </Button>
+          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={onCancel}>
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      </li>
+    )
+  }
+
+  return (
+    <li className="flex items-center gap-3 px-3 py-2.5">
+      <Badge variant="outline" className="font-mono shrink-0 text-[10px]">
+        {item.code}
+      </Badge>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium truncate">{item.label}</div>
+        {item.en && (
+          <div className="text-[10px] text-muted-foreground truncate">{item.en}</div>
+        )}
+      </div>
+      <span className="text-[10px] text-muted-foreground">정렬: {item.sort_order}</span>
+      <Button size="icon" variant="ghost" className="h-7 w-7" onClick={onStartEdit}>
+        <Pencil className="h-3.5 w-3.5" />
+      </Button>
+      <Button
+        size="icon"
+        variant="ghost"
+        className="h-7 w-7 text-destructive"
+        onClick={onDelete}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </Button>
+    </li>
+  )
+}
+
+/** Shared dialog for both 'new category' and 'edit category'. */
+function SectionCategoryDialog({ open, category, onOpenChange, onSaved }) {
+  const editing = Boolean(category)
+  const [slug, setSlug] = useState('')
+  const [name, setName] = useState('')
+  const [color, setColor] = useState('#64748b')
+  const [sortOrder, setSortOrder] = useState(100)
+  const [submitting, setSubmitting] = useState(false)
+  const [errorMsg, setErrorMsg] = useState(null)
+
+  useEffect(() => {
+    if (open) {
+      setSlug(category?.slug ?? '')
+      setName(category?.name ?? '')
+      setColor(category?.color ?? '#64748b')
+      setSortOrder(category?.sort_order ?? 100)
+      setErrorMsg(null)
+    }
+  }, [open, category])
+
+  async function onSubmit(e) {
+    e.preventDefault()
+    setErrorMsg(null)
+    setSubmitting(true)
+    try {
+      if (editing) {
+        await updateSectionCategory(category.slug, {
+          name,
+          color,
+          sortOrder: Number(sortOrder),
+        })
+        toast.success('수정되었습니다.')
+      } else {
+        await createSectionCategory({
+          slug,
+          name,
+          color,
+          sortOrder: Number(sortOrder),
+        })
+        toast.success('분류가 추가되었습니다.')
+      }
+      onSaved()
+    } catch (err) {
+      setErrorMsg(err.message || (editing ? '수정 실패' : '생성 실패'))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{editing ? '분류 편집' : '새 분류'}</DialogTitle>
+          <DialogDescription>
+            {editing
+              ? `슬러그(${category?.slug})는 변경할 수 없습니다.`
+              : '슬러그는 생성 후 변경할 수 없습니다.'}
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="sec-slug">슬러그</Label>
+            <Input
+              id="sec-slug"
+              value={slug}
+              onChange={(e) => setSlug(e.target.value.toLowerCase())}
+              placeholder="background_definition"
+              pattern="^[a-z0-9][a-z0-9_-]*$"
+              required
+              readOnly={editing}
+              disabled={editing}
+              className="font-mono"
+            />
+            {!editing && (
+              <p className="text-[11px] text-muted-foreground">
+                영문 소문자/숫자/하이픈/언더스코어.
+              </p>
+            )}
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="sec-name">이름</Label>
+            <Input
+              id="sec-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="배경 및 정의"
+              required
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="sec-color">색상</Label>
+            <ColorPicker id="sec-color" value={color} onChange={setColor} />
+            <p className="text-[11px] text-muted-foreground">
+              플로팅 picker의 원형 배경과 위젯 배지에 사용됩니다.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="sec-sort">정렬 순서</Label>
+            <Input
+              id="sec-sort"
+              type="number"
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value)}
+            />
+          </div>
+          {errorMsg && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {errorMsg}
+            </div>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              취소
+            </Button>
+            <Button type="submit" disabled={submitting}>
+              {submitting ? (editing ? '저장 중...' : '추가 중...') : editing ? '저장' : '추가'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Dialog for adding a brand-new item. Edits use the inline row instead. */
+function SectionItemDialog({
+  open,
+  defaultCategorySlug,
+  categories,
+  onOpenChange,
+  onSaved,
+}) {
+  const [code, setCode] = useState('')
+  const [label, setLabel] = useState('')
+  const [en, setEn] = useState('')
+  const [categorySlug, setCategorySlug] = useState('')
+  const [sortOrder, setSortOrder] = useState(100)
+  const [submitting, setSubmitting] = useState(false)
+  const [errorMsg, setErrorMsg] = useState(null)
+
+  useEffect(() => {
+    if (open) {
+      setCode('')
+      setLabel('')
+      setEn('')
+      setCategorySlug(defaultCategorySlug ?? categories[0]?.slug ?? '')
+      setSortOrder(100)
+      setErrorMsg(null)
+    }
+  }, [open, defaultCategorySlug, categories])
+
+  async function onSubmit(e) {
+    e.preventDefault()
+    setErrorMsg(null)
+    setSubmitting(true)
+    try {
+      await createSectionItem({
+        code,
+        categorySlug,
+        label,
+        en: en || undefined,
+        sortOrder: Number(sortOrder),
+      })
+      toast.success('항목이 추가되었습니다.')
+      onSaved()
+    } catch (err) {
+      setErrorMsg(err.message || '생성 실패')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>새 항목</DialogTitle>
+          <DialogDescription>
+            코드는 보고서에 저장되므로 생성 후 변경할 수 없습니다.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="sec-it-code">코드</Label>
+            <Input
+              id="sec-it-code"
+              value={code}
+              onChange={(e) => setCode(e.target.value.toLowerCase())}
+              placeholder="risk"
+              pattern="^[a-z0-9][a-z0-9_-]*$"
+              required
+              className="font-mono"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              영문 소문자/숫자/하이픈/언더스코어. 전체 항목 중 고유해야 합니다.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="sec-it-cat">분류</Label>
+            <select
+              id="sec-it-cat"
+              value={categorySlug}
+              onChange={(e) => setCategorySlug(e.target.value)}
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              required
+            >
+              {categories.map((c) => (
+                <option key={c.slug} value={c.slug}>
+                  {c.name} ({c.slug})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="sec-it-label">이름 (한국어)</Label>
+            <Input
+              id="sec-it-label"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="리스크"
+              required
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="sec-it-en">영문명 (선택)</Label>
+            <Input
+              id="sec-it-en"
+              value={en}
+              onChange={(e) => setEn(e.target.value)}
+              placeholder="Risk"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="sec-it-sort">정렬 순서</Label>
+            <Input
+              id="sec-it-sort"
               type="number"
               value={sortOrder}
               onChange={(e) => setSortOrder(e.target.value)}

@@ -17,7 +17,7 @@
  *   2. Create <Widget>.jsx here exporting PropsPanel + Preview + (optional) Editor
  *   3. Register the components below
  */
-import { Heading1, Type, ListOrdered, Table2, Image, LineChart, Paperclip, AlignLeft } from 'lucide-react'
+import { AlignLeft, Flag, Heading1, Image, LineChart, ListOrdered, Paperclip, Table2, Type, Workflow } from 'lucide-react'
 
 import { HeadingPropsPanel, HeadingPreview, HeadingEditor } from './Heading'
 import { RichTextPropsPanel, RichTextPreview, RichTextEditor } from './RichText'
@@ -27,6 +27,8 @@ import { TablePropsPanel, TablePreview, TableEditor } from './Table'
 import { ImagePropsPanel, ImagePreview, ImageEditor } from './Image'
 import { AttachmentPropsPanel, AttachmentPreview, AttachmentEditor } from './Attachment'
 import { ChartPropsPanel, ChartPreview, ChartEditor } from './Chart'
+import { MilestonePropsPanel, MilestonePreview, MilestoneEditor } from './Milestone'
+import { FlowchartPropsPanel, FlowchartPreview, FlowchartEditor } from './Flowchart'
 
 export const WIDGET_RENDERERS = {
   heading: {
@@ -76,6 +78,18 @@ export const WIDGET_RENDERERS = {
     PropsPanel: ChartPropsPanel,
     Preview: ChartPreview,
     Editor: ChartEditor,
+  },
+  milestone: {
+    Icon: Flag,
+    PropsPanel: MilestonePropsPanel,
+    Preview: MilestonePreview,
+    Editor: MilestoneEditor,
+  },
+  flowchart: {
+    Icon: Workflow,
+    PropsPanel: FlowchartPropsPanel,
+    Preview: FlowchartPreview,
+    Editor: FlowchartEditor,
   },
 }
 

@@ -85,6 +85,12 @@ class ReportPage(BaseModel):
     # list are hidden, so removing template-defined blocks from a
     # specific report is just "exclude that id from blocks_order".
     blocks_order: list[str] = []
+    # Optional per-block "section marker" tag — keys are block ids,
+    # values are item codes from the frontend's SECTION_CATEGORIES
+    # taxonomy (e.g. 'rationale', 'risk', 'action_item'). Display-only
+    # metadata; no validation against a known whitelist because the
+    # taxonomy lives on the frontend side and might evolve.
+    block_sections: dict[str, str] = {}
 
 
 class ReportRead(BaseModel):

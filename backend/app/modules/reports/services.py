@@ -64,6 +64,19 @@ def _validate_page(db: Session, page: ReportPage) -> None:
         # Layout overrides may reference extra-block ids too; pass them
         # through as a synthetic schema so the validator accepts them.
         combined = _schema_with_extras(template.schema, page.extra_blocks)
+        # When the page hides some template blocks via blocks_order, those
+        # blocks aren't actually rendered — so their layouts should NOT
+        # constrain the col_span row sums. Filter them out before passing
+        # to the layout validator. (Validation already enforces that
+        # blocks_order entries are known ids; we trust it here.)
+        if page.blocks_order:
+            order_set = set(page.blocks_order)
+            combined = {
+                **combined,
+                "blocks": [
+                    b for b in combined.get("blocks", []) if b["id"] in order_set
+                ],
+            }
         _validate_layout_overrides(combined, page.layout_overrides)
     if page.blocks_order:
         template_ids = {b["id"] for b in template.schema.get("blocks", [])}
@@ -147,6 +160,7 @@ def _pages_to_jsonb(pages: list[ReportPage]) -> list[dict]:
             "props_overrides": _sanitize_props_overrides(p.props_overrides),
             "extra_blocks": list(p.extra_blocks or []),
             "blocks_order": list(p.blocks_order or []),
+            "block_sections": dict(p.block_sections or {}),
         }
         for p in pages
     ]

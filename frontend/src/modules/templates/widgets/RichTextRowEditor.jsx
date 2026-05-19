@@ -4,6 +4,7 @@ import { BubbleMenu } from '@tiptap/react/menus'
 import StarterKit from '@tiptap/starter-kit'
 import { Placeholder } from '@tiptap/extensions'
 import { TextStyle, Color, FontSize } from '@tiptap/extension-text-style'
+import { DOMSerializer } from '@tiptap/pm/model'
 import {
   Bold as BoldIcon,
   Italic as ItalicIcon,
@@ -45,6 +46,42 @@ const COLOR_OPTIONS = [
   { label: '파랑', value: '#2563eb' },
   { label: '보라', value: '#9333ea' },
 ]
+
+// Slice the row's single-paragraph doc into a `before` and `after` half at
+// a 0-based plain-text offset, preserving inline marks (bold/italic/color/
+// font-size) on both sides. The slice is serialized back to html via the
+// schema's DOMSerializer and re-wrapped in `<p>...</p>` so the result is a
+// drop-in replacement for items[i].html.
+function sliceAtChar(view, charOffset) {
+  const docSize = view.state.doc.content.size
+  // ProseMirror positions: the paragraph's interior spans [1, docSize - 1].
+  const start = 1
+  const end = Math.max(start, docSize - 1)
+  const splitPos = Math.max(start, Math.min(start + (charOffset | 0), end))
+
+  const schema = view.state.schema
+  const serializer = DOMSerializer.fromSchema(schema)
+
+  function sliceHtml(fragment) {
+    const container = document.createElement('div')
+    container.appendChild(serializer.serializeFragment(fragment))
+    return container.innerHTML
+  }
+
+  const beforeFragment = view.state.doc.slice(start, splitPos).content
+  const afterFragment = view.state.doc.slice(splitPos, end).content
+  const beforeInner = sliceHtml(beforeFragment)
+  const afterInner = sliceHtml(afterFragment)
+  const beforeText = view.state.doc.textBetween(start, splitPos, '', '')
+  const afterText = view.state.doc.textBetween(splitPos, end, '', '')
+
+  return {
+    beforeHtml: `<p>${beforeInner}</p>`,
+    beforeText,
+    afterHtml: `<p>${afterInner}</p>`,
+    afterText,
+  }
+}
 
 /**
  * A single-line rich text editor used as one row of the RichText widget's
@@ -117,6 +154,12 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
         hardBreak: false,
         // We use Underline below — StarterKit provides it too in v3 but
         // configuring it here is a no-op since we don't extend it further.
+        //
+        // Per-row history is disabled — undo/redo is owned by the parent
+        // OutlineEditor so a single Ctrl+Z can step back across structural
+        // changes (Enter splits, Tab depth, relation chips) that don't
+        // pass through any one editor's transaction log.
+        history: false,
       }),
       TextStyle,
       Color,
@@ -147,6 +190,11 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
           text: view.state.doc.textContent,
           caret: Math.max(0, from - 1),
           isCollapsed: from === to,
+          // Split the paragraph at the current caret, returning rich-html
+          // halves so an Enter keypress mid-line can move the tail to a new
+          // row without losing inline marks. Caller decides whether to act
+          // on the result (e.g. only split when afterText is non-empty).
+          splitAtCaret: () => sliceAtChar(view, Math.max(0, from - 1)),
         }
         // The callback returns true to absorb (suppresses default), false
         // to let ProseMirror handle normally.
@@ -217,6 +265,15 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
       // without ProseMirror snapping it back to a single editor's doc.
       setEditable(b) {
         editor?.setEditable(!!b)
+      },
+      // Split the paragraph at an explicit 0-based plain-text offset and
+      // return both halves as `<p>...</p>` html (with marks preserved) plus
+      // their text. Used by the cross-row Delete handler so it can keep
+      // chars 0..fromOffset of the first row and chars toOffset..end of the
+      // last row without losing inline formatting.
+      splitAt(charOffset) {
+        if (!editor) return null
+        return sliceAtChar(editor.view, charOffset)
       },
       // Map a DOM selection endpoint (node + offset) to a 0-based char
       // index within this row's plain text. Returns null when the position

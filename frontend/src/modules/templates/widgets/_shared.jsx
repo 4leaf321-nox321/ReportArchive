@@ -687,9 +687,17 @@ function _TextStyleSelect({ label, value, options, onChange }) {
 
 /**
  * Shared block-level caption input used by every non-heading widget's
- * Editor. Renders inline as a heading-styled text field. When empty, the
- * placeholder shows the template's intended label as a hint; when set,
- * the caption replaces the block's external `<h2>` title in the report.
+ * Editor. Renders inline as a heading-styled text field. When set, the
+ * caption replaces the block's external `<h2>` title in the report.
+ *
+ * Template hint behavior — `placeholder` is the value the template author
+ * configured (the widget's `label` prop). When it is non-empty:
+ *   - the visible hint becomes `미입력시 "X"가 입력됩니다` so writers know
+ *     the field auto-fills
+ *   - blurring the input while the value is empty saves the hint as the
+ *     caption verbatim (so view-mode renders it as a real heading)
+ * When the template hint is empty we fall back to the legacy "제목 (선택)"
+ * placeholder and no auto-fill happens, matching the prior behavior.
  *
  * When `readOnly` is true:
  *   - empty value → renders nothing (no placeholder leakage in view mode)
@@ -702,12 +710,22 @@ export function CaptionInput({ value, onChange, placeholder, readOnly }) {
       <div className="text-base font-semibold px-2 py-1">{value}</div>
     )
   }
+  const hint = typeof placeholder === 'string' ? placeholder.trim() : ''
+  const hasHint = hint.length > 0
+  const displayPlaceholder = hasHint
+    ? `미입력시 "${hint}"이(가) 입력됩니다`
+    : '제목 (선택)'
+  function handleBlur() {
+    if (!hasHint) return
+    if ((value ?? '').trim().length === 0) onChange(hint)
+  }
   return (
     <input
       type="text"
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder || '제목 (선택)'}
+      onBlur={handleBlur}
+      placeholder={displayPlaceholder}
       className="w-full bg-transparent border-0 outline-none focus:ring-0 placeholder:text-muted-foreground/50 text-base font-semibold px-2 py-1"
     />
   )

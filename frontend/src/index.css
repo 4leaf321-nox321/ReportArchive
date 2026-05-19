@@ -90,3 +90,30 @@
   float: left;
   height: 0;
 }
+
+/* Report widget body — global 1.5× scale for body text inside report
+   widgets. Selectors use descendant combinators against Tailwind's text-*
+   utilities so the override wins on specificity (0,2,0 vs 0,1,0) without
+   needing !important. Only the body sizes scale; text-xs and arbitrary
+   pixel sizes ([10px], [11px]) are left intact so hint labels, chips,
+   and per-block style toggles keep their compact size. */
+.report-widget-body .text-sm {
+  font-size: 1.3125rem;
+  line-height: 1.875rem;
+}
+.report-widget-body .text-base {
+  font-size: 1.5rem;
+  line-height: 2.25rem;
+}
+.report-widget-body .text-lg {
+  font-size: 1.6875rem;
+  line-height: 2.625rem;
+}
+.report-widget-body .text-xl {
+  font-size: 1.875rem;
+  line-height: 2.625rem;
+}
+.report-widget-body .text-2xl {
+  font-size: 2.25rem;
+  line-height: 3rem;
+}

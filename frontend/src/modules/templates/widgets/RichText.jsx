@@ -102,9 +102,9 @@ export function RichTextPropsPanel({ props, onChange }) {
       <p className="text-[10px] text-muted-foreground">
         이 위젯은 줄 단위 아웃라인 입력입니다. Tab으로 깊이를 늘리고 Shift+Tab으로 줄이세요.
         자식 줄(들여쓰기된 줄)의 <strong>맨 앞</strong>에서{' '}
-        <span className="font-mono">//</span>를 입력하면 관계(원인/결과/예시 등)를
-        키보드로 선택할 수 있습니다 (← → 이동, Enter 적용, Esc 취소). 문장 중간에는
-        동작하지 않으며 일반 텍스트로 입력됩니다.
+        <span className="font-mono">//</span>를 입력하면 상위 문장과의 관계
+        (상세/원인/결과/예시 등)를 키보드로 선택할 수 있습니다 (← → 이동, Enter 적용, Esc 취소).
+        문장 중간에는 동작하지 않으며 일반 텍스트로 입력됩니다.
       </p>
       <TextStyleField
         value={props.text_style}
@@ -146,7 +146,6 @@ const MAX_DEPTH = 5
 const WARN_DEPTH = 4
 const DEPTH_PREFIX = ['□', '–', '·', '·', '·', '·']
 const INDENT_PX_PER_DEPTH = 24
-const DEFAULT_RELATION = 'detail'
 // Keyboard combo trigger — typed at the very start of a line to open the
 // relation picker. Picked deliberately as a sequence that's rare in body
 // text (a single "/" is too common — URL paths, dates, etc.).
@@ -200,7 +199,10 @@ function normalizeItem(it) {
         ? `<p>${escapeHtml(text)}</p>`
         : '<p></p>'
   const out = { depth, text, html }
-  if (typeof it?.relation === 'string' && it.relation && it.relation !== DEFAULT_RELATION) {
+  // Any non-empty relation slug is preserved verbatim. `detail` is a real
+  // relation just like `cause`/`effect` — the only "no relation" state is
+  // the absence of the field.
+  if (typeof it?.relation === 'string' && it.relation) {
     out.relation = it.relation
   }
   return out
@@ -488,11 +490,11 @@ function OutlineView({ items, bodyClassFor }) {
             >
               {DEPTH_PREFIX[depth]}
             </span>
+            <RelationChipStatic relation={it.relation} />
             <span
               className={`flex-1 min-w-0 break-words [&_p]:leading-[1.4] ${classFor(depth)}`}
               dangerouslySetInnerHTML={{ __html: safeHtml }}
             />
-            <RelationChipStatic relation={it.relation} />
           </div>
         )
       })}
@@ -502,11 +504,11 @@ function OutlineView({ items, bodyClassFor }) {
 
 function RelationChipStatic({ relation }) {
   const { byKey } = useWidgetRelations()
-  if (!relation || relation === DEFAULT_RELATION) return null
+  if (!relation) return null
   const rel = byKey[relation]
   const label = rel?.name ?? relation
   return (
-    <span className="shrink-0 inline-flex items-center rounded bg-amber-100 dark:bg-amber-900/30 text-amber-900 dark:text-amber-200 text-[10px] px-1.5 py-0.5 leading-none mt-1">
+    <span className="shrink-0 inline-flex items-center bg-amber-500/15 dark:bg-amber-400/15 text-amber-800 dark:text-amber-200 text-[10px] font-semibold tracking-tight px-1.5 py-[3px] leading-none border-l-2 border-amber-500/70 dark:border-amber-400/60 self-center">
       {label}
     </span>
   )
@@ -536,6 +538,73 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor }) {
   const containerRef = useRef(null)
   const toolbarRef = useRef(null)
   const [crossRowSelection, setCrossRowSelection] = useState(null)
+  // Listener effects below are set up once; reads of the live selection go
+  // through this ref so the closures don't capture a stale snapshot.
+  const crossRowSelectionRef = useRef(null)
+  useEffect(() => {
+    crossRowSelectionRef.current = crossRowSelection
+  }, [crossRowSelection])
+  // Latest-callback ref for cross-row Delete. Recreated each render so
+  // it sees current `items` / `onChange`; the keydown listener invokes
+  // it through this ref.
+  const crossRowDeleteRef = useRef(null)
+
+  // ── Outline-level undo/redo ───────────────────────────────────────────
+  // Per-row TipTap history is disabled (RichTextRowEditor passes
+  // `history: false` to StarterKit) so a single Ctrl+Z can roll back
+  // changes that no single editor sees: row splits, depth shifts,
+  // relation chips, cross-row deletes, etc.
+  //
+  // Stack shape: each entry is the items array from BEFORE a change.
+  // Typing inside one row coalesces — if the previous push happened
+  // within COALESCE_MS we skip pushing again, so a flurry of keystrokes
+  // collapses into one undo step (which restores the state from before
+  // the burst started). Structural ops set `coalesce: false` and always
+  // push a fresh entry.
+  const HISTORY_LIMIT = 50
+  const COALESCE_MS = 500
+  const historyRef = useRef({ undo: [], redo: [], lastPush: 0 })
+  // Latest-callback refs — the document keydown listener is registered
+  // once on mount but needs to see the current `items` / `onChange`.
+  const performUndoRef = useRef(null)
+  const performRedoRef = useRef(null)
+
+  function commitChange(next, options) {
+    const coalesce = options?.coalesce === true
+    const now = Date.now()
+    const recent = now - historyRef.current.lastPush < COALESCE_MS
+    if (!(coalesce && recent)) {
+      historyRef.current.undo.push(items)
+      if (historyRef.current.undo.length > HISTORY_LIMIT) {
+        historyRef.current.undo.shift()
+      }
+      historyRef.current.redo = []
+    }
+    historyRef.current.lastPush = now
+    onChange(next)
+  }
+
+  performUndoRef.current = () => {
+    const stacks = historyRef.current
+    if (stacks.undo.length === 0) return
+    const prev = stacks.undo.pop()
+    stacks.redo.push(items)
+    if (stacks.redo.length > HISTORY_LIMIT) stacks.redo.shift()
+    // Bumping lastPush so the user's next typed character starts a fresh
+    // history entry instead of coalescing into the just-restored state.
+    stacks.lastPush = Date.now()
+    onChange(prev)
+  }
+
+  performRedoRef.current = () => {
+    const stacks = historyRef.current
+    if (stacks.redo.length === 0) return
+    const next = stacks.redo.pop()
+    stacks.undo.push(items)
+    if (stacks.undo.length > HISTORY_LIMIT) stacks.undo.shift()
+    stacks.lastPush = Date.now()
+    onChange(next)
+  }
 
   const captureCrossRowSelection = useCallback(() => {
     const sel = typeof window !== 'undefined' ? window.getSelection() : null
@@ -691,7 +760,46 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor }) {
     // letting the focused row's TipTap eat the keystroke and select-all
     // within just that paragraph. Single-row outlines are left alone — the
     // native behavior already covers the whole widget there.
+    //
+    // Cross-row Delete/Backspace: while a captured cross-row selection is
+    // live (from Ctrl+A or a multi-row drag), per-row TipTap editors are
+    // non-editable so Delete would otherwise be a no-op. After takeover
+    // focus typically leaves the container (contenteditable is removed),
+    // so this listener is attached at the document level — the
+    // crossRowSelectionRef gate makes sure we only intercept while we
+    // genuinely own the selection.
     function onKeyDown(e) {
+      if (
+        (e.key === 'Delete' || e.key === 'Backspace') &&
+        crossRowSelectionRef.current
+      ) {
+        e.preventDefault()
+        e.stopPropagation()
+        crossRowDeleteRef.current?.()
+        return
+      }
+      // Outline-level undo/redo. Per-row TipTap history is off, so this
+      // listener owns Ctrl+Z. Gated on widget focus (or live cross-row
+      // selection, which can sit on body after takeover) so Ctrl+Z
+      // elsewhere on the page still routes to whoever owns that focus.
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        const k = e.key
+        const isZ = k === 'z' || k === 'Z' || k === 'ㅋ'
+        const isY = k === 'y' || k === 'Y' || k === 'ㅛ'
+        if (isZ || isY) {
+          const activeEl = document.activeElement
+          const inContainer = activeEl && container.contains(activeEl)
+          if (!inContainer && !crossRowSelectionRef.current) return
+          e.preventDefault()
+          e.stopPropagation()
+          if (isY || (isZ && e.shiftKey)) {
+            performRedoRef.current?.()
+          } else {
+            performUndoRef.current?.()
+          }
+          return
+        }
+      }
       if (!((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A'))) return
       if (e.shiftKey || e.altKey) return
       const active = document.activeElement
@@ -728,12 +836,12 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor }) {
       captureCrossRowSelection()
     }
     container.addEventListener('mousedown', onMouseDown)
-    container.addEventListener('keydown', onKeyDown, true)
+    document.addEventListener('keydown', onKeyDown, true)
     document.addEventListener('mousemove', onMouseMove)
     document.addEventListener('mouseup', onMouseUp)
     return () => {
       container.removeEventListener('mousedown', onMouseDown)
-      container.removeEventListener('keydown', onKeyDown, true)
+      document.removeEventListener('keydown', onKeyDown, true)
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseup', onMouseUp)
       restoreEditable()
@@ -801,7 +909,7 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor }) {
       const r = collected.get(i)
       return { ...it, html: r.html, text: r.text }
     })
-    onChange(next)
+    commitChange(next)
   }
 
   // Read the "currently active" format from the first selected row. Cross-
@@ -852,7 +960,7 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor }) {
 
   function replace(nextItems, focus) {
     if (focus) pendingFocus.current = focus
-    onChange(nextItems)
+    commitChange(nextItems)
   }
 
   function updateRowContent(idx, html, text) {
@@ -860,7 +968,9 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor }) {
     // and `text` (used for plain-text logic upstream: prefix detection,
     // char counts, AI prompts).
     const next = items.map((it, i) => (i === idx ? { ...it, html, text } : it))
-    onChange(next)
+    // Typing fires onUpdate on every keystroke; coalesce so a typing burst
+    // produces a single undo entry (the state from before the burst).
+    commitChange(next, { coalesce: true })
   }
 
   function setDepth(idx, depth) {
@@ -876,11 +986,14 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor }) {
     const next = items.map((it, i) => {
       if (i !== idx) return it
       const copy = { ...it }
-      if (relation && relation !== DEFAULT_RELATION) copy.relation = relation
+      // Pass `null`/`undefined` to clear (X button on chip). Any non-empty
+      // slug — including `detail` — is stored explicitly so the chip stays
+      // visible. The "no relation" state is the missing field.
+      if (relation) copy.relation = relation
       else delete copy.relation
       return copy
     })
-    onChange(next)
+    commitChange(next)
   }
 
   /**
@@ -906,12 +1019,89 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor }) {
       }
       return copy
     })
-    onChange(next)
+    commitChange(next)
   }
 
   function insertAfter(idx, depth) {
     const newItem = normalizeItem({ depth: clamp(depth, 0, MAX_DEPTH), text: '' })
     const next = [...items.slice(0, idx + 1), newItem, ...items.slice(idx + 1)]
+    replace(next, { index: idx + 1, caret: 0 })
+  }
+
+  // Cross-row Delete: collapse a captured cross-row selection down to a
+  // single row holding (first row before fromOffset) + (last row after
+  // toOffset). Used for Ctrl+A → Delete and for selecting across rows by
+  // drag and then pressing Delete/Backspace. Marks on either side are
+  // preserved via the row editor's splitAt() (DOMSerializer round-trip).
+  //
+  // Updates each render so `items` and `onChange` stay current — the
+  // keydown listener reaches us through crossRowDeleteRef.
+  crossRowDeleteRef.current = () => {
+    const sel = crossRowSelectionRef.current
+    if (!sel) return
+    const { fromRow, fromOffset, toRow, toOffset } = sel
+    if (fromRow < 0 || toRow >= items.length || fromRow > toRow) return
+
+    const firstEd = inputRefs.current.get(fromRow)
+    const lastEd = inputRefs.current.get(toRow)
+    const firstSplit = firstEd?.splitAt?.(fromOffset)
+    const lastSplit = lastEd?.splitAt?.(toOffset)
+
+    const beforeHtml = firstSplit?.beforeHtml ?? '<p></p>'
+    const beforeText = firstSplit?.beforeText ?? ''
+    const afterHtml = lastSplit?.afterHtml ?? '<p></p>'
+    const afterText = lastSplit?.afterText ?? ''
+
+    const mergedText = beforeText + afterText
+    const mergedHtml =
+      mergedText.length === 0
+        ? '<p></p>'
+        : `<p>${unwrapParagraph(beforeHtml)}${unwrapParagraph(afterHtml)}</p>`
+
+    const baseItem = items[fromRow]
+    const mergedItem = { ...baseItem, html: mergedHtml, text: mergedText }
+
+    let next = [
+      ...items.slice(0, fromRow),
+      mergedItem,
+      ...items.slice(toRow + 1),
+    ]
+    if (next.length === 0) {
+      next = [normalizeItem({ depth: 0, text: '' })]
+    }
+
+    setCrossRowSelection(null)
+    if (typeof window !== 'undefined') {
+      window.getSelection()?.removeAllRanges?.()
+    }
+    restoreEditable()
+    pendingFocus.current = { index: fromRow, caret: beforeText.length }
+    commitChange(next)
+  }
+
+  // Mid-line Enter: the row editor sliced its current paragraph at the
+  // caret. We replace the current row with the `before` half and insert a
+  // sibling row carrying the `after` half. Relation is intentionally NOT
+  // copied to the new row — the continuation is a fresh fragment, not a
+  // new child of the parent.
+  function splitRowAt(idx, split) {
+    const cur = items[idx]
+    const beforeItem = {
+      ...cur,
+      html: split.beforeHtml || '<p></p>',
+      text: split.beforeText ?? '',
+    }
+    const afterItem = {
+      depth: clamp(cur.depth ?? 0, 0, MAX_DEPTH),
+      html: split.afterHtml || '<p></p>',
+      text: split.afterText ?? '',
+    }
+    const next = [
+      ...items.slice(0, idx),
+      beforeItem,
+      afterItem,
+      ...items.slice(idx + 1),
+    ]
     replace(next, { index: idx + 1, caret: 0 })
   }
 
@@ -941,7 +1131,10 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor }) {
   }
 
   return (
-    <div ref={containerRef} className="rounded-md border bg-background p-2 space-y-0.5">
+    <div
+      ref={containerRef}
+      className="rounded-md border bg-background px-2 pt-2 pb-3 space-y-0.5"
+    >
       {items.map((it, i) => (
         <OutlineRow
           key={i}
@@ -967,6 +1160,7 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor }) {
           onRelationChange={(r) => setRelation(i, r)}
           onPatch={(p) => patchRow(i, p)}
           onNewLine={() => insertAfter(i, it.depth)}
+          onSplitLine={(split) => splitRowAt(i, split)}
           onDeleteEmpty={() => removeAt(i)}
           onMergeWithPrev={() => mergeWithPrevious(i)}
           onFocusPrev={(caret) => {
@@ -1064,6 +1258,7 @@ function OutlineRow({
   onRelationChange,
   onPatch,
   onNewLine,
+  onSplitLine,
   onDeleteEmpty,
   onMergeWithPrev,
   onFocusPrev,
@@ -1072,7 +1267,7 @@ function OutlineRow({
 }) {
   const depth = clamp(item.depth ?? 0, 0, MAX_DEPTH)
   const showWarning = depth >= WARN_DEPTH
-  const relation = item.relation && item.relation !== DEFAULT_RELATION ? item.relation : null
+  const relation = item.relation || null
   const rowText = item.text ?? ''
   const rowHtml = item.html ?? ''
   // Picker strip appears only on indented rows — depth 0 has no parent, so
@@ -1132,7 +1327,7 @@ function OutlineRow({
     onPatch({
       text: rest,
       html: rest ? `<p>${escapeHtml(rest)}</p>` : '<p></p>',
-      relation: slug === DEFAULT_RELATION ? null : slug,
+      relation: slug || null,
     })
   }
 
@@ -1141,7 +1336,7 @@ function OutlineRow({
   // plain relation set.
   function selectRelation(slug) {
     if (comboActive) applyCombo(slug)
-    else onRelationChange(slug === DEFAULT_RELATION ? null : slug)
+    else onRelationChange(slug || null)
   }
 
   // Called by the rich editor with (html, text) on every change. We run
@@ -1162,7 +1357,7 @@ function OutlineRow({
         onPatch({
           text: rest,
           html: rest ? `<p>${escapeHtml(rest)}</p>` : '<p></p>',
-          relation: matched.slug === DEFAULT_RELATION ? null : matched.slug,
+          relation: matched.slug,
         })
         return
       }
@@ -1227,7 +1422,15 @@ function OutlineRow({
 
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault()
-      onNewLine()
+      // Mid-line Enter splits the row at the caret; end-of-line Enter just
+      // appends a new sibling. splitAtCaret returns null only when the row
+      // editor isn't ready yet — fall back to the append path.
+      const split = ctx?.splitAtCaret?.()
+      if (split && (split.afterText ?? '').length > 0) {
+        onSplitLine?.(split)
+      } else {
+        onNewLine()
+      }
       return true
     }
     if (e.key === 'Tab') {
@@ -1291,6 +1494,7 @@ function OutlineRow({
         >
           {DEPTH_PREFIX[depth]}
         </span>
+        <RelationChip relation={relation} onChange={onRelationChange} />
         <div className="flex-1 min-w-0 outline-rich-row">
           <RichTextRowEditor
             ref={(el) => setInputRef(index, el)}
@@ -1305,7 +1509,6 @@ function OutlineRow({
             }`}
           />
         </div>
-        <RelationChip relation={relation} onChange={onRelationChange} />
         {showWarning && <DepthWarning depth={depth} />}
       </div>
       {showPicker && (
@@ -1393,12 +1596,9 @@ function RelationPickerStrip({ currentRelation, comboActive, hoverIdx, onSelect 
         e.preventDefault()
       }}
     >
-      <span className="text-muted-foreground select-none">관계:</span>
+      <span className="text-muted-foreground select-none">상위 문장과의 관계:</span>
       {relations.map((r, i) => {
-        const isCurrent =
-          r.slug === DEFAULT_RELATION
-            ? !currentRelation
-            : currentRelation === r.slug
+        const isCurrent = currentRelation === r.slug
         const isComboPick = comboActive && i === hoverIdx
         return (
           <PickerChip
@@ -1478,10 +1678,10 @@ function RelationChip({ relation, onChange }) {
 
   return (
     <span
-      className={`shrink-0 inline-flex items-center gap-1 rounded text-[10px] px-1.5 py-0.5 leading-none mt-1.5 ${
+      className={`shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold tracking-tight px-1.5 py-[3px] leading-none border-l-2 self-center ${
         known
-          ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-900 dark:text-amber-200'
-          : 'bg-muted text-muted-foreground'
+          ? 'bg-amber-500/15 dark:bg-amber-400/15 text-amber-800 dark:text-amber-200 border-amber-500/70 dark:border-amber-400/60'
+          : 'bg-muted text-muted-foreground border-muted-foreground/40'
       }`}
       title={known ? rel.description || rel.name : `알 수 없는 관계: ${relation}`}
     >
@@ -1491,7 +1691,7 @@ function RelationChip({ relation, onChange }) {
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => onChange(null)}
         className="opacity-50 hover:opacity-100"
-        aria-label="관계 제거"
+        aria-label="상위 문장과의 관계 제거"
       >
         <X className="h-2.5 w-2.5" />
       </button>

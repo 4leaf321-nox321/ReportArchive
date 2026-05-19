@@ -161,8 +161,17 @@ export default function ReportDetailPage() {
   const [draft, setDraft] = useState(null)
   useEffect(() => {
     if (isNew && seedTemplate) {
+      // The "+ 새 보고서" flow hands us a title via router state (set in
+      // ReportNewPage's name dialog). Fall back to the legacy default so
+      // direct-link entry into /reports/new/:templateId/:version (no router
+      // state) still works.
+      const seededTitle =
+        typeof location.state?.initialTitle === 'string' &&
+        location.state.initialTitle.trim()
+          ? location.state.initialTitle.trim()
+          : '새 보고서'
       setDraft({
-        title: '새 보고서',
+        title: seededTitle,
         report_date: todayIsoDate(),
         status: 'draft',
         tags: [],
@@ -3292,7 +3301,14 @@ function BlockEditorCard({
   // handle when shown.
   const chromeExtraPx = (() => {
     if (block.type === 'heading') return showDragHandle ? 28 : 0
-    const topPx = showDragHandle ? 36 : 16 // pt-9 vs pt-4
+    let topPx = showDragHandle ? 36 : 16 // pt-9 vs pt-4
+    // View-mode section header lives outside the measured mirror, so its
+    // height has to be added to the row-span the autoFit measurement
+    // produces — otherwise the cell would clip the strip's worth of
+    // content at the bottom.
+    if (!showDragHandle && sectionItem && sectionCategory && block.type !== 'heading') {
+      topPx += 28 // SECTION_HEADER_HEIGHT_PX
+    }
     const bottomPx = 16 // pb-4
     return topPx + bottomPx
   })()
@@ -3359,10 +3375,10 @@ function BlockEditorCard({
     )
   }
 
-  // Shared section chip — rendered inline inside the drag-handle bar
-  // in edit mode, and as a floating top-right tag in view mode (see
-  // `viewModeSectionChip` below). Same visual treatment in both spots
-  // so writers and readers see an identical badge.
+  // Shared section chip — rendered inline inside the drag-handle bar in
+  // edit mode (compact pill on a crowded toolbar) and reused by the
+  // heading-widget view-mode floater below. Card-based widgets get the
+  // richer top-of-card header instead (`viewModeSectionHeader`).
   const sectionChip = (sectionItem && sectionCategory) ? (
     <span
       className="inline-flex items-center gap-1 rounded-full border px-1.5 h-3.5 text-[9px] font-medium"
@@ -3381,15 +3397,52 @@ function BlockEditorCard({
     </span>
   ) : null
 
-  // View-mode-only floating chip: sits in the top-right corner of the
-  // card so readers can still tell which 단락 each block belongs to
-  // after editing is done. Skipped in edit mode because the drag-handle
-  // bar already shows the chip — rendering both would be redundant.
-  const viewModeSectionChip = (!showDragHandle && sectionChip) ? (
-    <div className="pointer-events-none absolute right-2 top-2 z-10">
-      {sectionChip}
-    </div>
-  ) : null
+  // View-mode header strip pinned to the top of the card. In-flow rather
+  // than absolutely positioned so it cannot overlap the (newly enlarged)
+  // widget body — the body just starts below the strip. Pulls its accent
+  // tone from the 단락 구분 taxonomy: lightly tinted background, matching
+  // bottom-border accent, item label on the right, category name on the
+  // left as a quieter prefix. Heading blocks fall back to the floating
+  // pill below since they don't have card chrome to host this strip.
+  const SECTION_HEADER_HEIGHT_PX = 28
+  const viewModeSectionHeader =
+    !showDragHandle &&
+    sectionItem &&
+    sectionCategory &&
+    block.type !== 'heading'
+      ? (
+          <div
+            className="flex items-center justify-between px-3 rounded-t-lg border-b"
+            style={{
+              height: SECTION_HEADER_HEIGHT_PX,
+              backgroundColor: `${sectionCategory.color}14`,
+              color: sectionCategory.color,
+              borderBottomColor: `${sectionCategory.color}40`,
+            }}
+            title={`${sectionCategory.name} · ${sectionItem.label}`}
+          >
+            <span className="text-[10px] font-medium opacity-60 tracking-wider">
+              {sectionCategory.name}
+            </span>
+            <span className="text-[12px] font-semibold tracking-tight">
+              {sectionItem.label}
+            </span>
+          </div>
+        )
+      : null
+
+  // Heading blocks have no Card chrome, so the in-flow strip above would
+  // stretch the single-line heading into a stacked block. Keep the small
+  // floating pill for them — overlap risk is low because the heading
+  // itself is one line and the chip sits in the top-right corner.
+  const headingSectionChip =
+    block.type === 'heading' && !showDragHandle && sectionChip
+      ? (
+          <div className="pointer-events-none absolute right-2 top-2 z-10">
+            {sectionChip}
+          </div>
+        )
+      : null
 
   const dragHandle = showDragHandle ? (
     <div className="block-drag-handle absolute inset-x-0 top-0 z-10 cursor-move px-2 py-0.5 bg-muted/60 backdrop-blur-sm border-b flex items-center gap-2 rounded-t-md">
@@ -3476,12 +3529,12 @@ function BlockEditorCard({
           // text isn't hidden behind it in edit mode. The view-mode floating
           // section chip occupies the same top-right zone, so reserve the
           // same room there to keep the heading from running under it.
-          (showDragHandle || viewModeSectionChip) && 'pt-7',
+          (showDragHandle || headingSectionChip) && 'pt-7',
           active && !readOnly && 'ring-2 ring-primary/30 rounded-md'
         )}
       >
         {dragHandle}
-        {viewModeSectionChip}
+        {headingSectionChip}
         <div className="relative w-full min-w-0">
           {autoFit && (
             // Heading has no Card / padding chrome, so the mirror just
@@ -3520,14 +3573,15 @@ function BlockEditorCard({
       )}
     >
       {dragHandle}
-      {viewModeSectionChip}
+      {viewModeSectionHeader}
       <CardContent
         className={cn(
           'relative pb-4',
-          // pt-9 clears the absolute drag-handle bar in edit mode; pt-7
-          // clears the floating section chip in view mode. Without one of
-          // these, content that reaches the top-right runs under the chip.
-          showDragHandle ? 'pt-9' : viewModeSectionChip ? 'pt-7' : 'pt-4',
+          // pt-9 clears the absolute drag-handle bar in edit mode. The
+          // view-mode section header sits in-flow above CardContent, so
+          // no top-padding reservation is needed for it — pt-4 is the
+          // standard breathing room between header and body.
+          showDragHandle ? 'pt-9' : 'pt-4',
           // In manual (non-autoFit) mode the cell height is fixed by
           // the user's drag, so we set up a flex-column chain inside
           // the card so widgets that opt into `h-full` / `flex-1`
@@ -3546,7 +3600,7 @@ function BlockEditorCard({
           <div
             ref={measureRef}
             aria-hidden="true"
-            className="invisible pointer-events-none absolute left-0 right-0 top-0 pl-6 pr-6"
+            className="invisible pointer-events-none absolute left-0 right-0 top-0 pl-6 pr-6 report-widget-body"
           >
             <Editor
               props={effectiveProps}
@@ -3564,7 +3618,13 @@ function BlockEditorCard({
             // widgets that fill the cell (chart) work in manual mode.
             // In autoFit mode we leave it as auto-height so the cell
             // can wrap the widget's natural size.
-            !autoFit && 'flex-1 min-h-0 flex flex-col'
+            !autoFit && 'flex-1 min-h-0 flex flex-col',
+            // Scales the widget body's text (text-sm/base/lg/xl/2xl) by
+            // 1.5× via `.report-widget-body` overrides in index.css. UI
+            // metadata classes (text-xs / arbitrary px) are left alone so
+            // hint labels, chips, and the per-block style panel keep their
+            // intended size.
+            'report-widget-body',
           )}
         >
           {Editor ? (

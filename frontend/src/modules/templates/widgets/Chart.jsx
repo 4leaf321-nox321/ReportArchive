@@ -872,30 +872,60 @@ function ChartCanvas({ chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle
   )
 }
 
+// Chart text sizes — scaled ~1.5× from Recharts' compact defaults so the
+// axes, legend, and tooltip match the rest of the report's body type
+// (set via `.report-widget-body` overrides in index.css). Recharts paints
+// these on an <svg>, which isn't reachable from the Tailwind utility
+// overrides, so the scale has to be applied here.
+const CHART_AXIS_TICK_FONT = 17
+const CHART_AXIS_TITLE_FONT = 18
+const CHART_LEGEND_FONT = 18
+const CHART_LEGEND_HEIGHT = 40
+const CHART_TOOLTIP_FONT = 18
+
 function renderChart(type, data, xKey, seriesCols, xAxisTitle, yAxisTitle) {
   // Reserve room for axis titles in the chart margins so labels aren't
-  // clipped against the container edges.
+  // clipped against the container edges. Bumped together with the larger
+  // axis title font so the wider/taller text still fits.
   const margin = {
     top: 8,
     right: 16,
-    left: yAxisTitle ? 12 : 0,
-    bottom: xAxisTitle ? 24 : 0,
+    left: yAxisTitle ? 18 : 0,
+    bottom: xAxisTitle ? 36 : 0,
   }
   const xLabel = xAxisTitle
-    ? { value: xAxisTitle, position: 'insideBottom', offset: -8, fontSize: 12 }
+    ? { value: xAxisTitle, position: 'insideBottom', offset: -8, fontSize: CHART_AXIS_TITLE_FONT }
     : undefined
   const yLabel = yAxisTitle
-    ? { value: yAxisTitle, angle: -90, position: 'insideLeft', fontSize: 12, style: { textAnchor: 'middle' } }
+    ? {
+        value: yAxisTitle,
+        angle: -90,
+        position: 'insideLeft',
+        fontSize: CHART_AXIS_TITLE_FONT,
+        style: { textAnchor: 'middle' },
+      }
     : undefined
+  const legendStyle = { fontSize: CHART_LEGEND_FONT }
+  const tooltipContentStyle = { fontSize: CHART_TOOLTIP_FONT }
+  const tooltipLabelStyle = { fontSize: CHART_TOOLTIP_FONT }
+  const tooltipItemStyle = { fontSize: CHART_TOOLTIP_FONT }
 
   if (type === 'line') {
     return (
       <LineChart data={data} margin={margin}>
         <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-        <XAxis dataKey={xKey} fontSize={11} label={xLabel} />
-        <YAxis fontSize={11} label={yLabel} />
-        <Tooltip />
-        <Legend verticalAlign="top" height={28} />
+        <XAxis dataKey={xKey} fontSize={CHART_AXIS_TICK_FONT} label={xLabel} />
+        <YAxis fontSize={CHART_AXIS_TICK_FONT} label={yLabel} />
+        <Tooltip
+          contentStyle={tooltipContentStyle}
+          labelStyle={tooltipLabelStyle}
+          itemStyle={tooltipItemStyle}
+        />
+        <Legend
+          verticalAlign="top"
+          height={CHART_LEGEND_HEIGHT}
+          wrapperStyle={legendStyle}
+        />
         {seriesCols.map((s, i) => (
           <Line
             key={s.key}
@@ -913,10 +943,18 @@ function renderChart(type, data, xKey, seriesCols, xAxisTitle, yAxisTitle) {
   return (
     <BarChart data={data} margin={margin}>
       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-      <XAxis dataKey={xKey} fontSize={11} label={xLabel} />
-      <YAxis fontSize={11} label={yLabel} />
-      <Tooltip />
-      <Legend verticalAlign="top" height={28} />
+      <XAxis dataKey={xKey} fontSize={CHART_AXIS_TICK_FONT} label={xLabel} />
+      <YAxis fontSize={CHART_AXIS_TICK_FONT} label={yLabel} />
+      <Tooltip
+        contentStyle={tooltipContentStyle}
+        labelStyle={tooltipLabelStyle}
+        itemStyle={tooltipItemStyle}
+      />
+      <Legend
+        verticalAlign="top"
+        height={CHART_LEGEND_HEIGHT}
+        wrapperStyle={legendStyle}
+      />
       {seriesCols.map((s, i) => (
         <Bar
           key={s.key}

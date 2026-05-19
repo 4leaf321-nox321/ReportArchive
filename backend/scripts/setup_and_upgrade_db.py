@@ -113,6 +113,14 @@ def _alembic_config():
     # Prefer runtime DATABASE_URL over whatever is in alembic.ini, so the
     # script behaves consistently with the running app.
     cfg.set_main_option("sqlalchemy.url", settings.database_url)
+    # alembic.ini ships with `script_location = migrations` (relative).
+    # Alembic resolves that against the caller's cwd, which under
+    # `apptainer exec` is whatever directory deploy.sh ran from on the
+    # host (often /tmp/reportarchive-vX.Y.Z/) — there's no migrations/
+    # dir there, so it crashes. Override with the absolute path so this
+    # script works regardless of cwd.
+    cfg.set_main_option("script_location", str(BACKEND_ROOT / "migrations"))
+    cfg.set_main_option("prepend_sys_path", str(BACKEND_ROOT))
     return cfg
 
 

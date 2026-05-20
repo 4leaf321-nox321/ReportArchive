@@ -236,3 +236,20 @@
     box-shadow: none !important;
   }
 }
+
+/* Annotation hover dim — when a filled annotation body (vrange /
+   hrange / rect) is hovered, fade its fill so the chart data behind
+   stays readable. `:first-of-type` targets the body rect specifically
+   (label backdrop rects sit inside a nested <g>, not as direct
+   children). Lines / points / arrows aren't dimmed — they don't
+   visually obscure data the way fills do. */
+.annotation-vrange > rect:first-of-type,
+.annotation-hrange > rect:first-of-type,
+.annotation-rect > rect:first-of-type {
+  transition: fill-opacity 0.15s ease;
+}
+.annotation-vrange:hover > rect:first-of-type,
+.annotation-hrange:hover > rect:first-of-type,
+.annotation-rect:hover > rect:first-of-type {
+  fill-opacity: 0.04;
+}

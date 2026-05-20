@@ -174,18 +174,44 @@ async function convertBlock(block, props, content) {
     case 'table':
       out.push(...convertTable(props, content))
       break
-    case 'image':
-      out.push(...(await convertImage(content)))
+    case 'image': {
+      // Annotated single-image cells go through the html2canvas path
+      // so the annotation SVG overlay bakes into the captured PNG.
+      // Plain galleries (no marks) keep the raw-file path so the
+      // exported image stays at its native resolution.
+      const hasAnnotations =
+        Array.isArray(content?.annotations) && content.annotations.length > 0
+      if (hasAnnotations) {
+        out.push(...(await convertVisualBlock(block.id, 'image')))
+      } else {
+        out.push(...(await convertImage(content)))
+      }
+      // Always echo annotation labels as plain text after the image
+      // — DOCX search treats the image as opaque pixels otherwise.
+      out.push(...convertAnnotationLabels(content?.annotations))
       break
+    }
     case 'attachment':
       out.push(...convertAttachment(content))
       break
     case 'chart':
+    case 'scatter':
+    case 'scatter3d':
+    case 'heatmap':
+    case 'radar':
+    case 'equation':
     case 'flowchart':
     case 'milestone':
     case 'progress_bar':
     case 'raci_matrix':
       out.push(...(await convertVisualBlock(block.id, block.type)))
+      // Chart annotations get captured into the PNG too, but the text
+      // labels need to be reachable by DOCX search / screen readers.
+      // scatter3d has no annotation surface (rotation makes 2-D pixel
+      // marks meaningless) so no label echoing for it.
+      if (block.type === 'chart' || block.type === 'scatter') {
+        out.push(...convertAnnotationLabels(content?.annotations))
+      }
       break
     default:
       out.push(
@@ -402,6 +428,46 @@ async function convertImage(content) {
         }),
       )
     }
+  }
+  return out
+}
+
+/** Emit annotation labels as a small "어노테이션" caption block so
+ *  DOCX search + screen readers can find them — the visual marks are
+ *  baked into the rendered PNG which is opaque to text indexing.
+ *  Returns [] when there are no labeled annotations. */
+function convertAnnotationLabels(annotations) {
+  if (!Array.isArray(annotations) || annotations.length === 0) return []
+  const labeled = annotations.filter((a) => {
+    if (a?.hidden) return false
+    const text = a?.label?.text
+    return typeof text === 'string' && text.trim() !== ''
+  })
+  if (labeled.length === 0) return []
+  const out = [
+    new Paragraph({
+      children: [
+        new TextRun({
+          text: '어노테이션',
+          bold: true,
+          size: 18,
+          color: '555555',
+        }),
+      ],
+    }),
+  ]
+  for (const a of labeled) {
+    out.push(
+      new Paragraph({
+        children: [
+          new TextRun({
+            text: `· ${a.label.text}`,
+            size: 18,
+            color: '555555',
+          }),
+        ],
+      }),
+    )
   }
   return out
 }

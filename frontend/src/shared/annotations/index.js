@@ -18,10 +18,27 @@ export {
 } from './types'
 
 export { useAnnotationStore } from './store'
+export { useAnnotationInteractions } from './useAnnotationInteractions'
+export { AnnotationLabelEditor } from './AnnotationLabelEditor'
+export { AnnotationStyleBar } from './AnnotationStyleBar'
+export { AnnotationCountBadge } from './AnnotationCountBadge'
+export { SelectionMarquee } from './SelectionMarquee'
+export { labelPositionFor } from './labelPosition'
 
 export { AnnotationLayer, AnnotationContents } from './AnnotationLayer'
+
+export {
+  AnnotationToolbar,
+  isClickTool,
+  isDragTool,
+} from './AnnotationToolbar'
+
+export { InteractiveCaptureRect } from './InteractiveCaptureRect'
+export { InteractiveOverlay } from './InteractiveOverlay'
 
 export {
   createChartAxesCapture,
   useChartAxesCapture,
 } from './ChartAnnotationAdapter'
+
+export { useImageAnnotationAdapter } from './ImageAnnotationAdapter'

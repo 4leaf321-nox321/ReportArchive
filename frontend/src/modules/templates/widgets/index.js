@@ -17,7 +17,7 @@
  *   2. Create <Widget>.jsx here exporting PropsPanel + Preview + (optional) Editor
  *   3. Register the components below
  */
-import { AlignLeft, BarChartHorizontal, Flag, Grid3x3, Heading1, Image, LineChart, ListOrdered, Paperclip, Table2, Type, Workflow } from 'lucide-react'
+import { AlignLeft, BarChartHorizontal, Box, Flag, Grid3x3, Heading1, Hexagon, Image, LayoutGrid, LineChart, ListOrdered, Paperclip, Sigma, Table2, Type, Workflow } from 'lucide-react'
 
 import { HeadingPropsPanel, HeadingPreview, HeadingEditor } from './Heading'
 import { RichTextPropsPanel, RichTextPreview, RichTextEditor } from './RichText'
@@ -27,6 +27,11 @@ import { TablePropsPanel, TablePreview, TableEditor } from './Table'
 import { ImagePropsPanel, ImagePreview, ImageEditor } from './Image'
 import { AttachmentPropsPanel, AttachmentPreview, AttachmentEditor } from './Attachment'
 import { ChartPropsPanel, ChartPreview, ChartEditor } from './Chart'
+import { ScatterPropsPanel, ScatterPreview, ScatterEditor } from './Scatter'
+import { Scatter3DPropsPanel, Scatter3DPreview, Scatter3DEditor } from './Scatter3D'
+import { HeatmapPropsPanel, HeatmapPreview, HeatmapEditor } from './Heatmap'
+import { RadarPropsPanel, RadarPreview, RadarEditor } from './Radar'
+import { EquationPropsPanel, EquationPreview, EquationEditor } from './Equation'
 import { MilestonePropsPanel, MilestonePreview, MilestoneEditor } from './Milestone'
 import { FlowchartPropsPanel, FlowchartPreview, FlowchartEditor } from './Flowchart'
 import { ProgressBarPropsPanel, ProgressBarPreview, ProgressBarEditor } from './ProgressBar'
@@ -76,10 +81,40 @@ export const WIDGET_RENDERERS = {
     Editor: AttachmentEditor,
   },
   chart: {
-    Icon: LineChart,
+    Icon: BarChartHorizontal,
     PropsPanel: ChartPropsPanel,
     Preview: ChartPreview,
     Editor: ChartEditor,
+  },
+  scatter: {
+    Icon: LineChart,
+    PropsPanel: ScatterPropsPanel,
+    Preview: ScatterPreview,
+    Editor: ScatterEditor,
+  },
+  scatter3d: {
+    Icon: Box,
+    PropsPanel: Scatter3DPropsPanel,
+    Preview: Scatter3DPreview,
+    Editor: Scatter3DEditor,
+  },
+  heatmap: {
+    Icon: LayoutGrid,
+    PropsPanel: HeatmapPropsPanel,
+    Preview: HeatmapPreview,
+    Editor: HeatmapEditor,
+  },
+  radar: {
+    Icon: Hexagon,
+    PropsPanel: RadarPropsPanel,
+    Preview: RadarPreview,
+    Editor: RadarEditor,
+  },
+  equation: {
+    Icon: Sigma,
+    PropsPanel: EquationPropsPanel,
+    Preview: EquationPreview,
+    Editor: EquationEditor,
   },
   milestone: {
     Icon: Flag,

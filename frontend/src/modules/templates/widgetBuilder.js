@@ -30,6 +30,11 @@ const DEFAULT_BLOCK_SIZE = {
   image: { col_span: 6, row_span: 4 },
   attachment: { col_span: 12, row_span: 3 },
   chart: { col_span: 6, row_span: 6 },
+  scatter: { col_span: 6, row_span: 6 },
+  scatter3d: { col_span: 6, row_span: 6 },
+  heatmap: { col_span: 6, row_span: 6 },
+  radar: { col_span: 6, row_span: 6 },
+  equation: { col_span: 12, row_span: 3 },
   progress_bar: { col_span: 12, row_span: 3 },
   raci_matrix: { col_span: 12, row_span: 4 },
 }

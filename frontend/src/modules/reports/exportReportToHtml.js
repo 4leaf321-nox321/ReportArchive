@@ -30,9 +30,15 @@ export async function exportReportToHtml({ draft }) {
   const clone = sourceRoot.cloneNode(true)
 
   // Strip the parts of the screen that aren't the report itself.
+  // Annotation edit chrome (style bar, label editor input) only
+  // mounts in editor mode — listed here defensively so even if the
+  // caller forgets to flip into printing mode, the saved file stays
+  // clean of UI controls. Annotation SHAPES (vlines, ranges, points,
+  // …) are plain SVG inside the report DOM, so they're captured
+  // automatically and don't need special handling here.
   clone
     .querySelectorAll(
-      '.report-detail-toolbar, .report-detail-pagestrip, .report-detail-floating, .report-autofit-mirror',
+      '.report-detail-toolbar, .report-detail-pagestrip, .report-detail-floating, .report-autofit-mirror, .annotation-style-bar, .annotation-label-editor',
     )
     .forEach((el) => el.remove())
   // ProseMirror leaves `contenteditable=""` everywhere; harmless for a

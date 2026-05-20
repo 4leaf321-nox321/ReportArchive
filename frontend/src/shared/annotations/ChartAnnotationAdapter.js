@@ -104,19 +104,34 @@ function pxToData(scale, px) {
   return null
 }
 
-/** Snap a value to the nearest "tick" the axis natively has — for
- *  categorical scales that's the domain entry, for continuous scales
- *  we just return the value unchanged (caller can use fromPx → toPx
- *  round-trip to get pixel-perfect alignment in continuous space). */
+/** Snap a value to a sensible "tick". For categorical band scales the
+ *  value is already a domain entry (fromPx returns the band label), so
+ *  we just pass it through. For continuous numeric scales we round to a
+ *  "nice" step derived from the visible domain — fine enough to feel
+ *  precise, coarse enough that the user actually feels the snap. The
+ *  caller can hold Shift to bypass and get raw pixel-precise placement. */
 function snapValue(scale, value) {
   if (scale == null) return value
+  // Categorical band scale — value is already a domain entry.
   if (
     typeof scale.domain === 'function' &&
     typeof scale.bandwidth === 'function'
   ) {
     return value
   }
-  return value
+  if (typeof value !== 'number' || !Number.isFinite(value)) return value
+  if (typeof scale.domain !== 'function') return value
+  const dom = scale.domain()
+  const d0 = Number(dom?.[0])
+  const d1 = Number(dom?.[dom.length - 1])
+  if (!Number.isFinite(d0) || !Number.isFinite(d1)) return value
+  const range = Math.abs(d1 - d0)
+  if (range === 0) return value
+  // Pick a step that's ~1% of the visible range, rounded down to a
+  // power of 10. y∈[0,100] → step 1; y∈[0,1] → step 0.01; y∈[0,10000]
+  // → step 100. Then snap to the nearest multiple of that step.
+  const step = Math.pow(10, Math.floor(Math.log10(range / 100)))
+  return Math.round(value / step) * step
 }
 
 /** Build the capture component + a factory that turns captured scales

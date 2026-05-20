@@ -5,6 +5,8 @@ import { getReport } from '@/modules/reports/api'
 import { getComposite } from '@/shared/api/composites'
 import { getTemplateVersion } from '@/shared/api/templates'
 import { getRenderer } from '@/modules/templates/widgets'
+import { DEFAULT_REPORT_WIDTH_PX } from '@/modules/reports/ReportSettingsDialog'
+import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
 
 /**
  * Read-only inline render of a source report. Resolves the report by id,
@@ -26,8 +28,14 @@ export function InlineReportView({ reportId }) {
   const pages = Array.isArray(report.pages) && report.pages.length > 0
     ? report.pages
     : [{ template_id: report.template_id, template_version: report.template_version, content: report.content ?? {} }]
+  // Per-report content width — same constraint the report detail page
+  // applies via `style.maxWidth`. Reports that pre-date the setting
+  // fall back to the narrow default (≈1024 px).
+  const pageWidthPx = Number.isFinite(report.page_width_px)
+    ? report.page_width_px
+    : DEFAULT_REPORT_WIDTH_PX
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 mx-auto w-full" style={{ maxWidth: `${pageWidthPx}px` }}>
       {pages.map((p, idx) => (
         <InlinePage key={idx} page={p} index={idx} totalPages={pages.length} />
       ))}
@@ -40,7 +48,29 @@ function InlinePage({ page, index, totalPages }) {
     () => getTemplateVersion(page.template_id, page.template_version),
     [page.template_id, page.template_version],
   )
-  const blocks = useMemo(() => extractBlocks(template?.schema), [template])
+  // Section taxonomy — admin-managed 단락 구분 codes resolved into the
+  // colored header strip each non-heading block displays in view mode.
+  const { itemByCode: sectionItemByCode } = useSectionTaxonomy()
+  // Use the SAME merge the report detail page does for live editing:
+  //   - template blocks + page.extra_blocks (per-report additions)
+  //   - honor page.blocks_order
+  //   - per-block props_overrides applied on top of template props
+  // Skipping any of these (which the old implementation did) hides
+  // significant amounts of report content from the composite view.
+  const blocks = useMemo(
+    () => combinedBlocks(template?.schema, page),
+    [template, page],
+  )
+  // Group blocks by their saved `layout.row` so blocks that sit
+  // side-by-side in the source report stay side-by-side here too.
+  // Within each row, ordering follows `blocks` order (which already
+  // honored blocks_order in combinedBlocks). We use a 12-col CSS grid
+  // mirroring `REPORT_GRID_COLS` — col_span maps directly. Heights
+  // are CONTENT-DRIVEN here (no fixed row_span like RGL) so auto-fit
+  // blocks render with their full content even if the source's saved
+  // row_span is stale.
+  const rows = useMemo(() => byRow(blocks, page), [blocks, page])
+
   if (loading) return <Skeleton className="h-20" />
   if (!template) return null
   return (
@@ -50,23 +80,128 @@ function InlinePage({ page, index, totalPages }) {
           페이지 {index + 1} · {page.name || template.name}
         </div>
       )}
-      {blocks.map((block) => {
-        const renderer = getRenderer(block.type)
-        if (!renderer?.Editor) return null
-        const content = page.content?.[block.id]
-        const Editor = renderer.Editor
-        return (
-          <Editor
-            key={block.id}
-            props={block.props}
-            content={content}
-            onChange={() => {}}
-            readOnly
-          />
-        )
-      })}
+      <div className="space-y-3">
+        {rows.map(({ row, items }) => (
+          <div key={row} className="grid grid-cols-12 gap-3">
+            {items.map((it) => (
+              <div
+                key={it.block.id}
+                style={{ gridColumn: `span ${it.colSpan} / span ${it.colSpan}` }}
+                className="min-w-0"
+              >
+                <BlockBody
+                  block={it.block}
+                  content={page.content?.[it.block.id]}
+                  propsOverride={page.props_overrides?.[it.block.id] ?? null}
+                  sectionCode={resolveBlockSection(page, it.block)}
+                  sectionItemByCode={sectionItemByCode}
+                />
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   )
+}
+
+/** Render a single block's editor in read-only mode. Pulls the same
+ *  merged-props pattern the live detail page uses so an overridden
+ *  chart_type / extended columns / per-block style all flow through.
+ *  When the block carries a 단락 구분 (section marker), prepends the
+ *  same colored header strip the report detail page draws so the
+ *  composite view matches the source visually. */
+function BlockBody({ block, content, propsOverride, sectionCode, sectionItemByCode }) {
+  const renderer = getRenderer(block.type)
+  if (!renderer?.Editor) return null
+  const mergedProps = propsOverride
+    ? { ...(block.props ?? {}), ...propsOverride }
+    : (block.props ?? {})
+  const Editor = renderer.Editor
+  const sectionEntry = sectionCode ? sectionItemByCode?.[sectionCode] : null
+  const sectionItem = sectionEntry?.item ?? null
+  const sectionCategory = sectionEntry?.category ?? null
+  // The detail page omits the header strip for heading blocks (no
+  // card chrome to attach to) — match that here too.
+  const showSectionHeader =
+    sectionItem && sectionCategory && block.type !== 'heading'
+  const body = (
+    <Editor
+      props={mergedProps}
+      content={content}
+      onChange={() => {}}
+      readOnly
+      // autoFit=true → content drives height. RGL row_span isn't
+      // enforced here; the source report's saved row_span often
+      // matches dynamic measurement, but using saved row_span as a
+      // hard ceiling would clip charts/images that re-measured to a
+      // larger size on the source. Letting content drive matches
+      // what users see when they actually open the report.
+      autoFit={true}
+    />
+  )
+  if (!showSectionHeader) return body
+  // Mirrors `viewModeSectionHeader` in ReportDetailPage — same height,
+  // same tint math (color + alpha for bg / border), same typography.
+  // The body sits below the strip with no rounded corners on its top
+  // so the two read as one continuous card.
+  return (
+    <div
+      className="rounded-md border bg-card overflow-hidden"
+      style={{ borderColor: `${sectionCategory.color}40` }}
+    >
+      <div
+        className="flex items-center px-3 border-b"
+        style={{
+          height: 34,
+          backgroundColor: `${sectionCategory.color}14`,
+          color: sectionCategory.color,
+          borderBottomColor: `${sectionCategory.color}40`,
+        }}
+        title={sectionItem.label}
+      >
+        <span className="text-[15px] font-semibold tracking-tight">
+          {sectionItem.label}
+        </span>
+      </div>
+      <div className="p-3">{body}</div>
+    </div>
+  )
+}
+
+/** Resolve a block's effective section code — page override beats
+ *  template default. Same logic as ReportDetailPage's helper of the
+ *  same name; duplicated here to keep InlineReportView self-contained
+ *  (the helper isn't exported). */
+function resolveBlockSection(page, block) {
+  if (!block) return null
+  const overrides = page?.block_sections
+  if (overrides && Object.prototype.hasOwnProperty.call(overrides, block.id)) {
+    const v = overrides[block.id]
+    return typeof v === 'string' && v.length > 0 ? v : null
+  }
+  return typeof block.section === 'string' && block.section.length > 0
+    ? block.section
+    : null
+}
+
+/** Group blocks by their `layout.row` and clamp col_span to 1..12.
+ *  Returns rows sorted ascending by row index so the visual order
+ *  matches the source report. Within each row, blocks keep the order
+ *  they came in (already honoring blocks_order). */
+function byRow(blocks, page) {
+  const groups = new Map()
+  for (const b of blocks) {
+    const layout = page?.layout_overrides?.[b.id] ?? b.layout ?? {}
+    const row = Number.isFinite(layout.row) ? layout.row : 99
+    const rawSpan = Number.isFinite(layout.col_span) ? layout.col_span : 12
+    const colSpan = Math.max(1, Math.min(12, rawSpan))
+    if (!groups.has(row)) groups.set(row, [])
+    groups.get(row).push({ block: b, colSpan })
+  }
+  return Array.from(groups.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([row, items]) => ({ row, items }))
 }
 
 /** Composites embedded inside other composites: show a compact summary
@@ -112,5 +247,50 @@ function extractBlocks(schema) {
     id: b.id,
     type: b.type,
     props: b.props ?? {},
+    layout: b.layout ?? null,
+    section: b.section ?? null,
   }))
+}
+
+/** Mirror of ReportDetailPage's `combinedBlocks` — merges template
+ *  schema blocks with the page's report-specific `extra_blocks`,
+ *  honoring `blocks_order` when present. Without this, anything the
+ *  user added via "위젯 추가" on the report side (not in the template)
+ *  would silently disappear from the composite's inline view. */
+function combinedBlocks(schema, page) {
+  const tplBlocks = extractBlocks(schema)
+  const extras = (page?.extra_blocks ?? []).map((b) => ({
+    id: b.id,
+    type: b.type,
+    props: b.props ?? {},
+    layout: b.layout ?? null,
+    section: b.section ?? null,
+  }))
+  const order = Array.isArray(page?.blocks_order) ? page.blocks_order : []
+  if (order.length === 0) {
+    return [...tplBlocks, ...extras]
+  }
+  const byId = new Map()
+  for (const b of tplBlocks) byId.set(b.id, b)
+  for (const b of extras) byId.set(b.id, b)
+  const out = []
+  const seen = new Set()
+  for (const id of order) {
+    if (seen.has(id)) continue
+    const b = byId.get(id)
+    if (b) {
+      out.push(b)
+      seen.add(id)
+    }
+  }
+  // Fall back to anything not listed in `order` (defensive — keeps
+  // newly-added blocks visible even if blocks_order wasn't updated
+  // alongside an extra-block addition).
+  for (const b of [...tplBlocks, ...extras]) {
+    if (!seen.has(b.id)) {
+      out.push(b)
+      seen.add(b.id)
+    }
+  }
+  return out
 }

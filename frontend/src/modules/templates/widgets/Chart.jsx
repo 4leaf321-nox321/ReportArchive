@@ -1,9 +1,8 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Bar,
   BarChart,
   CartesianGrid,
-  Customized,
   Legend,
   Line,
   LineChart,
@@ -11,15 +10,33 @@ import {
   Tooltip,
   XAxis,
   YAxis,
+  useXAxisScale,
+  useYAxisScale,
+  useXAxisInverseScale,
+  useYAxisInverseScale,
+  useXAxisDomain,
+  usePlotArea,
 } from 'recharts'
-import { AnnotationContents } from '@/shared/annotations'
-import { AlertTriangle, BarChart3, ChevronDown, ChevronUp, Hash, LineChart as LineIcon, Plus, Settings, Table2, Type, X } from 'lucide-react'
+import {
+  AnnotationContents,
+  AnnotationLabelEditor,
+  AnnotationStyleBar,
+  SelectionMarquee,
+  InteractiveOverlay,
+  useAnnotationInteractions,
+} from '@/shared/annotations'
+import { AlertTriangle, BarChart3, ChevronDown, ChevronUp, Hash, LineChart as LineIcon, Plus, Type, X } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/components/ui/popover'
-import { CaptionInput, LabelField, PreviewLabel, captionSkipProps } from './_shared'
+import { AxisRangeInput, CaptionInput, LabelField, PreviewLabel, captionSkipProps } from './_shared'
 import { usePrintScale } from '@/modules/reports/printContext'
+import {
+  AnnotationCountBadge,
+  AnnotationToolbar,
+  useAnnotationStore,
+} from '@/shared/annotations'
 
 const CHART_TYPES = [
   { value: 'bar', label: '막대', Icon: BarChart3 },
@@ -147,13 +164,98 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
   const chartType = content?.chart_type ?? props.chart_type ?? 'bar'
   const xAxisTitle = content?.x_axis_title ?? props.x_axis_title ?? ''
   const yAxisTitle = content?.y_axis_title ?? props.y_axis_title ?? ''
+  // Optional axis range overrides. Stored as numbers in content;
+  // empty/undefined → Recharts auto-domain.
+  const xMin = Number.isFinite(content?.x_min) ? content.x_min : null
+  const xMax = Number.isFinite(content?.x_max) ? content.x_max : null
+  const yMin = Number.isFinite(content?.y_min) ? content.y_min : null
+  const yMax = Number.isFinite(content?.y_max) ? content.y_max : null
   const rows = content?.rows ?? []
-  // Data entry table is heavy chrome — keep it collapsed by default so the
-  // edit-mode block stays close in size to the read-only render. Writers
-  // expand it only when they actually need to add/edit data.
-  const [dataExpanded, setDataExpanded] = useState(false)
 
   const seriesCols = cols.filter((c) => c.key !== xKey && c.type === 'number')
+
+  // Annotation state.
+  //   tool        — null / 'vline' / 'vrange' / ... — driven by the
+  //                 toolbar. While non-null, clicks on the chart's
+  //                 plot area create the corresponding annotation.
+  //   store       — owns the annotations array (mirrors content.annotations)
+  //                 + selection + undo/redo. Persists upstream through
+  //                 `patch({ annotations: next })` after every mutation.
+  const [annotationTool, setAnnotationTool] = useState(null)
+  // Stable reference for the annotations array. Without useMemo,
+  // `content?.annotations ?? []` produces a fresh `[]` on every render
+  // when annotations are absent — that fresh ref churns
+  // useAnnotationStore's prop-sync effect, which churns the chart's
+  // render, which restarts Recharts' bar/line animations from 0
+  // forever. Net effect: frame + axes visible, bars/lines invisible.
+  const annotations = useMemo(
+    () => (Array.isArray(content?.annotations) ? content.annotations : []),
+    [content?.annotations],
+  )
+  const annotationStore = useAnnotationStore({
+    annotations,
+    onChange: (next) => patch({ annotations: next }),
+  })
+  // Esc cancels the active tool / clears selection. Listening at the
+  // document level keeps the shortcut working regardless of where
+  // focus sits (inside the chart, on a sibling input, etc.).
+  useEffect(() => {
+    if (readOnly) return undefined
+    function onKey(e) {
+      if (e.key === 'Escape') {
+        if (annotationTool) {
+          e.preventDefault()
+          setAnnotationTool(null)
+        } else if (annotationStore.selectedIds.size > 0) {
+          e.preventDefault()
+          annotationStore.clearSelection()
+        }
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        // Only consume when the active focus is NOT in an input/
+        // textarea/contenteditable — otherwise we'd eat the user's
+        // normal text deletes.
+        const active = document.activeElement
+        const tag = active?.tagName?.toLowerCase()
+        const editable =
+          tag === 'input' ||
+          tag === 'textarea' ||
+          active?.isContentEditable
+        if (editable) return
+        const ids = Array.from(annotationStore.selectedIds)
+        if (ids.length > 0) {
+          e.preventDefault()
+          annotationStore.removeMany(ids)
+        }
+      } else if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
+        // Cmd/Ctrl+Z → undo, Cmd/Ctrl+Shift+Z → redo. Skip while a text
+        // field has focus so the browser's native textbox undo still
+        // works for label / data-cell editing.
+        const active = document.activeElement
+        const tag = active?.tagName?.toLowerCase()
+        const editable =
+          tag === 'input' ||
+          tag === 'textarea' ||
+          active?.isContentEditable
+        if (editable) return
+        e.preventDefault()
+        if (e.shiftKey) annotationStore.history.redo()
+        else annotationStore.history.undo()
+      } else if ((e.metaKey || e.ctrlKey) && (e.key === 'y' || e.key === 'Y')) {
+        // Windows-style Ctrl+Y redo alias. Same focus guard as above.
+        const active = document.activeElement
+        const tag = active?.tagName?.toLowerCase()
+        const editable =
+          tag === 'input' ||
+          tag === 'textarea' ||
+          active?.isContentEditable
+        if (editable) return
+        e.preventDefault()
+        annotationStore.history.redo()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [readOnly, annotationTool, annotationStore])
 
   function patch(next) {
     // Split incoming patch into structural (→ props_overrides) and
@@ -172,20 +274,36 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
     const canOverride = typeof onChangePropsOverride === 'function'
 
     if (hasStructural && canOverride) {
-      // Lift any legacy structural fields still sitting in content into
-      // the same override write — once we move structure into props,
-      // content's copies become stale, so we promote them in-place and
-      // then strip them below.
-      const liftFromContent = {}
+      // Send a FULL snapshot of every structural field rather than
+      // just the changed ones. The consumer may treat this as a
+      // REPLACE (the modal dialog's setDraftPropsOverride does) —
+      // dropping fields the user hasn't touched on this call would
+      // silently reset them back to the template default. For each
+      // field, prefer:
+      //   1. the explicit value from this patch, if any
+      //   2. the value from current content (legacy reports), if any
+      //   3. the current effective value (= template ∪ active override)
+      // Result: chart_type='line' set earlier survives a later paste,
+      // and a 3rd column added earlier survives a later chart_type
+      // toggle — both cases were silently resetting before.
+      const effective = {
+        columns: cols,
+        chart_type: chartType,
+        x_column_key: xKey,
+        x_axis_title: xAxisTitle,
+        y_axis_title: yAxisTitle,
+      }
+      const fullStructural = {}
       for (const k of STRUCTURAL_KEYS) {
-        if (
-          content?.[k] !== undefined &&
-          structural[k] === undefined
-        ) {
-          liftFromContent[k] = content[k]
+        if (structural[k] !== undefined) {
+          fullStructural[k] = structural[k]
+        } else if (content?.[k] !== undefined) {
+          fullStructural[k] = content[k]
+        } else if (effective[k] !== undefined && effective[k] !== '') {
+          fullStructural[k] = effective[k]
         }
       }
-      onChangePropsOverride({ ...liftFromContent, ...structural })
+      onChangePropsOverride(fullStructural)
     }
 
     // Build the next content object. When canOverride, content holds
@@ -199,6 +317,20 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
       nextContent.caption_skip_autofill = true
     }
     nextContent.rows = rows
+    // Preserve annotations across unrelated patches (same idea as
+    // caption above — a row edit shouldn't blow away the user's marks
+    // on the chart). An explicit annotations entry in `data` still
+    // wins via the Object.assign below.
+    if (Array.isArray(content?.annotations) && data.annotations === undefined) {
+      nextContent.annotations = content.annotations
+    }
+    // Same idea for axis-range overrides — preserve unless the
+    // current patch explicitly clears them.
+    for (const k of ['x_min', 'x_max', 'y_min', 'y_max']) {
+      if (Number.isFinite(content?.[k]) && data[k] === undefined) {
+        nextContent[k] = content[k]
+      }
+    }
     if (!canOverride) {
       // Legacy fallback — keep mirroring structural fields into content
       // so the template-editor preview still works without an override
@@ -213,6 +345,18 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
     Object.assign(nextContent, data)
     if (!nextContent.caption) delete nextContent.caption
     if (!nextContent.caption_skip_autofill) delete nextContent.caption_skip_autofill
+    // Empty annotations array = "no marks" — keep the wire payload
+    // tight by dropping the field instead of emitting `[]`.
+    if (Array.isArray(nextContent.annotations) && nextContent.annotations.length === 0) {
+      delete nextContent.annotations
+    }
+    // Drop axis-range keys when the user cleared them — keeps the
+    // saved payload tight and lets Recharts fall back to auto-domain.
+    for (const k of ['x_min', 'x_max', 'y_min', 'y_max']) {
+      if (nextContent[k] === undefined || Number.isNaN(nextContent[k])) {
+        delete nextContent[k]
+      }
+    }
     // The structural fallback fields may end up empty after the merge
     // — drop them so JSON stays tight.
     for (const k of STRUCTURAL_KEYS) {
@@ -480,7 +624,12 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
     if (!caption && !hasData) return null
     return (
       <div className="flex flex-col h-full gap-2">
-        <CaptionInput value={caption} readOnly />
+        <CaptionInput
+          value={caption}
+          readOnly
+          placeholder={props.label}
+          skipAutofill={content?.caption_skip_autofill}
+        />
         {hasData && (
           <ChartCanvas
             chartType={chartType}
@@ -489,8 +638,13 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
             seriesCols={seriesCols}
             xAxisTitle={xAxisTitle}
             yAxisTitle={yAxisTitle}
+            xMin={xMin}
+            xMax={xMax}
+            yMin={yMin}
+            yMax={yMax}
             autoFit={autoFit}
-            annotations={Array.isArray(content?.annotations) ? content.annotations : []}
+            annotations={annotationStore.annotations}
+            annotationProps={{ readOnly: true }}
           />
         )}
       </div>
@@ -498,12 +652,9 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
   }
 
   return (
-    <div className="flex flex-col h-full gap-2">
-      {/* Caption + chart tools compressed into a single row so the edit-
-          mode block reserves roughly the same height as the read-only
-          render. Axis titles are tucked into a popover (rarely changed),
-          chart_type and data toggle stay inline (frequently used). */}
-      <div className="flex items-center gap-1 shrink-0">
+    <div className="flex flex-col h-full gap-3 min-h-0">
+      {/* Top: caption + chart_type icon toggle (bar / line). */}
+      <div className="flex items-center gap-2">
         <div className="flex-1 min-w-0">
           <CaptionInput
             value={caption}
@@ -526,85 +677,137 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
               <t.Icon className="h-3.5 w-3.5" />
             </Button>
           ))}
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                title="축 제목 설정"
-              >
-                <Settings className="h-3.5 w-3.5" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-64 space-y-2">
-              <div>
-                <Label className="text-xs">X축 제목</Label>
-                <Input
-                  value={xAxisTitle}
-                  onChange={(e) =>
-                    patch({ x_axis_title: e.target.value || undefined })
-                  }
-                  placeholder={props.x_axis_title || '제목 (선택)'}
-                  className="mt-1 h-8 text-xs"
-                />
-              </div>
-              <div>
-                <Label className="text-xs">Y축 제목</Label>
-                <Input
-                  value={yAxisTitle}
-                  onChange={(e) =>
-                    patch({ y_axis_title: e.target.value || undefined })
-                  }
-                  placeholder={props.y_axis_title || '제목 (선택)'}
-                  className="mt-1 h-8 text-xs"
-                />
-              </div>
-            </PopoverContent>
-          </Popover>
-          <Button
-            type="button"
-            variant={dataExpanded ? 'default' : 'ghost'}
-            size="icon"
-            className="h-7 w-7"
-            onClick={() => setDataExpanded((v) => !v)}
-            title={dataExpanded ? '데이터 닫기' : '데이터 편집'}
-          >
-            <Table2 className="h-3.5 w-3.5" />
-          </Button>
         </div>
       </div>
 
-      {hasData ? (
-        <ChartCanvas
-          chartType={chartType}
-          data={deferredChartData}
-          xKey={xKey}
-          seriesCols={seriesCols}
-          xAxisTitle={xAxisTitle}
-          yAxisTitle={yAxisTitle}
-          autoFit={autoFit}
-          annotations={Array.isArray(content?.annotations) ? content.annotations : []}
-        />
-      ) : (
-        <div className="flex-1 min-h-[16rem] rounded-md border border-dashed bg-muted/20 flex items-center justify-center text-xs text-muted-foreground">
-          데이터를 입력하면 그래프가 그려집니다.
+      {/* Axis titles — inline row, matches Scatter's pattern so the
+          two widgets look + feel identical. */}
+      <div className="flex flex-wrap items-center gap-3 text-xs">
+        <div className="flex items-center gap-1">
+          <span className="text-muted-foreground">X 제목:</span>
+          <Input
+            value={xAxisTitle}
+            onChange={(e) => patch({ x_axis_title: e.target.value || undefined })}
+            placeholder={props.x_axis_title || '(없음)'}
+            className="h-7 w-24 text-xs"
+          />
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="text-muted-foreground">Y 제목:</span>
+          <Input
+            value={yAxisTitle}
+            onChange={(e) => patch({ y_axis_title: e.target.value || undefined })}
+            placeholder={props.y_axis_title || '(없음)'}
+            className="h-7 w-24 text-xs"
+          />
+        </div>
+      </div>
+
+      {/* Axis range row. Categorical x ignores X min/max (Recharts uses
+          the band domain) — kept visible but called out. */}
+      <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+        <span>축 범위 (선택):</span>
+        <AxisRangeInput label="X min" value={xMin} onChange={(v) => patch({ x_min: v })} />
+        <AxisRangeInput label="X max" value={xMax} onChange={(v) => patch({ x_max: v })} />
+        <AxisRangeInput label="Y min" value={yMin} onChange={(v) => patch({ y_min: v })} />
+        <AxisRangeInput label="Y max" value={yMax} onChange={(v) => patch({ y_max: v })} />
+        <span className="text-[10px]">카테고리형 X축은 X min/max를 무시합니다.</span>
+      </div>
+
+      {hasData && (
+        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+          <span>어노테이션:</span>
+          <AnnotationToolbar
+            tool={annotationTool}
+            onChange={setAnnotationTool}
+            // All 8 types — rect / arrow / text join the line-based
+            // ones now that resize + style + drag flows are in place.
+            supportedTypes={[
+              'vline',
+              'vrange',
+              'hline',
+              'hrange',
+              'point',
+              'rect',
+              'arrow',
+              'text',
+            ]}
+          />
+          {annotationStore.annotations.length > 0 && (
+            <AnnotationCountBadge count={annotationStore.annotations.length} />
+          )}
+          {annotationTool && (
+            <span>차트 영역을 클릭/드래그하세요 (Esc 취소)</span>
+          )}
         </div>
       )}
 
-      {/* Excel-style data entry. Hidden by default to keep the edit-mode
-          block close in size to the read-only render — toggle with the
-          "데이터 편집" button in the toolbar. */}
-      {dataExpanded && (
-      <>
-      <div className="overflow-x-auto rounded-md border">
-        <table className="w-full text-sm table-fixed">
+      {/* Chart + data — 50/50 grid that flexes to fill the rest of
+          the dialog. Chart canvas uses autoFit=false so its height
+          comes from the grid cell's flex height — squaring the chart
+          (autoFit=true) was pushing the X-axis label off the bottom
+          of the 80vh dialog when the column was wide. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 flex-1 min-h-0">
+        <div className="min-h-0 flex flex-col">
+          {hasData ? (
+            <ChartCanvas
+              chartType={chartType}
+              data={deferredChartData}
+              xKey={xKey}
+              seriesCols={seriesCols}
+              xAxisTitle={xAxisTitle}
+              yAxisTitle={yAxisTitle}
+              xMin={xMin}
+              xMax={xMax}
+              yMin={yMin}
+              yMax={yMax}
+              autoFit={false}
+              annotations={annotationStore.annotations}
+              annotationProps={{
+                readOnly: false,
+                selection: annotationStore.selectedIds,
+                onSelect: (id, opts) => annotationStore.setSelected(id, opts),
+                tool: annotationTool,
+                onCreate: (init) => annotationStore.add(init),
+                // Intentionally NOT setting onToolDone — we want the
+                // tool to stay active after each create so the user can
+                // drop several marks in a row. The toolbar's same-tool
+                // re-click toggles it off, and Esc cancels.
+                onToolDone: undefined,
+                // The style bar's "완료" button calls this to drop the
+                // active tool so the next chart click doesn't create
+                // another annotation while the user is still styling.
+                onCancelTool: () => setAnnotationTool(null),
+                store: annotationStore,
+              }}
+            />
+          ) : (
+            <div className="flex-1 min-h-0 rounded-md border border-dashed bg-muted/20 flex items-center justify-center text-xs text-muted-foreground">
+              데이터를 입력하면 그래프가 그려집니다.
+            </div>
+          )}
+        </div>
+
+        {/* Data entry — right column of the grid. Its own internal
+            scroll for long row lists so the chart on the left never
+            has to shrink to make room. */}
+        <div className="space-y-2 min-h-0 overflow-y-auto pr-1">
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold sticky top-0 bg-background pt-0.5 pb-1 z-10">
+          데이터
+        </div>
+        {/* Horizontal scroll wrapper. Each column has a sensible min
+            width so adding more series shifts the table into scroll
+            instead of squeezing every cell down to illegible.
+            `table-fixed` is intentionally OFF — without it, columns
+            sized by their <col> minWidth + content, which is what we
+            want for scroll-on-overflow behavior. */}
+        <div className="overflow-x-auto rounded-md border">
+        <table className="text-sm" style={{ minWidth: '100%' }}>
           <colgroup>
             {cols.map((_, i) => (
-              <col key={i} />
+              <col key={i} style={{ minWidth: '6rem' }} />
             ))}
-            <col className="w-20" />
+            <col style={{ width: '5rem', minWidth: '5rem' }} />
           </colgroup>
           <thead className="bg-muted/40">
             <tr>
@@ -783,18 +986,18 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
           </tbody>
         </table>
       </div>
-      <div className="flex items-center gap-2">
-        <Button variant="outline" size="sm" onClick={addRow}>
-          <Plus className="mr-1 h-3 w-3" />
-          행 추가
-        </Button>
-        <Button variant="outline" size="sm" onClick={addColumn}>
-          <Plus className="mr-1 h-3 w-3" />
-          열 추가
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={addRow}>
+            <Plus className="mr-1 h-3 w-3" />
+            행 추가
+          </Button>
+          <Button variant="outline" size="sm" onClick={addColumn}>
+            <Plus className="mr-1 h-3 w-3" />
+            열 추가
+          </Button>
+        </div>
+        </div>
       </div>
-      </>
-      )}
     </div>
   )
 }
@@ -809,7 +1012,22 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
  * making the editor feel laggy. We pause rendering for 150ms after the
  * last size change, so the chart only repaints once the user lets go.
  */
-function ChartCanvas({ chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle, autoFit, annotations, className = '' }) {
+function ChartCanvas({
+  chartType,
+  data,
+  xKey,
+  seriesCols,
+  xAxisTitle,
+  yAxisTitle,
+  xMin,
+  xMax,
+  yMin,
+  yMax,
+  autoFit,
+  annotations,
+  annotationProps,
+  className = '',
+}) {
   // PDF-print font scale. 1 outside of printing; rebinds during print so
   // the SVG re-renders with axis/legend/tooltip fonts multiplied to
   // match the body-text scale picked in PdfPrintDialog.
@@ -838,6 +1056,84 @@ function ChartCanvas({ chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle
   const [measuredWidth, setMeasuredWidth] = useState(0)
   const [resizing, setResizing] = useState(false)
   const resizeTimerRef = useRef(null)
+
+  // Interactive annotation overlay lives OUTSIDE Recharts' Customized
+  // because Recharts' Tooltip cursor + active-shape detection layers
+  // render after Customized and capture pointer events first. We use
+  // the Customized only for the read-only paint (correct coordinate
+  // system) and capture the freshest adapter into a ref so a sibling
+  // overlay SVG can do drag/click handling without fighting Recharts.
+  //
+  //   adapterRef.current → always-fresh adapter (rebuilt every paint).
+  //   adapterBounds      → stale-tolerant copy of bounds, drives whether
+  //                        the overlay is mounted at all.
+  const adapterRef = useRef(null)
+  const [adapterBounds, setAdapterBounds] = useState(null)
+  const onCaptureAdapter = useCallback((adapter) => {
+    adapterRef.current = adapter
+    const b = adapter?.bounds
+    if (!b) return
+    // Round to whole pixels before comparing — Recharts can emit
+    // subpixel float values across renders that are visually
+    // identical but trip strict ===, causing setState to fire on
+    // every chart re-paint. With chart type toggles + Recharts'
+    // internal transitions that was enough to look like an infinite
+    // loop.
+    const next = {
+      x: Math.round(b.x),
+      y: Math.round(b.y),
+      width: Math.round(b.width),
+      height: Math.round(b.height),
+    }
+    setAdapterBounds((prev) => {
+      if (
+        prev &&
+        prev.x === next.x &&
+        prev.y === next.y &&
+        prev.width === next.width &&
+        prev.height === next.height
+      ) {
+        return prev
+      }
+      return next
+    })
+  }, [])
+
+  // Stable adapter wrapper — its identity never changes but its
+  // getters delegate to the freshest adapter captured from Recharts.
+  // The interactions hook (drag-to-move + label edit) and the DOM
+  // label editor below both close over this once and never need to
+  // re-bind across re-renders.
+  const stableAdapter = useMemo(
+    () => ({
+      coordSpace: 'data',
+      supportedTypes: ['vline', 'vrange', 'hline', 'hrange', 'point', 'rect', 'arrow', 'text'],
+      get bounds() {
+        return adapterRef.current?.bounds ?? { x: 0, y: 0, width: 0, height: 0 }
+      },
+      toPx(g) {
+        return adapterRef.current?.toPx ? adapterRef.current.toPx(g) : {}
+      },
+      fromPx(p) {
+        return adapterRef.current?.fromPx ? adapterRef.current.fromPx(p) : {}
+      },
+      snap(value, axis) {
+        return adapterRef.current?.snap ? adapterRef.current.snap(value, axis) : value
+      },
+    }),
+    [],
+  )
+
+  // Interactions hook lives here (not inside Recharts) so the label
+  // editor can be a DOM sibling — rendering it inside the chart's SVG
+  // via foreignObject was invisible under BarChart's compositing.
+  const annotationStore = annotationProps?.store ?? null
+  const annotationReadOnlyFromHookProps = annotationProps?.readOnly ?? true
+  const interactions = useAnnotationInteractions({
+    store: annotationStore,
+    adapter: stableAdapter,
+    readOnly: annotationReadOnlyFromHookProps,
+  })
 
   useEffect(() => {
     const el = ref.current
@@ -874,16 +1170,113 @@ function ChartCanvas({ chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle
   const style = autoFit
     ? { height: measuredWidth > 0 ? `${measuredWidth}px` : '18rem' }
     : { flex: 1, minHeight: '12rem' }
+  const annotationTool = annotationProps?.tool ?? null
+  const showInteractiveOverlay =
+    !annotationReadOnlyFromHookProps && annotationTool != null && adapterBounds != null
   return (
-    <div ref={ref} className={`w-full ${className}`} style={style}>
+    <div ref={ref} className={`w-full relative ${className}`} style={style}>
       {resizing ? (
         <div className="w-full h-full flex items-center justify-center text-[11px] text-muted-foreground bg-muted/20 rounded-md">
           크기 조정 중…
         </div>
       ) : (
         <ResponsiveContainer width="100%" height="100%">
-          {renderChart(chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle, printScale, annotations)}
+          {renderChart(
+            chartType,
+            data,
+            xKey,
+            seriesCols,
+            xAxisTitle,
+            yAxisTitle,
+            printScale,
+            onCaptureAdapter,
+            { xMin, xMax, yMin, yMax },
+          )}
         </ResponsiveContainer>
+      )}
+      {/* External annotation overlay — sits OUTSIDE Recharts' SVG so
+          its <g> elements draw on top of the chart's bars / lines
+          unconditionally. Same coord system as the chart (both SVGs
+          fill 100% of the same wrapper), so adapter.toPx output lands
+          at the right pixel. Uses `pointer-events: none` on the SVG
+          and `pointer-events: auto` on each annotation shape inside
+          so clicks on empty chart area pass through to the chart. */}
+      {adapterBounds && (annotations?.length > 0 || !annotationReadOnlyFromHookProps) && (
+        <svg
+          className="absolute inset-0"
+          width="100%"
+          height="100%"
+          style={{ pointerEvents: 'none' }}
+        >
+          {/* Marquee sits BEHIND the annotation shapes so it only
+              catches drags that start on empty plot area. Mounted
+              only in edit mode with no creation tool active —
+              otherwise the marquee + InteractiveOverlay would fight
+              for the same pointer events. */}
+          {!annotationReadOnlyFromHookProps &&
+            annotationProps?.tool == null &&
+            annotationProps?.store && (
+              <SelectionMarquee
+                store={annotationProps.store}
+                adapter={stableAdapter}
+              />
+            )}
+          <AnnotationContents
+            drawable={annotations}
+            adapter={stableAdapter}
+            selectedIds={annotationProps?.selection}
+            readOnly={annotationReadOnlyFromHookProps}
+            onSelect={annotationProps?.onSelect}
+            interactions={interactions}
+          />
+        </svg>
+      )}
+      {/* Interactive overlay — only mounted in edit mode while a tool
+          is active. DOM div positioned over the chart's plot area, so
+          pointer events land on the overlay first instead of fighting
+          Recharts' Tooltip / active-shape SVG layers (which proved
+          unreliable across browsers for SVG nested capture rects). */}
+      {showInteractiveOverlay && (
+        <InteractiveOverlay
+          bounds={adapterBounds}
+          fromPx={(p) =>
+            adapterRef.current?.fromPx
+              ? adapterRef.current.fromPx(p)
+              : { x: undefined, y: undefined }
+          }
+          toPx={(g) =>
+            adapterRef.current?.toPx ? adapterRef.current.toPx(g) : {}
+          }
+          tool={annotationTool}
+          onCreate={annotationProps?.onCreate}
+          onCommit={annotationProps?.onToolDone}
+        />
+      )}
+      {/* Label editor as a DOM overlay (not SVG foreignObject) — the
+          latter was invisible under BarChart's compositing stack. The
+          editor positions itself at the annotation's label coords via
+          labelPositionFor + the adapter we publish from inside the
+          chart. */}
+      {!annotationReadOnlyFromHookProps && annotationStore && (
+        <AnnotationLabelEditor
+          interactions={interactions}
+          annotations={annotationStore.annotations}
+          adapter={stableAdapter}
+        />
+      )}
+      {/* Inline style/action bar — appears next to the single selected
+          annotation. Hidden during label-edit so the controls don't
+          double-stack on the same anchor.
+          onDone drops the active creation tool (passed up via
+          annotationProps.onCancelTool) so clicking the chart after
+          "완료" doesn't immediately start a new annotation. */}
+      {!annotationReadOnlyFromHookProps && annotationStore && (
+        <AnnotationStyleBar
+          store={annotationStore}
+          adapter={stableAdapter}
+          editingId={interactions?.editingId}
+          onDone={annotationProps?.onCancelTool}
+        />
       )}
     </div>
   )
@@ -900,7 +1293,29 @@ const CHART_LEGEND_FONT = 16
 const CHART_LEGEND_HEIGHT = 34
 const CHART_TOOLTIP_FONT = 16
 
-function renderChart(type, data, xKey, seriesCols, xAxisTitle, yAxisTitle, printScale = 1, annotations = []) {
+function renderChart(
+  type,
+  data,
+  xKey,
+  seriesCols,
+  xAxisTitle,
+  yAxisTitle,
+  printScale = 1,
+  onCaptureAdapter,
+  axisRanges = {},
+) {
+  const { xMin, xMax, yMin, yMax } = axisRanges
+  // Recharts XAxis / YAxis accept `domain={[min, max]}` arrays. Either
+  // entry can be 'auto' (let Recharts pick) or a literal number; we
+  // map our nullable fields onto that contract.
+  const xDomain =
+    Number.isFinite(xMin) || Number.isFinite(xMax)
+      ? [Number.isFinite(xMin) ? xMin : 'auto', Number.isFinite(xMax) ? xMax : 'auto']
+      : undefined
+  const yDomain =
+    Number.isFinite(yMin) || Number.isFinite(yMax)
+      ? [Number.isFinite(yMin) ? yMin : 'auto', Number.isFinite(yMax) ? yMax : 'auto']
+      : undefined
   // Apply the PDF-print scale (1 outside printing) to every SVG-rendered
   // text size so the chart's labels grow/shrink with the rest of the
   // report body. Margins also scale so the (taller) axis title text
@@ -913,10 +1328,13 @@ function renderChart(type, data, xKey, seriesCols, xAxisTitle, yAxisTitle, print
   const tooltipFont = Math.round(CHART_TOOLTIP_FONT * pScale)
 
   const margin = {
-    top: 8,
-    right: 16,
-    left: yAxisTitle ? Math.round(14 * pScale) : 0,
-    bottom: xAxisTitle ? Math.round(30 * pScale) : 0,
+    // A bit of breathing room around the plot — bars / lines used to
+    // butt right up against the chart edge which felt cramped next to
+    // the surrounding card chrome.
+    top: 16,
+    right: 24,
+    left: 8 + (yAxisTitle ? Math.round(14 * pScale) : 0),
+    bottom: 16 + (xAxisTitle ? Math.round(30 * pScale) : 0),
   }
   const xLabel = xAxisTitle
     ? { value: xAxisTitle, position: 'insideBottom', offset: -8, fontSize: titleFont }
@@ -939,8 +1357,8 @@ function renderChart(type, data, xKey, seriesCols, xAxisTitle, yAxisTitle, print
     return (
       <LineChart data={data} margin={margin}>
         <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-        <XAxis dataKey={xKey} fontSize={tickFont} label={xLabel} />
-        <YAxis fontSize={tickFont} label={yLabel} />
+        <XAxis dataKey={xKey} fontSize={tickFont} label={xLabel} domain={xDomain} />
+        <YAxis fontSize={tickFont} label={yLabel} domain={yDomain} />
         <Tooltip
           contentStyle={tooltipContentStyle}
           labelStyle={tooltipLabelStyle}
@@ -962,19 +1380,15 @@ function renderChart(type, data, xKey, seriesCols, xAxisTitle, yAxisTitle, print
             dot={{ r: 3 }}
           />
         ))}
-        <Customized
-          component={(rcProps) => (
-            <ChartAnnotationOverlay rcProps={rcProps} annotations={annotations} />
-          )}
-        />
+        <ChartAnnotationOverlay onCaptureAdapter={onCaptureAdapter} />
       </LineChart>
     )
   }
   return (
     <BarChart data={data} margin={margin}>
       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-      <XAxis dataKey={xKey} fontSize={tickFont} label={xLabel} />
-      <YAxis fontSize={tickFont} label={yLabel} />
+      <XAxis dataKey={xKey} fontSize={tickFont} label={xLabel} domain={xDomain} />
+      <YAxis fontSize={tickFont} label={yLabel} domain={yDomain} />
       <Tooltip
         contentStyle={tooltipContentStyle}
         labelStyle={tooltipLabelStyle}
@@ -993,11 +1407,7 @@ function renderChart(type, data, xKey, seriesCols, xAxisTitle, yAxisTitle, print
           fill={SERIES_COLORS[i % SERIES_COLORS.length]}
         />
       ))}
-      <Customized
-        component={(rcProps) => (
-          <ChartAnnotationOverlay rcProps={rcProps} annotations={annotations} />
-        )}
-      />
+      <ChartAnnotationOverlay onCaptureAdapter={onCaptureAdapter} />
     </BarChart>
   )
 }
@@ -1014,59 +1424,123 @@ function renderChart(type, data, xKey, seriesCols, xAxisTitle, yAxisTitle, print
  * one stays as the canonical "final paint" so view-mode rendering is
  * never affected by editing UI.
  */
-function ChartAnnotationOverlay({ rcProps, annotations }) {
-  if (!annotations || annotations.length === 0) return null
-  const xMap = rcProps?.xAxisMap
-  const yMap = rcProps?.yAxisMap
-  if (!xMap || !yMap) return null
-  const xAxis = Object.values(xMap)[0]
-  const yAxis = Object.values(yMap)[0]
-  if (!xAxis?.scale || !yAxis?.scale) return null
-  const adapter = buildChartAdapter(xAxis, yAxis, rcProps?.offset)
-  return <AnnotationContents drawable={annotations} adapter={adapter} readOnly />
+/**
+ * Adapter-only bridge: lives inside the Recharts chart context, uses
+ * the v3 axis hooks to assemble a coordinate adapter, and publishes it
+ * to the host (ChartCanvas) via `onCaptureAdapter`. Doesn't draw
+ * anything — the actual annotation shapes render in a SIBLING SVG
+ * overlay outside Recharts (so the chart's bars / lines / cursor
+ * layers can't sit on top of them).
+ */
+function ChartAnnotationOverlay({ onCaptureAdapter }) {
+  const xScale = useXAxisScale()
+  const yScale = useYAxisScale()
+  const xInverse = useXAxisInverseScale()
+  const yInverse = useYAxisInverseScale()
+  const xDomain = useXAxisDomain()
+  const plotArea = usePlotArea()
+  const adapter = useMemo(() => {
+    if (!xScale || !yScale || !plotArea) return null
+    return buildChartAdapter(xScale, yScale, xInverse, yInverse, plotArea, xDomain)
+  }, [xScale, yScale, xInverse, yInverse, plotArea, xDomain])
+  useEffect(() => {
+    if (adapter && onCaptureAdapter) onCaptureAdapter(adapter)
+  }, [adapter, onCaptureAdapter])
+  return null
 }
 
-function buildChartAdapter(xAxis, yAxis, offset) {
-  // Same logic as the standalone factory in ChartAnnotationAdapter.js
-  // — duplicated here so this file stays self-contained and the chart
-  // can render annotations without indirection through a ref.
-  function scaleToPx(scale, value) {
+function buildChartAdapter(xScale, yScale, xInverse, yInverse, plotArea, xDomain) {
+  // Recharts v3 ScaleFunction signature: `(value, { position }?) => number | undefined`.
+  // Categorical scales (band) accept `{ position: 'middle' }` to land
+  // on the band center; continuous scales ignore the option.
+  function toPxCoord(scale, value) {
     if (scale == null) return NaN
-    const out = scale(value)
-    if (typeof out !== 'number' || !Number.isFinite(out)) return NaN
-    if (typeof scale.bandwidth === 'function') return out + scale.bandwidth() / 2
-    return out
+    const out = scale(value, { position: 'middle' })
+    return typeof out === 'number' && Number.isFinite(out) ? out : NaN
+  }
+  // Categorical x-inverse needs its own pass — Recharts' built-in
+  // createCategoricalInverse maps pixels by comparing to each band's
+  // LEFT EDGE (scale(d) without `position`). For a chart with bands of
+  // width W, that means clicks past `W/2 + W*i` snap to the wrong
+  // category (one to the right). We do our own bisect using band
+  // CENTERS so a click at band i's center stays at band i.
+  const isCategoricalX = Array.isArray(xDomain) && xDomain.length > 0 && xDomain.some((v) => typeof v === 'string')
+  function xFromPx(px) {
+    if (!Number.isFinite(px)) return null
+    if (isCategoricalX) {
+      let best = null
+      let bestDist = Infinity
+      for (const d of xDomain) {
+        const center = xScale(d, { position: 'middle' })
+        if (typeof center !== 'number' || !Number.isFinite(center)) continue
+        const dist = Math.abs(center - px)
+        if (dist < bestDist) {
+          bestDist = dist
+          best = d
+        }
+      }
+      return best
+    }
+    return xInverse ? xInverse(px) : null
   }
   return {
     coordSpace: 'data',
     supportedTypes: ['vline', 'vrange', 'hline', 'hrange', 'point', 'rect', 'arrow', 'text'],
     bounds: {
-      x: xAxis.x ?? offset?.left ?? 0,
-      y: yAxis.y ?? offset?.top ?? 0,
-      width: xAxis.width ?? offset?.width ?? 0,
-      height: yAxis.height ?? offset?.height ?? 0,
+      x: plotArea.x,
+      y: plotArea.y,
+      width: plotArea.width,
+      height: plotArea.height,
     },
     toPx(geometry) {
       const out = {}
-      if ('x' in geometry) out.x = scaleToPx(xAxis.scale, geometry.x)
-      if ('y' in geometry) out.y = scaleToPx(yAxis.scale, geometry.y)
-      if ('x_from' in geometry) out.x_from = scaleToPx(xAxis.scale, geometry.x_from)
-      if ('x_to' in geometry) out.x_to = scaleToPx(xAxis.scale, geometry.x_to)
-      if ('y_from' in geometry) out.y_from = scaleToPx(yAxis.scale, geometry.y_from)
-      if ('y_to' in geometry) out.y_to = scaleToPx(yAxis.scale, geometry.y_to)
+      if ('x' in geometry) out.x = toPxCoord(xScale, geometry.x)
+      if ('y' in geometry) out.y = toPxCoord(yScale, geometry.y)
+      if ('x_from' in geometry) out.x_from = toPxCoord(xScale, geometry.x_from)
+      if ('x_to' in geometry) out.x_to = toPxCoord(xScale, geometry.x_to)
+      if ('y_from' in geometry) out.y_from = toPxCoord(yScale, geometry.y_from)
+      if ('y_to' in geometry) out.y_to = toPxCoord(yScale, geometry.y_to)
       if (geometry.from) {
         out.from = {
-          x: scaleToPx(xAxis.scale, geometry.from.x),
-          y: scaleToPx(yAxis.scale, geometry.from.y),
+          x: toPxCoord(xScale, geometry.from.x),
+          y: toPxCoord(yScale, geometry.from.y),
         }
       }
       if (geometry.to) {
         out.to = {
-          x: scaleToPx(xAxis.scale, geometry.to.x),
-          y: scaleToPx(yAxis.scale, geometry.to.y),
+          x: toPxCoord(xScale, geometry.to.x),
+          y: toPxCoord(yScale, geometry.to.y),
         }
       }
       return out
+    },
+    fromPx(px) {
+      // X uses our band-center-aware inverse (categorical), or the
+      // Recharts inverse (continuous). Y always uses Recharts' inverse
+      // — number scales have proper `invert()` on the d3 scale.
+      const out = {}
+      if ('x' in px) out.x = xFromPx(px.x)
+      if ('y' in px && yInverse) out.y = yInverse(px.y)
+      return out
+    },
+    snap(value, axis) {
+      // Categorical x — values are domain entries already; fromPx maps
+      // any pixel to the nearest band label, so the value is naturally
+      // snapped. Just pass through.
+      if (axis === 'x' && isCategoricalX) return value
+      if (typeof value !== 'number' || !Number.isFinite(value)) return value
+      // Continuous numeric — derive a step from the visible domain so
+      // the snap matches what feels right at the chart's scale (1%
+      // of the range, rounded down to a power of 10).
+      const scale = axis === 'x' ? xScale : yScale
+      const dom = typeof scale?.domain === 'function' ? scale.domain() : null
+      const d0 = Number(dom?.[0])
+      const d1 = Number(dom?.[dom.length - 1])
+      if (!Number.isFinite(d0) || !Number.isFinite(d1)) return value
+      const range = Math.abs(d1 - d0)
+      if (range === 0) return value
+      const step = Math.pow(10, Math.floor(Math.log10(range / 100)))
+      return Math.round(value / step) * step
     },
   }
 }

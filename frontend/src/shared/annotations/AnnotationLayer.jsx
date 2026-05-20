@@ -35,17 +35,20 @@ export function AnnotationLayer({
   onSelect,
   readOnly = false,
 }) {
-  // Drop hidden + unsupported annotations before rendering. We accept
-  // "unsupported" gracefully so a payload with an arrow annotation
-  // still loads on a host that only supports lines — it just doesn't
-  // draw those, never breaks the layer.
+  // Drop unsupported types; keep hidden ones only in edit mode (the
+  // user needs to be able to find + un-hide them). In read-only /
+  // export mode, hidden truly means gone. Unsupported types are
+  // accepted silently so a payload with an arrow still loads on a
+  // host that only supports lines — it just doesn't draw those.
   const drawable = useMemo(() => {
     if (!Array.isArray(annotations) || !adapter) return []
     const supported = new Set(adapter.supportedTypes ?? [])
     return annotations.filter(
-      (a) => !a.hidden && (supported.size === 0 || supported.has(a.type)),
+      (a) =>
+        (!a.hidden || !readOnly) &&
+        (supported.size === 0 || supported.has(a.type)),
     )
-  }, [annotations, adapter])
+  }, [annotations, adapter, readOnly])
 
   if (!adapter) return null
   const { x: bx, y: by, width: bw, height: bh } = adapter.bounds ?? {
@@ -104,6 +107,11 @@ export function AnnotationContents({
   selectedIds,
   readOnly,
   onSelect,
+  // Optional richer interaction layer (drag-to-move + double-click
+  // label edit). When provided, drawers use it INSTEAD of the simple
+  // onSelect/onClick wiring — the interaction hook handles selection
+  // itself (on pointerup with no movement) so we don't double-fire.
+  interactions,
 }) {
   if (!adapter) return null
   const bounds = adapter.bounds ?? { x: 0, y: 0, width: 0, height: 0 }
@@ -118,7 +126,7 @@ export function AnnotationContents({
         const selected = selectedIds?.has(a.id) ?? false
         const draw = DRAWERS[a.type]
         if (!draw) return null
-        return draw({
+        const node = draw({
           key: a.id,
           annotation: a,
           adapter,
@@ -126,10 +134,43 @@ export function AnnotationContents({
           selected,
           locked: !!a.locked,
           onClick: (e) => handleClick(e, a.id),
+          interactions,
         })
+        // Hidden annotations only reach this branch in edit mode (the
+        // useMemo above strips them in readOnly). Render as a faded
+        // ghost so the user can still find + click them to un-hide.
+        if (a.hidden) {
+          return (
+            <g key={a.id} opacity={0.25} style={{ pointerEvents: 'auto' }}>
+              {node}
+            </g>
+          )
+        }
+        return node
       })}
     </>
   )
+}
+
+/** Build the props for an annotation's body shape (line / rect /
+ *  circle). When the host provides an interactions hook, the body
+ *  becomes draggable (mousedown starts a drag, mouseup selects when
+ *  no movement happened). Otherwise it stays click-to-select for the
+ *  legacy code path used by hosts that haven't migrated. */
+function bodyHandlers({ annotation, interactions, onClick }) {
+  if (interactions?.onBodyPointerDown && !annotation.locked) {
+    return {
+      onPointerDown: (e) => interactions.onBodyPointerDown(annotation, e),
+      style: { pointerEvents: 'auto', cursor: 'move' },
+    }
+  }
+  return {
+    onClick,
+    style: {
+      pointerEvents: 'auto',
+      cursor: annotation.locked ? 'not-allowed' : 'pointer',
+    },
+  }
 }
 
 // --------------------------------------------------------------------------- //
@@ -155,14 +196,42 @@ function selectionRingProps(selected) {
     : null
 }
 
+/** Endpoint handle drawn at one corner / edge of a selected range
+ *  annotation. Pointer-down forwards to the interaction hook with the
+ *  geometry field name so the resize updates only that field.
+ *
+ *  Renders null when the host has no interactions hook (view-only)
+ *  or when the annotation is locked — same gating the body uses. */
+function ResizeHandle({ annotation, handle, x, y, color, interactions, cursor = 'move' }) {
+  if (!interactions?.onHandlePointerDown) return null
+  if (annotation.locked) return null
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+  return (
+    <circle
+      cx={x}
+      cy={y}
+      r={5}
+      fill="#fff"
+      stroke={color}
+      strokeWidth={2}
+      style={{ pointerEvents: 'auto', cursor }}
+      onPointerDown={(e) => {
+        e.stopPropagation()
+        interactions.onHandlePointerDown(annotation, handle, e)
+      }}
+    />
+  )
+}
+
 const DRAWERS = {
-  vline({ key, annotation: a, adapter, bounds, selected, onClick }) {
+  vline({ key, annotation: a, adapter, bounds, selected, onClick, interactions }) {
     const px = adapter.toPx(a.geometry)
     if (!Number.isFinite(px?.x)) return null
     const color = resolveColor(a)
     const dash = resolveDash(a)
     const top = bounds.y
     const bot = bounds.y + bounds.height
+    const hb = bodyHandlers({ annotation: a, interactions, onClick })
     return (
       <g key={key} className="annotation annotation-vline" data-annotation-id={a.id}>
         {/* The wide invisible hitbox makes thin lines clickable. */}
@@ -173,8 +242,7 @@ const DRAWERS = {
           y2={bot}
           stroke="transparent"
           strokeWidth={10}
-          style={{ pointerEvents: 'auto', cursor: 'pointer' }}
-          onClick={onClick}
+          {...hb}
         />
         <line
           x1={px.x}
@@ -192,6 +260,7 @@ const DRAWERS = {
           y={top}
           color={color}
           anchor="middle"
+          interactions={interactions}
         />
         {selected && (
           <circle
@@ -206,13 +275,14 @@ const DRAWERS = {
     )
   },
 
-  hline({ key, annotation: a, adapter, bounds, selected, onClick }) {
+  hline({ key, annotation: a, adapter, bounds, selected, onClick, interactions }) {
     const px = adapter.toPx(a.geometry)
     if (!Number.isFinite(px?.y)) return null
     const color = resolveColor(a)
     const dash = resolveDash(a)
     const left = bounds.x
     const right = bounds.x + bounds.width
+    const hb = bodyHandlers({ annotation: a, interactions, onClick })
     return (
       <g key={key} className="annotation annotation-hline" data-annotation-id={a.id}>
         <line
@@ -222,8 +292,7 @@ const DRAWERS = {
           y2={px.y}
           stroke="transparent"
           strokeWidth={10}
-          style={{ pointerEvents: 'auto', cursor: 'pointer' }}
-          onClick={onClick}
+          {...hb}
         />
         <line
           x1={left}
@@ -242,17 +311,19 @@ const DRAWERS = {
           color={color}
           anchor="end"
           dy={-4}
+          interactions={interactions}
         />
       </g>
     )
   },
 
-  vrange({ key, annotation: a, adapter, bounds, selected, onClick }) {
+  vrange({ key, annotation: a, adapter, bounds, selected, onClick, interactions }) {
     const px = adapter.toPx(a.geometry)
     if (!Number.isFinite(px?.x_from) || !Number.isFinite(px?.x_to)) return null
     const left = Math.min(px.x_from, px.x_to)
     const right = Math.max(px.x_from, px.x_to)
     const color = resolveColor(a)
+    const hb = bodyHandlers({ annotation: a, interactions, onClick })
     return (
       <g key={key} className="annotation annotation-vrange" data-annotation-id={a.id}>
         <rect
@@ -262,8 +333,7 @@ const DRAWERS = {
           height={bounds.height}
           fill={color}
           opacity={resolveOpacity(a, 0.12)}
-          style={{ pointerEvents: 'auto', cursor: 'pointer' }}
-          onClick={onClick}
+          {...hb}
         />
         {/* Edge lines — selected state thickens them. */}
         <line
@@ -292,17 +362,41 @@ const DRAWERS = {
           y={bounds.y}
           color={color}
           anchor="middle"
+          interactions={interactions}
         />
+        {selected && (
+          <>
+            <ResizeHandle
+              annotation={a}
+              handle="x_from"
+              x={px.x_from}
+              y={bounds.y + bounds.height / 2}
+              color={color}
+              interactions={interactions}
+              cursor="ew-resize"
+            />
+            <ResizeHandle
+              annotation={a}
+              handle="x_to"
+              x={px.x_to}
+              y={bounds.y + bounds.height / 2}
+              color={color}
+              interactions={interactions}
+              cursor="ew-resize"
+            />
+          </>
+        )}
       </g>
     )
   },
 
-  hrange({ key, annotation: a, adapter, bounds, selected, onClick }) {
+  hrange({ key, annotation: a, adapter, bounds, selected, onClick, interactions }) {
     const px = adapter.toPx(a.geometry)
     if (!Number.isFinite(px?.y_from) || !Number.isFinite(px?.y_to)) return null
     const top = Math.min(px.y_from, px.y_to)
     const bot = Math.max(px.y_from, px.y_to)
     const color = resolveColor(a)
+    const hb = bodyHandlers({ annotation: a, interactions, onClick })
     return (
       <g key={key} className="annotation annotation-hrange" data-annotation-id={a.id}>
         <rect
@@ -312,8 +406,7 @@ const DRAWERS = {
           height={Math.max(1, bot - top)}
           fill={color}
           opacity={resolveOpacity(a, 0.12)}
-          style={{ pointerEvents: 'auto', cursor: 'pointer' }}
-          onClick={onClick}
+          {...hb}
         />
         <AnnotationLabel
           annotation={a}
@@ -322,15 +415,39 @@ const DRAWERS = {
           color={color}
           anchor="end"
           dy={4}
+          interactions={interactions}
         />
+        {selected && (
+          <>
+            <ResizeHandle
+              annotation={a}
+              handle="y_from"
+              x={bounds.x + bounds.width / 2}
+              y={px.y_from}
+              color={color}
+              interactions={interactions}
+              cursor="ns-resize"
+            />
+            <ResizeHandle
+              annotation={a}
+              handle="y_to"
+              x={bounds.x + bounds.width / 2}
+              y={px.y_to}
+              color={color}
+              interactions={interactions}
+              cursor="ns-resize"
+            />
+          </>
+        )}
       </g>
     )
   },
 
-  point({ key, annotation: a, adapter, selected, onClick }) {
+  point({ key, annotation: a, adapter, selected, onClick, interactions }) {
     const px = adapter.toPx(a.geometry)
     if (!Number.isFinite(px?.x) || !Number.isFinite(px?.y)) return null
     const color = resolveColor(a, '#ef4444')
+    const hb = bodyHandlers({ annotation: a, interactions, onClick })
     return (
       <g key={key} className="annotation annotation-point" data-annotation-id={a.id}>
         <circle
@@ -341,8 +458,7 @@ const DRAWERS = {
           stroke="#fff"
           strokeWidth={2}
           opacity={resolveOpacity(a, 0.95)}
-          style={{ pointerEvents: 'auto', cursor: 'pointer' }}
-          onClick={onClick}
+          {...hb}
         />
         <AnnotationLabel
           annotation={a}
@@ -350,12 +466,13 @@ const DRAWERS = {
           y={px.y - 10}
           color={color}
           anchor="middle"
+          interactions={interactions}
         />
       </g>
     )
   },
 
-  rect({ key, annotation: a, adapter, selected, onClick }) {
+  rect({ key, annotation: a, adapter, selected, onClick, interactions }) {
     const px = adapter.toPx(a.geometry)
     if (
       !Number.isFinite(px?.x_from) ||
@@ -370,6 +487,7 @@ const DRAWERS = {
     const top = Math.min(px.y_from, px.y_to)
     const bot = Math.max(px.y_from, px.y_to)
     const color = resolveColor(a)
+    const hb = bodyHandlers({ annotation: a, interactions, onClick })
     return (
       <g key={key} className="annotation annotation-rect" data-annotation-id={a.id}>
         <rect
@@ -382,8 +500,7 @@ const DRAWERS = {
           stroke={color}
           strokeWidth={selected ? 2 : 1}
           strokeDasharray={resolveDash(a)}
-          style={{ pointerEvents: 'auto', cursor: 'pointer' }}
-          onClick={onClick}
+          {...hb}
         />
         <AnnotationLabel
           annotation={a}
@@ -392,12 +509,58 @@ const DRAWERS = {
           color={color}
           anchor="start"
           dy={-4}
+          interactions={interactions}
         />
+        {selected && (
+          <>
+            {/* Four corner handles. Each handle name encodes the TWO
+                data-coord fields it owns so a corner drag moves both
+                axes together. Pixel position follows the actual field
+                values — not min/max — so a temporarily-inverted rect
+                keeps each handle attached to its field. */}
+            <ResizeHandle
+              annotation={a}
+              handle="x_from_y_from"
+              x={px.x_from}
+              y={px.y_from}
+              color={color}
+              interactions={interactions}
+              cursor="nwse-resize"
+            />
+            <ResizeHandle
+              annotation={a}
+              handle="x_to_y_from"
+              x={px.x_to}
+              y={px.y_from}
+              color={color}
+              interactions={interactions}
+              cursor="nesw-resize"
+            />
+            <ResizeHandle
+              annotation={a}
+              handle="x_from_y_to"
+              x={px.x_from}
+              y={px.y_to}
+              color={color}
+              interactions={interactions}
+              cursor="nesw-resize"
+            />
+            <ResizeHandle
+              annotation={a}
+              handle="x_to_y_to"
+              x={px.x_to}
+              y={px.y_to}
+              color={color}
+              interactions={interactions}
+              cursor="nwse-resize"
+            />
+          </>
+        )}
       </g>
     )
   },
 
-  arrow({ key, annotation: a, adapter, selected, onClick }) {
+  arrow({ key, annotation: a, adapter, selected, onClick, interactions }) {
     const px = adapter.toPx(a.geometry)
     if (
       !Number.isFinite(px?.from?.x) ||
@@ -408,42 +571,76 @@ const DRAWERS = {
       return null
     }
     const color = resolveColor(a)
-    const markerId = `annot-arrow-${a.id}`
+    // Compute a manual triangle head instead of relying on SVG's
+    // <marker>. Markers with dynamic attributes (size / color
+    // changing between selected ↔ unselected) were occasionally
+    // failing to re-render in browsers — the line would still
+    // reference url(#...) but the head wouldn't paint, leaving an
+    // invisible tip. A plain <polygon> derived from the line
+    // direction is bulletproof: no defs, no URL indirection.
+    const dx = px.to.x - px.from.x
+    const dy = px.to.y - px.from.y
+    const lineLen = Math.hypot(dx, dy)
+    const strokeW = selected ? 3 : 2
+    const headLen = selected ? 20 : 18
+    const headHalfWidth = selected ? 10 : 9
+    // Fall back to no head when the arrow has zero length (mid-drag /
+    // degenerate state) so we don't divide by zero.
+    let head = null
+    let lineEndX = px.to.x
+    let lineEndY = px.to.y
+    if (lineLen > 0.001) {
+      const ux = dx / lineLen
+      const uy = dy / lineLen
+      // Base center: head's flat side, offset along the line away
+      // from the tip. We also pull the LINE end back to this point so
+      // the line stroke doesn't poke through the triangle (matters
+      // for dashed / dotted styles).
+      const bcx = px.to.x - headLen * ux
+      const bcy = px.to.y - headLen * uy
+      lineEndX = bcx
+      lineEndY = bcy
+      // Perpendicular unit vector (-uy, ux) — gives the base corners
+      // on either side of the line.
+      const pxv = -uy
+      const pyv = ux
+      const blx = bcx + headHalfWidth * pxv
+      const bly = bcy + headHalfWidth * pyv
+      const brx = bcx - headHalfWidth * pxv
+      const bry = bcy - headHalfWidth * pyv
+      head = `${px.to.x},${px.to.y} ${blx},${bly} ${brx},${bry}`
+    }
     return (
       <g key={key} className="annotation annotation-arrow" data-annotation-id={a.id}>
-        <defs>
-          <marker
-            id={markerId}
-            viewBox="0 0 10 10"
-            refX="10"
-            refY="5"
-            markerWidth="6"
-            markerHeight="6"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
-          </marker>
-        </defs>
         <line
           x1={px.from.x}
           y1={px.from.y}
           x2={px.to.x}
           y2={px.to.y}
           stroke="transparent"
-          strokeWidth={10}
-          style={{ pointerEvents: 'auto', cursor: 'pointer' }}
-          onClick={onClick}
+          strokeWidth={14}
+          {...bodyHandlers({ annotation: a, interactions, onClick })}
         />
         <line
           x1={px.from.x}
           y1={px.from.y}
-          x2={px.to.x}
-          y2={px.to.y}
+          x2={lineEndX}
+          y2={lineEndY}
           stroke={color}
-          strokeWidth={selected ? 2.5 : 1.5}
-          markerEnd={`url(#${markerId})`}
-          opacity={resolveOpacity(a, 0.9)}
+          strokeWidth={strokeW}
+          strokeDasharray={resolveDash(a)}
+          opacity={resolveOpacity(a, 0.95)}
         />
+        {head && (
+          <polygon
+            points={head}
+            fill={color}
+            stroke={color}
+            strokeWidth={1}
+            strokeLinejoin="miter"
+            opacity={resolveOpacity(a, 0.95)}
+          />
+        )}
         <AnnotationLabel
           annotation={a}
           x={(px.from.x + px.to.x) / 2}
@@ -451,7 +648,28 @@ const DRAWERS = {
           color={color}
           anchor="middle"
           dy={-6}
+          interactions={interactions}
         />
+        {selected && (
+          <>
+            <ResizeHandle
+              annotation={a}
+              handle="from"
+              x={px.from.x}
+              y={px.from.y}
+              color={color}
+              interactions={interactions}
+            />
+            <ResizeHandle
+              annotation={a}
+              handle="to"
+              x={px.to.x}
+              y={px.to.y}
+              color={color}
+              interactions={interactions}
+            />
+          </>
+        )}
       </g>
     )
   },
@@ -479,7 +697,12 @@ const DRAWERS = {
 
 /** Tiny label renderer used by every drawer. Reads the annotation's
  *  label.text / label.position; positions itself with a backdrop rect
- *  so the text stays legible over colored fills. */
+ *  so the text stays legible over colored fills.
+ *
+ *  When the host provides an interactions hook AND this annotation is
+ *  the one currently being edited, the label flips to an HTML <input>
+ *  hosted by a <foreignObject>. Enter / blur commits, Esc cancels.
+ *  Double-click on the label area opens the editor. */
 function AnnotationLabel({
   annotation,
   x,
@@ -490,39 +713,126 @@ function AnnotationLabel({
   forceText = false,
   onClick,
   selected,
+  interactions,
 }) {
   const text = annotation.label?.text
-  if (!forceText && (!text || text.length === 0)) return null
-  const display = text || '(라벨 없음)'
-  // Approximate text width — enough for the backdrop pill to fit. Real
-  // measurement would require a hidden <text> + getBBox; we accept the
-  // approximation here since labels are usually short.
-  const approxWidth = display.length * 6.5 + 8
+  const isEditing = interactions?.editingId === annotation.id
   const labelY = y + dy - 8
+  // While editing, hide the static label entirely. The host renders
+  // a DOM-overlay <AnnotationLabelEditor> at this same position
+  // (using `labelPositionFor`) — SVG foreignObject editing inside
+  // the chart's SVG turned out to be invisible under BarChart's
+  // compositing stack, so we render the input outside the SVG.
+  if (isEditing) return null
+  if (!forceText && (!text || text.length === 0)) {
+    // No saved label. Show a faint "+ 라벨" placeholder when the
+    // annotation is selected and interactions are wired, so the user
+    // has a discoverable spot to click and add one. Outside that, we
+    // render nothing to keep the chart visually clean.
+    if (selected && interactions?.onLabelDoubleClick) {
+      const placeholderText = '+ 라벨'
+      const PLACEHOLDER_PAD_X = 10
+      const PLACEHOLDER_HEIGHT = 20
+      const placeholderWidth = placeholderText.length * 6.5 + PLACEHOLDER_PAD_X * 2
+      function handleAddLabel(e) {
+        e.stopPropagation()
+        interactions.onLabelDoubleClick(annotation, e)
+      }
+      return (
+        <g
+          style={{ pointerEvents: 'auto', cursor: 'text' }}
+          onClick={handleAddLabel}
+          onDoubleClick={handleAddLabel}
+        >
+          <rect
+            x={
+              anchor === 'middle'
+                ? x - placeholderWidth / 2
+                : anchor === 'end'
+                  ? x - placeholderWidth
+                  : x
+            }
+            y={labelY - PLACEHOLDER_HEIGHT / 2}
+            width={placeholderWidth}
+            height={PLACEHOLDER_HEIGHT}
+            rx={4}
+            fill="#fff"
+            stroke={color}
+            strokeWidth={1}
+            strokeDasharray="3,2"
+            opacity={0.7}
+          />
+          <text
+            x={
+              anchor === 'end'
+                ? x - PLACEHOLDER_PAD_X
+                : anchor === 'start'
+                  ? x + PLACEHOLDER_PAD_X
+                  : x
+            }
+            y={labelY}
+            fill={color}
+            fontSize={11}
+            fontStyle="italic"
+            textAnchor={anchor}
+            dominantBaseline="central"
+            opacity={0.8}
+            style={{ userSelect: 'none' }}
+          >
+            {placeholderText}
+          </text>
+        </g>
+      )
+    }
+    return null
+  }
+  const display = text || '(라벨 없음)'
+  // Pill dimensions. 8px horizontal + ~4px vertical padding around the
+  // text — the old chip rendered text tight against the rect border
+  // which felt cramped against neighboring annotations.
+  const LABEL_PAD_X = 8
+  const LABEL_HEIGHT = 20
+  const approxWidth = display.length * 6.5 + LABEL_PAD_X * 2
+  // Double-click on the label area triggers edit mode when interactions
+  // are available; otherwise label is purely display. The single-click
+  // handler stays on the wrapping <g> so click-to-select keeps working
+  // on hosts that don't provide interactions.
+  function handleDoubleClick(e) {
+    if (!interactions?.onLabelDoubleClick) return
+    interactions.onLabelDoubleClick(annotation, e)
+  }
+  const labelStyle = onClick
+    ? { pointerEvents: 'auto', cursor: 'pointer' }
+    : interactions?.onLabelDoubleClick
+      ? { pointerEvents: 'auto', cursor: 'text' }
+      : undefined
   return (
-    <g
-      style={onClick ? { pointerEvents: 'auto', cursor: 'pointer' } : undefined}
-      onClick={onClick}
-    >
+    <g style={labelStyle} onClick={onClick} onDoubleClick={handleDoubleClick}>
       <rect
         x={anchor === 'middle' ? x - approxWidth / 2 : anchor === 'end' ? x - approxWidth : x}
-        y={labelY - 10}
+        y={labelY - LABEL_HEIGHT / 2}
         width={approxWidth}
-        height={14}
-        rx={3}
+        height={LABEL_HEIGHT}
+        rx={4}
         fill="#fff"
         stroke={color}
         strokeWidth={selected ? 1.5 : 1}
         opacity={0.95}
       />
       <text
-        x={x}
+        x={
+          anchor === 'end'
+            ? x - LABEL_PAD_X
+            : anchor === 'start'
+              ? x + LABEL_PAD_X
+              : x
+        }
         y={labelY}
         fill={color}
         fontSize={11}
         fontWeight={600}
         textAnchor={anchor}
-        dominantBaseline="middle"
+        dominantBaseline="central"
         style={{ userSelect: 'none' }}
       >
         {display}

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronUp, ImageIcon, Loader2, Upload, X } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
@@ -7,6 +7,18 @@ import { AuthedImage } from '@/shared/components/AuthedImage'
 import { uploadFile } from '@/shared/api/files'
 import { toast } from 'sonner'
 import { CaptionInput, LabelField, PreviewLabel, captionSkipProps } from './_shared'
+import {
+  AnnotationContents,
+  AnnotationCountBadge,
+  AnnotationLabelEditor,
+  AnnotationStyleBar,
+  AnnotationToolbar,
+  InteractiveOverlay,
+  SelectionMarquee,
+  useAnnotationInteractions,
+  useAnnotationStore,
+  useImageAnnotationAdapter,
+} from '@/shared/annotations'
 
 export function ImagePropsPanel({ props, onChange }) {
   return (
@@ -65,12 +77,23 @@ export function ImageEditor({ props, content, onChange, readOnly }) {
   const [progress, setProgress] = useState(0)
   const fileInputRef = useRef(null)
 
+  // Annotations only make sense when there's a single canonical image
+  // to mark up — pinning a mark to "image #2 of 5" gets confusing fast
+  // and the saved geometry has no concept of which file it belongs to.
+  // Skip the entire annotation surface for galleries.
+  const annotationsEnabled = max === 1 && files.length === 1
+
   // Always emit both fields so the saved content shape stays stable
   // regardless of which one the user touched first.
   function patchContent(patch) {
     const next = { ...(content ?? {}), caption, files, ...patch }
     if (!next.caption) delete next.caption
     if (!next.caption_skip_autofill) delete next.caption_skip_autofill
+    // Mirror the chart's behavior: empty annotation arrays stay out
+    // of the wire payload so the JSON stays tight.
+    if (Array.isArray(next.annotations) && next.annotations.length === 0) {
+      delete next.annotations
+    }
     onChange(next)
   }
   function update(idx, patch) {
@@ -139,18 +162,32 @@ export function ImageEditor({ props, content, onChange, readOnly }) {
     if (!caption && files.length === 0) return null
     return (
       <div className="space-y-2">
-        <CaptionInput value={caption} readOnly />
+        <CaptionInput
+          value={caption}
+          readOnly
+          placeholder={props.label}
+          skipAutofill={content?.caption_skip_autofill}
+        />
         {files.length > 0 && (
           <div className={`grid gap-2 ${max > 1 ? 'grid-cols-3' : 'grid-cols-1'}`}>
             {files.map((file, idx) => (
               <figure key={idx} className="space-y-1">
-                <div className={`relative ${aspectClass} bg-muted/30 rounded-md overflow-hidden`}>
-                  <AuthedImage
-                    fileId={file.file_id}
-                    alt={file.alt}
-                    className="absolute inset-0 w-full h-full object-cover"
+                {annotationsEnabled ? (
+                  <AnnotatableImageBox
+                    file={file}
+                    aspectClass={aspectClass}
+                    annotations={content?.annotations}
+                    readOnly
                   />
-                </div>
+                ) : (
+                  <div className={`relative ${aspectClass} bg-muted/30 rounded-md overflow-hidden`}>
+                    <AuthedImage
+                      fileId={file.file_id}
+                      alt={file.alt}
+                      className="absolute inset-0 w-full h-full object-cover"
+                    />
+                  </div>
+                )}
                 {file.caption && (
                   <figcaption className="text-xs text-muted-foreground text-center">
                     {file.caption}
@@ -179,13 +216,29 @@ export function ImageEditor({ props, content, onChange, readOnly }) {
               key={idx}
               className="rounded-md border bg-muted/10 overflow-hidden flex flex-col"
             >
-              <div className={`relative ${aspectClass} bg-muted/30`}>
-                <AuthedImage
-                  fileId={file.file_id}
-                  alt={file.alt}
-                  className="absolute inset-0 w-full h-full object-cover"
+              {annotationsEnabled ? (
+                <AnnotatableImageBox
+                  file={file}
+                  aspectClass={aspectClass}
+                  annotations={content?.annotations}
+                  onChangeAnnotations={(next) => patchContent({ annotations: next })}
+                  topRightSlot={
+                    <ImageFileActions
+                      idx={idx}
+                      total={files.length}
+                      onMove={move}
+                      onRemove={remove}
+                    />
+                  }
                 />
-                <div className="absolute top-1 right-1 flex items-center gap-0.5 bg-background/80 rounded">
+              ) : (
+                <div className={`relative ${aspectClass} bg-muted/30`}>
+                  <AuthedImage
+                    fileId={file.file_id}
+                    alt={file.alt}
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+                  <div className="absolute top-1 right-1 flex items-center gap-0.5 bg-background/80 rounded">
                   <Button
                     variant="ghost"
                     size="icon"
@@ -222,7 +275,8 @@ export function ImageEditor({ props, content, onChange, readOnly }) {
                     <X className="h-3 w-3" />
                   </Button>
                 </div>
-              </div>
+                </div>
+              )}
               <div className="p-1.5 space-y-1">
                 <Input
                   value={file.caption ?? ''}
@@ -282,6 +336,237 @@ export function ImageEditor({ props, content, onChange, readOnly }) {
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * Image cell with an annotation overlay. Used in single-image mode
+ * (max_count === 1 + files.length === 1) for both view and edit.
+ *
+ * Owns the annotation store + tool state. Wires the same surface the
+ * chart uses: AnnotationContents (rendering), InteractiveOverlay
+ * (creating), AnnotationLabelEditor (labeling), AnnotationStyleBar
+ * (styling), SelectionMarquee (multi-select). Read-only mode strips
+ * everything but AnnotationContents.
+ *
+ * `topRightSlot` is for host-supplied controls (move ↑/↓, delete) so
+ * the file actions can sit at the top-right corner without colliding
+ * with the annotation toolbar that lives ABOVE the image in edit mode.
+ */
+function AnnotatableImageBox({
+  file,
+  aspectClass,
+  annotations,
+  onChangeAnnotations,
+  readOnly = false,
+  topRightSlot = null,
+}) {
+  const containerRef = useRef(null)
+  const imgRef = useRef(null)
+  const [annotationTool, setAnnotationTool] = useState(null)
+  // Stable source-of-truth array. Without useMemo, an absent value
+  // produces a fresh `[]` per render → churns useAnnotationStore's
+  // prop-sync effect (same pitfall the chart hit).
+  const stableAnnotations = useMemo(
+    () => (Array.isArray(annotations) ? annotations : []),
+    [annotations],
+  )
+  const annotationStore = useAnnotationStore({
+    annotations: stableAnnotations,
+    onChange: (next) => onChangeAnnotations?.(next),
+  })
+  const adapter = useImageAnnotationAdapter(containerRef, { imgRef })
+  const interactions = useAnnotationInteractions({
+    store: annotationStore,
+    adapter,
+    readOnly,
+  })
+
+  // Esc / Delete / Cmd+Z bindings. Document-level — when multiple
+  // editable images are on a page they each register, but each only
+  // does something for THEIR selection / tool, so they don't
+  // interfere. Skip the binding entirely in read-only mode.
+  useEffect(() => {
+    if (readOnly) return undefined
+    function isEditableTarget() {
+      const active = document.activeElement
+      const tag = active?.tagName?.toLowerCase()
+      return (
+        tag === 'input' ||
+        tag === 'textarea' ||
+        active?.isContentEditable
+      )
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') {
+        if (annotationTool) {
+          e.preventDefault()
+          setAnnotationTool(null)
+        } else if (annotationStore.selectedIds.size > 0) {
+          e.preventDefault()
+          annotationStore.clearSelection()
+        }
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (isEditableTarget()) return
+        const ids = Array.from(annotationStore.selectedIds)
+        if (ids.length > 0) {
+          e.preventDefault()
+          annotationStore.removeMany(ids)
+        }
+      } else if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
+        if (isEditableTarget()) return
+        e.preventDefault()
+        if (e.shiftKey) annotationStore.history.redo()
+        else annotationStore.history.undo()
+      } else if ((e.metaKey || e.ctrlKey) && (e.key === 'y' || e.key === 'Y')) {
+        if (isEditableTarget()) return
+        e.preventDefault()
+        annotationStore.history.redo()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [readOnly, annotationTool, annotationStore])
+
+  return (
+    <div className="space-y-2">
+      {!readOnly && (
+        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+          <span>어노테이션:</span>
+          <AnnotationToolbar
+            tool={annotationTool}
+            onChange={setAnnotationTool}
+            supportedTypes={[
+              'vline',
+              'vrange',
+              'hline',
+              'hrange',
+              'point',
+              'rect',
+              'arrow',
+              'text',
+            ]}
+          />
+          {annotationStore.annotations.length > 0 && (
+            <AnnotationCountBadge count={annotationStore.annotations.length} />
+          )}
+          {annotationTool && <span>이미지를 클릭해 표시 (Esc 취소)</span>}
+        </div>
+      )}
+      <div
+        ref={containerRef}
+        className={`relative ${aspectClass} bg-muted/30 rounded-md overflow-hidden`}
+      >
+        <AuthedImage
+          ref={imgRef}
+          fileId={file.file_id}
+          alt={file.alt}
+          className="absolute inset-0 w-full h-full object-cover"
+        />
+        {topRightSlot && (
+          <div className="absolute top-1 right-1 z-20 flex items-center gap-0.5 bg-background/80 rounded">
+            {topRightSlot}
+          </div>
+        )}
+        {/* Annotation surface — only mounts once the adapter has
+            measured the image. Same SVG pattern the chart uses: a
+            top-level overlay <svg> with pointer-events: none, with
+            the per-shape pointer-events: auto granted by drawers. */}
+        {adapter && (
+          <svg
+            className="absolute inset-0"
+            width="100%"
+            height="100%"
+            style={{ pointerEvents: 'none' }}
+          >
+            {!readOnly && annotationTool == null && (
+              <SelectionMarquee store={annotationStore} adapter={adapter} />
+            )}
+            <AnnotationContents
+              drawable={stableAnnotations}
+              adapter={adapter}
+              selectedIds={annotationStore.selectedIds}
+              readOnly={readOnly}
+              onSelect={(id, opts) => annotationStore.setSelected(id, opts)}
+              interactions={interactions}
+            />
+          </svg>
+        )}
+        {adapter && !readOnly && (
+          <InteractiveOverlay
+            bounds={adapter.bounds}
+            fromPx={(p) => adapter.fromPx(p)}
+            toPx={(g) => adapter.toPx(g)}
+            tool={annotationTool}
+            onCreate={(init) => annotationStore.add(init)}
+            // Tool stays active after each create — matches the
+            // chart pattern so the user can drop a series of marks
+            // without re-picking the tool every time. Esc / completed
+            // button / clicking the same tool again exits.
+          />
+        )}
+        {!readOnly && (
+          <AnnotationLabelEditor
+            interactions={interactions}
+            annotations={annotationStore.annotations}
+            adapter={adapter}
+          />
+        )}
+        {!readOnly && (
+          <AnnotationStyleBar
+            store={annotationStore}
+            adapter={adapter}
+            editingId={interactions?.editingId}
+            onDone={() => setAnnotationTool(null)}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Tiny adapter so the file ↑/↓/× buttons can be reused inside the
+ *  annotatable image box (where they need to sit on top of the
+ *  annotation overlay) as well as the non-annotatable branch. */
+function ImageFileActions({ idx, total, onMove, onRemove }) {
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-6 w-6"
+        disabled={idx === 0}
+        onClick={(e) => {
+          e.stopPropagation()
+          onMove(idx, -1)
+        }}
+      >
+        <ChevronUp className="h-3 w-3" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-6 w-6"
+        disabled={idx === total - 1}
+        onClick={(e) => {
+          e.stopPropagation()
+          onMove(idx, 1)
+        }}
+      >
+        <ChevronDown className="h-3 w-3" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-6 w-6 text-destructive"
+        onClick={(e) => {
+          e.stopPropagation()
+          onRemove(idx)
+        }}
+      >
+        <X className="h-3 w-3" />
+      </Button>
+    </>
   )
 }
 

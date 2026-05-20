@@ -104,7 +104,12 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
     if (!caption && filledItems.length === 0) return null
     return (
       <div className="space-y-2">
-        <CaptionInput value={caption} readOnly />
+        <CaptionInput
+          value={caption}
+          readOnly
+          placeholder={props.label}
+          skipAutofill={content?.caption_skip_autofill}
+        />
         {filledItems.length > 0 && (
           <div
             className={`grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 items-baseline text-sm ${bodyTextClass}`}

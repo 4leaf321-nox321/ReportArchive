@@ -57,6 +57,14 @@ export function useAnnotationStore({ annotations, onChange }) {
   }, [annotations])
 
   const [selectedIds, setSelectedIds] = useState(() => new Set())
+  // ID of the most-recently-created annotation. The interactions hook
+  // watches this so it can auto-enter label-edit mode immediately after
+  // creation — without it, every new vline / point sits there without
+  // a label and the user has to discover the double-click affordance.
+  // Consumers MUST clear it (via clearNewlyAddedId) once they've acted,
+  // otherwise re-mounting the consuming component would re-trigger
+  // the auto-edit.
+  const [newlyAddedId, setNewlyAddedId] = useState(null)
 
   // History stacks. Each entry is the annotations array from BEFORE the
   // change, so undo restores it. We cap depth so a noisy editor doesn't
@@ -112,10 +120,16 @@ export function useAnnotationStore({ annotations, onChange }) {
       apply((prev) => [...prev, a])
       // Auto-select the new one so the toolbar / sidebar lights up.
       setSelectedIds(new Set([a.id]))
+      // Signal "just added" so interactions can flip into label-edit
+      // mode automatically. Consumer clears this via clearNewlyAddedId
+      // once they've handled it.
+      setNewlyAddedId(a.id)
       return a.id
     },
     [apply],
   )
+
+  const clearNewlyAddedId = useCallback(() => setNewlyAddedId(null), [])
 
   const update = useCallback(
     (id, mutator, options) => {
@@ -216,6 +230,21 @@ export function useAnnotationStore({ annotations, onChange }) {
     })
   }, [])
 
+  /** Set selection from an iterable of IDs in one go. Used by marquee
+   *  selection — committing each ID through `setSelected({additive})`
+   *  would re-render between every add. */
+  const setSelectedMany = useCallback((ids, options) => {
+    setSelectedIds((prev) => {
+      const incoming = new Set(ids ?? [])
+      if (options?.additive) {
+        const next = new Set(prev)
+        for (const id of incoming) next.add(id)
+        return next
+      }
+      return incoming
+    })
+  }, [])
+
   const clearSelection = useCallback(() => setSelectedIds(new Set()), [])
 
   const isSelected = useCallback((id) => selectedIds.has(id), [selectedIds])
@@ -259,6 +288,8 @@ export function useAnnotationStore({ annotations, onChange }) {
     annotations: local,
     selectedIds,
     selected,
+    newlyAddedId,
+    clearNewlyAddedId,
     add,
     update,
     moveGeometry,
@@ -268,6 +299,7 @@ export function useAnnotationStore({ annotations, onChange }) {
     toggleHidden,
     toggleLocked,
     setSelected,
+    setSelectedMany,
     clearSelection,
     isSelected,
     history: { undo, redo },

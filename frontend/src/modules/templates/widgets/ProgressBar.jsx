@@ -259,7 +259,12 @@ export function ProgressBarEditor({ props, content, onChange, readOnly }) {
     if (!caption && items.length === 0) return null
     return (
       <div className={`space-y-2 ${textClass}`} style={textStyle}>
-        <CaptionInput value={caption} readOnly />
+        <CaptionInput
+          value={caption}
+          readOnly
+          placeholder={props.label}
+          skipAutofill={content?.caption_skip_autofill}
+        />
         {items.length > 0 ? (
           <div className="space-y-2">
             {hydratedItems.map((it, i) => (

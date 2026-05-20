@@ -633,7 +633,12 @@ _CHART_COLUMN_SCHEMA = {
     "type": "object",
     "properties": {
         "key": {"type": "string", "pattern": r"^[a-z][a-z0-9_]*$", "maxLength": 64},
-        "label": {"type": "string", "minLength": 1, "maxLength": 200},
+        # Empty labels are intentionally allowed — auto-added columns
+        # (via paste / "열 추가") start blank and the editor uses the
+        # column key as a visual placeholder until the user names them.
+        # Rejecting "" here makes "add column → save" fail with a
+        # cryptic validation error.
+        "label": {"type": "string", "maxLength": 200},
         "type": {"type": "string", "enum": ["text", "number"]},
         # Optional ontology / linking hints — see validation.META_SCHEMA.
         "meta": {"type": "object"},
@@ -654,6 +659,14 @@ def _chart_content(props: dict) -> dict:
             "x_column_key": {"type": "string", "pattern": r"^[a-z][a-z0-9_]*$"},
             "x_axis_title": {"type": "string", "maxLength": 100},
             "y_axis_title": {"type": "string", "maxLength": 100},
+            # Optional axis range overrides. When unset, Recharts picks
+            # the domain from the data. Numeric x-axis (rare — most x
+            # axes are categorical) honors x_min/x_max; categorical x
+            # ignores them. y_min/y_max always apply.
+            "x_min": {"type": "number"},
+            "x_max": {"type": "number"},
+            "y_min": {"type": "number"},
+            "y_max": {"type": "number"},
             "columns": {
                 "type": "array",
                 "items": _CHART_COLUMN_SCHEMA,
@@ -784,8 +797,8 @@ MILESTONE: WidgetDescriptor = {
 
 CHART: WidgetDescriptor = {
     "type": "chart",
-    "label": "그래프",
-    "description": "표 데이터로 그리는 막대 / 꺾은선 그래프 (보고서에서 전환 가능)",
+    "label": "막대/선 차트",
+    "description": "범주형 x축 (분기, 모델명 등) + 막대 / 꺾은선 — 사양·결과 비교용",
     "has_content": True,
     "props_schema": {
         "type": "object",
@@ -816,6 +829,272 @@ CHART: WidgetDescriptor = {
         "columns": [
             {"key": "category", "label": "구분", "type": "text"},
             {"key": "value", "label": "값", "type": "number"},
+        ],
+    },
+}
+
+
+# --------------------------------------------------------------------------- #
+# 9b. scatter — XY scatter / line chart over numeric coordinates
+# --------------------------------------------------------------------------- #
+# Distinct from CHART above (which has a CATEGORICAL x-axis for spec
+# comparison). Scatter assumes BOTH x and y are numeric — useful for
+# measurement plots, calibration curves, parametric data, etc.
+_SCATTER_MODES = ("scatter", "line", "scatter_line")
+
+# Scatter columns are number-only — no categorical x. Same shape as
+# _CHART_COLUMN_SCHEMA but with the type enum locked to "number".
+_SCATTER_COLUMN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "key": {"type": "string", "pattern": r"^[a-z][a-z0-9_]*$", "maxLength": 64},
+        # Empty labels allowed — matches _CHART_COLUMN_SCHEMA, lets
+        # paste-extended / "열 추가" columns survive until the user
+        # names them.
+        "label": {"type": "string", "maxLength": 200},
+        "type": {"type": "string", "enum": ["number"]},
+        "meta": {"type": "object"},
+    },
+    "required": ["key", "label", "type"],
+    "additionalProperties": False,
+}
+
+
+def _scatter_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "mode": {"type": "string", "enum": list(_SCATTER_MODES)},
+            # Legacy "shared x" key — when `series` is absent, the
+            # frontend derives series from this + any number column
+            # that isn't the X column. New saves write explicit
+            # series instead.
+            "x_column_key": {"type": "string", "pattern": r"^[a-z][a-z0-9_]*$"},
+            # Explicit (x, y) pair series. Each entry picks two columns
+            # from `columns` — different series can share an x column
+            # or have entirely independent x columns. When present,
+            # this REPLACES the legacy shared-x derivation.
+            "series": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "maxLength": 200},
+                        "x_key": {
+                            "type": "string",
+                            "pattern": r"^[a-z][a-z0-9_]*$",
+                            "maxLength": 64,
+                        },
+                        "y_key": {
+                            "type": "string",
+                            "pattern": r"^[a-z][a-z0-9_]*$",
+                            "maxLength": 64,
+                        },
+                        "color": {"type": "string", "maxLength": 64},
+                    },
+                    "required": ["x_key", "y_key"],
+                    "additionalProperties": False,
+                },
+            },
+            "x_axis_title": {"type": "string", "maxLength": 100},
+            "y_axis_title": {"type": "string", "maxLength": 100},
+            "x_min": {"type": "number"},
+            "x_max": {"type": "number"},
+            "y_min": {"type": "number"},
+            "y_max": {"type": "number"},
+            "columns": {
+                "type": "array",
+                "items": _SCATTER_COLUMN_SCHEMA,
+            },
+            "rows": {
+                "type": "array",
+                "items": {"type": "object", "additionalProperties": True},
+            },
+            # Same annotation shape the chart uses; works because the
+            # scatter axes are also `data` coord-space.
+            "annotations": _ANNOTATIONS_FIELD,
+        },
+        "additionalProperties": False,
+    }
+
+
+SCATTER: WidgetDescriptor = {
+    "type": "scatter",
+    "label": "산점도",
+    "description": "x·y 모두 수치인 좌표 그래프 — 산점도 / 곡선 / 둘 다",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "mode": {"type": "string", "enum": list(_SCATTER_MODES)},
+            "x_column_key": {
+                "type": "string",
+                "pattern": r"^[a-z][a-z0-9_]*$",
+                "maxLength": 64,
+            },
+            "x_axis_title": {"type": "string", "maxLength": 100},
+            "y_axis_title": {"type": "string", "maxLength": 100},
+            "columns": {
+                "type": "array",
+                "minItems": 2,
+                "items": _SCATTER_COLUMN_SCHEMA,
+            },
+        },
+        "required": ["label", "mode", "x_column_key", "columns"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _scatter_content,
+    "default_props": {
+        "label": "산점도",
+        "mode": "scatter_line",
+        "x_column_key": "x",
+        "columns": [
+            {"key": "x", "label": "X", "type": "number"},
+            {"key": "y", "label": "Y", "type": "number"},
+        ],
+    },
+}
+
+
+# --------------------------------------------------------------------------- #
+# 9c. scatter3d — 3D XY-Z scatter plot (Plotly-backed)
+# --------------------------------------------------------------------------- #
+# Each series picks three columns from the data — (x, y, z) — and is
+# plotted as a marker cloud. Rotation / zoom / hover come for free via
+# Plotly's scene controls. Annotations are intentionally OUT OF SCOPE
+# here — the user's reference axis space rotates with the camera, so
+# 2-D-pixel annotation primitives don't map cleanly onto 3-D points.
+_SCATTER3D_MODES = ("scatter3d",)
+# Series render kind. Both kinds consume the same (x, y, z) long-form
+# columns — `surface` pivots them into a grid at render time. Mixing
+# kinds in one widget is allowed (e.g. measured points + fitted
+# response surface in the same plot).
+_SCATTER3D_SERIES_KINDS = ("scatter3d", "surface")
+# Curated colorscale names Plotly accepts natively. Used widget-wide
+# (one colorbar per chart) rather than per-series — keeps the
+# legend / colorbar uncluttered when multiple series share a color
+# axis. Mix of perceptual (Viridis / Plasma / Cividis), sequential
+# (Blues / Reds / Hot), diverging (RdBu / Bluered), and legacy
+# rainbow (Jet) — covers most engineering report needs.
+_SCATTER3D_COLORSCALES = (
+    "Viridis",
+    "Plasma",
+    "Cividis",
+    "Hot",
+    "Blues",
+    "Reds",
+    "Greens",
+    "RdBu",
+    "Bluered",
+    "Portland",
+    "Jet",
+)
+
+
+def _scatter3d_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "mode": {"type": "string", "enum": list(_SCATTER3D_MODES)},
+            # Color ramp applied to every series that uses an
+            # independent color axis. Single chart-wide value because
+            # mixing ramps in one scene is visually confusing.
+            "colorscale": {
+                "type": "string",
+                "enum": list(_SCATTER3D_COLORSCALES),
+            },
+            "series": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "maxLength": 200},
+                        "kind": {
+                            "type": "string",
+                            "enum": list(_SCATTER3D_SERIES_KINDS),
+                        },
+                        "x_key": {
+                            "type": "string",
+                            "pattern": r"^[a-z][a-z0-9_]*$",
+                            "maxLength": 64,
+                        },
+                        "y_key": {
+                            "type": "string",
+                            "pattern": r"^[a-z][a-z0-9_]*$",
+                            "maxLength": 64,
+                        },
+                        "z_key": {
+                            "type": "string",
+                            "pattern": r"^[a-z][a-z0-9_]*$",
+                            "maxLength": 64,
+                        },
+                        # Optional 4th coordinate — when set, scatter
+                        # markers are colored by this column and
+                        # surfaces paint a contour-style colormap
+                        # using it as `surfacecolor` (independent
+                        # of z). Same column-key pattern as the
+                        # geometric axes.
+                        "color_key": {
+                            "type": "string",
+                            "pattern": r"^[a-z][a-z0-9_]*$",
+                            "maxLength": 64,
+                        },
+                        "color": {"type": "string", "maxLength": 64},
+                    },
+                    "required": ["x_key", "y_key", "z_key"],
+                    "additionalProperties": False,
+                },
+            },
+            "x_axis_title": {"type": "string", "maxLength": 100},
+            "y_axis_title": {"type": "string", "maxLength": 100},
+            "z_axis_title": {"type": "string", "maxLength": 100},
+            "columns": {
+                "type": "array",
+                "items": _SCATTER_COLUMN_SCHEMA,
+            },
+            "rows": {
+                "type": "array",
+                "items": {"type": "object", "additionalProperties": True},
+            },
+            # NO `annotations` field — 3D rotation makes 2-D-pixel
+            # annotation geometry meaningless. Re-enable when / if a
+            # 3-D-aware annotation system lands.
+        },
+        "additionalProperties": False,
+    }
+
+
+SCATTER3D: WidgetDescriptor = {
+    "type": "scatter3d",
+    "label": "3D 산점도",
+    "description": "x·y·z 3축 수치 좌표 — 회전 / 확대 / 호버 가능 (Plotly)",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "x_axis_title": {"type": "string", "maxLength": 100},
+            "y_axis_title": {"type": "string", "maxLength": 100},
+            "z_axis_title": {"type": "string", "maxLength": 100},
+            "columns": {
+                "type": "array",
+                "minItems": 3,
+                "items": _SCATTER_COLUMN_SCHEMA,
+            },
+        },
+        "required": ["label", "columns"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _scatter3d_content,
+    "default_props": {
+        "label": "3D 산점도",
+        "columns": [
+            {"key": "x", "label": "X", "type": "number"},
+            {"key": "y", "label": "Y", "type": "number"},
+            {"key": "z", "label": "Z", "type": "number"},
         ],
     },
 }
@@ -963,6 +1242,219 @@ RACI_MATRIX: WidgetDescriptor = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# 9d. heatmap — 2D color matrix (correlation, parameter sweep, etc.)
+# --------------------------------------------------------------------------- #
+# Data shape is intentionally NOT the columns+rows model the scatter
+# widgets use. A heatmap is a 2-D matrix indexed by (row, col) — the
+# row / col labels are positional, not keyed — so we store
+# `x_labels[]`, `y_labels[]`, and a `matrix[row][col]` of numbers.
+# Cells may be null for sparse data (Plotly draws those as gaps).
+_HEATMAP_COLORSCALES = (
+    "Viridis",
+    "Plasma",
+    "Cividis",
+    "Hot",
+    "Blues",
+    "Reds",
+    "Greens",
+    "RdBu",
+    "Bluered",
+    "Portland",
+    "Jet",
+)
+
+
+def _heatmap_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            # Positional labels — length must match the matrix shape.
+            # Frontend keeps them in sync on edit; backend only checks
+            # that they're strings of sane length.
+            "x_labels": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 200},
+            },
+            "y_labels": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 200},
+            },
+            "matrix": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {"type": ["number", "null"]},
+                },
+            },
+            "colorscale": {
+                "type": "string",
+                "enum": list(_HEATMAP_COLORSCALES),
+            },
+            "reverse_scale": {"type": "boolean"},
+            # Optional fixed color domain. When unset Plotly auto-fits
+            # to the data range — usually right, but explicit bounds
+            # matter when comparing multiple heatmaps in one report.
+            "z_min": {"type": "number"},
+            "z_max": {"type": "number"},
+            "x_axis_title": {"type": "string", "maxLength": 100},
+            "y_axis_title": {"type": "string", "maxLength": 100},
+            "show_values": {"type": "boolean"},
+        },
+        "additionalProperties": False,
+    }
+
+
+HEATMAP: WidgetDescriptor = {
+    "type": "heatmap",
+    "label": "히트맵",
+    "description": "2D 값 매트릭스를 색상으로 — 상관행렬, 파라미터 스윕, 민감도 등",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "x_axis_title": {"type": "string", "maxLength": 100},
+            "y_axis_title": {"type": "string", "maxLength": 100},
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _heatmap_content,
+    "default_props": {
+        "label": "히트맵",
+    },
+}
+
+
+# --------------------------------------------------------------------------- #
+# 9e. radar — multi-axis polar comparison (spec sheets, scorecards)
+# --------------------------------------------------------------------------- #
+# Data shape mirrors the heatmap widget: positional `axis_labels[]`,
+# a `series[]` of `{ label, color }`, and a 2-D `values[axis][series]`
+# matrix. Each radar series traces a polygon through its values
+# across the shared set of axes.
+def _radar_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            "axis_labels": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 200},
+            },
+            "series": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "maxLength": 200},
+                        # Hex string ("#abcdef") or any CSS color name —
+                        # frontend falls back to the rotating palette
+                        # when omitted.
+                        "color": {"type": "string", "maxLength": 64},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            "values": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {"type": ["number", "null"]},
+                },
+            },
+            # Global radial range. Auto-fits when unset.
+            "value_min": {"type": "number"},
+            "value_max": {"type": "number"},
+            # 0..1 alpha for the filled polygon underneath the
+            # outline. 0 → just outline; ~0.3 default reads as "tinted
+            # area" without obscuring overlapping series.
+            "fill_opacity": {"type": "number", "minimum": 0, "maximum": 1},
+            "show_legend": {"type": "boolean"},
+        },
+        "additionalProperties": False,
+    }
+
+
+RADAR: WidgetDescriptor = {
+    "type": "radar",
+    "label": "레이더 차트",
+    "description": "다축 폴라 비교 — 사양 비교 / 평가표 / 다요소 점수",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _radar_content,
+    "default_props": {
+        "label": "레이더 차트",
+    },
+}
+
+
+# --------------------------------------------------------------------------- #
+# 9f. equation — LaTeX-rendered mathematical formula
+# --------------------------------------------------------------------------- #
+# Frontend renders via KaTeX so HTML / PDF export work without
+# a runtime math typesetter (KaTeX emits static HTML+SVG). DOCX
+# export currently embeds the rendered cell as a PNG via the same
+# visual-block capture path other charts use — math doesn't have a
+# clean text equivalent.
+_EQUATION_DISPLAY_MODES = ("display", "inline")
+
+
+def _equation_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            # Raw LaTeX source. Limit is generous (5K chars) because
+            # multi-line `\begin{align}…\end{align}` blocks can be
+            # surprisingly long even for routine engineering work.
+            "latex": {"type": "string", "maxLength": 5000},
+            # display mode = centered, large, on its own line (default)
+            # inline       = small, baseline-aligned for embedded use
+            "display_mode": {
+                "type": "string",
+                "enum": list(_EQUATION_DISPLAY_MODES),
+            },
+            # Optional equation number / tag — e.g. "(1)", "(eq. 3.2)".
+            # Rendered on the right of the formula in display mode.
+            "number": {"type": "string", "maxLength": 64},
+        },
+        "additionalProperties": False,
+    }
+
+
+EQUATION: WidgetDescriptor = {
+    "type": "equation",
+    "label": "수식",
+    "description": "LaTeX 문법의 수학식 — 지배 방정식, 정의식, 회귀식 등",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _equation_content,
+    "default_props": {
+        "label": "수식",
+    },
+}
+
+
 PROGRESS_BAR: WidgetDescriptor = {
     "type": "progress_bar",
     "label": "진행률 바",
@@ -1009,6 +1501,11 @@ WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
         IMAGE,
         ATTACHMENT,
         CHART,
+        SCATTER,
+        SCATTER3D,
+        HEATMAP,
+        RADAR,
+        EQUATION,
         MILESTONE,
         FLOWCHART,
         PROGRESS_BAR,

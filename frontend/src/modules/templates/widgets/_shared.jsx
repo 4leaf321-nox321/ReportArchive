@@ -845,6 +845,38 @@ function _TextStyleSelect({ label, value, options, onChange }) {
  * (typically by spreading `content` into the merged object) so the
  * flag survives across unrelated edits.
  */
+/**
+ * Compact inline `min/max` input used by chart-like widgets for axis
+ * range overrides. `value` is null when unset (Recharts auto-domain);
+ * `onChange(v)` passes the numeric value or `undefined` to clear.
+ *
+ *   <AxisRangeInput label="X min" value={xMin} onChange={(v) => patch({ x_min: v })} />
+ *
+ * Shared across Chart + Scatter so the two stay visually identical.
+ */
+export function AxisRangeInput({ label, value, onChange }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span>{label}</span>
+      <input
+        type="number"
+        step="any"
+        value={typeof value === 'number' ? value : ''}
+        onChange={(e) => {
+          const v = e.target.value
+          if (v === '') onChange(undefined)
+          else {
+            const n = Number(v)
+            if (Number.isFinite(n)) onChange(n)
+          }
+        }}
+        placeholder="auto"
+        className="h-6 w-16 rounded-md border px-2 text-[11px]"
+      />
+    </span>
+  )
+}
+
 export function captionSkipProps({ content, patch }) {
   return {
     skipAutofill: content?.caption_skip_autofill === true,
@@ -869,65 +901,81 @@ export function CaptionInput({
   skipAutofill,
   onChangeSkipAutofill,
 }) {
-  if (readOnly) {
-    if (!value) return null
-    return (
-      <div className="text-base font-semibold px-2 py-1">{value}</div>
-    )
-  }
+  const skip = !!skipAutofill
   const hint = typeof placeholder === 'string' ? placeholder.trim() : ''
   const hasHint = hint.length > 0
-  const skip = !!skipAutofill
-  const displayPlaceholder = skip
-    ? '(제목 없이 표시)'
-    : hasHint
-      ? `미입력시 "${hint}"이(가) 입력됩니다`
-      : '제목 (선택)'
-  function handleBlur() {
-    if (skip) return
-    if (!hasHint) return
-    if ((value ?? '').trim().length === 0) onChange(hint)
+  const hasValue = (value ?? '').trim().length > 0
+  // Effective visible text when the user hasn't typed anything:
+  //   - skip ON  → blank (title row hidden entirely)
+  //   - auto-fit → template hint (so the default is visible without
+  //                forcing a focus-then-blur cycle)
+  const fallback = skip ? '' : hint
+  const effectiveText = hasValue ? value : fallback
+
+  if (readOnly) {
+    // View mode: only render the row when there's something to show.
+    if (!effectiveText) return null
+    return (
+      <div className="text-base font-semibold px-2 py-1">{effectiveText}</div>
+    )
   }
-  // Single atomic toggle callback — widgets clear the caption AND flip
-  // the flag in the same onChange call so the two field updates can't
-  // race on a stale content snapshot. Hidden when the widget doesn't
-  // wire the callback (no way to persist the flag) or when there's no
-  // template hint to autofill from (button would be a no-op).
+
+  // Edit + skip ON → hide the input completely. Only the small toggle
+  // button remains so the user can re-enable auto-fill. Matches the
+  // user's "제목부분 표기가 그냥 없어져야" expectation.
+  if (skip && onChangeSkipAutofill) {
+    return (
+      <div className="flex items-center px-2 py-1">
+        <button
+          type="button"
+          onClick={() => onChangeSkipAutofill(false)}
+          // Stop bubbling so the click doesn't re-activate the block
+          // and steal focus back the moment we toggle.
+          onMouseDown={(e) => e.stopPropagation()}
+          title="자동 채움을 다시 켭니다 (템플릿 라벨로 채움)"
+          className={cn(
+            'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors',
+            'bg-amber-100 text-amber-900 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-200',
+          )}
+        >
+          자동 채움 켜기
+        </button>
+      </div>
+    )
+  }
+
+  // Edit + auto-fill ON. The input uses the hint as its placeholder
+  // styled like real text (high contrast) so the default value is
+  // visually present without forcing the writer to focus/blur to
+  // trigger an auto-fill mutation. Typing replaces; deleting back
+  // to empty restores the hint as the visible default. `content.
+  // caption` stays empty in that case so a later template-label
+  // change still propagates.
   const showSkipToggle = Boolean(onChangeSkipAutofill) && hasHint
-  function toggleSkip() {
-    if (!onChangeSkipAutofill) return
-    onChangeSkipAutofill(!skip)
-  }
   return (
     <div className="flex items-center gap-1">
       <input
         type="text"
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value)}
-        onBlur={handleBlur}
-        placeholder={displayPlaceholder}
-        className="flex-1 min-w-0 bg-transparent border-0 outline-none focus:ring-0 placeholder:text-muted-foreground/50 text-base font-semibold px-2 py-1"
+        placeholder={hasHint ? hint : '제목 (선택)'}
+        className={cn(
+          'flex-1 min-w-0 bg-transparent border-0 outline-none focus:ring-0',
+          'text-base font-semibold px-2 py-1',
+          // High-contrast placeholder so the hint reads like the
+          // saved default rather than a faded suggestion.
+          'placeholder:text-foreground/55',
+        )}
       />
       {showSkipToggle && (
         <button
           type="button"
-          onClick={toggleSkip}
-          // Stop bubbling so the click doesn't re-activate the block
-          // and steal focus back to the input the moment we toggle.
+          onClick={() => onChangeSkipAutofill(true)}
           onMouseDown={(e) => e.stopPropagation()}
-          title={
-            skip
-              ? '자동 채움을 다시 켭니다 (빈 칸이면 템플릿 라벨로 채움)'
-              : '템플릿 라벨 자동 채움을 끄고 제목을 비워둡니다'
-          }
-          className={cn(
-            'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors',
-            skip
-              ? 'bg-amber-100 text-amber-900 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-200'
-              : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-          )}
+          title="템플릿 라벨 자동 채움을 끄고 제목을 비워둡니다"
+          className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
         >
-          {skip ? '자동 채움 켜기' : '제목 생략'}
+          제목 생략
         </button>
       )}
     </div>

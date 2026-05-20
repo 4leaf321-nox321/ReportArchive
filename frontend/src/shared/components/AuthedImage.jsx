@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { forwardRef, useEffect, useState } from 'react'
 import { ImageIcon } from 'lucide-react'
 import { fetchImageObjectURL } from '@/shared/api/files'
 
@@ -7,8 +7,15 @@ import { fetchImageObjectURL } from '@/shared/api/files'
  * can't attach headers to <img src>, so we fetch as a blob via the API
  * client (which carries the token) and display via an object URL. The
  * URL is revoked on unmount / fileId change so we don't leak memory.
+ *
+ * Forwards refs to the underlying <img>, which lets callers attach
+ * ResizeObservers (e.g. the annotation adapter measures the image's
+ * actual rendered box for image_pct ↔ pixel conversion).
  */
-export function AuthedImage({ fileId, alt = '', className = '' }) {
+export const AuthedImage = forwardRef(function AuthedImage(
+  { fileId, alt = '', className = '' },
+  ref,
+) {
   const [url, setUrl] = useState(null)
   const [error, setError] = useState(false)
 
@@ -50,5 +57,5 @@ export function AuthedImage({ fileId, alt = '', className = '' }) {
   if (!url) {
     return <div className={`bg-muted/40 animate-pulse ${className}`} />
   }
-  return <img src={url} alt={alt} className={className} />
-}
+  return <img ref={ref} src={url} alt={alt} className={className} />
+})

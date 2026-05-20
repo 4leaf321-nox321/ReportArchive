@@ -3212,10 +3212,14 @@ function PageSection({
     const out = {}
     for (const b of blocks) {
       let layout = overrides[b.id] ?? b.layout ?? null
-      // auto_fit defaults to true. Only an explicit `false` opts out — that
-      // way existing template/report data automatically gains the behavior
-      // without a backfill.
-      const isAutoFit = layout?.auto_fit !== false
+      // auto_fit per type:
+      //   - graph / scatter / heatmap default to FALSE so the cell
+      //     keeps a manually set size (Recharts/Plotly need a real
+      //     height to paint, and a content-driven row_span snaps the
+      //     chart small repeatedly during data edits)
+      //   - everything else still defaults to TRUE (content-driven)
+      // An explicit `auto_fit` in the saved layout always wins.
+      const isAutoFit = autoFitForBlock(b, layout)
       if (isAutoFit) {
         const contentPx = contentHeights?.[b.id]
         const editPx = editHeights[b.id]
@@ -3303,7 +3307,11 @@ function PageSection({
           {blocks.map((block) => {
             const isActive =
               activeBlock?.pageIdx === pageIdx && activeBlock?.blockId === block.id
-            const autoFit = effectiveLayouts[block.id]?.auto_fit !== false
+            // Same per-type default the effectiveLayouts computation
+            // uses — without this lookup the card would always treat
+            // an absent `auto_fit` as true, defeating the graph-widget
+            // override.
+            const autoFit = autoFitForBlock(block, effectiveLayouts[block.id])
             const isExtraBlock = block.source === 'extra'
             // Every block in edit mode is configurable: extras write back
             // to their own props, template blocks pile their changes onto
@@ -3812,14 +3820,28 @@ function WidgetContentEditDialog({
   }
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-4xl max-h-[85vh] overflow-hidden flex flex-col">
+      {/* 80% of the viewport in both dimensions — chart in particular
+          benefits from a large editing surface (the in-grid cell is
+          much smaller than the modal). Tailwind `max-w-*` defaults on
+          DialogContent are explicitly overridden to keep the 80vw / 80vh
+          authoritative. */}
+      <DialogContent
+        className="w-[80vw] h-[80vh] max-w-[80vw] sm:max-w-[80vw] overflow-hidden flex flex-col"
+        style={{ maxHeight: '80vh' }}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Pencil className="h-4 w-4" />
             위젯 편집 — {renderer.label ?? block.type}
           </DialogTitle>
         </DialogHeader>
-        <div className="flex-1 min-h-0 overflow-y-auto -mx-6 px-6 report-widget-body">
+        {/* No outer scroll wrapper — widgets that need horizontal /
+            vertical scrolling own that internally (Chart splits into
+            its own left/right panel with the right panel scrollable;
+            table widgets use their own overflow-x-auto wrappers). A
+            blanket overflow-y-auto here collapsed `flex: 1` heights
+            for chart-like widgets that need to fit-to-container. */}
+        <div className="flex-1 min-h-0 flex flex-col report-widget-body">
           <Editor
             props={editorProps ?? effectiveProps}
             content={draftContent}
@@ -3831,9 +3853,11 @@ function WidgetContentEditDialog({
               // it as the next full override).
               setDraftPropsOverride(patch)
             }}
-            // The dialog's height is auto, so auto-fit's height-tracking
-            // would fight the scrollable body. Disable it here — the
-            // measurement only mattered for the in-grid layout.
+            // autoFit is meaningful only for the in-grid cell sizing
+            // pipeline. The dialog has a definite (80vh) height + flex
+            // chain — widgets that respect autoFit=false honor that
+            // chain (chart fills its left panel; other widgets just
+            // ignore the flag).
             autoFit={false}
             readOnly={false}
           />
@@ -3971,6 +3995,24 @@ function DirectionalAddArrows({ canInsertHorizontally, onAdd }) {
   )
 }
 
+// Picker categories. Types listed here render under the matching
+// header; anything not classified falls through into a 「기타」
+// bucket so newly added widgets are still reachable. Order matters —
+// categories show in the listed sequence.
+const WIDGET_PICKER_CATEGORIES = [
+  { name: '텍스트', types: ['heading', 'rich_text', 'equation'] },
+  { name: '목록 / 표', types: ['bulleted_list', 'key_value', 'table'] },
+  {
+    name: '차트',
+    types: ['chart', 'scatter', 'scatter3d', 'heatmap', 'radar'],
+  },
+  {
+    name: '다이어그램',
+    types: ['flowchart', 'milestone', 'raci_matrix', 'progress_bar'],
+  },
+  { name: '첨부', types: ['image', 'attachment'] },
+]
+
 /** Floating "위젯 추가" pill. Rendered inside the parent floating-action
  *  cluster (which owns the fixed positioning + the
  *  `report-detail-floating` class that exporters strip), so this
@@ -3978,8 +4020,42 @@ function DirectionalAddArrows({ canInsertHorizontally, onAdd }) {
 function FloatingAddWidget({ onAdd }) {
   const { catalog, loading } = useWidgetCatalog()
   const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  // Reset the search box every time the popover closes so the next
+  // open starts on the full categorized view.
+  useEffect(() => {
+    if (!open) setQuery('')
+  }, [open])
   if (loading) return null
   const widgets = catalog?.widgets ?? []
+  const q = query.trim().toLowerCase()
+  // Filter on label / description / type so the user can find a
+  // widget by Korean label, English type, or a description keyword.
+  const filtered = q
+    ? widgets.filter(
+        (w) =>
+          (w.label ?? '').toLowerCase().includes(q) ||
+          (w.description ?? '').toLowerCase().includes(q) ||
+          (w.type ?? '').toLowerCase().includes(q),
+      )
+    : widgets
+  // Bucket the filtered list by the picker categories. Widgets not
+  // claimed by any category land in 「기타」 so newly added types
+  // remain visible even before someone updates the category map.
+  const claimedTypes = new Set(
+    WIDGET_PICKER_CATEGORIES.flatMap((c) => c.types),
+  )
+  const filteredByType = new Map(filtered.map((w) => [w.type, w]))
+  const groups = WIDGET_PICKER_CATEGORIES.map((cat) => ({
+    name: cat.name,
+    items: cat.types
+      .map((t) => filteredByType.get(t))
+      .filter(Boolean),
+  })).filter((g) => g.items.length > 0)
+  const uncategorized = filtered.filter((w) => !claimedTypes.has(w.type))
+  if (uncategorized.length > 0) {
+    groups.push({ name: '기타', items: uncategorized })
+  }
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -3996,36 +4072,73 @@ function FloatingAddWidget({ onAdd }) {
         align="end"
         side="top"
         sideOffset={8}
-        className="w-[360px] p-2"
+        className="w-[380px] p-2 max-h-[70vh] overflow-y-auto"
       >
-        <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-2 pb-1">
-          위젯 종류
+        {/* Sticky search header — pinned at the top while the
+            grouped list scrolls underneath. Auto-focus so the user
+            can start typing immediately after the popover opens. */}
+        <div className="sticky -top-2 bg-popover z-10 pb-2 pt-1">
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="위젯 검색…"
+            autoFocus
+            className="h-8 text-xs"
+            // Esc on the input clears the query first; only closes
+            // the popover on the second press (the default Esc
+            // handler on the popover takes over once the input
+            // value is empty).
+            onKeyDown={(e) => {
+              if (e.key === 'Escape' && query) {
+                e.preventDefault()
+                e.stopPropagation()
+                setQuery('')
+              }
+            }}
+          />
         </div>
-        <div className="grid grid-cols-2 gap-1">
-          {widgets.map((w) => {
-            const meta = getRenderer(w.type)
-            const Icon = meta?.Icon
-            return (
-              <button
-                key={w.type}
-                type="button"
-                className="flex items-start gap-2 px-2 py-2 rounded-md text-left hover:bg-muted transition-colors"
-                onClick={() => {
-                  onAdd(w.type, w.default_props ?? {})
-                  setOpen(false)
-                }}
-              >
-                {Icon && <Icon className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />}
-                <div className="min-w-0">
-                  <div className="text-sm font-medium truncate">{w.label}</div>
-                  <div className="text-[10px] text-muted-foreground line-clamp-2">
-                    {w.description}
-                  </div>
+        {groups.length === 0 ? (
+          <div className="px-2 py-6 text-center text-xs text-muted-foreground">
+            “{query}”에 일치하는 위젯이 없습니다.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {groups.map((group) => (
+              <div key={group.name}>
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-2 pb-1">
+                  {group.name}
                 </div>
-              </button>
-            )
-          })}
-        </div>
+                <div className="grid grid-cols-2 gap-1">
+                  {group.items.map((w) => {
+                    const meta = getRenderer(w.type)
+                    const Icon = meta?.Icon
+                    return (
+                      <button
+                        key={w.type}
+                        type="button"
+                        className="flex items-start gap-2 px-2 py-2 rounded-md text-left hover:bg-muted transition-colors"
+                        onClick={() => {
+                          onAdd(w.type, w.default_props ?? {})
+                          setOpen(false)
+                        }}
+                      >
+                        {Icon && (
+                          <Icon className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium truncate">{w.label}</div>
+                          <div className="text-[10px] text-muted-foreground line-clamp-2">
+                            {w.description}
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </PopoverContent>
     </Popover>
   )
@@ -4294,6 +4407,13 @@ function BlockEditorCard({
   //                focus rings) don't get clipped or covered by neighbors.
   const measureRef = useRef(null)
   const contentRef = useRef(null)
+  // Suppress click that fires at the END of an RGL drag. RGL's
+  // mousedown→mousemove→mouseup sequence on the drag handle bubbles
+  // up to the Card as a click event; if the user actually moved the
+  // widget, we don't want that click to ALSO open the modal editor.
+  // Compare mouseup vs mousedown position — past ~5px of movement
+  // means the user dragged, not clicked.
+  const downPosRef = useRef(null)
   // Card chrome that adds to the measured `scrollHeight` to produce the
   // final cell height. In edit mode (`showDragHandle` true), the top
   // padding is bumped from pt-4 → pt-9 so the widget's own caption /
@@ -4567,17 +4687,29 @@ function BlockEditorCard({
   // a scrollbar nor an empty gap should appear. We drop the inner
   // `overflow-auto` + `flex-1 min-h-0` clamp; the card grows / shrinks with
   // the measured row_span via the grid layout.
+  function handleCardMouseDown(e) {
+    downPosRef.current = { x: e.clientX, y: e.clientY }
+  }
+  function handleCardClick(e) {
+    const start = downPosRef.current
+    downPosRef.current = null
+    if (start) {
+      const dx = e.clientX - start.x
+      const dy = e.clientY - start.y
+      if (Math.abs(dx) + Math.abs(dy) > 5) return // drag, not click
+    }
+    onActivate?.(e)
+    // Non-inline-editable widgets open the modal editor on click.
+    // The drag handle / autoFit / settings / remove buttons live
+    // inside the card and stop propagation themselves, so this
+    // only fires when the user clicks the actual content area.
+    if (opensModalEditor) onOpenContentEdit()
+  }
   return (
     <Card
       id={`block-${block.id}`}
-      onClick={(e) => {
-        onActivate?.(e)
-        // Non-inline-editable widgets open the modal editor on click.
-        // The drag handle / autoFit / settings / remove buttons live
-        // inside the card and stop propagation themselves, so this
-        // only fires when the user clicks the actual content area.
-        if (opensModalEditor) onOpenContentEdit()
-      }}
+      onMouseDown={handleCardMouseDown}
+      onClick={handleCardClick}
       className={cn(
         'relative h-full flex flex-col',
         autoFit ? 'overflow-visible' : 'overflow-hidden',
@@ -4734,6 +4866,29 @@ const REPORT_COL_GAP = 12
 // of content; small enough that auto-fit shrinks visibly on most widgets.
 const AUTO_FIT_INITIAL_ROWS = 12
 
+// Widget types whose auto_fit DEFAULTS to false (manual cell size).
+// Charts / scatter / heatmap need a real height to paint — letting
+// content drive the row_span makes them snap small repeatedly while
+// the user edits data, which feels broken. Users can still flip the
+// per-block toggle when they want auto-fit on these.
+const WIDGETS_DEFAULT_NO_AUTOFIT = new Set([
+  'chart',
+  'scatter',
+  'scatter3d',
+  'heatmap',
+  'radar',
+])
+
+/** Resolve whether a block is in auto_fit mode. Explicit `auto_fit`
+ *  in the saved layout always wins; absent value falls back to the
+ *  per-type default. */
+function autoFitForBlock(block, layout) {
+  if (layout && Object.prototype.hasOwnProperty.call(layout, 'auto_fit')) {
+    return layout.auto_fit !== false
+  }
+  return !WIDGETS_DEFAULT_NO_AUTOFIT.has(block?.type)
+}
+
 function buildRglItems(blocks, effectiveLayouts) {
   const byRow = new Map()
   for (const b of blocks) {
@@ -4761,10 +4916,10 @@ function buildRglItems(blocks, effectiveLayouts) {
       maxW: REPORT_GRID_COLS,
       minH: 1,
     }
-    // Auto-fit blocks: hide the vertical / corner resize handles since height
-    // is content-driven. Only the right edge ('e') remains so users can still
-    // adjust column-span. Default ON — only explicit `auto_fit: false` opts out.
-    if (layout?.auto_fit !== false) {
+    // Auto-fit blocks: hide the vertical / corner resize handles since
+    // height is content-driven. Per-type default applies when the
+    // layout doesn't explicitly set auto_fit — see `autoFitForBlock`.
+    if (autoFitForBlock(b, layout)) {
       item.resizeHandles = ['e']
     }
     items.push(item)

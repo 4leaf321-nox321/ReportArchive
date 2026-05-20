@@ -100,7 +100,12 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     if (!caption && rows.length === 0) return null
     return (
       <div className="space-y-2">
-        <CaptionInput value={caption} readOnly />
+        <CaptionInput
+          value={caption}
+          readOnly
+          placeholder={props.label}
+          skipAutofill={content?.caption_skip_autofill}
+        />
         {rows.length > 0 && cols.length > 0 && (
           <div className={`overflow-x-auto rounded-md border ${bodyTextClass}`} style={bodyTextStyle}>
             {/* No trailing column here — edit mode reserves an action column

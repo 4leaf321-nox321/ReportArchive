@@ -454,7 +454,12 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
     const hasBody = items.some((it) => (it.text ?? '').trim() !== '')
     return (
       <div className="space-y-2">
-        <CaptionInput value={caption} readOnly />
+        <CaptionInput
+          value={caption}
+          readOnly
+          placeholder={props.label}
+          skipAutofill={content?.caption_skip_autofill}
+        />
         {hasBody && (
           <OutlineView
             items={items}

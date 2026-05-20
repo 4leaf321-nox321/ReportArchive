@@ -20,8 +20,6 @@ import { Textarea } from '@/shared/components/ui/textarea'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { ErrorState } from '@/shared/components/ErrorState'
-import { PageWidthToggle, usePageWidth } from '@/shared/components/PageWidthToggle'
-import { cn } from '@/shared/lib/utils'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import {
@@ -38,16 +36,23 @@ export default function CompositeDetailPage() {
   const navigate = useNavigate()
   const { slug, all: workspaces } = useWorkspace()
 
+  // Gate the fetch on `slug` too — on a hard reload the URL gives us
+  // `compositeId` immediately but the workspace context's
+  // `setCurrentWorkspace()` runs in an effect, so firing the request
+  // before that lands sends it without the `X-Workspace-Slug` header
+  // → backend returns 400. ReportDetailPage uses the same gate.
   const { data: composite, loading, error, reload } = useAsync(
-    () => (compositeId ? getComposite(Number(compositeId)) : Promise.resolve(null)),
-    [compositeId],
+    () =>
+      compositeId && slug
+        ? getComposite(Number(compositeId))
+        : Promise.resolve(null),
+    [compositeId, slug],
   )
 
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [pageWidth, setPageWidth] = usePageWidth()
   // Per-item expansion state, keyed by row index. Reset when the draft is
   // rebuilt so newly-added items start collapsed.
   const [expanded, setExpanded] = useState(new Set())
@@ -154,7 +159,7 @@ export default function CompositeDetailPage() {
   }
 
   return (
-    <div className={cn('p-6 space-y-6', pageWidth === 'narrow' && 'max-w-5xl')}>
+    <div className="p-6 space-y-6">
       <div className="flex items-start gap-3">
         <div className="flex-1 min-w-0">
           {isEditing ? (
@@ -206,7 +211,6 @@ export default function CompositeDetailPage() {
             )}
           </div>
         </div>
-        <PageWidthToggle value={pageWidth} onChange={setPageWidth} />
         <Button variant="ghost" size="sm" onClick={() => navigate(`/w/${slug}/composites`)}>
           <ArrowLeft className="mr-1 h-3 w-3" />
           목록

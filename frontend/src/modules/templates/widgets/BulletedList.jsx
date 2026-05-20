@@ -134,7 +134,12 @@ export function BulletedListEditor({ props, content, onChange, readOnly }) {
     if (!caption && filled.length === 0) return null
     return (
       <div className="space-y-2">
-        <CaptionInput value={caption} readOnly />
+        <CaptionInput
+          value={caption}
+          readOnly
+          placeholder={props.label}
+          skipAutofill={content?.caption_skip_autofill}
+        />
         {filled.length > 0 && (
           <ul
             className={`text-sm list-disc pl-5 space-y-1 ${bodyTextClass}`}

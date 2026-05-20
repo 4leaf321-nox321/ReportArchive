@@ -130,7 +130,12 @@ export function AttachmentEditor({ props, content, onChange, readOnly }) {
     if (!caption && files.length === 0) return null
     return (
       <div className="space-y-2">
-        <CaptionInput value={caption} readOnly />
+        <CaptionInput
+          value={caption}
+          readOnly
+          placeholder={props.label}
+          skipAutofill={content?.caption_skip_autofill}
+        />
         {files.length > 0 && (
           <ul className="space-y-1.5">
             {files.map((file, idx) => (

@@ -759,7 +759,12 @@ export function RaciMatrixEditor({ props, content, onChange, readOnly }) {
     if (!caption && rows.length === 0) return null
     return (
       <div className={`space-y-2 ${textClass}`} style={textStyle}>
-        <CaptionInput value={caption} readOnly />
+        <CaptionInput
+          value={caption}
+          readOnly
+          placeholder={props.label}
+          skipAutofill={content?.caption_skip_autofill}
+        />
         <div className="overflow-x-auto">
           <RaciTable rows={rows} roles={roles} readOnly />
         </div>

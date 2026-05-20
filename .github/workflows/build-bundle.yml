@@ -38,6 +38,10 @@ jobs:
         # prefixing the build with sudo.
         env:
           USE_SUDO_APPTAINER: '1'
+          # Vite bundling plotly.js-dist + recharts blew past Node's 4GB
+          # default old-space and exited with SIGABRT (134). GHA runners
+          # have ~7GB RAM, so 6GB headroom is safe.
+          NODE_OPTIONS: '--max-old-space-size=6144'
         run: ./deploy/build_bundle.sh
 
       - name: Upload as workflow artifact

@@ -2,7 +2,7 @@ import { ChevronDown, ChevronRight, ChevronUp, Plus, X } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { CaptionInput, LabelField, PreviewLabel, TextStyleField, textStyleToClassName } from './_shared'
+import { CaptionInput, DEFAULT_BODY_FONT_PX, LabelField, PreviewLabel, TextStyleField, captionSkipProps, textStyleToClassName, textStyleToInlineStyle } from './_shared'
 
 // --------------------------------------------------------------------------- //
 // Visual palette                                                              //
@@ -72,6 +72,7 @@ export function FlowchartPropsPanel({ props, onChange }) {
       <TextStyleField
         value={props.text_style}
         onChange={(text_style) => patch({ text_style })}
+        defaultSizePx={DEFAULT_BODY_FONT_PX}
       />
     </div>
   )
@@ -112,9 +113,11 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
   const orientation =
     content?.orientation ?? props.orientation ?? 'horizontal'
   const textClass = textStyleToClassName(props.text_style)
+  const textStyle = textStyleToInlineStyle(props.text_style)
 
   function patch(next) {
     const merged = {
+      ...(content ?? {}),
       ...(caption ? { caption } : {}),
       ...(content?.orientation ? { orientation: content.orientation } : {}),
       items,
@@ -123,6 +126,7 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
     if (!merged.caption) delete merged.caption
     if (!merged.orientation) delete merged.orientation
     if (!merged.items || merged.items.length === 0) delete merged.items
+    if (!merged.caption_skip_autofill) delete merged.caption_skip_autofill
     onChange(merged)
   }
 
@@ -150,7 +154,7 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
   if (readOnly) {
     if (!caption && items.length === 0) return null
     return (
-      <div className={`space-y-2 ${textClass}`}>
+      <div className={`space-y-2 ${textClass}`} style={textStyle}>
         <CaptionInput value={caption} readOnly />
         {items.length > 0 ? (
           <FlowchartCanvas items={items} orientation={orientation} />
@@ -164,13 +168,14 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
   }
 
   return (
-    <div className={`space-y-3 ${textClass}`}>
+    <div className={`space-y-3 ${textClass}`} style={textStyle}>
       <div className="flex items-center gap-2">
         <div className="flex-1 min-w-0">
           <CaptionInput
             value={caption}
             onChange={(v) => patch({ caption: v })}
             placeholder={props.label}
+            {...captionSkipProps({ content, patch })}
           />
         </div>
         <div className="flex items-center gap-0.5 shrink-0">

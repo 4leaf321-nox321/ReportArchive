@@ -13,6 +13,105 @@ from __future__ import annotations
 from typing import Any, Callable, Optional, TypedDict
 
 
+# Annotation data model — shared by every visual widget that hosts an
+# annotation layer (chart, image, milestone, possibly more). Lives here
+# (rather than in validation.py) to break a circular import: validation
+# already pulls WIDGET_REGISTRY from this module.
+#
+# Coordinate space is per-annotation so the same shape describes a
+# "March 2026" mark on a chart and a "top-right corner" mark on an
+# image. The host widget's adapter knows how to convert.
+#
+# Keep in sync with frontend/src/shared/annotations/types.js.
+_ANNOTATION_TYPES = ("vline", "vrange", "hline", "hrange", "point", "rect", "arrow", "text")
+_ANNOTATION_COORD_SPACES = ("data", "data_relative", "image_pct")
+_ANNOTATION_LABEL_POSITIONS = ("auto", "top", "bottom", "inside", "left", "right")
+_ANNOTATION_BORDER_STYLES = ("solid", "dashed", "dotted")
+_ANNOTATION_Z_ORDERS = ("front", "back")
+
+# Geometry is loose — `additionalProperties: True` so each type carries
+# only the fields it needs. Frontend validates the per-type field list;
+# backend just enforces "coords are numbers or strings, structure isn't
+# obviously malformed."
+_ANNOTATION_GEOMETRY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "x": {"type": ["number", "string"]},
+        "y": {"type": ["number", "string"]},
+        "x_from": {"type": ["number", "string"]},
+        "x_to": {"type": ["number", "string"]},
+        "y_from": {"type": ["number", "string"]},
+        "y_to": {"type": ["number", "string"]},
+        "from": {
+            "type": "object",
+            "properties": {
+                "x": {"type": ["number", "string"]},
+                "y": {"type": ["number", "string"]},
+            },
+            "additionalProperties": False,
+        },
+        "to": {
+            "type": "object",
+            "properties": {
+                "x": {"type": ["number", "string"]},
+                "y": {"type": ["number", "string"]},
+            },
+            "additionalProperties": False,
+        },
+    },
+}
+
+ANNOTATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 64},
+        "type": {"type": "string", "enum": list(_ANNOTATION_TYPES)},
+        "coord_space": {"type": "string", "enum": list(_ANNOTATION_COORD_SPACES)},
+        "geometry": _ANNOTATION_GEOMETRY_SCHEMA,
+        "label": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "maxLength": 500},
+                "position": {
+                    "type": "string",
+                    "enum": list(_ANNOTATION_LABEL_POSITIONS),
+                },
+            },
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+        "style": {
+            "type": "object",
+            "properties": {
+                "color": {"type": "string", "maxLength": 64},
+                "opacity": {"type": "number", "minimum": 0, "maximum": 1},
+                "border": {"type": "string", "enum": list(_ANNOTATION_BORDER_STYLES)},
+                "z": {"type": "string", "enum": list(_ANNOTATION_Z_ORDERS)},
+            },
+            "additionalProperties": False,
+        },
+        "locked": {"type": "boolean"},
+        "hidden": {"type": "boolean"},
+        "series_key": {
+            "type": "string",
+            "pattern": r"^[a-z][a-z0-9_]*$",
+            "maxLength": 64,
+        },
+    },
+    "required": ["id", "type", "geometry"],
+    "additionalProperties": False,
+}
+
+# Reusable `content.annotations` field shape. Visual widgets all share
+# this — bumping the soft cap here lifts it everywhere consistently.
+_ANNOTATIONS_FIELD = {
+    "type": "array",
+    "items": ANNOTATION_SCHEMA,
+    "maxItems": 200,
+}
+
+
 # --------------------------------------------------------------------------- #
 # Helpers shared between widgets
 # --------------------------------------------------------------------------- #
@@ -35,6 +134,16 @@ _CAPTION_FIELD = {"type": "string", "maxLength": 200}
 _TEXT_STYLE_SCHEMA = {
     "type": "object",
     "properties": {
+        # Numeric pixel font size. Emitted by the current UI as an inline
+        # CSS value so it always wins over the Tailwind utility classes the
+        # widgets ship with (heading levels, body-text defaults). Range is
+        # generous on purpose — the UI exposes a curated dropdown but
+        # custom values typed by future tooling stay valid.
+        "font_size_px": {"type": "integer", "minimum": 6, "maximum": 200},
+        # Legacy size enum. Kept solely for templates saved before the
+        # numeric switch; the UI no longer offers these values. Render-time
+        # code reads `font_size_px` first and falls back to mapping this
+        # enum onto a px value.
         "size": {
             "type": "string",
             "enum": ["xs", "sm", "base", "lg", "xl", "2xl"],
@@ -429,6 +538,9 @@ def _image_content(props: dict) -> dict:
                 "minItems": 0,
                 "maxItems": props.get("max_count", 10),
             },
+            # Image-coordinate annotations (image_pct space — 0..1 across
+            # the image's natural width/height). Same shape as chart's.
+            "annotations": _ANNOTATIONS_FIELD,
         },
         "additionalProperties": False,
     }
@@ -550,6 +662,10 @@ def _chart_content(props: dict) -> dict:
                 "type": "array",
                 "items": {"type": "object", "additionalProperties": True},
             },
+            # User-drawn marks over the chart (event lines, period bands,
+            # threshold lines, point callouts, etc.). Shape is the shared
+            # ANNOTATION_SCHEMA — same field appears on image / milestone.
+            "annotations": _ANNOTATIONS_FIELD,
         },
         "additionalProperties": False,
     }
@@ -633,6 +749,10 @@ def _milestone_content(props: dict) -> dict:
                     "additionalProperties": False,
                 },
             },
+            # Timeline annotations — date-coordinate vrange / text on
+            # top of the milestone axis. Same shared shape as chart /
+            # image annotations.
+            "annotations": _ANNOTATIONS_FIELD,
         },
         "additionalProperties": False,
     }
@@ -701,6 +821,180 @@ CHART: WidgetDescriptor = {
 }
 
 
+def _progress_bar_content(props: dict) -> dict:
+    """Each item is `{label, value, ?max, ?note}`. The widget renders a
+    horizontal bar per item with the fill ratio = value / (max ?? 100).
+    Color shades by ratio (red < 30%, amber 30–70%, green ≥ 70%) so the
+    writer doesn't need to set status manually — though `status` is left
+    available as an explicit override.
+
+    `value` is intentionally permissive (any non-negative number, can
+    exceed `max` to show "over goal" cases like 120% delivery)."""
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "minLength": 1, "maxLength": 200},
+                        "value": {"type": "number", "minimum": 0},
+                        "max": {"type": "number", "exclusiveMinimum": 0},
+                        "note": {"type": "string", "maxLength": 500},
+                        "status": {
+                            "type": "string",
+                            "enum": ["pending", "in_progress", "done", "blocked"],
+                        },
+                    },
+                    "required": ["label", "value"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
+# Shared role-item shape — used both at template time (default_roles in
+# props) and at report time (content.roles, writer-edited). `group` is
+# the optional top-row header label; consecutive roles sharing the same
+# group are merged into a single colspan'd top-row cell at render time.
+_RACI_ROLE_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "key": {
+            "type": "string",
+            "pattern": r"^[a-z][a-z0-9_]*$",
+            "maxLength": 64,
+        },
+        "label": {"type": "string", "maxLength": 100},
+        "group": {"type": "string", "maxLength": 100},
+    },
+    "required": ["key"],
+    "additionalProperties": False,
+}
+
+
+def _raci_matrix_content(props: dict) -> dict:
+    """Each row is `{label, ?note, assignments: { role_key: cell }}`.
+
+    Roles live in `content.roles` (writer-edited) with `props.default_roles`
+    as the initial seed. We can't pin assignments keys at schema time
+    because the role list is now dynamic per report — the frontend
+    enforces consistency by stripping orphaned assignment keys when a
+    role column is removed. Cell values stay tightly constrained:
+    `/`-joined RACI letters or empty string."""
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "roles": {
+                "type": "array",
+                "items": _RACI_ROLE_ITEM_SCHEMA,
+            },
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "minLength": 1, "maxLength": 200},
+                        "note": {"type": "string", "maxLength": 500},
+                        "assignments": {
+                            "type": "object",
+                            # patternProperties keeps the validation
+                            # local to the cell shape without coupling
+                            # to a fixed role-key set.
+                            "patternProperties": {
+                                r"^[a-z][a-z0-9_]{0,63}$": {
+                                    "type": "string",
+                                    "pattern": r"^([RACI](/[RACI])*)?$",
+                                    "maxLength": 7,
+                                },
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                    "required": ["label"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
+RACI_MATRIX: WidgetDescriptor = {
+    "type": "raci_matrix",
+    "label": "RACI 매트릭스",
+    "description": "작업(행) × 역할(열) 책임 분담표. 각 셀은 R(실행)/A(책임)/C(자문)/I(통보) 중 하나 또는 슬래시 결합 (예: R/A). 역할 열은 보고서마다 자유롭게 추가·편집 가능, 같은 그룹의 인접 열은 상단 헤더로 자동 병합.",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            # Initial seed roles. Writers can override per-report via
+            # `content.roles` (the matrix table's inline header editor).
+            "default_roles": {
+                "type": "array",
+                "items": _RACI_ROLE_ITEM_SCHEMA,
+            },
+            "text_style": _TEXT_STYLE_SCHEMA,
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _raci_matrix_content,
+    "default_props": {
+        "label": "RACI 매트릭스",
+        # Engineering-flavored default groups. Each entry seeds one
+        # column with the work area in the top-row group slot and a
+        # blank label slot below — writers fill in the bottom row with
+        # individual people, and "역할 추가" appends another column
+        # under the most recently used group by default.
+        "default_roles": [
+            {"key": "modeling", "label": "", "group": "모델링"},
+            {"key": "analysis", "label": "", "group": "분석"},
+            {"key": "develop", "label": "", "group": "개발"},
+            {"key": "design", "label": "", "group": "설계"},
+        ],
+    },
+}
+
+
+PROGRESS_BAR: WidgetDescriptor = {
+    "type": "progress_bar",
+    "label": "진행률 바",
+    "description": "여러 작업의 진척도를 가로 막대로 한 번에 비교 (값/목표 비율에 따라 색상 자동 매핑)",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            # Per-item default target. Most use cases are 0–100% so 100
+            # is sensible, but for raw-count progress (e.g. "8 / 12 tasks
+            # done") the writer overrides `max` on each item.
+            "default_max": {"type": "number", "exclusiveMinimum": 0},
+            # Hint suffix appended to the value/max display ("%", "건",
+            # "h", ...). Purely cosmetic — value math is unit-agnostic.
+            "unit": {"type": "string", "maxLength": 8},
+            "min_items": {"type": "integer", "minimum": 0},
+            "max_items": {"type": "integer", "minimum": 1},
+            "text_style": _TEXT_STYLE_SCHEMA,
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _progress_bar_content,
+    "default_props": {
+        "label": "진행률",
+        "default_max": 100,
+        "unit": "%",
+    },
+}
+
+
 # --------------------------------------------------------------------------- #
 # Registry
 # --------------------------------------------------------------------------- #
@@ -717,6 +1011,8 @@ WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
         CHART,
         MILESTONE,
         FLOWCHART,
+        PROGRESS_BAR,
+        RACI_MATRIX,
     )
 }
 

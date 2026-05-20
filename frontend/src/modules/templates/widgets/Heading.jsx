@@ -1,6 +1,11 @@
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { TextStyleField, textStyleToClassName } from './_shared'
+import {
+  HEADING_DEFAULT_PX_BY_LEVEL,
+  TextStyleField,
+  textStyleToClassName,
+  textStyleToInlineStyle,
+} from './_shared'
 
 export function HeadingPropsPanel({ props, onChange }) {
   return (
@@ -34,6 +39,7 @@ export function HeadingPropsPanel({ props, onChange }) {
       <TextStyleField
         value={props.text_style}
         onChange={(text_style) => onChange({ ...props, text_style })}
+        defaultSizePx={HEADING_DEFAULT_PX_BY_LEVEL[props.level ?? 2]}
       />
     </div>
   )
@@ -49,11 +55,15 @@ export function HeadingPreview({ props }) {
   const text = props.default_text || '(보고서에서 입력)'
   const isPlaceholder = !props.default_text
   // `text_style` overrides win when set; defaults from `levelClass` only
-  // fill in the slots the designer left untouched.
+  // fill in the slots the designer left untouched. Inline style lives on
+  // the same element as the level class so size/weight from `text_style`
+  // beat the level defaults instead of fighting them in Tailwind's cascade.
   const cls = `${levelClass(props.level ?? 2)} ${textStyleToClassName(props.text_style)}`
+  const inlineStyle = textStyleToInlineStyle(props.text_style)
   return (
     <div
       className={`px-2 ${cls} ${isPlaceholder ? 'text-muted-foreground italic' : ''}`}
+      style={inlineStyle}
     >
       {text}
     </div>
@@ -63,9 +73,14 @@ export function HeadingPreview({ props }) {
 export function HeadingEditor({ props, content, onChange, readOnly }) {
   const value = content?.text ?? ''
   const cls = `${levelClass(props.level ?? 2)} ${textStyleToClassName(props.text_style)}`
+  const inlineStyle = textStyleToInlineStyle(props.text_style)
   if (readOnly) {
     if (!value) return null
-    return <div className={`px-2 py-1 ${cls}`}>{value}</div>
+    return (
+      <div className={`px-2 py-1 ${cls}`} style={inlineStyle}>
+        {value}
+      </div>
+    )
   }
   return (
     <input
@@ -74,6 +89,7 @@ export function HeadingEditor({ props, content, onChange, readOnly }) {
       onChange={(e) => onChange({ text: e.target.value })}
       placeholder={props.default_text || '제목 입력'}
       className={`w-full bg-transparent border-0 outline-none focus:ring-0 placeholder:text-muted-foreground/50 px-2 py-1 ${cls}`}
+      style={inlineStyle}
     />
   )
 }

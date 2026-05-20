@@ -3,6 +3,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Customized,
   Legend,
   Line,
   LineChart,
@@ -11,12 +12,14 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { AnnotationContents } from '@/shared/annotations'
 import { AlertTriangle, BarChart3, ChevronDown, ChevronUp, Hash, LineChart as LineIcon, Plus, Settings, Table2, Type, X } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/components/ui/popover'
-import { CaptionInput, LabelField, PreviewLabel } from './_shared'
+import { CaptionInput, LabelField, PreviewLabel, captionSkipProps } from './_shared'
+import { usePrintScale } from '@/modules/reports/printContext'
 
 const CHART_TYPES = [
   { value: 'bar', label: '막대', Icon: BarChart3 },
@@ -189,6 +192,12 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
     // only data (rows + caption); otherwise it's the union (legacy).
     const nextContent = {}
     if (caption) nextContent.caption = caption
+    // Preserve the caption-skip flag across unrelated patches (rows /
+    // column edits etc.). If the current patch explicitly sets or
+    // clears it, the `Object.assign(nextContent, data)` below wins.
+    if (content?.caption_skip_autofill && data.caption_skip_autofill === undefined) {
+      nextContent.caption_skip_autofill = true
+    }
     nextContent.rows = rows
     if (!canOverride) {
       // Legacy fallback — keep mirroring structural fields into content
@@ -203,6 +212,7 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
     }
     Object.assign(nextContent, data)
     if (!nextContent.caption) delete nextContent.caption
+    if (!nextContent.caption_skip_autofill) delete nextContent.caption_skip_autofill
     // The structural fallback fields may end up empty after the merge
     // — drop them so JSON stays tight.
     for (const k of STRUCTURAL_KEYS) {
@@ -480,6 +490,7 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
             xAxisTitle={xAxisTitle}
             yAxisTitle={yAxisTitle}
             autoFit={autoFit}
+            annotations={Array.isArray(content?.annotations) ? content.annotations : []}
           />
         )}
       </div>
@@ -498,6 +509,7 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
             value={caption}
             onChange={(v) => patch({ caption: v })}
             placeholder={props.label}
+            {...captionSkipProps({ content, patch })}
           />
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
@@ -573,6 +585,7 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
           xAxisTitle={xAxisTitle}
           yAxisTitle={yAxisTitle}
           autoFit={autoFit}
+          annotations={Array.isArray(content?.annotations) ? content.annotations : []}
         />
       ) : (
         <div className="flex-1 min-h-[16rem] rounded-md border border-dashed bg-muted/20 flex items-center justify-center text-xs text-muted-foreground">
@@ -796,7 +809,11 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
  * making the editor feel laggy. We pause rendering for 150ms after the
  * last size change, so the chart only repaints once the user lets go.
  */
-function ChartCanvas({ chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle, autoFit, className = '' }) {
+function ChartCanvas({ chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle, autoFit, annotations, className = '' }) {
+  // PDF-print font scale. 1 outside of printing; rebinds during print so
+  // the SVG re-renders with axis/legend/tooltip fonts multiplied to
+  // match the body-text scale picked in PdfPrintDialog.
+  const printScale = usePrintScale()
   // Two sizing modes, both giving ResponsiveContainer a *definite*
   // parent height so it actually renders:
   //
@@ -865,57 +882,65 @@ function ChartCanvas({ chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle
         </div>
       ) : (
         <ResponsiveContainer width="100%" height="100%">
-          {renderChart(chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle)}
+          {renderChart(chartType, data, xKey, seriesCols, xAxisTitle, yAxisTitle, printScale, annotations)}
         </ResponsiveContainer>
       )}
     </div>
   )
 }
 
-// Chart text sizes — scaled ~1.5× from Recharts' compact defaults so the
+// Chart text sizes — scaled ~1.3× from Recharts' compact defaults so the
 // axes, legend, and tooltip match the rest of the report's body type
 // (set via `.report-widget-body` overrides in index.css). Recharts paints
 // these on an <svg>, which isn't reachable from the Tailwind utility
 // overrides, so the scale has to be applied here.
-const CHART_AXIS_TICK_FONT = 17
-const CHART_AXIS_TITLE_FONT = 18
-const CHART_LEGEND_FONT = 18
-const CHART_LEGEND_HEIGHT = 40
-const CHART_TOOLTIP_FONT = 18
+const CHART_AXIS_TICK_FONT = 14
+const CHART_AXIS_TITLE_FONT = 16
+const CHART_LEGEND_FONT = 16
+const CHART_LEGEND_HEIGHT = 34
+const CHART_TOOLTIP_FONT = 16
 
-function renderChart(type, data, xKey, seriesCols, xAxisTitle, yAxisTitle) {
-  // Reserve room for axis titles in the chart margins so labels aren't
-  // clipped against the container edges. Bumped together with the larger
-  // axis title font so the wider/taller text still fits.
+function renderChart(type, data, xKey, seriesCols, xAxisTitle, yAxisTitle, printScale = 1, annotations = []) {
+  // Apply the PDF-print scale (1 outside printing) to every SVG-rendered
+  // text size so the chart's labels grow/shrink with the rest of the
+  // report body. Margins also scale so the (taller) axis title text
+  // still fits under/beside the chart at higher zooms.
+  const pScale = Number.isFinite(printScale) && printScale > 0 ? printScale : 1
+  const tickFont = Math.round(CHART_AXIS_TICK_FONT * pScale)
+  const titleFont = Math.round(CHART_AXIS_TITLE_FONT * pScale)
+  const legendFont = Math.round(CHART_LEGEND_FONT * pScale)
+  const legendHeight = Math.round(CHART_LEGEND_HEIGHT * pScale)
+  const tooltipFont = Math.round(CHART_TOOLTIP_FONT * pScale)
+
   const margin = {
     top: 8,
     right: 16,
-    left: yAxisTitle ? 18 : 0,
-    bottom: xAxisTitle ? 36 : 0,
+    left: yAxisTitle ? Math.round(14 * pScale) : 0,
+    bottom: xAxisTitle ? Math.round(30 * pScale) : 0,
   }
   const xLabel = xAxisTitle
-    ? { value: xAxisTitle, position: 'insideBottom', offset: -8, fontSize: CHART_AXIS_TITLE_FONT }
+    ? { value: xAxisTitle, position: 'insideBottom', offset: -8, fontSize: titleFont }
     : undefined
   const yLabel = yAxisTitle
     ? {
         value: yAxisTitle,
         angle: -90,
         position: 'insideLeft',
-        fontSize: CHART_AXIS_TITLE_FONT,
+        fontSize: titleFont,
         style: { textAnchor: 'middle' },
       }
     : undefined
-  const legendStyle = { fontSize: CHART_LEGEND_FONT }
-  const tooltipContentStyle = { fontSize: CHART_TOOLTIP_FONT }
-  const tooltipLabelStyle = { fontSize: CHART_TOOLTIP_FONT }
-  const tooltipItemStyle = { fontSize: CHART_TOOLTIP_FONT }
+  const legendStyle = { fontSize: legendFont }
+  const tooltipContentStyle = { fontSize: tooltipFont }
+  const tooltipLabelStyle = { fontSize: tooltipFont }
+  const tooltipItemStyle = { fontSize: tooltipFont }
 
   if (type === 'line') {
     return (
       <LineChart data={data} margin={margin}>
         <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-        <XAxis dataKey={xKey} fontSize={CHART_AXIS_TICK_FONT} label={xLabel} />
-        <YAxis fontSize={CHART_AXIS_TICK_FONT} label={yLabel} />
+        <XAxis dataKey={xKey} fontSize={tickFont} label={xLabel} />
+        <YAxis fontSize={tickFont} label={yLabel} />
         <Tooltip
           contentStyle={tooltipContentStyle}
           labelStyle={tooltipLabelStyle}
@@ -923,7 +948,7 @@ function renderChart(type, data, xKey, seriesCols, xAxisTitle, yAxisTitle) {
         />
         <Legend
           verticalAlign="top"
-          height={CHART_LEGEND_HEIGHT}
+          height={legendHeight}
           wrapperStyle={legendStyle}
         />
         {seriesCols.map((s, i) => (
@@ -937,14 +962,19 @@ function renderChart(type, data, xKey, seriesCols, xAxisTitle, yAxisTitle) {
             dot={{ r: 3 }}
           />
         ))}
+        <Customized
+          component={(rcProps) => (
+            <ChartAnnotationOverlay rcProps={rcProps} annotations={annotations} />
+          )}
+        />
       </LineChart>
     )
   }
   return (
     <BarChart data={data} margin={margin}>
       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-      <XAxis dataKey={xKey} fontSize={CHART_AXIS_TICK_FONT} label={xLabel} />
-      <YAxis fontSize={CHART_AXIS_TICK_FONT} label={yLabel} />
+      <XAxis dataKey={xKey} fontSize={tickFont} label={xLabel} />
+      <YAxis fontSize={tickFont} label={yLabel} />
       <Tooltip
         contentStyle={tooltipContentStyle}
         labelStyle={tooltipLabelStyle}
@@ -952,7 +982,7 @@ function renderChart(type, data, xKey, seriesCols, xAxisTitle, yAxisTitle) {
       />
       <Legend
         verticalAlign="top"
-        height={CHART_LEGEND_HEIGHT}
+        height={legendHeight}
         wrapperStyle={legendStyle}
       />
       {seriesCols.map((s, i) => (
@@ -963,8 +993,82 @@ function renderChart(type, data, xKey, seriesCols, xAxisTitle, yAxisTitle) {
           fill={SERIES_COLORS[i % SERIES_COLORS.length]}
         />
       ))}
+      <Customized
+        component={(rcProps) => (
+          <ChartAnnotationOverlay rcProps={rcProps} annotations={annotations} />
+        )}
+      />
     </BarChart>
   )
+}
+
+/**
+ * Bridges Recharts' Customized hand-off (which gives us the internal
+ * xAxisMap / yAxisMap / offset) into a synchronous adapter object that
+ * the shared AnnotationContents component understands. Lives inside the
+ * chart's SVG, so the <g> elements it produces sit on top of the bars
+ * / lines without needing a separate overlay <svg>.
+ *
+ * Read-only for now (Phase A integration). Phase B will add a sibling
+ * interactive layer that handles create/select/drag — the read-only
+ * one stays as the canonical "final paint" so view-mode rendering is
+ * never affected by editing UI.
+ */
+function ChartAnnotationOverlay({ rcProps, annotations }) {
+  if (!annotations || annotations.length === 0) return null
+  const xMap = rcProps?.xAxisMap
+  const yMap = rcProps?.yAxisMap
+  if (!xMap || !yMap) return null
+  const xAxis = Object.values(xMap)[0]
+  const yAxis = Object.values(yMap)[0]
+  if (!xAxis?.scale || !yAxis?.scale) return null
+  const adapter = buildChartAdapter(xAxis, yAxis, rcProps?.offset)
+  return <AnnotationContents drawable={annotations} adapter={adapter} readOnly />
+}
+
+function buildChartAdapter(xAxis, yAxis, offset) {
+  // Same logic as the standalone factory in ChartAnnotationAdapter.js
+  // — duplicated here so this file stays self-contained and the chart
+  // can render annotations without indirection through a ref.
+  function scaleToPx(scale, value) {
+    if (scale == null) return NaN
+    const out = scale(value)
+    if (typeof out !== 'number' || !Number.isFinite(out)) return NaN
+    if (typeof scale.bandwidth === 'function') return out + scale.bandwidth() / 2
+    return out
+  }
+  return {
+    coordSpace: 'data',
+    supportedTypes: ['vline', 'vrange', 'hline', 'hrange', 'point', 'rect', 'arrow', 'text'],
+    bounds: {
+      x: xAxis.x ?? offset?.left ?? 0,
+      y: yAxis.y ?? offset?.top ?? 0,
+      width: xAxis.width ?? offset?.width ?? 0,
+      height: yAxis.height ?? offset?.height ?? 0,
+    },
+    toPx(geometry) {
+      const out = {}
+      if ('x' in geometry) out.x = scaleToPx(xAxis.scale, geometry.x)
+      if ('y' in geometry) out.y = scaleToPx(yAxis.scale, geometry.y)
+      if ('x_from' in geometry) out.x_from = scaleToPx(xAxis.scale, geometry.x_from)
+      if ('x_to' in geometry) out.x_to = scaleToPx(xAxis.scale, geometry.x_to)
+      if ('y_from' in geometry) out.y_from = scaleToPx(yAxis.scale, geometry.y_from)
+      if ('y_to' in geometry) out.y_to = scaleToPx(yAxis.scale, geometry.y_to)
+      if (geometry.from) {
+        out.from = {
+          x: scaleToPx(xAxis.scale, geometry.from.x),
+          y: scaleToPx(yAxis.scale, geometry.from.y),
+        }
+      }
+      if (geometry.to) {
+        out.to = {
+          x: scaleToPx(xAxis.scale, geometry.to.x),
+          y: scaleToPx(yAxis.scale, geometry.to.y),
+        }
+      }
+      return out
+    },
+  }
 }
 
 function ChartCell({ column, value, onChange, onMultiPaste }) {

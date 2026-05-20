@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { CaptionInput, LabelField, PreviewLabel, TextStyleField, textStyleToClassName } from './_shared'
+import { CaptionInput, DEFAULT_BODY_FONT_PX, LabelField, PreviewLabel, TextStyleField, captionSkipProps, textStyleToClassName, textStyleToInlineStyle } from './_shared'
 
 export function BulletedListPropsPanel({ props, onChange }) {
   return (
@@ -53,6 +53,7 @@ export function BulletedListPropsPanel({ props, onChange }) {
       <TextStyleField
         value={props.text_style}
         onChange={(text_style) => onChange({ ...props, text_style })}
+        defaultSizePx={DEFAULT_BODY_FONT_PX}
       />
     </div>
   )
@@ -65,6 +66,7 @@ export function BulletedListEditor({ props, content, onChange, readOnly }) {
   const caption = content?.caption ?? ''
   const items = content?.items ?? []
   const bodyTextClass = textStyleToClassName(props.text_style)
+  const bodyTextStyle = textStyleToInlineStyle(props.text_style)
   const maxItems = props.max_items
   // Same "always at least one row, last row is virtual when array is empty"
   // pattern that key_value's multi-value input uses. Enter on the last row
@@ -85,8 +87,12 @@ export function BulletedListEditor({ props, content, onChange, readOnly }) {
   inputRefs.current.length = rowCount
 
   function patch(next) {
-    const merged = { caption, items, ...next }
+    // Spread `content` so unknown fields (e.g. caption_skip_autofill,
+    // future per-block metadata) survive across patches that only
+    // touch caption/items.
+    const merged = { ...(content ?? {}), caption, items, ...next }
     if (!merged.caption) delete merged.caption
+    if (!merged.caption_skip_autofill) delete merged.caption_skip_autofill
     onChange(merged)
   }
   function setAt(idx, value) {
@@ -130,7 +136,10 @@ export function BulletedListEditor({ props, content, onChange, readOnly }) {
       <div className="space-y-2">
         <CaptionInput value={caption} readOnly />
         {filled.length > 0 && (
-          <ul className={`text-sm list-disc pl-5 space-y-1 ${bodyTextClass}`}>
+          <ul
+            className={`text-sm list-disc pl-5 space-y-1 ${bodyTextClass}`}
+            style={bodyTextStyle}
+          >
             {filled.map((it, i) => (
               <li key={i}>{it}</li>
             ))}
@@ -146,6 +155,7 @@ export function BulletedListEditor({ props, content, onChange, readOnly }) {
         value={caption}
         onChange={(v) => patch({ caption: v })}
         placeholder={props.label}
+        {...captionSkipProps({ content, patch })}
       />
       {Array.from({ length: rowCount }).map((_, idx) => {
         const hasRealEntry = idx < items.length
@@ -168,6 +178,7 @@ export function BulletedListEditor({ props, content, onChange, readOnly }) {
               }}
               placeholder={props.placeholder || '항목 입력'}
               className={`h-8 flex-1 ${bodyTextClass}`}
+              style={bodyTextStyle}
             />
             {hasRealEntry ? (
               <>

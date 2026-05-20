@@ -3,7 +3,7 @@ import { X } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { CaptionInput, FieldItemListEditor, LabelField, PreviewLabel, TextStyleField, textStyleToClassName } from './_shared'
+import { CaptionInput, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, PreviewLabel, TextStyleField, captionSkipProps, textStyleToClassName, textStyleToInlineStyle } from './_shared'
 
 export function KeyValuePropsPanel({ props, onChange }) {
   return (
@@ -28,6 +28,7 @@ export function KeyValuePropsPanel({ props, onChange }) {
       <TextStyleField
         value={props.text_style}
         onChange={(text_style) => onChange({ ...props, text_style })}
+        defaultSizePx={DEFAULT_BODY_FONT_PX}
       />
     </div>
   )
@@ -81,6 +82,7 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
   function patch(next) {
     const merged = { ...data, ...next }
     if (!merged.caption) delete merged.caption
+    if (!merged.caption_skip_autofill) delete merged.caption_skip_autofill
     onChange(merged)
   }
 
@@ -95,6 +97,7 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
 
   // Designer-supplied typography for both keys and values.
   const bodyTextClass = textStyleToClassName(props.text_style)
+  const bodyTextStyle = textStyleToInlineStyle(props.text_style)
 
   if (readOnly) {
     const filledItems = items.filter((item) => isFilled(item, data[item.key]))
@@ -103,7 +106,10 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
       <div className="space-y-2">
         <CaptionInput value={caption} readOnly />
         {filledItems.length > 0 && (
-          <div className={`grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 items-baseline text-sm ${bodyTextClass}`}>
+          <div
+            className={`grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 items-baseline text-sm ${bodyTextClass}`}
+            style={bodyTextStyle}
+          >
             {filledItems.map((item, i) => (
               <div key={i} className="contents">
                 <span className="text-muted-foreground">
@@ -124,8 +130,12 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
         value={caption}
         onChange={(v) => patch({ caption: v })}
         placeholder={props.label}
+        {...captionSkipProps({ content, patch })}
       />
-      <div className={`grid grid-cols-[max-content_1fr] gap-x-3 gap-y-2 items-center ${bodyTextClass}`}>
+      <div
+        className={`grid grid-cols-[max-content_1fr] gap-x-3 gap-y-2 items-center ${bodyTextClass}`}
+        style={bodyTextStyle}
+      >
         {items.map((item, i) => (
           <div key={i} className="contents">
             <Label className="text-sm text-muted-foreground">

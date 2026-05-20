@@ -17,7 +17,7 @@
  *   2. Create <Widget>.jsx here exporting PropsPanel + Preview + (optional) Editor
  *   3. Register the components below
  */
-import { AlignLeft, Flag, Heading1, Image, LineChart, ListOrdered, Paperclip, Table2, Type, Workflow } from 'lucide-react'
+import { AlignLeft, BarChartHorizontal, Flag, Grid3x3, Heading1, Image, LineChart, ListOrdered, Paperclip, Table2, Type, Workflow } from 'lucide-react'
 
 import { HeadingPropsPanel, HeadingPreview, HeadingEditor } from './Heading'
 import { RichTextPropsPanel, RichTextPreview, RichTextEditor } from './RichText'
@@ -29,6 +29,8 @@ import { AttachmentPropsPanel, AttachmentPreview, AttachmentEditor } from './Att
 import { ChartPropsPanel, ChartPreview, ChartEditor } from './Chart'
 import { MilestonePropsPanel, MilestonePreview, MilestoneEditor } from './Milestone'
 import { FlowchartPropsPanel, FlowchartPreview, FlowchartEditor } from './Flowchart'
+import { ProgressBarPropsPanel, ProgressBarPreview, ProgressBarEditor } from './ProgressBar'
+import { RaciMatrixPropsPanel, RaciMatrixPreview, RaciMatrixEditor } from './RaciMatrix'
 
 export const WIDGET_RENDERERS = {
   heading: {
@@ -90,6 +92,18 @@ export const WIDGET_RENDERERS = {
     PropsPanel: FlowchartPropsPanel,
     Preview: FlowchartPreview,
     Editor: FlowchartEditor,
+  },
+  progress_bar: {
+    Icon: BarChartHorizontal,
+    PropsPanel: ProgressBarPropsPanel,
+    Preview: ProgressBarPreview,
+    Editor: ProgressBarEditor,
+  },
+  raci_matrix: {
+    Icon: Grid3x3,
+    PropsPanel: RaciMatrixPropsPanel,
+    Preview: RaciMatrixPreview,
+    Editor: RaciMatrixEditor,
   },
 }
 

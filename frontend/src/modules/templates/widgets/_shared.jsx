@@ -2,6 +2,7 @@ import { ChevronDown, ChevronUp, Plus, X } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
+import { cn } from '@/shared/lib/utils'
 
 /**
  * Shared editor for the {key, label, type, options?, required?} item shape
@@ -378,16 +379,30 @@ export function FieldMetaEditor({ value, onChange }) {
 }
 
 // --------------------------------------------------------------------------- //
-// Text styling — designer-time controls + render-time className mapping        //
+// Text styling — designer-time controls + render-time CSS mapping              //
 //                                                                              //
 // Every text-bearing widget carries an optional `props.text_style` object       //
-// declared in backend/app/widgets/registry.py. Render-time we translate it      //
-// to Tailwind utility classes; missing fields = inherit (no class emitted).     //
+// declared in backend/app/widgets/registry.py. Render-time emits two surfaces:  //
+//                                                                              //
+//   * textStyleToInlineStyle(style) → React style object. Used as `style={...}` //
+//     and always wins over any conflicting Tailwind class (heading levels,     //
+//     widget body text-sm defaults, etc.). This is the canonical surface for   //
+//     all new code.                                                            //
+//                                                                              //
+//   * textStyleToClassName(style) → Tailwind class string for the legacy       //
+//     `size` enum only. Pre-numeric-switch templates still carry e.g.          //
+//     `size: 'sm'` and we honor it via class so the report-widget-body 1.3×    //
+//     boost continues to apply (matching how those templates rendered before). //
+//     weight/family/align deliberately stop emitting classes — the inline      //
+//     style path covers them, and emitting both would re-introduce the         //
+//     cascade race we are trying to fix.                                       //
+//                                                                              //
 // CRITICAL: do NOT build class strings via interpolation — Tailwind purges      //
 // unseen patterns. Every literal must appear in the source, hence the lookups.  //
 // --------------------------------------------------------------------------- //
 
-const _SIZE_CLASS = {
+// Legacy size enum → Tailwind class. Only honored when `font_size_px` is unset.
+const _LEGACY_SIZE_CLASS = {
   xs: 'text-xs',
   sm: 'text-sm',
   base: 'text-base',
@@ -395,50 +410,127 @@ const _SIZE_CLASS = {
   xl: 'text-xl',
   '2xl': 'text-2xl',
 }
-const _FONT_CLASS = {
-  sans: 'font-sans',
-  serif: 'font-serif',
-  mono: 'font-mono',
+// Legacy size enum → px value, used by textStyleToInlineStyle when callers
+// fall back through to the legacy field. Numbers match the boosted sizes
+// the `.report-widget-body` overrides produced for these enum values, so a
+// template saved with `size: 'sm'` renders at the same visual size after
+// the switch to inline px even if its widget host loses the boost.
+const _LEGACY_SIZE_PX = {
+  xs: 12,
+  sm: 18,
+  base: 21,
+  lg: 23,
+  xl: 26,
+  '2xl': 31,
 }
-const _ALIGN_CLASS = {
-  left: 'text-left',
-  center: 'text-center',
-  right: 'text-right',
-  justify: 'text-justify',
+const _FONT_FAMILY_CSS = {
+  sans: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+  serif: 'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
+  mono: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
 }
-const _WEIGHT_CLASS = {
-  normal: 'font-normal',
-  medium: 'font-medium',
-  semibold: 'font-semibold',
-  bold: 'font-bold',
+const _WEIGHT_NUM = {
+  normal: 400,
+  medium: 500,
+  semibold: 600,
+  bold: 700,
+}
+
+function _fontSizePx(style) {
+  if (!style || typeof style !== 'object') return undefined
+  if (Number.isFinite(style.font_size_px)) return style.font_size_px
+  return _LEGACY_SIZE_PX[style.size]
 }
 
 /**
- * Map a text_style object to a Tailwind class string. Unset fields produce
- * no class so the parent's CSS keeps applying (heading levels, default
- * card text size, etc.).
+ * Map a text_style object to a React style object. Wins over conflicting
+ * Tailwind classes — this is how Heading (text-xl) + user's pick (e.g. 18px)
+ * land on the user's choice instead of whichever class Tailwind emitted last.
+ *
+ * Returns undefined when nothing is set so JSX can splat it without leaking
+ * an empty `style={}` attribute onto the DOM.
+ */
+export function textStyleToInlineStyle(style) {
+  if (!style || typeof style !== 'object') return undefined
+  const out = {}
+  const px = _fontSizePx(style)
+  if (px != null) out.fontSize = `${px}px`
+  if (style.font_family && _FONT_FAMILY_CSS[style.font_family]) {
+    out.fontFamily = _FONT_FAMILY_CSS[style.font_family]
+  }
+  if (style.align) out.textAlign = style.align
+  if (style.weight && _WEIGHT_NUM[style.weight] != null) {
+    out.fontWeight = _WEIGHT_NUM[style.weight]
+  }
+  return Object.keys(out).length === 0 ? undefined : out
+}
+
+/**
+ * Legacy class string — only emits `text-{size}` for the deprecated `size`
+ * enum so old templates keep rendering with the report-widget-body boost.
+ * New code should prefer `textStyleToInlineStyle`; this helper exists so
+ * the existing `className={textClass}` plumbing in each widget keeps
+ * working without per-call site refactors.
  */
 export function textStyleToClassName(style) {
   if (!style || typeof style !== 'object') return ''
-  return [
-    _SIZE_CLASS[style.size],
-    _FONT_CLASS[style.font_family],
-    _ALIGN_CLASS[style.align],
-    _WEIGHT_CLASS[style.weight],
-  ]
-    .filter(Boolean)
-    .join(' ')
+  // If the writer picked a numeric size, drop the legacy class so it can't
+  // race with the inline style we also emit. (Old data with no font_size_px
+  // still falls through to the class so its boost-era rendering survives.)
+  if (Number.isFinite(style.font_size_px)) return ''
+  return _LEGACY_SIZE_CLASS[style.size] ?? ''
 }
 
-const _SIZE_OPTIONS = [
+// Curated font sizes matching the RichText inline floating toolbar so
+// designers see the same vocabulary at template time and at write time.
+// Kept as integers in the schema; the UI presents them in px for clarity.
+const _FONT_SIZE_PX_OPTIONS = [
   { value: '', label: '기본' },
-  { value: 'xs', label: '아주 작게' },
-  { value: 'sm', label: '작게' },
-  { value: 'base', label: '보통' },
-  { value: 'lg', label: '크게' },
-  { value: 'xl', label: '아주 크게' },
-  { value: '2xl', label: '특대' },
+  { value: 10, label: '10 px' },
+  { value: 11, label: '11 px' },
+  { value: 12, label: '12 px' },
+  { value: 13, label: '13 px' },
+  { value: 14, label: '14 px' },
+  { value: 16, label: '16 px' },
+  { value: 18, label: '18 px' },
+  { value: 20, label: '20 px' },
+  { value: 24, label: '24 px' },
+  { value: 28, label: '28 px' },
+  { value: 32, label: '32 px' },
+  { value: 36, label: '36 px' },
+  { value: 48, label: '48 px' },
 ]
+
+/**
+ * Body widgets render inside `.report-widget-body`, which scales `text-sm`
+ * (the widget body default) to 1.1375rem ≈ 18px. Surfaced as a named
+ * constant so every widget's "기본 (18 px)" label points at the same
+ * place; bump this and the index.css boost together.
+ */
+export const DEFAULT_BODY_FONT_PX = 18
+
+/**
+ * Heading level → boosted px. Mirrors `.report-widget-body .text-lg/xl/2xl`
+ * from index.css so the heading props panel's "기본" hint matches what the
+ * report editor actually paints.
+ */
+export const HEADING_DEFAULT_PX_BY_LEVEL = {
+  1: 31, // text-2xl → 1.95rem
+  2: 26, // text-xl  → 1.625rem
+  3: 23, // text-lg  → 1.4625rem
+}
+
+/**
+ * Build the font-size dropdown options with the widget's resolved default
+ * surfaced inside the empty option's label. Falls back to a plain "기본"
+ * row when no default was passed in, so callers that haven't been updated
+ * yet still get the previous behavior.
+ */
+function _fontSizeOptionsWithDefault(defaultPx) {
+  if (!Number.isFinite(defaultPx)) return _FONT_SIZE_PX_OPTIONS
+  return _FONT_SIZE_PX_OPTIONS.map((o) =>
+    o.value === '' ? { value: '', label: `기본 (${defaultPx} px)` } : o,
+  )
+}
 const _FONT_OPTIONS = [
   { value: '', label: '기본' },
   { value: 'sans', label: '산세리프 (Sans)' },
@@ -467,7 +559,7 @@ const _WEIGHT_OPTIONS = [
  * `text_style` object stays sparse (and is pruned to `undefined` entirely
  * when every field is empty).
  */
-export function TextStyleField({ value, onChange }) {
+export function TextStyleField({ value, onChange, defaultSizePx }) {
   const style = value ?? {}
   function patch(p) {
     const merged = { ...style, ...p }
@@ -479,9 +571,15 @@ export function TextStyleField({ value, onChange }) {
     }
     onChange(Object.keys(cleaned).length === 0 ? undefined : cleaned)
   }
-  // Preview text reflects the current selection so the designer can see
-  // the combination without saving and switching to the report editor.
+  // Preview reflects the current selection (inline style + legacy class) so
+  // the designer sees the actual visual without saving and switching to the
+  // report editor.
   const previewClass = textStyleToClassName(style) || 'text-sm text-muted-foreground'
+  const previewStyle = textStyleToInlineStyle(style)
+  // Legacy templates may carry only `size` (enum). Surface its mapped px
+  // value in the dropdown so the designer sees the current setting; the
+  // first edit upgrades the row to `font_size_px` and drops the legacy key.
+  const displayFontSize = style.font_size_px ?? _LEGACY_SIZE_PX[style.size] ?? ''
 
   return (
     <details className="rounded-md border bg-muted/10 px-3 py-2">
@@ -497,9 +595,16 @@ export function TextStyleField({ value, onChange }) {
         <div className="grid grid-cols-2 gap-2">
           <_TextStyleSelect
             label="글자 크기"
-            value={style.size ?? ''}
-            options={_SIZE_OPTIONS}
-            onChange={(v) => patch({ size: v })}
+            value={displayFontSize === '' ? '' : String(displayFontSize)}
+            options={_fontSizeOptionsWithDefault(defaultSizePx)}
+            onChange={(v) =>
+              patch({
+                font_size_px: v === '' ? '' : Number(v),
+                // Clear the legacy enum on any edit so we never carry both
+                // and so old back-compat data graduates to the numeric field.
+                size: '',
+              })
+            }
           />
           <_TextStyleSelect
             label="글꼴"
@@ -524,7 +629,9 @@ export function TextStyleField({ value, onChange }) {
           <div className="text-[10px] uppercase text-muted-foreground mb-1">
             미리보기
           </div>
-          <div className={previewClass}>가나다 ABC 123 — 텍스트 스타일 미리보기</div>
+          <div className={previewClass} style={previewStyle}>
+            가나다 ABC 123 — 텍스트 스타일 미리보기
+          </div>
         </div>
       </div>
     </details>
@@ -549,7 +656,7 @@ const _DEPTH_LABELS = [
   { key: '2', glyph: '·', name: '깊은 설명 (depth 2+)' },
 ]
 
-export function DepthStyleField({ value, onChange }) {
+export function DepthStyleField({ value, onChange, baseSizePx }) {
   const map = value ?? {}
   const setCount = _DEPTH_LABELS.reduce(
     (n, d) => n + (map[d.key] && Object.keys(map[d.key]).length > 0 ? 1 : 0),
@@ -585,6 +692,7 @@ export function DepthStyleField({ value, onChange }) {
           <_DepthRow
             key={d.key}
             depthKey={d.key}
+            defaultSizePx={baseSizePx}
             glyph={d.glyph}
             name={d.name}
             style={map[d.key]}
@@ -596,7 +704,7 @@ export function DepthStyleField({ value, onChange }) {
   )
 }
 
-function _DepthRow({ depthKey, glyph, name, style, onChange }) {
+function _DepthRow({ depthKey, glyph, name, style, onChange, defaultSizePx }) {
   const cur = style ?? {}
   function patch(p) {
     const merged = { ...cur, ...p }
@@ -608,6 +716,8 @@ function _DepthRow({ depthKey, glyph, name, style, onChange }) {
     onChange(Object.keys(cleaned).length === 0 ? undefined : cleaned)
   }
   const previewClass = textStyleToClassName(cur) || 'text-sm text-muted-foreground'
+  const previewStyle = textStyleToInlineStyle(cur)
+  const displayFontSize = cur.font_size_px ?? _LEGACY_SIZE_PX[cur.size] ?? ''
   return (
     <div className="rounded border bg-background p-2 space-y-2">
       <div className="flex items-center gap-2">
@@ -619,9 +729,14 @@ function _DepthRow({ depthKey, glyph, name, style, onChange }) {
       <div className="grid grid-cols-2 gap-2">
         <_TextStyleSelect
           label="글자 크기"
-          value={cur.size ?? ''}
-          options={_SIZE_OPTIONS}
-          onChange={(v) => patch({ size: v })}
+          value={displayFontSize === '' ? '' : String(displayFontSize)}
+          options={_fontSizeOptionsWithDefault(defaultSizePx)}
+          onChange={(v) =>
+            patch({
+              font_size_px: v === '' ? '' : Number(v),
+              size: '',
+            })
+          }
         />
         <_TextStyleSelect
           label="굵기"
@@ -642,7 +757,9 @@ function _DepthRow({ depthKey, glyph, name, style, onChange }) {
           onChange={(v) => patch({ align: v })}
         />
       </div>
-      <div className={`px-1 ${previewClass}`}>{glyph} 미리보기 — 가나다 ABC</div>
+      <div className={`px-1 ${previewClass}`} style={previewStyle}>
+        {glyph} 미리보기 — 가나다 ABC
+      </div>
     </div>
   )
 }
@@ -657,13 +774,25 @@ function _DepthRow({ depthKey, glyph, name, style, onChange }) {
  * classes appear in source and survive the purge.
  */
 export function depthBodyClassName(textStyle, depthStyles, depth) {
+  return textStyleToClassName(_mergedDepthStyle(textStyle, depthStyles, depth))
+}
+
+/**
+ * Inline-style analog of `depthBodyClassName` — the per-depth merge then
+ * fed through `textStyleToInlineStyle` so the resulting CSS overrides any
+ * conflicting class on the same element.
+ */
+export function depthBodyInlineStyle(textStyle, depthStyles, depth) {
+  return textStyleToInlineStyle(_mergedDepthStyle(textStyle, depthStyles, depth))
+}
+
+function _mergedDepthStyle(textStyle, depthStyles, depth) {
   // Bucket: 0, 1, or 2 — depths 3+ collapse into "2".
   const bucket = String(Math.min(Math.max(depth | 0, 0), 2))
   const overlay = depthStyles?.[bucket]
   // If the bucket has no override, the depth inherits the base unchanged.
   // Buckets are independent — leaving "1" empty doesn't pull in "0".
-  const merged = { ...(textStyle ?? {}), ...(overlay ?? {}) }
-  return textStyleToClassName(merged)
+  return { ...(textStyle ?? {}), ...(overlay ?? {}) }
 }
 
 function _TextStyleSelect({ label, value, options, onChange }) {
@@ -692,10 +821,16 @@ function _TextStyleSelect({ label, value, options, onChange }) {
  *
  * Template hint behavior — `placeholder` is the value the template author
  * configured (the widget's `label` prop). When it is non-empty:
- *   - the visible hint becomes `미입력시 "X"가 입력됩니다` so writers know
+ *   - the visible hint becomes `미입력시 "X"이(가) 입력됩니다` so writers know
  *     the field auto-fills
  *   - blurring the input while the value is empty saves the hint as the
  *     caption verbatim (so view-mode renders it as a real heading)
+ * Writers can opt out via the inline "제목 생략" toggle — that flips
+ * `skipAutofill` on, clears the caption, and changes the placeholder to
+ * "(제목 없이 표시)" so they can leave the block headerless on purpose.
+ * The toggle is driven by `onChangeSkipAutofill`; widgets that don't pass
+ * one stay on the legacy always-autofill behavior.
+ *
  * When the template hint is empty we fall back to the legacy "제목 (선택)"
  * placeholder and no auto-fill happens, matching the prior behavior.
  *
@@ -703,7 +838,37 @@ function _TextStyleSelect({ label, value, options, onChange }) {
  *   - empty value → renders nothing (no placeholder leakage in view mode)
  *   - non-empty value → renders as static styled text
  */
-export function CaptionInput({ value, onChange, placeholder, readOnly }) {
+/**
+ * Helper that returns the props needed to wire CaptionInput's skip
+ * toggle into a widget's existing `patch(next)` helper. Each widget
+ * needs to make sure its `patch` round-trips `caption_skip_autofill`
+ * (typically by spreading `content` into the merged object) so the
+ * flag survives across unrelated edits.
+ */
+export function captionSkipProps({ content, patch }) {
+  return {
+    skipAutofill: content?.caption_skip_autofill === true,
+    onChangeSkipAutofill: (skip) => {
+      // Atomic patch: clear caption + set flag (or unset the flag) in
+      // one call so the two field updates can't race on a stale
+      // content snapshot inside a click handler.
+      if (skip) {
+        patch({ caption: '', caption_skip_autofill: true })
+      } else {
+        patch({ caption_skip_autofill: undefined })
+      }
+    },
+  }
+}
+
+export function CaptionInput({
+  value,
+  onChange,
+  placeholder,
+  readOnly,
+  skipAutofill,
+  onChangeSkipAutofill,
+}) {
   if (readOnly) {
     if (!value) return null
     return (
@@ -712,21 +877,59 @@ export function CaptionInput({ value, onChange, placeholder, readOnly }) {
   }
   const hint = typeof placeholder === 'string' ? placeholder.trim() : ''
   const hasHint = hint.length > 0
-  const displayPlaceholder = hasHint
-    ? `미입력시 "${hint}"이(가) 입력됩니다`
-    : '제목 (선택)'
+  const skip = !!skipAutofill
+  const displayPlaceholder = skip
+    ? '(제목 없이 표시)'
+    : hasHint
+      ? `미입력시 "${hint}"이(가) 입력됩니다`
+      : '제목 (선택)'
   function handleBlur() {
+    if (skip) return
     if (!hasHint) return
     if ((value ?? '').trim().length === 0) onChange(hint)
   }
+  // Single atomic toggle callback — widgets clear the caption AND flip
+  // the flag in the same onChange call so the two field updates can't
+  // race on a stale content snapshot. Hidden when the widget doesn't
+  // wire the callback (no way to persist the flag) or when there's no
+  // template hint to autofill from (button would be a no-op).
+  const showSkipToggle = Boolean(onChangeSkipAutofill) && hasHint
+  function toggleSkip() {
+    if (!onChangeSkipAutofill) return
+    onChangeSkipAutofill(!skip)
+  }
   return (
-    <input
-      type="text"
-      value={value ?? ''}
-      onChange={(e) => onChange(e.target.value)}
-      onBlur={handleBlur}
-      placeholder={displayPlaceholder}
-      className="w-full bg-transparent border-0 outline-none focus:ring-0 placeholder:text-muted-foreground/50 text-base font-semibold px-2 py-1"
-    />
+    <div className="flex items-center gap-1">
+      <input
+        type="text"
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={handleBlur}
+        placeholder={displayPlaceholder}
+        className="flex-1 min-w-0 bg-transparent border-0 outline-none focus:ring-0 placeholder:text-muted-foreground/50 text-base font-semibold px-2 py-1"
+      />
+      {showSkipToggle && (
+        <button
+          type="button"
+          onClick={toggleSkip}
+          // Stop bubbling so the click doesn't re-activate the block
+          // and steal focus back to the input the moment we toggle.
+          onMouseDown={(e) => e.stopPropagation()}
+          title={
+            skip
+              ? '자동 채움을 다시 켭니다 (빈 칸이면 템플릿 라벨로 채움)'
+              : '템플릿 라벨 자동 채움을 끄고 제목을 비워둡니다'
+          }
+          className={cn(
+            'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors',
+            skip
+              ? 'bg-amber-100 text-amber-900 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-200'
+              : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+          )}
+        >
+          {skip ? '자동 채움 켜기' : '제목 생략'}
+        </button>
+      )}
+    </div>
   )
 }

@@ -108,6 +108,12 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
     onFocus,
     onBlur,
     className,
+    // React-style object (camelCase keys) applied directly to the
+    // ProseMirror contenteditable DOM node. Inline style here wins over
+    // any conflicting Tailwind class on the same element, which is how
+    // template-time `text_style.font_size_px` / weight / family / align
+    // beat the editor's hard-coded `text-sm` baseline.
+    style,
     editable = true,
   },
   ref,
@@ -222,6 +228,27 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
     externalHtmlRef.current = incoming
     editor.commands.setContent(incoming, { emitUpdate: false })
   }, [html, editor])
+
+  // Sync `style` prop → contenteditable DOM. We only manage the four
+  // typography properties the template editor can set; any other inline
+  // style (e.g. per-character `font-size: 16px` from the bubble menu)
+  // lives inside the doc and is unaffected. Clearing happens by setting
+  // the property to the empty string, which restores cascade behavior.
+  // We depend on the individual fields rather than the `style` object
+  // identity because parent helpers (`depthBodyInlineStyle`) build a
+  // fresh object each render — depending on the object would re-fire on
+  // every keystroke for no behavioral reason.
+  useEffect(() => {
+    if (!editor) return
+    const dom = editor.view?.dom
+    if (!dom) return
+    const s = style ?? {}
+    dom.style.fontSize = s.fontSize ?? ''
+    dom.style.fontFamily = s.fontFamily ?? ''
+    dom.style.fontWeight = s.fontWeight == null ? '' : String(s.fontWeight)
+    dom.style.textAlign = s.textAlign ?? ''
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, style?.fontSize, style?.fontFamily, style?.fontWeight, style?.textAlign])
 
   useImperativeHandle(
     ref,

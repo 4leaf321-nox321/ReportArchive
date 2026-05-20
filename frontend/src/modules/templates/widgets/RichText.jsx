@@ -6,11 +6,13 @@ import { Label } from '@/shared/components/ui/label'
 import { useWidgetRelations } from '@/shared/hooks/useWidgetRelations'
 import {
   CaptionInput,
+  DEFAULT_BODY_FONT_PX,
   DepthStyleField,
   LabelField,
   PreviewLabel,
   TextStyleField,
   depthBodyClassName,
+  depthBodyInlineStyle,
 } from './_shared'
 import {
   RichTextRowEditor,
@@ -109,10 +111,15 @@ export function RichTextPropsPanel({ props, onChange }) {
       <TextStyleField
         value={props.text_style}
         onChange={(text_style) => onChange({ ...props, text_style })}
+        defaultSizePx={DEFAULT_BODY_FONT_PX}
       />
       <DepthStyleField
         value={props.depth_styles}
         onChange={(depth_styles) => onChange({ ...props, depth_styles })}
+        // Each depth's "기본" reflects the base text_style — if the user
+        // set a numeric base, that's the inherited value; otherwise the
+        // widget's body default applies.
+        baseSizePx={props.text_style?.font_size_px ?? DEFAULT_BODY_FONT_PX}
       />
       <p className="text-[10px] text-muted-foreground">
         스타일은 본문 텍스트에만 적용됩니다. 깊이 기호(□ – ·)와 들여쓰기, 관계 칩은 가독성을 위해 고정 크기로 유지됩니다.
@@ -401,7 +408,26 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
   }
 
   function patchCaption(nextCaption) {
-    const merged = { caption: nextCaption, items }
+    const merged = {
+      ...(content ?? {}),
+      caption: nextCaption,
+      items,
+    }
+    if (!merged.caption) delete merged.caption
+    if (!merged.items || merged.items.length === 0) delete merged.items
+    onChange(merged)
+  }
+
+  function patchSkipAutofill(next) {
+    const merged = { ...(content ?? {}), items }
+    if (next) {
+      // Entering skip mode also clears any existing caption (typed or
+      // auto-filled) so the block visibly drops its title in one step.
+      merged.caption_skip_autofill = true
+      delete merged.caption
+    } else {
+      delete merged.caption_skip_autofill
+    }
     if (!merged.caption) delete merged.caption
     if (!merged.items || merged.items.length === 0) delete merged.items
     onChange(merged)
@@ -411,8 +437,16 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
   // function so the bucketed `depth_styles` overlay can win on a single
   // line without affecting the others. Structural marks (prefix glyphs,
   // indent width, relation chips) deliberately stay un-styled.
+  //
+  // `bodyStyleFor` is the inline-style twin — same merge, emitted as a
+  // React style object so the size/weight/family/align reliably win over
+  // the row wrapper's `text-sm` and any per-row class the editor sets.
   const bodyClassFor = useCallback(
     (d) => depthBodyClassName(props.text_style, props.depth_styles, d),
+    [props.text_style, props.depth_styles],
+  )
+  const bodyStyleFor = useCallback(
+    (d) => depthBodyInlineStyle(props.text_style, props.depth_styles, d),
     [props.text_style, props.depth_styles],
   )
 
@@ -421,7 +455,13 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
     return (
       <div className="space-y-2">
         <CaptionInput value={caption} readOnly />
-        {hasBody && <OutlineView items={items} bodyClassFor={bodyClassFor} />}
+        {hasBody && (
+          <OutlineView
+            items={items}
+            bodyClassFor={bodyClassFor}
+            bodyStyleFor={bodyStyleFor}
+          />
+        )}
       </div>
     )
   }
@@ -432,12 +472,15 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
         value={caption}
         onChange={patchCaption}
         placeholder={props.label}
+        skipAutofill={content?.caption_skip_autofill}
+        onChangeSkipAutofill={patchSkipAutofill}
       />
       <OutlineEditor
         items={items}
         onChange={patchItems}
         placeholder={props.placeholder || '대표 문장을 입력하고 Tab으로 상세를 들여쓰세요.'}
         bodyClassFor={bodyClassFor}
+        bodyStyleFor={bodyStyleFor}
       />
       {(min || max) && (
         <p className="text-[10px] text-muted-foreground text-right">
@@ -451,11 +494,14 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
 // --------------------------------------------------------------------------- //
 // View mode — read-only structured render
 // --------------------------------------------------------------------------- //
-function OutlineView({ items, bodyClassFor }) {
+function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
   // The wrapper keeps a sensible default (text-sm) — bodyClassFor returns
   // *only* the designer-selected overrides for the row's depth, so an
-  // empty style leaves the original rendering untouched.
+  // empty style leaves the original rendering untouched. `bodyStyleFor`
+  // is the inline-style twin that wins on the same element, fixing the
+  // class-cascade race that used to drop the designer's size pick.
   const classFor = bodyClassFor ?? (() => '')
+  const styleFor = bodyStyleFor ?? (() => undefined)
   return (
     <div className="space-y-0.5 text-sm">
       {items.map((it, i) => {
@@ -493,6 +539,7 @@ function OutlineView({ items, bodyClassFor }) {
             <RelationChipStatic relation={it.relation} />
             <span
               className={`flex-1 min-w-0 break-words [&_p]:leading-[1.4] ${classFor(depth)}`}
+              style={styleFor(depth)}
               dangerouslySetInnerHTML={{ __html: safeHtml }}
             />
           </div>
@@ -517,7 +564,7 @@ function RelationChipStatic({ relation }) {
 // --------------------------------------------------------------------------- //
 // Edit mode — outline with Tab depth, auto-prefix, inline relation picker
 // --------------------------------------------------------------------------- //
-function OutlineEditor({ items, onChange, placeholder, bodyClassFor }) {
+function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFor }) {
   // Each row exposes an imperative handle ({focus, setCaret, getCaret,
   // getTextLength, isAtStart, isAtEnd}) provided by RichTextRowEditor.
   const inputRefs = useRef(new Map())
@@ -1184,6 +1231,7 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor }) {
             el.setCaret(target)
           }}
           bodyClassFor={bodyClassFor}
+          bodyStyleFor={bodyStyleFor}
         />
       ))}
       {crossRowSelection && crossRowFormat && (
@@ -1264,6 +1312,7 @@ function OutlineRow({
   onFocusPrev,
   onFocusNext,
   bodyClassFor,
+  bodyStyleFor,
 }) {
   const depth = clamp(item.depth ?? 0, 0, MAX_DEPTH)
   const showWarning = depth >= WARN_DEPTH
@@ -1507,6 +1556,7 @@ function OutlineRow({
             className={`min-w-0 text-sm py-1 [&_p]:leading-[1.4] focus:outline-none ${
               bodyClassFor ? bodyClassFor(depth) : ''
             }`}
+            style={bodyStyleFor ? bodyStyleFor(depth) : undefined}
           />
         </div>
         {showWarning && <DepthWarning depth={depth} />}

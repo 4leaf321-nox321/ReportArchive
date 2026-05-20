@@ -7,10 +7,14 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   ClipboardPaste,
   Copy,
   Download,
   FileBox,
+  FileCode,
+  FileText,
+  FileType2,
   GripVertical,
   HardDrive,
   Layers,
@@ -26,6 +30,7 @@ import {
   X,
 } from 'lucide-react'
 import GridLayout, { useContainerWidth } from 'react-grid-layout'
+import { PrintScaleContext } from './printContext'
 import { Button } from '@/shared/components/ui/button'
 import { Badge } from '@/shared/components/ui/badge'
 import { Card, CardContent } from '@/shared/components/ui/card'
@@ -33,7 +38,7 @@ import { ScrollArea } from '@/shared/components/ui/scroll-area'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { Input } from '@/shared/components/ui/input'
 import { Textarea } from '@/shared/components/ui/textarea'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/components/ui/popover'
 import {
   DropdownMenu,
@@ -43,7 +48,6 @@ import {
 } from '@/shared/components/ui/dropdown-menu'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { ErrorState } from '@/shared/components/ErrorState'
-import { PageWidthToggle, usePageWidth } from '@/shared/components/PageWidthToggle'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useAsync } from '@/shared/hooks/useAsync'
@@ -57,6 +61,10 @@ import {
   LockConflictError,
 } from './api'
 import { useReportLock } from './useReportLock'
+import {
+  DEFAULT_REPORT_WIDTH_PX,
+  ReportSettingsDialog,
+} from './ReportSettingsDialog'
 import { getTemplateVersion, createTemplate } from '@/shared/api/templates'
 import { listTemplateCategories } from '@/shared/api/templateCategories'
 import { STATUSES, STATUS_LABEL, STATUS_VARIANT } from './constants'
@@ -97,8 +105,17 @@ export default function ReportDetailPage() {
     'ra:report-view-mode:v1',
     'paginated'
   )
-  const [pageWidth, setPageWidth] = usePageWidth()
   const [confirmDelete, setConfirmDelete] = useState(false)
+  // Right-click on the empty (block-less) area — or the floating
+  // "보고서 설정" pill at the bottom-right — opens this tabbed dialog.
+  // Currently only the 폭 설정 tab is wired; the tab structure is in
+  // place so other report-level settings can land here without another
+  // dialog round-trip. Persisted per-report via draft.page_width_px.
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
+  // Coords of the empty-area right-click. When non-null we render a small
+  // floating menu with the "보고서 폭 설정" item; clicking it opens the
+  // dialog above. Closes on outside-click / Esc / item click.
+  const [pageContextMenu, setPageContextMenu] = useState(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [copyOpen, setCopyOpen] = useState(false)
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
@@ -110,7 +127,23 @@ export default function ReportDetailPage() {
   // the dialog read the latest info directly.
   const [takeoverPrompt, setTakeoverPrompt] = useState(null)
   const [pasteJsonOpen, setPasteJsonOpen] = useState(false)
+  // PDF print dialog — lets the writer pick a font scale before the
+  // browser print dialog opens. Persisted so a writer who prefers 90%
+  // doesn't have to re-pick on every print this session.
+  const [pdfDialogOpen, setPdfDialogOpen] = useState(false)
+  const [pdfPrintScale, setPdfPrintScale] = usePersistedState(
+    'ra:pdf-print-scale:v1',
+    1,
+  )
   const [isEditing, setIsEditing] = useState(isNew || startEditingFromState)
+  // "Printing" doesn't actually leave edit mode (no lock release, no
+  // unsaved-change loss); it just renders all blocks read-only and stacks
+  // every page vertically so the browser's print engine sees the same
+  // chrome-free, paginated layout regardless of where the user was. Used
+  // by both PDF print-to-file and the Word export's html2canvas capture.
+  const [printing, setPrinting] = useState(false)
+  const effectiveIsEditing = isEditing && !printing
+  const effectiveViewMode = printing ? 'all' : viewMode
   const [currentPage, setCurrentPage] = useState(0)
   // Widget catalog (label/description/props_schema per widget type) is
   // bundled into the AI prompt so the model knows what shapes it may emit.
@@ -170,11 +203,20 @@ export default function ReportDetailPage() {
         location.state.initialTitle.trim()
           ? location.state.initialTitle.trim()
           : '새 보고서'
+      // Inherit per-template defaults (currently just page_width_px).
+      // Lives on the template's schema doc under `report_defaults` —
+      // every template version carries its own copy, so new reports
+      // bound to that version pick up the same starting point.
+      const tplDefaults = seedTemplate?.schema?.report_defaults ?? null
+      const seededWidth = Number.isFinite(tplDefaults?.page_width_px)
+        ? tplDefaults.page_width_px
+        : null
       setDraft({
         title: seededTitle,
         report_date: todayIsoDate(),
         status: 'draft',
         tags: [],
+        page_width_px: seededWidth,
         pages: [
           {
             template_id: seedTemplate.template_id,
@@ -215,6 +257,10 @@ export default function ReportDetailPage() {
         // `expected_revision` on save; the server rejects with 409 if
         // someone else's save landed between our load and our save.
         revision: existingReport.revision ?? 1,
+        // Per-report content width. null falls through to the narrow
+        // default at render; the right-click "보고서 폭 설정" dialog
+        // writes here when the user picks a custom value.
+        page_width_px: existingReport.page_width_px ?? null,
         pages,
       })
       setCurrentPage((p) => clamp(p, 0, pages.length - 1))
@@ -416,10 +462,8 @@ export default function ReportDetailPage() {
       if (!d) return d
       const page = d.pages[pageIdx]
       if (!page) return d
-      const existingIds = new Set([
-        ...Object.keys(page.content ?? {}),
-        ...(page.extra_blocks ?? []).map((b) => b.id),
-      ])
+      const tpl = getCachedTemplate(pageTemplateMap, page)
+      const existingIds = collectPageBlockIds(page, tpl)
       const id = freshExtraId(widgetType, existingIds)
       const newBlock = {
         id,
@@ -448,6 +492,149 @@ export default function ReportDetailPage() {
               ...p,
               extra_blocks: [...(p.extra_blocks ?? []), newBlock],
               blocks_order: nextOrder,
+              ...(defaultSection ? { block_sections: nextSections } : {}),
+            }
+          : p,
+      )
+      return { ...d, pages: nextPages }
+    })
+  }
+
+  /** Insert a new ad-hoc widget relative to an existing block. `direction`
+   *  is one of 'up' / 'down' / 'left' / 'right' (against the anchor block).
+   *
+   *    up / down  — full-width row insert; every block at/after the insert
+   *                 row gets its `row` bumped by 1 via layout_overrides so
+   *                 the grid stays consistent.
+   *    left / right — splits the anchor's col_span in half; the new block
+   *                 takes the other half on the same row. blocks_order
+   *                 decides which side ends up on the left.
+   *
+   *  We materialize layout_overrides for both the anchor (when it was
+   *  shrunk or its row changed) and the new block — extras don't have a
+   *  template layout to fall back on, so without an override the new
+   *  block would render at default size/position. */
+  function addExtraBlockAt(pageIdx, widgetType, defaultProps, anchorId, direction) {
+    setDraft((d) => {
+      if (!d) return d
+      const page = d.pages[pageIdx]
+      if (!page) return d
+      const tpl = getCachedTemplate(pageTemplateMap, page)
+      const blocks = combinedBlocks(tpl, page)
+      const anchor = blocks.find((b) => b.id === anchorId)
+      if (!anchor) return d
+
+      // Resolve the anchor's *current* layout (override beats template).
+      // Fallbacks mirror what `effectiveLayouts` uses so the inserted
+      // block lands where the user sees the anchor.
+      const overrides = page?.layout_overrides ?? {}
+      function resolvedLayout(block) {
+        const ov = overrides[block.id]
+        const base = ov ?? block.layout ?? null
+        return base
+          ? { row: base.row, col_span: base.col_span, row_span: base.row_span ?? 4 }
+          : { row: 1, col_span: REPORT_GRID_COLS, row_span: AUTO_FIT_INITIAL_ROWS }
+      }
+      const anchorLayout = resolvedLayout(anchor)
+
+      const existingIds = collectPageBlockIds(page, tpl)
+      const id = freshExtraId(widgetType, existingIds)
+      const newBlock = { id, type: widgetType, props: { ...defaultProps } }
+
+      // Materialize the order so subsequent renders use ours.
+      const baseOrder = page.blocks_order?.length
+        ? [...page.blocks_order]
+        : blocks.map((b) => b.id)
+      const anchorIdx = baseOrder.indexOf(anchorId)
+      // Defensive: anchor not in order (shouldn't happen, but if it
+      // does, append at end and leave layout to defaults).
+      if (anchorIdx < 0) {
+        const nextPages = d.pages.map((p, i) =>
+          i === pageIdx
+            ? {
+                ...p,
+                extra_blocks: [...(p.extra_blocks ?? []), newBlock],
+                blocks_order: [...baseOrder, id],
+              }
+            : p,
+        )
+        return { ...d, pages: nextPages }
+      }
+
+      const nextOverrides = { ...overrides }
+      let nextOrder
+
+      if (direction === 'up' || direction === 'down') {
+        // Full-width insert on its own row. Bump every block at or after
+        // the insert row by 1 so we don't collide with them.
+        const insertRow = direction === 'up' ? anchorLayout.row : anchorLayout.row + 1
+        for (const b of blocks) {
+          const lay = resolvedLayout(b)
+          if (lay.row >= insertRow) {
+            nextOverrides[b.id] = { ...(nextOverrides[b.id] ?? lay), row: lay.row + 1 }
+          }
+        }
+        nextOverrides[id] = {
+          row: insertRow,
+          col_span: REPORT_GRID_COLS,
+          row_span: AUTO_FIT_INITIAL_ROWS,
+        }
+        // Place the new id in blocks_order near the anchor so visual + DOM
+        // order stay coherent (the grid uses (row, x) for layout, but
+        // blocks_order seeds initial positions when there's no override).
+        nextOrder =
+          direction === 'up'
+            ? [...baseOrder.slice(0, anchorIdx), id, ...baseOrder.slice(anchorIdx)]
+            : [...baseOrder.slice(0, anchorIdx + 1), id, ...baseOrder.slice(anchorIdx + 1)]
+      } else {
+        // Left/right — prefer to fill the row's remaining capacity over
+        // shrinking the anchor. When the row isn't full yet, the new
+        // block claims the leftover columns without disturbing any
+        // existing block; only when the row is fully packed do we split
+        // the anchor in two. Caller is expected to hide the arrow only
+        // when neither option is available (row full AND col_span < 2).
+        const rowUsed = blocks
+          .filter((b) => resolvedLayout(b).row === anchorLayout.row)
+          .reduce((sum, b) => sum + resolvedLayout(b).col_span, 0)
+        const remaining = REPORT_GRID_COLS - rowUsed
+        let newColSpan
+        if (remaining > 0) {
+          newColSpan = remaining
+        } else {
+          // Row is packed → split the anchor. Clamp so we never emit
+          // a 0-span block.
+          const cs = Math.max(2, anchorLayout.col_span)
+          newColSpan = Math.max(1, Math.floor(cs / 2))
+          nextOverrides[anchorId] = {
+            ...(nextOverrides[anchorId] ?? anchorLayout),
+            col_span: cs - newColSpan,
+          }
+        }
+        nextOverrides[id] = {
+          row: anchorLayout.row,
+          col_span: newColSpan,
+          row_span: anchorLayout.row_span,
+        }
+        nextOrder =
+          direction === 'left'
+            ? [...baseOrder.slice(0, anchorIdx), id, ...baseOrder.slice(anchorIdx)]
+            : [...baseOrder.slice(0, anchorIdx + 1), id, ...baseOrder.slice(anchorIdx + 1)]
+      }
+
+      // Seed the section tag if the widget type has a default — same
+      // behavior as addExtraBlock so writers get a useful starting chip.
+      const defaultSection = WIDGET_DEFAULT_SECTION_CODE[widgetType]
+      const nextSections = defaultSection
+        ? { ...(page.block_sections ?? {}), [id]: defaultSection }
+        : page.block_sections
+
+      const nextPages = d.pages.map((p, i) =>
+        i === pageIdx
+          ? {
+              ...p,
+              extra_blocks: [...(p.extra_blocks ?? []), newBlock],
+              blocks_order: nextOrder,
+              layout_overrides: nextOverrides,
               ...(defaultSection ? { block_sections: nextSections } : {}),
             }
           : p,
@@ -549,8 +736,14 @@ export default function ReportDetailPage() {
       const nextPages = d.pages.map((p, i) => {
         if (i !== pageIdx) return p
         const next = { ...(p.block_sections ?? {}) }
-        if (code) next[blockId] = code
-        else delete next[blockId]
+        // Three-state value:
+        //   string  → explicit pick.
+        //   null    → explicit "no section" (overrides the template's
+        //             per-block default).
+        //   absent  → use the template default (block.section) at render.
+        // The picker's "지우기" sends `null`, so the override sticks even
+        // when the template defined a default.
+        next[blockId] = code ?? null
         return { ...p, block_sections: next }
       })
       return { ...d, pages: nextPages }
@@ -701,6 +894,9 @@ export default function ReportDetailPage() {
         status: draft.status,
         tags: draft.tags ?? [],
         pages: normalizedPages,
+        // null clears the per-report override and falls back to the
+        // frontend's narrow default at render time.
+        page_width_px: Number.isFinite(draft.page_width_px) ? draft.page_width_px : null,
       }
       if (isNew) {
         const created = await createReport({
@@ -837,6 +1033,9 @@ export default function ReportDetailPage() {
         status: 'draft',
         tags: draft.tags ?? [],
         pages: draft.pages,
+        // Carry the source report's width preference into the copy so the
+        // user sees the same layout immediately.
+        page_width_px: Number.isFinite(draft.page_width_px) ? draft.page_width_px : null,
       })
       toast.success('보고서가 복사되었습니다.')
       setCopyOpen(false)
@@ -982,6 +1181,118 @@ export default function ReportDetailPage() {
     URL.revokeObjectURL(url)
     toast.success('JSON 파일로 저장했습니다.')
   }
+
+  // PDF export — opens a small dialog so the writer can pick a font
+  // scale, then triggers the browser's print dialog with that scale
+  // applied via the `--print-scale` CSS variable that print rules in
+  // index.css multiply against the widget text sizes.
+  function handleExportPdf() {
+    if (!draft) return
+    setPdfDialogOpen(true)
+  }
+  function performPdfPrint(scale) {
+    if (!draft) return
+    const safe = Number.isFinite(scale) && scale > 0 ? scale : 1
+    setPdfDialogOpen(false)
+    document.documentElement.style.setProperty('--print-scale', String(safe))
+    setPrinting(true)
+    // Two RAFs so React has a chance to (a) re-render with printing=true,
+    // (b) commit layout. Without this, the print preview can snapshot the
+    // pre-toggle DOM and capture edit chrome.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        // Measure the rendered grid's screen width and pick a zoom ratio
+        // so the entire grid (with its desktop-sized side-by-side widget
+        // layout) fits inside the paper's printable area. Without this,
+        // the grid's pixel-based positioning runs off the right edge of
+        // A4 and content gets cropped.
+        //
+        // A4 portrait, 12mm margins ≈ 186mm × 273mm printable.
+        // 186mm at 96dpi ≈ 703 CSS px. We bias slightly under 703 to
+        // leave a tiny safety gutter for browsers that round oddly.
+        const TARGET_PRINT_PX = 690
+        const gridEl = document.querySelector(
+          '.report-detail-root .react-grid-layout',
+        )
+        const screenW = gridEl?.getBoundingClientRect?.()?.width ?? 0
+        const zoomRatio = screenW > TARGET_PRINT_PX
+          ? Math.max(0.35, TARGET_PRINT_PX / screenW)
+          : 1
+        document.documentElement.style.setProperty(
+          '--print-zoom',
+          String(zoomRatio),
+        )
+        const cleanup = () => {
+          setPrinting(false)
+          document.documentElement.style.removeProperty('--print-scale')
+          document.documentElement.style.removeProperty('--print-zoom')
+          window.removeEventListener('afterprint', cleanup)
+        }
+        window.addEventListener('afterprint', cleanup)
+        window.print()
+        // Fallback for browsers that don't fire afterprint reliably (rare,
+        // but Safari historically has been spotty). 500ms is generous —
+        // the print dialog blocks the event loop in modern Chromium so we
+        // shouldn't actually hit this in practice.
+        setTimeout(() => {
+          setPrinting(false)
+          document.documentElement.style.removeProperty('--print-scale')
+          document.documentElement.style.removeProperty('--print-zoom')
+        }, 500)
+      })
+    })
+  }
+
+  // HTML export — clone the currently rendered report DOM (with the
+  // app shell stripped) into a single self-contained .html with
+  // stylesheets inlined and images converted to base64 data URIs.
+  // Keeps the on-screen visual layout exactly as the writer sees it.
+  async function handleExportHtml() {
+    if (!draft) return
+    setPrinting(true)
+    try {
+      await new Promise((r) =>
+        requestAnimationFrame(() => requestAnimationFrame(r)),
+      )
+      const { exportReportToHtml } = await import('./exportReportToHtml')
+      await exportReportToHtml({ draft })
+      toast.success('HTML 파일로 저장했습니다.')
+    } catch (err) {
+      console.error(err)
+      toast.error(`HTML 저장 실패: ${err?.message ?? err}`)
+    } finally {
+      setPrinting(false)
+    }
+  }
+
+  // Word export — runs the docx builder with the report mounted in
+  // view-mode so html2canvas captures of chart/flowchart/milestone
+  // blocks come out clean. The builder lives in exportReportToDocx.
+  async function handleExportDocx() {
+    if (!draft) return
+    setPrinting(true)
+    try {
+      // Same two-frame wait so the DOM the exporter snapshots reflects
+      // the read-only layout (no drag handles, no edit-mode picker
+      // strips, etc.).
+      await new Promise((r) =>
+        requestAnimationFrame(() => requestAnimationFrame(r)),
+      )
+      const { exportReportToDocx } = await import('./exportReportToDocx')
+      await exportReportToDocx({
+        draft,
+        pageTemplateMap,
+        sectionItemByCode,
+      })
+      toast.success('Word 파일로 저장했습니다.')
+    } catch (err) {
+      console.error(err)
+      toast.error(`Word 저장 실패: ${err?.message ?? err}`)
+    } finally {
+      setPrinting(false)
+    }
+  }
+
   // Shared import path for both the file picker and the paste-JSON dialog.
   // Throws on schema mismatch so the caller can surface its own toast.
   function applyImportedDraft(text) {
@@ -1111,6 +1422,24 @@ export default function ReportDetailPage() {
       'props (required: label) : `{ "label":"검토 흐름", "orientation":"horizontal" }`   // orientation: horizontal | vertical',
       'content : `{ "items":[ {"label":"요구사항"}, {"label":"설계"}, {"label":"검토","description":"리뷰 미팅"}, {"label":"승인"} ] }`',
       '※ 순차 흐름만 지원. `nodes` / `edges` 같은 키 사용 금지.',
+      '',
+      '### progress_bar (진행률 바)',
+      'props (required: label) : `{ "label":"작업 진척도", "default_max":100, "unit":"%" }`   // default_max / unit 은 선택. 기본 100% 기준이면 둘 다 생략 가능',
+      'content : `{ "items":[ {"label":"기획","value":100}, {"label":"개발","value":65}, {"label":"테스트","value":20,"max":40,"note":"케이스 부족"} ] }`',
+      '- value 는 현재값(숫자), max 는 목표값(생략하면 props.default_max 사용). 비율(value/max) 에 따라 색상이 자동: <30% 빨강, 30–70% 주황, 70% 이상 초록, 100% 이상 진초록.',
+      '- status(선택)는 `pending` | `in_progress` | `done` | `blocked` 중 하나. 지정하면 자동 색상보다 우선.',
+      '- 단순 % 가 아닌 절대값 비교(예: "8 / 12 건")도 가능 — props.unit 을 "건" 등으로 바꾸고 item.max 를 명시.',
+      '- 여러 작업·지표의 진척도를 한 번에 비교할 때 사용. 단일 KPI 면 key_value 가 더 어울립니다.',
+      '',
+      '### raci_matrix (RACI 매트릭스)',
+      'props (required: label) : `{ "label":"역할 분담" }`   // default_roles 는 선택 (보고서별로 content.roles 가 우선)',
+      'content : `{ "roles":[ {"key":"modeling","label":"모델링"}, {"key":"analysis","label":"분석"}, {"key":"develop","label":"개발"}, {"key":"design","label":"설계"} ], "rows":[ {"label":"요구사항 정의","assignments":{"modeling":"I","analysis":"R/A","develop":"C","design":"C"}}, {"label":"시스템 모델링","assignments":{"modeling":"R/A","analysis":"C","develop":"I","design":"C"}}, {"label":"구현","assignments":{"modeling":"I","analysis":"I","develop":"R/A","design":"C"}} ] }`',
+      '- roles 는 content 안에 둡니다 (props 가 아님). key 는 영문 소문자/숫자/_ 만, 페이지 내에서 고유.',
+      '- role 의 `group` (선택)은 상단 헤더 그룹 라벨. 같은 group 의 **인접한** 역할들이 자동으로 한 셀로 병합 (colspan).',
+      '- assignments 의 키는 content.roles 의 key 와 정확히 일치해야 함. 알 수 없는 키 사용 금지.',
+      '- 셀 값은 `R`(실무) | `A`(책임) | `C`(자문) | `I`(공유) 중 하나 또는 `/` 로 결합 (예: `R/A`). 스키마 값은 영문자, 화면 표시는 자동으로 한국어("실무 / 책임")로 변환됩니다.',
+      '- R = 실무(실제 작업), A = 책임(최종 책임자, 한 행에 1명), C = 자문(의견 제공), I = 공유(결과 통지).',
+      '- 표준: 한 행에 A 는 1명만 (책임자 단일화). R 은 여러 명 가능. C/I 는 자유.',
       '',
       '### image / attachment  ★ AI 가 만들지 마세요 ★',
       '두 위젯의 content 는 시스템에 실제로 업로드된 파일의 `file_id` 를 요구합니다. AI 는 file_id 를 알 수 없으므로 이 위젯들은 `extra_blocks` / `content` 양쪽 모두에서 생성하지 마세요. 이미지·첨부가 필요하다는 점만 본문 rich_text 에 메모해 두세요. (사용자가 보고서를 받은 뒤 직접 추가합니다.)',
@@ -1279,6 +1608,24 @@ export default function ReportDetailPage() {
       'content : `{ "items":[ {"label":"요구사항"}, {"label":"설계"}, {"label":"검토","description":"리뷰 미팅"}, {"label":"승인"} ] }`',
       '※ 순차 흐름만 지원. `nodes` / `edges` 같은 키 사용 금지.',
       '',
+      '### progress_bar (진행률 바)',
+      'props (required: label) : `{ "label":"작업 진척도", "default_max":100, "unit":"%" }`   // default_max / unit 은 선택. 기본 100% 기준이면 둘 다 생략 가능',
+      'content : `{ "items":[ {"label":"기획","value":100}, {"label":"개발","value":65}, {"label":"테스트","value":20,"max":40,"note":"케이스 부족"} ] }`',
+      '- value 는 현재값(숫자), max 는 목표값(생략하면 props.default_max 사용). 비율(value/max) 에 따라 색상이 자동: <30% 빨강, 30–70% 주황, 70% 이상 초록, 100% 이상 진초록.',
+      '- status(선택)는 `pending` | `in_progress` | `done` | `blocked` 중 하나. 지정하면 자동 색상보다 우선.',
+      '- 단순 % 가 아닌 절대값 비교(예: "8 / 12 건")도 가능 — props.unit 을 "건" 등으로 바꾸고 item.max 를 명시.',
+      '- 여러 작업·지표의 진척도를 한 번에 비교할 때 사용. 단일 KPI 면 key_value 가 더 어울립니다.',
+      '',
+      '### raci_matrix (RACI 매트릭스)',
+      'props (required: label) : `{ "label":"역할 분담" }`   // default_roles 는 선택 (보고서별로 content.roles 가 우선)',
+      'content : `{ "roles":[ {"key":"modeling","label":"모델링"}, {"key":"analysis","label":"분석"}, {"key":"develop","label":"개발"}, {"key":"design","label":"설계"} ], "rows":[ {"label":"요구사항 정의","assignments":{"modeling":"I","analysis":"R/A","develop":"C","design":"C"}}, {"label":"시스템 모델링","assignments":{"modeling":"R/A","analysis":"C","develop":"I","design":"C"}}, {"label":"구현","assignments":{"modeling":"I","analysis":"I","develop":"R/A","design":"C"}} ] }`',
+      '- roles 는 content 안에 둡니다 (props 가 아님). key 는 영문 소문자/숫자/_ 만, 페이지 내에서 고유.',
+      '- role 의 `group` (선택)은 상단 헤더 그룹 라벨. 같은 group 의 **인접한** 역할들이 자동으로 한 셀로 병합 (colspan).',
+      '- assignments 의 키는 content.roles 의 key 와 정확히 일치해야 함. 알 수 없는 키 사용 금지.',
+      '- 셀 값은 `R`(실무) | `A`(책임) | `C`(자문) | `I`(공유) 중 하나 또는 `/` 로 결합 (예: `R/A`). 스키마 값은 영문자, 화면 표시는 자동으로 한국어("실무 / 책임")로 변환됩니다.',
+      '- R = 실무(실제 작업), A = 책임(최종 책임자, 한 행에 1명), C = 자문(의견 제공), I = 공유(결과 통지).',
+      '- 표준: 한 행에 A 는 1명만 (책임자 단일화). R 은 여러 명 가능. C/I 는 자유.',
+      '',
       '### image / attachment  ★ AI 가 만들지 마세요 ★',
       '두 위젯의 content 는 시스템에 실제로 업로드된 파일의 `file_id` 를 요구합니다. AI 는 file_id 를 알 수 없으므로 이 위젯들은 `extra_blocks` / `content` 양쪽 모두에서 생성하지 마세요. 이미지·첨부가 필요하다는 점만 본문 rich_text 에 메모해 두세요. (사용자가 보고서를 받은 뒤 직접 추가합니다.)',
     ].join('\n')
@@ -1354,10 +1701,17 @@ export default function ReportDetailPage() {
     ].join('\n')
   }
 
+  // Driven by performPdfPrint — when not printing the context value is 1
+  // so screen rendering uses the chart's default font sizes; while
+  // printing it switches to the user-picked scale so SVG-rendered text
+  // (Recharts) re-renders with the right size for the page.
+  const printContextValue = printing ? pdfPrintScale : 1
+
   return (
-    <div className="flex h-full">
+    <PrintScaleContext.Provider value={printContextValue}>
+    <div className="flex h-full report-detail-root">
       <div className="relative flex-1 min-w-0 flex flex-col">
-        <div className="flex flex-wrap items-center gap-3 border-b bg-background px-6 py-3">
+        <div className="flex flex-wrap items-center gap-3 border-b bg-background px-6 py-3 report-detail-toolbar">
           <div className="flex-1 min-w-[280px]">
             {isEditing ? (
               <Input
@@ -1420,8 +1774,6 @@ export default function ReportDetailPage() {
 
           <div className="flex flex-wrap items-center gap-2 ml-auto">
           <ViewModeToggle value={viewMode} onChange={setViewMode} />
-
-          <PageWidthToggle value={pageWidth} onChange={setPageWidth} />
 
           <Button
             variant="ghost"
@@ -1514,13 +1866,21 @@ export default function ReportDetailPage() {
                 <Download className="mr-2 h-3.5 w-3.5" />
                 JSON으로 저장
               </DropdownMenuItem>
+              <DropdownMenuItem onSelect={handleExportPdf}>
+                <FileText className="mr-2 h-3.5 w-3.5" />
+                PDF로 저장 (브라우저 인쇄)
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={handleExportDocx}>
+                <FileType2 className="mr-2 h-3.5 w-3.5" />
+                Word로 저장
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={handleExportHtml}>
+                <FileCode className="mr-2 h-3.5 w-3.5" />
+                HTML로 저장
+              </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
                 <Upload className="mr-2 h-3.5 w-3.5" />
                 JSON에서 불러오기
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setPasteJsonOpen(true)}>
-                <ClipboardPaste className="mr-2 h-3.5 w-3.5" />
-                JSON 데이터 붙여넣기
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -1556,19 +1916,47 @@ export default function ReportDetailPage() {
 
         <ScrollArea className="flex-1">
           <div
-            className={cn(
-              'p-6 space-y-8',
-              pageWidth === 'narrow' && 'max-w-5xl mx-auto w-full',
-            )}
+            className="p-6 space-y-8 mx-auto w-full"
+            // Per-report content width. Falls back to the narrow default
+            // (1024px ≈ Tailwind `max-w-5xl`) so reports that pre-date the
+            // setting keep their look. Right-click in the empty area below
+            // opens the picker.
+            style={{ maxWidth: `${draft.page_width_px ?? DEFAULT_REPORT_WIDTH_PX}px` }}
+            onContextMenu={(e) => {
+              // Blocks call `e.preventDefault()` in their own handler and
+              // we let that flag bubble up here — when it's set we know a
+              // child already handled the click and our page-level menu
+              // should stay quiet. Any right-click that lands on empty
+              // padding / inter-page gap reaches us with the flag unset.
+              if (e.defaultPrevented) return
+              // The width is a saved property, so the menu only makes
+              // sense inside edit mode. In view mode we leave the native
+              // browser context menu alone so the writer can still copy
+              // text, inspect, etc.
+              if (!effectiveIsEditing) return
+              e.preventDefault()
+              setPageContextMenu({ x: e.clientX, y: e.clientY })
+            }}
           >
-            {viewMode === 'all'
+            {/* Print-only title block — the in-app title lives in the
+                toolbar, which is hidden by the @media print rules. Adding
+                an inline title here keeps the printed PDF self-explanatory
+                without disturbing the screen layout. */}
+            <div className="hidden print:block mb-4">
+              <h1 className="text-2xl font-bold">{draft.title || '(제목 없음)'}</h1>
+              <div className="text-sm text-muted-foreground mt-1">
+                {draft.report_date}
+                {existingReport?.owner_name ? ` · ${existingReport.owner_name}` : ''}
+              </div>
+            </div>
+            {effectiveViewMode === 'all'
               ? pages.map((p, idx) => (
                   <PageSection
                     key={`page-${idx}`}
                     pageIdx={idx}
                     page={p}
                     template={getCachedTemplate(pageTemplateMap, p)}
-                    isEditing={isEditing}
+                    isEditing={effectiveIsEditing}
                     activeBlock={activeBlock}
                     onActivate={(blockId) => setActiveBlock({ pageIdx: idx, blockId })}
                     onChangeContent={(blockId, value) => updateBlockContent(idx, blockId, value)}
@@ -1586,6 +1974,9 @@ export default function ReportDetailPage() {
                     onRename={(name) => renamePage(idx, name)}
                     showPageHeader={pageCount > 1}
                     onAddExtraBlock={(type, defaults) => addExtraBlock(idx, type, defaults)}
+                    onAddExtraBlockAt={(type, defaults, anchorId, direction) =>
+                      addExtraBlockAt(idx, type, defaults, anchorId, direction)
+                    }
                     onRemoveBlock={(blockId) => removeBlockFromPage(idx, blockId)}
                     onChangeExtraBlockProps={(blockId, newProps) =>
                       setExtraBlockProps(idx, blockId, newProps)
@@ -1601,7 +1992,7 @@ export default function ReportDetailPage() {
                     pageIdx={safeCurrent}
                     page={currentPageData}
                     template={currentTemplate}
-                    isEditing={isEditing}
+                    isEditing={effectiveIsEditing}
                     activeBlock={activeBlock}
                     onActivate={(blockId) =>
                       setActiveBlock({ pageIdx: safeCurrent, blockId })
@@ -1624,6 +2015,9 @@ export default function ReportDetailPage() {
                     showPageHeader={pageCount > 1}
                     onAddExtraBlock={(type, defaults) =>
                       addExtraBlock(safeCurrent, type, defaults)
+                    }
+                    onAddExtraBlockAt={(type, defaults, anchorId, direction) =>
+                      addExtraBlockAt(safeCurrent, type, defaults, anchorId, direction)
                     }
                     onRemoveBlock={(blockId) =>
                       removeBlockFromPage(safeCurrent, blockId)
@@ -1720,12 +2114,63 @@ export default function ReportDetailPage() {
         }}
       />
 
+      {pageContextMenu && (
+        <PageContextMenu
+          x={pageContextMenu.x}
+          y={pageContextMenu.y}
+          onClose={() => setPageContextMenu(null)}
+          onOpenSettings={() => {
+            setPageContextMenu(null)
+            setSettingsDialogOpen(true)
+          }}
+        />
+      )}
+
+      <ReportSettingsDialog
+        open={settingsDialogOpen}
+        currentWidthPx={draft?.page_width_px ?? null}
+        defaultWidthPx={DEFAULT_REPORT_WIDTH_PX}
+        onClose={() => setSettingsDialogOpen(false)}
+        onApplyWidth={(px) => {
+          setDraft((d) => (d ? { ...d, page_width_px: px } : d))
+          setSettingsDialogOpen(false)
+        }}
+      />
+
       <TakeoverLockDialog
         holder={takeoverPrompt}
         onCancel={() => setTakeoverPrompt(null)}
         onConfirm={() => onEnterEdit({ force: true })}
       />
+
+      <PdfPrintDialog
+        open={pdfDialogOpen}
+        onOpenChange={setPdfDialogOpen}
+        scale={pdfPrintScale}
+        onChangeScale={setPdfPrintScale}
+        onConfirm={(s) => performPdfPrint(s)}
+      />
+
+      {/* Floating action cluster pinned to the viewport's bottom-right.
+          The "위젯 추가" pill drops a new block on the current page
+          (safeCurrent — in 'all' viewMode the writer flips the active
+          page via PageStrip first); the "보고서 설정" pill opens the
+          tabbed settings dialog (currently just 폭 설정). Both live
+          inside the same container so the exporter strips them in one
+          shot via `report-detail-floating`. */}
+      {isEditing && (
+        <div className="report-detail-floating fixed bottom-6 right-6 z-40 print:hidden flex items-center gap-2">
+          <FloatingPasteJson onOpen={() => setPasteJsonOpen(true)} />
+          <FloatingReportSettings onOpen={() => setSettingsDialogOpen(true)} />
+          <FloatingAddWidget
+            onAdd={(type, defaults) =>
+              addExtraBlock(safeCurrent, type, defaults)
+            }
+          />
+        </div>
+      )}
     </div>
+    </PrintScaleContext.Provider>
   )
 }
 
@@ -1819,6 +2264,8 @@ const PROMPT_COVERED_WIDGETS = new Set([
   'chart',
   'milestone',
   'flowchart',
+  'progress_bar',
+  'raci_matrix',
   'image',
   'attachment',
 ])
@@ -1992,6 +2439,70 @@ function WidgetCoverageRow({ widget, covered }) {
         )}
       </div>
     </div>
+  )
+}
+
+/** Pre-print step for "PDF로 저장". The body sizes in print are
+ *  multiplied by `--print-scale` (set on documentElement by
+ *  performPdfPrint), so picking a preset here changes the printed font
+ *  density without touching screen rendering. Chart text is rendered
+ *  into SVG via inline fontSize props so it won't scale with this
+ *  variable — the dialog notes that limitation.
+ */
+const PDF_SCALE_PRESETS = [0.8, 0.9, 1.0, 1.1, 1.2]
+function PdfPrintDialog({ open, onOpenChange, scale, onChangeScale, onConfirm }) {
+  const [local, setLocal] = useState(scale ?? 1)
+  useEffect(() => {
+    if (open) setLocal(scale ?? 1)
+  }, [open, scale])
+  function handleConfirm() {
+    onChangeScale(local)
+    onConfirm(local)
+  }
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>PDF 인쇄</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <div className="text-sm font-medium">글자 배율</div>
+            <div className="flex gap-1.5">
+              {PDF_SCALE_PRESETS.map((p) => {
+                const active = Math.abs(p - local) < 0.001
+                return (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setLocal(p)}
+                    className={cn(
+                      'flex-1 rounded-md border px-2 py-2 text-sm transition-colors',
+                      active
+                        ? 'bg-primary text-primary-foreground border-primary'
+                        : 'bg-background hover:bg-muted',
+                    )}
+                  >
+                    {Math.round(p * 100)}%
+                  </button>
+                )
+              })}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              100% = 화면과 동일한 크기. 페이지에 더 많은 내용을 담으려면 80~90%,
+              가독성 우선이면 110~120%를 추천합니다. 본문·차트·표 글자 모두
+              같은 비율로 함께 조정됩니다.
+            </p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
+              취소
+            </Button>
+            <Button onClick={handleConfirm}>인쇄 진행</Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -2493,7 +3004,7 @@ function PageStrip({
   if (pages.length <= 1 && !isEditing) return null
 
   return (
-    <div className="relative border-b bg-muted/30">
+    <div className="relative border-b bg-muted/30 report-detail-pagestrip">
       <div
         className={cn(
           'pointer-events-none absolute inset-y-0 left-0 w-8 bg-gradient-to-r from-muted/80 to-transparent transition-opacity',
@@ -2646,6 +3157,7 @@ function PageSection({
   onRename,
   showPageHeader,
   onAddExtraBlock,
+  onAddExtraBlockAt,
   onRemoveBlock,
   onChangeExtraBlockProps,
   onChangeSection,
@@ -2659,6 +3171,11 @@ function PageSection({
   // Same idea but for the "단락 구분" floating picker — non-null = open
   // with that block id as the target.
   const [sectionEditingId, setSectionEditingId] = useState(null)
+  // Modal content editor — opened for non-inline-editable widgets when
+  // their card is clicked in edit mode. Non-null = open with that
+  // block id as the target. Inline-editable widgets (rich_text,
+  // heading) don't go through this dialog at all.
+  const [contentEditingId, setContentEditingId] = useState(null)
   // Context menu coords + target. Right-click on an extra block pops a
   // small menu here; click outside / Esc dismisses.
   const [contextMenu, setContextMenu] = useState(null)
@@ -2738,7 +3255,10 @@ function PageSection({
   )
 
   return (
-    <section id={`report-page-${pageIdx}`} className="space-y-3">
+    <section
+      id={`report-page-${pageIdx}`}
+      className="space-y-3 report-detail-page"
+    >
       {showPageHeader && (
         <div className="flex items-center gap-2 border-b pb-2">
           <Badge variant="outline" className="text-[10px] shrink-0">
@@ -2795,10 +3315,31 @@ function PageSection({
             )
             const showContextMenu =
               isEditing && (canEditProps || !!onRemoveBlock || !!onChangeSection)
+            const showInsertArrows = isEditing && !!onAddExtraBlockAt
+            const blockColSpan = effectiveLayouts[block.id]?.col_span ?? REPORT_GRID_COLS
+            // Horizontal insert is allowed when the row still has free
+            // columns OR when the anchor is wide enough to be split in
+            // half. Mirrors the logic inside addExtraBlockAt so the UI
+            // never shows an arrow that would no-op.
+            const blockRow = effectiveLayouts[block.id]?.row
+            const rowUsed = Number.isFinite(blockRow)
+              ? blocks.reduce(
+                  (sum, b) =>
+                    effectiveLayouts[b.id]?.row === blockRow
+                      ? sum + (effectiveLayouts[b.id]?.col_span ?? 0)
+                      : sum,
+                  0,
+                )
+              : REPORT_GRID_COLS
+            const rowHasRoom = rowUsed < REPORT_GRID_COLS
+            const canInsertHorizontally = rowHasRoom || blockColSpan >= 2
             return (
               <div
                 key={block.id}
-                className="min-w-0 h-full"
+                // `group/insert` scopes the hover state to this block's
+                // wrapper so DirectionalAddArrows only lights up over the
+                // hovered card, not its neighbors.
+                className="min-w-0 h-full relative group/insert"
                 onContextMenu={
                   showContextMenu
                     ? (e) => {
@@ -2817,7 +3358,7 @@ function PageSection({
                   showDragHandle={isEditing}
                   autoFit={autoFit}
                   isExtra={isExtraBlock}
-                  sectionCode={page?.block_sections?.[block.id] ?? null}
+                  sectionCode={resolveBlockSection(page, block)}
                   sectionItemByCode={sectionItemByCode}
                   onActivate={() => onActivate(block.id)}
                   onChange={(value) => onChangeContent(block.id, value)}
@@ -2835,20 +3376,34 @@ function PageSection({
                       : undefined
                   }
                   onOpenProps={canEditProps ? () => setPropsEditingId(block.id) : undefined}
+                  onOpenContentEdit={
+                    isEditing && !INLINE_EDITABLE_WIDGETS.has(block.type)
+                      ? () => setContentEditingId(block.id)
+                      : undefined
+                  }
                   onMeasureContentHeight={(px) =>
                     onMeasureContentHeight?.(block.id, px)
                   }
                   onMeasureEditHeight={(px) => handleMeasureEdit(block.id, px)}
                 />
+                {showInsertArrows && (
+                  <DirectionalAddArrows
+                    blockId={block.id}
+                    canInsertHorizontally={canInsertHorizontally}
+                    onAdd={(type, defaults, direction) =>
+                      onAddExtraBlockAt(type, defaults, block.id, direction)
+                    }
+                  />
+                )}
               </div>
             )
           })}
         </ResizableGrid>
       )}
 
-      {isEditing && onAddExtraBlock && (
-        <AddWidgetBar onAdd={onAddExtraBlock} />
-      )}
+      {/* Widget add UI moved to a floating button at the page bottom-right
+          (FloatingAddWidget at ReportDetailPage root) so the writer
+          doesn't have to scroll to the end of every page to find it. */}
 
       {contextMenu && (
         <BlockContextMenu
@@ -2878,16 +3433,20 @@ function PageSection({
         />
       )}
 
-      {sectionEditingId && (
-        <SectionPickerDialog
-          open
-          categories={sectionCategories}
-          currentSection={page?.block_sections?.[sectionEditingId] ?? null}
-          onPick={(code) => onChangeSection?.(sectionEditingId, code)}
-          onClear={() => onChangeSection?.(sectionEditingId, null)}
-          onClose={() => setSectionEditingId(null)}
-        />
-      )}
+      {sectionEditingId && (() => {
+        const target = blocks.find((b) => b.id === sectionEditingId)
+        const current = resolveBlockSection(page, target)
+        return (
+          <SectionPickerDialog
+            open
+            categories={sectionCategories}
+            currentSection={current}
+            onPick={(code) => onChangeSection?.(sectionEditingId, code)}
+            onClear={() => onChangeSection?.(sectionEditingId, null)}
+            onClose={() => setSectionEditingId(null)}
+          />
+        )
+      })()}
 
       {propsEditingId && (() => {
         const block = blocks.find((b) => b.id === propsEditingId)
@@ -2919,6 +3478,46 @@ function PageSection({
               }
             }}
             onClose={() => setPropsEditingId(null)}
+          />
+        )
+      })()}
+
+      {contentEditingId && (() => {
+        const block = blocks.find((b) => b.id === contentEditingId)
+        if (!block) return null
+        // Mirror the inline path's "effective props" computation so the
+        // modal editor renders with the same effective_props the saved
+        // view does — text_style etc. propagate identically.
+        const override = page?.props_overrides?.[block.id] ?? null
+        const effective = mergePropsWithOverride(block.props, override)
+        return (
+          <WidgetContentEditDialog
+            block={block}
+            effectiveProps={effective}
+            initialContent={page?.content?.[block.id]}
+            initialPropsOverride={override}
+            onApply={({ content: nextContent, propsOverride: nextOverride }) => {
+              // Commit content first, then props override (the order
+              // doesn't actually matter — they're independent slices —
+              // but doing content first matches what onChange/onChangePropsOverride
+              // do in the inline flow).
+              onChangeContent?.(block.id, nextContent)
+              if (block.source === 'extra') {
+                // Extras don't use props_overrides; they own their props
+                // directly. The editor handed us the merged override
+                // shape, but for extras we route it to extra-block props.
+                if (nextOverride) {
+                  onChangeExtraBlockProps?.(block.id, {
+                    ...block.props,
+                    ...nextOverride,
+                  })
+                }
+              } else {
+                onChangePropsOverride?.(block.id, nextOverride)
+              }
+              setContentEditingId(null)
+            }}
+            onClose={() => setContentEditingId(null)}
           />
         )
       })()}
@@ -3017,6 +3616,10 @@ function extractBlocks(schema) {
     props: b.props ?? {},
     layout: b.layout,
     source: 'template',
+    // Default 단락 구분 baked into the template. Reports override via
+    // `page.block_sections[block.id]` (absent = use this, null =
+    // explicit clear, string = explicit pick).
+    section: typeof b.section === 'string' && b.section.length > 0 ? b.section : null,
   }))
 }
 
@@ -3074,6 +3677,40 @@ function BlockContextMenu({ x, y, onClose, onEditProps, onEditSection, onRemove 
   )
 }
 
+/** Right-click menu surfaced by the report wrapper itself — distinct from
+ *  the per-block menu above. Lives at the page level so it can drive
+ *  page-wide settings (currently just 폭, but the settings dialog hosts a
+ *  tab structure to accumulate more without a UI redesign). Same dismiss
+ *  behavior as BlockContextMenu so the two feel like one system. */
+function PageContextMenu({ x, y, onClose, onOpenSettings }) {
+  useEffect(() => {
+    function handleClick() { onClose() }
+    function handleKey(e) { if (e.key === 'Escape') onClose() }
+    window.addEventListener('mousedown', handleClick)
+    window.addEventListener('keydown', handleKey)
+    return () => {
+      window.removeEventListener('mousedown', handleClick)
+      window.removeEventListener('keydown', handleKey)
+    }
+  }, [onClose])
+  return (
+    <div
+      className="fixed z-50 min-w-[180px] rounded-md border bg-popover py-1 shadow-md"
+      style={{ left: x, top: y }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        onClick={onOpenSettings}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-muted text-left"
+      >
+        <Settings2 className="h-3.5 w-3.5" />
+        보고서 설정
+      </button>
+    </div>
+  )
+}
+
 /** Modal that surfaces the widget's PropsPanel — the same component the
  *  template editor uses — so users can configure structural props (table
  *  columns, KV items, KPI label/unit, etc.) per-report. Works for both
@@ -3124,6 +3761,312 @@ function BlockPropsDialog({ block, initialProps, isExtra, onChange, onClose }) {
         )}
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** Modal editor for widget *content*. Hosts the widget's own Editor
+ *  with a local draft so typed changes don't reach the report state
+ *  until the user clicks 적용 (the user can cancel out and discard).
+ *  Used for every widget except the inline-editable ones (rich_text,
+ *  heading) — their editing surfaces are tightly integrated with the
+ *  document flow so editing inline is the right shape there.
+ *
+ *  The dialog reuses the same Editor component the inline path uses;
+ *  the only differences are (a) it sits inside a modal with its own
+ *  comfortable width, and (b) the onChange wires into local state so
+ *  the report doesn't see partial typing. */
+function WidgetContentEditDialog({
+  block,
+  effectiveProps,
+  initialContent,
+  initialPropsOverride,
+  onApply,
+  onClose,
+}) {
+  const renderer = getRenderer(block.type)
+  const Editor = renderer?.Editor
+  const [draftContent, setDraftContent] = useState(initialContent)
+  // Some widgets (currently just Chart) can ask to mutate their own
+  // props from inside the editor. We buffer those too so cancel really
+  // means "nothing happened".
+  const [draftPropsOverride, setDraftPropsOverride] = useState(initialPropsOverride)
+  // Compute the props shown to the editor by re-merging the buffered
+  // override on every render — the editor receives `effectiveProps` so
+  // its UI reflects in-flight changes.
+  const editorProps = mergePropsWithOverride(block.props, draftPropsOverride)
+  function apply() {
+    onApply({
+      content: draftContent,
+      // Treat empty {} the same as "no override" so we don't leave
+      // an empty key in props_overrides.
+      propsOverride:
+        draftPropsOverride && Object.keys(draftPropsOverride).length > 0
+          ? draftPropsOverride
+          : null,
+    })
+  }
+  if (!Editor) {
+    // Defensive — should never happen because the card click handler
+    // only fires for widgets that have a renderer.
+    return null
+  }
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-4xl max-h-[85vh] overflow-hidden flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Pencil className="h-4 w-4" />
+            위젯 편집 — {renderer.label ?? block.type}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="flex-1 min-h-0 overflow-y-auto -mx-6 px-6 report-widget-body">
+          <Editor
+            props={editorProps ?? effectiveProps}
+            content={draftContent}
+            onChange={setDraftContent}
+            onChangePropsOverride={(patch) => {
+              // Mirror the live report's "replace with full props" wire
+              // contract — the editor hands us a complete props object
+              // (or a patch on top of the previous override; we treat
+              // it as the next full override).
+              setDraftPropsOverride(patch)
+            }}
+            // The dialog's height is auto, so auto-fit's height-tracking
+            // would fight the scrollable body. Disable it here — the
+            // measurement only mattered for the in-grid layout.
+            autoFit={false}
+            readOnly={false}
+          />
+        </div>
+        <DialogFooter className="gap-2 sm:gap-2 pt-2">
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            취소
+          </Button>
+          <Button size="sm" onClick={apply}>
+            적용
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Hover-only "+ in this direction" affordance for an existing block.
+ *  Four small circular buttons hug the block's edges and become visible
+ *  while the parent (`group/insert`) is hovered. Clicking an arrow opens
+ *  the standard widget catalog popover anchored to that arrow; picking
+ *  a type calls `onAdd(type, defaults, direction)`.
+ *
+ *  Left/right arrows hide only when there's truly no horizontal room —
+ *  the row is full AND the anchor can't be split. Up/down are always
+ *  available. */
+function DirectionalAddArrows({ canInsertHorizontally, onAdd }) {
+  const { catalog, loading } = useWidgetCatalog()
+  const [open, setOpen] = useState(null) // 'up' | 'down' | 'left' | 'right' | null
+  if (loading) return null
+  const widgets = catalog?.widgets ?? []
+  function pick(direction, type, defaults) {
+    onAdd(type, defaults, direction)
+    setOpen(null)
+  }
+  // Common arrow button. The wrapper uses `pointer-events-none` while
+  // hidden so it never blocks clicks on the block's own UI; the inner
+  // Button re-enables them once visible.
+  function Arrow({ direction, icon: Icon, positionClass, side, align }) {
+    return (
+      <Popover
+        open={open === direction}
+        onOpenChange={(o) => setOpen(o ? direction : null)}
+      >
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            title="이 방향에 위젯 추가"
+            // Stop the click from bubbling to the block's onActivate /
+            // drag handlers — the arrow is purely a quick-add trigger.
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            className={cn(
+              'absolute z-20 flex h-6 w-6 items-center justify-center rounded-full',
+              'border bg-background text-muted-foreground shadow-sm',
+              'opacity-0 transition-opacity pointer-events-none',
+              'hover:bg-primary hover:text-primary-foreground hover:border-primary',
+              'group-hover/insert:opacity-100 group-hover/insert:pointer-events-auto',
+              positionClass,
+            )}
+          >
+            <Icon className="h-3 w-3" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          side={side}
+          align={align}
+          sideOffset={6}
+          className="w-[320px] p-2"
+        >
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-2 pb-1">
+            위젯 종류
+          </div>
+          <div className="grid grid-cols-2 gap-1">
+            {widgets.map((w) => {
+              const meta = getRenderer(w.type)
+              const Icon = meta?.Icon
+              return (
+                <button
+                  key={w.type}
+                  type="button"
+                  className="flex items-start gap-2 px-2 py-2 rounded-md text-left hover:bg-muted transition-colors"
+                  onClick={() => pick(direction, w.type, w.default_props ?? {})}
+                >
+                  {Icon && <Icon className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />}
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">{w.label}</div>
+                    <div className="text-[10px] text-muted-foreground line-clamp-2">
+                      {w.description}
+                    </div>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </PopoverContent>
+      </Popover>
+    )
+  }
+  return (
+    <>
+      <Arrow
+        direction="up"
+        icon={ChevronUp}
+        positionClass="-top-3 left-1/2 -translate-x-1/2"
+        side="top"
+        align="center"
+      />
+      <Arrow
+        direction="down"
+        icon={ChevronDown}
+        positionClass="-bottom-3 left-1/2 -translate-x-1/2"
+        side="bottom"
+        align="center"
+      />
+      {canInsertHorizontally && (
+        <Arrow
+          direction="left"
+          icon={ChevronLeft}
+          positionClass="top-1/2 -left-3 -translate-y-1/2"
+          side="left"
+          align="center"
+        />
+      )}
+      {canInsertHorizontally && (
+        <Arrow
+          direction="right"
+          icon={ChevronRight}
+          positionClass="top-1/2 -right-3 -translate-y-1/2"
+          side="right"
+          align="center"
+        />
+      )}
+    </>
+  )
+}
+
+/** Floating "위젯 추가" pill. Rendered inside the parent floating-action
+ *  cluster (which owns the fixed positioning + the
+ *  `report-detail-floating` class that exporters strip), so this
+ *  component is just the Popover/Button — no positioning of its own. */
+function FloatingAddWidget({ onAdd }) {
+  const { catalog, loading } = useWidgetCatalog()
+  const [open, setOpen] = useState(false)
+  if (loading) return null
+  const widgets = catalog?.widgets ?? []
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          size="lg"
+          className="h-12 rounded-full px-5 shadow-lg"
+          title="현재 페이지에 위젯 추가"
+        >
+          <Plus className="mr-2 h-4 w-4" />
+          위젯 추가
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        side="top"
+        sideOffset={8}
+        className="w-[360px] p-2"
+      >
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-2 pb-1">
+          위젯 종류
+        </div>
+        <div className="grid grid-cols-2 gap-1">
+          {widgets.map((w) => {
+            const meta = getRenderer(w.type)
+            const Icon = meta?.Icon
+            return (
+              <button
+                key={w.type}
+                type="button"
+                className="flex items-start gap-2 px-2 py-2 rounded-md text-left hover:bg-muted transition-colors"
+                onClick={() => {
+                  onAdd(w.type, w.default_props ?? {})
+                  setOpen(false)
+                }}
+              >
+                {Icon && <Icon className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />}
+                <div className="min-w-0">
+                  <div className="text-sm font-medium truncate">{w.label}</div>
+                  <div className="text-[10px] text-muted-foreground line-clamp-2">
+                    {w.description}
+                  </div>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/** Sibling of FloatingAddWidget — opens the tabbed 보고서 설정 dialog.
+ *  Same pill styling as the add-widget button (matched size/radius) so
+ *  the two read as one floating action cluster. The dialog itself is
+ *  mounted at the ReportDetailPage root; this just flips its open
+ *  state through `onOpen`. */
+function FloatingReportSettings({ onOpen }) {
+  return (
+    <Button
+      size="lg"
+      variant="secondary"
+      className="h-12 rounded-full px-5 shadow-lg"
+      title="보고서 설정 (폭 등)"
+      onClick={onOpen}
+    >
+      <Settings2 className="mr-2 h-4 w-4" />
+      보고서 설정
+    </Button>
+  )
+}
+
+/** Floating pill that opens the JSON paste dialog. Moved out of the
+ *  "로컬" dropdown so AI-generated JSON paste is reachable in one click
+ *  during writing, without expanding a menu. Dialog itself stays mounted
+ *  at the ReportDetailPage root. */
+function FloatingPasteJson({ onOpen }) {
+  return (
+    <Button
+      size="lg"
+      variant="secondary"
+      className="h-12 rounded-full px-5 shadow-lg"
+      title="AI 가 생성한 JSON 을 붙여넣어 보고서에 적용"
+      onClick={onOpen}
+    >
+      <ClipboardPaste className="mr-2 h-4 w-4" />
+      JSON 붙여넣기
+    </Button>
   )
 }
 
@@ -3188,6 +4131,25 @@ function freshExtraId(type, existingIds) {
   return `${type}_${n}`
 }
 
+/** Every block id a page already touches — template blocks, extras, and
+ *  any id that leaked into content / blocks_order / sections / overrides.
+ *  Used when minting a new extra id so we never alias a template block
+ *  (the backend rejects extras whose id matches a template block id) or
+ *  a stale reference left over from a removed block. */
+function collectPageBlockIds(page, template) {
+  const ids = new Set()
+  for (const b of extractBlocks(template?.schema)) ids.add(b.id)
+  for (const b of page?.extra_blocks ?? []) {
+    if (b?.id) ids.add(b.id)
+  }
+  for (const id of Object.keys(page?.content ?? {})) ids.add(id)
+  for (const id of page?.blocks_order ?? []) ids.add(id)
+  for (const id of Object.keys(page?.block_sections ?? {})) ids.add(id)
+  for (const id of Object.keys(page?.layout_overrides ?? {})) ids.add(id)
+  for (const id of Object.keys(page?.props_overrides ?? {})) ids.add(id)
+  return ids
+}
+
 /** Combined template + page.extra_blocks list, in render order. Extras
  *  inherit the same shape so the rest of the editor (layouts, content
  *  validation, etc.) treats them as peers — only the `source` flag
@@ -3199,6 +4161,28 @@ function freshExtraId(type, existingIds) {
  *  blocks_order are dropped from the render, so users can remove
  *  template-defined blocks from a specific report without touching
  *  the template itself. */
+/** Resolve the effective 단락 구분 code for a block, layering the
+ *  page-level override on top of the template's per-block default.
+ *
+ *  Three states for `page.block_sections[id]`:
+ *    - missing  → no override; use the template's `block.section`.
+ *    - null     → explicit "no section" (overrides the template).
+ *    - string   → explicit pick.
+ *
+ *  Returns the resolved code (or null when there is none).
+ */
+function resolveBlockSection(page, block) {
+  if (!block) return null
+  const overrides = page?.block_sections
+  if (overrides && Object.prototype.hasOwnProperty.call(overrides, block.id)) {
+    const v = overrides[block.id]
+    return typeof v === 'string' && v.length > 0 ? v : null
+  }
+  return typeof block.section === 'string' && block.section.length > 0
+    ? block.section
+    : null
+}
+
 function combinedBlocks(template, page) {
   const tplBlocks = extractBlocks(template?.schema)
   const extras = (page?.extra_blocks ?? []).map((b) => ({
@@ -3250,6 +4234,14 @@ function seedContentFromTemplate(template) {
 // so a separate accordion would just be a second, redundant control.
 const WIDGETS_WITH_REPORT_STYLE = new Set()
 
+// Widgets that keep their editor INLINE in edit mode. Every other widget
+// flips to a view-mode render in the page and opens a separate modal
+// editor on click — that way the visible cell size matches view mode
+// exactly (no more "drag the cell smaller and the inline editor still
+// shows full controls" mismatch), and the editing surface gets enough
+// room for its own controls regardless of the user's chosen cell size.
+const INLINE_EDITABLE_WIDGETS = new Set(['rich_text', 'heading'])
+
 function BlockEditorCard({
   block,
   content,
@@ -3267,9 +4259,19 @@ function BlockEditorCard({
   onToggleAutoFit,
   onRemove,
   onOpenProps,
+  onOpenContentEdit,
   onMeasureContentHeight,
   onMeasureEditHeight,
 }) {
+  // Non-inline-editable widgets render as if in view mode while sitting
+  // inside the edit grid — their "edit" happens in a separate modal that
+  // the parent opens via `onOpenContentEdit`. The chrome (drag handle,
+  // resize affordances, autoFit toggle, etc.) is still driven by the
+  // page-level `readOnly` flag; only the inner Editor flips to readOnly.
+  const isInlineEditable = INLINE_EDITABLE_WIDGETS.has(block.type)
+  const editorReadOnly = readOnly || !isInlineEditable
+  const opensModalEditor =
+    !readOnly && !isInlineEditable && typeof onOpenContentEdit === 'function'
   // Resolve the section-marker tag (if any) into its item + category so
   // the drag handle can show a colored chip. The lookup tolerates
   // unknown codes (orphaned tags from a deleted taxonomy entry) by
@@ -3307,7 +4309,7 @@ function BlockEditorCard({
     // produces — otherwise the cell would clip the strip's worth of
     // content at the bottom.
     if (!showDragHandle && sectionItem && sectionCategory && block.type !== 'heading') {
-      topPx += 28 // SECTION_HEADER_HEIGHT_PX
+      topPx += 34 // SECTION_HEADER_HEIGHT_PX
     }
     const bottomPx = 16 // pb-4
     return topPx + bottomPx
@@ -3404,7 +4406,7 @@ function BlockEditorCard({
   // bottom-border accent, item label on the right, category name on the
   // left as a quieter prefix. Heading blocks fall back to the floating
   // pill below since they don't have card chrome to host this strip.
-  const SECTION_HEADER_HEIGHT_PX = 28
+  const SECTION_HEADER_HEIGHT_PX = 34
   const viewModeSectionHeader =
     !showDragHandle &&
     sectionItem &&
@@ -3412,19 +4414,16 @@ function BlockEditorCard({
     block.type !== 'heading'
       ? (
           <div
-            className="flex items-center justify-between px-3 rounded-t-lg border-b"
+            className="flex items-center px-3 rounded-t-lg border-b"
             style={{
               height: SECTION_HEADER_HEIGHT_PX,
               backgroundColor: `${sectionCategory.color}14`,
               color: sectionCategory.color,
               borderBottomColor: `${sectionCategory.color}40`,
             }}
-            title={`${sectionCategory.name} · ${sectionItem.label}`}
+            title={sectionItem.label}
           >
-            <span className="text-[10px] font-medium opacity-60 tracking-wider">
-              {sectionCategory.name}
-            </span>
-            <span className="text-[12px] font-semibold tracking-tight">
+            <span className="text-[15px] font-semibold tracking-tight">
               {sectionItem.label}
             </span>
           </div>
@@ -3530,7 +4529,13 @@ function BlockEditorCard({
           // section chip occupies the same top-right zone, so reserve the
           // same room there to keep the heading from running under it.
           (showDragHandle || headingSectionChip) && 'pt-7',
-          active && !readOnly && 'ring-2 ring-primary/30 rounded-md'
+          active && !readOnly && 'ring-2 ring-primary/30 rounded-md',
+          // Same body-text scaling as every other widget — without it the
+          // heading's text-lg/xl/2xl stay at Tailwind defaults while body
+          // widgets get the 1.3× boost, making a level-3 heading actually
+          // smaller than rich_text body. The drag-handle / section chip
+          // pieces use text-[9px]/[10px] which the boost rule doesn't touch.
+          'report-widget-body',
         )}
       >
         {dragHandle}
@@ -3542,7 +4547,7 @@ function BlockEditorCard({
             <div
               ref={measureRef}
               aria-hidden="true"
-              className="invisible pointer-events-none absolute left-0 right-0 top-0"
+              className="invisible pointer-events-none absolute left-0 right-0 top-0 report-autofit-mirror"
             >
               <HE props={effectiveProps} content={content} onChange={NO_OP} readOnly={true} />
             </div>
@@ -3565,11 +4570,21 @@ function BlockEditorCard({
   return (
     <Card
       id={`block-${block.id}`}
-      onClick={onActivate}
+      onClick={(e) => {
+        onActivate?.(e)
+        // Non-inline-editable widgets open the modal editor on click.
+        // The drag handle / autoFit / settings / remove buttons live
+        // inside the card and stop propagation themselves, so this
+        // only fires when the user clicks the actual content area.
+        if (opensModalEditor) onOpenContentEdit()
+      }}
       className={cn(
         'relative h-full flex flex-col',
         autoFit ? 'overflow-visible' : 'overflow-hidden',
-        active && !readOnly && 'ring-2 ring-primary/30'
+        active && !readOnly && 'ring-2 ring-primary/30',
+        // Hover hint that this card opens a modal — only when in
+        // edit mode and the click would actually do something.
+        opensModalEditor && 'cursor-pointer hover:ring-2 hover:ring-primary/20'
       )}
     >
       {dragHandle}
@@ -3600,7 +4615,7 @@ function BlockEditorCard({
           <div
             ref={measureRef}
             aria-hidden="true"
-            className="invisible pointer-events-none absolute left-0 right-0 top-0 pl-6 pr-6 report-widget-body"
+            className="invisible pointer-events-none absolute left-0 right-0 top-0 pl-6 pr-6 report-widget-body report-autofit-mirror"
           >
             <Editor
               props={effectiveProps}
@@ -3634,7 +4649,7 @@ function BlockEditorCard({
               onChange={onChange}
               onChangePropsOverride={onChangePropsOverride}
               autoFit={autoFit}
-              readOnly={readOnly}
+              readOnly={editorReadOnly}
             />
           ) : (
             <p className="text-xs text-muted-foreground italic">

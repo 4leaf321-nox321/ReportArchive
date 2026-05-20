@@ -265,6 +265,8 @@ def create_report(
         init_kwargs["report_date"] = payload.report_date
     if payload.status is not None:
         init_kwargs["status"] = payload.status
+    if payload.page_width_px is not None:
+        init_kwargs["page_width_px"] = payload.page_width_px
     report = Report(
         **init_kwargs,
         content=page0.content or {},
@@ -461,7 +463,7 @@ def update_report(
         report.pages = _pages_to_jsonb(new_pages)
 
     # Apply non-page scalar fields.
-    for key in ("title", "status", "report_date", "tags"):
+    for key in ("title", "status", "report_date", "tags", "page_width_px"):
         if key in data:
             setattr(report, key, data[key])
 

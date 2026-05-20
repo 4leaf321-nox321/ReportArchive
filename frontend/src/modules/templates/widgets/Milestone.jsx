@@ -3,7 +3,7 @@ import { ChevronDown, ChevronUp, Circle, CircleCheck, CircleAlert, Plus, X } fro
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { CaptionInput, LabelField, PreviewLabel, TextStyleField, textStyleToClassName } from './_shared'
+import { CaptionInput, DEFAULT_BODY_FONT_PX, LabelField, PreviewLabel, TextStyleField, captionSkipProps, textStyleToClassName, textStyleToInlineStyle } from './_shared'
 
 // --------------------------------------------------------------------------- //
 // Status presets — shared by the editor's row select and the timeline marker. //
@@ -78,6 +78,7 @@ export function MilestonePropsPanel({ props, onChange }) {
       <TextStyleField
         value={props.text_style}
         onChange={(text_style) => patch({ text_style })}
+        defaultSizePx={DEFAULT_BODY_FONT_PX}
       />
     </div>
   )
@@ -112,11 +113,18 @@ export function MilestoneEditor({ props, content, onChange, readOnly }) {
   const caption = content?.caption ?? ''
   const items = Array.isArray(content?.items) ? content.items : []
   const textClass = textStyleToClassName(props.text_style)
+  const textStyle = textStyleToInlineStyle(props.text_style)
 
   function patch(next) {
-    const merged = { ...(caption ? { caption } : {}), items, ...next }
+    const merged = {
+      ...(content ?? {}),
+      ...(caption ? { caption } : {}),
+      items,
+      ...next,
+    }
     if (!merged.caption) delete merged.caption
     if (!merged.items || merged.items.length === 0) delete merged.items
+    if (!merged.caption_skip_autofill) delete merged.caption_skip_autofill
     onChange(merged)
   }
 
@@ -142,7 +150,7 @@ export function MilestoneEditor({ props, content, onChange, readOnly }) {
   if (readOnly) {
     if (!caption && items.length === 0) return null
     return (
-      <div className={`space-y-2 ${textClass}`}>
+      <div className={`space-y-2 ${textClass}`} style={textStyle}>
         <CaptionInput value={caption} readOnly />
         {items.length > 0 ? (
           <MilestoneTimeline
@@ -160,11 +168,12 @@ export function MilestoneEditor({ props, content, onChange, readOnly }) {
   }
 
   return (
-    <div className={`space-y-3 ${textClass}`}>
+    <div className={`space-y-3 ${textClass}`} style={textStyle}>
       <CaptionInput
         value={caption}
         onChange={(v) => patch({ caption: v })}
         placeholder={props.label}
+        {...captionSkipProps({ content, patch })}
       />
       {/* Live timeline — fed by the table below. Stays visible while
           the writer types so they can sanity-check the date layout. */}
@@ -352,6 +361,12 @@ function MilestoneTimeline({ items, startDate, endDate }) {
         : `${formatDate(min)} → ${formatDate(max)}`,
       minLabel: formatDate(min),
       maxLabel: formatDate(max),
+      // The axis tick labels duplicate the endpoint markers' own dates
+      // whenever the axis range comes from the data (no explicit
+      // start_date/end_date) — or coincidentally matches them. Flag those
+      // cases so the render can drop the redundant tick.
+      firstAtStart: dated[0]._t === min,
+      lastAtEnd: dated[dated.length - 1]._t === max,
     }
   }, [items, startDate, endDate])
 
@@ -401,13 +416,19 @@ function MilestoneTimeline({ items, startDate, endDate }) {
           <div className="absolute inset-x-0 top-1/2 h-0.5 bg-border -translate-y-1/2" />
           {/* range tick labels — anchored just outside the inner track
               so they sit in the gutter, not on top of the first /
-              last marker. */}
-          <span className="absolute -left-1 top-1/2 mt-2 text-[10px] text-muted-foreground -translate-x-full whitespace-nowrap">
-            {layout.minLabel}
-          </span>
-          <span className="absolute -right-1 top-1/2 mt-2 text-[10px] text-muted-foreground translate-x-full whitespace-nowrap">
-            {layout.maxLabel}
-          </span>
+              last marker. Suppressed when the endpoint marker already
+              prints the same date under itself, so we don't show it
+              twice. */}
+          {!layout.firstAtStart && (
+            <span className="absolute -left-1 top-1/2 mt-2 text-[10px] text-muted-foreground -translate-x-full whitespace-nowrap">
+              {layout.minLabel}
+            </span>
+          )}
+          {!layout.lastAtEnd && (
+            <span className="absolute -right-1 top-1/2 mt-2 text-[10px] text-muted-foreground translate-x-full whitespace-nowrap">
+              {layout.maxLabel}
+            </span>
+          )}
           {layout.points.map((p) => {
             const st = statusOf(p)
             const StatusIcon = st.Icon

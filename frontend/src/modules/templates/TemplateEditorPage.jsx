@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { GripVertical, Save, Trash2, X } from 'lucide-react'
+import { GripVertical, Save, Settings2, Trash2, X } from 'lucide-react'
 import GridLayout, { useContainerWidth } from 'react-grid-layout'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
@@ -30,6 +30,13 @@ import {
 } from './widgetBuilder'
 import { getRenderer } from './widgets'
 import { BlockMetaEditor } from './widgets/_shared'
+import {
+  DEFAULT_REPORT_WIDTH_PX,
+  ReportSettingsDialog,
+} from '@/modules/reports/ReportSettingsDialog'
+import { SectionPickerDialog } from '@/modules/reports/SectionPickerDialog'
+import { findItemInCategories } from '@/modules/reports/sections'
+import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
 import { toast } from 'sonner'
 
 const ROW_HEIGHT = 50
@@ -59,6 +66,10 @@ export default function TemplateEditorPage() {
   )
   const [selectedBlockId, setSelectedBlockId] = useState(null)
   const [saving, setSaving] = useState(false)
+  // Same dialog the report editor uses — opened from the 보고서 설정
+  // button below. Writes back to draft.report_defaults so the settings
+  // travel with the template version on publish.
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
 
   useEffect(() => {
     if (isEdit && existing) {
@@ -330,6 +341,26 @@ export default function TemplateEditorPage() {
                     </p>
                   </div>
                 )}
+                <div>
+                  <Label className="text-xs">보고서 기본 설정</Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-1 w-full justify-start"
+                    onClick={() => setSettingsDialogOpen(true)}
+                  >
+                    <Settings2 className="mr-2 h-3.5 w-3.5" />
+                    보고서 설정
+                  </Button>
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    이 템플릿으로 새 보고서를 만들 때 적용될 기본값
+                    (폭 등). 보고서 작성 중에는 각자 다시 조절할 수 있습니다.
+                    {Number.isFinite(draft.report_defaults?.page_width_px)
+                      ? ` 현재 폭: ${draft.report_defaults.page_width_px} px.`
+                      : ' 현재 폭: 기본값.'}
+                  </p>
+                </div>
                 {isEdit && (
                   <div className="text-[11px] text-muted-foreground border-l-2 border-amber-400 bg-amber-50 dark:bg-amber-900/10 p-2 rounded-r">
                     저장 시 <strong>새 버전</strong>으로 발행됩니다. 기존
@@ -427,6 +458,28 @@ export default function TemplateEditorPage() {
           </aside>
         )}
       </div>
+
+      <ReportSettingsDialog
+        open={settingsDialogOpen}
+        currentWidthPx={draft.report_defaults?.page_width_px ?? null}
+        defaultWidthPx={DEFAULT_REPORT_WIDTH_PX}
+        onClose={() => setSettingsDialogOpen(false)}
+        onApplyWidth={(px) => {
+          setDraft((d) => {
+            // Drop the key entirely when set back to default so the
+            // saved schema doc stays minimal and old templates that
+            // never opened the dialog don't gain noise.
+            const next = { ...(d.report_defaults ?? {}) }
+            if (px == null) delete next.page_width_px
+            else next.page_width_px = px
+            return {
+              ...d,
+              report_defaults: Object.keys(next).length === 0 ? null : next,
+            }
+          })
+          setSettingsDialogOpen(false)
+        }}
+      />
     </div>
   )
 }
@@ -490,12 +543,21 @@ function BlockCard({ block, selected, onSelect, onRemove }) {
 function BlockPropsEditor({ block, catalog, onChange, onClose }) {
   const renderer = getRenderer(block.type)
   const widgetMeta = catalog?.byType?.[block.type]
+  const { categories: sectionCategories } = useSectionTaxonomy()
+  const [sectionPickerOpen, setSectionPickerOpen] = useState(false)
   if (!renderer || !widgetMeta) {
     return (
       <div className="text-sm text-destructive">미지의 위젯 타입: {block.type}</div>
     )
   }
   const { PropsPanel } = renderer
+  // Resolve the current section into its display label (category + item)
+  // so the row shows what's currently picked without forcing the writer
+  // to open the picker. Falls back to the raw code if the taxonomy was
+  // edited after this template was saved and the code no longer matches.
+  const sectionHit = block.section
+    ? findItemInCategories(sectionCategories, block.section)
+    : null
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-2">
@@ -547,6 +609,42 @@ function BlockPropsEditor({ block, catalog, onChange, onClose }) {
 
       <Separator />
 
+      <div>
+        <Label className="text-xs">단락 구분 (기본값)</Label>
+        <button
+          type="button"
+          onClick={() => setSectionPickerOpen(true)}
+          className="mt-1 flex h-9 w-full items-center gap-2 rounded-md border border-input bg-background px-3 text-left text-xs hover:bg-muted transition-colors"
+        >
+          {sectionHit ? (
+            <>
+              <span
+                className="h-2.5 w-2.5 rounded-full shrink-0"
+                style={{ backgroundColor: sectionHit.category.color }}
+              />
+              <span className="truncate" style={{ color: sectionHit.category.color }}>
+                {sectionHit.item.label}
+              </span>
+              <span className="ml-auto text-[10px] text-muted-foreground">
+                {sectionHit.category.name}
+              </span>
+            </>
+          ) : block.section ? (
+            <span className="truncate text-muted-foreground">
+              {block.section} <span className="italic">(분류 변경됨)</span>
+            </span>
+          ) : (
+            <span className="text-muted-foreground">설정 안 함</span>
+          )}
+        </button>
+        <p className="mt-1 text-[10px] text-muted-foreground">
+          이 템플릿으로 새 보고서를 만들 때 이 블록에 기본으로 붙는 단락 구분.
+          보고서 편집 모드에서 작성자가 재설정·삭제할 수 있습니다.
+        </p>
+      </div>
+
+      <Separator />
+
       <details className="group">
         <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wider text-muted-foreground py-1 hover:text-foreground select-none">
           메타데이터 (선택)
@@ -558,6 +656,17 @@ function BlockPropsEditor({ block, catalog, onChange, onClose }) {
           />
         </div>
       </details>
+
+      {sectionPickerOpen && (
+        <SectionPickerDialog
+          open
+          categories={sectionCategories}
+          currentSection={block.section ?? null}
+          onPick={(code) => onChange({ section: code })}
+          onClear={() => onChange({ section: null })}
+          onClose={() => setSectionPickerOpen(false)}
+        />
+      )}
     </div>
   )
 }

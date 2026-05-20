@@ -6,7 +6,7 @@ import { Label } from '@/shared/components/ui/label'
 import { AuthedImage } from '@/shared/components/AuthedImage'
 import { uploadFile } from '@/shared/api/files'
 import { toast } from 'sonner'
-import { CaptionInput, LabelField, PreviewLabel } from './_shared'
+import { CaptionInput, LabelField, PreviewLabel, captionSkipProps } from './_shared'
 
 export function ImagePropsPanel({ props, onChange }) {
   return (
@@ -68,8 +68,9 @@ export function ImageEditor({ props, content, onChange, readOnly }) {
   // Always emit both fields so the saved content shape stays stable
   // regardless of which one the user touched first.
   function patchContent(patch) {
-    const next = { caption, files, ...patch }
+    const next = { ...(content ?? {}), caption, files, ...patch }
     if (!next.caption) delete next.caption
+    if (!next.caption_skip_autofill) delete next.caption_skip_autofill
     onChange(next)
   }
   function update(idx, patch) {
@@ -169,6 +170,7 @@ export function ImageEditor({ props, content, onChange, readOnly }) {
         value={caption}
         onChange={(v) => patchContent({ caption: v })}
         placeholder={props.label}
+        {...captionSkipProps({ content, patch: patchContent })}
       />
       {files.length > 0 && (
         <div className={`grid gap-2 ${max > 1 ? 'grid-cols-3' : 'grid-cols-1'}`}>

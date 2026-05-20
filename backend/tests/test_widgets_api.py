@@ -33,6 +33,7 @@ def test_widgets_endpoint_returns_full_catalog() -> None:
         [
             "heading", "rich_text", "key_value", "bulleted_list",
             "table", "image", "attachment", "chart",
+            "milestone", "flowchart", "progress_bar", "raci_matrix",
         ]
     )
     # Each entry must include the fields the frontend needs to build a

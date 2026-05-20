@@ -5,7 +5,7 @@ import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { downloadFile, uploadFile } from '@/shared/api/files'
 import { toast } from 'sonner'
-import { CaptionInput, LabelField, PreviewLabel } from './_shared'
+import { CaptionInput, LabelField, PreviewLabel, captionSkipProps } from './_shared'
 
 export function AttachmentPropsPanel({ props, onChange }) {
   return (
@@ -63,8 +63,9 @@ export function AttachmentEditor({ props, content, onChange, readOnly }) {
   const fileInputRef = useRef(null)
 
   function patch(next) {
-    const merged = { caption, files, ...next }
+    const merged = { ...(content ?? {}), caption, files, ...next }
     if (!merged.caption) delete merged.caption
+    if (!merged.caption_skip_autofill) delete merged.caption_skip_autofill
     onChange(merged)
   }
   function remove(idx) {
@@ -169,6 +170,7 @@ export function AttachmentEditor({ props, content, onChange, readOnly }) {
         value={caption}
         onChange={(v) => patch({ caption: v })}
         placeholder={props.label}
+        {...captionSkipProps({ content, patch })}
       />
       {files.length > 0 && (
         <ul className="space-y-1.5">

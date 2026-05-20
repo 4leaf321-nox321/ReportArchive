@@ -30,6 +30,8 @@ const DEFAULT_BLOCK_SIZE = {
   image: { col_span: 6, row_span: 4 },
   attachment: { col_span: 12, row_span: 3 },
   chart: { col_span: 6, row_span: 6 },
+  progress_bar: { col_span: 12, row_span: 3 },
+  raci_matrix: { col_span: 12, row_span: 4 },
 }
 
 function defaultSize(type) {
@@ -79,21 +81,25 @@ export function newEmptyDraft() {
     // null = global. otherwise array of workspace slugs.
     owner_workspace_slugs: null,
     blocks: [],
+    // Per-template defaults that new reports inherit at creation time
+    // (e.g. page_width_px). Lives on the schema doc so each template
+    // version carries its own copy; null = no defaults set.
+    report_defaults: null,
   }
 }
 
 /** Draft → wire schema document. */
 export function draftToSchema(draft) {
-  return {
+  const out = {
     version: SCHEMA_VERSION,
     blocks: draft.blocks.map((b) => {
-      const out = {
+      const block = {
         id: b.id,
         type: b.type,
         props: b.props ?? {},
       }
       if (b.layout) {
-        out.layout = {
+        block.layout = {
           row: b.layout.row,
           col_span: b.layout.col_span,
           ...(b.layout.row_span ? { row_span: b.layout.row_span } : {}),
@@ -102,11 +108,24 @@ export function draftToSchema(draft) {
       // Optional ontology / aggregation hints — only emit when non-empty
       // so legacy templates without meta stay byte-identical.
       if (b.meta && Object.keys(b.meta).length > 0) {
-        out.meta = b.meta
+        block.meta = b.meta
       }
-      return out
+      // Optional default 단락 구분 (item code from the section taxonomy).
+      // New reports built from this template seed `page.block_sections`
+      // from it, and the report editor lets writers override per-report.
+      if (typeof b.section === 'string' && b.section.length > 0) {
+        block.section = b.section
+      }
+      return block
     }),
   }
+  // Only emit `report_defaults` when it actually carries values; this
+  // keeps existing templates byte-identical until the editor first
+  // touches the new field.
+  if (draft.report_defaults && Object.keys(draft.report_defaults).length > 0) {
+    out.report_defaults = draft.report_defaults
+  }
+  return out
 }
 
 /**
@@ -122,6 +141,13 @@ export function schemaToDraft(template) {
     description: template?.description ?? '',
     category: template?.category ?? 'misc',
     owner_workspace_slugs: template?.owner_workspace_slugs ?? null,
+    // Surface the schema's report_defaults so the template editor can
+    // edit it as a regular draft field. Legacy templates without the
+    // key fall through to null and don't emit anything on save unless
+    // the user touches the 보고서 설정 dialog.
+    report_defaults: schema.report_defaults
+      ? structuredClone(schema.report_defaults)
+      : null,
     blocks: blocks.map((b, idx) => {
       let layout = b.layout
       if (!layout) {
@@ -146,6 +172,7 @@ export function schemaToDraft(template) {
         props: structuredClone(b.props ?? {}),
         layout,
         meta: b.meta ? structuredClone(b.meta) : undefined,
+        section: typeof b.section === 'string' && b.section.length > 0 ? b.section : null,
       }
     }),
   }

@@ -145,6 +145,12 @@ class Report(Base):
         Date, nullable=False, server_default=func.current_date()
     )
 
+    # Per-report max content width in pixels. NULL = use the frontend's
+    # narrow default (~1024px). Editable from the report detail view via
+    # the empty-area right-click "보고서 폭 설정". Capped client-side at
+    # 3000; the server only enforces the integer column type.
+    page_width_px: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # Eagerly load the two user joins — every read of a Report needs the
     # owner / last-editor display info, so paying one JOIN beats N+1 lookups
     # in the route layer.

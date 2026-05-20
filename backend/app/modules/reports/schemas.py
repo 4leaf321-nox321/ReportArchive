@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 from typing import Annotated, Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
+from sqlalchemy import inspect as sa_inspect
 
 from app.modules.reports.models import ReportStatus
 
@@ -54,20 +55,17 @@ def _flatten_user_refs(obj: Any) -> Any:
         }
     if not extras:
         return obj
-    # Build a dict so Pydantic stops walking the ORM (otherwise it'd try to
-    # find owner_name as an attribute on the row and fail). We carry every
-    # field through that the consumer schemas declare; the rest get the
-    # default from_attributes pull via __dict__.
+    # Build a dict so Pydantic stops walking the ORM (otherwise it'd try
+    # to find owner_name as an attribute on the row and fail). Column
+    # keys come from SQLAlchemy's mapper so adding a new column to the
+    # Report model is enough — no hand-maintained list to keep in sync.
+    # Relationships are intentionally excluded (Pydantic would try to
+    # walk them); the relationship-derived fields above are flattened by
+    # hand into `extras`.
     base: dict[str, Any] = {
-        key: getattr(obj, key)
-        for key in (
-            "id", "workspace_slug", "template_id", "template_version",
-            "title", "status", "report_date",
-            "owner_user_id", "updated_by_user_id",
-            "tags", "content", "layout_overrides", "props_overrides", "pages",
-            "created_at", "updated_at", "revision",
-        )
-        if hasattr(obj, key)
+        col.key: getattr(obj, col.key)
+        for col in sa_inspect(type(obj)).mapper.column_attrs
+        if hasattr(obj, col.key)
     }
     base.update(extras)
     return base
@@ -126,10 +124,14 @@ class ReportPage(BaseModel):
     blocks_order: list[str] = []
     # Optional per-block "section marker" tag — keys are block ids,
     # values are item codes from the frontend's SECTION_CATEGORIES
-    # taxonomy (e.g. 'rationale', 'risk', 'action_item'). Display-only
-    # metadata; no validation against a known whitelist because the
-    # taxonomy lives on the frontend side and might evolve.
-    block_sections: dict[str, str] = {}
+    # taxonomy (e.g. 'rationale', 'risk', 'action_item'), or `null` to
+    # mark the block as "explicitly no section" (overriding the template's
+    # per-block default). When a key is absent entirely, the renderer
+    # falls back to whatever the template's block defines under
+    # `schema.blocks[].section`. Display-only metadata; no validation
+    # against a known whitelist because the taxonomy lives on the frontend
+    # side and might evolve.
+    block_sections: dict[str, Optional[str]] = {}
 
 
 class ReportRead(BaseModel):
@@ -160,6 +162,10 @@ class ReportRead(BaseModel):
     layout_overrides: Optional[dict] = None
     props_overrides: Optional[dict] = None
     pages: list[ReportPage] = []
+    # Per-report max content width in pixels. None → frontend uses its
+    # narrow default (~1024px). Set via the report's empty-area right-click
+    # menu; capped client-side at 3000.
+    page_width_px: Optional[int] = Field(default=None, ge=320, le=3000)
     created_at: UtcDatetime
     updated_at: UtcDatetime
     # Optimistic-concurrency token. Clients echo this back in PATCH bodies
@@ -239,6 +245,8 @@ class ReportCreate(BaseModel):
     # New multi-page payload. When provided, takes precedence over the
     # legacy single-page fields.
     pages: Optional[list[ReportPage]] = None
+    # Per-report content max-width in pixels. None → frontend default.
+    page_width_px: Optional[int] = Field(default=None, ge=320, le=3000)
 
 
 class ReportUpdate(BaseModel):
@@ -253,6 +261,9 @@ class ReportUpdate(BaseModel):
     layout_overrides: Optional[dict] = None
     props_overrides: Optional[dict] = None
     pages: Optional[list[ReportPage]] = None
+    # Per-report content max-width in pixels. None resets to the frontend
+    # default; an integer (320–3000) sets the cap.
+    page_width_px: Optional[int] = Field(default=None, ge=320, le=3000)
     # Optimistic-concurrency token: the revision the client thinks is
     # current. The service compares against the server's value and rejects
     # the PATCH with revision_mismatch if they differ. Optional so the

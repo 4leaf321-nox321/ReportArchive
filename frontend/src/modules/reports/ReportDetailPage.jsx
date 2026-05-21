@@ -1297,13 +1297,7 @@ export default function ReportDetailPage() {
   // Shared import path for both the file picker and the paste-JSON dialog.
   // Throws on schema mismatch so the caller can surface its own toast.
   function applyImportedDraft(text) {
-    const obj = JSON.parse(text)
-    if (obj?._type !== 'report_archive_draft_v1') {
-      throw new Error('지원하지 않는 형식입니다. (_type=report_archive_draft_v1 이어야 합니다.)')
-    }
-    if (!Array.isArray(obj.pages) || obj.pages.length === 0) {
-      throw new Error('페이지 데이터가 비어 있습니다.')
-    }
+    const obj = parseImportPayload(text)
     setDraft((d) => ({
       ...(d ?? {}),
       title: typeof obj.title === 'string' ? obj.title : (d?.title ?? ''),
@@ -1317,6 +1311,108 @@ export default function ReportDetailPage() {
     setCurrentPage(0)
     // Loaded content is unsaved — switch into edit mode so the user can
     // review and either save back to the server or discard.
+    setIsEditing(true)
+  }
+
+  /** Append-as-new-pages: keep title/date/tags and existing pages,
+   *  drop the imported pages at the end as their own pages. The
+   *  imported pages keep their own template binding. Use case: a
+   *  generated multi-page section becomes a separate chapter. */
+  function appendImportedAsNewPages(text) {
+    const obj = parseImportPayload(text)
+    let nextPageCount = 0
+    setDraft((d) => {
+      const existing = Array.isArray(d?.pages) ? d.pages : []
+      const incoming = obj.pages.map(normalizePage)
+      nextPageCount = existing.length + incoming.length
+      return {
+        ...(d ?? {}),
+        // Metadata (title / date / tags) stays put — appending content
+        // shouldn't quietly rewrite the report's identity.
+        pages: [...existing, ...incoming],
+      }
+    })
+    // Jump to the first appended page so the user lands on the new
+    // content right away.
+    setCurrentPage(Math.max(0, nextPageCount - obj.pages.length))
+    setIsEditing(true)
+  }
+
+  /** Append-into-current-page: flatten the imported widgets (every
+   *  page's `extra_blocks` + matching `content`) into the *current*
+   *  page's extras. Keeps the current page's template, layout, and
+   *  metadata; new blocks just slot in at the end of the page. Use
+   *  case: dropping AI-generated widgets into the spot the writer is
+   *  already working on without making a brand-new page.
+   *
+   *  Per-block IDs get remapped against the current page's existing
+   *  ID space (template blocks + extras + content keys + ...) so
+   *  imported blocks named the same way as something on the current
+   *  page don't collide and get silently dropped.
+   */
+  function appendImportedToCurrentPage(text) {
+    const obj = parseImportPayload(text)
+    setDraft((d) => {
+      if (!d?.pages || d.pages.length === 0) {
+        // No page to merge into — fall through to the new-page path
+        // so the user doesn't lose their paste.
+        return {
+          ...(d ?? {}),
+          pages: obj.pages.map(normalizePage),
+        }
+      }
+      const idx = clamp(currentPage, 0, d.pages.length - 1)
+      const target = d.pages[idx]
+      const targetTpl = getCachedTemplate(pageTemplateMap, target)
+      const existingIds = collectPageBlockIds(target, targetTpl)
+
+      const addedExtras = []
+      const addedContent = {}
+      const addedSections = {}
+      for (const importedPage of obj.pages) {
+        const idMap = new Map()
+        for (const b of importedPage.extra_blocks ?? []) {
+          if (!b?.id || !b?.type) continue
+          let newId = b.id
+          if (existingIds.has(newId)) newId = freshExtraId(b.type, existingIds)
+          existingIds.add(newId)
+          idMap.set(b.id, newId)
+          addedExtras.push({ ...b, id: newId })
+        }
+        const importedContent = importedPage.content ?? {}
+        const importedSections = importedPage.block_sections ?? {}
+        for (const [oldId, newId] of idMap) {
+          if (oldId in importedContent) addedContent[newId] = importedContent[oldId]
+          if (oldId in importedSections) addedSections[newId] = importedSections[oldId]
+        }
+      }
+      if (addedExtras.length === 0) {
+        // Imported JSON had no extra_blocks (only template-content
+        // entries that don't apply to our different template). Bail
+        // gracefully — caller's toast still fires success but with a
+        // hint via the next-line warning toast.
+        toast.info('붙일 위젯이 없습니다. 가져온 JSON 에 extra_blocks 가 없습니다.')
+        return d
+      }
+      // If the target page already maintains an explicit blocks_order,
+      // append the new IDs so the new widgets actually render. Empty
+      // blocks_order means "default = template then extras" and the
+      // new extras get appended naturally by combinedBlocks().
+      const nextOrder =
+        Array.isArray(target.blocks_order) && target.blocks_order.length > 0
+          ? [...target.blocks_order, ...addedExtras.map((b) => b.id)]
+          : target.blocks_order ?? []
+
+      const nextPages = [...d.pages]
+      nextPages[idx] = {
+        ...target,
+        extra_blocks: [...(target.extra_blocks ?? []), ...addedExtras],
+        content: { ...(target.content ?? {}), ...addedContent },
+        block_sections: { ...(target.block_sections ?? {}), ...addedSections },
+        blocks_order: nextOrder,
+      }
+      return { ...(d ?? {}), pages: nextPages }
+    })
     setIsEditing(true)
   }
 
@@ -1981,9 +2077,17 @@ export default function ReportDetailPage() {
       <PasteJsonDialog
         open={pasteJsonOpen}
         onOpenChange={setPasteJsonOpen}
-        onImport={(text) => {
+        onReplace={(text) => {
           applyImportedDraft(text)
-          toast.success('붙여넣은 JSON을 적용했습니다. 저장하려면 “저장” 버튼을 눌러주세요.')
+          toast.success('보고서 전체를 교체했습니다. 저장하려면 “저장” 버튼을 눌러주세요.')
+        }}
+        onAppendNewPages={(text) => {
+          appendImportedAsNewPages(text)
+          toast.success('JSON 의 페이지를 새 페이지로 뒤에 추가했습니다.')
+        }}
+        onAppendToCurrentPage={(text) => {
+          appendImportedToCurrentPage(text)
+          toast.success('JSON 의 위젯을 현재 페이지 끝에 이어 붙였습니다.')
         }}
       />
 
@@ -2547,10 +2651,27 @@ function PdfPrintDialog({ open, onOpenChange, scale, onChangeScale, onConfirm })
 }
 
 /** Lets the user paste a `report_archive_draft_v1` JSON blob directly
- *  instead of uploading a file. Validation is delegated to onImport,
- *  which throws on schema mismatch; we surface the error inline so the
- *  user can fix the paste without closing the dialog. */
-function PasteJsonDialog({ open, onOpenChange, onImport }) {
+ *  instead of uploading a file. Three commit modes — what differs is
+ *  *where* the imported content lands:
+ *   - 전체 교체           → replace the whole draft (title/date/tags
+ *                          + every page).
+ *   - 새 페이지로 추가     → keep current draft; the imported pages
+ *                          land at the END of the page list as their
+ *                          own pages.
+ *   - 현재 페이지 끝에 추가 → flatten the imported widgets and slot
+ *                          them into the CURRENT page's extra_blocks.
+ *                          Current page's template + metadata stays.
+ *
+ *  Validation is delegated to the callback, which throws on schema
+ *  mismatch; we surface the error inline so the user can fix the
+ *  paste without closing the dialog. */
+function PasteJsonDialog({
+  open,
+  onOpenChange,
+  onReplace,
+  onAppendNewPages,
+  onAppendToCurrentPage,
+}) {
   const [text, setText] = useState('')
   const [err, setErr] = useState('')
   useEffect(() => {
@@ -2560,16 +2681,16 @@ function PasteJsonDialog({ open, onOpenChange, onImport }) {
     }
   }, [open])
 
-  function handleApply() {
+  function runWith(fn) {
     if (!text.trim()) {
       setErr('붙여넣을 JSON 내용이 비어 있습니다.')
       return
     }
     try {
-      onImport(text)
+      fn(text)
       onOpenChange(false)
     } catch (e) {
-      setErr(e.message || '불러오기 실패')
+      setErr(e.message || '실패')
     }
   }
 
@@ -2595,16 +2716,49 @@ function PasteJsonDialog({ open, onOpenChange, onImport }) {
           placeholder='{ "_type": "report_archive_draft_v1", ... }'
           className="flex-1 min-h-[280px] font-mono text-[11px] leading-relaxed"
         />
+        <div className="text-[10px] text-muted-foreground leading-relaxed space-y-0.5">
+          <div>
+            <strong>전체 교체</strong>: 보고서 전체를 새 JSON 으로 교체 (제목·날짜·태그 포함).
+          </div>
+          <div>
+            <strong>새 페이지로 추가</strong>: 기존 페이지는 유지, JSON 의 페이지들을 맨 뒤에 새 페이지로 붙임.
+          </div>
+          <div>
+            <strong>현재 페이지 끝에 추가</strong>: 기존 페이지·구조 유지, JSON 의 위젯들을 지금 보고 있는 페이지의 끝에 합침. (id 충돌은 자동 회피)
+          </div>
+        </div>
         {err && (
           <p className="text-xs text-destructive whitespace-pre-wrap">{err}</p>
         )}
-        <div className="flex justify-end gap-2 pt-2">
+        <div className="flex justify-end gap-2 pt-2 flex-wrap">
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
             취소
           </Button>
-          <Button size="sm" onClick={handleApply}>
+          {onAppendToCurrentPage && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => runWith(onAppendToCurrentPage)}
+              title="현재 페이지의 extra_blocks 에 위젯을 추가 (페이지 늘리지 않음)"
+            >
+              <Plus className="mr-1 h-3 w-3" />
+              현재 페이지 끝에 추가
+            </Button>
+          )}
+          {onAppendNewPages && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => runWith(onAppendNewPages)}
+              title="JSON 의 페이지들을 그대로 뒤에 새 페이지로 추가"
+            >
+              <Plus className="mr-1 h-3 w-3" />
+              새 페이지로 추가
+            </Button>
+          )}
+          <Button size="sm" onClick={() => runWith(onReplace)} title="보고서 전체를 교체">
             <Upload className="mr-1 h-3 w-3" />
-            불러오기
+            전체 교체
           </Button>
         </div>
       </DialogContent>
@@ -3629,6 +3783,20 @@ function usePageTemplates(pages, slug) {
 function getCachedTemplate(map, page) {
   if (!page) return null
   return map.get(`${page.template_id}@${page.template_version}`) ?? null
+}
+
+/** Parse + validate a `report_archive_draft_v1` payload. Returns the
+ *  parsed object on success; throws with a user-readable message on
+ *  any structural problem so the dialog caller can show it inline. */
+function parseImportPayload(text) {
+  const obj = JSON.parse(text)
+  if (obj?._type !== 'report_archive_draft_v1') {
+    throw new Error('지원하지 않는 형식입니다. (_type=report_archive_draft_v1 이어야 합니다.)')
+  }
+  if (!Array.isArray(obj.pages) || obj.pages.length === 0) {
+    throw new Error('페이지 데이터가 비어 있습니다.')
+  }
+  return obj
 }
 
 function normalizePage(p) {

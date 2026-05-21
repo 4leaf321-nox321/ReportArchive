@@ -22,6 +22,7 @@ import TemplateEditorPage from '@/modules/templates/TemplateEditorPage'
 import CompositesListPage from '@/modules/composites/CompositesListPage'
 import CompositeDetailPage from '@/modules/composites/CompositeDetailPage'
 import AdminPage from '@/modules/admin/AdminPage'
+import ServerPage from '@/modules/admin/ServerPage'
 import MembersPage from '@/modules/members/MembersPage'
 
 /**
@@ -91,6 +92,7 @@ export default function App() {
               <Route path="/templates/new" element={<TemplateEditorPage />} />
               <Route path="/templates/:templateId/edit" element={<TemplateEditorPage />} />
               <Route path="/admin" element={<AdminPage />} />
+              <Route path="/server" element={<ServerPage />} />
 
               <Route path="*" element={<NotFoundPage />} />
             </Route>

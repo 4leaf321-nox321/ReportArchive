@@ -95,7 +95,7 @@ export default function AdminPage() {
     <div className="p-6 space-y-6 max-w-5xl">
       <PageHeader
         title="관리자"
-        description="시스템 기준정보 — 템플릿 카테고리 / 부서 트리. 사용자 관리는 '멤버' 메뉴에서."
+        description="시스템 기준정보 — 부서 트리 / 템플릿 카테고리 / 관계 라벨 / 단락 구분. 사용자 관리는 '멤버' 메뉴, 서버 상태는 '서버' 메뉴에서."
       />
 
       <Tabs defaultValue="workspaces" className="space-y-4">

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from app.modules.admin.routes import router as admin_router
 from app.modules.auth.routes import router as auth_router
 from app.modules.composites.routes import router as composites_router
 from app.modules.files.routes import router as files_router
@@ -47,3 +48,4 @@ def register_routers(app: FastAPI) -> None:
         prefix="/api/section-taxonomy",
         tags=["section-taxonomy"],
     )
+    app.include_router(admin_router, prefix="/api/admin", tags=["admin"])

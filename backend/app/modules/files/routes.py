@@ -22,6 +22,7 @@ from app.modules.files.schemas import FileMeta
 from app.modules.users.models import Role
 from app.shared.auth import CurrentUser, get_current_user
 from app.shared.responses import created_response, not_found_response, success_response
+from app.shared.storage import assert_space_for
 
 router = APIRouter()
 
@@ -40,6 +41,10 @@ async def upload_file(
         )
     if len(contents) == 0:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "빈 파일은 업로드할 수 없습니다.")
+    # 413 (too big for our policy) is separate from 507 (no room on disk).
+    # Both can hit on a busy server — guarding here lets the client show
+    # a clear error before we waste an fsync.
+    assert_space_for(len(contents))
 
     record = services.save_upload(
         db,

@@ -29,6 +29,7 @@ import {
   schemaToDraft,
 } from './widgetBuilder'
 import { getRenderer } from './widgets'
+import { WidgetPicker } from './WidgetPicker'
 import { BlockMetaEditor } from './widgets/_shared'
 import {
   DEFAULT_REPORT_WIDTH_PX,
@@ -376,24 +377,12 @@ export default function TemplateEditorPage() {
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground px-1 pb-1">
                   위젯 팔레트
                 </div>
-                <div className="space-y-1">
-                  {catalog?.widgets?.map((w) => {
-                    const renderer = getRenderer(w.type)
-                    const Icon = renderer?.Icon
-                    return (
-                      <button
-                        key={w.type}
-                        onClick={() => addBlock(w.type)}
-                        className="w-full text-left rounded-md px-2 py-1.5 hover:bg-accent flex items-center gap-2 text-sm"
-                      >
-                        {Icon && (
-                          <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                        )}
-                        <span className="truncate">{w.label}</span>
-                      </button>
-                    )
-                  })}
-                </div>
+                <WidgetPicker
+                  widgets={catalog?.widgets ?? []}
+                  onSelect={(w) => addBlock(w.type)}
+                  layout="list"
+                  autoFocusSearch={false}
+                />
                 <p className="text-[10px] text-muted-foreground px-1 pt-2">
                   클릭 시 새 행에 추가. 캔버스에서 드래그·리사이즈로 배치.
                 </p>

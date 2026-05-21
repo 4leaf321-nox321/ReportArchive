@@ -69,6 +69,7 @@ import { getTemplateVersion, createTemplate } from '@/shared/api/templates'
 import { listTemplateCategories } from '@/shared/api/templateCategories'
 import { STATUSES, STATUS_LABEL, STATUS_VARIANT } from './constants'
 import { getRenderer } from '@/modules/templates/widgets'
+import { WidgetPicker } from '@/modules/templates/WidgetPicker'
 import { DepthStyleField, TextStyleField } from '@/modules/templates/widgets/_shared'
 import { TemplatePicker } from './TemplatePicker'
 import { SectionPickerDialog } from './SectionPickerDialog'
@@ -1973,7 +1974,6 @@ export default function ReportDetailPage() {
                     }
                     onRename={(name) => renamePage(idx, name)}
                     showPageHeader={pageCount > 1}
-                    onAddExtraBlock={(type, defaults) => addExtraBlock(idx, type, defaults)}
                     onAddExtraBlockAt={(type, defaults, anchorId, direction) =>
                       addExtraBlockAt(idx, type, defaults, anchorId, direction)
                     }
@@ -2013,9 +2013,6 @@ export default function ReportDetailPage() {
                     }
                     onRename={(name) => renamePage(safeCurrent, name)}
                     showPageHeader={pageCount > 1}
-                    onAddExtraBlock={(type, defaults) =>
-                      addExtraBlock(safeCurrent, type, defaults)
-                    }
                     onAddExtraBlockAt={(type, defaults, anchorId, direction) =>
                       addExtraBlockAt(safeCurrent, type, defaults, anchorId, direction)
                     }
@@ -3156,7 +3153,6 @@ function PageSection({
   contentHeights,
   onRename,
   showPageHeader,
-  onAddExtraBlock,
   onAddExtraBlockAt,
   onRemoveBlock,
   onChangeExtraBlockProps,
@@ -3926,33 +3922,14 @@ function DirectionalAddArrows({ canInsertHorizontally, onAdd }) {
           side={side}
           align={align}
           sideOffset={6}
-          className="w-[320px] p-2"
+          // Width sized to fit all 5 category columns side by side. Radix
+          // shifts the popover into view if a narrow viewport can't fit it.
+          className="w-[760px] max-w-[92vw] p-2 max-h-[70vh] overflow-y-auto"
         >
-          <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-2 pb-1">
-            위젯 종류
-          </div>
-          <div className="grid grid-cols-2 gap-1">
-            {widgets.map((w) => {
-              const meta = getRenderer(w.type)
-              const Icon = meta?.Icon
-              return (
-                <button
-                  key={w.type}
-                  type="button"
-                  className="flex items-start gap-2 px-2 py-2 rounded-md text-left hover:bg-muted transition-colors"
-                  onClick={() => pick(direction, w.type, w.default_props ?? {})}
-                >
-                  {Icon && <Icon className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />}
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium truncate">{w.label}</div>
-                    <div className="text-[10px] text-muted-foreground line-clamp-2">
-                      {w.description}
-                    </div>
-                  </div>
-                </button>
-              )
-            })}
-          </div>
+          <WidgetPicker
+            widgets={widgets}
+            onSelect={(w) => pick(direction, w.type, w.default_props ?? {})}
+          />
         </PopoverContent>
       </Popover>
     )
@@ -3995,24 +3972,6 @@ function DirectionalAddArrows({ canInsertHorizontally, onAdd }) {
   )
 }
 
-// Picker categories. Types listed here render under the matching
-// header; anything not classified falls through into a 「기타」
-// bucket so newly added widgets are still reachable. Order matters —
-// categories show in the listed sequence.
-const WIDGET_PICKER_CATEGORIES = [
-  { name: '텍스트', types: ['heading', 'rich_text', 'equation'] },
-  { name: '목록 / 표', types: ['bulleted_list', 'key_value', 'table'] },
-  {
-    name: '차트',
-    types: ['chart', 'scatter', 'scatter3d', 'heatmap', 'radar'],
-  },
-  {
-    name: '다이어그램',
-    types: ['flowchart', 'milestone', 'raci_matrix', 'progress_bar'],
-  },
-  { name: '첨부', types: ['image', 'attachment'] },
-]
-
 /** Floating "위젯 추가" pill. Rendered inside the parent floating-action
  *  cluster (which owns the fixed positioning + the
  *  `report-detail-floating` class that exporters strip), so this
@@ -4020,42 +3979,8 @@ const WIDGET_PICKER_CATEGORIES = [
 function FloatingAddWidget({ onAdd }) {
   const { catalog, loading } = useWidgetCatalog()
   const [open, setOpen] = useState(false)
-  const [query, setQuery] = useState('')
-  // Reset the search box every time the popover closes so the next
-  // open starts on the full categorized view.
-  useEffect(() => {
-    if (!open) setQuery('')
-  }, [open])
   if (loading) return null
   const widgets = catalog?.widgets ?? []
-  const q = query.trim().toLowerCase()
-  // Filter on label / description / type so the user can find a
-  // widget by Korean label, English type, or a description keyword.
-  const filtered = q
-    ? widgets.filter(
-        (w) =>
-          (w.label ?? '').toLowerCase().includes(q) ||
-          (w.description ?? '').toLowerCase().includes(q) ||
-          (w.type ?? '').toLowerCase().includes(q),
-      )
-    : widgets
-  // Bucket the filtered list by the picker categories. Widgets not
-  // claimed by any category land in 「기타」 so newly added types
-  // remain visible even before someone updates the category map.
-  const claimedTypes = new Set(
-    WIDGET_PICKER_CATEGORIES.flatMap((c) => c.types),
-  )
-  const filteredByType = new Map(filtered.map((w) => [w.type, w]))
-  const groups = WIDGET_PICKER_CATEGORIES.map((cat) => ({
-    name: cat.name,
-    items: cat.types
-      .map((t) => filteredByType.get(t))
-      .filter(Boolean),
-  })).filter((g) => g.items.length > 0)
-  const uncategorized = filtered.filter((w) => !claimedTypes.has(w.type))
-  if (uncategorized.length > 0) {
-    groups.push({ name: '기타', items: uncategorized })
-  }
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -4072,73 +3997,17 @@ function FloatingAddWidget({ onAdd }) {
         align="end"
         side="top"
         sideOffset={8}
-        className="w-[380px] p-2 max-h-[70vh] overflow-y-auto"
+        // Width sized to fit all 5 category columns side by side. Radix
+        // shifts the popover into view if a narrow viewport can't fit it.
+        className="w-[760px] max-w-[92vw] p-2 max-h-[70vh] overflow-y-auto"
       >
-        {/* Sticky search header — pinned at the top while the
-            grouped list scrolls underneath. Auto-focus so the user
-            can start typing immediately after the popover opens. */}
-        <div className="sticky -top-2 bg-popover z-10 pb-2 pt-1">
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="위젯 검색…"
-            autoFocus
-            className="h-8 text-xs"
-            // Esc on the input clears the query first; only closes
-            // the popover on the second press (the default Esc
-            // handler on the popover takes over once the input
-            // value is empty).
-            onKeyDown={(e) => {
-              if (e.key === 'Escape' && query) {
-                e.preventDefault()
-                e.stopPropagation()
-                setQuery('')
-              }
-            }}
-          />
-        </div>
-        {groups.length === 0 ? (
-          <div className="px-2 py-6 text-center text-xs text-muted-foreground">
-            “{query}”에 일치하는 위젯이 없습니다.
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {groups.map((group) => (
-              <div key={group.name}>
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-2 pb-1">
-                  {group.name}
-                </div>
-                <div className="grid grid-cols-2 gap-1">
-                  {group.items.map((w) => {
-                    const meta = getRenderer(w.type)
-                    const Icon = meta?.Icon
-                    return (
-                      <button
-                        key={w.type}
-                        type="button"
-                        className="flex items-start gap-2 px-2 py-2 rounded-md text-left hover:bg-muted transition-colors"
-                        onClick={() => {
-                          onAdd(w.type, w.default_props ?? {})
-                          setOpen(false)
-                        }}
-                      >
-                        {Icon && (
-                          <Icon className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />
-                        )}
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium truncate">{w.label}</div>
-                          <div className="text-[10px] text-muted-foreground line-clamp-2">
-                            {w.description}
-                          </div>
-                        </div>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+        <WidgetPicker
+          widgets={widgets}
+          onSelect={(w) => {
+            onAdd(w.type, w.default_props ?? {})
+            setOpen(false)
+          }}
+        />
       </PopoverContent>
     </Popover>
   )
@@ -4180,58 +4049,6 @@ function FloatingPasteJson({ onOpen }) {
       <ClipboardPaste className="mr-2 h-4 w-4" />
       JSON 붙여넣기
     </Button>
-  )
-}
-
-/** Page-level "위젯 추가" toolbar. Shown only in edit mode. Pulls the
- *  widget catalog and lets the user pick a type; on click, hands the
- *  type + default_props back to the parent to push onto extra_blocks. */
-function AddWidgetBar({ onAdd }) {
-  const { catalog, loading } = useWidgetCatalog()
-  const [open, setOpen] = useState(false)
-  if (loading) return null
-  const widgets = catalog?.widgets ?? []
-  return (
-    <div className="pt-3 border-t">
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <Button variant="outline" size="sm" className="text-xs">
-            <Plus className="mr-1 h-3 w-3" />
-            위젯 추가
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-[320px] p-2">
-          <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-2 pb-1">
-            위젯 종류
-          </div>
-          <div className="grid grid-cols-2 gap-1">
-            {widgets.map((w) => {
-              const meta = getRenderer(w.type)
-              const Icon = meta?.Icon
-              return (
-                <button
-                  key={w.type}
-                  type="button"
-                  className="flex items-start gap-2 px-2 py-2 rounded-md text-left hover:bg-muted transition-colors"
-                  onClick={() => {
-                    onAdd(w.type, w.default_props ?? {})
-                    setOpen(false)
-                  }}
-                >
-                  {Icon && <Icon className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />}
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium truncate">{w.label}</div>
-                    <div className="text-[10px] text-muted-foreground line-clamp-2">
-                      {w.description}
-                    </div>
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-        </PopoverContent>
-      </Popover>
-    </div>
   )
 }
 

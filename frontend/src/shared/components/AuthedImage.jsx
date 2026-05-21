@@ -20,13 +20,16 @@ export const AuthedImage = forwardRef(function AuthedImage(
   const [error, setError] = useState(false)
 
   useEffect(() => {
-    if (!fileId) {
-      setUrl(null)
-      return
-    }
+    // Clear the displayed URL *before* the previous effect's cleanup runs
+    // — otherwise the cleanup revokes the old blob URL while `url` state
+    // still points at it, so `<img src>` briefly references a dead blob
+    // and the browser renders a broken-image placeholder. Resetting here
+    // lets the skeleton show during the refetch instead.
+    setUrl(null)
+    setError(false)
+    if (!fileId) return undefined
     let cancelled = false
     let createdUrl = null
-    setError(false)
     fetchImageObjectURL(fileId)
       .then((u) => {
         if (cancelled) {

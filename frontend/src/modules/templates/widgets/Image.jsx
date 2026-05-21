@@ -5,6 +5,7 @@ import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { AuthedImage } from '@/shared/components/AuthedImage'
 import { uploadFile } from '@/shared/api/files'
+import { cn } from '@/shared/lib/utils'
 import { toast } from 'sonner'
 import { CaptionInput, LabelField, PreviewLabel, captionSkipProps } from './_shared'
 import {
@@ -69,13 +70,19 @@ export function ImagePropsPanel({ props, onChange }) {
   )
 }
 
-export function ImageEditor({ props, content, onChange, readOnly }) {
+export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
   const caption = content?.caption ?? ''
   const files = content?.files ?? []
   const max = props.max_count ?? 1
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
   const fileInputRef = useRef(null)
+  // Cell-fill mode: when the widget cell has an explicit height
+  // (autoFit=false) and there's a single image with no user-set aspect
+  // ratio, let the image grow to fill the available space instead of
+  // squeezing it into a fixed 16:9 box that leaves big gaps or overflows.
+  const hasUserAspect = Boolean(props.aspect_ratio)
+  const fillCell = max === 1 && autoFit === false && !hasUserAspect
 
   // Annotations only make sense when there's a single canonical image
   // to mark up — pinning a mark to "image #2 of 5" gets confusing fast
@@ -155,13 +162,33 @@ export function ImageEditor({ props, content, onChange, readOnly }) {
     handleFiles(e.dataTransfer.files)
   }
 
+  // Pulls image blobs out of the system clipboard (screenshots, copies
+  // from image viewers, "copy image" from browsers). Falls through when
+  // the clipboard only carries text so the default paste behavior of any
+  // ancestor input still works.
+  function onPaste(e) {
+    const items = Array.from(e.clipboardData?.items ?? [])
+    const imageFiles = items
+      .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+      .map((it) => it.getAsFile())
+      .filter(Boolean)
+    if (imageFiles.length === 0) return
+    e.preventDefault()
+    handleFiles(imageFiles)
+  }
+
   const canAdd = files.length < max
   const aspectClass = aspectRatioToClass(props.aspect_ratio)
 
   if (readOnly) {
     if (!caption && files.length === 0) return null
     return (
-      <div className="space-y-2">
+      <div
+        className={cn(
+          'flex flex-col gap-2',
+          fillCell && 'h-full',
+        )}
+      >
         <CaptionInput
           value={caption}
           readOnly
@@ -169,22 +196,34 @@ export function ImageEditor({ props, content, onChange, readOnly }) {
           skipAutofill={content?.caption_skip_autofill}
         />
         {files.length > 0 && (
-          <div className={`grid gap-2 ${max > 1 ? 'grid-cols-3' : 'grid-cols-1'}`}>
+          <div
+            className={cn(
+              'grid gap-2',
+              max > 1 ? 'grid-cols-3' : 'grid-cols-1',
+              fillCell && 'flex-1 min-h-0',
+            )}
+          >
             {files.map((file, idx) => (
-              <figure key={idx} className="space-y-1">
+              <figure key={idx} className="flex flex-col gap-1 min-h-0">
                 {annotationsEnabled ? (
                   <AnnotatableImageBox
                     file={file}
                     aspectClass={aspectClass}
+                    fillCell={fillCell}
                     annotations={content?.annotations}
                     readOnly
                   />
                 ) : (
-                  <div className={`relative ${aspectClass} bg-muted/30 rounded-md overflow-hidden`}>
+                  <div
+                    className={cn(
+                      'relative bg-muted/30 rounded-md overflow-hidden',
+                      fillCell ? 'flex-1 min-h-0' : aspectClass,
+                    )}
+                  >
                     <AuthedImage
                       fileId={file.file_id}
                       alt={file.alt}
-                      className="absolute inset-0 w-full h-full object-cover"
+                      className="absolute inset-0 w-full h-full object-contain"
                     />
                   </div>
                 )}
@@ -202,7 +241,12 @@ export function ImageEditor({ props, content, onChange, readOnly }) {
   }
 
   return (
-    <div className="space-y-3">
+    <div
+      className={cn(
+        'flex flex-col gap-3',
+        fillCell && 'h-full',
+      )}
+    >
       <CaptionInput
         value={caption}
         onChange={(v) => patchContent({ caption: v })}
@@ -210,16 +254,23 @@ export function ImageEditor({ props, content, onChange, readOnly }) {
         {...captionSkipProps({ content, patch: patchContent })}
       />
       {files.length > 0 && (
-        <div className={`grid gap-2 ${max > 1 ? 'grid-cols-3' : 'grid-cols-1'}`}>
+        <div
+          className={cn(
+            'grid gap-2',
+            max > 1 ? 'grid-cols-3' : 'grid-cols-1',
+            fillCell && 'flex-1 min-h-0',
+          )}
+        >
           {files.map((file, idx) => (
             <div
               key={idx}
-              className="rounded-md border bg-muted/10 overflow-hidden flex flex-col"
+              className="rounded-md border bg-muted/10 overflow-hidden flex flex-col min-h-0"
             >
               {annotationsEnabled ? (
                 <AnnotatableImageBox
                   file={file}
                   aspectClass={aspectClass}
+                  fillCell={fillCell}
                   annotations={content?.annotations}
                   onChangeAnnotations={(next) => patchContent({ annotations: next })}
                   topRightSlot={
@@ -232,11 +283,16 @@ export function ImageEditor({ props, content, onChange, readOnly }) {
                   }
                 />
               ) : (
-                <div className={`relative ${aspectClass} bg-muted/30`}>
+                <div
+                  className={cn(
+                    'relative bg-muted/30',
+                    fillCell ? 'flex-1 min-h-0' : aspectClass,
+                  )}
+                >
                   <AuthedImage
                     fileId={file.file_id}
                     alt={file.alt}
-                    className="absolute inset-0 w-full h-full object-cover"
+                    className="absolute inset-0 w-full h-full object-contain"
                   />
                   <div className="absolute top-1 right-1 flex items-center gap-0.5 bg-background/80 rounded">
                   <Button
@@ -303,11 +359,17 @@ export function ImageEditor({ props, content, onChange, readOnly }) {
       )}
 
       {canAdd && (
+        // Dropzone is now a **paste target**, not a picker trigger —
+        // clicking it just focuses the div (tabIndex auto-focuses on
+        // click) so the user can immediately Ctrl+V. Opening the file
+        // dialog is now an explicit button below so the two actions
+        // don't conflict.
         <div
-          onClick={() => fileInputRef.current?.click()}
+          tabIndex={0}
           onDragOver={(e) => e.preventDefault()}
           onDrop={onDrop}
-          className="border-2 border-dashed rounded-md p-6 text-center cursor-pointer hover:bg-muted/30 transition-colors"
+          onPaste={onPaste}
+          className="border-2 border-dashed rounded-md p-6 text-center shrink-0 hover:bg-muted/20 focus:bg-muted/30 focus:outline-none focus:ring-2 focus:ring-primary/40 transition-colors"
         >
           {uploading ? (
             <div className="flex flex-col items-center gap-2 text-muted-foreground">
@@ -317,12 +379,29 @@ export function ImageEditor({ props, content, onChange, readOnly }) {
           ) : (
             <div className="flex flex-col items-center gap-2 text-muted-foreground">
               <Upload className="h-5 w-5" />
-              <span className="text-xs">
-                이미지 끌어다 놓거나 클릭해 업로드
-                <span className="text-[10px] block mt-0.5">
-                  남은 슬롯 {max - files.length}/{max}
-                </span>
-              </span>
+              <div className="text-xs">
+                이미지 드래그·앤·드롭, 또는 클릭해서 포커스 후{' '}
+                <kbd className="px-1 rounded bg-muted">Ctrl</kbd>+
+                <kbd className="px-1 rounded bg-muted">V</kbd>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={(e) => {
+                  // Stop the dropzone's tabIndex-driven focus shift so
+                  // the file dialog gets the focus instead, which keeps
+                  // keyboard flow predictable when it closes.
+                  e.stopPropagation()
+                  fileInputRef.current?.click()
+                }}
+                className="h-7 text-xs"
+              >
+                파일 선택
+              </Button>
+              <div className="text-[10px]">
+                남은 슬롯 {max - files.length}/{max}
+              </div>
             </div>
           )}
           <input
@@ -356,6 +435,7 @@ export function ImageEditor({ props, content, onChange, readOnly }) {
 function AnnotatableImageBox({
   file,
   aspectClass,
+  fillCell = false,
   annotations,
   onChangeAnnotations,
   readOnly = false,
@@ -429,9 +509,14 @@ function AnnotatableImageBox({
   }, [readOnly, annotationTool, annotationStore])
 
   return (
-    <div className="space-y-2">
+    <div
+      className={cn(
+        'flex flex-col gap-2',
+        fillCell && 'h-full min-h-0',
+      )}
+    >
       {!readOnly && (
-        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+        <div className="flex items-center gap-2 text-[10px] text-muted-foreground shrink-0">
           <span>어노테이션:</span>
           <AnnotationToolbar
             tool={annotationTool}
@@ -455,13 +540,16 @@ function AnnotatableImageBox({
       )}
       <div
         ref={containerRef}
-        className={`relative ${aspectClass} bg-muted/30 rounded-md overflow-hidden`}
+        className={cn(
+          'relative bg-muted/30 rounded-md overflow-hidden',
+          fillCell ? 'flex-1 min-h-0' : aspectClass,
+        )}
       >
         <AuthedImage
           ref={imgRef}
           fileId={file.file_id}
           alt={file.alt}
-          className="absolute inset-0 w-full h-full object-cover"
+          className="absolute inset-0 w-full h-full object-contain"
         />
         {topRightSlot && (
           <div className="absolute top-1 right-1 z-20 flex items-center gap-0.5 bg-background/80 rounded">

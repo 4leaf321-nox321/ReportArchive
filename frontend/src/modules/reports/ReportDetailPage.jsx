@@ -1384,68 +1384,6 @@ export default function ReportDetailPage() {
           })
           .join('\n\n')
 
-    const examples = [
-      '※ 모든 예시는 백엔드 스키마와 1:1 로 일치합니다. 키 이름·타입을 절대 변형하지 마세요.',
-      '',
-      '### heading (제목)',
-      'props (required: level) : `{ "level": 2 }`   // 1=대제목, 2=중제목, 3=소제목',
-      'content : `{ "text": "섹션 제목" }`',
-      '',
-      '### rich_text (자유 서술 / 마크다운)',
-      'props : `{}`   // 모든 필드 선택. label 등 없음.',
-      'content (권장: 단순형) : `{ "markdown": "여러 줄 텍스트…\\n- 글머리도 가능" }`',
-      'content (구조형) : `{ "items": [ {"depth":0,"text":"첫째 줄"}, {"depth":1,"text":"하위 항목"} ] }`   // depth 는 0~5 정수',
-      '',
-      '### key_value (키-값 카드)  ★ 자주 틀리는 형식 — 주의 ★',
-      'props (required: items) : `{ "label":"주요 결과", "items":[ {"key":"stress","label":"발생 응력","type":"number"}, {"key":"unit","label":"단위","type":"text"} ] }`',
-      'content : `{ "stress": 100, "unit": "MPa" }`   // ← 각 item.key 가 그대로 top-level 키. `values` 같은 래퍼 절대 금지.',
-      'item.type 은 text | number | integer | date | select 중 하나. `multi: true` 항목의 값은 배열 (예: `"defect_type": ["크랙","변형"]`).',
-      '',
-      '### bulleted_list (글머리 리스트)  ★ 자주 틀리는 형식 — 주의 ★',
-      'props (required: label) : `{ "label": "후속 검토 사항" }`',
-      'content : `{ "items": [ "첫째 항목", "둘째 항목", "셋째 항목" ] }`   // ← 문자열 배열. {text, depth} 객체 절대 금지.',
-      '',
-      '### table (표)',
-      'props (required: label, columns) : `{ "label":"검토 내용", "columns":[ {"key":"category","label":"구분","type":"text"}, {"key":"amount","label":"금액","type":"number"} ] }`',
-      'content : `{ "rows":[ {"category":"배경","amount":1200}, {"category":"결과","amount":3400} ] }`   // 행 객체의 키 = column.key',
-      '',
-      '### chart (차트)',
-      'props (required: label) : `{ "label":"월별 매출", "chart_type":"line", "x_column_key":"month", "columns":[ {"key":"month","label":"월","type":"text"}, {"key":"sales","label":"매출","type":"number"} ] }`',
-      'content : `{ "rows":[ {"month":"1월","sales":120}, {"month":"2월","sales":135} ] }`',
-      '※ x_column_key 가 가리키는 열 외에 모든 열은 type:"number" 여야 합니다.',
-      '',
-      '### milestone (마일스톤)',
-      'props (required: label) : `{ "label":"프로젝트 일정" }`',
-      'content : `{ "items":[ {"date":"2026-01-15","label":"기획","status":"done"}, {"date":"2026-03-01","label":"개발","status":"pending","note":"인력 보강 필요"} ] }`',
-      'status 는 `pending` | `done` | `delayed` 셋 중 하나. (in_progress / planned 등 다른 값 사용 금지)',
-      '',
-      '### flowchart (플로우차트)',
-      'props (required: label) : `{ "label":"검토 흐름", "orientation":"horizontal" }`   // orientation: horizontal | vertical',
-      'content : `{ "items":[ {"label":"요구사항"}, {"label":"설계"}, {"label":"검토","description":"리뷰 미팅"}, {"label":"승인"} ] }`',
-      '※ 순차 흐름만 지원. `nodes` / `edges` 같은 키 사용 금지.',
-      '',
-      '### progress_bar (진행률 바)',
-      'props (required: label) : `{ "label":"작업 진척도", "default_max":100, "unit":"%" }`   // default_max / unit 은 선택. 기본 100% 기준이면 둘 다 생략 가능',
-      'content : `{ "items":[ {"label":"기획","value":100}, {"label":"개발","value":65}, {"label":"테스트","value":20,"max":40,"note":"케이스 부족"} ] }`',
-      '- value 는 현재값(숫자), max 는 목표값(생략하면 props.default_max 사용). 비율(value/max) 에 따라 색상이 자동: <30% 빨강, 30–70% 주황, 70% 이상 초록, 100% 이상 진초록.',
-      '- status(선택)는 `pending` | `in_progress` | `done` | `blocked` 중 하나. 지정하면 자동 색상보다 우선.',
-      '- 단순 % 가 아닌 절대값 비교(예: "8 / 12 건")도 가능 — props.unit 을 "건" 등으로 바꾸고 item.max 를 명시.',
-      '- 여러 작업·지표의 진척도를 한 번에 비교할 때 사용. 단일 KPI 면 key_value 가 더 어울립니다.',
-      '',
-      '### raci_matrix (RACI 매트릭스)',
-      'props (required: label) : `{ "label":"역할 분담" }`   // default_roles 는 선택 (보고서별로 content.roles 가 우선)',
-      'content : `{ "roles":[ {"key":"modeling","label":"모델링"}, {"key":"analysis","label":"분석"}, {"key":"develop","label":"개발"}, {"key":"design","label":"설계"} ], "rows":[ {"label":"요구사항 정의","assignments":{"modeling":"I","analysis":"R/A","develop":"C","design":"C"}}, {"label":"시스템 모델링","assignments":{"modeling":"R/A","analysis":"C","develop":"I","design":"C"}}, {"label":"구현","assignments":{"modeling":"I","analysis":"I","develop":"R/A","design":"C"}} ] }`',
-      '- roles 는 content 안에 둡니다 (props 가 아님). key 는 영문 소문자/숫자/_ 만, 페이지 내에서 고유.',
-      '- role 의 `group` (선택)은 상단 헤더 그룹 라벨. 같은 group 의 **인접한** 역할들이 자동으로 한 셀로 병합 (colspan).',
-      '- assignments 의 키는 content.roles 의 key 와 정확히 일치해야 함. 알 수 없는 키 사용 금지.',
-      '- 셀 값은 `R`(실무) | `A`(책임) | `C`(자문) | `I`(공유) 중 하나 또는 `/` 로 결합 (예: `R/A`). 스키마 값은 영문자, 화면 표시는 자동으로 한국어("실무 / 책임")로 변환됩니다.',
-      '- R = 실무(실제 작업), A = 책임(최종 책임자, 한 행에 1명), C = 자문(의견 제공), I = 공유(결과 통지).',
-      '- 표준: 한 행에 A 는 1명만 (책임자 단일화). R 은 여러 명 가능. C/I 는 자유.',
-      '',
-      '### image / attachment  ★ AI 가 만들지 마세요 ★',
-      '두 위젯의 content 는 시스템에 실제로 업로드된 파일의 `file_id` 를 요구합니다. AI 는 file_id 를 알 수 없으므로 이 위젯들은 `extra_blocks` / `content` 양쪽 모두에서 생성하지 마세요. 이미지·첨부가 필요하다는 점만 본문 rich_text 에 메모해 두세요. (사용자가 보고서를 받은 뒤 직접 추가합니다.)',
-    ].join('\n')
-
     return [
       '당신은 ReportArchive 보고서 작성 도우미입니다.',
       '사용자 입력(자유 텍스트, 메모, 표 등)을 분석해, 아래 위젯들을 자유롭게 조합한 JSON 한 덩어리만 출력합니다.',
@@ -1492,7 +1430,7 @@ export default function ReportDetailPage() {
       widgetCatalogBlock,
       '',
       '== 위젯별 props / content 예시 ==',
-      examples,
+      WIDGET_EXAMPLES_TEXT,
       '',
       '== 작성 흐름 ==',
       '① 사용자 입력을 훑어 섹션/표/리스트/수치 등을 식별 → ② 각 조각을 어떤 위젯으로 표현할지 결정 → ③ extra_blocks 에 블록을 선언하고 같은 id 로 content 채움 → ④ 단락 구분이 분명한 블록은 block_sections 에 태깅 → ⑤ JSON 만 출력.',
@@ -1569,68 +1507,6 @@ export default function ReportDetailPage() {
           })
           .join('\n\n')
 
-    const examples = [
-      '※ 모든 예시는 백엔드 스키마와 1:1 로 일치합니다. 키 이름·타입을 절대 변형하지 마세요.',
-      '',
-      '### heading (제목)',
-      'props (required: level) : `{ "level": 2 }`   // 1=대제목, 2=중제목, 3=소제목',
-      'content : `{ "text": "섹션 제목" }`',
-      '',
-      '### rich_text (자유 서술 / 마크다운)',
-      'props : `{}`   // 모든 필드 선택. label 등 없음.',
-      'content (권장: 단순형) : `{ "markdown": "여러 줄 텍스트…\\n- 글머리도 가능" }`',
-      'content (구조형) : `{ "items": [ {"depth":0,"text":"첫째 줄"}, {"depth":1,"text":"하위 항목"} ] }`   // depth 는 0~5 정수',
-      '',
-      '### key_value (키-값 카드)  ★ 자주 틀리는 형식 — 주의 ★',
-      'props (required: items) : `{ "label":"주요 결과", "items":[ {"key":"stress","label":"발생 응력","type":"number"}, {"key":"unit","label":"단위","type":"text"} ] }`',
-      'content : `{ "stress": 100, "unit": "MPa" }`   // ← 각 item.key 가 그대로 top-level 키. `values` 같은 래퍼 절대 금지.',
-      'item.type 은 text | number | integer | date | select 중 하나. `multi: true` 항목의 값은 배열 (예: `"defect_type": ["크랙","변형"]`).',
-      '',
-      '### bulleted_list (글머리 리스트)  ★ 자주 틀리는 형식 — 주의 ★',
-      'props (required: label) : `{ "label": "후속 검토 사항" }`',
-      'content : `{ "items": [ "첫째 항목", "둘째 항목", "셋째 항목" ] }`   // ← 문자열 배열. {text, depth} 객체 절대 금지.',
-      '',
-      '### table (표)',
-      'props (required: label, columns) : `{ "label":"검토 내용", "columns":[ {"key":"category","label":"구분","type":"text"}, {"key":"amount","label":"금액","type":"number"} ] }`',
-      'content : `{ "rows":[ {"category":"배경","amount":1200}, {"category":"결과","amount":3400} ] }`   // 행 객체의 키 = column.key',
-      '',
-      '### chart (차트)',
-      'props (required: label) : `{ "label":"월별 매출", "chart_type":"line", "x_column_key":"month", "columns":[ {"key":"month","label":"월","type":"text"}, {"key":"sales","label":"매출","type":"number"} ] }`',
-      'content : `{ "rows":[ {"month":"1월","sales":120}, {"month":"2월","sales":135} ] }`',
-      '※ x_column_key 가 가리키는 열 외에 모든 열은 type:"number" 여야 합니다.',
-      '',
-      '### milestone (마일스톤)',
-      'props (required: label) : `{ "label":"프로젝트 일정" }`',
-      'content : `{ "items":[ {"date":"2026-01-15","label":"기획","status":"done"}, {"date":"2026-03-01","label":"개발","status":"pending","note":"인력 보강 필요"} ] }`',
-      'status 는 `pending` | `done` | `delayed` 셋 중 하나. (in_progress / planned 등 다른 값 사용 금지)',
-      '',
-      '### flowchart (플로우차트)',
-      'props (required: label) : `{ "label":"검토 흐름", "orientation":"horizontal" }`   // orientation: horizontal | vertical',
-      'content : `{ "items":[ {"label":"요구사항"}, {"label":"설계"}, {"label":"검토","description":"리뷰 미팅"}, {"label":"승인"} ] }`',
-      '※ 순차 흐름만 지원. `nodes` / `edges` 같은 키 사용 금지.',
-      '',
-      '### progress_bar (진행률 바)',
-      'props (required: label) : `{ "label":"작업 진척도", "default_max":100, "unit":"%" }`   // default_max / unit 은 선택. 기본 100% 기준이면 둘 다 생략 가능',
-      'content : `{ "items":[ {"label":"기획","value":100}, {"label":"개발","value":65}, {"label":"테스트","value":20,"max":40,"note":"케이스 부족"} ] }`',
-      '- value 는 현재값(숫자), max 는 목표값(생략하면 props.default_max 사용). 비율(value/max) 에 따라 색상이 자동: <30% 빨강, 30–70% 주황, 70% 이상 초록, 100% 이상 진초록.',
-      '- status(선택)는 `pending` | `in_progress` | `done` | `blocked` 중 하나. 지정하면 자동 색상보다 우선.',
-      '- 단순 % 가 아닌 절대값 비교(예: "8 / 12 건")도 가능 — props.unit 을 "건" 등으로 바꾸고 item.max 를 명시.',
-      '- 여러 작업·지표의 진척도를 한 번에 비교할 때 사용. 단일 KPI 면 key_value 가 더 어울립니다.',
-      '',
-      '### raci_matrix (RACI 매트릭스)',
-      'props (required: label) : `{ "label":"역할 분담" }`   // default_roles 는 선택 (보고서별로 content.roles 가 우선)',
-      'content : `{ "roles":[ {"key":"modeling","label":"모델링"}, {"key":"analysis","label":"분석"}, {"key":"develop","label":"개발"}, {"key":"design","label":"설계"} ], "rows":[ {"label":"요구사항 정의","assignments":{"modeling":"I","analysis":"R/A","develop":"C","design":"C"}}, {"label":"시스템 모델링","assignments":{"modeling":"R/A","analysis":"C","develop":"I","design":"C"}}, {"label":"구현","assignments":{"modeling":"I","analysis":"I","develop":"R/A","design":"C"}} ] }`',
-      '- roles 는 content 안에 둡니다 (props 가 아님). key 는 영문 소문자/숫자/_ 만, 페이지 내에서 고유.',
-      '- role 의 `group` (선택)은 상단 헤더 그룹 라벨. 같은 group 의 **인접한** 역할들이 자동으로 한 셀로 병합 (colspan).',
-      '- assignments 의 키는 content.roles 의 key 와 정확히 일치해야 함. 알 수 없는 키 사용 금지.',
-      '- 셀 값은 `R`(실무) | `A`(책임) | `C`(자문) | `I`(공유) 중 하나 또는 `/` 로 결합 (예: `R/A`). 스키마 값은 영문자, 화면 표시는 자동으로 한국어("실무 / 책임")로 변환됩니다.',
-      '- R = 실무(실제 작업), A = 책임(최종 책임자, 한 행에 1명), C = 자문(의견 제공), I = 공유(결과 통지).',
-      '- 표준: 한 행에 A 는 1명만 (책임자 단일화). R 은 여러 명 가능. C/I 는 자유.',
-      '',
-      '### image / attachment  ★ AI 가 만들지 마세요 ★',
-      '두 위젯의 content 는 시스템에 실제로 업로드된 파일의 `file_id` 를 요구합니다. AI 는 file_id 를 알 수 없으므로 이 위젯들은 `extra_blocks` / `content` 양쪽 모두에서 생성하지 마세요. 이미지·첨부가 필요하다는 점만 본문 rich_text 에 메모해 두세요. (사용자가 보고서를 받은 뒤 직접 추가합니다.)',
-    ].join('\n')
-
     return [
       '당신은 ReportArchive 보고서 작성 도우미입니다.',
       '사용자 입력(자유 텍스트, 메모, 표 등)을 분석해, 아래 위젯들을 자유롭게 조합한 JSON 한 덩어리만 출력합니다.',
@@ -1692,7 +1568,7 @@ export default function ReportDetailPage() {
       widgetCatalogBlock,
       '',
       '== 위젯별 props / content 예시 ==',
-      examples,
+      WIDGET_EXAMPLES_TEXT,
       '',
       '== 작성 흐름 ==',
       '① 사용자 입력을 훑어 섹션/표/리스트/수치 등을 식별 → ② 위 “템플릿에 이미 배치된 위젯” 목록을 보고 각 조각을 어느 블록 id 에 채울지 결정 → ③ 빠진 위젯이 있을 때만 `extra_blocks` 에 새 블록을 선언 → ④ 단락 구분이 분명한 블록은 block_sections 에 태깅 → ⑤ JSON 만 출력.',
@@ -2156,7 +2032,7 @@ export default function ReportDetailPage() {
           inside the same container so the exporter strips them in one
           shot via `report-detail-floating`. */}
       {isEditing && (
-        <div className="report-detail-floating fixed bottom-6 right-6 z-40 print:hidden flex items-center gap-2">
+        <div className="report-detail-floating fixed bottom-6 right-6 z-40 print:hidden flex flex-col items-end gap-2">
           <FloatingPasteJson onOpen={() => setPasteJsonOpen(true)} />
           <FloatingReportSettings onOpen={() => setSettingsDialogOpen(true)} />
           <FloatingAddWidget
@@ -2242,30 +2118,197 @@ function ReportCopyDialog({ open, onOpenChange, sourceTitle, onConfirm }) {
   )
 }
 
-// Widget types that the AI prompt's hand-written `examples` block
-// explicitly covers (props shape, content shape, common pitfalls).
-// The AiPromptDialog sidebar uses this to flag catalog widgets that
-// are *not* yet covered — so when a new widget type is added to the
-// backend, the developer sees a red "미등록" row and knows to extend
-// both buildAiPrompt() and buildAiPromptV2() with examples for it.
+// AI prompt example entries — one per `### <type>` section the prompt
+// writes out. `types` is the list of widget types each entry covers (a
+// single section covers multiple types when their handling is identical;
+// e.g. image / attachment share a single "don't generate these" warning).
 //
-// !! Keep in sync with the `examples` arrays in buildAiPrompt and
-//    buildAiPromptV2 above. Adding/removing a `### <type>` example
-//    section without updating this set will mis-report coverage.
-const PROMPT_COVERED_WIDGETS = new Set([
-  'heading',
-  'rich_text',
-  'key_value',
-  'bulleted_list',
-  'table',
-  'chart',
-  'milestone',
-  'flowchart',
-  'progress_bar',
-  'raci_matrix',
-  'image',
-  'attachment',
-])
+// Single source of truth for:
+//   - WIDGET_EXAMPLES_TEXT  — the joined-text block both prompts paste in
+//   - PROMPT_COVERED_WIDGETS — the set the coverage sidebar checks
+//
+// When the backend gains a new widget, add ONE entry here and both the
+// prompts + the "미등록" flag update together.
+const WIDGET_PROMPT_EXAMPLES = [
+  {
+    types: ['heading'],
+    body: [
+      '### heading (제목)',
+      'props (required: level) : `{ "level": 2 }`   // 1=대제목, 2=중제목, 3=소제목',
+      'content : `{ "text": "섹션 제목" }`',
+    ].join('\n'),
+  },
+  {
+    types: ['rich_text'],
+    body: [
+      '### rich_text (자유 서술 / 마크다운)',
+      'props : `{}`   // 모든 필드 선택. label 등 없음.',
+      'content (권장: 단순형) : `{ "markdown": "여러 줄 텍스트…\\n- 글머리도 가능" }`',
+      'content (구조형) : `{ "items": [ {"depth":0,"text":"첫째 줄"}, {"depth":1,"text":"하위 항목"} ] }`   // depth 는 0~5 정수',
+    ].join('\n'),
+  },
+  {
+    types: ['equation'],
+    body: [
+      '### equation (수식 — LaTeX)',
+      'props (required: label) : `{ "label":"지배 방정식" }`',
+      'content : `{ "latex":"\\\\sigma = \\\\frac{F}{A}", "display_mode":"display", "number":"(1)" }`',
+      '- latex 은 KaTeX 호환 LaTeX 문자열. **JSON 안에 들어가므로 백슬래시는 두 번** (`\\\\frac`, `\\\\sigma`, `\\\\int_0^1` 등).',
+      '- display_mode 는 `display`(중앙·큰 글씨, 기본) | `inline`(베이스라인 정렬, 본문 삽입용).',
+      '- number (선택)는 우측에 표시되는 식 번호 — 예: `"(1)"`, `"(eq. 3.2)"`. 비우면 표시 안 됨.',
+    ].join('\n'),
+  },
+  {
+    types: ['key_value'],
+    body: [
+      '### key_value (키-값 카드)  ★ 자주 틀리는 형식 — 주의 ★',
+      'props (required: items) : `{ "label":"주요 결과", "items":[ {"key":"stress","label":"발생 응력","type":"number"}, {"key":"unit","label":"단위","type":"text"} ] }`',
+      'content : `{ "stress": 100, "unit": "MPa" }`   // ← 각 item.key 가 그대로 top-level 키. `values` 같은 래퍼 절대 금지.',
+      'item.type 은 text | number | integer | date | select 중 하나. `multi: true` 항목의 값은 배열 (예: `"defect_type": ["크랙","변형"]`).',
+    ].join('\n'),
+  },
+  {
+    types: ['bulleted_list'],
+    body: [
+      '### bulleted_list (글머리 리스트)  ★ 자주 틀리는 형식 — 주의 ★',
+      'props (required: label) : `{ "label": "후속 검토 사항" }`',
+      'content : `{ "items": [ "첫째 항목", "둘째 항목", "셋째 항목" ] }`   // ← 문자열 배열. {text, depth} 객체 절대 금지.',
+    ].join('\n'),
+  },
+  {
+    types: ['table'],
+    body: [
+      '### table (표)',
+      'props (required: label, columns) : `{ "label":"검토 내용", "columns":[ {"key":"category","label":"구분","type":"text"}, {"key":"amount","label":"금액","type":"number"} ] }`',
+      'content : `{ "rows":[ {"category":"배경","amount":1200}, {"category":"결과","amount":3400} ] }`   // 행 객체의 키 = column.key',
+    ].join('\n'),
+  },
+  {
+    types: ['chart'],
+    body: [
+      '### chart (차트 — 카테고리 x축)',
+      'props (required: label) : `{ "label":"월별 매출", "chart_type":"line", "x_column_key":"month", "columns":[ {"key":"month","label":"월","type":"text"}, {"key":"sales","label":"매출","type":"number"} ] }`',
+      'content : `{ "rows":[ {"month":"1월","sales":120}, {"month":"2월","sales":135} ] }`',
+      '※ x_column_key 가 가리키는 열 외에 모든 열은 type:"number" 여야 합니다.',
+      '※ x 도 숫자라면 chart 대신 **scatter** 를 사용하세요 (산점도 / 곡선 / 회귀).',
+    ].join('\n'),
+  },
+  {
+    types: ['scatter'],
+    body: [
+      '### scatter (산점도 — x·y 모두 수치)',
+      'props (required: label, mode, x_column_key, columns≥2) : `{ "label":"전압-전류 곡선", "mode":"scatter_line", "x_column_key":"voltage", "columns":[ {"key":"voltage","label":"전압(V)","type":"number"}, {"key":"current","label":"전류(A)","type":"number"} ] }`',
+      'content : `{ "rows":[ {"voltage":0,"current":0}, {"voltage":1.0,"current":0.5}, {"voltage":2.0,"current":1.1} ] }`',
+      '- chart 와 달리 x·y **모두 type:"number"**. category 가 섞이면 chart 위젯을 쓰세요.',
+      '- mode 는 `scatter`(점만) | `line`(선만) | `scatter_line`(점 + 선).',
+      '- 시리즈를 명시적으로 지정하려면 content 에 `"series":[ {"label":"측정","x_key":"voltage","y_key":"current"} ]`. 생략 시 x_column_key 외 모든 number 열이 자동 시리즈가 됩니다.',
+      '- props 에 x_axis_title / y_axis_title (선택) 로 축 라벨, content 에 x_min/x_max/y_min/y_max (선택) 로 범위 고정 가능.',
+    ].join('\n'),
+  },
+  {
+    types: ['scatter3d'],
+    body: [
+      '### scatter3d (3D 산점도 — Plotly)',
+      'props (required: label, columns≥3) : `{ "label":"파라미터 응답면", "columns":[ {"key":"p1","label":"P1","type":"number"}, {"key":"p2","label":"P2","type":"number"}, {"key":"resp","label":"응답","type":"number"} ] }`',
+      'content : `{ "mode":"scatter3d", "series":[ {"label":"실험","kind":"scatter3d","x_key":"p1","y_key":"p2","z_key":"resp"} ], "rows":[ {"p1":0,"p2":0,"resp":1.2}, {"p1":0.5,"p2":0.3,"resp":2.4} ], "colorscale":"Viridis" }`',
+      '- 모든 컬럼은 type:"number" (3D 좌표). 회전·확대·호버는 Plotly 기본 제공.',
+      '- series.kind 는 `scatter3d`(마커 구름) | `surface`(long-form 데이터를 그리드로 pivot 한 응답면). 한 차트에 둘 다 섞어도 OK.',
+      '- 4번째 컬럼을 더해 `"color_key":"<key>"` 를 series 에 추가하면 마커/표면을 그 값으로 색상 매핑.',
+      '- colorscale 은 `Viridis | Plasma | Cividis | Hot | Blues | Reds | Greens | RdBu | Bluered | Portland | Jet` 중 하나 (위젯 전체에 1개).',
+    ].join('\n'),
+  },
+  {
+    types: ['heatmap'],
+    body: [
+      '### heatmap (히트맵 — 2D 매트릭스)',
+      'props (required: label) : `{ "label":"민감도 분석", "x_axis_title":"파라미터", "y_axis_title":"사양" }`',
+      'content : `{ "x_labels":["A","B","C"], "y_labels":["사양1","사양2"], "matrix":[[0.1,0.4,0.7],[0.3,0.6,0.9]], "colorscale":"Viridis" }`',
+      '- 데이터는 (행, 열) 의 2-D 매트릭스 — chart/scatter 의 columns+rows 모델과 **다릅니다**.',
+      '- matrix[i] 는 y_labels[i] 행. matrix[i][j] 는 (y_labels[i], x_labels[j]) 셀 값.',
+      '- 길이 일치 필수: matrix.length === y_labels.length, matrix[*].length === x_labels.length.',
+      '- 빈 셀은 `null` (sparse data 도 OK — Plotly 가 갭으로 표시). reverse_scale:true 로 색상 반전.',
+      '- z_min / z_max (선택) 로 색축 범위 고정 — 여러 히트맵 비교 시 유용.',
+      '- colorscale 은 scatter3d 와 동일 enum.',
+    ].join('\n'),
+  },
+  {
+    types: ['radar'],
+    body: [
+      '### radar (레이더 차트 — 다축 폴라 비교)',
+      'props (required: label) : `{ "label":"제품 비교" }`',
+      'content : `{ "axis_labels":["속도","효율","가격","유지보수","확장성"], "series":[ {"label":"A안"}, {"label":"B안"} ], "values":[[90,75],[80,85],[60,90],[70,80],[85,70]] }`',
+      '- axis_labels 는 각 폴라 축 라벨 (3개 이상 권장).',
+      '- series 의 color (선택) 는 hex/CSS 컬러; 미지정 시 회전 팔레트 자동 적용.',
+      '- values 는 **`values[축_index][시리즈_index]`** 형식의 2D 배열. values.length === axis_labels.length, values[*].length === series.length.',
+      '- value_min / value_max (선택) 로 반경 범위 고정. fill_opacity (0~1, 기본 0.3) 로 폴리곤 채움 강도.',
+      '- 사양 비교 / 평가표 / 다요소 점수에 적합. 비교 항목이 1개면 bulleted_list 가 더 어울립니다.',
+    ].join('\n'),
+  },
+  {
+    types: ['milestone'],
+    body: [
+      '### milestone (마일스톤)',
+      'props (required: label) : `{ "label":"프로젝트 일정" }`',
+      'content : `{ "items":[ {"date":"2026-01-15","label":"기획","status":"done"}, {"date":"2026-03-01","label":"개발","status":"pending","note":"인력 보강 필요"} ] }`',
+      'status 는 `pending` | `done` | `delayed` 셋 중 하나. (in_progress / planned 등 다른 값 사용 금지)',
+    ].join('\n'),
+  },
+  {
+    types: ['flowchart'],
+    body: [
+      '### flowchart (플로우차트)',
+      'props (required: label) : `{ "label":"검토 흐름", "orientation":"horizontal" }`   // orientation: horizontal | vertical',
+      'content : `{ "items":[ {"label":"요구사항"}, {"label":"설계"}, {"label":"검토","description":"리뷰 미팅"}, {"label":"승인"} ] }`',
+      '※ 순차 흐름만 지원. `nodes` / `edges` 같은 키 사용 금지.',
+    ].join('\n'),
+  },
+  {
+    types: ['progress_bar'],
+    body: [
+      '### progress_bar (진행률 바)',
+      'props (required: label) : `{ "label":"작업 진척도", "default_max":100, "unit":"%" }`   // default_max / unit 은 선택. 기본 100% 기준이면 둘 다 생략 가능',
+      'content : `{ "items":[ {"label":"기획","value":100}, {"label":"개발","value":65}, {"label":"테스트","value":20,"max":40,"note":"케이스 부족"} ] }`',
+      '- value 는 현재값(숫자), max 는 목표값(생략하면 props.default_max 사용). 비율(value/max) 에 따라 색상이 자동: <30% 빨강, 30–70% 주황, 70% 이상 초록, 100% 이상 진초록.',
+      '- status(선택)는 `pending` | `in_progress` | `done` | `blocked` 중 하나. 지정하면 자동 색상보다 우선.',
+      '- 단순 % 가 아닌 절대값 비교(예: "8 / 12 건")도 가능 — props.unit 을 "건" 등으로 바꾸고 item.max 를 명시.',
+      '- 여러 작업·지표의 진척도를 한 번에 비교할 때 사용. 단일 KPI 면 key_value 가 더 어울립니다.',
+    ].join('\n'),
+  },
+  {
+    types: ['raci_matrix'],
+    body: [
+      '### raci_matrix (RACI 매트릭스)',
+      'props (required: label) : `{ "label":"역할 분담" }`   // default_roles 는 선택 (보고서별로 content.roles 가 우선)',
+      'content : `{ "roles":[ {"key":"modeling","label":"모델링"}, {"key":"analysis","label":"분석"}, {"key":"develop","label":"개발"}, {"key":"design","label":"설계"} ], "rows":[ {"label":"요구사항 정의","assignments":{"modeling":"I","analysis":"R/A","develop":"C","design":"C"}}, {"label":"시스템 모델링","assignments":{"modeling":"R/A","analysis":"C","develop":"I","design":"C"}}, {"label":"구현","assignments":{"modeling":"I","analysis":"I","develop":"R/A","design":"C"}} ] }`',
+      '- roles 는 content 안에 둡니다 (props 가 아님). key 는 영문 소문자/숫자/_ 만, 페이지 내에서 고유.',
+      '- role 의 `group` (선택)은 상단 헤더 그룹 라벨. 같은 group 의 **인접한** 역할들이 자동으로 한 셀로 병합 (colspan).',
+      '- assignments 의 키는 content.roles 의 key 와 정확히 일치해야 함. 알 수 없는 키 사용 금지.',
+      '- 셀 값은 `R`(실무) | `A`(책임) | `C`(자문) | `I`(공유) 중 하나 또는 `/` 로 결합 (예: `R/A`). 스키마 값은 영문자, 화면 표시는 자동으로 한국어("실무 / 책임")로 변환됩니다.',
+      '- R = 실무(실제 작업), A = 책임(최종 책임자, 한 행에 1명), C = 자문(의견 제공), I = 공유(결과 통지).',
+      '- 표준: 한 행에 A 는 1명만 (책임자 단일화). R 은 여러 명 가능. C/I 는 자유.',
+    ].join('\n'),
+  },
+  {
+    types: ['image', 'attachment'],
+    body: [
+      '### image / attachment  ★ AI 가 만들지 마세요 ★',
+      '두 위젯의 content 는 시스템에 실제로 업로드된 파일의 `file_id` 를 요구합니다. AI 는 file_id 를 알 수 없으므로 이 위젯들은 `extra_blocks` / `content` 양쪽 모두에서 생성하지 마세요. 이미지·첨부가 필요하다는 점만 본문 rich_text 에 메모해 두세요. (사용자가 보고서를 받은 뒤 직접 추가합니다.)',
+    ].join('\n'),
+  },
+]
+
+const WIDGET_EXAMPLES_TEXT = [
+  '※ 모든 예시는 백엔드 스키마와 1:1 로 일치합니다. 키 이름·타입을 절대 변형하지 마세요.',
+  ...WIDGET_PROMPT_EXAMPLES.map((e) => e.body),
+].join('\n\n')
+
+// Widget types the prompt's examples block covers. Used by the
+// AiPromptDialog sidebar to flag catalog widgets without examples
+// (rendered as a red "미등록" row). Auto-derived — adding a new entry
+// to WIDGET_PROMPT_EXAMPLES is enough.
+const PROMPT_COVERED_WIDGETS = new Set(
+  WIDGET_PROMPT_EXAMPLES.flatMap((e) => e.types),
+)
 
 /** Prefix every line of `s` with `n` spaces. Used by buildAiPrompt so
  *  nested JSON renders cleanly under bullet headings. */

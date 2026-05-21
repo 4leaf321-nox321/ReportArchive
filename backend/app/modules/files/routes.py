@@ -81,12 +81,18 @@ def download(
         )
     # Inline for images so they render in <img>; attachment disposition
     # for everything else so browsers download with the original filename.
-    disposition = "inline" if record.is_image else "attachment"
+    #
+    # Don't build Content-Disposition by hand — HTTP headers are latin-1
+    # encoded, and filenames here can contain Korean (e.g. "최종_9_문화원.png").
+    # Starlette's FileResponse already produces a proper
+    # `... filename*=utf-8''<percent-encoded>` header from `filename=` +
+    # `content_disposition_type=`; doing it manually crashed the response
+    # serializer with UnicodeEncodeError (500) for any non-ASCII name.
     return FileResponse(
         path=str(path),
         media_type=record.mime_type,
         filename=record.filename,
-        headers={"Content-Disposition": f'{disposition}; filename="{record.filename}"'},
+        content_disposition_type="inline" if record.is_image else "attachment",
     )
 
 

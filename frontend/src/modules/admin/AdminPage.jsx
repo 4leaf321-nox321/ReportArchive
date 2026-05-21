@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Plus,
@@ -34,6 +34,7 @@ import { ErrorState } from '@/shared/components/ErrorState'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { ColorPicker } from '@/shared/components/ColorPicker'
+import { WorkspaceCombobox } from '@/shared/components/WorkspaceCombobox'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import {
@@ -45,6 +46,7 @@ import {
 import {
   listWorkspaces,
   createWorkspace,
+  bulkCreateWorkspaces,
   updateWorkspace,
   deleteWorkspace,
   getWorkspaceDependents,
@@ -405,6 +407,7 @@ function CategoryCreateDialog({ open, onOpenChange, onCreated }) {
 function WorkspacesSection() {
   const { data: workspaces, loading, error, reload } = useAsync(() => listWorkspaces(), [])
   const [creating, setCreating] = useState(false)
+  const [bulkCreating, setBulkCreating] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [editing, setEditing] = useState(null)
   const [moving, setMoving] = useState(false)
@@ -417,8 +420,11 @@ function WorkspacesSection() {
     try {
       await deleteWorkspace(slug)
       toast.success('부서가 삭제되었습니다.')
+      setConfirmDelete(null)
       reload()
     } catch (err) {
+      // Keep the modal open on failure so the user can see the error and
+      // either retry or cancel.
       toast.error(err.message || '삭제 실패')
     }
   }
@@ -530,10 +536,16 @@ function WorkspacesSection() {
             <Building2 className="h-4 w-4 text-muted-foreground" />
             <CardTitle className="text-base">부서 트리</CardTitle>
           </div>
-          <Button size="sm" onClick={() => setCreating(true)}>
-            <Plus className="mr-1 h-3 w-3" />
-            부서 추가
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => setBulkCreating(true)}>
+              <Plus className="mr-1 h-3 w-3" />
+              부서 일괄 추가
+            </Button>
+            <Button size="sm" onClick={() => setCreating(true)}>
+              <Plus className="mr-1 h-3 w-3" />
+              부서 추가
+            </Button>
+          </div>
         </div>
         <CardDescription>
           그립(⋮⋮) 잡고 드래그 — 행 위쪽 가는 띠에 놓으면 그 형제 위로 끼움, 행 본체에 놓으면 그 부서의 자식이 됨.
@@ -575,6 +587,16 @@ function WorkspacesSection() {
         workspaces={real}
         onCreated={() => {
           setCreating(false)
+          reload()
+        }}
+      />
+
+      <WorkspaceBulkCreateDialog
+        open={bulkCreating}
+        onOpenChange={setBulkCreating}
+        onCreated={(count) => {
+          setBulkCreating(false)
+          toast.success(`${count}개 부서가 추가되었습니다.`)
           reload()
         }}
       />
@@ -688,7 +710,6 @@ function WorkspaceCreateDialog({ open, onOpenChange, workspaces, onCreated }) {
   const [slug, setSlug] = useState('')
   const [name, setName] = useState('')
   const [parentSlug, setParentSlug] = useState('')
-  const [color, setColor] = useState('#64748b')
   const [submitting, setSubmitting] = useState(false)
   const [errorMsg, setErrorMsg] = useState(null)
 
@@ -701,7 +722,6 @@ function WorkspaceCreateDialog({ open, onOpenChange, workspaces, onCreated }) {
       setSlug(globalThis.crypto?.randomUUID?.() ?? fallbackUuid())
       setName('')
       setParentSlug('')
-      setColor('#64748b')
       setErrorMsg(null)
     }
   }, [open])
@@ -715,7 +735,6 @@ function WorkspaceCreateDialog({ open, onOpenChange, workspaces, onCreated }) {
         slug,
         name,
         parentSlug: parentSlug || null,
-        color,
       })
       toast.success('부서가 생성되었습니다.')
       onCreated()
@@ -726,7 +745,9 @@ function WorkspaceCreateDialog({ open, onOpenChange, workspaces, onCreated }) {
     }
   }
 
-  const ordered = orderTreeWithDepth(workspaces)
+  // Virtuals can't own children; filter them so the parent picker only
+  // shows pickable nodes.
+  const eligibleParents = (workspaces ?? []).filter((w) => !w.virtual)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -763,26 +784,20 @@ function WorkspaceCreateDialog({ open, onOpenChange, workspaces, onCreated }) {
             </p>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="ws-parent">상위 부서 (없으면 본부 = 루트)</Label>
-            <select
+            <Label htmlFor="ws-parent">상위 부서</Label>
+            <WorkspaceCombobox
               id="ws-parent"
+              workspaces={eligibleParents}
               value={parentSlug}
-              onChange={(e) => setParentSlug(e.target.value)}
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-            >
-              <option value="">(루트 — 본부)</option>
-              {ordered.map((w) => (
-                <option key={w.slug} value={w.slug}>
-                  {'  '.repeat(w.depth)}
-                  {w.depth > 0 ? '└ ' : ''}
-                  {w.name} ({w.slug})
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="ws-color">색상</Label>
-            <ColorPicker id="ws-color" value={color} onChange={setColor} />
+              onChange={setParentSlug}
+              placeholder="(루트 — 본부)"
+              allowNone
+              noneLabel="(루트 — 본부)"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              상위를 선택하지 않으면 루트(본부) 부서가 됩니다. 색상은 상위
+              부서를 따라 자동 배정됩니다.
+            </p>
           </div>
           {errorMsg && (
             <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
@@ -807,7 +822,6 @@ function WorkspaceEditDialog({ ws, workspaces, onOpenChange, onSaved }) {
   const open = Boolean(ws)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [color, setColor] = useState('')
   const [sortOrder, setSortOrder] = useState(0)
   const [parentSlug, setParentSlug] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -817,7 +831,6 @@ function WorkspaceEditDialog({ ws, workspaces, onOpenChange, onSaved }) {
     if (ws) {
       setName(ws.name)
       setDescription(ws.description ?? '')
-      setColor(ws.color ?? '#64748b')
       setSortOrder(ws.sort_order ?? 0)
       setParentSlug(ws.parent_slug ?? '')
       setErrorMsg(null)
@@ -825,13 +838,13 @@ function WorkspaceEditDialog({ ws, workspaces, onOpenChange, onSaved }) {
   }, [ws])
 
   // Forbid moving under self or any descendant — those are rejected by the
-  // backend with cycle errors anyway, but pre-filter the dropdown for clarity.
+  // backend with cycle errors anyway, but pre-filter the picker for clarity.
+  // Virtuals are also stripped: they can't own children.
   const eligibleParents = useMemo(() => {
     if (!ws || !workspaces) return []
     const descendants = new Set(collectDescendants(workspaces, ws.slug))
     descendants.add(ws.slug)
-    const real = workspaces.filter((w) => !w.virtual && !descendants.has(w.slug))
-    return orderTreeWithDepth(real)
+    return workspaces.filter((w) => !w.virtual && !descendants.has(w.slug))
   }, [ws, workspaces])
 
   const movedToDifferentParent = ws && (ws.parent_slug ?? '') !== parentSlug
@@ -843,7 +856,6 @@ function WorkspaceEditDialog({ ws, workspaces, onOpenChange, onSaved }) {
       const payload = {
         name,
         description,
-        color,
         sortOrder: Number(sortOrder),
       }
       // Only send parent_slug when it actually changed — sending null when
@@ -868,6 +880,7 @@ function WorkspaceEditDialog({ ws, workspaces, onOpenChange, onSaved }) {
           <DialogTitle>부서 편집</DialogTitle>
           <DialogDescription>
             슬러그(<code className="font-mono">{ws?.slug}</code>) 외 모든 항목 변경 가능.
+            색상은 상위 부서에 따라 자동 배정.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={onSubmit} className="space-y-4">
@@ -882,26 +895,20 @@ function WorkspaceEditDialog({ ws, workspaces, onOpenChange, onSaved }) {
                 상위 부서
               </span>
             </Label>
-            <select
+            <WorkspaceCombobox
               id="edit-parent"
+              workspaces={eligibleParents}
               value={parentSlug}
-              onChange={(e) => setParentSlug(e.target.value)}
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-            >
-              <option value="">(루트 — 본부)</option>
-              {eligibleParents.map((p) => (
-                <option key={p.slug} value={p.slug}>
-                  {'  '.repeat(p.depth)}
-                  {p.depth > 0 ? '└ ' : ''}
-                  {p.name} ({p.slug})
-                </option>
-              ))}
-            </select>
+              onChange={setParentSlug}
+              placeholder="(루트 — 본부)"
+              allowNone
+              noneLabel="(루트 — 본부)"
+            />
             <p className="text-[11px] text-muted-foreground">
               자기 자신 / 하위 부서는 선택할 수 없습니다 (트리 순환 방지).
               {movedToDifferentParent && (
                 <span className="ml-1 text-amber-600">
-                  ※ 저장 시 부서 위치가 이동합니다.
+                  ※ 저장 시 부서 위치 + 색상이 함께 이동합니다.
                 </span>
               )}
             </p>
@@ -909,10 +916,6 @@ function WorkspaceEditDialog({ ws, workspaces, onOpenChange, onSaved }) {
           <div className="space-y-1.5">
             <Label>설명</Label>
             <Input value={description} onChange={(e) => setDescription(e.target.value)} />
-          </div>
-          <div className="space-y-1.5">
-            <Label>색상</Label>
-            <ColorPicker value={color} onChange={setColor} />
           </div>
           <div className="space-y-1.5">
             <Label>정렬 순서</Label>
@@ -941,14 +944,217 @@ function WorkspaceEditDialog({ ws, workspaces, onOpenChange, onSaved }) {
   )
 }
 
+/**
+ * Bulk-add depts via a pasteable 2-column table. Operators copy from a
+ * spreadsheet (parent name, dept name) and we resolve parents by name —
+ * either against the existing tree or against earlier rows in the same
+ * batch. Empty parent = root. Backend handles the topological order and
+ * surfaces a per-row error for ambiguous / orphaned references.
+ */
+const BULK_EMPTY_ROW = { parentName: '', name: '' }
+
+function WorkspaceBulkCreateDialog({ open, onOpenChange, onCreated }) {
+  const [rows, setRows] = useState(() => Array.from({ length: 5 }, () => ({ ...BULK_EMPTY_ROW })))
+  const [submitting, setSubmitting] = useState(false)
+  const [errorMsg, setErrorMsg] = useState(null)
+
+  useEffect(() => {
+    if (open) {
+      setRows(Array.from({ length: 5 }, () => ({ ...BULK_EMPTY_ROW })))
+      setErrorMsg(null)
+    }
+  }, [open])
+
+  function updateCell(rowIdx, key, value) {
+    setRows((prev) => {
+      const next = [...prev]
+      next[rowIdx] = { ...next[rowIdx], [key]: value }
+      return next
+    })
+  }
+
+  function addRow() {
+    setRows((prev) => [...prev, { ...BULK_EMPTY_ROW }])
+  }
+
+  function removeRow(rowIdx) {
+    setRows((prev) => (prev.length <= 1 ? prev : prev.filter((_, i) => i !== rowIdx)))
+  }
+
+  // Intercept paste so a TSV from a spreadsheet (rows × tab-separated
+  // cells) populates the table starting at the focused cell. Single-cell
+  // pastes fall through to the default behavior.
+  function handlePaste(rowIdx, colIdx, e) {
+    const text = e.clipboardData.getData('text')
+    if (!text || (!text.includes('\t') && !text.includes('\n'))) return
+    e.preventDefault()
+    const grid = text
+      .replace(/\r/g, '')
+      .split('\n')
+      .filter((line, idx, arr) => line.length > 0 || idx < arr.length - 1)
+      .map((line) => line.split('\t'))
+    setRows((prev) => {
+      const next = [...prev]
+      for (let i = 0; i < grid.length; i += 1) {
+        const targetRow = rowIdx + i
+        while (next.length <= targetRow) next.push({ ...BULK_EMPTY_ROW })
+        const cells = grid[i]
+        const merged = { ...next[targetRow] }
+        for (let j = 0; j < cells.length; j += 1) {
+          const targetCol = colIdx + j
+          const value = (cells[j] ?? '').trim()
+          if (targetCol === 0) merged.parentName = value
+          else if (targetCol === 1) merged.name = value
+        }
+        next[targetRow] = merged
+      }
+      return next
+    })
+  }
+
+  async function onSubmit(e) {
+    e.preventDefault()
+    setErrorMsg(null)
+    const items = rows
+      .map((r) => ({
+        parentName: (r.parentName || '').trim(),
+        name: (r.name || '').trim(),
+      }))
+      .filter((r) => r.name) // drop completely empty rows
+    if (items.length === 0) {
+      setErrorMsg('부서 이름이 입력된 행이 없습니다.')
+      return
+    }
+    setSubmitting(true)
+    try {
+      const created = await bulkCreateWorkspaces(items)
+      onCreated(Array.isArray(created) ? created.length : items.length)
+    } catch (err) {
+      setErrorMsg(err.message || '일괄 추가 실패')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>부서 일괄 추가</DialogTitle>
+          <DialogDescription>
+            엑셀에서 두 열 (<strong>상위 부서</strong> / <strong>부서 이름</strong>)을
+            복사한 뒤 첫 셀에 붙여넣으면 행이 채워집니다. 상위 부서는 기존
+            부서명 또는 같은 표 안의 다른 행 이름과 일치해야 하며, 비우면
+            루트(본부)가 됩니다.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={onSubmit} className="space-y-3">
+          <div className="overflow-x-auto rounded-md border">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/40">
+                <tr>
+                  <th className="px-2 py-1.5 text-left font-medium text-xs text-muted-foreground w-10">
+                    #
+                  </th>
+                  <th className="px-2 py-1.5 text-left font-medium text-xs text-muted-foreground">
+                    상위 부서 이름{' '}
+                    <span className="font-normal text-muted-foreground/70">
+                      (비우면 루트)
+                    </span>
+                  </th>
+                  <th className="px-2 py-1.5 text-left font-medium text-xs text-muted-foreground">
+                    부서 이름
+                  </th>
+                  <th className="w-10" />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, idx) => (
+                  <tr key={idx} className="border-t">
+                    <td className="px-2 py-1 text-xs text-muted-foreground">
+                      {idx + 1}
+                    </td>
+                    <td className="p-1">
+                      <Input
+                        value={row.parentName}
+                        onChange={(e) => updateCell(idx, 'parentName', e.target.value)}
+                        onPaste={(e) => handlePaste(idx, 0, e)}
+                        className="h-8 text-sm"
+                        placeholder="(루트)"
+                      />
+                    </td>
+                    <td className="p-1">
+                      <Input
+                        value={row.name}
+                        onChange={(e) => updateCell(idx, 'name', e.target.value)}
+                        onPaste={(e) => handlePaste(idx, 1, e)}
+                        className="h-8 text-sm"
+                        placeholder="부서 이름"
+                      />
+                    </td>
+                    <td className="p-1 text-right">
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7 text-muted-foreground"
+                        onClick={() => removeRow(idx)}
+                        disabled={rows.length <= 1}
+                        title="이 행 삭제"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex items-center justify-between">
+            <Button type="button" variant="outline" size="sm" onClick={addRow}>
+              <Plus className="mr-1 h-3 w-3" />행 추가
+            </Button>
+            <p className="text-[11px] text-muted-foreground">
+              완료 후 색상은 새 트리 구조에 맞춰 자동 재배정됩니다.
+            </p>
+          </div>
+          {errorMsg && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {errorMsg}
+            </div>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              취소
+            </Button>
+            <Button type="submit" disabled={submitting}>
+              {submitting ? '추가 중…' : '일괄 추가'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function DeleteWorkspaceConfirm({ ws, onOpenChange, onConfirm }) {
   const open = Boolean(ws)
   const [blockers, setBlockers] = useState(null)
   const [loading, setLoading] = useState(false)
+  // Separate from `loading` (which tracks the initial blockers fetch) —
+  // this guards the actual delete request so double-submit / Enter spam
+  // can't fire it twice.
+  const [submitting, setSubmitting] = useState(false)
+  // Move keyboard focus to the destructive button once the blockers fetch
+  // returns clean. `autoFocus` doesn't help here because the button starts
+  // disabled — Radix can't focus a disabled control, and the prop only
+  // fires on mount.
+  const deleteBtnRef = useRef(null)
 
   useEffect(() => {
     if (!open || !ws) {
       setBlockers(null)
+      setSubmitting(false)
       return
     }
     setLoading(true)
@@ -961,7 +1167,29 @@ function DeleteWorkspaceConfirm({ ws, onOpenChange, onConfirm }) {
   const totalBlockers = blockers
     ? Object.values(blockers).reduce((a, b) => a + b, 0)
     : 0
-  const canDelete = !loading && blockers && totalBlockers === 0
+  const canDelete = !loading && !submitting && blockers && totalBlockers === 0
+
+  useEffect(() => {
+    if (canDelete) {
+      // Defer so the button is for-sure enabled in the DOM before we
+      // call focus() — React may not have flushed the disabled attr yet.
+      const id = requestAnimationFrame(() => {
+        deleteBtnRef.current?.focus()
+      })
+      return () => cancelAnimationFrame(id)
+    }
+  }, [canDelete])
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    if (!canDelete) return
+    setSubmitting(true)
+    try {
+      await onConfirm()
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -973,30 +1201,45 @@ function DeleteWorkspaceConfirm({ ws, onOpenChange, onConfirm }) {
           </DialogDescription>
         </DialogHeader>
 
-        {loading ? (
-          <Skeleton className="h-20" />
-        ) : blockers ? (
-          <div className="space-y-2 text-sm">
-            <BlockerRow label="자식 부서" count={blockers.children} />
-            <BlockerRow label="멤버" count={blockers.members} />
-            <BlockerRow label="보고서" count={blockers.reports} />
-            <BlockerRow label="이 부서가 소유한 템플릿" count={blockers.templates} />
-            {totalBlockers > 0 && (
-              <p className="text-xs text-amber-600 mt-2">
-                참조 중인 항목이 있어 삭제할 수 없습니다. 먼저 정리하세요.
-              </p>
-            )}
-          </div>
-        ) : null}
+        {/* Form wrapper so Enter on the dialog triggers the destructive
+            action. The submit button auto-focuses to make the keyboard
+            flow obvious. */}
+        <form onSubmit={handleSubmit}>
+          {loading ? (
+            <Skeleton className="h-20" />
+          ) : blockers ? (
+            <div className="space-y-2 text-sm">
+              <BlockerRow label="자식 부서" count={blockers.children} />
+              <BlockerRow label="멤버" count={blockers.members} />
+              <BlockerRow label="보고서" count={blockers.reports} />
+              <BlockerRow label="이 부서가 소유한 템플릿" count={blockers.templates} />
+              {totalBlockers > 0 && (
+                <p className="text-xs text-amber-600 mt-2">
+                  참조 중인 항목이 있어 삭제할 수 없습니다. 먼저 정리하세요.
+                </p>
+              )}
+            </div>
+          ) : null}
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            취소
-          </Button>
-          <Button variant="destructive" onClick={onConfirm} disabled={!canDelete}>
-            삭제
-          </Button>
-        </DialogFooter>
+          <DialogFooter className="mt-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={submitting}
+            >
+              취소
+            </Button>
+            <Button
+              ref={deleteBtnRef}
+              type="submit"
+              variant="destructive"
+              disabled={!canDelete}
+            >
+              {submitting ? '삭제 중…' : '삭제'}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   )
@@ -1028,26 +1271,6 @@ function fallbackUuid() {
     else out[i] = hex[(Math.random() * 16) | 0]
   }
   return out.join('')
-}
-
-function orderTreeWithDepth(workspaces) {
-  const byParent = new Map()
-  for (const w of workspaces) {
-    const arr = byParent.get(w.parent_slug ?? null) ?? []
-    arr.push(w)
-    byParent.set(w.parent_slug ?? null, arr)
-  }
-  const out = []
-  function walk(parentSlug, depth) {
-    const children = byParent.get(parentSlug ?? null) ?? []
-    children.sort((a, b) => a.sort_order - b.sort_order || a.slug.localeCompare(b.slug))
-    for (const c of children) {
-      out.push({ ...c, depth })
-      walk(c.slug, depth + 1)
-    }
-  }
-  walk(null, 0)
-  return out
 }
 
 function collectDescendants(workspaces, slug) {

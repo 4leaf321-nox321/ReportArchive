@@ -9,6 +9,7 @@ from app.modules.users.models import User
 from app.modules.workspaces import services
 from app.modules.workspaces.models import Workspace
 from app.modules.workspaces.schemas import (
+    WorkspaceBulkCreate,
     WorkspaceCreate,
     WorkspaceRead,
     WorkspaceUpdate,
@@ -50,6 +51,24 @@ def create_workspace(
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return created_response(data=WorkspaceRead.model_validate(ws))
+
+
+@router.post("/bulk")
+def bulk_create_workspaces(
+    payload: WorkspaceBulkCreate,
+    db: Session = Depends(get_db),
+    _: CurrentUser = Depends(require_admin),
+):
+    """Bulk-create from a paste table. Parent column carries the parent's
+    *name*, not its slug — operators copy from a spreadsheet that doesn't
+    know slugs. See `services.bulk_create_workspaces` for resolution rules."""
+    try:
+        created = services.bulk_create_workspaces(db, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return created_response(
+        data=[WorkspaceRead.model_validate(w) for w in created]
+    )
 
 
 @router.patch("/{slug}")

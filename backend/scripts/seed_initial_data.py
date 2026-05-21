@@ -40,13 +40,12 @@ TEMPLATE_CATEGORIES = [
 
 
 WORKSPACES = [
-    {"slug": "dx", "name": "DX 부문", "parent_slug": None, "color": "#3b82f6"},
+    {"slug": "dx", "name": "DX 부문", "parent_slug": None},
     {
         "slug": "_global",
         "name": "공통",
         "description": "부서 횡단 집계 뷰",
         "parent_slug": None,
-        "color": "#64748b",
         "virtual": True,
     },
 ]
@@ -339,7 +338,8 @@ def seed_workspaces(db: Session) -> None:
                 name=spec["name"],
                 description=spec.get("description", ""),
                 parent_slug=spec.get("parent_slug"),
-                color=spec.get("color", "bg-slate-500"),
+                # Color column has a default; it gets overwritten below by
+                # the auto-from-tree recompute. Seed never picks colors.
                 virtual=spec.get("virtual", False),
                 sort_order=len(inserted),
             )
@@ -349,6 +349,13 @@ def seed_workspaces(db: Session) -> None:
 
     for spec in WORKSPACES:
         insert(spec["slug"])
+
+    # Ensure even fresh-seeded workspaces get the auto-derived palette
+    # color, not the column default.
+    from app.modules.workspaces.services import recompute_workspace_colors
+
+    db.flush()
+    recompute_workspace_colors(db)
 
 
 def seed_template_categories(db: Session) -> None:

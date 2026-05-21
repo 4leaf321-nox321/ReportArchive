@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # --- File uploads ---
     upload_dir: str = Field(default="uploads")
     upload_max_bytes: int = Field(default=25 * 1024 * 1024)  # 25 MB
+    # CAD models (GLB/STL/STEP/...) routinely exceed the general image
+    # limit. The files route detects CAD extensions and applies this
+    # cap instead. Phase-1 default of 200 MB matches the realistic
+    # ceiling for a mid-size assembly export.
+    upload_max_bytes_cad: int = Field(default=200 * 1024 * 1024)
 
     @property
     def is_development(self) -> bool:

@@ -2289,10 +2289,10 @@ const WIDGET_PROMPT_EXAMPLES = [
     ].join('\n'),
   },
   {
-    types: ['image', 'attachment'],
+    types: ['image', 'attachment', 'cad_3d'],
     body: [
-      '### image / attachment  ★ AI 가 만들지 마세요 ★',
-      '두 위젯의 content 는 시스템에 실제로 업로드된 파일의 `file_id` 를 요구합니다. AI 는 file_id 를 알 수 없으므로 이 위젯들은 `extra_blocks` / `content` 양쪽 모두에서 생성하지 마세요. 이미지·첨부가 필요하다는 점만 본문 rich_text 에 메모해 두세요. (사용자가 보고서를 받은 뒤 직접 추가합니다.)',
+      '### image / attachment / cad_3d  ★ AI 가 만들지 마세요 ★',
+      '세 위젯 모두 content 가 시스템에 업로드된 파일의 `file_id` 를 요구합니다. AI 는 file_id 를 알 수 없으므로 이 위젯들은 `extra_blocks` / `content` 양쪽 모두에서 생성하지 마세요. 이미지·첨부·3D 모델이 필요하다는 점만 본문 rich_text 에 메모해 두세요. (사용자가 보고서를 받은 뒤 직접 추가합니다.)',
     ].join('\n'),
   },
 ]

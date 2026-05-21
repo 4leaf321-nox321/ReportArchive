@@ -57,6 +57,17 @@ export async function fetchImageObjectURL(fileId) {
 }
 
 /**
+ * Returns the raw Blob for an authenticated file. Used by callers that
+ * want to feed the bytes directly into a loader (Three.js, KaTeX, etc.)
+ * without going through an object URL — avoids leaking URL-table
+ * entries and makes ArrayBuffer access via blob.arrayBuffer() trivial.
+ */
+export async function fetchFileBlob(fileId) {
+  const res = await apiClient.get(`${BASE}/${fileId}`, { responseType: 'blob' })
+  return res.data
+}
+
+/**
  * Downloads a file by streaming it as a blob and triggering a save dialog.
  * Used by the attachment widget — keeps the auth header attached.
  */

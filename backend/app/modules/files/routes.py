@@ -15,6 +15,8 @@ from fastapi import APIRouter, Depends, File as FastAPIFile, HTTPException, Uplo
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from pathlib import Path
+
 from app.config import settings
 from app.database import get_db
 from app.modules.files import services
@@ -23,6 +25,26 @@ from app.modules.users.models import Role
 from app.shared.auth import CurrentUser, get_current_user
 from app.shared.responses import created_response, not_found_response, success_response
 from app.shared.storage import assert_space_for
+
+
+# Extensions that route through the CAD upload limit instead of the
+# general image limit. Listed lowercase; matched against the filename's
+# trailing suffix. Includes both web-ready meshes (GLB/GLTF/STL/OBJ)
+# and STEP/IGES — STEP/IGES are converted server-side by Phase 5, but
+# accepting them through the upload guard here keeps the user flow
+# uniform when that phase lands.
+_CAD_EXTENSIONS: frozenset[str] = frozenset({
+    ".glb", ".gltf",
+    ".stl", ".obj", ".ply", ".fbx", ".3mf",
+    ".step", ".stp", ".iges", ".igs",
+})
+
+
+def _upload_limit_for(filename: str) -> int:
+    ext = Path(filename or "").suffix.lower()
+    if ext in _CAD_EXTENSIONS:
+        return settings.upload_max_bytes_cad
+    return settings.upload_max_bytes
 
 router = APIRouter()
 
@@ -34,10 +56,11 @@ async def upload_file(
     actor: CurrentUser = Depends(get_current_user),
 ):
     contents = await file.read()
-    if len(contents) > settings.upload_max_bytes:
+    limit = _upload_limit_for(file.filename or "")
+    if len(contents) > limit:
         raise HTTPException(
             status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            f"파일이 너무 큽니다. 최대 {settings.upload_max_bytes // (1024 * 1024)} MB.",
+            f"파일이 너무 큽니다. 최대 {limit // (1024 * 1024)} MB.",
         )
     if len(contents) == 0:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "빈 파일은 업로드할 수 없습니다.")

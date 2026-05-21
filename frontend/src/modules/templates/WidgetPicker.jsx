@@ -16,7 +16,7 @@ export const WIDGET_PICKER_CATEGORIES = [
   },
   {
     name: '다이어그램',
-    types: ['flowchart', 'milestone', 'raci_matrix', 'progress_bar'],
+    types: ['flowchart', 'milestone', 'raci_matrix', 'progress_bar', 'cad_3d'],
   },
   { name: '첨부', types: ['image', 'attachment'] },
 ]

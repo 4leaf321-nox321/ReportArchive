@@ -1488,6 +1488,161 @@ PROGRESS_BAR: WidgetDescriptor = {
 
 
 # --------------------------------------------------------------------------- #
+# 10. cad_3d — 3D 모델 뷰어 (Phase 1: GLB/GLTF/STL/OBJ)
+# --------------------------------------------------------------------------- #
+# Single-file widget: the user uploads one 3D model and the frontend
+# renders it via Three.js. Camera state lives in content.view_state so
+# the saved report opens at the writer-chosen angle. Annotations are
+# OUT of Phase 1 scope — Phase 2 adds world-space distance measures
+# on top of this shape.
+_CAD_VIEW_PRESETS = ("iso", "front", "top", "side", "fit")
+
+
+# World-space 3D point used by cad_3d annotations. Coordinates are in
+# the model's native unit (we assume mm by convention; props.unit only
+# affects display in the UI).
+_CAD_POINT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "x": {"type": "number"},
+        "y": {"type": "number"},
+        "z": {"type": "number"},
+    },
+    "required": ["x", "y", "z"],
+    "additionalProperties": False,
+}
+
+
+def _cad_3d_content(props: dict) -> dict:  # noqa: ARG001
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            # Reference to a single uploaded model file (GLB/GLTF/STL/...).
+            # Same file_id contract as image/attachment widgets.
+            "file_id": {"type": "string", "minLength": 1},
+            # Display-only; the actual bytes live keyed by file_id. Useful
+            # for "this widget shows model_X.glb" in lists / DOCX export.
+            "loaded_filename": {"type": "string", "maxLength": 255},
+            # Camera persistence. Optional — when absent the viewer
+            # falls back to props.default_view + auto-fit to bounding box.
+            "view_state": {
+                "type": "object",
+                "properties": {
+                    "position": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 3,
+                        "maxItems": 3,
+                    },
+                    "target": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 3,
+                        "maxItems": 3,
+                    },
+                    "zoom": {"type": "number"},
+                    # Toolbar toggles snapshotted by "뷰 저장" so a
+                    # reader lands on the exact same view the author
+                    # set up — without these the camera would snap
+                    # back but the grid / axes / parts sidebar would
+                    # revert to whatever the local UI defaults are.
+                    "show_grid": {"type": "boolean"},
+                    "show_axes": {"type": "boolean"},
+                    "sidebar_open": {"type": "boolean"},
+                },
+                "additionalProperties": False,
+            },
+            # Names of parts the report author wants hidden by default.
+            # The viewer can locally override these (transient state in
+            # the widget) without dirtying this list. Part identity =
+            # the GLB/GLTF node `name` of the model's first level of
+            # named children; falls back to a positional `_unnamed_<i>`
+            # token for unnamed nodes (rare, but stable).
+            "hidden_parts": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 200},
+            },
+            # Names of parts the author wants shown as wireframe (no
+            # solid fill). Independent of hidden_parts: a part listed
+            # here AND in hidden_parts is hidden (hidden wins).
+            "wireframe_parts": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 200},
+            },
+            # Phase 2: world-space measurement annotations. Distinct shape
+            # from chart/image annotations (those live in 2D pct space).
+            # `distance_3d`: line between p1 and p2, label shows the
+            #                Euclidean distance + per-axis breakdown.
+            # `point_3d`:    single tagged point, label is freeform note.
+            "annotations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "minLength": 1, "maxLength": 64},
+                        "type": {
+                            "type": "string",
+                            "enum": ["distance_3d", "point_3d"],
+                        },
+                        "p1": _CAD_POINT_SCHEMA,
+                        # Only required for distance_3d — point_3d skips this.
+                        "p2": _CAD_POINT_SCHEMA,
+                        "label": {"type": "string", "maxLength": 200},
+                        "color": {
+                            "type": "string",
+                            "pattern": r"^#[0-9a-fA-F]{6}$",
+                        },
+                    },
+                    "required": ["id", "type", "p1"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
+CAD_3D: WidgetDescriptor = {
+    "type": "cad_3d",
+    "label": "3D 모델",
+    "description": "3D CAD 모델 뷰어 (GLB/GLTF/STL/OBJ) — 회전·줌·뷰 프리셋",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            # mm/cm/m — used by Phase-2 measurements. Phase 1 surfaces
+            # it as a label hint near the canvas.
+            "unit": {"type": "string", "enum": ["mm", "cm", "m"]},
+            "default_view": {
+                "type": "string",
+                "enum": list(_CAD_VIEW_PRESETS),
+            },
+            "show_grid": {"type": "boolean"},
+            "show_axes": {"type": "boolean"},
+            "background": {
+                "type": "string",
+                "pattern": r"^#[0-9a-fA-F]{6}$",
+            },
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _cad_3d_content,
+    "default_props": {
+        "label": "3D 모델",
+        "unit": "mm",
+        "default_view": "iso",
+        "show_grid": True,
+        "show_axes": True,
+        "background": "#f8fafc",
+    },
+}
+
+
+# --------------------------------------------------------------------------- #
 # Registry
 # --------------------------------------------------------------------------- #
 WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
@@ -1510,6 +1665,7 @@ WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
         FLOWCHART,
         PROGRESS_BAR,
         RACI_MATRIX,
+        CAD_3D,
     )
 }
 

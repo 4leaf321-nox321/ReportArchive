@@ -17,7 +17,7 @@
  *   2. Create <Widget>.jsx here exporting PropsPanel + Preview + (optional) Editor
  *   3. Register the components below
  */
-import { AlignLeft, BarChartHorizontal, Box, Flag, Grid3x3, Heading1, Hexagon, Image, LayoutGrid, LineChart, ListOrdered, Paperclip, Sigma, Table2, Type, Workflow } from 'lucide-react'
+import { AlignLeft, BarChartHorizontal, Box, Boxes, Flag, Grid3x3, Heading1, Hexagon, Image, LayoutGrid, LineChart, ListOrdered, Paperclip, Sigma, Table2, Type, Workflow } from 'lucide-react'
 
 import { HeadingPropsPanel, HeadingPreview, HeadingEditor } from './Heading'
 import { RichTextPropsPanel, RichTextPreview, RichTextEditor } from './RichText'
@@ -36,6 +36,7 @@ import { MilestonePropsPanel, MilestonePreview, MilestoneEditor } from './Milest
 import { FlowchartPropsPanel, FlowchartPreview, FlowchartEditor } from './Flowchart'
 import { ProgressBarPropsPanel, ProgressBarPreview, ProgressBarEditor } from './ProgressBar'
 import { RaciMatrixPropsPanel, RaciMatrixPreview, RaciMatrixEditor } from './RaciMatrix'
+import { Cad3dPropsPanel, Cad3dPreview, Cad3dEditor } from './Cad3d'
 
 export const WIDGET_RENDERERS = {
   heading: {
@@ -139,6 +140,12 @@ export const WIDGET_RENDERERS = {
     PropsPanel: RaciMatrixPropsPanel,
     Preview: RaciMatrixPreview,
     Editor: RaciMatrixEditor,
+  },
+  cad_3d: {
+    Icon: Boxes,
+    PropsPanel: Cad3dPropsPanel,
+    Preview: Cad3dPreview,
+    Editor: Cad3dEditor,
   },
 }
 

@@ -196,6 +196,18 @@ class Report(Base):
         lazy="joined",
     )
 
+    # M:N to Entity via the `report_entities` link table (owned by the
+    # `entities` module). `selectin` avoids the row-multiplication a
+    # joined load would cause across the M:N — one extra SELECT per
+    # batch is the right trade-off for list endpoints that pull dozens
+    # of reports at once. `order_by` keeps the JSON shape deterministic.
+    entities: Mapped[list["Entity"]] = relationship(  # noqa: F821
+        "Entity",
+        secondary="report_entities",
+        lazy="selectin",
+        order_by="Entity.value",
+    )
+
 
 class ReportEditLock(Base):
     """Pessimistic edit lock — at most one row per report (report_id is PK).

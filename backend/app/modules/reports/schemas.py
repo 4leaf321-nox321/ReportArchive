@@ -7,6 +7,7 @@ from typing import Annotated, Any, Optional
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
 from sqlalchemy import inspect as sa_inspect
 
+from app.modules.entities.schemas import EntityRefMini
 from app.modules.report_types.models import ReportTypeStatus
 from app.modules.reports.models import ReportStatus
 
@@ -66,6 +67,24 @@ def _flatten_user_refs(obj: Any) -> Any:
             "acquired_at": lock.acquired_at,
             "expires_at": lock.expires_at,
         }
+    # Flatten the M:N entity tags. We hand-roll the per-row dict (rather
+    # than letting Pydantic walk the ORM list) because `type_slug` lives
+    # on the joined EntityType — same trick the report_type block above
+    # uses. Eager-loaded via `lazy="selectin"` on Report.entities, so this
+    # is a relationship walk, not a per-row roundtrip.
+    entities_rel = getattr(obj, "entities", None)
+    if entities_rel is not None:
+        extras["entities"] = [
+            {
+                "id": e.id,
+                "type_id": e.type_id,
+                "type_slug": e.entity_type.slug if e.entity_type else "",
+                "value": e.value,
+                "code": e.code,
+                "status": e.status,
+            }
+            for e in entities_rel
+        ]
     if not extras:
         return obj
     # Build a dict so Pydantic stops walking the ORM (otherwise it'd try
@@ -199,6 +218,11 @@ class ReportRead(BaseModel):
     # frontend doesn't need a separate /api/report-types/<id> call.
     report_type_id: Optional[int] = None
     report_type: Optional[ReportTypeRef] = None
+    # M:N entity tags (모델/부품/BOM/단계/불량/시험/시뮬레이션). Embedded
+    # in slim form so the list/detail page can render chips without a
+    # second `/api/entities` lookup. Writes go through the `entity_ids`
+    # field on PATCH (below) — this is read-only on the response side.
+    entities: list[EntityRefMini] = []
     created_at: UtcDatetime
     updated_at: UtcDatetime
     # Optimistic-concurrency token. Clients echo this back in PATCH bodies
@@ -255,6 +279,9 @@ class ReportSummary(BaseModel):
     # render the "종류" cell + filter by it without a heavier fetch.
     report_type_id: Optional[int] = None
     report_type: Optional[ReportTypeRef] = None
+    # Entity tags — same slim shape as ReportRead. The list page filter
+    # bar reads these to render axis-keyed chips per row.
+    entities: list[EntityRefMini] = []
     created_at: UtcDatetime
     updated_at: UtcDatetime
 
@@ -290,6 +317,10 @@ class ReportCreate(BaseModel):
     # Optional FK to a report_types row. Created via the picker dialog;
     # may be null (no tag).
     report_type_id: Optional[int] = None
+    # Optional list of Entity ids to tag this new report with. When
+    # omitted the report starts with no tags; when supplied each id is
+    # validated by the entities service (must exist; deprecated is OK).
+    entity_ids: Optional[list[int]] = None
 
 
 class ReportUpdate(BaseModel):
@@ -314,6 +345,11 @@ class ReportUpdate(BaseModel):
     # `exclude_unset` so an explicit `null` clears the tag while an
     # absent key leaves the existing value alone.
     report_type_id: Optional[int] = None
+    # Full replacement set of entity tags. `None`/absent = leave existing
+    # tags alone; `[]` = clear all tags. Picker UIs always send the full
+    # current set (not a delta), which keeps server-side reconciliation
+    # trivial and avoids "lost update" races between concurrent edits.
+    entity_ids: Optional[list[int]] = None
     # Optimistic-concurrency token: the revision the client thinks is
     # current. The service compares against the server's value and rejects
     # the PATCH with revision_mismatch if they differ. Optional so the

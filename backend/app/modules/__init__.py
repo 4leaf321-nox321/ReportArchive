@@ -11,6 +11,10 @@ from fastapi import FastAPI
 from app.modules.admin.routes import router as admin_router
 from app.modules.auth.routes import router as auth_router
 from app.modules.composites.routes import router as composites_router
+from app.modules.entities.routes import (
+    entities_router,
+    entity_types_router,
+)
 from app.modules.files.routes import router as files_router
 from app.modules.members.routes import router as members_router
 from app.modules.prompts.routes import router as prompts_router
@@ -48,6 +52,16 @@ def register_routers(app: FastAPI) -> None:
         report_types_router,
         prefix="/api/report-types",
         tags=["report-types"],
+    )
+    app.include_router(
+        entity_types_router,
+        prefix="/api/entity-types",
+        tags=["entity-types"],
+    )
+    app.include_router(
+        entities_router,
+        prefix="/api/entities",
+        tags=["entities"],
     )
     app.include_router(prompts_router, prefix="/api/prompts", tags=["prompts"])
     app.include_router(composites_router, prefix="/api/composites", tags=["composites"])

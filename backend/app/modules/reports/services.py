@@ -7,6 +7,7 @@ from typing import Iterable, Optional
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from app.modules.entities import services as entity_services
 from app.modules.reports.models import Report, ReportEditLock
 from app.modules.reports.schemas import ReportCreate, ReportPage, ReportUpdate
 from app.modules.templates import services as template_services
@@ -286,6 +287,18 @@ def create_report(
     db.add(report)
     db.commit()
     db.refresh(report)
+
+    # Entity tags — applied AFTER the initial commit so the report row
+    # has its id. Validation happens inside set_report_entities (missing
+    # ids raise ValueError → route maps to 400). Refresh again so the
+    # eager-loaded `entities` relationship reflects the new links on the
+    # response.
+    if payload.entity_ids is not None:
+        entity_services.set_report_entities(
+            db, report_id=report.id, entity_ids=payload.entity_ids
+        )
+        db.commit()
+        db.refresh(report)
     return report
 
 
@@ -484,6 +497,18 @@ def update_report(
 
     db.commit()
     db.refresh(report)
+
+    # Entity tags — handled after the main commit. We treat the supplied
+    # list as a full replacement set (`None`/absent = no change, `[]` =
+    # clear). Errors here propagate as ValueError and are mapped to 400
+    # by the route layer; the report's scalar/page edits stay committed
+    # so a bad entity id doesn't roll back the rest of the save.
+    if "entity_ids" in data:
+        entity_services.set_report_entities(
+            db, report_id=report.id, entity_ids=data["entity_ids"] or []
+        )
+        db.commit()
+        db.refresh(report)
     return report
 
 

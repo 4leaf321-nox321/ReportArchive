@@ -1,8 +1,103 @@
-import { ChevronDown, ChevronUp, Plus, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, Copy, Eraser, Plus, X } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { cn } from '@/shared/lib/utils'
+
+/**
+ * Two-button cluster ("복사" + "비우기") that every data-grid widget
+ * (Table / Chart / Scatter / Scatter3D / Heatmap / Radar / RaciMatrix)
+ * pins above its grid in edit mode. Each widget supplies:
+ *   - `onCopy()` → string to put on the clipboard (TSV is the default
+ *     convention; the widget builds it because the row/column shape is
+ *     widget-specific).
+ *   - `onClear()` → fired after the confirm dialog; the widget runs
+ *     `onChange(emptyContent)` itself so each widget owns its "empty"
+ *     definition (rows=[] for tabular; matrix=[]+labels intact for
+ *     heatmap, etc.).
+ *
+ * The cluster intentionally lives outside the widget files so the
+ * label / icon / confirm prompt stay in sync across every grid widget
+ * — that's the only consistency burden of having ~7 grids.
+ */
+export function DataTableActions({
+  onCopy,
+  onClear,
+  label = '데이터',
+  disabled,
+  className,
+}) {
+  async function handleCopy() {
+    try {
+      const text = onCopy?.()
+      if (text == null || text === '') {
+        toast.info(`복사할 ${label}가 없습니다.`)
+        return
+      }
+      await navigator.clipboard.writeText(text)
+      toast.success(`${label}를 클립보드에 복사했습니다.`)
+    } catch (e) {
+      toast.error('클립보드 복사 실패', {
+        description: String(e?.message ?? e),
+      })
+    }
+  }
+  function handleClear() {
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(`${label}를 모두 비울까요? 되돌릴 수 없습니다.`)) return
+    onClear?.()
+  }
+  return (
+    <div className={cn('flex items-center gap-1', className)}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 gap-1 px-2 text-xs"
+        onClick={handleCopy}
+        disabled={disabled}
+        title={`${label}를 TSV(탭 구분) 로 클립보드에 복사 — Excel · 시트에 그대로 붙여넣기 가능`}
+      >
+        <Copy className="h-3 w-3" />
+        복사
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 gap-1 px-2 text-xs text-destructive hover:text-destructive"
+        onClick={handleClear}
+        disabled={disabled}
+        title={`${label}를 모두 비웁니다 (되돌릴 수 없음)`}
+      >
+        <Eraser className="h-3 w-3" />
+        비우기
+      </Button>
+    </div>
+  )
+}
+
+/**
+ * Serialize a 2D array of cell values to a TSV string. Cells are
+ * coerced to strings; null/undefined become empty strings; tabs and
+ * newlines inside cells are replaced with spaces so the resulting
+ * string can be safely round-tripped to/from a spreadsheet.
+ */
+export function toTsv(rows2d) {
+  if (!Array.isArray(rows2d) || rows2d.length === 0) return ''
+  return rows2d
+    .map((row) =>
+      (Array.isArray(row) ? row : [row])
+        .map((cell) => {
+          if (cell == null) return ''
+          const s = typeof cell === 'string' ? cell : String(cell)
+          return s.replace(/[\t\n\r]+/g, ' ')
+        })
+        .join('\t'),
+    )
+    .join('\n')
+}
 
 /**
  * Shared editor for the {key, label, type, options?, required?} item shape

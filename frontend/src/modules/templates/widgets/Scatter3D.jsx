@@ -16,7 +16,7 @@ import Plotly from 'plotly.js-dist'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { CaptionInput, LabelField, PreviewLabel, captionSkipProps } from './_shared'
+import { CaptionInput, DataTableActions, LabelField, PreviewLabel, captionSkipProps, toTsv } from './_shared'
 
 const SERIES_COLORS = [
   '#2563eb', '#dc2626', '#16a34a', '#f59e0b', '#7c3aed', '#0891b2', '#db2777', '#475569',
@@ -538,11 +538,22 @@ export function Scatter3DEditor({ props, content, onChange, readOnly, autoFit })
 
           {/* Data */}
           <div className="space-y-1">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
               <span className="text-xs font-semibold text-muted-foreground">데이터</span>
-              <Button variant="outline" size="sm" className="h-6 text-xs" onClick={addColumn}>
-                <Plus className="h-3 w-3 mr-1" /> 열 추가
-              </Button>
+              <div className="flex items-center gap-1">
+                <Button variant="outline" size="sm" className="h-6 text-xs" onClick={addColumn}>
+                  <Plus className="h-3 w-3 mr-1" /> 열 추가
+                </Button>
+                <DataTableActions
+                  label="3D 산점도 데이터"
+                  onCopy={() => {
+                    const header = columns.map((c) => c.label || c.key)
+                    const body = rows.map((row) => columns.map((c) => row[c.key]))
+                    return toTsv([header, ...body])
+                  }}
+                  onClear={() => patch({ rows: [] })}
+                />
+              </div>
             </div>
             {/* See Scatter.jsx for sizing notes — same `6rem` min per
                 column + horizontal overflow scroll on the wrapper. */}

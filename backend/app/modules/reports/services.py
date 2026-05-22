@@ -267,6 +267,8 @@ def create_report(
         init_kwargs["status"] = payload.status
     if payload.page_width_px is not None:
         init_kwargs["page_width_px"] = payload.page_width_px
+    if payload.report_type_id is not None:
+        init_kwargs["report_type_id"] = payload.report_type_id
     report = Report(
         **init_kwargs,
         content=page0.content or {},
@@ -462,8 +464,9 @@ def update_report(
         report.props_overrides = _sanitize_props_overrides(page0.props_overrides)
         report.pages = _pages_to_jsonb(new_pages)
 
-    # Apply non-page scalar fields.
-    for key in ("title", "status", "report_date", "tags", "page_width_px"):
+    # Apply non-page scalar fields. `report_type_id` is included so the
+    # picker can both set and clear (explicit None) the tag in one PATCH.
+    for key in ("title", "status", "report_date", "tags", "page_width_px", "report_type_id"):
         if key in data:
             setattr(report, key, data[key])
 

@@ -17,7 +17,7 @@
  *   2. Create <Widget>.jsx here exporting PropsPanel + Preview + (optional) Editor
  *   3. Register the components below
  */
-import { AlignLeft, BarChartHorizontal, Box, Boxes, Flag, Grid3x3, Heading1, Hexagon, Image, LayoutGrid, LineChart, ListOrdered, Paperclip, Sigma, Table2, Type, Workflow } from 'lucide-react'
+import { AlignLeft, BarChartHorizontal, Box, Boxes, Circle, FileCode2, Film, Flag, GitBranch, Grid2x2, Grid3x3, Heading1, Hexagon, Image, LayoutGrid, LineChart, ListOrdered, MoreVertical, Paperclip, PieChart as PieIcon, Sigma, Table2, Type, Workflow } from 'lucide-react'
 
 import { HeadingPropsPanel, HeadingPreview, HeadingEditor } from './Heading'
 import { RichTextPropsPanel, RichTextPreview, RichTextEditor } from './RichText'
@@ -26,10 +26,19 @@ import { BulletedListPropsPanel, BulletedListPreview, BulletedListEditor } from 
 import { TablePropsPanel, TablePreview, TableEditor } from './Table'
 import { ImagePropsPanel, ImagePreview, ImageEditor } from './Image'
 import { AttachmentPropsPanel, AttachmentPreview, AttachmentEditor } from './Attachment'
+import { VideoPropsPanel, VideoPreview, VideoEditor } from './Video'
+import { HtmlEmbedPropsPanel, HtmlEmbedPreview, HtmlEmbedEditor } from './HtmlEmbed'
 import { ChartPropsPanel, ChartPreview, ChartEditor } from './Chart'
 import { ScatterPropsPanel, ScatterPreview, ScatterEditor } from './Scatter'
 import { Scatter3DPropsPanel, Scatter3DPreview, Scatter3DEditor } from './Scatter3D'
 import { HeatmapPropsPanel, HeatmapPreview, HeatmapEditor } from './Heatmap'
+import { ContourPropsPanel, ContourPreview, ContourEditor } from './Contour'
+import { TreemapPropsPanel, TreemapPreview, TreemapEditor } from './Treemap'
+import { PackingPropsPanel, PackingPreview, PackingEditor } from './Packing'
+import { TreePropsPanel, TreePreview, TreeEditor } from './Tree'
+import { PiePropsPanel, PiePreview, PieEditor } from './Pie'
+import { WafflePropsPanel, WafflePreview, WaffleEditor } from './Waffle'
+import { BoxPropsPanel, BoxPreview, BoxEditor } from './Box'
 import { RadarPropsPanel, RadarPreview, RadarEditor } from './Radar'
 import { EquationPropsPanel, EquationPreview, EquationEditor } from './Equation'
 import { MilestonePropsPanel, MilestonePreview, MilestoneEditor } from './Milestone'
@@ -81,6 +90,18 @@ export const WIDGET_RENDERERS = {
     Preview: AttachmentPreview,
     Editor: AttachmentEditor,
   },
+  video: {
+    Icon: Film,
+    PropsPanel: VideoPropsPanel,
+    Preview: VideoPreview,
+    Editor: VideoEditor,
+  },
+  html_embed: {
+    Icon: FileCode2,
+    PropsPanel: HtmlEmbedPropsPanel,
+    Preview: HtmlEmbedPreview,
+    Editor: HtmlEmbedEditor,
+  },
   chart: {
     Icon: BarChartHorizontal,
     PropsPanel: ChartPropsPanel,
@@ -104,6 +125,48 @@ export const WIDGET_RENDERERS = {
     PropsPanel: HeatmapPropsPanel,
     Preview: HeatmapPreview,
     Editor: HeatmapEditor,
+  },
+  contour: {
+    Icon: LayoutGrid,
+    PropsPanel: ContourPropsPanel,
+    Preview: ContourPreview,
+    Editor: ContourEditor,
+  },
+  treemap: {
+    Icon: LayoutGrid,
+    PropsPanel: TreemapPropsPanel,
+    Preview: TreemapPreview,
+    Editor: TreemapEditor,
+  },
+  packing: {
+    Icon: Circle,
+    PropsPanel: PackingPropsPanel,
+    Preview: PackingPreview,
+    Editor: PackingEditor,
+  },
+  tree: {
+    Icon: GitBranch,
+    PropsPanel: TreePropsPanel,
+    Preview: TreePreview,
+    Editor: TreeEditor,
+  },
+  pie: {
+    Icon: PieIcon,
+    PropsPanel: PiePropsPanel,
+    Preview: PiePreview,
+    Editor: PieEditor,
+  },
+  waffle: {
+    Icon: Grid2x2,
+    PropsPanel: WafflePropsPanel,
+    Preview: WafflePreview,
+    Editor: WaffleEditor,
+  },
+  box: {
+    Icon: MoreVertical,
+    PropsPanel: BoxPropsPanel,
+    Preview: BoxPreview,
+    Editor: BoxEditor,
   },
   radar: {
     Icon: Hexagon,

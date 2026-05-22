@@ -466,7 +466,7 @@ export default function TemplateEditorPage() {
               report_defaults: Object.keys(next).length === 0 ? null : next,
             }
           })
-          setSettingsDialogOpen(false)
+          // Dialog handles its own close after "적용" — we just merge.
         }}
       />
     </div>

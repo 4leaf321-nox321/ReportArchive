@@ -47,7 +47,7 @@ import {
   useAnnotationInteractions,
   useAnnotationStore,
 } from '@/shared/annotations'
-import { AxisRangeInput, CaptionInput, LabelField, PreviewLabel, captionSkipProps } from './_shared'
+import { AxisRangeInput, CaptionInput, DataTableActions, LabelField, PreviewLabel, captionSkipProps, toTsv } from './_shared'
 
 const MODES = [
   { value: 'scatter', label: '산점도' },
@@ -598,11 +598,22 @@ export function ScatterEditor({ props, content, onChange, readOnly, autoFit }) {
               accept multi-cell paste (first TSV row becomes column
               labels). Series pick which two columns they pair. ─── */}
           <div className="space-y-1">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
               <span className="text-xs font-semibold text-muted-foreground">데이터</span>
-              <Button variant="outline" size="sm" className="h-6 text-xs" onClick={addColumn}>
-                <Plus className="h-3 w-3 mr-1" /> 열 추가
-              </Button>
+              <div className="flex items-center gap-1">
+                <Button variant="outline" size="sm" className="h-6 text-xs" onClick={addColumn}>
+                  <Plus className="h-3 w-3 mr-1" /> 열 추가
+                </Button>
+                <DataTableActions
+                  label="산점도 데이터"
+                  onCopy={() => {
+                    const header = columns.map((c) => c.label || c.key)
+                    const body = rows.map((row) => columns.map((c) => row[c.key]))
+                    return toTsv([header, ...body])
+                  }}
+                  onClear={() => patch({ rows: [] })}
+                />
+              </div>
             </div>
             {/* Outer wrapper has both axes scrollable. When the column
                 count exceeds what the parent panel can fit, each cell
@@ -797,7 +808,11 @@ function ScatterCanvas({
       }
     >
       {resizing && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center text-[11px] text-muted-foreground bg-muted/20 rounded-md">
+        // Match Chart / Contour / Heatmap — placeholder fills the cell
+        // by occupying flow (w-full h-full) rather than overlaying on
+        // top of a stale plot. ResponsiveContainer below is gated on
+        // `!resizing` so we never render both at once.
+        <div className="w-full h-full flex items-center justify-center text-[11px] text-muted-foreground bg-muted/20 rounded-md">
           크기 조정 중…
         </div>
       )}

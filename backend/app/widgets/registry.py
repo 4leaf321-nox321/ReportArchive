@@ -623,6 +623,114 @@ ATTACHMENT: WidgetDescriptor = {
 
 
 # --------------------------------------------------------------------------- #
+# 8a. video — playable video file(s) (mp4 / webm / etc.)                       #
+# --------------------------------------------------------------------------- #
+# Same `file_id` storage model as image/attachment — the frontend
+# fetches the bytes via the auth'd files API, wraps them in a blob URL,
+# and feeds that to a native <video controls> element. AI never fills
+# this (no file_id), so it joins the "do not generate" prompt group.
+def _video_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            "files": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "file_id": {"type": "string", "minLength": 1},
+                        "filename": {"type": "string", "minLength": 1, "maxLength": 255},
+                        "size": {"type": "integer", "minimum": 0},
+                        "mime_type": {"type": "string", "maxLength": 100},
+                    },
+                    "required": ["file_id"],
+                    "additionalProperties": False,
+                },
+                "minItems": 0,
+                "maxItems": props.get("max_count", 4),
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
+VIDEO: WidgetDescriptor = {
+    "type": "video",
+    "label": "동영상",
+    "description": "업로드한 동영상 파일을 웹에서 재생 (mp4 / webm / mov / ogg / m4v)",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "max_count": {"type": "integer", "minimum": 1, "maximum": 10},
+            # Playback defaults — author overrides per-instance via the
+            # editor; the report viewer sees these exact options unless
+            # the user changes the player controls at runtime.
+            "autoplay": {"type": "boolean"},
+            "loop": {"type": "boolean"},
+            "muted": {"type": "boolean"},
+        },
+        "required": ["label", "max_count"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _video_content,
+    "default_props": {"label": "동영상", "max_count": 1},
+}
+
+
+# --------------------------------------------------------------------------- #
+# 8b. html_embed — uploaded HTML rendered in-place via sandboxed iframe       #
+# --------------------------------------------------------------------------- #
+# Pattern mirrors `attachment`: the report stores a single `file_id` from
+# /api/files, and the frontend loads it into an iframe with sandbox so the
+# author's HTML (potentially including <script>, <style>, external <img>)
+# renders verbatim without leaking into the report shell. AI never fills
+# this — like image / attachment / cad_3d, it requires a real file_id.
+def _html_embed_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            "file_id": {"type": "string", "minLength": 1},
+            # Display only — the original uploaded filename so the editor
+            # can show "report.html" next to the upload button.
+            "filename": {"type": "string", "maxLength": 255},
+            # Optional explicit pixel height for the iframe cell. Useful
+            # for HTML that can't reliably postMessage its own height
+            # (cross-origin assets, async-rendered content). When unset
+            # the widget falls back to its grid cell height.
+            "height_px": {"type": "integer", "minimum": 60, "maximum": 4000},
+        },
+        # file_id is *not* required at the schema level so a freshly-
+        # inserted widget with no upload yet still validates — the
+        # frontend handles the "empty" UX inline.
+        "additionalProperties": False,
+    }
+
+
+HTML_EMBED: WidgetDescriptor = {
+    "type": "html_embed",
+    "label": "HTML 임베드",
+    "description": "업로드한 HTML 파일을 sandbox iframe 으로 그대로 렌더 (스크립트 OK, 메인 페이지와 격리)",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _html_embed_content,
+    "default_props": {"label": "HTML"},
+}
+
+
+# --------------------------------------------------------------------------- #
 # 9. chart — bar / line chart over tabular data
 # --------------------------------------------------------------------------- #
 _CHART_TYPES = ("bar", "line")
@@ -1330,6 +1438,644 @@ HEATMAP: WidgetDescriptor = {
 
 
 # --------------------------------------------------------------------------- #
+# 11b. contour — 2D contour plot (Plotly type:'contour')                      #
+# --------------------------------------------------------------------------- #
+# Data shape mirrors heatmap (`x_labels` / `y_labels` / `matrix`) so authors
+# don't relearn a grid layout — what differs is the rendering: instead of
+# coloring each cell, Plotly draws iso-value curves over the field. The
+# extra knobs control how those curves look (count, line vs. filled, label).
+_CONTOUR_COLORING_MODES = ("fill", "heatmap", "lines", "none")
+
+
+_CONTOUR_INPUT_MODES = ("matrix", "rows")
+
+
+def _contour_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            # Which input model the user is editing in.  Defaults to
+            # 'matrix' for backward compatibility (existing reports
+            # don't carry this field).
+            #   'matrix' — x_labels / y_labels / matrix[row][col]
+            #   'rows'   — long-form list of {x, y, z} numeric points.
+            #              Renderer normalizes into the matrix form by
+            #              taking the union of unique x's and y's as
+            #              axes; cells without a matching row stay null.
+            "mode": {
+                "type": "string",
+                "enum": list(_CONTOUR_INPUT_MODES),
+            },
+            # matrix-mode data ──────────────────────────────────────
+            "x_labels": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 200},
+            },
+            "y_labels": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 200},
+            },
+            "matrix": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {"type": ["number", "null"]},
+                },
+            },
+            # rows-mode data ─────────────────────────────────────────
+            # Each entry is a single (x, y, z) sample. All three must
+            # be numeric; rows missing any of them are skipped at
+            # render time (the frontend keeps them in the table so the
+            # author can fill them in later).
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": ["number", "null"]},
+                        "y": {"type": ["number", "null"]},
+                        "z": {"type": ["number", "null"]},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            "colorscale": {
+                "type": "string",
+                "enum": list(_HEATMAP_COLORSCALES),
+            },
+            "reverse_scale": {"type": "boolean"},
+            # Fixed value-domain — same usage as heatmap's z_min/z_max
+            # (locking the color range when comparing multiple plots).
+            "z_min": {"type": "number"},
+            "z_max": {"type": "number"},
+            "x_axis_title": {"type": "string", "maxLength": 100},
+            "y_axis_title": {"type": "string", "maxLength": 100},
+            # contour-specific knobs ─────────────────────────────────
+            # Number of contour levels Plotly auto-picks between
+            # min/max. Plotly uses 15 by default.
+            "ncontours": {"type": "integer", "minimum": 2, "maximum": 100},
+            # `fill` = filled bands + lines (default).
+            # `heatmap` = filled like a heatmap, no contour lines.
+            # `lines` = lines only, transparent background.
+            # `none` = same as fill but explicit (kept for completeness).
+            "contours_coloring": {
+                "type": "string",
+                "enum": list(_CONTOUR_COLORING_MODES),
+            },
+            "show_lines": {"type": "boolean"},
+            # Numeric labels printed on each contour line.
+            "show_labels": {"type": "boolean"},
+            # Bridge null / sparse cells by carrying neighbor values
+            # across the gap. Plotly's `contour.connectgaps` — turns a
+            # ragged data field (DOE results, partial measurements) into
+            # a continuous contour map instead of a checkerboard of
+            # voids. Default true at render time so authors don't have
+            # to think about it; explicit false opts back into "strict
+            # nulls" for cases where the gaps mean something.
+            "connect_gaps": {"type": "boolean"},
+        },
+        "additionalProperties": False,
+    }
+
+
+CONTOUR: WidgetDescriptor = {
+    "type": "contour",
+    "label": "등고선 차트",
+    "description": "2D 값 매트릭스를 등고선으로 — 응답면, 등압선, 민감도 등고",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "x_axis_title": {"type": "string", "maxLength": 100},
+            "y_axis_title": {"type": "string", "maxLength": 100},
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _contour_content,
+    "default_props": {
+        "label": "등고선",
+    },
+}
+
+
+# --------------------------------------------------------------------------- #
+# 11c. treemap — hierarchical area chart (Plotly type:'treemap')              #
+# --------------------------------------------------------------------------- #
+# Data model is a flat long-form list of `{label, parent, value}` rows so the
+# editor can stay a simple 3-column table — Plotly internally rebuilds the
+# tree from `parents[i]` pointing back into another row's `label` (root rows
+# use `""`). This avoids forcing the user to think in terms of nested JSON.
+#
+# `text_info` mirrors Plotly's `textinfo` flag (which substrings appear on
+# each box). `branchvalues` decides whether a parent's value is independent
+# (=`total`) or the sum of its leaves (=`remainder`); we default to
+# `remainder` so the AI / author can leave parents blank and have Plotly
+# compute the rollup automatically.
+_TREEMAP_TEXT_INFO = (
+    "label",
+    "label+value",
+    "label+value+percent_parent",
+    "label+value+percent_root",
+    "label+percent_root",
+    "value",
+    "none",
+)
+_TREEMAP_BRANCH_VALUES = ("remainder", "total")
+
+
+def _treemap_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            # Unit string appended to numeric values in the cell labels
+            # + hover (e.g. "억원", "%", "건"). Free-form so the author
+            # can type the punctuation/spacing they want.
+            "unit": {"type": "string", "maxLength": 32},
+            # Flat list of nodes. `parent` is another row's `label`, or
+            # an empty string for top-level nodes. `value` is required at
+            # leaf level — Plotly fills parents in via `branchvalues` =
+            # 'remainder'. We keep them nullable so the editor can hold
+            # half-typed rows without failing schema validation.
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "maxLength": 200},
+                        "parent": {"type": "string", "maxLength": 200},
+                        "value": {"type": ["number", "null"]},
+                        # Optional explicit fill color (CSS / hex string).
+                        # When unset Plotly picks from the categorical
+                        # palette or maps from the colorscale below.
+                        "color": {"type": "string", "maxLength": 32},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            # Optional value-driven colorscale. When set Plotly maps each
+            # node's value through the scale instead of using categorical
+            # colors — useful for "size + intensity" encodings.
+            "colorscale": {
+                "type": "string",
+                "enum": list(_HEATMAP_COLORSCALES),
+            },
+            "reverse_scale": {"type": "boolean"},
+            "text_info": {
+                "type": "string",
+                "enum": list(_TREEMAP_TEXT_INFO),
+            },
+            "branchvalues": {
+                "type": "string",
+                "enum": list(_TREEMAP_BRANCH_VALUES),
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 11d. pie / donut — flat proportion chart (Plotly type:'pie')                #
+# --------------------------------------------------------------------------- #
+# Single trace covers both pie and donut — `chart_type: 'donut'` just
+# sets a non-zero hole. Data is a flat list of `{label, value, color?}`
+# rows; no parent/children, no hierarchy. For hierarchical proportions
+# use treemap instead.
+_PIE_CHART_TYPES = ("pie", "donut")
+_PIE_TEXT_INFO = (
+    "label",
+    "label+percent",
+    "label+value",
+    "label+value+percent",
+    "percent",
+    "value",
+    "none",
+)
+_PIE_TEXT_POSITIONS = ("auto", "inside", "outside", "none")
+
+
+def _pie_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            "unit": {"type": "string", "maxLength": 32},
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "maxLength": 200},
+                        "value": {"type": ["number", "null"]},
+                        "color": {"type": "string", "maxLength": 32},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            "chart_type": {
+                "type": "string",
+                "enum": list(_PIE_CHART_TYPES),
+            },
+            # Donut center hole as a ratio of the chart radius (0..0.9).
+            # Only consulted when `chart_type == 'donut'`; default 0.45
+            # which gives a recognisable donut without the slices feeling
+            # too thin.
+            "hole": {"type": "number", "minimum": 0, "maximum": 0.9},
+            "colorscale": {
+                "type": "string",
+                "enum": list(_HEATMAP_COLORSCALES),
+            },
+            "reverse_scale": {"type": "boolean"},
+            "text_info": {
+                "type": "string",
+                "enum": list(_PIE_TEXT_INFO),
+            },
+            "text_position": {
+                "type": "string",
+                "enum": list(_PIE_TEXT_POSITIONS),
+            },
+            # Plotly default is true (largest first). Disable for cases
+            # where the row order itself carries meaning (e.g. process
+            # stage, calendar order).
+            "sort": {"type": "boolean"},
+            "show_legend": {"type": "boolean"},
+        },
+        "additionalProperties": False,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 11f. boxplot — long-form box-and-whisker chart (Plotly type:'box')          #
+# --------------------------------------------------------------------------- #
+# Data is a flat `rows: [{group, value}]` list — each row is one
+# observation; rows sharing the same `group` form a single box. Plotly
+# computes quartiles / median / whiskers / outliers from the raw values
+# automatically, so authors never need to precompute summary stats.
+_BOX_ORIENTATION = ("vertical", "horizontal")
+_BOX_POINTS = ("outliers", "suspectedoutliers", "all", "none")
+_BOX_MEAN = ("none", "line", "sd")
+
+
+def _box_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            "unit": {"type": "string", "maxLength": 32},
+            "x_axis_title": {"type": "string", "maxLength": 100},
+            "y_axis_title": {"type": "string", "maxLength": 100},
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "group": {"type": "string", "maxLength": 200},
+                        "value": {"type": ["number", "null"]},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            "orientation": {
+                "type": "string",
+                "enum": list(_BOX_ORIENTATION),
+            },
+            # Value-axis manual range. Applied to Plotly's yaxis.range
+            # when orientation='vertical' (default) and xaxis.range when
+            # 'horizontal'. Either bound can be null — a one-sided
+            # clamp is interpreted client-side as "auto on that side,
+            # fixed on this one".
+            "y_min": {"type": ["number", "null"]},
+            "y_max": {"type": ["number", "null"]},
+            # outliers: classical (default). suspectedoutliers: 3·IQR
+            # marker tint. all: every data point shown alongside the
+            # box. none: clean box without dots.
+            "box_points": {
+                "type": "string",
+                "enum": list(_BOX_POINTS),
+            },
+            # `line`: dashed line at the mean. `sd`: line + a vertical
+            # ±1σ marker. `none`: median only (Plotly default).
+            "box_mean": {
+                "type": "string",
+                "enum": list(_BOX_MEAN),
+            },
+            # How spread out the individual point dots are. 0 = stacked
+            # on the box axis, 1 = full sibling-box width. Only matters
+            # when box_points != 'none'.
+            "jitter": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "additionalProperties": False,
+    }
+
+
+BOX: WidgetDescriptor = {
+    "type": "box",
+    "label": "박스플롯",
+    "description": "그룹별 분포 (5수치 요약 + 이상치) — A/B 비교, 실험 분산, 측정값 산포",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "x_axis_title": {"type": "string", "maxLength": 100},
+            "y_axis_title": {"type": "string", "maxLength": 100},
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _box_content,
+    "default_props": {
+        "label": "박스플롯",
+    },
+}
+
+
+# --------------------------------------------------------------------------- #
+# 11g. waffle — grid-of-cells proportion chart                                 #
+# --------------------------------------------------------------------------- #
+# Each cell is one slice of the whole (default 1% of the total). Cells
+# are colored by group and laid out in a `cols × rows` grid (default
+# 10×10). Visually it reads as a pie chart that's been "unrolled" into
+# a percentage grid — easier to compare small shares than a pie because
+# every 1% is the same shape, and it prints / exports cleanly.
+_WAFFLE_SHAPES = ("square", "circle")
+_WAFFLE_DIRECTIONS = ("row", "column")
+
+
+def _waffle_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            "unit": {"type": "string", "maxLength": 32},
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "maxLength": 200},
+                        "value": {"type": ["number", "null"]},
+                        "color": {"type": "string", "maxLength": 32},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            # Grid dimensions. cols × rows = total cells. Common
+            # choices: 10×10 (100 cells, 1%/cell), 5×5 (25 cells, 4%),
+            # 20×5 (100 cells, slim shape). Keep both at a sane
+            # bound so authors can't accidentally request 10 000 cells.
+            "cols": {"type": "integer", "minimum": 1, "maximum": 50},
+            "grid_rows": {"type": "integer", "minimum": 1, "maximum": 50},
+            "shape": {"type": "string", "enum": list(_WAFFLE_SHAPES)},
+            # Direction in which cells are filled. 'column' (bottom-up,
+            # left-to-right) is the convention most waffle / pictogram
+            # charts use because it reads like a bar piling up. 'row'
+            # fills left-to-right, top-to-bottom (text-style).
+            "fill_direction": {
+                "type": "string",
+                "enum": list(_WAFFLE_DIRECTIONS),
+            },
+            "show_legend": {"type": "boolean"},
+            # When set, every cell shows the share of the total it
+            # represents in the hover/legend; cells themselves stay
+            # plain. Mostly for documenting "1 cell = N units".
+            "show_value_per_cell": {"type": "boolean"},
+        },
+        "additionalProperties": False,
+    }
+
+
+WAFFLE: WidgetDescriptor = {
+    "type": "waffle",
+    "label": "와플 차트",
+    "description": "비율을 격자 100칸 (또는 N칸) 으로 — 점유율·달성률·인구 비중 등 (파이 대안, 작은 % 비교에 강함)",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _waffle_content,
+    "default_props": {
+        "label": "비중",
+    },
+}
+
+
+PIE: WidgetDescriptor = {
+    "type": "pie",
+    "label": "파이 / 도넛 차트",
+    "description": "비중을 한 원의 부채꼴로 — 항목별 점유, 비용 구성 등 (계층은 트리맵)",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _pie_content,
+    "default_props": {
+        "label": "비중",
+    },
+}
+
+
+# --------------------------------------------------------------------------- #
+# 11e. packing — circle packing (d3-hierarchy pack layout)                     #
+# --------------------------------------------------------------------------- #
+# Same long-form `rows: [{label, parent, value, color}]` model the
+# treemap uses — they share data shape but render very differently
+# (treemap = squarified rectangles, packing = nested circles). Plotly
+# has no built-in trace for circle packing, so this one renders with
+# d3-hierarchy's pack layout into a plain SVG inside the widget.
+def _packing_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            "unit": {"type": "string", "maxLength": 32},
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "maxLength": 200},
+                        "parent": {"type": "string", "maxLength": 200},
+                        "value": {"type": ["number", "null"]},
+                        "color": {"type": "string", "maxLength": 32},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            "colorscale": {
+                "type": "string",
+                "enum": list(_HEATMAP_COLORSCALES),
+            },
+            "reverse_scale": {"type": "boolean"},
+            # 'label' / 'label+value' / 'label+value+percent' / 'value' /
+            # 'none'. Percentage is relative to the immediate parent
+            # (same semantics as treemap's percent_parent). NB: jsonschema
+            # wants the enum as a **list** — tuples here look the same in
+            # Python but the validator's internal serialization rejects
+            # them, surfacing as a 500 instead of a clean ValueError when
+            # a report tries to save.
+            "text_info": {
+                "type": "string",
+                "enum": [
+                    "label",
+                    "label+value",
+                    "label+value+percent",
+                    "value",
+                    "none",
+                ],
+            },
+            # Pixel padding between sibling circles inside the same
+            # parent. Bigger values make the grouping more obvious at
+            # the cost of usable area for the actual leaves.
+            "padding": {"type": "integer", "minimum": 0, "maximum": 20},
+        },
+        "additionalProperties": False,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 11h. tree — node-and-edge tree diagram (d3-hierarchy tree layout)            #
+# --------------------------------------------------------------------------- #
+# Hierarchical structure shown as classical tree-of-nodes (org chart,
+# decision tree, taxonomy, file-system view). Data shape mirrors
+# treemap/packing so authors can switch visualizations on the same
+# rows without re-keying anything.
+_TREE_ORIENTATIONS = ("vertical", "horizontal")
+_TREE_NODE_SHAPES = ("rect", "circle")
+_TREE_EDGE_STYLES = ("curve", "step", "straight")
+
+
+def _tree_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "maxLength": 200},
+                        "parent": {"type": "string", "maxLength": 200},
+                        # Optional sublabel rendered under the main label
+                        # (e.g. role for an org chart, count for a
+                        # taxonomy node). Free-form short string.
+                        "subtitle": {"type": "string", "maxLength": 200},
+                        "color": {"type": "string", "maxLength": 32},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            "orientation": {
+                "type": "string",
+                "enum": list(_TREE_ORIENTATIONS),
+            },
+            "node_shape": {
+                "type": "string",
+                "enum": list(_TREE_NODE_SHAPES),
+            },
+            # 'curve' (default): smooth bezier — best for most cases.
+            # 'step': right-angle elbow joints — popular for org charts.
+            # 'straight': plain line — minimal / dense trees.
+            "edge_style": {
+                "type": "string",
+                "enum": list(_TREE_EDGE_STYLES),
+            },
+            # When set, every node is colored by its top-level ancestor
+            # (matches treemap / packing's group coloring rule). When
+            # unset, every node uses the same neutral color; per-row
+            # `color` still wins either way.
+            "color_by_group": {"type": "boolean"},
+            # Visual sizing knobs — let authors trade between
+            # readability and dense layouts without hand-tweaking SVG.
+            "node_padding_x": {"type": "integer", "minimum": 0, "maximum": 80},
+            "node_padding_y": {"type": "integer", "minimum": 0, "maximum": 80},
+        },
+        "additionalProperties": False,
+    }
+
+
+TREE: WidgetDescriptor = {
+    "type": "tree",
+    "label": "트리 다이어그램",
+    "description": "노드·엣지 계층도 — 조직도, 분류 체계, 결정 트리, 파일 트리 등 (트리맵과 데이터 동일, 시각만 다름)",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _tree_content,
+    "default_props": {
+        "label": "트리",
+    },
+}
+
+
+PACKING: WidgetDescriptor = {
+    "type": "packing",
+    "label": "Circle Packing",
+    "description": "계층 데이터를 원·원 패킹으로 (treemap 과 데이터 동일, 시각만 원형)",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _packing_content,
+    "default_props": {
+        "label": "패킹",
+    },
+}
+
+
+TREEMAP: WidgetDescriptor = {
+    "type": "treemap",
+    "label": "트리맵",
+    "description": "계층 데이터의 비중을 사각형 면적으로 — 비용 분해, 시장 점유, BoM 등",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _treemap_content,
+    "default_props": {
+        "label": "트리맵",
+    },
+}
+
+
+# --------------------------------------------------------------------------- #
 # 9e. radar — multi-axis polar comparison (spec sheets, scorecards)
 # --------------------------------------------------------------------------- #
 # Data shape mirrors the heatmap widget: positional `axis_labels[]`,
@@ -1655,10 +2401,19 @@ WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
         TABLE,
         IMAGE,
         ATTACHMENT,
+        VIDEO,
+        HTML_EMBED,
         CHART,
         SCATTER,
         SCATTER3D,
         HEATMAP,
+        CONTOUR,
+        TREEMAP,
+        PACKING,
+        TREE,
+        PIE,
+        WAFFLE,
+        BOX,
         RADAR,
         EQUATION,
         MILESTONE,

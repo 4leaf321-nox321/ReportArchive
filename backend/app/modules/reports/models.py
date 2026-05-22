@@ -151,6 +151,15 @@ class Report(Base):
     # 3000; the server only enforces the integer column type.
     page_width_px: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Optional report-type tag — system-wide controlled vocabulary
+    # orthogonal to the template (templates describe shape; types
+    # describe purpose, e.g. "주간 보고", "안전 점검"). Managed by
+    # the report_types module; SET NULL on delete so reports never
+    # cascade-vanish when an admin cleans up the vocabulary.
+    report_type_id: Mapped[int | None] = mapped_column(
+        ForeignKey("report_types.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
     # Eagerly load the two user joins — every read of a Report needs the
     # owner / last-editor display info, so paying one JOIN beats N+1 lookups
     # in the route layer.
@@ -159,6 +168,16 @@ class Report(Base):
     )
     updated_by: Mapped["User | None"] = relationship(
         "User", foreign_keys=[updated_by_user_id], lazy="joined"
+    )
+
+    # Eager-load the report-type tag — list payloads need name + status
+    # for the "종류" column, and detail views show the description in
+    # the settings dialog. Skipping the JOIN would mean an N+1 over the
+    # list endpoint.
+    report_type: Mapped["ReportType | None"] = relationship(  # noqa: F821
+        "ReportType",
+        foreign_keys=[report_type_id],
+        lazy="joined",
     )
     # Current edit lock, if any. Eager-loaded so the report GET can include
     # "who's editing" without a second query. The lock row may exist but be

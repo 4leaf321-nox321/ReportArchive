@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus } from 'lucide-react'
+import { Plus, Calendar, BookOpen } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
-import { Badge } from '@/shared/components/ui/badge'
+import { Card, CardContent } from '@/shared/components/ui/card'
 import { DataTable } from '@/shared/components/DataTable'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { Skeleton } from '@/shared/components/ui/skeleton'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs'
 import {
   PeriodFilterControls,
   usePeriodFilter,
@@ -16,16 +17,21 @@ import { dateInPeriodRange, formatRangeLabel } from '@/shared/lib/period'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { listComposites } from '@/shared/api/composites'
-import { KINDS, KIND_LABEL, KIND_VARIANT } from './constants'
 import { NewCompositeDialog } from './NewCompositeDialog'
 
-/** 종합보고 목록. The reports API + composites API are sibling endpoints —
- *  same UX pattern, but composites carry kind/period_date instead of a
- *  template binding. */
+/** 종합보고 목록 — 정기(period-anchored) vs 주제(time-independent) 는
+ *  brain models 가 달라서 한 리스트에 섞으면 어색해진다. Tabs 으로
+ *  분리:
+ *    - 정기  : period 필터 활성 + 월별 그룹핑 헤더 (시간축 인덱스)
+ *    - 주제  : period 필터 숨김 + 단순 sortable 테이블 (제목 인덱스)
+ *  Tab 라벨에 각각의 건수를 박아 두어 어느 쪽에 데이터가 있는지 즉시
+ *  보이게 한다.
+ */
 export default function CompositesListPage() {
   const { slug, workspace, all: workspaces } = useWorkspace()
   const navigate = useNavigate()
   const [newOpen, setNewOpen] = useState(false)
+  const [tab, setTab] = useState('recurring')
   const period = usePeriodFilter('week')
 
   const { data: items, loading, error, reload } = useAsync(
@@ -38,38 +44,190 @@ export default function CompositesListPage() {
     return (s) => map.get(s) ?? s
   }, [workspaces])
 
-  // Period filter targets period_date — applies to recurring composites
-  // only. Theme composites have no date, so they fall out of the list
-  // when a range is active (by design, mirroring the picker dialog).
-  const list = (items ?? [])
-    .filter((r) => dateInPeriodRange(r.period_date, period.range))
-    .map((r) => ({
-      ...r,
-      workspace_name: workspaceName(r.workspace_slug),
-    }))
+  const decorated = useMemo(
+    () =>
+      (items ?? []).map((r) => ({
+        ...r,
+        workspace_name: workspaceName(r.workspace_slug),
+      })),
+    [items, workspaceName],
+  )
 
+  const recurring = useMemo(
+    () =>
+      decorated
+        .filter((r) => r.kind === 'recurring')
+        .filter((r) => dateInPeriodRange(r.period_date, period.range)),
+    [decorated, period.range],
+  )
+  const themes = useMemo(
+    () => decorated.filter((r) => r.kind === 'theme'),
+    [decorated],
+  )
+
+  return (
+    <div className="p-6 space-y-4">
+      <PageHeader
+        title="종합보고"
+        description={
+          workspace
+            ? `${workspace.name}${workspace.virtual ? ' (횡단)' : ''} — 정기 ${recurring.length}건 · 주제 ${themes.length}건`
+            : ''
+        }
+        actions={
+          <div className="flex items-center gap-2 flex-wrap">
+            {tab === 'recurring' && <PeriodFilterControls period={period} />}
+            {!workspace?.virtual && (
+              <Button onClick={() => setNewOpen(true)}>
+                <Plus className="mr-2 h-4 w-4" />
+                새 종합보고
+              </Button>
+            )}
+          </div>
+        }
+      />
+
+      {error ? (
+        <ErrorState description={error.message} onRetry={reload} />
+      ) : loading ? (
+        <Skeleton className="h-96" />
+      ) : (
+        <Tabs value={tab} onValueChange={setTab}>
+          <TabsList>
+            <TabsTrigger value="recurring">
+              <Calendar className="mr-1.5 h-3.5 w-3.5" />
+              정기 ({recurring.length})
+            </TabsTrigger>
+            <TabsTrigger value="theme">
+              <BookOpen className="mr-1.5 h-3.5 w-3.5" />
+              주제 ({themes.length})
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="recurring" className="mt-3">
+            <RecurringList
+              items={recurring}
+              rangeLabel={formatRangeLabel(period.range)}
+              onOpen={(r) => navigate(`/w/${slug}/composites/${r.id}`)}
+            />
+          </TabsContent>
+
+          <TabsContent value="theme" className="mt-3">
+            <ThemeList
+              items={themes}
+              workspaceName={workspaceName}
+              onOpen={(r) => navigate(`/w/${slug}/composites/${r.id}`)}
+            />
+          </TabsContent>
+        </Tabs>
+      )}
+
+      <NewCompositeDialog
+        open={newOpen}
+        onOpenChange={setNewOpen}
+        currentWorkspaceSlug={slug}
+        workspaces={workspaces}
+        onCreated={(id) => {
+          setNewOpen(false)
+          toast.success('종합보고가 생성되었습니다.')
+          navigate(`/w/${slug}/composites/${id}`)
+        }}
+      />
+    </div>
+  )
+}
+
+/** 정기 종합 — period_date 기준 월 그룹으로 묶어 시간축 인덱스처럼
+ *  보여준다. 같은 달의 종합이 여러 건이면 그 안에서 날짜 desc 정렬.
+ *  월별로 「YYYY년 M월 (N건)」 헤더가 위에 붙는다. */
+function RecurringList({ items, rangeLabel, onOpen }) {
+  if (items.length === 0) {
+    return (
+      <Card>
+        <CardContent className="py-12 text-center text-sm text-muted-foreground">
+          {rangeLabel} 범위에 정기 종합이 없습니다.
+        </CardContent>
+      </Card>
+    )
+  }
+  // Group by YYYY-MM; null period_date is rare for recurring but
+  // possible (legacy data) — bucket those under a "(기준일 없음)"
+  // group at the end.
+  const groups = new Map()
+  for (const it of items) {
+    const key = it.period_date ? it.period_date.slice(0, 7) : '__nodate'
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(it)
+  }
+  // Sort group keys: real months desc, no-date bucket last.
+  const sortedKeys = [...groups.keys()].sort((a, b) => {
+    if (a === '__nodate') return 1
+    if (b === '__nodate') return -1
+    return b.localeCompare(a)
+  })
+  return (
+    <div className="space-y-4">
+      <div className="text-[11px] text-muted-foreground">
+        범위: {rangeLabel} · {items.length}건
+      </div>
+      {sortedKeys.map((key) => {
+        const list = groups.get(key) ?? []
+        list.sort((a, b) => (b.period_date ?? '').localeCompare(a.period_date ?? ''))
+        return (
+          <section key={key}>
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider pb-1.5 border-b mb-1.5">
+              {formatMonthHeader(key)} <span className="ml-1 font-normal">({list.length})</span>
+            </h3>
+            <div className="divide-y border rounded-md overflow-hidden">
+              {list.map((r) => (
+                <RecurringRow key={r.id} item={r} onClick={() => onOpen(r)} />
+              ))}
+            </div>
+          </section>
+        )
+      })}
+    </div>
+  )
+}
+
+function RecurringRow({ item, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full grid grid-cols-12 gap-3 px-3 py-2 text-left hover:bg-muted/40 transition-colors"
+    >
+      <div className="col-span-1 font-mono text-xs text-muted-foreground tabular-nums whitespace-nowrap">
+        {item.period_date ?? '—'}
+      </div>
+      <div className="col-span-5 font-medium text-sm truncate">{item.title}</div>
+      <div className="col-span-2 text-xs text-muted-foreground truncate" title={item.workspace_slug}>
+        {item.workspace_name}
+      </div>
+      <div className="col-span-1 text-xs text-muted-foreground tabular-nums">
+        {item.item_count}건
+      </div>
+      <div className="col-span-2 text-xs text-muted-foreground truncate">
+        {item.owner_name ?? '—'}
+      </div>
+      <div className="col-span-1 text-xs text-muted-foreground tabular-nums whitespace-nowrap">
+        {item.updated_at?.slice(0, 10) ?? '—'}
+      </div>
+    </button>
+  )
+}
+
+function formatMonthHeader(key) {
+  if (key === '__nodate') return '(기준일 없음)'
+  const [y, m] = key.split('-')
+  return `${y}년 ${Number(m)}월`
+}
+
+/** 주제 종합 — period_date 가 없어서 시간축이 의미 없음. 단순
+ *  sortable 테이블로 제목·작성자·부서·수정일 인덱싱. */
+function ThemeList({ items, workspaceName, onOpen }) {
   const columns = [
     { key: 'title', header: '제목', sortable: true, cellClassName: 'font-medium' },
-    {
-      key: 'kind',
-      header: '타입',
-      sortable: true,
-      render: (r) => (
-        <Badge variant={KIND_VARIANT[r.kind]} className="text-[10px]">
-          {KIND_LABEL[r.kind] ?? r.kind}
-        </Badge>
-      ),
-    },
-    {
-      key: 'period_date',
-      header: '기준일',
-      sortable: true,
-      render: (r) => (
-        <span className="text-xs text-muted-foreground whitespace-nowrap font-mono">
-          {r.period_date ?? '—'}
-        </span>
-      ),
-    },
     {
       key: 'workspace_slug',
       header: '부서',
@@ -112,54 +270,23 @@ export default function CompositesListPage() {
       ),
     },
   ]
-
+  if (items.length === 0) {
+    return (
+      <Card>
+        <CardContent className="py-12 text-center text-sm text-muted-foreground">
+          주제 종합이 아직 없습니다.
+        </CardContent>
+      </Card>
+    )
+  }
   return (
-    <div className="p-6 space-y-4">
-      <PageHeader
-        title="종합보고"
-        description={
-          workspace
-            ? `${workspace.name} 및 하위 부서${workspace.virtual ? ' (횡단)' : ''} — ${list.length}건 · ${formatRangeLabel(period.range)}`
-            : ''
-        }
-        actions={
-          <div className="flex items-center gap-2 flex-wrap">
-            <PeriodFilterControls period={period} />
-            {!workspace?.virtual && (
-              <Button onClick={() => setNewOpen(true)}>
-                <Plus className="mr-2 h-4 w-4" />
-                새 종합보고
-              </Button>
-            )}
-          </div>
-        }
-      />
-
-      {error ? (
-        <ErrorState description={error.message} onRetry={reload} />
-      ) : loading ? (
-        <Skeleton className="h-96" />
-      ) : (
-        <DataTable
-          columns={columns}
-          data={list}
-          searchableKeys={['title', 'kind', 'workspace_slug', 'workspace_name', 'owner_name', 'owner_email']}
-          searchPlaceholder="제목, 타입, 부서, 작성자 검색"
-          onRowClick={(r) => navigate(`/w/${slug}/composites/${r.id}`)}
-        />
-      )}
-
-      <NewCompositeDialog
-        open={newOpen}
-        onOpenChange={setNewOpen}
-        currentWorkspaceSlug={slug}
-        workspaces={workspaces}
-        onCreated={(id) => {
-          setNewOpen(false)
-          toast.success('종합보고가 생성되었습니다.')
-          navigate(`/w/${slug}/composites/${id}`)
-        }}
-      />
-    </div>
+    <DataTable
+      columns={columns}
+      data={items}
+      pageSizeStorageKey="composites-theme"
+      searchableKeys={['title', 'workspace_slug', 'workspace_name', 'owner_name', 'owner_email']}
+      searchPlaceholder="제목, 부서, 작성자 검색"
+      onRowClick={onOpen}
+    />
   )
 }

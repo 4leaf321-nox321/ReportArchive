@@ -8,6 +8,8 @@ import {
   Home,
   Users,
   HardDrive,
+  MessageSquare,
+  Sparkles,
 } from 'lucide-react'
 import { WorkspaceSelector } from '@/shared/components/WorkspaceSelector'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
@@ -31,6 +33,8 @@ const WORKSPACE_MENU = [
  */
 const GLOBAL_MENU = [
   { to: '/templates', label: '템플릿 관리', icon: FileCode2 },
+  { to: '/voc', label: 'VOC', icon: MessageSquare },
+  { to: '/ai-settings', label: 'AI 설정', icon: Sparkles },
   {
     resolve: (slug) => `/w/${slug}/members`,
     label: '멤버',

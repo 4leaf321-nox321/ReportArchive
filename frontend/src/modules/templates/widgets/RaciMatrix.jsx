@@ -6,12 +6,14 @@ import { Label } from '@/shared/components/ui/label'
 import {
   CaptionInput,
   DEFAULT_BODY_FONT_PX,
+  DataTableActions,
   LabelField,
   PreviewLabel,
   TextStyleField,
   captionSkipProps,
   textStyleToClassName,
   textStyleToInlineStyle,
+  toTsv,
 } from './_shared'
 
 // --------------------------------------------------------------------------- //
@@ -781,6 +783,24 @@ export function RaciMatrixEditor({ props, content, onChange, readOnly }) {
         placeholder={props.label}
         {...captionSkipProps({ content, patch })}
       />
+      {roles.length > 0 && (
+        <div className="flex justify-end">
+          <DataTableActions
+            label="RACI 데이터"
+            onCopy={() => {
+              // Top-left blank, role labels across, then each task row
+              // prefixed by its task label with R/A/C/I cells.
+              const header = ['', ...roles.map((r) => r.label || r.key)]
+              const body = rows.map((row) => [
+                row.label ?? '',
+                ...roles.map((r) => row.assignments?.[r.key] ?? ''),
+              ])
+              return toTsv([header, ...body])
+            }}
+            onClear={() => patch({ rows: [] })}
+          />
+        </div>
+      )}
       {roles.length === 0 ? (
         <div className="rounded-md border border-dashed bg-muted/20 px-3 py-4 text-center text-xs text-muted-foreground">
           담당자(열)가 없습니다.
@@ -810,7 +830,7 @@ export function RaciMatrixEditor({ props, content, onChange, readOnly }) {
           />
         </div>
       )}
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <Button size="sm" variant="outline" onClick={addRow} disabled={roles.length === 0}>
           <Plus className="mr-1 h-3.5 w-3.5" />
           작업 추가

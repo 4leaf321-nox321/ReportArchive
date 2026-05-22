@@ -13,6 +13,11 @@ import {
   Move,
   Workflow,
   Bookmark,
+  ShieldCheck,
+  ShieldQuestion,
+  FileType2,
+  CheckCircle2,
+  Undo2,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
@@ -68,6 +73,14 @@ import {
   deleteSectionItem,
 } from '@/shared/api/sectionTaxonomy'
 import { invalidateSectionTaxonomyCache } from '@/shared/hooks/useSectionTaxonomy'
+import {
+  listAllReportTypes,
+  createReportType,
+  updateReportType,
+  promoteReportType,
+  demoteReportType,
+  deleteReportType,
+} from '@/shared/api/reportTypes'
 import { WorkspaceTreeDnD } from './WorkspaceTreeDnD'
 
 export default function AdminPage() {
@@ -116,6 +129,10 @@ export default function AdminPage() {
             <Bookmark className="mr-1 h-3 w-3" />
             단락 구분
           </TabsTrigger>
+          <TabsTrigger value="report-types">
+            <FileType2 className="mr-1 h-3 w-3" />
+            보고서 종류
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="workspaces">
@@ -129,6 +146,9 @@ export default function AdminPage() {
         </TabsContent>
         <TabsContent value="sections">
           <SectionsSection />
+        </TabsContent>
+        <TabsContent value="report-types">
+          <ReportTypesSection />
         </TabsContent>
       </Tabs>
     </div>
@@ -2280,6 +2300,320 @@ function SectionItemDialog({
             </Button>
             <Button type="submit" disabled={submitting}>
               {submitting ? '추가 중...' : '추가'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// =========================================================================
+// 보고서 종류
+// =========================================================================
+function ReportTypesSection() {
+  const { data, loading, error, reload } = useAsync(
+    () => listAllReportTypes({ limit: 500 }),
+    []
+  )
+  const [q, setQ] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [editing, setEditing] = useState(null)
+  const [confirmDelete, setConfirmDelete] = useState(null)
+
+  const items = data?.items ?? []
+  // Client-side substring filter on top of the server list. Server-side
+  // search is also supported (q param), but the admin tab usually
+  // shows ≤ a few hundred entries, so an instant local filter beats
+  // round-tripping per keystroke.
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    if (!needle) return items
+    return items.filter(
+      (it) =>
+        it.name.toLowerCase().includes(needle) ||
+        (it.description ?? '').toLowerCase().includes(needle),
+    )
+  }, [items, q])
+  const unofficialCount = items.filter((it) => it.status === 'unofficial').length
+
+  async function handlePromote(it) {
+    try {
+      await promoteReportType(it.id)
+      toast.success(`'${it.name}' 을(를) 공식으로 승격했습니다.`)
+      reload()
+    } catch (err) {
+      toast.error(err.message || '승격 실패')
+    }
+  }
+
+  async function handleDemote(it) {
+    try {
+      await demoteReportType(it.id)
+      toast.success(`'${it.name}' 을(를) 비공식으로 되돌렸습니다.`)
+      reload()
+    } catch (err) {
+      toast.error(err.message || '되돌리기 실패')
+    }
+  }
+
+  async function handleDelete(it) {
+    try {
+      const res = await deleteReportType(it.id)
+      const orphan = res?.orphan_report_count ?? 0
+      toast.success(
+        orphan > 0
+          ? `'${it.name}' 삭제. ${orphan}건의 보고서에서 연결이 해제되었습니다.`
+          : `'${it.name}' 삭제 완료.`,
+      )
+      reload()
+    } catch (err) {
+      toast.error(err.message || '삭제 실패')
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <FileType2 className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">보고서 종류</CardTitle>
+            {unofficialCount > 0 && (
+              <Badge variant="outline" className="ml-1 gap-1 text-[10px]">
+                <ShieldQuestion className="h-3 w-3" />
+                비공식 {unofficialCount}건
+              </Badge>
+            )}
+          </div>
+          <Button size="sm" onClick={() => setCreating(true)}>
+            <Plus className="mr-1 h-3 w-3" />
+            추가
+          </Button>
+        </div>
+        <CardDescription>
+          보고서의 <strong>용도</strong>를 분류하는 라벨 (예: 주간 보고, 안전 점검).
+          템플릿(보고서의 모양)과는 별개로 관리되며, 시스템 전체에서 공유됩니다.
+          일반 사용자가 보고서 설정에서 새 종류를 입력하면 <strong>비공식</strong>
+          상태로 여기에 추가되고, 관리자가 <CheckCircle2 className="inline h-3 w-3" />
+          버튼으로 <strong>공식</strong>으로 승격하면 모든 사용자에게 노출됩니다.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="mb-3">
+          <Input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="이름 / 설명 검색..."
+            className="h-9"
+          />
+        </div>
+        {loading ? (
+          <Skeleton className="h-40" />
+        ) : error ? (
+          <ErrorState description={error.message} onRetry={reload} />
+        ) : filtered.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-4">
+            {q.trim() ? '검색 결과가 없습니다.' : '등록된 종류가 없습니다.'}
+          </p>
+        ) : (
+          <ul className="divide-y">
+            {filtered.map((it) => (
+              <ReportTypeRow
+                key={it.id}
+                row={it}
+                onEdit={() => setEditing(it)}
+                onPromote={() => handlePromote(it)}
+                onDemote={() => handleDemote(it)}
+                onDelete={() => setConfirmDelete(it)}
+              />
+            ))}
+          </ul>
+        )}
+      </CardContent>
+
+      <ReportTypeFormDialog
+        open={creating || Boolean(editing)}
+        row={editing}
+        onOpenChange={(o) => {
+          if (!o) {
+            setCreating(false)
+            setEditing(null)
+          }
+        }}
+        onSaved={() => {
+          setCreating(false)
+          setEditing(null)
+          reload()
+        }}
+      />
+
+      <ConfirmDialog
+        open={Boolean(confirmDelete)}
+        onOpenChange={() => setConfirmDelete(null)}
+        title="보고서 종류 삭제"
+        description={
+          confirmDelete
+            ? `'${confirmDelete.name}' 종류를 삭제하시겠습니까? 이 종류를 사용하던 보고서들은 종류 없음 상태가 됩니다 (보고서 자체는 삭제되지 않습니다).`
+            : ''
+        }
+        confirmLabel="삭제"
+        variant="destructive"
+        onConfirm={() => confirmDelete && handleDelete(confirmDelete)}
+      />
+    </Card>
+  )
+}
+
+function ReportTypeRow({ row, onEdit, onPromote, onDemote, onDelete }) {
+  const isOfficial = row.status === 'official'
+  return (
+    <li className="flex items-center gap-3 py-3">
+      <Badge
+        variant={isOfficial ? 'secondary' : 'outline'}
+        className="gap-1 shrink-0"
+        title={isOfficial ? '공식 — 모든 사용자에게 노출' : '비공식 — 작성자와 관리자만 볼 수 있음'}
+      >
+        {isOfficial ? <ShieldCheck className="h-3 w-3" /> : <ShieldQuestion className="h-3 w-3" />}
+        {isOfficial ? '공식' : '비공식'}
+      </Badge>
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium">{row.name}</div>
+        {row.description && (
+          <p className="truncate text-xs text-muted-foreground mt-0.5">
+            {row.description}
+          </p>
+        )}
+        <p className="mt-0.5 text-[10px] text-muted-foreground">
+          {row.created_by ? `등록: ${row.created_by.name}` : '등록자 미상'}
+          {row.approved_by && ` · 승인: ${row.approved_by.name}`}
+        </p>
+      </div>
+      {!isOfficial ? (
+        <Button
+          size="icon"
+          variant="ghost"
+          className="h-8 w-8 text-emerald-600"
+          onClick={onPromote}
+          title="공식으로 승격"
+        >
+          <CheckCircle2 className="h-3.5 w-3.5" />
+        </Button>
+      ) : (
+        <Button
+          size="icon"
+          variant="ghost"
+          className="h-8 w-8 text-muted-foreground"
+          onClick={onDemote}
+          title="비공식으로 되돌리기"
+        >
+          <Undo2 className="h-3.5 w-3.5" />
+        </Button>
+      )}
+      <Button size="icon" variant="ghost" className="h-8 w-8" onClick={onEdit} title="수정">
+        <Pencil className="h-3.5 w-3.5" />
+      </Button>
+      <Button
+        size="icon"
+        variant="ghost"
+        className="h-8 w-8 text-destructive"
+        onClick={onDelete}
+        title="삭제"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </Button>
+    </li>
+  )
+}
+
+/**
+ * Unified create/edit dialog — when `row` is null we POST a new entry
+ * (defaults to `official` since the admin tab is the canonical "I
+ * approve this" surface); when `row` is set we PATCH name/description.
+ * Status flips have their own buttons on the row (promote/demote) —
+ * not exposed here.
+ */
+function ReportTypeFormDialog({ open, row, onOpenChange, onSaved }) {
+  const isEdit = Boolean(row)
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [errorMsg, setErrorMsg] = useState(null)
+
+  useEffect(() => {
+    if (open) {
+      setName(row?.name ?? '')
+      setDescription(row?.description ?? '')
+      setErrorMsg(null)
+    }
+  }, [open, row])
+
+  async function onSubmit(e) {
+    e.preventDefault()
+    setErrorMsg(null)
+    setSubmitting(true)
+    try {
+      if (isEdit) {
+        await updateReportType(row.id, { name, description })
+        toast.success('수정되었습니다.')
+      } else {
+        await createReportType({ name, description, status: 'official' })
+        toast.success('공식 종류로 추가되었습니다.')
+      }
+      onSaved()
+    } catch (err) {
+      setErrorMsg(err?.response?.data?.detail ?? err.message ?? '저장 실패')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{isEdit ? '보고서 종류 수정' : '새 보고서 종류'}</DialogTitle>
+          <DialogDescription>
+            {isEdit
+              ? '이름과 설명을 변경할 수 있습니다. 상태(공식/비공식)는 목록의 승격/되돌리기 버튼으로 바꾸세요.'
+              : '관리자가 직접 추가하는 종류는 곧바로 공식으로 등록됩니다.'}
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="rt-name">이름</Label>
+            <Input
+              id="rt-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              maxLength={128}
+              placeholder="예: 주간 보고"
+              required
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="rt-desc">설명</Label>
+            <textarea
+              id="rt-desc"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              maxLength={2000}
+              rows={4}
+              className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              placeholder="이 종류를 언제 사용하는지 짧게 설명해주세요."
+            />
+          </div>
+          {errorMsg && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {errorMsg}
+            </div>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              취소
+            </Button>
+            <Button type="submit" disabled={submitting || !name.trim()}>
+              {submitting ? (isEdit ? '저장 중...' : '추가 중...') : isEdit ? '저장' : '추가'}
             </Button>
           </DialogFooter>
         </form>

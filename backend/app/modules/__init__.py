@@ -13,6 +13,8 @@ from app.modules.auth.routes import router as auth_router
 from app.modules.composites.routes import router as composites_router
 from app.modules.files.routes import router as files_router
 from app.modules.members.routes import router as members_router
+from app.modules.prompts.routes import router as prompts_router
+from app.modules.report_types.routes import router as report_types_router
 from app.modules.reports.routes import router as reports_router
 from app.modules.section_taxonomy.routes import router as section_taxonomy_router
 from app.modules.template_categories.routes import router as template_categories_router
@@ -20,6 +22,7 @@ from app.modules.templates.routes import router as templates_router
 from app.modules.users.routes import router as users_router
 from app.modules.widget_relations.routes import router as widget_relations_router
 from app.modules.widgets.routes import router as widgets_router
+from app.modules.voc.routes import router as voc_router
 from app.modules.workspaces.routes import router as workspaces_router
 
 
@@ -41,6 +44,12 @@ def register_routers(app: FastAPI) -> None:
         tags=["widget-relations"],
     )
     app.include_router(reports_router, prefix="/api/reports", tags=["reports"])
+    app.include_router(
+        report_types_router,
+        prefix="/api/report-types",
+        tags=["report-types"],
+    )
+    app.include_router(prompts_router, prefix="/api/prompts", tags=["prompts"])
     app.include_router(composites_router, prefix="/api/composites", tags=["composites"])
     app.include_router(files_router, prefix="/api/files", tags=["files"])
     app.include_router(
@@ -49,3 +58,4 @@ def register_routers(app: FastAPI) -> None:
         tags=["section-taxonomy"],
     )
     app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
+    app.include_router(voc_router, prefix="/api/voc", tags=["voc"])

@@ -55,6 +55,11 @@ def save_upload(
     owner_user_id: int | None,
     workspace_slug: str,
 ) -> File:
+    """Convenience entry point used by callers that already have the
+    entire payload buffered in memory (small files, programmatic
+    uploads). Routes use `reserve_storage_path` + `register_upload`
+    for chunk-streamed uploads to avoid loading the whole file into
+    RAM."""
     file_id = str(uuid.uuid4())
     ext = _ext_for(filename, mime_type)
     yyyymm = datetime.utcnow().strftime("%Y%m")
@@ -70,6 +75,50 @@ def save_upload(
         mime_type=mime_type,
         size=len(contents),
         storage_path=str(rel_path).replace(os.sep, "/"),
+        owner_user_id=owner_user_id,
+        workspace_slug=workspace_slug,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+def reserve_storage_path(filename: str, mime_type: str) -> tuple[str, Path, Path]:
+    """Allocate a final on-disk path for a streaming upload before the
+    bytes arrive. Returns `(file_id, relative_path, absolute_path)` —
+    the route writes chunks straight into `absolute_path`, then calls
+    `register_upload` with the final byte count to commit the metadata
+    row. Used by the upload route so 1GB videos don't have to be
+    buffered in memory first."""
+    file_id = str(uuid.uuid4())
+    ext = _ext_for(filename, mime_type)
+    yyyymm = datetime.utcnow().strftime("%Y%m")
+    rel_path = Path(yyyymm) / f"{file_id}{ext}"
+    abs_path = _disk_path(str(rel_path))
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    return file_id, rel_path, abs_path
+
+
+def register_upload(
+    db: Session,
+    *,
+    file_id: str,
+    filename: str,
+    mime_type: str,
+    size: int,
+    storage_path: str,
+    owner_user_id: int | None,
+    workspace_slug: str,
+) -> File:
+    """Insert the metadata row for a file already written to disk by
+    `reserve_storage_path` + chunk-streamed write."""
+    record = File(
+        id=file_id,
+        filename=filename,
+        mime_type=mime_type,
+        size=size,
+        storage_path=storage_path,
         owner_user_id=owner_user_id,
         workspace_slug=workspace_slug,
     )

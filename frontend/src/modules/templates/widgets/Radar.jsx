@@ -36,9 +36,11 @@ import { Input } from '@/shared/components/ui/input'
 import {
   AxisRangeInput,
   CaptionInput,
+  DataTableActions,
   LabelField,
   PreviewLabel,
   captionSkipProps,
+  toTsv,
 } from './_shared'
 
 const SERIES_COLORS = [
@@ -428,7 +430,7 @@ export function RadarEditor({ props, content, onChange, readOnly, autoFit }) {
 
         {/* Data table */}
         <div className="min-h-0 overflow-y-auto pr-1">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-1">
             <span className="text-xs font-semibold text-muted-foreground">데이터 (행 = 축 / 열 = 시리즈)</span>
             <div className="flex items-center gap-1">
               <Button variant="outline" size="sm" className="h-6 text-xs" onClick={addAxis}>
@@ -437,6 +439,25 @@ export function RadarEditor({ props, content, onChange, readOnly, autoFit }) {
               <Button variant="outline" size="sm" className="h-6 text-xs" onClick={addSeries}>
                 <Plus className="h-3 w-3 mr-1" /> 시리즈 추가
               </Button>
+              <DataTableActions
+                label="레이더 데이터"
+                onCopy={() => {
+                  // Top-left blank, series labels across, then each row
+                  // prefixed by axis label.
+                  const header = ['', ...series.map((s) => s.label ?? '')]
+                  const body = values.map((row, i) => [
+                    axisLabels[i] ?? '',
+                    ...row,
+                  ])
+                  return toTsv([header, ...body])
+                }}
+                onClear={() => {
+                  // Keep axes + series intact; null out the value matrix
+                  // so the user can refill without rebuilding the grid.
+                  const emptyValues = values.map((row) => row.map(() => null))
+                  patch({ values: emptyValues })
+                }}
+              />
             </div>
           </div>
           <div className="overflow-auto max-h-[28rem]">

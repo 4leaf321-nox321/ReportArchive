@@ -39,12 +39,26 @@ _CAD_EXTENSIONS: frozenset[str] = frozenset({
     ".step", ".stp", ".iges", ".igs",
 })
 
+# Video extensions get their own (much higher) cap — short demo clips
+# and screen captures routinely run into hundreds of MB / low GB.
+_VIDEO_EXTENSIONS: frozenset[str] = frozenset({
+    ".mp4", ".m4v", ".webm", ".mov", ".ogg", ".ogv", ".mkv", ".avi",
+})
+
 
 def _upload_limit_for(filename: str) -> int:
     ext = Path(filename or "").suffix.lower()
     if ext in _CAD_EXTENSIONS:
         return settings.upload_max_bytes_cad
+    if ext in _VIDEO_EXTENSIONS:
+        return settings.upload_max_bytes_video
     return settings.upload_max_bytes
+
+
+# Chunk size for streaming uploads. 8 MB is large enough that we're
+# not making a syscall per 64 KB but small enough that the in-flight
+# buffer stays modest even with many concurrent uploads.
+_UPLOAD_CHUNK = 8 * 1024 * 1024
 
 router = APIRouter()
 
@@ -55,25 +69,62 @@ async def upload_file(
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
-    contents = await file.read()
-    limit = _upload_limit_for(file.filename or "")
-    if len(contents) > limit:
-        raise HTTPException(
-            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            f"파일이 너무 큽니다. 최대 {limit // (1024 * 1024)} MB.",
-        )
-    if len(contents) == 0:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "빈 파일은 업로드할 수 없습니다.")
-    # 413 (too big for our policy) is separate from 507 (no room on disk).
-    # Both can hit on a busy server — guarding here lets the client show
-    # a clear error before we waste an fsync.
-    assert_space_for(len(contents))
+    """Chunk-streamed upload — never buffers more than `_UPLOAD_CHUNK`
+    of the payload in memory. The route reserves the final on-disk path
+    up front, streams chunks straight into it, and only registers the
+    metadata row after the full transfer succeeds. If the running total
+    exceeds the per-extension cap we delete the partial file and 413
+    before any DB write.
+    """
+    import os as _os  # local alias for the file-cleanup branch
+    filename = file.filename or "unnamed"
+    mime_type = file.content_type or "application/octet-stream"
+    limit = _upload_limit_for(filename)
 
-    record = services.save_upload(
+    # Allocate the final path first so a write failure mid-stream still
+    # has a known location to clean up.
+    file_id, rel_path, abs_path = services.reserve_storage_path(filename, mime_type)
+
+    total = 0
+    try:
+        with abs_path.open("wb") as buf:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > limit:
+                    # Stop draining, drop the partial file, surface 413.
+                    raise HTTPException(
+                        status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        f"파일이 너무 큽니다. 최대 {limit // (1024 * 1024)} MB.",
+                    )
+                buf.write(chunk)
+        if total == 0:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "빈 파일은 업로드할 수 없습니다."
+            )
+        # 413 (too big for our policy) is separate from 507 (no room on
+        # disk). Both can hit on a busy server — guarding here lets the
+        # client show a clear error.
+        assert_space_for(total)
+    except BaseException:
+        # Streaming failure or limit hit — best-effort cleanup so we
+        # don't litter the upload dir with orphaned partials.
+        try:
+            if abs_path.exists():
+                abs_path.unlink()
+        except _os.error:
+            pass
+        raise
+
+    record = services.register_upload(
         db,
-        filename=file.filename or "unnamed",
-        mime_type=file.content_type or "application/octet-stream",
-        contents=contents,
+        file_id=file_id,
+        filename=filename,
+        mime_type=mime_type,
+        size=total,
+        storage_path=str(rel_path).replace(_os.sep, "/"),
         owner_user_id=actor.user.id,
         workspace_slug=actor.workspace.slug,
     )

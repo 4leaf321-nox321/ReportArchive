@@ -7,6 +7,7 @@ from typing import Annotated, Any, Optional
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
 from sqlalchemy import inspect as sa_inspect
 
+from app.modules.report_types.models import ReportTypeStatus
 from app.modules.reports.models import ReportStatus
 
 
@@ -43,6 +44,18 @@ def _flatten_user_refs(obj: Any) -> Any:
     # GET /reports/{id} consumer can render "현재 OO 편집 중" without a
     # second roundtrip. We deliberately walk the eager-loaded relationship
     # here and let LockInfo's model_validator drop expired rows.
+    # Flatten the joined report_type so list/detail consumers can render
+    # the "종류" cell + settings preview without a second roundtrip. We
+    # only emit the small "ref" shape (id/name/status/description) here;
+    # the full row is fetchable via /api/report-types if needed.
+    report_type = getattr(obj, "report_type", None)
+    if report_type is not None:
+        extras["report_type"] = {
+            "id": report_type.id,
+            "name": report_type.name,
+            "description": report_type.description,
+            "status": report_type.status,
+        }
     lock = getattr(obj, "edit_lock", None)
     if lock is not None:
         lock_user = getattr(lock, "user", None)
@@ -69,6 +82,18 @@ def _flatten_user_refs(obj: Any) -> Any:
     }
     base.update(extras)
     return base
+
+
+class ReportTypeRef(BaseModel):
+    """Slim, embedded form of a report type — what we flatten into report
+    list/detail responses so the frontend doesn't need a second lookup.
+    Status is included so the picker / list-cell can show the "비공식"
+    badge inline."""
+
+    id: int
+    name: str
+    description: str = ""
+    status: ReportTypeStatus
 
 
 class LockInfo(BaseModel):
@@ -166,6 +191,11 @@ class ReportRead(BaseModel):
     # narrow default (~1024px). Set via the report's empty-area right-click
     # menu; capped client-side at 3000.
     page_width_px: Optional[int] = Field(default=None, ge=320, le=3000)
+    # Optional report-type tag. `report_type_id` is the raw FK; the
+    # embedded `report_type` carries name/description/status so the
+    # frontend doesn't need a separate /api/report-types/<id> call.
+    report_type_id: Optional[int] = None
+    report_type: Optional[ReportTypeRef] = None
     created_at: UtcDatetime
     updated_at: UtcDatetime
     # Optimistic-concurrency token. Clients echo this back in PATCH bodies
@@ -218,6 +248,10 @@ class ReportSummary(BaseModel):
     # `pages` column and discards the heavy fields (content, layouts)
     # via ReportPagePreview's extra="ignore".
     pages: list[ReportPagePreview] = []
+    # Mirrors ReportRead — kept on the summary so the list page can
+    # render the "종류" cell + filter by it without a heavier fetch.
+    report_type_id: Optional[int] = None
+    report_type: Optional[ReportTypeRef] = None
     created_at: UtcDatetime
     updated_at: UtcDatetime
 
@@ -247,6 +281,9 @@ class ReportCreate(BaseModel):
     pages: Optional[list[ReportPage]] = None
     # Per-report content max-width in pixels. None → frontend default.
     page_width_px: Optional[int] = Field(default=None, ge=320, le=3000)
+    # Optional FK to a report_types row. Created via the picker dialog;
+    # may be null (no tag).
+    report_type_id: Optional[int] = None
 
 
 class ReportUpdate(BaseModel):
@@ -264,6 +301,10 @@ class ReportUpdate(BaseModel):
     # Per-report content max-width in pixels. None resets to the frontend
     # default; an integer (320–3000) sets the cap.
     page_width_px: Optional[int] = Field(default=None, ge=320, le=3000)
+    # Optional report-type FK. The field is consulted via model_dump's
+    # `exclude_unset` so an explicit `null` clears the tag while an
+    # absent key leaves the existing value alone.
+    report_type_id: Optional[int] = None
     # Optimistic-concurrency token: the revision the client thinks is
     # current. The service compares against the server's value and rejects
     # the PATCH with revision_mismatch if they differ. Optional so the

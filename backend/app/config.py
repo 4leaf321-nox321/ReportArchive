@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     # cap instead. Phase-1 default of 200 MB matches the realistic
     # ceiling for a mid-size assembly export.
     upload_max_bytes_cad: int = Field(default=200 * 1024 * 1024)
+    # Video uploads (mp4 / webm / mov / ...). Bigger than CAD because
+    # demo clips + screen captures routinely run into hundreds of MB.
+    # Default 1 GB. With streaming writes (routes.upload_file) the
+    # server-side memory cost stays bounded regardless of file size —
+    # the reverse-proxy `client_max_body_size` is the other knob that
+    # needs to match (see 그래프정보.md / deployment docs).
+    upload_max_bytes_video: int = Field(default=1024 * 1024 * 1024)
 
     @property
     def is_development(self) -> bool:

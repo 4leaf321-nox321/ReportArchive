@@ -100,8 +100,11 @@ def validate_template_schema(schema_doc: dict) -> None:
     blocks = schema_doc.get("blocks")
     if not isinstance(blocks, list):
         raise ValueError("Template schema 'blocks' must be a list.")
-    if len(blocks) == 0:
-        raise ValueError("Template must have at least one block.")
+    # An empty blocks list is legal — used by "빈 템플릿" patterns where
+    # the report's whole content arrives later via JSON paste / AI import
+    # (the report's own `extra_blocks` carry every widget). The frontend
+    # already renders empty templates correctly (TemplateEditorPage.jsx
+    # handles `blocks.length === 0`), so no other layer cares.
 
     seen_ids: set[str] = set()
     for idx, block in enumerate(blocks):

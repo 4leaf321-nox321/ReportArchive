@@ -93,7 +93,8 @@ export function ItemPickerDialog({
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList>
             <TabsTrigger value="reports">보고서</TabsTrigger>
-            <TabsTrigger value="composites">종합보고</TabsTrigger>
+            <TabsTrigger value="composites_recurring">정기 종합</TabsTrigger>
+            <TabsTrigger value="composites_theme">주제 종합</TabsTrigger>
           </TabsList>
           <TabsContent value="reports" className="mt-3">
             <ReportPickerList
@@ -103,13 +104,28 @@ export function ItemPickerDialog({
               onToggle={toggle}
             />
           </TabsContent>
-          <TabsContent value="composites" className="mt-3">
+          <TabsContent value="composites_recurring" className="mt-3">
+            {/* 정기: period_date 기반 날짜 필터 활성. */}
             <CompositePickerList
-              open={open && tab === 'composites'}
+              open={open && tab === 'composites_recurring'}
               excludeId={excludeCompositeId}
               selected={selected}
               existingKeys={existingKeys}
               onToggle={toggle}
+              kindFilter="recurring"
+            />
+          </TabsContent>
+          <TabsContent value="composites_theme" className="mt-3">
+            {/* 주제: period_date 가 NULL 이라 날짜 필터 자체를 숨김.
+                예전엔 한 탭에 합쳐져서 날짜 필터만 켜면 주제가 통째로
+                사라지는 버그가 있었다. */}
+            <CompositePickerList
+              open={open && tab === 'composites_theme'}
+              excludeId={excludeCompositeId}
+              selected={selected}
+              existingKeys={existingKeys}
+              onToggle={toggle}
+              kindFilter="theme"
             />
           </TabsContent>
         </Tabs>
@@ -180,7 +196,14 @@ function ReportPickerList({ open, selected, existingKeys, onToggle }) {
   )
 }
 
-function CompositePickerList({ open, excludeId, selected, existingKeys, onToggle }) {
+function CompositePickerList({
+  open,
+  excludeId,
+  selected,
+  existingKeys,
+  onToggle,
+  kindFilter, // 'recurring' | 'theme' | undefined (= 모두)
+}) {
   const { all: workspaces } = useWorkspace()
   const { data, loading, error } = useAsync(
     () => (open ? listComposites() : Promise.resolve([])),
@@ -194,12 +217,15 @@ function CompositePickerList({ open, excludeId, selected, existingKeys, onToggle
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
 
+  // Theme composites have no period_date — showing the date filter
+  // for them invites confusion (any date → empty list). Hide it.
+  const showDateFilter = kindFilter !== 'theme'
+
   // Drop the composite itself so the picker can't self-reference.
-  // Date filter targets period_date — theme composites (no period_date)
-  // fall out of the result when a date range is active, by design.
   const filtered = (data ?? [])
     .filter((c) => c.id !== excludeId)
-    .filter((c) => inDateRange(c.period_date, dateFrom, dateTo))
+    .filter((c) => (kindFilter ? c.kind === kindFilter : true))
+    .filter((c) => (showDateFilter ? inDateRange(c.period_date, dateFrom, dateTo) : true))
     .filter((c) => {
       if (!query.trim()) return true
       const q = query.toLowerCase()
@@ -221,6 +247,7 @@ function CompositePickerList({ open, excludeId, selected, existingKeys, onToggle
       dateTo={dateTo}
       setDateTo={setDateTo}
       dateLabel="기준일"
+      showDateFilter={showDateFilter}
       keyOf={(c) => `c:${c.id}`}
       isExisting={(c) => existingKeys.has(`c:${c.id}`)}
       isSelected={(c) => selected.has(`c:${c.id}`)}
@@ -249,6 +276,7 @@ function PickerBody({
   dateTo,
   setDateTo,
   dateLabel,
+  showDateFilter = true,
   keyOf,
   isExisting,
   isSelected,
@@ -268,33 +296,35 @@ function PickerBody({
           className="pl-8"
         />
       </div>
-      <div className="flex items-center gap-2 flex-wrap text-xs">
-        <span className="text-muted-foreground shrink-0">{dateLabel ?? '날짜'}:</span>
-        <Input
-          type="date"
-          value={dateFrom}
-          onChange={(e) => setDateFrom(e.target.value)}
-          className="h-8 w-[150px] text-xs font-mono"
-          aria-label="시작일"
-        />
-        <span className="text-muted-foreground">~</span>
-        <Input
-          type="date"
-          value={dateTo}
-          onChange={(e) => setDateTo(e.target.value)}
-          className="h-8 w-[150px] text-xs font-mono"
-          aria-label="종료일"
-        />
-        {dateFilterActive && (
-          <button
-            type="button"
-            onClick={() => { setDateFrom(''); setDateTo('') }}
-            className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
-          >
-            지우기
-          </button>
-        )}
-      </div>
+      {showDateFilter && (
+        <div className="flex items-center gap-2 flex-wrap text-xs">
+          <span className="text-muted-foreground shrink-0">{dateLabel ?? '날짜'}:</span>
+          <Input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => setDateFrom(e.target.value)}
+            className="h-8 w-[150px] text-xs font-mono"
+            aria-label="시작일"
+          />
+          <span className="text-muted-foreground">~</span>
+          <Input
+            type="date"
+            value={dateTo}
+            onChange={(e) => setDateTo(e.target.value)}
+            className="h-8 w-[150px] text-xs font-mono"
+            aria-label="종료일"
+          />
+          {dateFilterActive && (
+            <button
+              type="button"
+              onClick={() => { setDateFrom(''); setDateTo('') }}
+              className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+            >
+              지우기
+            </button>
+          )}
+        </div>
+      )}
       <div className="border rounded-md max-h-[360px] overflow-y-auto divide-y">
         {items.length === 0 ? (
           <div className="p-6 text-center text-sm text-muted-foreground">

@@ -65,7 +65,11 @@ import {
   DEFAULT_REPORT_WIDTH_PX,
   ReportSettingsDialog,
 } from './ReportSettingsDialog'
-import { getTemplateVersion, createTemplate } from '@/shared/api/templates'
+import {
+  getTemplateVersion,
+  createTemplate,
+  getLatestTemplate,
+} from '@/shared/api/templates'
 import { listTemplateCategories } from '@/shared/api/templateCategories'
 import { STATUSES, STATUS_LABEL, STATUS_VARIANT } from './constants'
 import { getRenderer } from '@/modules/templates/widgets'
@@ -73,9 +77,11 @@ import { WidgetPicker } from '@/modules/templates/WidgetPicker'
 import { DepthStyleField, TextStyleField } from '@/modules/templates/widgets/_shared'
 import { TemplatePicker } from './TemplatePicker'
 import { SectionPickerDialog } from './SectionPickerDialog'
+import { PromptPickerDialog } from './PromptPickerDialog'
 import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
 import { cn } from '@/shared/lib/utils'
 import { toast } from 'sonner'
+import { renderPrompt, buildPromptContext } from '@/shared/ai/promptRenderer'
 
 /**
  * Two entry modes:
@@ -120,8 +126,11 @@ export default function ReportDetailPage() {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [copyOpen, setCopyOpen] = useState(false)
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
-  const [aiPromptOpen, setAiPromptOpen] = useState(false)
-  const [aiPromptV2Open, setAiPromptV2Open] = useState(false)
+  // AI prompt — picker + active selection. PromptPickerDialog is the
+  // grid of available prompts; once the user picks one we stash the row
+  // in `aiPromptActive` and the existing AiPromptDialog renders it.
+  const [aiPromptPickerOpen, setAiPromptPickerOpen] = useState(false)
+  const [aiPromptActive, setAiPromptActive] = useState(null)
   // Takeover prompt — holds the LockConflictError.holder payload when
   // the user tried to acquire a lock that someone else holds. Driving
   // the dialog open state by the holder object (vs a separate bool) lets
@@ -218,6 +227,8 @@ export default function ReportDetailPage() {
         status: 'draft',
         tags: [],
         page_width_px: seededWidth,
+        report_type_id: null,
+        report_type: null,
         pages: [
           {
             template_id: seedTemplate.template_id,
@@ -262,6 +273,11 @@ export default function ReportDetailPage() {
         // default at render; the right-click "보고서 폭 설정" dialog
         // writes here when the user picks a custom value.
         page_width_px: existingReport.page_width_px ?? null,
+        // 보고서 종류 — picker writes the FK + embedded ref so the
+        // settings dialog (and the list view, once we rerender it)
+        // can show the name/status without a second roundtrip.
+        report_type_id: existingReport.report_type_id ?? null,
+        report_type: existingReport.report_type ?? null,
         pages,
       })
       setCurrentPage((p) => clamp(p, 0, pages.length - 1))
@@ -273,6 +289,43 @@ export default function ReportDetailPage() {
   // switching pages is instant and the 'all' view can render every page
   // without waterfalling.
   const pageTemplateMap = usePageTemplates(draft?.pages, slug)
+
+  // Map of template_id → latest published version number. Populated
+  // lazily as the user navigates pages. Used by the AI-prompt context
+  // so the {{template_version}} placeholder always reflects the most
+  // recent baseline schema, regardless of which version the report was
+  // originally bound to — that way an AI response generated against a
+  // since-promoted v2 doesn't get pasted in as a stale v1 reference.
+  const [latestVersionByTemplate, setLatestVersionByTemplate] = useState({})
+  // Set of template_ids we've already kicked off a fetch for, so React's
+  // strict-mode double-invocation doesn't fire two requests for the same
+  // template_id. Lives in a ref because mutating it doesn't need to
+  // trigger renders.
+  const latestVersionFetchStartedRef = useRef(new Set())
+  const currentTemplateIdForLatest =
+    draft?.pages?.[currentPage]?.template_id ?? null
+  useEffect(() => {
+    const tid = currentTemplateIdForLatest
+    if (!tid) return
+    if (latestVersionFetchStartedRef.current.has(tid)) return
+    latestVersionFetchStartedRef.current.add(tid)
+    let cancelled = false
+    getLatestTemplate(tid)
+      .then((t) => {
+        if (cancelled || !t?.version) return
+        setLatestVersionByTemplate((m) =>
+          m[tid] === t.version ? m : { ...m, [tid]: t.version },
+        )
+      })
+      .catch(() => {
+        // Silent — falling back to the page's stored version is the
+        // existing behavior, so the worst case is "no improvement"
+        // rather than a broken prompt.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [currentTemplateIdForLatest])
 
   // Active block tracking — composite key so the same block id across two
   // pages doesn't collide. `null` = nothing focused.
@@ -324,6 +377,38 @@ export default function ReportDetailPage() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [viewMode, pageCountForKeys])
+
+  // Context that the AiPromptDialog passes into renderPrompt() — packs
+  // what the dynamic chunks ({{template_id}} / {{section_taxonomy}} / etc.)
+  // resolve to. Declared *above* the loading/error/!draft early returns
+  // so the hook order stays stable across the "still loading" → "ready"
+  // transition. Inputs that don't exist yet are tolerated via optional
+  // chaining — buildPromptContext fills sensible fallbacks.
+  const aiPromptContext = useMemo(() => {
+    const page = draft?.pages?.[currentPage] ?? draft?.pages?.[0]
+    const tpl = getCachedTemplate(pageTemplateMap, page)
+    // Prefer the latest published version of this template over the
+    // version the report is currently bound to — see comment on
+    // `latestVersionByTemplate` above. Falls back to the page's stored
+    // version while the latest-fetch is still in flight or on error.
+    const latestForPage =
+      (page?.template_id && latestVersionByTemplate[page.template_id]) ??
+      page?.template_version
+    return buildPromptContext({
+      widgetCatalog,
+      sectionCategories,
+      templateBlocks: tpl?.schema?.blocks,
+      templateId: page?.template_id,
+      templateVersion: latestForPage,
+    })
+  }, [
+    widgetCatalog,
+    sectionCategories,
+    pageTemplateMap,
+    draft,
+    currentPage,
+    latestVersionByTemplate,
+  ])
 
   if (loading) {
     return (
@@ -752,9 +837,11 @@ export default function ReportDetailPage() {
   }
 
   // RGL layout-change handler scoped to one page. Diffs against that page's
-  // template defaults to keep `layout_overrides` lean. `auto_fit` defaults to
-  // true; we only persist it when the user has explicitly disabled it (so the
-  // diff still strips overrides that match the template + default flag).
+  // template defaults to keep `layout_overrides` lean. `auto_fit`'s default
+  // depends on the widget type — graph widgets default to OFF, everything
+  // else defaults to ON — so we preserve the explicit value (when set)
+  // verbatim and only drop the override when the explicit value coincides
+  // with the type's default.
   //
   // Critically, for auto_fit blocks the persisted `row_span` is computed
   // from the *content* (read-only render) height — not the rgl cell `h`,
@@ -800,8 +887,20 @@ export default function ReportDetailPage() {
     for (const it of rglLayout) {
       const block = blocks.find((b) => b.id === it.i)
       if (!block) continue
-      const explicitlyDisabled = curOverrides[block.id]?.auto_fit === false
-      const isAutoFit = !explicitlyDisabled
+      // Read the *current* explicit auto_fit (if any) so we don't lose
+      // it across an onLayoutChange cycle. Graph widgets default to OFF;
+      // an explicit ON only survives if we re-write it back into the
+      // newly-built layout object below — otherwise autoFitForBlock
+      // falls back to the type's default and the checkbox visibly
+      // un-checks itself on the next render. See the "어떤 경우 체크가
+      // 한 번에 안 됨" bug report.
+      const cur = curOverrides[block.id]
+      const hasExplicitAutoFit =
+        cur && Object.prototype.hasOwnProperty.call(cur, 'auto_fit')
+      const explicitAutoFit = hasExplicitAutoFit ? cur.auto_fit !== false : null
+      const defaultEnabled = !WIDGETS_DEFAULT_NO_AUTOFIT.has(block.type)
+      const isAutoFit =
+        explicitAutoFit !== null ? explicitAutoFit : defaultEnabled
       const contentPx = pageContentHeights[block.id]
       let rowSpan = Math.max(1, it.h ?? 2)
       if (isAutoFit && contentPx != null && contentPx > 0) {
@@ -817,11 +916,16 @@ export default function ReportDetailPage() {
         col_span: clamp(it.w ?? 12, 1, 12),
         row_span: rowSpan,
       }
-      if (explicitlyDisabled) newLayout.auto_fit = false
+      // Only persist `auto_fit` when it diverges from the type's default.
+      // (Equal-to-default → leave the key out, so the override can still
+      // drop when the rest of the layout matches the template.)
+      if (explicitAutoFit !== null && explicitAutoFit !== defaultEnabled) {
+        newLayout.auto_fit = explicitAutoFit
+      }
       const blkTpl = block.layout
       const matchesTemplate =
         blkTpl &&
-        !explicitlyDisabled &&
+        isAutoFit === defaultEnabled &&
         blkTpl.row === newLayout.row &&
         blkTpl.col_span === newLayout.col_span &&
         blkTpl.row_span === newLayout.row_span
@@ -835,10 +939,14 @@ export default function ReportDetailPage() {
     }
   }
 
-  // Toggle the per-block auto-fit flag inside layout_overrides. Default is
-  // ON, so disabling stores `auto_fit: false` explicitly; re-enabling drops
-  // the field (default takes over) and removes the override entirely when
-  // row/col/row_span still match the template's layout.
+  // Toggle the per-block auto-fit flag inside layout_overrides. We
+  // ALWAYS store the explicit `auto_fit` value (true/false) rather than
+  // relying on absence to mean "ON" — graph widgets have a default of
+  // OFF (see WIDGETS_DEFAULT_NO_AUTOFIT), so the old absence-as-ON
+  // convention silently dropped the user's ON click for those types.
+  // The override is still removed when the resulting layout matches the
+  // template's layout *and* the explicit auto_fit equals the type's
+  // default (= the override is fully redundant).
   function handleToggleAutoFit(pageIdx, blockId, enabled) {
     setDraft((d) => {
       if (!d) return d
@@ -854,13 +962,17 @@ export default function ReportDetailPage() {
         row: base.row ?? 1,
         col_span: base.col_span ?? REPORT_GRID_COLS,
         row_span: base.row_span ?? AUTO_FIT_INITIAL_ROWS,
+        auto_fit: enabled === true,
       }
-      if (!enabled) next.auto_fit = false
 
+      // The override is redundant when the row/col/row_span match the
+      // template AND the explicit auto_fit matches this widget type's
+      // default. Otherwise it has to stick around.
+      const defaultEnabled = !WIDGETS_DEFAULT_NO_AUTOFIT.has(block.type)
       const blkTpl = block.layout
       const matchesTemplate =
         blkTpl &&
-        enabled &&
+        next.auto_fit === defaultEnabled &&
         blkTpl.row === next.row &&
         blkTpl.col_span === next.col_span &&
         blkTpl.row_span === next.row_span
@@ -898,6 +1010,10 @@ export default function ReportDetailPage() {
         // null clears the per-report override and falls back to the
         // frontend's narrow default at render time.
         page_width_px: Number.isFinite(draft.page_width_px) ? draft.page_width_px : null,
+        // 보고서 종류 — null clears the tag. The backend's update
+        // schema uses `exclude_unset`, so always sending the key (even
+        // when null) is the explicit "clear" signal.
+        report_type_id: draft.report_type_id ?? null,
       }
       if (isNew) {
         const created = await createReport({
@@ -1037,6 +1153,8 @@ export default function ReportDetailPage() {
         // Carry the source report's width preference into the copy so the
         // user sees the same layout immediately.
         page_width_px: Number.isFinite(draft.page_width_px) ? draft.page_width_px : null,
+        // The 종류 tag follows the copy too — same reasoning as width.
+        report_type_id: draft.report_type_id ?? null,
       })
       toast.success('보고서가 복사되었습니다.')
       setCopyOpen(false)
@@ -1296,8 +1414,12 @@ export default function ReportDetailPage() {
 
   // Shared import path for both the file picker and the paste-JSON dialog.
   // Throws on schema mismatch so the caller can surface its own toast.
-  function applyImportedDraft(text) {
+  async function applyImportedDraft(text) {
     const obj = parseImportPayload(text)
+    // Bump each page's template_version to the current latest before
+    // pushing into the draft — see remapPagesToLatestVersions comment
+    // for the rationale.
+    await remapPagesToLatestVersions(obj.pages)
     setDraft((d) => ({
       ...(d ?? {}),
       title: typeof obj.title === 'string' ? obj.title : (d?.title ?? ''),
@@ -1314,16 +1436,27 @@ export default function ReportDetailPage() {
     setIsEditing(true)
   }
 
-  /** Append-as-new-pages: keep title/date/tags and existing pages,
-   *  drop the imported pages at the end as their own pages. The
-   *  imported pages keep their own template binding. Use case: a
-   *  generated multi-page section becomes a separate chapter. */
-  function appendImportedAsNewPages(text) {
+  /** Append-as-new-pages: drop the imported pages at the end as their
+   *  own pages.
+   *
+   *  Carve-out for unsaved new reports: the seed-template page is just
+   *  a placeholder we synthesize before the user has done anything, so
+   *  prepending it to imported content always looks like a bug ("왜 빈
+   *  첫 페이지가 남지?"). When `draft.id` is absent (= report has never
+   *  been saved), we discard the placeholder and let the imported pages
+   *  be the entire body. For existing reports the historical "append at
+   *  the end" semantics stay intact. */
+  async function appendImportedAsNewPages(text) {
     const obj = parseImportPayload(text)
+    await remapPagesToLatestVersions(obj.pages)
     let nextPageCount = 0
+    let firstImportedIndex = 0
     setDraft((d) => {
-      const existing = Array.isArray(d?.pages) ? d.pages : []
+      const isUnsavedNew = !d?.id
+      const existing =
+        !isUnsavedNew && Array.isArray(d?.pages) ? d.pages : []
       const incoming = obj.pages.map(normalizePage)
+      firstImportedIndex = existing.length
       nextPageCount = existing.length + incoming.length
       return {
         ...(d ?? {}),
@@ -1332,9 +1465,9 @@ export default function ReportDetailPage() {
         pages: [...existing, ...incoming],
       }
     })
-    // Jump to the first appended page so the user lands on the new
-    // content right away.
-    setCurrentPage(Math.max(0, nextPageCount - obj.pages.length))
+    // Jump to the first imported page so the user lands on the new
+    // content right away (= 0 when we dropped the unsaved placeholder).
+    setCurrentPage(firstImportedIndex)
     setIsEditing(true)
   }
 
@@ -1422,257 +1555,13 @@ export default function ReportDetailPage() {
     if (!file) return
     try {
       const text = await file.text()
-      applyImportedDraft(text)
+      await applyImportedDraft(text)
       toast.success('JSON 파일을 불러왔습니다. 저장하려면 “저장” 버튼을 눌러주세요.')
     } catch (err) {
       toast.error(err.message || '불러오기 실패')
     }
   }
 
-  // Build the prompt that teaches an external AI ReportArchive's JSON
-  // shape + widget catalog. The prompt is *template-agnostic*: it does
-  // not embed the current report's content or block layout (those tend
-  // to confuse the model). Only the page's template binding
-  // (template_id / template_version) is pre-filled so the round-trip
-  // import + save still works against a real template.
-  function buildAiPrompt() {
-    const widgets = widgetCatalog?.widgets ?? []
-    const firstPage = draft?.pages?.[0]
-    const tplId = firstPage?.template_id ?? 'TEMPLATE_ID_HERE'
-    const tplVer = firstPage?.template_version ?? 1
-
-    const skeleton = {
-      _type: 'report_archive_draft_v1',
-      title: '<보고서 제목>',
-      report_date: '<YYYY-MM-DD>',
-      tags: [],
-      pages: [
-        {
-          template_id: tplId,
-          template_version: tplVer,
-          name: null,
-          extra_blocks: [
-            { id: '<block_id_1>', type: '<widget_type>', props: { /* 위젯 props */ } },
-            { id: '<block_id_2>', type: '<widget_type>', props: { /* 위젯 props */ } },
-          ],
-          content: {
-            '<block_id_1>': { /* 해당 위젯의 content 형식 */ },
-            '<block_id_2>': { /* 해당 위젯의 content 형식 */ },
-          },
-          layout_overrides: null,
-          props_overrides: null,
-          blocks_order: [],
-          block_sections: {
-            '<block_id_1>': '<단락 구분 item code>',
-          },
-        },
-      ],
-    }
-
-    const sectionTaxonomyBlock = renderSectionTaxonomy(sectionCategories)
-
-    const widgetCatalogBlock = widgets.length === 0
-      ? '(위젯 카탈로그를 아직 불러오지 못했습니다. 잠시 후 다시 열어보세요.)'
-      : widgets
-          .map((w) => {
-            const schemaStr = JSON.stringify(w.props_schema ?? {}, null, 2)
-            return `### ${w.type} — ${w.label}\n${w.description}\nprops_schema:\n${indent(schemaStr, 2)}`
-          })
-          .join('\n\n')
-
-    return [
-      '당신은 ReportArchive 보고서 작성 도우미입니다.',
-      '사용자 입력(자유 텍스트, 메모, 표 등)을 분석해, 아래 위젯들을 자유롭게 조합한 JSON 한 덩어리만 출력합니다.',
-      'JSON 외의 설명·주석·마크다운 코드펜스(```)는 일체 출력하지 마세요. 응답은 반드시 `{` 로 시작해 `}` 로 끝나야 합니다.',
-      '',
-      '== 출력 JSON 전체 구조 ==',
-      'top-level 형식은 아래와 같습니다. `pages` 배열에 페이지를 1개 이상 만들고, 각 페이지 안에서는 위젯 블록을 `extra_blocks` 에 선언하고, 같은 `id` 를 키로 `content` 에 데이터를 넣으세요.',
-      JSON.stringify(skeleton, null, 2),
-      '',
-      '== 작성 규칙 ==',
-      '1. 데이터 성격에 맞춰 다양한 위젯을 자유롭게 조합하세요. (제목 → heading, 줄글 → rich_text, 수치 카드 → key_value, 항목 나열 → bulleted_list, 표 데이터 → table, 시계열/추세 → chart 등)',
-      '2. 위젯 블록은 모두 `extra_blocks` 에 정의합니다. 같은 `id` 가 `extra_blocks` 와 `content` 양쪽에 존재해야 합니다. (블록 선언 ↔ 데이터 매핑)',
-      '3. `block_id` 는 정규식 `^[a-z][a-z0-9_]{0,63}$` 를 만족해야 합니다. 영문 소문자로 시작, 숫자·언더스코어 가능, 페이지 내 유일.',
-      '4. 각 페이지의 `template_id` / `template_version` 은 위 골격에 채워둔 값을 그대로 유지하세요 (직접 수정 금지).',
-      '5. 주제가 길거나 분리된다면 `pages` 에 페이지를 추가해도 됩니다. 같은 template_id / version 을 그대로 복사해 사용하세요.',
-      '6. `layout_overrides`, `props_overrides`, `blocks_order` 는 비워두는 것이 안전합니다. (`null` / `[]` 그대로)',
-      '7. `block_sections` 은 선택 사항입니다. 단락 구분이 분명한 블록만 아래 “단락 구분 (block_sections)” 절을 참고해 채우세요. 비울 때는 `{}`.',
-      '8. 모르는 값은 생략하거나 빈 문자열 `""` 로 두세요. 임의의 값(placeholder)을 지어내지 마세요.',
-      '9. `image` / `attachment` 위젯은 시스템에 업로드된 파일을 가리키는 `file_id` 가 필요하므로 절대 만들지 마세요.',
-      '',
-      '== 단락 구분 (block_sections) ==',
-      '`pages[].block_sections` 는 `{ "block_id": "item_code" }` 형식의 맵입니다. 각 블록에 "이 블록이 어느 단락(섹션)에 속하는지" 표시하는 메타데이터로, 보고서 화면에서 색상 칩으로 표시됩니다.',
-      '- 키 = 같은 페이지 안에 존재하는 블록 id (template 블록이든 extra 블록이든 OK)',
-      '- 값 = 아래 taxonomy 의 `code` 문자열 (정확히 일치해야 함, label/한글이름 사용 금지)',
-      '- 모든 블록에 달 필요 없음. 단락 구분이 분명한 블록만 태깅.',
-      '- 같은 code 를 여러 블록에 사용 가능 (한 단락에 여러 위젯).',
-      '- 아래 taxonomy 에 없는 code 는 사용 금지. 적절한 항목이 없으면 그 블록은 그냥 생략.',
-      '',
-      '아래는 현재 워크스페이스에 등록된 단락 구분 taxonomy 입니다 (카테고리별 그룹).',
-      '',
-      sectionTaxonomyBlock,
-      '',
-      '== 절대 하지 말 것 (체크리스트) ==',
-      '- bulleted_list 의 items 를 `[{text, depth}, ...]` 객체 배열로 만들기 → 반드시 `["문자열", ...]`',
-      '- key_value 의 content 를 `{values: {...}}` 로 감싸기 → 키를 top-level 에 그대로 펼치기',
-      '- milestone 의 status 에 `planned` / `in_progress` 사용 → `pending` / `done` / `delayed` 만 허용',
-      '- flowchart 를 `nodes` / `edges` 그래프로 표현 → `items: [{label, description?}]` 순차 리스트만 지원',
-      '- image / attachment 위젯 생성 → 불가능 (file_id 필요)',
-      '- props 에 widget 의 props_schema 에 없는 키 추가 (`additionalProperties: false`)',
-      '- `block_sections` 값에 한글 라벨/카테고리 이름 넣기 → 반드시 `code` 문자열',
-      '- 위 taxonomy 에 없는 임의의 code 만들기 → 적절한 항목이 없으면 그 블록 항목을 생략',
-      '',
-      '== 위젯 카탈로그 (전체 목록 / props_schema 원본) ==',
-      widgetCatalogBlock,
-      '',
-      '== 위젯별 props / content 예시 ==',
-      WIDGET_EXAMPLES_TEXT,
-      '',
-      '== 작성 흐름 ==',
-      '① 사용자 입력을 훑어 섹션/표/리스트/수치 등을 식별 → ② 각 조각을 어떤 위젯으로 표현할지 결정 → ③ extra_blocks 에 블록을 선언하고 같은 id 로 content 채움 → ④ 단락 구분이 분명한 블록은 block_sections 에 태깅 → ⑤ JSON 만 출력.',
-      '',
-      '== 사용자 입력 ==',
-      '<<여기에 보고서로 만들고 싶은 내용을 붙여 넣으세요>>',
-    ].join('\n')
-  }
-
-  // V2: bakes the current page's template skeleton (already-arranged
-  // widget blocks: id / type / props) into the prompt so the AI is told
-  // to fill those existing blocks first, and only fall back to
-  // `extra_blocks` when the template lacks a needed widget type. None of
-  // the report's user-entered content is included — only the empty
-  // template layout.
-  function buildAiPromptV2() {
-    const widgets = widgetCatalog?.widgets ?? []
-    const firstPage = draft?.pages?.[0]
-    const tplId = firstPage?.template_id ?? 'TEMPLATE_ID_HERE'
-    const tplVer = firstPage?.template_version ?? 1
-    const template = currentTemplate
-    const tplBlocks = Array.isArray(template?.schema?.blocks) ? template.schema.blocks : []
-
-    const contentSkeleton = {}
-    for (const b of tplBlocks) {
-      contentSkeleton[b.id] = `<${b.type} 위젯의 content (아래 위젯별 형식 참고)>`
-    }
-
-    const blockSectionsSkeleton = tplBlocks.length > 0
-      ? { [tplBlocks[0].id]: '<단락 구분 item code>' }
-      : { '<block_id>': '<단락 구분 item code>' }
-
-    const skeleton = {
-      _type: 'report_archive_draft_v1',
-      title: '<보고서 제목>',
-      report_date: '<YYYY-MM-DD>',
-      tags: [],
-      pages: [
-        {
-          template_id: tplId,
-          template_version: tplVer,
-          name: null,
-          extra_blocks: [],
-          content: tplBlocks.length > 0
-            ? contentSkeleton
-            : {
-                '<block_id_1>': { /* extra_blocks 에 추가한 위젯의 content */ },
-              },
-          layout_overrides: null,
-          props_overrides: null,
-          blocks_order: [],
-          block_sections: blockSectionsSkeleton,
-        },
-      ],
-    }
-
-    const sectionTaxonomyBlock = renderSectionTaxonomy(sectionCategories)
-
-    const templateBlocksBlock = tplBlocks.length === 0
-      ? '(현재 페이지에 바인딩된 템플릿을 아직 불러오지 못했거나 비어 있습니다. 잠시 후 다시 열어보세요. 그동안에는 모든 위젯을 `extra_blocks` 에 직접 선언하셔도 됩니다.)'
-      : tplBlocks
-          .map((b, i) => {
-            const propsStr = JSON.stringify(b.props ?? {}, null, 2)
-            return `### [${i + 1}] id="${b.id}"  type=${b.type}\nprops (수정 금지 — 참고용):\n${indent(propsStr, 2)}`
-          })
-          .join('\n\n')
-
-    const widgetCatalogBlock = widgets.length === 0
-      ? '(위젯 카탈로그를 아직 불러오지 못했습니다. 잠시 후 다시 열어보세요.)'
-      : widgets
-          .map((w) => {
-            const schemaStr = JSON.stringify(w.props_schema ?? {}, null, 2)
-            return `### ${w.type} — ${w.label}\n${w.description}\nprops_schema:\n${indent(schemaStr, 2)}`
-          })
-          .join('\n\n')
-
-    return [
-      '당신은 ReportArchive 보고서 작성 도우미입니다.',
-      '사용자 입력(자유 텍스트, 메모, 표 등)을 분석해, 아래 위젯들을 자유롭게 조합한 JSON 한 덩어리만 출력합니다.',
-      'JSON 외의 설명·주석·마크다운 코드펜스(```)는 일체 출력하지 마세요. 응답은 반드시 `{` 로 시작해 `}` 로 끝나야 합니다.',
-      '',
-      '== 출력 JSON 전체 구조 ==',
-      'top-level 형식은 아래와 같습니다. `pages[0].content` 의 키는 아래 “템플릿에 이미 배치된 위젯” 섹션의 id 와 1:1 로 대응합니다. 부족할 때만 `extra_blocks` 에 새 위젯을 추가하고, 같은 id 를 `content` 에도 넣으세요.',
-      JSON.stringify(skeleton, null, 2),
-      '',
-      '== 템플릿에 이미 배치된 위젯 (★ 우선 사용 ★) ==',
-      '아래 블록들은 현재 페이지 템플릿에 이미 배치되어 있습니다. **반드시 이 id 들을 그대로 사용해 `content[id]` 를 채우세요.**',
-      '- props 는 템플릿이 정한 값이며, 절대 수정하지 마세요. (`props_overrides` 도 비워두세요.)',
-      '- 사용자 입력의 각 조각을 보고, 의미가 맞는 블록의 content 를 채웁니다.',
-      '- 대응하는 블록이 정말 없을 때만 `extra_blocks` 에 새 위젯을 추가하세요.',
-      '- 이 목록에 있는 블록은 절대 삭제·이름변경하지 마세요. (사용할 내용이 없으면 content 에서 그 id 만 비워 두면 됩니다.)',
-      '',
-      templateBlocksBlock,
-      '',
-      '== 부족한 위젯을 추가하는 방법 (extra_blocks) ==',
-      '템플릿에 없는 위젯이 필요하면 `extra_blocks` 에 `{ id, type, props }` 형식으로 새 블록을 선언하고, 같은 id 를 키로 `content[id]` 에 데이터를 넣으세요.',
-      '- `id` 는 정규식 `^[a-z][a-z0-9_]{0,63}$` 를 만족해야 하며, 위 템플릿 블록 id 와 충돌하지 않아야 합니다.',
-      '- 새 블록의 `props` 는 아래 “위젯 카탈로그”의 `props_schema` 와 정확히 일치해야 합니다 (`additionalProperties: false`).',
-      '- 꼭 필요한 위젯만 추가하세요. 무리하게 만들지 말 것.',
-      '',
-      '== 작성 규칙 ==',
-      '1. 각 페이지의 `template_id` / `template_version` 은 위 골격에 채워둔 값을 그대로 유지하세요 (직접 수정 금지).',
-      '2. `content` 의 키는 (a) 위 “템플릿에 이미 배치된 위젯” 의 id, 또는 (b) 본인이 `extra_blocks` 에 새로 선언한 id 둘 중 하나여야 합니다.',
-      '3. `layout_overrides`, `props_overrides`, `blocks_order` 는 비워두는 것이 안전합니다. (`null` / `[]` 그대로)',
-      '4. `block_sections` 은 선택 사항입니다. 단락 구분이 분명한 블록만 아래 “단락 구분 (block_sections)” 절을 참고해 채우세요. 비울 때는 `{}`.',
-      '5. 주제가 길거나 분리된다면 `pages` 에 페이지를 추가해도 됩니다. 같은 template_id / version 을 그대로 복사해 사용하세요.',
-      '6. 모르는 값은 생략하거나 빈 문자열 `""` 로 두세요. 임의의 값(placeholder)을 지어내지 마세요.',
-      '7. `image` / `attachment` 위젯은 시스템에 업로드된 파일을 가리키는 `file_id` 가 필요하므로 절대 만들지 마세요.',
-      '',
-      '== 단락 구분 (block_sections) ==',
-      '`pages[].block_sections` 는 `{ "block_id": "item_code" }` 형식의 맵입니다. 각 블록에 "이 블록이 어느 단락(섹션)에 속하는지" 표시하는 메타데이터로, 보고서 화면에서 색상 칩으로 표시됩니다.',
-      '- 키 = 같은 페이지 안에 존재하는 블록 id (위 “템플릿에 이미 배치된 위젯” 의 id 또는 본인이 만든 extra id)',
-      '- 값 = 아래 taxonomy 의 `code` 문자열 (정확히 일치해야 함, label/한글이름 사용 금지)',
-      '- 모든 블록에 달 필요 없음. 단락 구분이 분명한 블록만 태깅.',
-      '- 같은 code 를 여러 블록에 사용 가능 (한 단락에 여러 위젯).',
-      '- 아래 taxonomy 에 없는 code 는 사용 금지. 적절한 항목이 없으면 그 블록은 그냥 생략.',
-      '',
-      '아래는 현재 워크스페이스에 등록된 단락 구분 taxonomy 입니다 (카테고리별 그룹).',
-      '',
-      sectionTaxonomyBlock,
-      '',
-      '== 절대 하지 말 것 (체크리스트) ==',
-      '- 템플릿 블록의 id 를 바꾸거나 새로운 id 로 대체하기 → 위 “템플릿에 이미 배치된 위젯” 의 id 를 **그대로** 사용',
-      '- 템플릿 블록을 `extra_blocks` 에 중복으로 다시 선언하기 → 템플릿 블록은 이미 있으므로 `content` 만 채움',
-      '- bulleted_list 의 items 를 `[{text, depth}, ...]` 객체 배열로 만들기 → 반드시 `["문자열", ...]`',
-      '- key_value 의 content 를 `{values: {...}}` 로 감싸기 → 키를 top-level 에 그대로 펼치기',
-      '- milestone 의 status 에 `planned` / `in_progress` 사용 → `pending` / `done` / `delayed` 만 허용',
-      '- flowchart 를 `nodes` / `edges` 그래프로 표현 → `items: [{label, description?}]` 순차 리스트만 지원',
-      '- image / attachment 위젯 생성 → 불가능 (file_id 필요)',
-      '- props 에 widget 의 props_schema 에 없는 키 추가 (`additionalProperties: false`)',
-      '- `block_sections` 값에 한글 라벨/카테고리 이름 넣기 → 반드시 `code` 문자열',
-      '- 위 taxonomy 에 없는 임의의 code 만들기 → 적절한 항목이 없으면 그 블록 항목을 생략',
-      '',
-      '== 위젯 카탈로그 (전체 목록 / props_schema 원본) ==',
-      widgetCatalogBlock,
-      '',
-      '== 위젯별 props / content 예시 ==',
-      WIDGET_EXAMPLES_TEXT,
-      '',
-      '== 작성 흐름 ==',
-      '① 사용자 입력을 훑어 섹션/표/리스트/수치 등을 식별 → ② 위 “템플릿에 이미 배치된 위젯” 목록을 보고 각 조각을 어느 블록 id 에 채울지 결정 → ③ 빠진 위젯이 있을 때만 `extra_blocks` 에 새 블록을 선언 → ④ 단락 구분이 분명한 블록은 block_sections 에 태깅 → ⑤ JSON 만 출력.',
-      '',
-      '== 사용자 입력 ==',
-      '<<여기에 보고서로 만들고 싶은 내용을 붙여 넣으세요>>',
-    ].join('\n')
-  }
 
   // Driven by performPdfPrint — when not printing the context value is 1
   // so screen rendering uses the chart's default font sizes; while
@@ -1815,13 +1704,9 @@ export default function ReportDetailPage() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => setAiPromptOpen(true)}>
+              <DropdownMenuItem onSelect={() => setAiPromptPickerOpen(true)}>
                 <Sparkles className="mr-2 h-3.5 w-3.5" />
-                V1 — 빈 골격 프롬프트
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setAiPromptV2Open(true)}>
-                <Sparkles className="mr-2 h-3.5 w-3.5" />
-                V2 — 템플릿 배치 우선
+                AI 프롬프트 선택
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -2056,33 +1941,32 @@ export default function ReportDetailPage() {
         onConfirm={onSaveAsTemplate}
       />
 
-      <AiPromptDialog
-        open={aiPromptOpen}
-        onOpenChange={setAiPromptOpen}
-        getPrompt={buildAiPrompt}
-        widgetCatalog={widgetCatalog}
-        title="AI 프롬프트 V1 — 보고서 JSON 생성 (빈 골격)"
-        description="아래 프롬프트를 AI에 보내고, 보고서 본문을 함께 입력하면 JSON 결과를 받을 수 있습니다. 그 JSON 을 “JSON 데이터 붙여넣기”로 다시 불러오세요."
+      <PromptPickerDialog
+        open={aiPromptPickerOpen}
+        onClose={() => setAiPromptPickerOpen(false)}
+        onPick={(p) => {
+          setAiPromptActive(p)
+          setAiPromptPickerOpen(false)
+        }}
       />
 
       <AiPromptDialog
-        open={aiPromptV2Open}
-        onOpenChange={setAiPromptV2Open}
-        getPrompt={buildAiPromptV2}
+        open={aiPromptActive != null}
+        onOpenChange={(o) => !o && setAiPromptActive(null)}
+        prompt={aiPromptActive}
+        context={aiPromptContext}
         widgetCatalog={widgetCatalog}
-        title="AI 프롬프트 V2 — 템플릿 배치를 우선해 채우기"
-        description="현재 페이지 템플릿에 배치된 위젯들의 id·props 를 함께 전달합니다. AI 는 이 위젯들을 먼저 채우고, 부족할 때만 새 위젯을 `extra_blocks` 에 추가합니다. (보고서의 기존 내용은 포함되지 않습니다.)"
       />
 
       <PasteJsonDialog
         open={pasteJsonOpen}
         onOpenChange={setPasteJsonOpen}
-        onReplace={(text) => {
-          applyImportedDraft(text)
+        onReplace={async (text) => {
+          await applyImportedDraft(text)
           toast.success('보고서 전체를 교체했습니다. 저장하려면 “저장” 버튼을 눌러주세요.')
         }}
-        onAppendNewPages={(text) => {
-          appendImportedAsNewPages(text)
+        onAppendNewPages={async (text) => {
+          await appendImportedAsNewPages(text)
           toast.success('JSON 의 페이지를 새 페이지로 뒤에 추가했습니다.')
         }}
         onAppendToCurrentPage={(text) => {
@@ -2107,10 +1991,39 @@ export default function ReportDetailPage() {
         open={settingsDialogOpen}
         currentWidthPx={draft?.page_width_px ?? null}
         defaultWidthPx={DEFAULT_REPORT_WIDTH_PX}
+        showPropertiesTab
+        currentTypeId={draft?.report_type_id ?? null}
+        currentType={draft?.report_type ?? null}
+        metadata={
+          // draft holds the user-editable subset (title/status/report_date);
+          // owner/workspace/timestamps are server-authoritative and only
+          // exist post-save, so we pull them from `existingReport`. For
+          // brand-new reports `existingReport` is null and those rows
+          // auto-hide via MetadataList's empty-value filter.
+          draft
+            ? {
+                title: draft.title,
+                report_date: draft.report_date,
+                status: draft.status,
+                owner_name: existingReport?.owner_name,
+                owner_email: existingReport?.owner_email,
+                workspace_slug: existingReport?.workspace_slug ?? slug,
+                created_at: existingReport?.created_at,
+                updated_at: existingReport?.updated_at,
+                updated_by_name: existingReport?.updated_by_name,
+                updated_by_email: existingReport?.updated_by_email,
+              }
+            : null
+        }
         onClose={() => setSettingsDialogOpen(false)}
         onApplyWidth={(px) => {
+          // Dialog batches width + type drafts and fires these on its
+          // own footer "적용"; we just merge into the report draft.
+          // The dialog closes itself afterwards.
           setDraft((d) => (d ? { ...d, page_width_px: px } : d))
-          setSettingsDialogOpen(false)
+        }}
+        onApplyType={({ id, ref }) => {
+          setDraft((d) => (d ? { ...d, report_type_id: id, report_type: ref } : d))
         }}
       />
 
@@ -2222,240 +2135,24 @@ function ReportCopyDialog({ open, onOpenChange, sourceTitle, onConfirm }) {
   )
 }
 
-// AI prompt example entries — one per `### <type>` section the prompt
-// writes out. `types` is the list of widget types each entry covers (a
-// single section covers multiple types when their handling is identical;
-// e.g. image / attachment share a single "don't generate these" warning).
-//
-// Single source of truth for:
-//   - WIDGET_EXAMPLES_TEXT  — the joined-text block both prompts paste in
-//   - PROMPT_COVERED_WIDGETS — the set the coverage sidebar checks
-//
-// When the backend gains a new widget, add ONE entry here and both the
-// prompts + the "미등록" flag update together.
-const WIDGET_PROMPT_EXAMPLES = [
-  {
-    types: ['heading'],
-    body: [
-      '### heading (제목)',
-      'props (required: level) : `{ "level": 2 }`   // 1=대제목, 2=중제목, 3=소제목',
-      'content : `{ "text": "섹션 제목" }`',
-    ].join('\n'),
-  },
-  {
-    types: ['rich_text'],
-    body: [
-      '### rich_text (자유 서술 / 마크다운)',
-      'props : `{}`   // 모든 필드 선택. label 등 없음.',
-      'content (권장: 단순형) : `{ "markdown": "여러 줄 텍스트…\\n- 글머리도 가능" }`',
-      'content (구조형) : `{ "items": [ {"depth":0,"text":"첫째 줄"}, {"depth":1,"text":"하위 항목"} ] }`   // depth 는 0~5 정수',
-    ].join('\n'),
-  },
-  {
-    types: ['equation'],
-    body: [
-      '### equation (수식 — LaTeX)',
-      'props (required: label) : `{ "label":"지배 방정식" }`',
-      'content : `{ "latex":"\\\\sigma = \\\\frac{F}{A}", "display_mode":"display", "number":"(1)" }`',
-      '- latex 은 KaTeX 호환 LaTeX 문자열. **JSON 안에 들어가므로 백슬래시는 두 번** (`\\\\frac`, `\\\\sigma`, `\\\\int_0^1` 등).',
-      '- display_mode 는 `display`(중앙·큰 글씨, 기본) | `inline`(베이스라인 정렬, 본문 삽입용).',
-      '- number (선택)는 우측에 표시되는 식 번호 — 예: `"(1)"`, `"(eq. 3.2)"`. 비우면 표시 안 됨.',
-    ].join('\n'),
-  },
-  {
-    types: ['key_value'],
-    body: [
-      '### key_value (키-값 카드)  ★ 자주 틀리는 형식 — 주의 ★',
-      'props (required: items) : `{ "label":"주요 결과", "items":[ {"key":"stress","label":"발생 응력","type":"number"}, {"key":"unit","label":"단위","type":"text"} ] }`',
-      'content : `{ "stress": 100, "unit": "MPa" }`   // ← 각 item.key 가 그대로 top-level 키. `values` 같은 래퍼 절대 금지.',
-      'item.type 은 text | number | integer | date | select 중 하나. `multi: true` 항목의 값은 배열 (예: `"defect_type": ["크랙","변형"]`).',
-    ].join('\n'),
-  },
-  {
-    types: ['bulleted_list'],
-    body: [
-      '### bulleted_list (글머리 리스트)  ★ 자주 틀리는 형식 — 주의 ★',
-      'props (required: label) : `{ "label": "후속 검토 사항" }`',
-      'content : `{ "items": [ "첫째 항목", "둘째 항목", "셋째 항목" ] }`   // ← 문자열 배열. {text, depth} 객체 절대 금지.',
-    ].join('\n'),
-  },
-  {
-    types: ['table'],
-    body: [
-      '### table (표)',
-      'props (required: label, columns) : `{ "label":"검토 내용", "columns":[ {"key":"category","label":"구분","type":"text"}, {"key":"amount","label":"금액","type":"number"} ] }`',
-      'content : `{ "rows":[ {"category":"배경","amount":1200}, {"category":"결과","amount":3400} ] }`   // 행 객체의 키 = column.key',
-    ].join('\n'),
-  },
-  {
-    types: ['chart'],
-    body: [
-      '### chart (차트 — 카테고리 x축)',
-      'props (required: label) : `{ "label":"월별 매출", "chart_type":"line", "x_column_key":"month", "columns":[ {"key":"month","label":"월","type":"text"}, {"key":"sales","label":"매출","type":"number"} ] }`',
-      'content : `{ "rows":[ {"month":"1월","sales":120}, {"month":"2월","sales":135} ] }`',
-      '※ x_column_key 가 가리키는 열 외에 모든 열은 type:"number" 여야 합니다.',
-      '※ x 도 숫자라면 chart 대신 **scatter** 를 사용하세요 (산점도 / 곡선 / 회귀).',
-    ].join('\n'),
-  },
-  {
-    types: ['scatter'],
-    body: [
-      '### scatter (산점도 — x·y 모두 수치)',
-      'props (required: label, mode, x_column_key, columns≥2) : `{ "label":"전압-전류 곡선", "mode":"scatter_line", "x_column_key":"voltage", "columns":[ {"key":"voltage","label":"전압(V)","type":"number"}, {"key":"current","label":"전류(A)","type":"number"} ] }`',
-      'content : `{ "rows":[ {"voltage":0,"current":0}, {"voltage":1.0,"current":0.5}, {"voltage":2.0,"current":1.1} ] }`',
-      '- chart 와 달리 x·y **모두 type:"number"**. category 가 섞이면 chart 위젯을 쓰세요.',
-      '- mode 는 `scatter`(점만) | `line`(선만) | `scatter_line`(점 + 선).',
-      '- 시리즈를 명시적으로 지정하려면 content 에 `"series":[ {"label":"측정","x_key":"voltage","y_key":"current"} ]`. 생략 시 x_column_key 외 모든 number 열이 자동 시리즈가 됩니다.',
-      '- props 에 x_axis_title / y_axis_title (선택) 로 축 라벨, content 에 x_min/x_max/y_min/y_max (선택) 로 범위 고정 가능.',
-    ].join('\n'),
-  },
-  {
-    types: ['scatter3d'],
-    body: [
-      '### scatter3d (3D 산점도 — Plotly)',
-      'props (required: label, columns≥3) : `{ "label":"파라미터 응답면", "columns":[ {"key":"p1","label":"P1","type":"number"}, {"key":"p2","label":"P2","type":"number"}, {"key":"resp","label":"응답","type":"number"} ] }`',
-      'content : `{ "mode":"scatter3d", "series":[ {"label":"실험","kind":"scatter3d","x_key":"p1","y_key":"p2","z_key":"resp"} ], "rows":[ {"p1":0,"p2":0,"resp":1.2}, {"p1":0.5,"p2":0.3,"resp":2.4} ], "colorscale":"Viridis" }`',
-      '- 모든 컬럼은 type:"number" (3D 좌표). 회전·확대·호버는 Plotly 기본 제공.',
-      '- series.kind 는 `scatter3d`(마커 구름) | `surface`(long-form 데이터를 그리드로 pivot 한 응답면). 한 차트에 둘 다 섞어도 OK.',
-      '- 4번째 컬럼을 더해 `"color_key":"<key>"` 를 series 에 추가하면 마커/표면을 그 값으로 색상 매핑.',
-      '- colorscale 은 `Viridis | Plasma | Cividis | Hot | Blues | Reds | Greens | RdBu | Bluered | Portland | Jet` 중 하나 (위젯 전체에 1개).',
-    ].join('\n'),
-  },
-  {
-    types: ['heatmap'],
-    body: [
-      '### heatmap (히트맵 — 2D 매트릭스)',
-      'props (required: label) : `{ "label":"민감도 분석", "x_axis_title":"파라미터", "y_axis_title":"사양" }`',
-      'content : `{ "x_labels":["A","B","C"], "y_labels":["사양1","사양2"], "matrix":[[0.1,0.4,0.7],[0.3,0.6,0.9]], "colorscale":"Viridis" }`',
-      '- 데이터는 (행, 열) 의 2-D 매트릭스 — chart/scatter 의 columns+rows 모델과 **다릅니다**.',
-      '- matrix[i] 는 y_labels[i] 행. matrix[i][j] 는 (y_labels[i], x_labels[j]) 셀 값.',
-      '- 길이 일치 필수: matrix.length === y_labels.length, matrix[*].length === x_labels.length.',
-      '- 빈 셀은 `null` (sparse data 도 OK — Plotly 가 갭으로 표시). reverse_scale:true 로 색상 반전.',
-      '- z_min / z_max (선택) 로 색축 범위 고정 — 여러 히트맵 비교 시 유용.',
-      '- colorscale 은 scatter3d 와 동일 enum.',
-    ].join('\n'),
-  },
-  {
-    types: ['radar'],
-    body: [
-      '### radar (레이더 차트 — 다축 폴라 비교)',
-      'props (required: label) : `{ "label":"제품 비교" }`',
-      'content : `{ "axis_labels":["속도","효율","가격","유지보수","확장성"], "series":[ {"label":"A안"}, {"label":"B안"} ], "values":[[90,75],[80,85],[60,90],[70,80],[85,70]] }`',
-      '- axis_labels 는 각 폴라 축 라벨 (3개 이상 권장).',
-      '- series 의 color (선택) 는 hex/CSS 컬러; 미지정 시 회전 팔레트 자동 적용.',
-      '- values 는 **`values[축_index][시리즈_index]`** 형식의 2D 배열. values.length === axis_labels.length, values[*].length === series.length.',
-      '- value_min / value_max (선택) 로 반경 범위 고정. fill_opacity (0~1, 기본 0.3) 로 폴리곤 채움 강도.',
-      '- 사양 비교 / 평가표 / 다요소 점수에 적합. 비교 항목이 1개면 bulleted_list 가 더 어울립니다.',
-    ].join('\n'),
-  },
-  {
-    types: ['milestone'],
-    body: [
-      '### milestone (마일스톤)',
-      'props (required: label) : `{ "label":"프로젝트 일정" }`',
-      'content : `{ "items":[ {"date":"2026-01-15","label":"기획","status":"done"}, {"date":"2026-03-01","label":"개발","status":"pending","note":"인력 보강 필요"} ] }`',
-      'status 는 `pending` | `done` | `delayed` 셋 중 하나. (in_progress / planned 등 다른 값 사용 금지)',
-    ].join('\n'),
-  },
-  {
-    types: ['flowchart'],
-    body: [
-      '### flowchart (플로우차트)',
-      'props (required: label) : `{ "label":"검토 흐름", "orientation":"horizontal" }`   // orientation: horizontal | vertical',
-      'content : `{ "items":[ {"label":"요구사항"}, {"label":"설계"}, {"label":"검토","description":"리뷰 미팅"}, {"label":"승인"} ] }`',
-      '※ 순차 흐름만 지원. `nodes` / `edges` 같은 키 사용 금지.',
-    ].join('\n'),
-  },
-  {
-    types: ['progress_bar'],
-    body: [
-      '### progress_bar (진행률 바)',
-      'props (required: label) : `{ "label":"작업 진척도", "default_max":100, "unit":"%" }`   // default_max / unit 은 선택. 기본 100% 기준이면 둘 다 생략 가능',
-      'content : `{ "items":[ {"label":"기획","value":100}, {"label":"개발","value":65}, {"label":"테스트","value":20,"max":40,"note":"케이스 부족"} ] }`',
-      '- value 는 현재값(숫자), max 는 목표값(생략하면 props.default_max 사용). 비율(value/max) 에 따라 색상이 자동: <30% 빨강, 30–70% 주황, 70% 이상 초록, 100% 이상 진초록.',
-      '- status(선택)는 `pending` | `in_progress` | `done` | `blocked` 중 하나. 지정하면 자동 색상보다 우선.',
-      '- 단순 % 가 아닌 절대값 비교(예: "8 / 12 건")도 가능 — props.unit 을 "건" 등으로 바꾸고 item.max 를 명시.',
-      '- 여러 작업·지표의 진척도를 한 번에 비교할 때 사용. 단일 KPI 면 key_value 가 더 어울립니다.',
-    ].join('\n'),
-  },
-  {
-    types: ['raci_matrix'],
-    body: [
-      '### raci_matrix (RACI 매트릭스)',
-      'props (required: label) : `{ "label":"역할 분담" }`   // default_roles 는 선택 (보고서별로 content.roles 가 우선)',
-      'content : `{ "roles":[ {"key":"modeling","label":"모델링"}, {"key":"analysis","label":"분석"}, {"key":"develop","label":"개발"}, {"key":"design","label":"설계"} ], "rows":[ {"label":"요구사항 정의","assignments":{"modeling":"I","analysis":"R/A","develop":"C","design":"C"}}, {"label":"시스템 모델링","assignments":{"modeling":"R/A","analysis":"C","develop":"I","design":"C"}}, {"label":"구현","assignments":{"modeling":"I","analysis":"I","develop":"R/A","design":"C"}} ] }`',
-      '- roles 는 content 안에 둡니다 (props 가 아님). key 는 영문 소문자/숫자/_ 만, 페이지 내에서 고유.',
-      '- role 의 `group` (선택)은 상단 헤더 그룹 라벨. 같은 group 의 **인접한** 역할들이 자동으로 한 셀로 병합 (colspan).',
-      '- assignments 의 키는 content.roles 의 key 와 정확히 일치해야 함. 알 수 없는 키 사용 금지.',
-      '- 셀 값은 `R`(실무) | `A`(책임) | `C`(자문) | `I`(공유) 중 하나 또는 `/` 로 결합 (예: `R/A`). 스키마 값은 영문자, 화면 표시는 자동으로 한국어("실무 / 책임")로 변환됩니다.',
-      '- R = 실무(실제 작업), A = 책임(최종 책임자, 한 행에 1명), C = 자문(의견 제공), I = 공유(결과 통지).',
-      '- 표준: 한 행에 A 는 1명만 (책임자 단일화). R 은 여러 명 가능. C/I 는 자유.',
-    ].join('\n'),
-  },
-  {
-    types: ['image', 'attachment', 'cad_3d'],
-    body: [
-      '### image / attachment / cad_3d  ★ AI 가 만들지 마세요 ★',
-      '세 위젯 모두 content 가 시스템에 업로드된 파일의 `file_id` 를 요구합니다. AI 는 file_id 를 알 수 없으므로 이 위젯들은 `extra_blocks` / `content` 양쪽 모두에서 생성하지 마세요. 이미지·첨부·3D 모델이 필요하다는 점만 본문 rich_text 에 메모해 두세요. (사용자가 보고서를 받은 뒤 직접 추가합니다.)',
-    ].join('\n'),
-  },
-]
 
-const WIDGET_EXAMPLES_TEXT = [
-  '※ 모든 예시는 백엔드 스키마와 1:1 로 일치합니다. 키 이름·타입을 절대 변형하지 마세요.',
-  ...WIDGET_PROMPT_EXAMPLES.map((e) => e.body),
-].join('\n\n')
-
-// Widget types the prompt's examples block covers. Used by the
-// AiPromptDialog sidebar to flag catalog widgets without examples
-// (rendered as a red "미등록" row). Auto-derived — adding a new entry
-// to WIDGET_PROMPT_EXAMPLES is enough.
-const PROMPT_COVERED_WIDGETS = new Set(
-  WIDGET_PROMPT_EXAMPLES.flatMap((e) => e.types),
-)
-
-/** Prefix every line of `s` with `n` spaces. Used by buildAiPrompt so
- *  nested JSON renders cleanly under bullet headings. */
-function indent(s, n) {
-  const pad = ' '.repeat(n)
-  return s.split('\n').map((line) => pad + line).join('\n')
-}
-
-/** Render the admin-managed 단락 구분 taxonomy as a plain-text block
- *  the AI can read. `categories` is the same `sectionCategories` array
- *  the page already holds (see useSectionTaxonomy); each entry has a
- *  name and an ordered `items` list. The output groups items under
- *  their category and shows `code: label (영문명: en)` per line so the
- *  AI must use the exact `code` string (not the Korean label) when
- *  filling `block_sections`. */
-function renderSectionTaxonomy(categories) {
-  const list = Array.isArray(categories) ? categories : []
-  if (list.length === 0) {
-    return '(아직 등록된 단락 구분이 없습니다. `block_sections` 는 `{}` 로 비워두세요.)'
-  }
-  return list
-    .map((cat) => {
-      const items = Array.isArray(cat.items) ? cat.items : []
-      if (items.length === 0) {
-        return `### ${cat.name} (slug=${cat.slug})\n  (등록된 항목 없음)`
-      }
-      const lines = items.map((it) => {
-        const en = it.en ? `  (영문명: ${it.en})` : ''
-        return `  - \`${it.code}\` : ${it.label}${en}`
-      })
-      return `### ${cat.name} (slug=${cat.slug})\n${lines.join('\n')}`
-    })
-    .join('\n\n')
-}
-
-/** Surfaces the generated AI prompt in a read-only textarea with a
- *  "복사" button. The prompt is rebuilt every time the dialog opens so
- *  it reflects the latest draft / catalog state. */
-function AiPromptDialog({ open, onOpenChange, getPrompt, title, description, widgetCatalog }) {
-  const [text, setText] = useState('')
-  useEffect(() => {
-    if (open) setText(getPrompt())
-  }, [open, getPrompt])
+/** Renders the selected prompt's body — with placeholder tokens already
+ *  expanded via renderPrompt(prompt.body, context) — in a read-only
+ *  textarea with a "복사" button + a widget-coverage sidebar. The dialog
+ *  is content-agnostic: any prompt row from the catalog works, so the
+ *  hard-coded "v1 / v2 / v3 …" menu is no longer needed.
+ *
+ *  Coverage rule:
+ *    - prompt.wildcard_all = true (body has {{widget_catalog}} or
+ *      {{widget_examples}}) → every catalog widget counts as covered.
+ *    - otherwise            → covered = derived_widget_types (the set
+ *      of {{widget:foo}} tokens). The rest goes in the "미등록" group.
+ */
+function AiPromptDialog({ open, onOpenChange, prompt, context, widgetCatalog }) {
+  const text = useMemo(() => {
+    if (!open || !prompt) return ''
+    return renderPrompt(prompt.body, context)
+  }, [open, prompt, context])
 
   async function handleCopy() {
     try {
@@ -2466,20 +2163,32 @@ function AiPromptDialog({ open, onOpenChange, getPrompt, title, description, wid
     }
   }
 
-  // Bucket the catalog into "covered by the prompt's examples block"
-  // vs "not covered yet" so the sidebar can highlight gaps. Catalog
-  // entries the prompt knows about are listed first; anything else
-  // surfaces in a red 미등록 group so new widget types stand out.
-  const widgetCoverage = (() => {
+  const widgetCoverage = useMemo(() => {
     const widgets = widgetCatalog?.widgets ?? []
+    const coveredSet = prompt?.wildcard_all
+      ? new Set(widgets.map((w) => w.type))
+      : new Set(prompt?.derived_widget_types ?? [])
     const covered = []
     const uncovered = []
     for (const w of widgets) {
-      if (PROMPT_COVERED_WIDGETS.has(w.type)) covered.push(w)
+      if (coveredSet.has(w.type)) covered.push(w)
       else uncovered.push(w)
     }
-    return { covered, uncovered, total: widgets.length, loading: !widgetCatalog }
-  })()
+    return {
+      covered,
+      uncovered,
+      total: widgets.length,
+      loading: !widgetCatalog,
+      wildcardAll: !!prompt?.wildcard_all,
+    }
+  }, [prompt, widgetCatalog])
+
+  const title = prompt?.name
+    ? `AI 프롬프트 — ${prompt.name}`
+    : 'AI 프롬프트'
+  const description =
+    prompt?.description ||
+    '아래 프롬프트를 AI에 보내고, 보고서 본문을 함께 입력하면 JSON 결과를 받을 수 있습니다. 그 JSON 을 "JSON 데이터 붙여넣기"로 다시 불러오세요.'
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -2487,12 +2196,10 @@ function AiPromptDialog({ open, onOpenChange, getPrompt, title, description, wid
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Sparkles className="h-4 w-4" />
-            {title ?? 'AI 프롬프트 — 보고서 JSON 생성'}
+            {title}
           </DialogTitle>
         </DialogHeader>
-        <p className="text-xs text-muted-foreground">
-          {description ?? '아래 프롬프트를 AI에 보내고, 보고서 본문을 함께 입력하면 JSON 결과를 받을 수 있습니다. 그 JSON 을 “JSON 데이터 붙여넣기”로 다시 불러오세요.'}
-        </p>
+        <p className="text-xs text-muted-foreground">{description}</p>
         <div className="flex-1 min-h-0 flex gap-3">
           <WidgetCoverageSidebar coverage={widgetCoverage} />
           <Textarea
@@ -2506,7 +2213,7 @@ function AiPromptDialog({ open, onOpenChange, getPrompt, title, description, wid
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
             닫기
           </Button>
-          <Button size="sm" onClick={handleCopy}>
+          <Button size="sm" onClick={handleCopy} disabled={!text}>
             <Copy className="mr-1 h-3 w-3" />
             복사
           </Button>
@@ -2516,19 +2223,23 @@ function AiPromptDialog({ open, onOpenChange, getPrompt, title, description, wid
   )
 }
 
-/** Left-hand sidebar in AiPromptDialog: lists every catalog widget
- *  with a check (등록됨) or X (미등록) so developers can tell at a
- *  glance whether a newly-added widget type still needs an example
- *  section in buildAiPrompt / buildAiPromptV2. */
+/** Left-hand sidebar in AiPromptDialog: lists every catalog widget with
+ *  a check (등록됨) or X (미등록) so the author can tell at a glance
+ *  which widgets the currently-selected prompt covers. The coverage set
+ *  comes from the prompt row itself (`derived_widget_types` /
+ *  `wildcard_all`), so adding a `{{widget:foo}}` token to the body in
+ *  the AI 설정 page is enough — no manual sync with this UI. */
 function WidgetCoverageSidebar({ coverage }) {
-  const { covered, uncovered, total, loading } = coverage
+  const { covered, uncovered, total, loading, wildcardAll } = coverage
   return (
     <div className="w-60 shrink-0 border rounded-md overflow-auto p-2 text-xs bg-muted/20">
       <div className="font-medium">위젯 등록 현황</div>
       <div className="text-[10px] text-muted-foreground mb-2">
         {loading
           ? '카탈로그 불러오는 중…'
-          : `등록 ${covered.length} / 전체 ${total}`}
+          : wildcardAll
+            ? `전체 위젯 포함 (catalog/examples wildcard)`
+            : `등록 ${covered.length} / 전체 ${total}`}
       </div>
       {covered.length > 0 && (
         <div className="space-y-0.5 mb-3">
@@ -2674,24 +2385,35 @@ function PasteJsonDialog({
 }) {
   const [text, setText] = useState('')
   const [err, setErr] = useState('')
+  const [submitting, setSubmitting] = useState(false)
   useEffect(() => {
     if (open) {
       setText('')
       setErr('')
+      setSubmitting(false)
     }
   }, [open])
 
+  // Wraps both sync and async callbacks — `applyImportedDraft` /
+  // `appendImportedAsNewPages` are async now (they fetch the template's
+  // latest version before pushing the new draft) so we resolve the
+  // return value through Promise.resolve before closing the dialog.
   function runWith(fn) {
     if (!text.trim()) {
       setErr('붙여넣을 JSON 내용이 비어 있습니다.')
       return
     }
-    try {
-      fn(text)
-      onOpenChange(false)
-    } catch (e) {
-      setErr(e.message || '실패')
-    }
+    setSubmitting(true)
+    Promise.resolve()
+      .then(() => fn(text))
+      .then(() => {
+        setSubmitting(false)
+        onOpenChange(false)
+      })
+      .catch((e) => {
+        setSubmitting(false)
+        setErr(e?.message || '실패')
+      })
   }
 
   return (
@@ -2731,7 +2453,12 @@ function PasteJsonDialog({
           <p className="text-xs text-destructive whitespace-pre-wrap">{err}</p>
         )}
         <div className="flex justify-end gap-2 pt-2 flex-wrap">
-          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onOpenChange(false)}
+            disabled={submitting}
+          >
             취소
           </Button>
           {onAppendToCurrentPage && (
@@ -2739,6 +2466,7 @@ function PasteJsonDialog({
               variant="outline"
               size="sm"
               onClick={() => runWith(onAppendToCurrentPage)}
+              disabled={submitting}
               title="현재 페이지의 extra_blocks 에 위젯을 추가 (페이지 늘리지 않음)"
             >
               <Plus className="mr-1 h-3 w-3" />
@@ -2750,15 +2478,21 @@ function PasteJsonDialog({
               variant="outline"
               size="sm"
               onClick={() => runWith(onAppendNewPages)}
+              disabled={submitting}
               title="JSON 의 페이지들을 그대로 뒤에 새 페이지로 추가"
             >
               <Plus className="mr-1 h-3 w-3" />
               새 페이지로 추가
             </Button>
           )}
-          <Button size="sm" onClick={() => runWith(onReplace)} title="보고서 전체를 교체">
+          <Button
+            size="sm"
+            onClick={() => runWith(onReplace)}
+            disabled={submitting}
+            title="보고서 전체를 교체"
+          >
             <Upload className="mr-1 h-3 w-3" />
-            전체 교체
+            {submitting ? '처리 중...' : '전체 교체'}
           </Button>
         </div>
       </DialogContent>
@@ -3567,7 +3301,11 @@ function PageSection({
                     onChangePropsOverride?.(block.id, patch)
                   }
                   onToggleAutoFit={
-                    isEditing
+                    // html_embed has no meaningful auto-fit (see
+                    // autoFitForBlock); hiding the toggle prevents
+                    // users from "turning it on" only to see the cell
+                    // immediately collapse.
+                    isEditing && block.type !== 'html_embed'
                       ? (enabled) => onToggleAutoFit?.(block.id, enabled)
                       : undefined
                   }
@@ -3785,11 +3523,50 @@ function getCachedTemplate(map, page) {
   return map.get(`${page.template_id}@${page.template_version}`) ?? null
 }
 
+/** Walk `pages` and replace each page's `template_version` with the
+ *  current latest published version of that page's `template_id`.
+ *  Mutates the page objects in place — callers always run this on a
+ *  freshly-parsed payload that nothing else references yet, so the
+ *  mutation is contained.
+ *
+ *  Same idea as the in-editor `latestVersionByTemplate` cache, but
+ *  applied at paste-time so JSON authored against an older template
+ *  version (whether by a previous v1/v2 prompt run, or by an external
+ *  collaborator) renders against the same baseline the editor would
+ *  use for new reports. On fetch failure we leave the page's original
+ *  version intact — that just means "no improvement", not breakage.
+ */
+async function remapPagesToLatestVersions(pages) {
+  const cache = new Map()
+  for (const page of pages) {
+    const tid = page?.template_id
+    if (!tid) continue
+    if (!cache.has(tid)) {
+      try {
+        const latest = await getLatestTemplate(tid)
+        cache.set(tid, latest?.version ?? null)
+      } catch {
+        cache.set(tid, null)
+      }
+    }
+    const v = cache.get(tid)
+    if (v != null && Number.isFinite(v) && v !== page.template_version) {
+      page.template_version = v
+    }
+  }
+}
+
 /** Parse + validate a `report_archive_draft_v1` payload. Returns the
  *  parsed object on success; throws with a user-readable message on
- *  any structural problem so the dialog caller can show it inline. */
+ *  any structural problem so the dialog caller can show it inline.
+ *
+ *  Includes a pre-parse pass that fixes the single most common LLM
+ *  failure mode for this app — equation widget bodies with single-
+ *  backslash LaTeX commands like `"\sigma"` / `"\frac"` that JSON.parse
+ *  rejects (`Bad escaped character`). See parseJsonWithLatexFix below
+ *  for the exact heuristic. */
 function parseImportPayload(text) {
-  const obj = JSON.parse(text)
+  const obj = parseJsonWithLatexFix(text)
   if (obj?._type !== 'report_archive_draft_v1') {
     throw new Error('지원하지 않는 형식입니다. (_type=report_archive_draft_v1 이어야 합니다.)')
   }
@@ -3799,15 +3576,115 @@ function parseImportPayload(text) {
   return obj
 }
 
+/** Wrap JSON.parse with a single-pass LaTeX-friendly backslash repair.
+ *
+ *  AI responses frequently produce `"\sigma"` / `"\frac{...}"` (single
+ *  backslash) instead of the JSON-correct `"\\sigma"` / `"\\frac{...}"`.
+ *  JSON.parse fails on `\s` (Bad escaped character) and silently
+ *  corrupts `\f` (form feed) / `\b` (backspace) into control chars,
+ *  which then breaks KaTeX rendering downstream.
+ *
+ *  Repair strategy: scan the text, find any odd-length run of
+ *  backslashes immediately before an ASCII letter, and add one more
+ *  backslash so the run is even (= single literal `\` in the resulting
+ *  string). Excludes letters that are unambiguous JSON-only escapes
+ *  (n/r/t/u) so `\n` newlines, `\t` tabs, `\uXXXX` Unicode escapes
+ *  inside genuine prose keep working. `\b` / `\f` are included in the
+ *  fix-up because LaTeX commands like `\beta` / `\frac` start with
+ *  them, and a stray BS/FF char inside a string is extremely unlikely
+ *  in this app's payloads.
+ *
+ *  If the repaired text still won't parse, we fall back to the raw
+ *  text so the user sees the original error, not a derived one. */
+function parseJsonWithLatexFix(text) {
+  const repaired = escapeUnescapedLatexBackslashes(text)
+  try {
+    return JSON.parse(repaired)
+  } catch (e1) {
+    try {
+      return JSON.parse(text)
+    } catch {
+      // Surface the repaired-version error — it's typically more
+      // diagnostic because the LaTeX issues have already been
+      // factored out.
+      throw e1
+    }
+  }
+}
+
+function escapeUnescapedLatexBackslashes(text) {
+  // Letters that we *don't* touch — JSON-only escapes where the LaTeX
+  // confusion case doesn't apply (no common command starts with these
+  // and they're heavily used in real string content).
+  const JSON_ONLY = new Set(['n', 'r', 't', 'u'])
+  const out = []
+  let i = 0
+  while (i < text.length) {
+    if (text[i] !== '\\') {
+      out.push(text[i])
+      i++
+      continue
+    }
+    let run = 0
+    while (i + run < text.length && text[i + run] === '\\') run++
+    const after = text[i + run]
+    const isOdd = run % 2 === 1
+    const looksLikeLatex =
+      after && /[a-zA-Z]/.test(after) && !JSON_ONLY.has(after)
+    if (isOdd && looksLikeLatex) {
+      // Add one more backslash so the run becomes even = one literal
+      // backslash followed by a LaTeX command in the decoded string.
+      out.push('\\'.repeat(run + 1))
+    } else {
+      out.push('\\'.repeat(run))
+    }
+    i += run
+  }
+  return out.join('')
+}
+
 function normalizePage(p) {
+  const extras = Array.isArray(p.extra_blocks) ? p.extra_blocks : []
+  // Default layout for AI-generated graph widgets: half-width + auto-fit
+  // square. AI / JSON imports rarely specify per-block layout, so without
+  // this seed the widgets land in the full-width fallback row and their
+  // square auto-fit shrinks them to a thin strip. By seeding `col_span: 6`
+  // here, each graph occupies half the report width and the autoFit
+  // measurement (clientWidth-based, see PageBlockCard) makes its height
+  // equal to that width — a square the user expects. Only fills in
+  // entries that aren't already in `layout_overrides`.
+  const layoutOverrides = { ...(p.layout_overrides ?? {}) }
+  let layoutChanged = false
+  for (const b of extras) {
+    if (!b?.id || !b?.type) continue
+    // Only graph-style widgets get the half-width + square seed.
+    // html_embed shares the default-OFF behavior but doesn't have a
+    // natural square aspect, so we leave its layout to the user.
+    if (!WIDGETS_SQUARE_AUTOFIT.has(b.type)) continue
+    if (layoutOverrides[b.id]) continue
+    layoutOverrides[b.id] = {
+      // `row` left undefined → falls through to the row=99 fallback in
+      // buildRglItems, which RGL then wraps into rows of two half-width
+      // graphs each.
+      col_span: 6,
+      row_span: AUTO_FIT_INITIAL_ROWS,
+      auto_fit: true,
+    }
+    layoutChanged = true
+  }
   return {
     template_id: p.template_id,
     template_version: p.template_version,
     name: p.name ?? null,
     content: p.content ?? {},
-    layout_overrides: p.layout_overrides ?? null,
+    layout_overrides:
+      layoutChanged || p.layout_overrides
+        ? Object.keys(layoutOverrides).length > 0
+          ? layoutOverrides
+          : null
+        : null,
     props_overrides: p.props_overrides ?? null,
-    extra_blocks: Array.isArray(p.extra_blocks) ? p.extra_blocks : [],
+    extra_blocks: extras,
     blocks_order: Array.isArray(p.blocks_order) ? p.blocks_order : [],
     block_sections:
       p.block_sections && typeof p.block_sections === 'object'
@@ -4442,6 +4319,14 @@ function BlockEditorCard({
   // Compare mouseup vs mousedown position — past ~5px of movement
   // means the user dragged, not clicked.
   const downPosRef = useRef(null)
+  // View-mode "fullscreen" — opens the same Editor (readOnly) inside a
+  // 95vw/95vh dialog so the user can read content the cell would have
+  // had to scroll. Gated by WIDGETS_FULLSCREEN_VIEWER and only in view
+  // (readOnly) mode — edit mode has its own modal editors for the
+  // non-inline-editable widgets.
+  const [fullscreenOpen, setFullscreenOpen] = useState(false)
+  const canFullscreen =
+    readOnly && WIDGETS_FULLSCREEN_VIEWER.has(block.type)
   // Card chrome that adds to the measured `scrollHeight` to produce the
   // final cell height. In edit mode (`showDragHandle` true), the top
   // padding is bumped from pt-4 → pt-9 so the widget's own caption /
@@ -4467,10 +4352,19 @@ function BlockEditorCard({
     const el = measureRef.current
     if (!el) return
     let raf = 0
+    // Graph widgets (chart / scatter / scatter3d / heatmap / radar)
+    // need a real height to paint, and the most "natural" auto-fit
+    // shape for those is a square — driven by the cell's measured
+    // width rather than the (essentially undefined) intrinsic content
+    // height. For non-graph widgets we keep the original scrollHeight
+    // behavior so text/tables still shrink to their actual content.
+    const wantsSquare = WIDGETS_SQUARE_AUTOFIT.has(block.type)
     const measure = () => {
       raf = 0
-      const h = el.scrollHeight
-      if (h > 0) onMeasureContentHeight(h + chromeExtraPx)
+      const reported = wantsSquare
+        ? el.clientWidth || el.offsetWidth
+        : el.scrollHeight
+      if (reported > 0) onMeasureContentHeight(reported + chromeExtraPx)
     }
     const schedule = () => {
       if (raf) return
@@ -4486,7 +4380,14 @@ function BlockEditorCard({
       ro.disconnect()
       mo.disconnect()
     }
-  }, [autoFit, onMeasureContentHeight, content, effectiveProps, chromeExtraPx])
+  }, [
+    autoFit,
+    onMeasureContentHeight,
+    content,
+    effectiveProps,
+    chromeExtraPx,
+    block.type,
+  ])
   useEffect(() => {
     // Edit-mode measurement only — view mode's visible editor *is* the
     // read-only render, so the mirror's measurement already covers it.
@@ -4494,10 +4395,13 @@ function BlockEditorCard({
     const el = contentRef.current
     if (!el) return
     let raf = 0
+    const wantsSquare = WIDGETS_SQUARE_AUTOFIT.has(block.type)
     const measure = () => {
       raf = 0
-      const h = el.scrollHeight
-      if (h > 0) onMeasureEditHeight(h + chromeExtraPx)
+      const reported = wantsSquare
+        ? el.clientWidth || el.offsetWidth
+        : el.scrollHeight
+      if (reported > 0) onMeasureEditHeight(reported + chromeExtraPx)
     }
     const schedule = () => {
       if (raf) return
@@ -4513,7 +4417,15 @@ function BlockEditorCard({
       ro.disconnect()
       mo.disconnect()
     }
-  }, [autoFit, readOnly, onMeasureEditHeight, content, effectiveProps, chromeExtraPx])
+  }, [
+    autoFit,
+    readOnly,
+    onMeasureEditHeight,
+    content,
+    effectiveProps,
+    chromeExtraPx,
+    block.type,
+  ])
 
   if (!renderer) {
     return (
@@ -4825,7 +4737,61 @@ function BlockEditorCard({
           )}
         </div>
       </CardContent>
+      {canFullscreen && (
+        <button
+          type="button"
+          onClick={(e) => {
+            // Don't let the click bubble up to the Card's handler — it
+            // would treat this as a content-area click and try to open
+            // the inline editor (which isn't even reachable in view mode
+            // but is still wired here for safety).
+            e.stopPropagation()
+            setFullscreenOpen(true)
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+          className="absolute right-2 top-2 z-10 inline-flex h-7 w-7 items-center justify-center rounded-md bg-background/70 text-muted-foreground opacity-50 backdrop-blur-sm transition-opacity hover:bg-background hover:text-foreground hover:opacity-100 print:hidden"
+          title="전체화면으로 보기"
+        >
+          <Maximize2 className="h-3.5 w-3.5" />
+        </button>
+      )}
+      {fullscreenOpen && Editor && (
+        <FullscreenWidgetDialog
+          open={fullscreenOpen}
+          onClose={() => setFullscreenOpen(false)}
+          title={effectiveProps?.label || block.type}
+        >
+          <Editor
+            props={effectiveProps}
+            content={content}
+            onChange={NO_OP}
+            readOnly={true}
+            autoFit={false}
+          />
+        </FullscreenWidgetDialog>
+      )}
     </Card>
+  )
+}
+
+/** Big-screen viewer wrapping any widget's Editor in read-only mode.
+ *  95vw / 95vh — enough headroom that even a wide chart breathes, and
+ *  the inner cell takes flex-1 so chart/scatter/iframe widgets fill the
+ *  dialog instead of rendering at their tiny default size. */
+function FullscreenWidgetDialog({ open, onClose, title, children }) {
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="w-[95vw] max-w-[95vw] h-[95vh] max-h-[95vh] flex flex-col overflow-hidden p-4">
+        <DialogHeader className="shrink-0">
+          <DialogTitle className="text-sm font-medium truncate pr-8">
+            {title}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="flex-1 min-h-0 flex flex-col mt-2 report-widget-body">
+          {children}
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -4897,20 +4863,81 @@ const AUTO_FIT_INITIAL_ROWS = 12
 // Widget types whose auto_fit DEFAULTS to false (manual cell size).
 // Charts / scatter / heatmap need a real height to paint — letting
 // content drive the row_span makes them snap small repeatedly while
-// the user edits data, which feels broken. Users can still flip the
-// per-block toggle when they want auto-fit on these.
+// the user edits data, which feels broken. `html_embed` is here too
+// because the iframe content has no measurable intrinsic height from
+// the parent's side, so auto-fit would collapse the cell to a tiny
+// strip. Users can still flip the per-block toggle when they want
+// auto-fit on these.
 const WIDGETS_DEFAULT_NO_AUTOFIT = new Set([
   'chart',
   'scatter',
   'scatter3d',
   'heatmap',
+  'contour',
+  'treemap',
+  'packing',
+  'tree',
+  'pie',
+  'waffle',
+  'box',
+  'radar',
+  'html_embed',
+])
+
+// Subset that wants the auto-fit measurement to track cell *width*
+// (square cell). Pure graph widgets are square-by-convention; html_embed
+// has no natural aspect ratio, so when its auto-fit is explicitly turned
+// on we fall back to the regular scrollHeight measurement instead.
+const WIDGETS_SQUARE_AUTOFIT = new Set([
+  'chart',
+  'scatter',
+  'scatter3d',
+  'heatmap',
+  'contour',
+  'packing',
+  'tree',
+  'pie',
+  'waffle',
+  'box',
+  'radar',
+])
+
+// Widgets that get a "전체화면" affordance in view mode — the cell
+// sometimes can't show the whole content at the report's normal
+// density (long HTML, dense chart, multi-series scatter). The button
+// opens the same widget in a 95vw / 95vh modal so the user can read
+// without scrolling. cad_3d intentionally not here — it ships its
+// own browser-fullscreen toolbar with scene-aware refit logic that
+// the generic modal can't replicate.
+const WIDGETS_FULLSCREEN_VIEWER = new Set([
+  'html_embed',
+  'video',
+  'chart',
+  'scatter',
+  'scatter3d',
+  'heatmap',
+  'contour',
+  'treemap',
+  'packing',
+  'tree',
+  'pie',
+  'waffle',
+  'box',
   'radar',
 ])
 
 /** Resolve whether a block is in auto_fit mode. Explicit `auto_fit`
- *  in the saved layout always wins; absent value falls back to the
- *  per-type default. */
+ *  in the saved layout normally wins; absent value falls back to the
+ *  per-type default.
+ *
+ *  html_embed is hard-coded to false regardless of any stored value:
+ *  the iframe content has no measurable height from the parent side
+ *  (no postMessage handshake) so auto-fit measurement always reports a
+ *  ~0 height and collapses the cell. Legacy widgets that were created
+ *  while the default was still ON would otherwise stay stuck in the
+ *  collapsed state even after dragging the row_span larger. */
 function autoFitForBlock(block, layout) {
+  if (block?.type === 'html_embed') return false
   if (layout && Object.prototype.hasOwnProperty.call(layout, 'auto_fit')) {
     return layout.auto_fit !== false
   }

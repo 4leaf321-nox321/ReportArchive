@@ -190,7 +190,10 @@ export function schemaToDraft(template) {
 export function preflightDraft(draft) {
   const errors = []
   if (!draft.name?.trim()) errors.push('템플릿 이름을 입력하세요.')
-  if (draft.blocks.length === 0) errors.push('블록을 최소 1개 추가하세요.')
+  // 0 blocks is intentionally allowed — a "빈 템플릿" is a valid base
+  // for reports whose entire content arrives later via JSON / AI paste
+  // (the report's own extra_blocks carry every widget). Backend mirrors
+  // this in app/widgets/validation.py.
 
   const seen = new Set()
   const sumByRow = new Map()

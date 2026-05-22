@@ -30,7 +30,7 @@ import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/components/ui/popover'
-import { AxisRangeInput, CaptionInput, LabelField, PreviewLabel, captionSkipProps } from './_shared'
+import { AxisRangeInput, CaptionInput, DataTableActions, LabelField, PreviewLabel, captionSkipProps, toTsv } from './_shared'
 import { usePrintScale } from '@/modules/reports/printContext'
 import {
   AnnotationCountBadge,
@@ -792,8 +792,19 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
             scroll for long row lists so the chart on the left never
             has to shrink to make room. */}
         <div className="space-y-2 min-h-0 overflow-y-auto pr-1">
-        <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold sticky top-0 bg-background pt-0.5 pb-1 z-10">
-          데이터
+        <div className="flex items-center justify-between sticky top-0 bg-background pt-0.5 pb-1 z-10">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+            데이터
+          </div>
+          <DataTableActions
+            label="차트 데이터"
+            onCopy={() => {
+              const header = cols.map((c) => c.label || c.key)
+              const body = rows.map((row) => cols.map((c) => row[c.key]))
+              return toTsv([header, ...body])
+            }}
+            onClear={() => patch({ rows: [] })}
+          />
         </div>
         {/* Horizontal scroll wrapper. Each column has a sensible min
             width so adding more series shifts the table into scroll
@@ -986,7 +997,7 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
           </tbody>
         </table>
       </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Button variant="outline" size="sm" onClick={addRow}>
             <Plus className="mr-1 h-3 w-3" />
             행 추가

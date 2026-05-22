@@ -21,7 +21,17 @@ import { cn } from '@/shared/lib/utils'
 export function DataTable({
   columns,
   data,
+  // Initial page size; if `pageSizeStorageKey` is set and localStorage
+  // already has a saved choice for that key, the saved value wins.
   pageSize = 10,
+  // Available choices for the page-size dropdown. The string 'all'
+  // means "no pagination — show every row on one page".
+  pageSizeOptions = [10, 20, 50, 100, 'all'],
+  // Per-list persistence key. When provided, the user's page-size
+  // selection persists across reloads as
+  //   localStorage[`datatable.pageSize.<key>`]
+  // Different lists in the app can store their own preferred page size.
+  pageSizeStorageKey,
   searchableKeys,
   searchPlaceholder = '검색...',
   onRowClick,
@@ -31,10 +41,64 @@ export function DataTable({
   // pill so per-page filters can share the toolbar row instead of stacking
   // on top of it.
   toolbarExtras,
+  // When true, the table uses `table-layout: fixed` so column widths are
+  // driven entirely by the column definitions (`headerClassName: 'w-…'`)
+  // rather than by the content of the current page. Without this, each
+  // page's content length determines column widths, so flipping pages
+  // makes the layout shift around — bad UX on long lists. Title-style
+  // columns (the one without an explicit width) absorb the remainder.
+  fixedLayout = false,
+  // Initial sort applied on mount. The user can still click headers
+  // to override. Without this, rows render in whatever order `data`
+  // arrives — usually backend's `ORDER BY updated_at DESC` for our
+  // list endpoints, which doesn't match user expectations on a board
+  // where IDs are the visible primary key.
+  defaultSort,
 }) {
   const [query, setQuery] = React.useState('')
-  const [sort, setSort] = React.useState({ key: null, dir: 'asc' })
+  const [sort, setSort] = React.useState(
+    defaultSort ?? { key: null, dir: 'asc' },
+  )
   const [page, setPage] = React.useState(1)
+  const [pageSizeState, setPageSizeState] = React.useState(() => {
+    // Lazy initializer — read the persisted value once. Validate against
+    // pageSizeOptions so an old value that's no longer offered doesn't
+    // permanently break the table.
+    if (pageSizeStorageKey && typeof window !== 'undefined') {
+      try {
+        const raw = window.localStorage.getItem(
+          `datatable.pageSize.${pageSizeStorageKey}`,
+        )
+        if (raw != null) {
+          const parsed = raw === 'all' ? 'all' : Number(raw)
+          if (pageSizeOptions.includes(parsed)) return parsed
+        }
+      } catch {
+        // localStorage can throw in private modes / disabled storage —
+        // fall through to the default and don't bother the user.
+      }
+    }
+    return pageSize
+  })
+
+  // Persist any subsequent change. The first-render write is harmless
+  // (same value the lazy init produced) and keeps the code symmetric.
+  React.useEffect(() => {
+    if (!pageSizeStorageKey || typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(
+        `datatable.pageSize.${pageSizeStorageKey}`,
+        String(pageSizeState),
+      )
+    } catch {
+      /* ignore */
+    }
+  }, [pageSizeState, pageSizeStorageKey])
+
+  // Internal numeric value used for slicing — 'all' means "one giant
+  // page with everything." Infinity makes the pagination math collapse
+  // naturally (totalPages = 1, slice(0, Infinity) = everything).
+  const effectivePageSize = pageSizeState === 'all' ? Infinity : pageSizeState
 
   const filtered = React.useMemo(() => {
     if (!query.trim()) return data
@@ -63,9 +127,12 @@ export function DataTable({
     })
   }, [filtered, sort, columns])
 
-  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize))
+  const totalPages = Math.max(1, Math.ceil(sorted.length / effectivePageSize))
   const safePage = Math.min(page, totalPages)
-  const pageRows = sorted.slice((safePage - 1) * pageSize, safePage * pageSize)
+  const pageRows = sorted.slice(
+    (safePage - 1) * effectivePageSize,
+    safePage * effectivePageSize,
+  )
 
   function toggleSort(key) {
     setSort((prev) => {
@@ -95,7 +162,7 @@ export function DataTable({
       </div>
 
       <div className="rounded-md border">
-        <Table>
+        <Table className={fixedLayout ? 'table-fixed' : undefined}>
           <TableHeader>
             <TableRow>
               {columns.map((col) => (
@@ -152,26 +219,49 @@ export function DataTable({
         </Table>
       </div>
 
-      <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
-        <span>
-          {safePage} / {totalPages}
-        </span>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={safePage <= 1}
-          onClick={() => setPage((p) => Math.max(1, p - 1))}
-        >
-          이전
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={safePage >= totalPages}
-          onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-        >
-          다음
-        </Button>
+      <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground flex-wrap">
+        <label className="inline-flex items-center gap-1.5">
+          <span>페이지 크기:</span>
+          <select
+            value={pageSizeState}
+            onChange={(e) => {
+              const raw = e.target.value
+              const next = raw === 'all' ? 'all' : Number(raw)
+              setPageSizeState(next)
+              // Reset to first page on size change — page index from
+              // the previous size usually doesn't map anywhere useful.
+              setPage(1)
+            }}
+            className="h-7 rounded border border-input bg-background px-1.5 text-xs"
+          >
+            {pageSizeOptions.map((opt) => (
+              <option key={String(opt)} value={String(opt)}>
+                {opt === 'all' ? '전체' : opt}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="flex items-center gap-2">
+          <span>
+            {safePage} / {totalPages}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={safePage <= 1}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+          >
+            이전
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={safePage >= totalPages}
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+          >
+            다음
+          </Button>
+        </div>
       </div>
     </div>
   )

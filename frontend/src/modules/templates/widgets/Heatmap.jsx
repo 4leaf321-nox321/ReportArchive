@@ -26,9 +26,11 @@ import { Label } from '@/shared/components/ui/label'
 import {
   AxisRangeInput,
   CaptionInput,
+  DataTableActions,
   LabelField,
   PreviewLabel,
   captionSkipProps,
+  toTsv,
 } from './_shared'
 
 const COLORSCALE_OPTIONS = [
@@ -436,7 +438,21 @@ export function HeatmapEditor({ props, content, onChange, readOnly, autoFit }) {
         {/* Data entry — top-left corner accepts headered paste, body
             cells accept body-only paste. */}
         <div className="min-h-0 overflow-y-auto pr-1">
-          <div className="text-xs font-semibold text-muted-foreground mb-1">데이터</div>
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-xs font-semibold text-muted-foreground">데이터</div>
+            <DataTableActions
+              label="히트맵 데이터"
+              onCopy={() => {
+                const header = ['', ...xLabels]
+                const body = matrix.map((row, i) => [yLabels[i] ?? '', ...row])
+                return toTsv([header, ...body])
+              }}
+              onClear={() => {
+                const emptyMatrix = matrix.map((row) => row.map(() => null))
+                patch({ matrix: emptyMatrix })
+              }}
+            />
+          </div>
           <div className="overflow-x-auto">
             <table className="text-xs">
               <thead>
@@ -719,11 +735,16 @@ function HeatmapCanvas({
           : { height: '100%', minHeight: '12rem' }
       }
     >
-      <div ref={containerRef} className="absolute inset-0" />
-      {resizing && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center text-[11px] text-muted-foreground bg-muted/20">
+      {resizing ? (
+        // Drop the plot during cell drag — Plotly's heatmap re-paint is
+        // heavy enough that keeping it visible visibly stutters under
+        // RGL's per-frame resize events. Same trade-off Chart / Contour
+        // make.
+        <div className="w-full h-full flex items-center justify-center text-[11px] text-muted-foreground bg-muted/20 rounded-md">
           크기 조정 중…
         </div>
+      ) : (
+        <div ref={containerRef} className="absolute inset-0" />
       )}
     </div>
   )

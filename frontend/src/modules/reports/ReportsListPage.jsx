@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus } from 'lucide-react'
+import { Plus, ShieldCheck, ShieldQuestion } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 import { Badge } from '@/shared/components/ui/badge'
 import { DataTable } from '@/shared/components/DataTable'
@@ -70,14 +70,52 @@ export default function ReportsListPage() {
     .map((r) => ({
       ...r,
       workspace_name: workspaceName(r.workspace_slug),
+      // Flatten the embedded report_type ref into a sortable/searchable
+      // string so DataTable's column sort + substring search both work
+      // without bespoke comparators. `report_type` itself is kept around
+      // for the cell renderer's badge.
+      report_type_name: r.report_type?.name ?? '',
     }))
 
+  // Column widths are pinned so page navigation doesn't reflow them.
+  // 제목 stays flexible (no explicit width) so it absorbs whatever
+  // space the fixed-width columns don't take. The "max content" of
+  // 상태 / 작성자 / 부서 / 날짜 columns is short, so keeping them
+  // tight here makes the title cell read longer.
   const columns = [
-    { key: 'title', header: '제목', sortable: true, cellClassName: 'font-medium' },
+    {
+      // Report's DB id — stable, matches the URL the row navigates to,
+      // and survives sort/filter changes (unlike a derived "row index"
+      // would). Sortable so users can quickly find a report they
+      // remember by number.
+      key: 'id',
+      header: '번호',
+      sortable: true,
+      headerClassName: 'w-[64px] text-right',
+      cellClassName: 'text-right',
+      render: (r) => (
+        <span className="text-xs text-muted-foreground tabular-nums">
+          {r.id}
+        </span>
+      ),
+    },
+    {
+      key: 'title',
+      header: '제목',
+      sortable: true,
+      cellClassName: 'font-medium truncate',
+      render: (r) => (
+        <span className="block truncate" title={r.title}>
+          {r.title}
+        </span>
+      ),
+    },
     {
       key: 'template_id',
       header: '템플릿',
       sortable: true,
+      headerClassName: 'w-[180px]',
+      cellClassName: 'truncate',
       render: (r) => {
         // Multi-page reports may bind a different template per page. Show
         // every distinct (template_id, version) pair so the list reflects
@@ -90,7 +128,7 @@ export default function ReportsListPage() {
         const fullText = labels.join(', ')
         return (
           <span
-            className="block truncate text-xs text-muted-foreground max-w-[260px]"
+            className="block truncate text-xs text-muted-foreground"
             title={fullText}
           >
             {fullText}
@@ -99,12 +137,45 @@ export default function ReportsListPage() {
       },
     },
     {
+      key: 'report_type_name',
+      header: '종류',
+      sortable: true,
+      headerClassName: 'w-[140px]',
+      cellClassName: 'truncate',
+      render: (r) => {
+        const t = r.report_type
+        if (!t) return <span className="text-xs text-muted-foreground/60">—</span>
+        const isUnofficial = t.status === 'unofficial'
+        return (
+          <span
+            className="inline-flex items-center gap-1 text-xs"
+            title={t.description || t.name}
+          >
+            {isUnofficial ? (
+              <ShieldQuestion
+                className="h-3 w-3 text-muted-foreground shrink-0"
+                aria-label="비공식"
+              />
+            ) : (
+              <ShieldCheck
+                className="h-3 w-3 text-emerald-600 shrink-0"
+                aria-label="공식"
+              />
+            )}
+            <span className="truncate">{t.name}</span>
+          </span>
+        )
+      },
+    },
+    {
       key: 'workspace_slug',
       header: '부서',
       sortable: true,
+      headerClassName: 'w-[110px]',
+      cellClassName: 'truncate',
       render: (r) => (
         <span
-          className="text-xs text-muted-foreground"
+          className="block truncate text-xs text-muted-foreground"
           title={r.workspace_slug}
         >
           {workspaceName(r.workspace_slug)}
@@ -115,15 +186,18 @@ export default function ReportsListPage() {
       key: 'status',
       header: '상태',
       sortable: true,
+      headerClassName: 'w-[88px]',
       render: (r) => <Badge variant={STATUS_VARIANT[r.status]}>{STATUS_LABEL[r.status]}</Badge>,
     },
     {
       key: 'owner_name',
       header: '작성자',
       sortable: true,
+      headerClassName: 'w-[110px]',
+      cellClassName: 'truncate',
       render: (r) => (
         <span
-          className="text-xs text-muted-foreground"
+          className="block truncate text-xs text-muted-foreground"
           title={r.owner_email ? `${r.owner_name} (${r.owner_email})` : undefined}
         >
           {r.owner_name ?? '—'}
@@ -134,6 +208,7 @@ export default function ReportsListPage() {
       key: 'updated_at',
       header: '수정일',
       sortable: true,
+      headerClassName: 'w-[100px]',
       render: (r) => (
         <span
           className="text-xs text-muted-foreground whitespace-nowrap"
@@ -151,6 +226,7 @@ export default function ReportsListPage() {
       key: 'report_date',
       header: '보고 기준일',
       sortable: true,
+      headerClassName: 'w-[110px]',
       render: (r) => (
         <span className="text-xs text-muted-foreground whitespace-nowrap font-mono">
           {r.report_date ?? '—'}
@@ -184,8 +260,13 @@ export default function ReportsListPage() {
         <DataTable
           columns={columns}
           data={list}
-          searchableKeys={['title', 'template_id', 'workspace_slug', 'workspace_name', 'owner_name', 'owner_email']}
-          searchPlaceholder="제목, 템플릿, 부서, 작성자 검색"
+          fixedLayout
+          // 번호 큰 순 (최신 보고서가 위) — 게시판 번호 mental model
+          // 에 맞춤. 사용자는 컬럼 헤더 클릭으로 다른 키로 바꿀 수 있음.
+          defaultSort={{ key: 'id', dir: 'desc' }}
+          pageSizeStorageKey="reports"
+          searchableKeys={['title', 'template_id', 'workspace_slug', 'workspace_name', 'owner_name', 'owner_email', 'report_type_name']}
+          searchPlaceholder="제목, 템플릿, 부서, 작성자, 종류 검색"
           onRowClick={(r) => navigate(`/w/${slug}/reports/${r.id}`)}
           toolbarExtras={
             <FilterBar

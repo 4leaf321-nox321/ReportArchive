@@ -1,6 +1,6 @@
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { CaptionInput, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, PreviewLabel, TextStyleField, captionSkipProps, textStyleToClassName, textStyleToInlineStyle } from './_shared'
+import { CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, PreviewLabel, TextStyleField, captionSkipProps, textStyleToClassName, textStyleToInlineStyle, toTsv } from './_shared'
 
 export function TablePropsPanel({ props, onChange }) {
   return (
@@ -312,6 +312,17 @@ export function TableEditor({ props, content, onChange, readOnly }) {
         placeholder={props.label}
         {...captionSkipProps({ content, patch })}
       />
+      <div className="flex justify-end">
+        <DataTableActions
+          label="표 데이터"
+          onCopy={() => {
+            const header = cols.map((c) => c.label || c.key)
+            const body = rows.map((row) => cols.map((c) => row[c.key]))
+            return toTsv([header, ...body])
+          }}
+          onClear={() => patch({ rows: [] })}
+        />
+      </div>
       <div className={`overflow-x-auto rounded-md border ${bodyTextClass}`} style={bodyTextStyle}>
         {/* Edit mode: same column structure as the read-only render. Row
             action buttons (move/delete) and per-column delete render as
@@ -427,7 +438,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           </tbody>
         </table>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <Button
           variant="outline"
           size="sm"

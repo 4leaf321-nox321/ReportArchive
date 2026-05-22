@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Info, Settings2 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
@@ -12,6 +13,8 @@ import {
   DialogTitle,
 } from '@/shared/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs'
+import { listEntityTypes } from '@/shared/api/entities'
+import { EntityMultiPicker } from '@/modules/entities/EntityMultiPicker'
 import { ReportTypePicker } from './ReportTypePicker'
 
 /**
@@ -58,6 +61,11 @@ export function ReportSettingsDialog({
   showPropertiesTab = false,
   currentTypeId = null,
   currentType = null,
+  // 보고서가 현재 태깅된 엔티티(슬림 EntityRefMini 배열). 다이얼로그가
+  // 열릴 때 draft 시드값으로 쓰이고, 사용자가 picker로 칩을 변경하면
+  // dirty 가 되어 적용 시 onApplyEntities 로 위로 전달된다. null/빈
+  // 배열이면 아무것도 태깅되지 않은 보고서.
+  currentEntities = null,
   // 보고서 메타데이터 (read-only로 표시). owner_name, owner_email,
   // workspace_slug, report_date, status, created_at, updated_at,
   // updated_by_name 등을 키로 가지는 평면 객체. 일부 키가 비어 있으면
@@ -68,6 +76,7 @@ export function ReportSettingsDialog({
   onApplyWidth,
   onApplyGap,
   onApplyType,
+  onApplyEntities,
 }) {
   if (!open) return null
   return (
@@ -87,11 +96,13 @@ export function ReportSettingsDialog({
           showPropertiesTab={showPropertiesTab}
           currentTypeId={currentTypeId}
           currentType={currentType}
+          currentEntities={currentEntities}
           metadata={metadata}
           onClose={onClose}
           onApplyWidth={onApplyWidth}
           onApplyGap={onApplyGap}
           onApplyType={onApplyType}
+          onApplyEntities={onApplyEntities}
         />
       </DialogContent>
     </Dialog>
@@ -111,14 +122,17 @@ function DialogBody({
   showPropertiesTab,
   currentTypeId,
   currentType,
+  currentEntities,
   metadata,
   onClose,
   onApplyWidth,
   onApplyGap,
   onApplyType,
+  onApplyEntities,
 }) {
   const initialWidth = Number.isFinite(currentWidthPx) ? currentWidthPx : null
   const initialGap = Number.isFinite(currentGapPx) ? currentGapPx : null
+  const initialEntities = Array.isArray(currentEntities) ? currentEntities : []
   const [widthDraft, setWidthDraft] = useState(initialWidth)
   const [widthValid, setWidthValid] = useState(true)
   const [gapDraft, setGapDraft] = useState(initialGap)
@@ -127,18 +141,30 @@ function DialogBody({
     id: currentTypeId ?? null,
     ref: currentType ?? null,
   })
+  // Flat list of slim EntityRefMini — same shape as the server emits on
+  // ReportRead.entities. Picker groups by type_slug at render-time.
+  const [entitiesDraft, setEntitiesDraft] = useState(initialEntities)
 
   const widthChanged = (widthDraft ?? null) !== (currentWidthPx ?? null)
   const gapChanged = (gapDraft ?? null) !== (currentGapPx ?? null)
   const typeChanged = (typeDraft.id ?? null) !== (currentTypeId ?? null)
+  // Compare on the sorted id-set — order in the array is irrelevant to
+  // the saved state (the backend stores it as an unordered link table).
+  const entitiesChanged = useMemo(
+    () => !sameIdSet(entitiesDraft, initialEntities),
+    [entitiesDraft, initialEntities],
+  )
   const dirty =
-    widthChanged || gapChanged || (showPropertiesTab && typeChanged)
+    widthChanged ||
+    gapChanged ||
+    (showPropertiesTab && (typeChanged || entitiesChanged))
 
   function handleApply() {
     if (!widthValid || !gapValid) return
     if (widthChanged) onApplyWidth?.(widthDraft ?? null)
     if (gapChanged) onApplyGap?.(gapDraft ?? null)
     if (showPropertiesTab && typeChanged) onApplyType?.(typeDraft)
+    if (showPropertiesTab && entitiesChanged) onApplyEntities?.(entitiesDraft)
     onClose()
   }
 
@@ -181,6 +207,8 @@ function DialogBody({
             <ReportSettingsPropertiesTab
               draft={typeDraft}
               onChange={setTypeDraft}
+              entitiesDraft={entitiesDraft}
+              onEntitiesChange={setEntitiesDraft}
               metadata={metadata}
             />
           </TabsContent>
@@ -434,7 +462,13 @@ function InlineGapControl({ value, defaultPx, onChange }) {
  * 푸시는 dialog footer의 "적용"이 담당. 메타 섹션은 보고서 작성자·부서·
  * 일시 등 서버 권위 정보라 편집 UI 없이 표시만 한다.
  */
-function ReportSettingsPropertiesTab({ draft, onChange, metadata }) {
+function ReportSettingsPropertiesTab({
+  draft,
+  onChange,
+  entitiesDraft,
+  onEntitiesChange,
+  metadata,
+}) {
   function handlePick(typeOrNull) {
     if (typeOrNull == null) {
       onChange({ id: null, ref: null })
@@ -444,12 +478,12 @@ function ReportSettingsPropertiesTab({ draft, onChange, metadata }) {
   }
 
   // The whole tab scrolls as one column — the type picker has its own
-  // internal scroll for the result grid (min-h-[18rem]), and the metadata
-  // section sits below. If both together exceed the modal body, this
-  // outer overflow-y-auto kicks in so the read-only rows are never
-  // clipped off-screen. px-1 keeps a small breathing room on both
-  // sides so the boxed sub-sections aren't flush with the modal edge
-  // (which read as "clipped on the left" in the prior layout).
+  // internal scroll for the result grid (min-h-[18rem]), entity tags
+  // sit below as compact one-line rows, and the metadata section is
+  // last. If everything together exceeds the modal body, this outer
+  // overflow-y-auto kicks in so the read-only rows are never clipped
+  // off-screen. px-1 keeps a small breathing room on both sides so the
+  // boxed sub-sections aren't flush with the modal edge.
   return (
     <div className="flex flex-1 min-h-0 flex-col gap-4 overflow-y-auto px-1">
       <div className="flex flex-col gap-1.5">
@@ -458,6 +492,14 @@ function ReportSettingsPropertiesTab({ draft, onChange, metadata }) {
           value={draft.id}
           currentType={draft.ref}
           onChange={handlePick}
+        />
+      </div>
+      <Separator />
+      <div className="flex flex-col gap-1.5">
+        <SectionLabel>관련 정보</SectionLabel>
+        <EntityTagsSection
+          entities={entitiesDraft}
+          onChange={onEntitiesChange}
         />
       </div>
       {metadata && (
@@ -473,6 +515,93 @@ function ReportSettingsPropertiesTab({ draft, onChange, metadata }) {
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+/**
+ * One row per axis (모델명/부품명/BOM/단계/불량/시험/시뮬레이션). Loads
+ * the axis catalog on first mount — small (~7 rows) + stable so a single
+ * fetch per dialog open is fine. While loading, the section shows a
+ * subtle placeholder rather than collapsing entirely (avoids a layout
+ * shift when the data arrives).
+ */
+function EntityTagsSection({ entities, onChange }) {
+  const [types, setTypes] = useState(null) // null = loading, [] = empty (impossible post-seed but safe)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    listEntityTypes()
+      .then((res) => {
+        if (cancelled) return
+        setTypes(res?.items ?? [])
+      })
+      .catch((e) => {
+        if (cancelled) return
+        setError(e)
+        toast.error('축 목록 불러오기 실패', {
+          description: String(e?.message ?? e),
+        })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Group selected entities by type_slug — O(n) once per render. The
+  // picker is controlled per-axis so swapping one row's list back into
+  // the flat draft means filtering out the old axis values and
+  // concatenating the new ones.
+  const byTypeSlug = useMemo(() => {
+    const m = new Map()
+    for (const e of entities || []) {
+      const slug = e.type_slug ?? ''
+      if (!m.has(slug)) m.set(slug, [])
+      m.get(slug).push(e)
+    }
+    return m
+  }, [entities])
+
+  function setAxisValue(slug, nextList) {
+    const others = (entities || []).filter((e) => (e.type_slug ?? '') !== slug)
+    onChange?.([...others, ...nextList])
+  }
+
+  if (types === null) {
+    return (
+      <p className="text-xs text-muted-foreground">축 목록 불러오는 중...</p>
+    )
+  }
+  if (error) {
+    return (
+      <p className="text-xs text-destructive">
+        축 목록을 불러올 수 없습니다. 새로고침 후 다시 시도하세요.
+      </p>
+    )
+  }
+  if (types.length === 0) {
+    return (
+      <p className="text-xs text-muted-foreground">등록된 축이 없습니다.</p>
+    )
+  }
+
+  return (
+    <div className="space-y-2">
+      {types.map((t) => (
+        <div key={t.id} className="flex items-start gap-3">
+          <Label className="w-24 shrink-0 pt-1.5 text-xs text-muted-foreground">
+            {t.label}
+          </Label>
+          <div className="min-w-0 flex-1">
+            <EntityMultiPicker
+              type={t}
+              value={byTypeSlug.get(t.slug) ?? []}
+              onChange={(next) => setAxisValue(t.slug, next)}
+            />
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
@@ -553,4 +682,20 @@ function formatDateTime(iso) {
   if (Number.isNaN(d.getTime())) return ''
   const pad = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/**
+ * Returns true when two slim entity lists tag the same set of ids,
+ * regardless of order. The backend stores links in an unordered M:N
+ * table, so the dirty check should match that semantic — sorting both
+ * lists before comparing avoids spurious "dirty" after a pure reorder.
+ */
+function sameIdSet(a, b) {
+  const aIds = (Array.isArray(a) ? a : []).map((e) => e.id).sort()
+  const bIds = (Array.isArray(b) ? b : []).map((e) => e.id).sort()
+  if (aIds.length !== bIds.length) return false
+  for (let i = 0; i < aIds.length; i += 1) {
+    if (aIds[i] !== bIds[i]) return false
+  }
+  return true
 }

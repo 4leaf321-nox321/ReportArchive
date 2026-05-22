@@ -234,6 +234,10 @@ export default function ReportDetailPage() {
         page_gap_px: seededGap,
         report_type_id: null,
         report_type: null,
+        // Entity tags (모델/부품/BOM/단계/불량/시험/시뮬레이션) — starts
+        // empty on new reports; user picks values in 보고서 설정 → 속성.
+        // Same slim EntityRefMini shape the backend returns on ReportRead.
+        entities: [],
         pages: [
           {
             template_id: seedTemplate.template_id,
@@ -285,6 +289,10 @@ export default function ReportDetailPage() {
         // can show the name/status without a second roundtrip.
         report_type_id: existingReport.report_type_id ?? null,
         report_type: existingReport.report_type ?? null,
+        // Entity tags — slim EntityRefMini list pre-flattened by the
+        // backend; the settings dialog re-renders chips from it without
+        // a second fetch. Mutated via onApplyEntities below.
+        entities: existingReport.entities ?? [],
         pages,
       })
       setCurrentPage((p) => clamp(p, 0, pages.length - 1))
@@ -1028,6 +1036,11 @@ export default function ReportDetailPage() {
         // schema uses `exclude_unset`, so always sending the key (even
         // when null) is the explicit "clear" signal.
         report_type_id: draft.report_type_id ?? null,
+        // Entity tags — full replacement set every save (the backend
+        // diffs against existing report_entities and rewrites). Empty
+        // array clears all tags; sending the field unconditionally keeps
+        // the create/update paths symmetric.
+        entity_ids: (draft.entities ?? []).map((e) => e.id),
       }
       if (isNew) {
         const created = await createReport({
@@ -1106,6 +1119,15 @@ export default function ReportDetailPage() {
         report_date: existingReport.report_date ?? todayIsoDate(),
         tags: existingReport.tags ?? [],
         status: existingReport.status,
+        // Restore from server snapshot so cancelling an edit reverts
+        // any chip changes the user made in the settings dialog
+        // (the dialog applies into draft *before* save commits).
+        report_type_id: existingReport.report_type_id ?? null,
+        report_type: existingReport.report_type ?? null,
+        entities: existingReport.entities ?? [],
+        page_width_px: existingReport.page_width_px ?? null,
+        page_gap_px: existingReport.page_gap_px ?? null,
+        revision: existingReport.revision ?? 1,
         pages,
       })
       setCurrentPage((p) => clamp(p, 0, pages.length - 1))
@@ -1170,6 +1192,10 @@ export default function ReportDetailPage() {
         page_gap_px: Number.isFinite(draft.page_gap_px) ? draft.page_gap_px : null,
         // The 종류 tag follows the copy too — same reasoning as width.
         report_type_id: draft.report_type_id ?? null,
+        // Entity tags follow the copy as well — the new report inherits
+        // the same model/part/BOM/단계/etc. tagging the user already
+        // confirmed on the source. Cleared/edited in 보고서 설정.
+        entity_ids: (draft.entities ?? []).map((e) => e.id),
       })
       toast.success('보고서가 복사되었습니다.')
       setCopyOpen(false)
@@ -2013,6 +2039,7 @@ export default function ReportDetailPage() {
         showPropertiesTab
         currentTypeId={draft?.report_type_id ?? null}
         currentType={draft?.report_type ?? null}
+        currentEntities={draft?.entities ?? []}
         metadata={
           // draft holds the user-editable subset (title/status/report_date);
           // owner/workspace/timestamps are server-authoritative and only
@@ -2138,6 +2165,13 @@ export default function ReportDetailPage() {
         }}
         onApplyType={({ id, ref }) => {
           setDraft((d) => (d ? { ...d, report_type_id: id, report_type: ref } : d))
+        }}
+        onApplyEntities={(entities) => {
+          // Slim EntityRefMini[] handed back from the dialog. Persisted on
+          // save via entity_ids in the PATCH payload (above); held here
+          // so the dialog re-opens with the user's draft chips intact
+          // even before they save.
+          setDraft((d) => (d ? { ...d, entities } : d))
         }}
       />
 

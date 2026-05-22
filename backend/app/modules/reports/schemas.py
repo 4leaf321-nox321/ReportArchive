@@ -191,6 +191,9 @@ class ReportRead(BaseModel):
     # narrow default (~1024px). Set via the report's empty-area right-click
     # menu; capped client-side at 3000.
     page_width_px: Optional[int] = Field(default=None, ge=320, le=3000)
+    # Per-report vertical gap (px) between top-level widget rows. None →
+    # frontend default. Set via 보고서 설정 → 페이지 설정 → 위젯 간격.
+    page_gap_px: Optional[int] = Field(default=None, ge=0, le=200)
     # Optional report-type tag. `report_type_id` is the raw FK; the
     # embedded `report_type` carries name/description/status so the
     # frontend doesn't need a separate /api/report-types/<id> call.
@@ -281,6 +284,9 @@ class ReportCreate(BaseModel):
     pages: Optional[list[ReportPage]] = None
     # Per-report content max-width in pixels. None → frontend default.
     page_width_px: Optional[int] = Field(default=None, ge=320, le=3000)
+    # Per-report vertical gap (px) between top-level widget rows. None →
+    # frontend default.
+    page_gap_px: Optional[int] = Field(default=None, ge=0, le=200)
     # Optional FK to a report_types row. Created via the picker dialog;
     # may be null (no tag).
     report_type_id: Optional[int] = None
@@ -301,6 +307,9 @@ class ReportUpdate(BaseModel):
     # Per-report content max-width in pixels. None resets to the frontend
     # default; an integer (320–3000) sets the cap.
     page_width_px: Optional[int] = Field(default=None, ge=320, le=3000)
+    # Per-report vertical gap (px) between top-level widget rows. None
+    # resets to the frontend default; an integer (0–200) sets the gap.
+    page_gap_px: Optional[int] = Field(default=None, ge=0, le=200)
     # Optional report-type FK. The field is consulted via model_dump's
     # `exclude_unset` so an explicit `null` clears the tag while an
     # absent key leaves the existing value alone.

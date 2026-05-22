@@ -63,6 +63,7 @@ import {
 import { useReportLock } from './useReportLock'
 import {
   DEFAULT_REPORT_WIDTH_PX,
+  DEFAULT_REPORT_GAP_PX,
   ReportSettingsDialog,
 } from './ReportSettingsDialog'
 import {
@@ -213,7 +214,7 @@ export default function ReportDetailPage() {
         location.state.initialTitle.trim()
           ? location.state.initialTitle.trim()
           : '새 보고서'
-      // Inherit per-template defaults (currently just page_width_px).
+      // Inherit per-template defaults (page_width_px, page_gap_px).
       // Lives on the template's schema doc under `report_defaults` —
       // every template version carries its own copy, so new reports
       // bound to that version pick up the same starting point.
@@ -221,12 +222,16 @@ export default function ReportDetailPage() {
       const seededWidth = Number.isFinite(tplDefaults?.page_width_px)
         ? tplDefaults.page_width_px
         : null
+      const seededGap = Number.isFinite(tplDefaults?.page_gap_px)
+        ? tplDefaults.page_gap_px
+        : null
       setDraft({
         title: seededTitle,
         report_date: todayIsoDate(),
         status: 'draft',
         tags: [],
         page_width_px: seededWidth,
+        page_gap_px: seededGap,
         report_type_id: null,
         report_type: null,
         pages: [
@@ -273,6 +278,8 @@ export default function ReportDetailPage() {
         // default at render; the right-click "보고서 폭 설정" dialog
         // writes here when the user picks a custom value.
         page_width_px: existingReport.page_width_px ?? null,
+        // Per-report widget gap. null → frontend default (DEFAULT_REPORT_GAP_PX).
+        page_gap_px: existingReport.page_gap_px ?? null,
         // 보고서 종류 — picker writes the FK + embedded ref so the
         // settings dialog (and the list view, once we rerender it)
         // can show the name/status without a second roundtrip.
@@ -855,6 +862,12 @@ export default function ReportDetailPage() {
     const blocks = combinedBlocks(tpl, page)
     const curOverrides = page?.layout_overrides ?? {}
     const pageContentHeights = contentHeightsByPage[pageIdx] ?? {}
+    // Mirror PageSection's effectiveRowGap: per-report draft override wins,
+    // otherwise REPORT_ROW_GAP. Keeps the saved row_span in sync with the
+    // actual rendered gap between cells.
+    const effectiveRowGap = Number.isFinite(draft.page_gap_px)
+      ? draft.page_gap_px
+      : REPORT_ROW_GAP
 
     // Group blocks by visual row (RGL y), then assign sequential row
     // numbers. Within a single y-group, split into multiple logical
@@ -907,7 +920,7 @@ export default function ReportDetailPage() {
         rowSpan = Math.max(
           1,
           Math.ceil(
-            (contentPx + REPORT_ROW_GAP) / (REPORT_ROW_HEIGHT + REPORT_ROW_GAP)
+            (contentPx + effectiveRowGap) / (REPORT_ROW_HEIGHT + effectiveRowGap)
           )
         )
       }
@@ -1010,6 +1023,7 @@ export default function ReportDetailPage() {
         // null clears the per-report override and falls back to the
         // frontend's narrow default at render time.
         page_width_px: Number.isFinite(draft.page_width_px) ? draft.page_width_px : null,
+        page_gap_px: Number.isFinite(draft.page_gap_px) ? draft.page_gap_px : null,
         // 보고서 종류 — null clears the tag. The backend's update
         // schema uses `exclude_unset`, so always sending the key (even
         // when null) is the explicit "clear" signal.
@@ -1153,6 +1167,7 @@ export default function ReportDetailPage() {
         // Carry the source report's width preference into the copy so the
         // user sees the same layout immediately.
         page_width_px: Number.isFinite(draft.page_width_px) ? draft.page_width_px : null,
+        page_gap_px: Number.isFinite(draft.page_gap_px) ? draft.page_gap_px : null,
         // The 종류 tag follows the copy too — same reasoning as width.
         report_type_id: draft.report_type_id ?? null,
       })
@@ -1841,6 +1856,7 @@ export default function ReportDetailPage() {
                     onChangeSection={(blockId, code) => setBlockSection(idx, blockId, code)}
                     sectionCategories={sectionCategories}
                     sectionItemByCode={sectionItemByCode}
+                    rowGapPx={draft.page_gap_px}
                   />
                 ))
               : (
@@ -1884,6 +1900,7 @@ export default function ReportDetailPage() {
                     }
                     sectionCategories={sectionCategories}
                     sectionItemByCode={sectionItemByCode}
+                    rowGapPx={draft.page_gap_px}
                   />
                 )}
 
@@ -1991,6 +2008,8 @@ export default function ReportDetailPage() {
         open={settingsDialogOpen}
         currentWidthPx={draft?.page_width_px ?? null}
         defaultWidthPx={DEFAULT_REPORT_WIDTH_PX}
+        currentGapPx={draft?.page_gap_px ?? null}
+        defaultGapPx={DEFAULT_REPORT_GAP_PX}
         showPropertiesTab
         currentTypeId={draft?.report_type_id ?? null}
         currentType={draft?.report_type ?? null}
@@ -2017,10 +2036,105 @@ export default function ReportDetailPage() {
         }
         onClose={() => setSettingsDialogOpen(false)}
         onApplyWidth={(px) => {
-          // Dialog batches width + type drafts and fires these on its
-          // own footer "적용"; we just merge into the report draft.
+          // Dialog batches width + gap + type drafts and fires these on
+          // its own footer "적용"; we just merge into the report draft.
           // The dialog closes itself afterwards.
           setDraft((d) => (d ? { ...d, page_width_px: px } : d))
+        }}
+        onApplyGap={(px) => {
+          setDraft((d) => {
+            if (!d) return d
+            // Rescale row_span values across all pages so each widget's
+            // visual height stays the same after the inter-cell margin
+            // changes. Without this, non-autofit widgets (charts,
+            // scatter etc.) keep their stored row_span and the new
+            // larger margin makes them blow up vertically — every extra
+            // unit of margin adds (h-1)*Δmargin to the rendered height.
+            const oldGap = Number.isFinite(d.page_gap_px)
+              ? d.page_gap_px
+              : REPORT_ROW_GAP
+            const newGap = Number.isFinite(px) ? px : REPORT_ROW_GAP
+            if (oldGap === newGap) {
+              return { ...d, page_gap_px: px }
+            }
+            const rescale = (h) => {
+              if (!Number.isFinite(h) || h < 1) return h
+              const visual = h * REPORT_ROW_HEIGHT + (h - 1) * oldGap
+              return Math.max(
+                1,
+                Math.round(
+                  (visual + newGap) / (REPORT_ROW_HEIGHT + newGap),
+                ),
+              )
+            }
+            const nextPages = d.pages.map((page) => {
+              const tpl = getCachedTemplate(pageTemplateMap, page)
+              const tplBlocks = tpl
+                ? (tpl.schema?.blocks ?? [])
+                : []
+              const overrides = { ...(page.layout_overrides ?? {}) }
+              let changed = false
+              // 1) Walk template blocks and write rescaled overrides where
+              //    needed. Without this, blocks that fall through to
+              //    `block.layout` (i.e. no per-report override yet) would
+              //    still render at the old gap's row_span — exactly the
+              //    case where charts blow up after a gap change.
+              for (const b of tplBlocks) {
+                const existing = overrides[b.id]
+                const baseRowSpan = Number.isFinite(existing?.row_span)
+                  ? existing.row_span
+                  : Number.isFinite(b.layout?.row_span)
+                    ? b.layout.row_span
+                    : null
+                if (!Number.isFinite(baseRowSpan)) continue
+                const nh = rescale(baseRowSpan)
+                if (nh === baseRowSpan) continue
+                const merged = {
+                  row: existing?.row ?? b.layout?.row ?? 1,
+                  col_span:
+                    existing?.col_span ?? b.layout?.col_span ?? REPORT_GRID_COLS,
+                  row_span: nh,
+                  ...(existing && 'auto_fit' in existing
+                    ? { auto_fit: existing.auto_fit }
+                    : {}),
+                }
+                overrides[b.id] = merged
+                changed = true
+              }
+              // 2) Update any leftover overrides for blocks that aren't in
+              //    the template (e.g. orphaned ids from old data).
+              for (const [id, layout] of Object.entries(overrides)) {
+                if (tplBlocks.some((b) => b.id === id)) continue
+                if (!Number.isFinite(layout?.row_span)) continue
+                const nh = rescale(layout.row_span)
+                if (nh !== layout.row_span) {
+                  overrides[id] = { ...layout, row_span: nh }
+                  changed = true
+                }
+              }
+              // 3) Rescale per-report extra_blocks' own layouts in place.
+              const extras = page.extra_blocks ?? []
+              let extrasChanged = false
+              const nextExtras = extras.map((b) => {
+                if (Number.isFinite(b?.layout?.row_span)) {
+                  const nh = rescale(b.layout.row_span)
+                  if (nh !== b.layout.row_span) {
+                    extrasChanged = true
+                    return { ...b, layout: { ...b.layout, row_span: nh } }
+                  }
+                }
+                return b
+              })
+              if (!changed && !extrasChanged) return page
+              return {
+                ...page,
+                layout_overrides:
+                  Object.keys(overrides).length > 0 ? overrides : null,
+                extra_blocks: extrasChanged ? nextExtras : extras,
+              }
+            })
+            return { ...d, page_gap_px: px, pages: nextPages }
+          })
         }}
         onApplyType={({ id, ref }) => {
           setDraft((d) => (d ? { ...d, report_type_id: id, report_type: ref } : d))
@@ -3090,7 +3204,12 @@ function PageSection({
   onChangeSection,
   sectionCategories,
   sectionItemByCode,
+  rowGapPx,
 }) {
+  // Effective RGL vertical margin between widget rows. Per-report
+  // setting (draft.page_gap_px) overrides the constant; falling back to
+  // REPORT_ROW_GAP keeps pre-existing reports laid out unchanged.
+  const effectiveRowGap = Number.isFinite(rowGapPx) ? rowGapPx : REPORT_ROW_GAP
   // Per-page state for "edit widget props" — null when no panel is open,
   // otherwise the extra block's id. Lives here (not on each card) so a
   // right-click on one block closes any other open panel cleanly.
@@ -3158,7 +3277,7 @@ function PageSection({
         if (px != null && px > 0) {
           const rows = Math.max(
             1,
-            Math.ceil((px + REPORT_ROW_GAP) / (REPORT_ROW_HEIGHT + REPORT_ROW_GAP))
+            Math.ceil((px + effectiveRowGap) / (REPORT_ROW_HEIGHT + effectiveRowGap))
           )
           if (rows !== layout?.row_span) {
             layout = { ...(layout ?? {}), row_span: rows }
@@ -3178,7 +3297,7 @@ function PageSection({
       out[b.id] = layout
     }
     return out
-  }, [blocks, page?.layout_overrides, contentHeights, editHeights, isEditing])
+  }, [blocks, page?.layout_overrides, contentHeights, editHeights, isEditing, effectiveRowGap])
 
   const rglItems = useMemo(
     () => buildRglItems(blocks, effectiveLayouts),
@@ -3230,6 +3349,7 @@ function PageSection({
           items={rglItems}
           onLayoutChange={isEditing ? onLayoutChange : undefined}
           isStatic={!isEditing}
+          rowGapPx={effectiveRowGap}
         >
           {blocks.map((block) => {
             const isActive =
@@ -5016,9 +5136,16 @@ function collidesWithAny(item, candidateY, others) {
   return false
 }
 
-function ResizableGrid({ items, onLayoutChange, children, isStatic = false }) {
+function ResizableGrid({
+  items,
+  onLayoutChange,
+  children,
+  isStatic = false,
+  rowGapPx,
+}) {
   const { containerRef, width, mounted } = useContainerWidth({ measureBeforeMount: true })
   const finalItems = isStatic ? items.map((it) => ({ ...it, static: true })) : items
+  const effectiveRowGap = Number.isFinite(rowGapPx) ? rowGapPx : REPORT_ROW_GAP
   return (
     <div ref={containerRef} className="w-full">
       {mounted && width > 0 && (
@@ -5030,7 +5157,7 @@ function ResizableGrid({ items, onLayoutChange, children, isStatic = false }) {
           gridConfig={{
             cols: REPORT_GRID_COLS,
             rowHeight: REPORT_ROW_HEIGHT,
-            margin: [REPORT_COL_GAP, REPORT_ROW_GAP],
+            margin: [REPORT_COL_GAP, effectiveRowGap],
           }}
           dragConfig={{
             enabled: !isStatic,

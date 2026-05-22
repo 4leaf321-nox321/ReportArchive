@@ -162,7 +162,7 @@ export const WIDGET_PROMPT_EXAMPLES = [
   {
     types: ['packing'],
     body: [
-      '### packing (Circle Packing — 원·원 계층 비중)',
+      '### packing (원형 패킹 — 원·원 계층 비중)',
       'props (required: label) : `{ "label":"비용 분해" }`',
       'content : `{ "rows":[ {"label":"전체","parent":"","value":null}, {"label":"재료","parent":"전체","value":30}, {"label":"가공","parent":"전체","value":20}, {"label":"기계가공","parent":"가공","value":12}, {"label":"열처리","parent":"가공","value":8} ], "text_info":"label+value+percent", "padding":4 }`',
       '- 데이터 모델은 treemap 과 동일 (`rows`, `parent`, `value`). 시각만 사각형 대신 중첩 원.',

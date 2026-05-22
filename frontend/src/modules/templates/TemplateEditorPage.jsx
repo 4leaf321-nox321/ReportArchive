@@ -33,6 +33,7 @@ import { WidgetPicker } from './WidgetPicker'
 import { BlockMetaEditor } from './widgets/_shared'
 import {
   DEFAULT_REPORT_WIDTH_PX,
+  DEFAULT_REPORT_GAP_PX,
   ReportSettingsDialog,
 } from '@/modules/reports/ReportSettingsDialog'
 import { SectionPickerDialog } from '@/modules/reports/SectionPickerDialog'
@@ -356,10 +357,14 @@ export default function TemplateEditorPage() {
                   </Button>
                   <p className="mt-1 text-[10px] text-muted-foreground">
                     이 템플릿으로 새 보고서를 만들 때 적용될 기본값
-                    (폭 등). 보고서 작성 중에는 각자 다시 조절할 수 있습니다.
+                    (폭·위젯 간격 등). 보고서 작성 중에는 각자 다시 조절할
+                    수 있습니다.
                     {Number.isFinite(draft.report_defaults?.page_width_px)
-                      ? ` 현재 폭: ${draft.report_defaults.page_width_px} px.`
-                      : ' 현재 폭: 기본값.'}
+                      ? ` 폭: ${draft.report_defaults.page_width_px} px.`
+                      : ' 폭: 기본값.'}
+                    {Number.isFinite(draft.report_defaults?.page_gap_px)
+                      ? ` 위젯 간격: ${draft.report_defaults.page_gap_px} px.`
+                      : ' 위젯 간격: 기본값.'}
                   </p>
                 </div>
                 {isEdit && (
@@ -452,6 +457,8 @@ export default function TemplateEditorPage() {
         open={settingsDialogOpen}
         currentWidthPx={draft.report_defaults?.page_width_px ?? null}
         defaultWidthPx={DEFAULT_REPORT_WIDTH_PX}
+        currentGapPx={draft.report_defaults?.page_gap_px ?? null}
+        defaultGapPx={DEFAULT_REPORT_GAP_PX}
         onClose={() => setSettingsDialogOpen(false)}
         onApplyWidth={(px) => {
           setDraft((d) => {
@@ -467,6 +474,17 @@ export default function TemplateEditorPage() {
             }
           })
           // Dialog handles its own close after "적용" — we just merge.
+        }}
+        onApplyGap={(px) => {
+          setDraft((d) => {
+            const next = { ...(d.report_defaults ?? {}) }
+            if (px == null) delete next.page_gap_px
+            else next.page_gap_px = px
+            return {
+              ...d,
+              report_defaults: Object.keys(next).length === 0 ? null : next,
+            }
+          })
         }}
       />
     </div>

@@ -151,6 +151,12 @@ class Report(Base):
     # 3000; the server only enforces the integer column type.
     page_width_px: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Per-report vertical gap (px) between top-level widget rows. NULL =
+    # use the frontend default. Editable from the 보고서 설정 dialog's
+    # 페이지 설정 tab. Capped client-side at 0–200; the server only
+    # enforces the integer column type.
+    page_gap_px: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # Optional report-type tag — system-wide controlled vocabulary
     # orthogonal to the template (templates describe shape; types
     # describe purpose, e.g. "주간 보고", "안전 점검"). Managed by

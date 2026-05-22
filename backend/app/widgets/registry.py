@@ -2037,7 +2037,7 @@ TREE: WidgetDescriptor = {
 
 PACKING: WidgetDescriptor = {
     "type": "packing",
-    "label": "Circle Packing",
+    "label": "원형 패킹",
     "description": "계층 데이터를 원·원 패킹으로 (treemap 과 데이터 동일, 시각만 원형)",
     "has_content": True,
     "props_schema": {

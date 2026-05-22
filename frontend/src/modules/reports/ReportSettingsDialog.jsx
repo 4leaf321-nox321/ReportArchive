@@ -26,6 +26,16 @@ import { ReportTypePicker } from './ReportTypePicker'
 export const DEFAULT_REPORT_WIDTH_PX = 1024
 
 /**
+ * Default vertical gap (px) between widget rows inside a page. Applied
+ * as the react-grid-layout vertical margin in edit/view mode, and as the
+ * row gap in the read-only InlineReportView. Picked as a sensible middle
+ * ground between the prior tight RGL gap (4 px) and a generous reading
+ * gap — large enough that adjacent widget cards read as separate, small
+ * enough that a single-screen report still feels dense.
+ */
+export const DEFAULT_REPORT_GAP_PX = 12
+
+/**
  * Tabbed report-level settings dialog. The dialog owns the shell + sizing
  * (80vw × 80vh, flex column so the tab body fills the modal) and ALSO
  * owns the cross-tab draft state — width + type live as drafts inside
@@ -40,6 +50,8 @@ export function ReportSettingsDialog({
   open,
   currentWidthPx,
   defaultWidthPx = DEFAULT_REPORT_WIDTH_PX,
+  currentGapPx,
+  defaultGapPx = DEFAULT_REPORT_GAP_PX,
   // 속성 탭 — editable 보고서 종류 + read-only 메타 (작성자/부서/일시 등).
   // 템플릿 편집기는 종류·메타 개념이 없으므로 이 prop을 false로 두면
   // 탭 자체가 사라진다.
@@ -54,6 +66,7 @@ export function ReportSettingsDialog({
   metadata = null,
   onClose,
   onApplyWidth,
+  onApplyGap,
   onApplyType,
 }) {
   if (!open) return null
@@ -69,12 +82,15 @@ export function ReportSettingsDialog({
         <DialogBody
           currentWidthPx={currentWidthPx}
           defaultWidthPx={defaultWidthPx}
+          currentGapPx={currentGapPx}
+          defaultGapPx={defaultGapPx}
           showPropertiesTab={showPropertiesTab}
           currentTypeId={currentTypeId}
           currentType={currentType}
           metadata={metadata}
           onClose={onClose}
           onApplyWidth={onApplyWidth}
+          onApplyGap={onApplyGap}
           onApplyType={onApplyType}
         />
       </DialogContent>
@@ -90,29 +106,38 @@ export function ReportSettingsDialog({
 function DialogBody({
   currentWidthPx,
   defaultWidthPx,
+  currentGapPx,
+  defaultGapPx,
   showPropertiesTab,
   currentTypeId,
   currentType,
   metadata,
   onClose,
   onApplyWidth,
+  onApplyGap,
   onApplyType,
 }) {
   const initialWidth = Number.isFinite(currentWidthPx) ? currentWidthPx : null
+  const initialGap = Number.isFinite(currentGapPx) ? currentGapPx : null
   const [widthDraft, setWidthDraft] = useState(initialWidth)
   const [widthValid, setWidthValid] = useState(true)
+  const [gapDraft, setGapDraft] = useState(initialGap)
+  const [gapValid, setGapValid] = useState(true)
   const [typeDraft, setTypeDraft] = useState({
     id: currentTypeId ?? null,
     ref: currentType ?? null,
   })
 
   const widthChanged = (widthDraft ?? null) !== (currentWidthPx ?? null)
+  const gapChanged = (gapDraft ?? null) !== (currentGapPx ?? null)
   const typeChanged = (typeDraft.id ?? null) !== (currentTypeId ?? null)
-  const dirty = widthChanged || (showPropertiesTab && typeChanged)
+  const dirty =
+    widthChanged || gapChanged || (showPropertiesTab && typeChanged)
 
   function handleApply() {
-    if (!widthValid) return
+    if (!widthValid || !gapValid) return
     if (widthChanged) onApplyWidth?.(widthDraft ?? null)
+    if (gapChanged) onApplyGap?.(gapDraft ?? null)
     if (showPropertiesTab && typeChanged) onApplyType?.(typeDraft)
     onClose()
   }
@@ -140,6 +165,12 @@ function DialogBody({
               setWidthDraft(value)
               setWidthValid(valid)
             }}
+            gapValue={gapDraft}
+            defaultGapPx={defaultGapPx}
+            onGapChange={(value, valid) => {
+              setGapDraft(value)
+              setGapValid(valid)
+            }}
           />
         </TabsContent>
         {showPropertiesTab && (
@@ -162,7 +193,7 @@ function DialogBody({
         <Button
           size="sm"
           onClick={handleApply}
-          disabled={!widthValid || !dirty}
+          disabled={!widthValid || !gapValid || !dirty}
         >
           적용
         </Button>
@@ -172,12 +203,19 @@ function DialogBody({
 }
 
 /**
- * 페이지 설정 — currently just the content width control. Designed
- * for additional rows to be added below as the page-level settings
- * grow (margins, default colors, etc.). Each row uses `SettingRow`
- * so the label column lines up across rows.
+ * 페이지 설정 — content width + inter-widget vertical gap. Each row uses
+ * `SettingRow` so the label column lines up across rows. Designed for
+ * additional rows to be added below as the page-level settings grow
+ * (margins, default colors, etc.).
  */
-function PageSettingsTab({ widthValue, defaultPx, onWidthChange }) {
+function PageSettingsTab({
+  widthValue,
+  defaultPx,
+  onWidthChange,
+  gapValue,
+  defaultGapPx,
+  onGapChange,
+}) {
   return (
     <div className="space-y-5 pr-1">
       <SettingRow
@@ -188,6 +226,16 @@ function PageSettingsTab({ widthValue, defaultPx, onWidthChange }) {
           value={widthValue}
           defaultPx={defaultPx}
           onChange={onWidthChange}
+        />
+      </SettingRow>
+      <SettingRow
+        label="위젯 간격"
+        hint={`위젯(행) 사이 세로 간격 (px). 기본값은 ${defaultGapPx} px.`}
+      >
+        <InlineGapControl
+          value={gapValue}
+          defaultPx={defaultGapPx}
+          onChange={onGapChange}
         />
       </SettingRow>
       {/* 후속 페이지 설정은 여기 같은 SettingRow 패턴으로 추가 */}
@@ -295,6 +343,83 @@ function InlineWidthControl({ value, defaultPx, onChange }) {
       {!isValid && (
         <p className="text-[11px] text-destructive">
           320 부터 3000 사이의 정수를 입력하세요.
+        </p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Compact one-line gap control. Mirrors `InlineWidthControl` — preset
+ * buttons + numeric input + 기본값 reset. Range 0–200 mirrors the backend
+ * Pydantic schema so an invalid entry disables 적용 before the round-trip.
+ */
+function InlineGapControl({ value, defaultPx, onChange }) {
+  const PRESETS = [8, 16, 32, 48]
+  const [text, setText] = useState(
+    Number.isFinite(value) ? String(value) : '',
+  )
+
+  useEffect(() => {
+    setText(Number.isFinite(value) ? String(value) : '')
+  }, [value])
+
+  const trimmed = text.trim()
+  const parsed = trimmed === '' ? null : Number.parseInt(trimmed, 10)
+  const isValid =
+    trimmed === '' ||
+    (Number.isFinite(parsed) && parsed >= 0 && parsed <= 200)
+
+  function reportChange(nextText) {
+    setText(nextText)
+    const t = nextText.trim()
+    if (t === '') {
+      onChange?.(null, true)
+      return
+    }
+    const p = Number.parseInt(t, 10)
+    const valid = Number.isFinite(p) && p >= 0 && p <= 200
+    onChange?.(valid ? p : null, valid)
+  }
+
+  return (
+    <div className="space-y-1">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {PRESETS.map((px) => (
+          <Button
+            key={px}
+            variant={parsed === px ? 'default' : 'outline'}
+            size="sm"
+            className="h-8"
+            onClick={() => reportChange(String(px))}
+          >
+            {px}
+          </Button>
+        ))}
+        <span className="text-xs text-muted-foreground px-1">또는</span>
+        <Input
+          type="number"
+          min={0}
+          max={200}
+          value={text}
+          placeholder={`${defaultPx}`}
+          onChange={(e) => reportChange(e.target.value)}
+          className="h-8 w-24"
+        />
+        <span className="text-xs text-muted-foreground">px</span>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8"
+          onClick={() => reportChange('')}
+          title={`기본값 (${defaultPx} px) 로 되돌립니다.`}
+        >
+          기본값
+        </Button>
+      </div>
+      {!isValid && (
+        <p className="text-[11px] text-destructive">
+          0 부터 200 사이의 정수를 입력하세요.
         </p>
       )}
     </div>

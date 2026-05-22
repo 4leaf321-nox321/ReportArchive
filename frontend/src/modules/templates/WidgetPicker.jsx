@@ -12,13 +12,34 @@ export const WIDGET_PICKER_CATEGORIES = [
   { name: '목록 / 표', types: ['bulleted_list', 'key_value', 'table'] },
   {
     name: '차트',
-    types: ['chart', 'scatter', 'scatter3d', 'heatmap', 'radar'],
+    types: [
+      'chart',
+      'scatter',
+      'scatter3d',
+      'heatmap',
+      'contour',
+      'radar',
+      'pie',
+      'box',
+      'waffle',
+    ],
   },
   {
     name: '다이어그램',
-    types: ['flowchart', 'milestone', 'raci_matrix', 'progress_bar', 'cad_3d'],
+    types: [
+      'flowchart',
+      'milestone',
+      'progress_bar',
+      'raci_matrix',
+      'tree',
+      'treemap',
+      'packing',
+    ],
   },
-  { name: '첨부', types: ['image', 'attachment'] },
+  {
+    name: '미디어 / 첨부',
+    types: ['image', 'attachment', 'video', 'html_embed', 'cad_3d'],
+  },
 ]
 
 /** Unified widget picker — search input + category-grouped list.

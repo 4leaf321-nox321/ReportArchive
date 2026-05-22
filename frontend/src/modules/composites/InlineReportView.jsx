@@ -5,7 +5,10 @@ import { getReport } from '@/modules/reports/api'
 import { getComposite } from '@/shared/api/composites'
 import { getTemplateVersion } from '@/shared/api/templates'
 import { getRenderer } from '@/modules/templates/widgets'
-import { DEFAULT_REPORT_WIDTH_PX } from '@/modules/reports/ReportSettingsDialog'
+import {
+  DEFAULT_REPORT_WIDTH_PX,
+  DEFAULT_REPORT_GAP_PX,
+} from '@/modules/reports/ReportSettingsDialog'
 import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
 
 /**
@@ -28,22 +31,31 @@ export function InlineReportView({ reportId }) {
   const pages = Array.isArray(report.pages) && report.pages.length > 0
     ? report.pages
     : [{ template_id: report.template_id, template_version: report.template_version, content: report.content ?? {} }]
-  // Per-report content width — same constraint the report detail page
-  // applies via `style.maxWidth`. Reports that pre-date the setting
-  // fall back to the narrow default (≈1024 px).
+  // Per-report content width + widget gap — same constraints the report
+  // detail page applies. Reports that pre-date these settings fall back
+  // to the frontend defaults.
   const pageWidthPx = Number.isFinite(report.page_width_px)
     ? report.page_width_px
     : DEFAULT_REPORT_WIDTH_PX
+  const pageGapPx = Number.isFinite(report.page_gap_px)
+    ? report.page_gap_px
+    : DEFAULT_REPORT_GAP_PX
   return (
     <div className="space-y-4 mx-auto w-full" style={{ maxWidth: `${pageWidthPx}px` }}>
       {pages.map((p, idx) => (
-        <InlinePage key={idx} page={p} index={idx} totalPages={pages.length} />
+        <InlinePage
+          key={idx}
+          page={p}
+          index={idx}
+          totalPages={pages.length}
+          rowGapPx={pageGapPx}
+        />
       ))}
     </div>
   )
 }
 
-function InlinePage({ page, index, totalPages }) {
+function InlinePage({ page, index, totalPages, rowGapPx }) {
   const { data: template, loading } = useAsync(
     () => getTemplateVersion(page.template_id, page.template_version),
     [page.template_id, page.template_version],
@@ -80,7 +92,13 @@ function InlinePage({ page, index, totalPages }) {
           페이지 {index + 1} · {page.name || template.name}
         </div>
       )}
-      <div className="space-y-3">
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          rowGap: Number.isFinite(rowGapPx) ? `${rowGapPx}px` : undefined,
+        }}
+      >
         {rows.map(({ row, items }) => (
           <div key={row} className="grid grid-cols-12 gap-3">
             {items.map((it) => (

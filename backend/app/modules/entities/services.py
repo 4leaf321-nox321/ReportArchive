@@ -359,6 +359,48 @@ def get_report_entities(db: Session, report_id: int) -> list[Entity]:
     return list(db.execute(stmt).scalars())
 
 
+def unlink_from_report(db: Session, *, entity_id: int, report_id: int) -> bool:
+    """Drop a single (report_id, entity_id) link from the M:N table.
+
+    Returns True when a link was removed, False when none existed (caller
+    treats absent as 200 idempotent — the desired end state already holds).
+    Used by the admin page's per-report × in the usage popover for
+    surgical fixes ("this one report has the wrong tag").
+    """
+    link = db.execute(
+        select(ReportEntity).where(
+            ReportEntity.entity_id == entity_id,
+            ReportEntity.report_id == report_id,
+        )
+    ).scalar_one_or_none()
+    if link is None:
+        return False
+    db.delete(link)
+    db.commit()
+    return True
+
+
+def unlink_from_all_reports(db: Session, *, entity_id: int) -> int:
+    """Drop every link this entity has across all reports — leaves the
+    entity row itself untouched. Returns the number of links removed.
+
+    Used by the admin's "모든 보고서에서 태그 해제" bulk action: after
+    this runs the entity has usage 0 and can be hard-deleted, OR the
+    admin can keep it around (e.g. wrong value to be re-attached later).
+    Unlike merge, this does NOT re-route reports to a different value —
+    they simply lose this axis tag entirely.
+    """
+    links = list(
+        db.execute(
+            select(ReportEntity).where(ReportEntity.entity_id == entity_id)
+        ).scalars()
+    )
+    for link in links:
+        db.delete(link)
+    db.commit()
+    return len(links)
+
+
 def list_reports_using_entity(db: Session, *, entity_id: int) -> list:
     """Slim "어떤 보고서가 이 값을 쓰고 있나?" lookup for the admin page.
 

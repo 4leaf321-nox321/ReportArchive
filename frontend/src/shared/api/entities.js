@@ -84,6 +84,26 @@ export async function listEntityUsage(id) {
   return extractData(res)
 }
 
+/**
+ * Admin-only — drop the link between this entity and one specific
+ * report. The entity row itself stays. Idempotent: removing a link
+ * that doesn't exist returns success.
+ */
+export async function unlinkEntityFromReport(entityId, reportId) {
+  const res = await apiClient.delete(`${BASE}/${entityId}/usage/${reportId}`)
+  return extractData(res)
+}
+
+/**
+ * Admin-only — drop every link this entity has across all reports.
+ * After this the entity has 0 usage and can be hard-deleted; the
+ * entity itself stays unless the admin explicitly deletes it next.
+ */
+export async function unlinkEntityFromAllReports(entityId) {
+  const res = await apiClient.delete(`${BASE}/${entityId}/usage`)
+  return extractData(res)
+}
+
 /** Admin-only hard delete. Server returns 400 when the entity is still in use. */
 export async function deleteEntity(id) {
   const res = await apiClient.delete(`${BASE}/${id}`)

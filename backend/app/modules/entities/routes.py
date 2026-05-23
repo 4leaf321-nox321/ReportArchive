@@ -260,6 +260,54 @@ def list_entity_usage(
     )
 
 
+@entities_router.delete("/{entity_id}/usage/{report_id}")
+def unlink_one_report(
+    entity_id: int,
+    report_id: int,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — drop the (entity, report) link from the M:N table.
+    The entity row itself stays. Idempotent: removing a link that doesn't
+    exist still returns 200 (the desired state already holds)."""
+    _require_admin(actor)
+    row = services.get_entity(db, entity_id)
+    if not row:
+        return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
+    removed = services.unlink_from_report(
+        db, entity_id=entity_id, report_id=report_id
+    )
+    return success_response(
+        data={"removed": removed, "report_id": report_id},
+        message=(
+            f"보고서 {report_id} 에서 '{row.value}' 태그 해제됨."
+            if removed
+            else f"보고서 {report_id} 에는 '{row.value}' 태그가 없었습니다."
+        ),
+    )
+
+
+@entities_router.delete("/{entity_id}/usage")
+def unlink_all_reports(
+    entity_id: int,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — drop every link this entity has across all reports.
+    Bulk version of the per-report unlink above. After this runs the
+    entity has 0 usage and can be hard-deleted via the regular endpoint.
+    Returns the number of links removed."""
+    _require_admin(actor)
+    row = services.get_entity(db, entity_id)
+    if not row:
+        return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
+    count = services.unlink_from_all_reports(db, entity_id=entity_id)
+    return success_response(
+        data={"removed_count": count},
+        message=f"{count}건의 보고서에서 '{row.value}' 태그 해제됨.",
+    )
+
+
 @entities_router.delete("/{entity_id}")
 def delete_entity(
     entity_id: int,

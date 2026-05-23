@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
   ExternalLink,
+  Link2Off,
   Pencil,
   Plus,
   RotateCcw,
@@ -41,6 +42,8 @@ import {
   listEntityTypes,
   listEntityUsage,
   mergeEntity,
+  unlinkEntityFromAllReports,
+  unlinkEntityFromReport,
   updateEntity,
 } from '@/shared/api/entities'
 
@@ -213,7 +216,7 @@ function AxisPanel({ type }) {
         sortable: true,
         headerClassName: 'w-[80px] text-right',
         cellClassName: 'text-right',
-        render: (r) => <UsageCell entity={r} />,
+        render: (r) => <UsageCell entity={r} onReload={reload} />,
       },
       {
         key: 'created_at',
@@ -406,12 +409,25 @@ function AxisPanel({ type }) {
  * so the admin can jump straight to any of them in a new tab. Reduces
  * the "왜 못 지우지?" guessing cost from O(grep the whole list) to a
  * single click.
+ *
+ * Each row also has a × that unlinks the entity from that one report
+ * in place. After unlink we refetch the popover list AND call onReload
+ * on the parent so the row's usage count + delete-button state stays
+ * in sync.
  */
-function UsageCell({ entity }) {
+function UsageCell({ entity, onReload }) {
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState(null)
   const [error, setError] = useState(null)
   const count = entity.usage_count ?? 0
+
+  function refetch() {
+    setItems(null)
+    setError(null)
+    listEntityUsage(entity.id)
+      .then((res) => setItems(res?.items ?? []))
+      .catch((e) => setError(e))
+  }
 
   useEffect(() => {
     if (!open || items !== null) return
@@ -428,6 +444,17 @@ function UsageCell({ entity }) {
       cancelled = true
     }
   }, [open, items, entity.id])
+
+  async function handleUnlink(reportId) {
+    try {
+      await unlinkEntityFromReport(entity.id, reportId)
+      toast.success(`보고서 ${reportId} 에서 '${entity.value}' 태그 해제됨`)
+      refetch()
+      onReload?.()
+    } catch (err) {
+      toast.error(err.message || '태그 해제 실패')
+    }
+  }
 
   if (count <= 0) {
     return <span className="text-xs text-muted-foreground tabular-nums">0건</span>
@@ -450,7 +477,7 @@ function UsageCell({ entity }) {
         className="w-80 p-2"
         onClick={(e) => e.stopPropagation()}
       >
-        <UsageList items={items} error={error} />
+        <UsageList items={items} error={error} onUnlink={handleUnlink} />
       </PopoverContent>
     </Popover>
   )
@@ -458,11 +485,18 @@ function UsageCell({ entity }) {
 
 /**
  * Shared list rendering used by the cell popover, the delete-confirm
- * dialog, and the merge preview. Each item is a button that opens the
- * report in a new tab (target=_blank) so the admin doesn't lose their
- * place in the entities grid.
+ * dialog, and the merge preview. Each item links out to the report in
+ * a new tab (target=_blank) so the admin doesn't lose their place. When
+ * `onUnlink(reportId)` is provided, each row also gets a small × button
+ * so the admin can untag a single report inline — useful for surgical
+ * fixes ("this one report has the wrong tag").
  */
-function UsageList({ items, error, emptyLabel = '사용 중인 보고서가 없습니다.' }) {
+function UsageList({
+  items,
+  error,
+  emptyLabel = '사용 중인 보고서가 없습니다.',
+  onUnlink,
+}) {
   if (error) {
     return (
       <p className="text-xs text-destructive">
@@ -483,12 +517,12 @@ function UsageList({ items, error, emptyLabel = '사용 중인 보고서가 없�
   return (
     <ul className="max-h-72 overflow-y-auto divide-y">
       {items.map((r) => (
-        <li key={r.id}>
+        <li key={r.id} className="flex items-stretch">
           <a
             href={`/w/${r.workspace_slug}/reports/${r.id}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-start justify-between gap-2 px-2 py-1.5 text-sm hover:bg-accent"
+            className="flex flex-1 items-start justify-between gap-2 px-2 py-1.5 text-sm hover:bg-accent min-w-0"
             title={`${r.workspace_slug} · 수정 ${formatDate(r.updated_at)}`}
           >
             <span className="flex-1 truncate">{r.title}</span>
@@ -497,6 +531,16 @@ function UsageList({ items, error, emptyLabel = '사용 중인 보고서가 없�
               <ExternalLink className="h-3 w-3" />
             </span>
           </a>
+          {onUnlink && (
+            <button
+              type="button"
+              onClick={() => onUnlink(r.id)}
+              className="px-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+              title="이 보고서에서 태그 해제"
+            >
+              <Link2Off className="h-3.5 w-3.5" />
+            </button>
+          )}
         </li>
       ))}
     </ul>
@@ -738,13 +782,31 @@ function MergeDialog({ type, source, allRows, onClose, onMerged }) {
  * Hard-delete confirm. On open, fetches the actual list of reports using
  * this entity so the admin can see them inline (instead of getting a
  * bare "사용 중" error toast after clicking 삭제). When there's any
- * usage the destructive action is disabled and we surface a "대신 머지"
- * shortcut that hands off to the merge dialog with the same source.
+ * usage the destructive action is disabled and three escape routes
+ * surface:
+ *
+ *   - 대신 머지   — consolidate with another value (preserves the tagging)
+ *   - 태그 해제   — unlink from one report (×) or all reports (footer button);
+ *                   the entity itself stays
+ *   - 취소
+ *
+ * Once usage drops to 0 (via × or bulk-unlink), the 삭제 button enables.
+ * The list and count refresh in place after each unlink so the admin
+ * doesn't have to re-open the dialog.
  */
 function DeleteConfirmDialog({ target, onClose, onDeleted, onSwitchToMerge }) {
   const [submitting, setSubmitting] = useState(false)
+  const [unlinkingAll, setUnlinkingAll] = useState(false)
   const [usage, setUsage] = useState(null) // null = loading | array
   const [usageError, setUsageError] = useState(null)
+
+  function refetchUsage() {
+    setUsage(null)
+    setUsageError(null)
+    listEntityUsage(target.id)
+      .then((res) => setUsage(res?.items ?? []))
+      .catch((e) => setUsageError(e))
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -765,9 +827,33 @@ function DeleteConfirmDialog({ target, onClose, onDeleted, onSwitchToMerge }) {
   // concurrent edit landed between the grid load and now; we trust the
   // freshly-fetched list to drive the disabled state.
   const blockedByUsage = (usage?.length ?? 0) > 0 || usage === null
-  // While loading we keep the button disabled (`usage === null` →
-  // blockedByUsage true). After load it reflects the real number.
   const canDelete = !submitting && usage !== null && usage.length === 0
+
+  async function handleUnlinkOne(reportId) {
+    try {
+      await unlinkEntityFromReport(target.id, reportId)
+      toast.success(`보고서 ${reportId} 에서 '${target.value}' 태그 해제됨`)
+      refetchUsage()
+    } catch (err) {
+      toast.error(err.message || '태그 해제 실패')
+    }
+  }
+
+  async function handleUnlinkAll() {
+    if (!usage || usage.length === 0) return
+    setUnlinkingAll(true)
+    try {
+      const res = await unlinkEntityFromAllReports(target.id)
+      toast.success(
+        `${res?.removed_count ?? usage.length}건의 보고서에서 '${target.value}' 태그 해제됨`,
+      )
+      refetchUsage()
+    } catch (err) {
+      toast.error(err.message || '태그 해제 실패')
+    } finally {
+      setUnlinkingAll(false)
+    }
+  }
 
   async function handleDelete() {
     setSubmitting(true)
@@ -776,9 +862,9 @@ function DeleteConfirmDialog({ target, onClose, onDeleted, onSwitchToMerge }) {
       toast.success(`'${target.value}' 삭제됨`)
       onDeleted()
     } catch (err) {
-      // Defensive: even with the inline guard, a concurrent edit might
-      // have re-introduced usage between our fetch and the delete call.
-      // Surface the server's message verbatim in that case.
+      // Defensive: a concurrent edit might have re-introduced usage
+      // between our refetch and the delete call. Surface the server's
+      // message verbatim in that case.
       toast.error(err.message || '삭제 실패')
     } finally {
       setSubmitting(false)
@@ -797,18 +883,37 @@ function DeleteConfirmDialog({ target, onClose, onDeleted, onSwitchToMerge }) {
             <strong>'{target.value}'</strong> 를 완전히 삭제합니다.
             {usage !== null && usage.length === 0
               ? ' 사용 중인 보고서가 없어 안전하게 삭제할 수 있습니다.'
-              : ' 이 값을 사용 중인 보고서가 있으면 직접 삭제할 수 없습니다 — 머지하거나 비활성화 하세요.'}
+              : ' 사용 중인 보고서가 있으면 직접 삭제할 수 없습니다 — 머지하거나, 아래 ×/일괄 해제로 태그를 먼저 풀어주세요.'}
           </DialogDescription>
         </DialogHeader>
 
         {blockedByUsage && (
           <div className="rounded-md border bg-muted/30 p-2">
-            <div className="mb-1 text-[11px] font-medium text-muted-foreground">
-              {usage === null
-                ? '사용 중인 보고서 확인 중...'
-                : `사용 중인 보고서 (${usage.length}건)`}
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-medium text-muted-foreground">
+                {usage === null
+                  ? '사용 중인 보고서 확인 중...'
+                  : `사용 중인 보고서 (${usage.length}건)`}
+              </span>
+              {usage !== null && usage.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-[11px] text-muted-foreground hover:text-destructive"
+                  onClick={handleUnlinkAll}
+                  disabled={unlinkingAll}
+                  title="이 모든 보고서에서 태그만 해제 — 엔티티 자체는 남습니다"
+                >
+                  <Link2Off className="mr-1 h-3 w-3" />
+                  {unlinkingAll ? '해제 중...' : '모두 해제'}
+                </Button>
+              )}
             </div>
-            <UsageList items={usage} error={usageError} />
+            <UsageList
+              items={usage}
+              error={usageError}
+              onUnlink={handleUnlinkOne}
+            />
           </div>
         )}
 

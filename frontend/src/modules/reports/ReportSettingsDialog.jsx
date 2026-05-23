@@ -40,6 +40,25 @@ export const DEFAULT_REPORT_WIDTH_PX = 1024
 export const DEFAULT_REPORT_GAP_PX = 12
 
 /**
+ * PPT 슬라이드 가이드의 기본 비율. 사용자가 가이드를 처음 켤 때 시드값.
+ * 비교적 보편적인 16:9 (PowerPoint 2013 이후 기본)로 시작하고, 보고서마다
+ * 사용자가 다이얼로그에서 자유롭게 바꿀 수 있다.
+ */
+export const DEFAULT_SLIDE_GUIDE_RATIO = '16:9'
+
+/**
+ * 가이드를 한 번도 켜지 않은 보고서의 슬라이드 가이드 draft 시드.
+ * page_slide_guide 가 null/false 인 보고서를 다이얼로그에서 열 때 이 값으로
+ * 화면을 채운다. 이후 사용자가 "켬"으로 토글해야 비로소 가이드가 보인다.
+ */
+export const DEFAULT_SLIDE_GUIDE_CONFIG = Object.freeze({
+  enabled: false,
+  ratio: DEFAULT_SLIDE_GUIDE_RATIO,
+  customW: null,
+  customH: null,
+})
+
+/**
  * Tabbed report-level settings dialog. The dialog owns the shell + sizing
  * (80vw × 80vh, flex column so the tab body fills the modal) and ALSO
  * owns the cross-tab draft state — width + type live as drafts inside
@@ -60,6 +79,11 @@ export function ReportSettingsDialog({
   // 시각적으로 구분되지 않게 하는 토글. null/false면 기존처럼 카드 경계가
   // 보이고, true면 경계가 사라진다. 보고서/템플릿 양쪽에서 사용.
   currentBlendBlocks = false,
+  // PPT 슬라이드 가이드 설정. { enabled, ratio, customW, customH } 형태로
+  // 들어오고, 다이얼로그는 같은 shape 으로 onApplySlideGuide 를 호출한다.
+  // null 이거나 일부 필드가 비어 있으면 DEFAULT_SLIDE_GUIDE_CONFIG 를
+  // 시드로 채워서 표시.
+  currentSlideGuide = null,
   // 속성 탭 — editable 보고서 종류 + read-only 메타 (작성자/부서/일시 등).
   // 템플릿 편집기는 종류·메타 개념이 없으므로 이 prop을 false로 두면
   // 탭 자체가 사라진다.
@@ -81,6 +105,7 @@ export function ReportSettingsDialog({
   onApplyWidth,
   onApplyGap,
   onApplyBlendBlocks,
+  onApplySlideGuide,
   onApplyType,
   onApplyEntities,
 }) {
@@ -100,6 +125,7 @@ export function ReportSettingsDialog({
           currentGapPx={currentGapPx}
           defaultGapPx={defaultGapPx}
           currentBlendBlocks={currentBlendBlocks}
+          currentSlideGuide={currentSlideGuide}
           showPropertiesTab={showPropertiesTab}
           currentTypeId={currentTypeId}
           currentType={currentType}
@@ -109,6 +135,7 @@ export function ReportSettingsDialog({
           onApplyWidth={onApplyWidth}
           onApplyGap={onApplyGap}
           onApplyBlendBlocks={onApplyBlendBlocks}
+          onApplySlideGuide={onApplySlideGuide}
           onApplyType={onApplyType}
           onApplyEntities={onApplyEntities}
         />
@@ -128,6 +155,7 @@ function DialogBody({
   currentGapPx,
   defaultGapPx,
   currentBlendBlocks,
+  currentSlideGuide,
   showPropertiesTab,
   currentTypeId,
   currentType,
@@ -137,18 +165,22 @@ function DialogBody({
   onApplyWidth,
   onApplyGap,
   onApplyBlendBlocks,
+  onApplySlideGuide,
   onApplyType,
   onApplyEntities,
 }) {
   const initialWidth = Number.isFinite(currentWidthPx) ? currentWidthPx : null
   const initialGap = Number.isFinite(currentGapPx) ? currentGapPx : null
   const initialBlend = currentBlendBlocks === true
+  const initialSlide = normalizeSlideGuide(currentSlideGuide)
   const initialEntities = Array.isArray(currentEntities) ? currentEntities : []
   const [widthDraft, setWidthDraft] = useState(initialWidth)
   const [widthValid, setWidthValid] = useState(true)
   const [gapDraft, setGapDraft] = useState(initialGap)
   const [gapValid, setGapValid] = useState(true)
   const [blendDraft, setBlendDraft] = useState(initialBlend)
+  const [slideDraft, setSlideDraft] = useState(initialSlide)
+  const [slideValid, setSlideValid] = useState(true)
   const [typeDraft, setTypeDraft] = useState({
     id: currentTypeId ?? null,
     ref: currentType ?? null,
@@ -160,6 +192,7 @@ function DialogBody({
   const widthChanged = (widthDraft ?? null) !== (currentWidthPx ?? null)
   const gapChanged = (gapDraft ?? null) !== (currentGapPx ?? null)
   const blendChanged = blendDraft !== initialBlend
+  const slideChanged = !sameSlideGuide(slideDraft, initialSlide)
   const typeChanged = (typeDraft.id ?? null) !== (currentTypeId ?? null)
   // Compare on the sorted id-set — order in the array is irrelevant to
   // the saved state (the backend stores it as an unordered link table).
@@ -171,13 +204,15 @@ function DialogBody({
     widthChanged ||
     gapChanged ||
     blendChanged ||
+    slideChanged ||
     (showPropertiesTab && (typeChanged || entitiesChanged))
 
   function handleApply() {
-    if (!widthValid || !gapValid) return
+    if (!widthValid || !gapValid || !slideValid) return
     if (widthChanged) onApplyWidth?.(widthDraft ?? null)
     if (gapChanged) onApplyGap?.(gapDraft ?? null)
     if (blendChanged) onApplyBlendBlocks?.(blendDraft)
+    if (slideChanged) onApplySlideGuide?.(slideDraft)
     if (showPropertiesTab && typeChanged) onApplyType?.(typeDraft)
     if (showPropertiesTab && entitiesChanged) onApplyEntities?.(entitiesDraft)
     onClose()
@@ -214,6 +249,11 @@ function DialogBody({
             }}
             blendValue={blendDraft}
             onBlendChange={setBlendDraft}
+            slideValue={slideDraft}
+            onSlideChange={(value, valid) => {
+              setSlideDraft(value)
+              setSlideValid(valid)
+            }}
           />
         </TabsContent>
         {showPropertiesTab && (
@@ -238,7 +278,7 @@ function DialogBody({
         <Button
           size="sm"
           onClick={handleApply}
-          disabled={!widthValid || !gapValid || !dirty}
+          disabled={!widthValid || !gapValid || !slideValid || !dirty}
         >
           적용
         </Button>
@@ -262,6 +302,8 @@ function PageSettingsTab({
   onGapChange,
   blendValue,
   onBlendChange,
+  slideValue,
+  onSlideChange,
 }) {
   return (
     <div className="space-y-5 pr-1">
@@ -296,7 +338,199 @@ function PageSettingsTab({
           offLabel="경계 표시 (기본)"
         />
       </SettingRow>
+      <SettingRow
+        label="PPT 가이드"
+        hint="본문 위에 PPT 슬라이드 한 장 분량(본문 폭 × 역비율)마다 수평 점선을 표시합니다. PPT export 시 한 슬라이드에 어디까지 들어갈지 미리 확인하는 용도이며, 인쇄/HTML/DOCX 출력에는 영향을 주지 않습니다."
+      >
+        <InlineSlideGuideControl value={slideValue} onChange={onSlideChange} />
+      </SettingRow>
       {/* 후속 페이지 설정은 여기 같은 SettingRow 패턴으로 추가 */}
+    </div>
+  )
+}
+
+const SLIDE_RATIO_PRESETS = ['16:9', '4:3', '16:10', 'custom']
+
+const SLIDE_RATIO_LABELS = {
+  '16:9': '16:9',
+  '4:3': '4:3',
+  '16:10': '16:10',
+  custom: '커스텀',
+}
+
+/**
+ * `null`/일부 누락된 currentSlideGuide 를 안전한 시드값으로 정규화한다.
+ * 다이얼로그가 항상 정형화된 객체로 dirty 비교를 하도록 보장.
+ */
+function normalizeSlideGuide(cfg) {
+  if (!cfg || typeof cfg !== 'object') return { ...DEFAULT_SLIDE_GUIDE_CONFIG }
+  const ratio = SLIDE_RATIO_PRESETS.includes(cfg.ratio)
+    ? cfg.ratio
+    : DEFAULT_SLIDE_GUIDE_RATIO
+  return {
+    enabled: cfg.enabled === true,
+    ratio,
+    customW: Number.isFinite(cfg.customW) ? cfg.customW : null,
+    customH: Number.isFinite(cfg.customH) ? cfg.customH : null,
+  }
+}
+
+function sameSlideGuide(a, b) {
+  return (
+    a.enabled === b.enabled &&
+    a.ratio === b.ratio &&
+    (a.customW ?? null) === (b.customW ?? null) &&
+    (a.customH ?? null) === (b.customH ?? null)
+  )
+}
+
+/**
+ * 슬라이드 가이드 컨트롤. 한 줄에 on/off 세그먼트 + (켜진 경우) 비율
+ * 세그먼트 + 커스텀 비율 입력 두 칸을 함께 보여준다. 커스텀이 아닐 땐
+ * 입력 두 칸을 감춰서 행이 한 줄로 짧게 유지된다.
+ *
+ * `onChange(next, isValid)` 로 부모 dialog 의 draft 와 valid 플래그를 동시에
+ * 갱신한다. valid 가 false 면 적용 버튼이 비활성화된다 (커스텀 비율의
+ * 음수/0/공백 같은 입력 보호).
+ */
+function InlineSlideGuideControl({ value, onChange }) {
+  const safe = normalizeSlideGuide(value)
+  const enabled = safe.enabled === true
+  const ratio = safe.ratio
+  const isCustom = ratio === 'custom'
+
+  const [customWText, setCustomWText] = useState(
+    Number.isFinite(safe.customW) ? String(safe.customW) : '',
+  )
+  const [customHText, setCustomHText] = useState(
+    Number.isFinite(safe.customH) ? String(safe.customH) : '',
+  )
+
+  // Sync local text when the parent value changes externally (e.g. a reset).
+  // The two text states are 1:1 mirrors of value.customW/H — keeping them
+  // local lets the user type partial values like "16" → "1" without us
+  // immediately invalidating the draft.
+  useEffect(() => {
+    setCustomWText(Number.isFinite(safe.customW) ? String(safe.customW) : '')
+    setCustomHText(Number.isFinite(safe.customH) ? String(safe.customH) : '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [safe.customW, safe.customH])
+
+  function emit(next, validOverride = null) {
+    // valid 는 "현재 입력이 backend 가 받을 만한 상태인가". 커스텀일 때만
+    // 두 정수 입력이 모두 1 이상이어야 valid. 그 외 비율은 항상 valid.
+    let valid = true
+    if (validOverride != null) {
+      valid = validOverride
+    } else if (next.enabled && next.ratio === 'custom') {
+      valid =
+        Number.isFinite(next.customW) &&
+        next.customW >= 1 &&
+        Number.isFinite(next.customH) &&
+        next.customH >= 1
+    }
+    onChange?.(next, valid)
+  }
+
+  function setEnabled(nextEnabled) {
+    emit({ ...safe, enabled: nextEnabled })
+  }
+  function setRatio(nextRatio) {
+    if (nextRatio === 'custom') {
+      const w = Number.parseInt(customWText, 10)
+      const h = Number.parseInt(customHText, 10)
+      emit({
+        ...safe,
+        ratio: 'custom',
+        customW: Number.isFinite(w) && w >= 1 ? w : null,
+        customH: Number.isFinite(h) && h >= 1 ? h : null,
+      })
+    } else {
+      // Preset 으로 돌아가면 custom 값은 보존하되 valid 검사 대상에서 제외.
+      emit({ ...safe, ratio: nextRatio })
+    }
+  }
+  function setCustomDim(key, text) {
+    if (key === 'w') setCustomWText(text)
+    else setCustomHText(text)
+    const wText = key === 'w' ? text : customWText
+    const hText = key === 'h' ? text : customHText
+    const w = Number.parseInt(wText, 10)
+    const h = Number.parseInt(hText, 10)
+    emit({
+      ...safe,
+      ratio: 'custom',
+      customW: Number.isFinite(w) && w >= 1 ? w : null,
+      customH: Number.isFinite(h) && h >= 1 ? h : null,
+    })
+  }
+
+  const customInvalid =
+    enabled &&
+    isCustom &&
+    (!Number.isFinite(safe.customW) ||
+      safe.customW < 1 ||
+      !Number.isFinite(safe.customH) ||
+      safe.customH < 1)
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <InlineToggleControl
+          checked={enabled}
+          onChange={setEnabled}
+          onLabel="켬"
+          offLabel="끔 (기본)"
+        />
+        {enabled && (
+          <div className="inline-flex rounded-md border bg-background overflow-hidden">
+            {SLIDE_RATIO_PRESETS.map((r, i) => (
+              <button
+                key={r}
+                type="button"
+                onClick={() => setRatio(r)}
+                className={cn(
+                  'h-8 px-3 text-xs transition-colors',
+                  i > 0 && 'border-l',
+                  ratio === r
+                    ? 'bg-primary text-primary-foreground'
+                    : 'hover:bg-muted',
+                )}
+              >
+                {SLIDE_RATIO_LABELS[r]}
+              </button>
+            ))}
+          </div>
+        )}
+        {enabled && isCustom && (
+          <div className="flex items-center gap-1">
+            <Input
+              type="number"
+              min={1}
+              max={10000}
+              value={customWText}
+              placeholder="16"
+              onChange={(e) => setCustomDim('w', e.target.value)}
+              className="h-8 w-16"
+            />
+            <span className="text-xs text-muted-foreground">:</span>
+            <Input
+              type="number"
+              min={1}
+              max={10000}
+              value={customHText}
+              placeholder="9"
+              onChange={(e) => setCustomDim('h', e.target.value)}
+              className="h-8 w-16"
+            />
+          </div>
+        )}
+      </div>
+      {customInvalid && (
+        <p className="text-[11px] text-destructive">
+          가로·세로 비율은 1 이상의 정수여야 합니다.
+        </p>
+      )}
     </div>
   )
 }

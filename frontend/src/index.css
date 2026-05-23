@@ -283,3 +283,17 @@ body.report-fullscreen .report-detail-content {
   border-color: transparent !important;
   box-shadow: none !important;
 }
+
+/* PPT 슬라이드 가이드 오버레이 (SlideGuideOverlay) — 화면 편집·보기에서만
+   보이는 시각적 보조선. 인쇄(PDF로 저장)와 보고서 전체화면 모드(독자용)
+   에서는 자동으로 숨긴다. HTML/DOCX export 는 InlineReportView 경로를
+   통해 가는데, 그쪽은 컴포넌트를 마운트하지 않으므로 별도 처리가 필요
+   없다. */
+@media print {
+  [data-slide-guide-overlay] {
+    display: none !important;
+  }
+}
+body.report-fullscreen [data-slide-guide-overlay] {
+  display: none !important;
+}

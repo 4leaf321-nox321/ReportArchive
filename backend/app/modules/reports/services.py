@@ -311,6 +311,14 @@ def create_report(
         init_kwargs["page_gap_px"] = payload.page_gap_px
     if payload.page_blend_blocks is not None:
         init_kwargs["page_blend_blocks"] = payload.page_blend_blocks
+    if payload.page_slide_guide is not None:
+        init_kwargs["page_slide_guide"] = payload.page_slide_guide
+    if payload.page_slide_ratio is not None:
+        init_kwargs["page_slide_ratio"] = payload.page_slide_ratio
+    if payload.page_slide_ratio_custom_w is not None:
+        init_kwargs["page_slide_ratio_custom_w"] = payload.page_slide_ratio_custom_w
+    if payload.page_slide_ratio_custom_h is not None:
+        init_kwargs["page_slide_ratio_custom_h"] = payload.page_slide_ratio_custom_h
     if payload.report_type_id is not None:
         init_kwargs["report_type_id"] = payload.report_type_id
     report = Report(
@@ -530,6 +538,10 @@ def update_report(
         "page_width_px",
         "page_gap_px",
         "page_blend_blocks",
+        "page_slide_guide",
+        "page_slide_ratio",
+        "page_slide_ratio_custom_w",
+        "page_slide_ratio_custom_h",
         "report_type_id",
     ):
         if key in data:

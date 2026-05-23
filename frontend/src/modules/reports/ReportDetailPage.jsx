@@ -73,6 +73,7 @@ import {
   DEFAULT_REPORT_GAP_PX,
   ReportSettingsDialog,
 } from './ReportSettingsDialog'
+import { SlideGuideOverlay } from './SlideGuideOverlay'
 import {
   getTemplateVersion,
   createTemplate,
@@ -260,6 +261,12 @@ export default function ReportDetailPage() {
         page_width_px: seededWidth,
         page_gap_px: seededGap,
         page_blend_blocks: seededBlend,
+        // PPT 슬라이드 가이드 — 새 보고서는 가이드 OFF 로 시작.
+        // 사용자가 보고서 설정 → 페이지 → "PPT 가이드" 에서 켤 수 있다.
+        page_slide_guide: false,
+        page_slide_ratio: null,
+        page_slide_ratio_custom_w: null,
+        page_slide_ratio_custom_h: null,
         report_type_id: null,
         report_type: null,
         // Entity tags (모델/부품/BOM/단계/불량/시험/시뮬레이션) — starts
@@ -315,6 +322,12 @@ export default function ReportDetailPage() {
         // Container blending toggle. null/false → bordered cards;
         // true → page blends widget chrome into the background.
         page_blend_blocks: existingReport.page_blend_blocks === true,
+        // PPT 슬라이드 가이드 — 백엔드의 4 필드를 그대로 받아 draft 에
+        // 저장. 오버레이 렌더 + 다이얼로그 표시 모두 이 값을 본다.
+        page_slide_guide: existingReport.page_slide_guide === true,
+        page_slide_ratio: existingReport.page_slide_ratio ?? null,
+        page_slide_ratio_custom_w: existingReport.page_slide_ratio_custom_w ?? null,
+        page_slide_ratio_custom_h: existingReport.page_slide_ratio_custom_h ?? null,
         // 보고서 종류 — picker writes the FK + embedded ref so the
         // settings dialog (and the list view, once we rerender it)
         // can show the name/status without a second roundtrip.
@@ -1139,6 +1152,19 @@ export default function ReportDetailPage() {
         page_width_px: Number.isFinite(draft.page_width_px) ? draft.page_width_px : null,
         page_gap_px: Number.isFinite(draft.page_gap_px) ? draft.page_gap_px : null,
         page_blend_blocks: draft.page_blend_blocks === true,
+        // PPT 슬라이드 가이드 4 필드. 가이드 OFF 면 false/null 로 비워서
+        // 서버에 명시적으로 reset. ratio 가 custom 이 아닐 때는 custom
+        // dims 도 null 로 같이 비워서 stale 값이 남지 않도록 한다.
+        page_slide_guide: draft.page_slide_guide === true,
+        page_slide_ratio: draft.page_slide_ratio ?? null,
+        page_slide_ratio_custom_w:
+          draft.page_slide_ratio === 'custom'
+            ? draft.page_slide_ratio_custom_w ?? null
+            : null,
+        page_slide_ratio_custom_h:
+          draft.page_slide_ratio === 'custom'
+            ? draft.page_slide_ratio_custom_h ?? null
+            : null,
         // 보고서 종류 — null clears the tag. The backend's update
         // schema uses `exclude_unset`, so always sending the key (even
         // when null) is the explicit "clear" signal.
@@ -1243,6 +1269,11 @@ export default function ReportDetailPage() {
         page_width_px: existingReport.page_width_px ?? null,
         page_gap_px: existingReport.page_gap_px ?? null,
         page_blend_blocks: existingReport.page_blend_blocks === true,
+        // 가이드 4 필드 — cancel 시 서버 스냅샷 그대로 복원되도록 한다.
+        page_slide_guide: existingReport.page_slide_guide === true,
+        page_slide_ratio: existingReport.page_slide_ratio ?? null,
+        page_slide_ratio_custom_w: existingReport.page_slide_ratio_custom_w ?? null,
+        page_slide_ratio_custom_h: existingReport.page_slide_ratio_custom_h ?? null,
         revision: existingReport.revision ?? 1,
         pages,
       })
@@ -1311,6 +1342,18 @@ export default function ReportDetailPage() {
         page_width_px: Number.isFinite(draft.page_width_px) ? draft.page_width_px : null,
         page_gap_px: Number.isFinite(draft.page_gap_px) ? draft.page_gap_px : null,
         page_blend_blocks: draft.page_blend_blocks === true,
+        // 슬라이드 가이드 설정도 복사. 원본의 보기 옵션을 그대로 들고
+        // 가는 게 사용자의 통상 기대치.
+        page_slide_guide: draft.page_slide_guide === true,
+        page_slide_ratio: draft.page_slide_ratio ?? null,
+        page_slide_ratio_custom_w:
+          draft.page_slide_ratio === 'custom'
+            ? draft.page_slide_ratio_custom_w ?? null
+            : null,
+        page_slide_ratio_custom_h:
+          draft.page_slide_ratio === 'custom'
+            ? draft.page_slide_ratio_custom_h ?? null
+            : null,
         // The 종류 tag follows the copy too — same reasoning as width.
         report_type_id: draft.report_type_id ?? null,
         // Entity tags follow the copy as well — the new report inherits
@@ -1956,7 +1999,11 @@ export default function ReportDetailPage() {
         <ScrollArea className="flex-1">
           <div
             className={cn(
-              'p-6 space-y-8 mx-auto w-full report-detail-content',
+              // relative — SlideGuideOverlay 가 inset:0 으로 깔리려면
+              // 부모가 positioning ancestor 여야 한다. 다른 위젯/페이지
+              // 카드도 같은 컨테이너 안에서 absolute 를 쓰지 않으므로
+              // 충돌은 없다.
+              'relative p-6 space-y-8 mx-auto w-full report-detail-content',
               // When the writer opts into blending, drop the per-widget
               // card chrome so the page reads as one continuous surface.
               // The styling itself lives in index.css under
@@ -1986,6 +2033,17 @@ export default function ReportDetailPage() {
               setPageContextMenu({ x: e.clientX, y: e.clientY })
             }}
           >
+            {/* PPT 슬라이드 가이드 — 컨테이너 첫 자식으로 마운트해서 모든
+                위젯 뒤(z-0)에 깔린다. enabled 가 false 면 마운트 자체를
+                건너뛰어 ResizeObserver 비용을 안 낸다. 인쇄/풀스크린에서의
+                숨김은 CSS 가 담당. */}
+            {draft.page_slide_guide === true && (
+              <SlideGuideOverlay
+                ratio={draft.page_slide_ratio ?? '16:9'}
+                customW={draft.page_slide_ratio_custom_w}
+                customH={draft.page_slide_ratio_custom_h}
+              />
+            )}
             {/* Print-only title block — the in-app title lives in the
                 toolbar, which is hidden by the @media print rules. Adding
                 an inline title here keeps the printed PDF self-explanatory
@@ -2186,6 +2244,16 @@ export default function ReportDetailPage() {
         currentGapPx={draft?.page_gap_px ?? null}
         defaultGapPx={DEFAULT_REPORT_GAP_PX}
         currentBlendBlocks={draft?.page_blend_blocks === true}
+        currentSlideGuide={
+          draft
+            ? {
+                enabled: draft.page_slide_guide === true,
+                ratio: draft.page_slide_ratio ?? null,
+                customW: draft.page_slide_ratio_custom_w ?? null,
+                customH: draft.page_slide_ratio_custom_h ?? null,
+              }
+            : null
+        }
         showPropertiesTab
         currentTypeId={draft?.report_type_id ?? null}
         currentType={draft?.report_type ?? null}
@@ -2315,6 +2383,24 @@ export default function ReportDetailPage() {
         }}
         onApplyBlendBlocks={(blend) => {
           setDraft((d) => (d ? { ...d, page_blend_blocks: blend === true } : d))
+        }}
+        onApplySlideGuide={(cfg) => {
+          // cfg = { enabled, ratio, customW, customH }. enabled 이 false
+          // 면 비율/커스텀 값도 같이 비워서 draft 가 깔끔하게 OFF 상태로
+          // 돌아가도록 한다 (저장 시에도 같은 정책을 따른다).
+          setDraft((d) => {
+            if (!d) return d
+            const enabled = cfg?.enabled === true
+            return {
+              ...d,
+              page_slide_guide: enabled,
+              page_slide_ratio: enabled ? cfg?.ratio ?? null : null,
+              page_slide_ratio_custom_w:
+                enabled && cfg?.ratio === 'custom' ? cfg?.customW ?? null : null,
+              page_slide_ratio_custom_h:
+                enabled && cfg?.ratio === 'custom' ? cfg?.customH ?? null : null,
+            }
+          })
         }}
         onApplyType={({ id, ref }) => {
           setDraft((d) => (d ? { ...d, report_type_id: id, report_type: ref } : d))

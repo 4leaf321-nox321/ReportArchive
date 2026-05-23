@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
 from sqlalchemy import inspect as sa_inspect
@@ -217,6 +217,14 @@ class ReportRead(BaseModel):
     # so the page reads as a single continuous surface. None / False →
     # default bordered cards. Set via 보고서 설정 → 페이지 설정.
     page_blend_blocks: Optional[bool] = None
+    # PPT 슬라이드 가이드. 본문 위에 한 슬라이드 분량(콘텐츠 폭 × 역비율)
+    # 마다 수평 점선을 그려서 PPT export 시 한 페이지가 어디까지인지 미리
+    # 가늠하게 해 준다. page_slide_guide=None/False면 가이드 OFF.
+    # page_slide_ratio가 "custom"일 때만 custom_w/_h가 의미를 가진다.
+    page_slide_guide: Optional[bool] = None
+    page_slide_ratio: Optional[Literal["16:9", "4:3", "16:10", "custom"]] = None
+    page_slide_ratio_custom_w: Optional[int] = Field(default=None, ge=1, le=10000)
+    page_slide_ratio_custom_h: Optional[int] = Field(default=None, ge=1, le=10000)
     # Optional report-type tag. `report_type_id` is the raw FK; the
     # embedded `report_type` carries name/description/status so the
     # frontend doesn't need a separate /api/report-types/<id> call.
@@ -320,6 +328,12 @@ class ReportCreate(BaseModel):
     page_gap_px: Optional[int] = Field(default=None, ge=0, le=200)
     # Per-report container blending toggle. None → default bordered cards.
     page_blend_blocks: Optional[bool] = None
+    # PPT 슬라이드 가이드 (ReportRead 의 동명 필드 참고). 새 보고서는
+    # 보통 가이드 OFF 로 시작하므로 모두 None 으로 둠.
+    page_slide_guide: Optional[bool] = None
+    page_slide_ratio: Optional[Literal["16:9", "4:3", "16:10", "custom"]] = None
+    page_slide_ratio_custom_w: Optional[int] = Field(default=None, ge=1, le=10000)
+    page_slide_ratio_custom_h: Optional[int] = Field(default=None, ge=1, le=10000)
     # Optional FK to a report_types row. Created via the picker dialog;
     # may be null (no tag).
     report_type_id: Optional[int] = None
@@ -350,6 +364,13 @@ class ReportUpdate(BaseModel):
     # Container blending toggle. None resets to default (False); True hides
     # widget card chrome so the page reads as one continuous surface.
     page_blend_blocks: Optional[bool] = None
+    # PPT 슬라이드 가이드. 4개 필드 모두 None 이면 가이드 OFF.
+    # exclude_unset 으로 PATCH 처리되므로, 가이드를 끄려면 클라이언트가
+    # page_slide_guide=False (또는 None) 을 명시적으로 보내야 한다.
+    page_slide_guide: Optional[bool] = None
+    page_slide_ratio: Optional[Literal["16:9", "4:3", "16:10", "custom"]] = None
+    page_slide_ratio_custom_w: Optional[int] = Field(default=None, ge=1, le=10000)
+    page_slide_ratio_custom_h: Optional[int] = Field(default=None, ge=1, le=10000)
     # Optional report-type FK. The field is consulted via model_dump's
     # `exclude_unset` so an explicit `null` clears the tag while an
     # absent key leaves the existing value alone.

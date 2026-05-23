@@ -166,6 +166,20 @@ class Report(Base):
         Boolean, nullable=True
     )
 
+    # PPT export 보조용 슬라이드 가이드. 본문 위에 슬라이드 한 장이
+    # 차지할 세로 경계를 점선으로 보여준다. 4개 컬럼 모두 NULL이면
+    # 프론트는 "가이드 OFF"로 취급한다. page_slide_ratio 는 "16:9" /
+    # "4:3" / "16:10" / "custom" 중 하나이고, "custom" 일 때만 _custom_w
+    # / _custom_h 가 의미를 가진다.
+    page_slide_guide: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    page_slide_ratio: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    page_slide_ratio_custom_w: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    page_slide_ratio_custom_h: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+
     # Optional report-type tag — system-wide controlled vocabulary
     # orthogonal to the template (templates describe shape; types
     # describe purpose, e.g. "주간 보고", "안전 점검"). Managed by

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
+  ExternalLink,
   Pencil,
   Plus,
   RotateCcw,
@@ -22,6 +23,11 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/shared/components/ui/dialog'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/shared/components/ui/popover'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { DataTable } from '@/shared/components/DataTable'
@@ -33,6 +39,7 @@ import {
   deleteEntity,
   listEntities,
   listEntityTypes,
+  listEntityUsage,
   mergeEntity,
   updateEntity,
 } from '@/shared/api/entities'
@@ -206,11 +213,7 @@ function AxisPanel({ type }) {
         sortable: true,
         headerClassName: 'w-[80px] text-right',
         cellClassName: 'text-right',
-        render: (r) => (
-          <span className="text-xs tabular-nums">
-            {r.usage_count ?? 0}건
-          </span>
-        ),
+        render: (r) => <UsageCell entity={r} />,
       },
       {
         key: 'created_at',
@@ -384,9 +387,119 @@ function AxisPanel({ type }) {
             setDeleteTarget(null)
             reload()
           }}
+          onSwitchToMerge={() => {
+            // Hand off to the merge dialog without losing context — the
+            // common reason a delete is blocked is duplicate-cleanup, and
+            // merge is the right next action.
+            setMergeTarget(deleteTarget)
+            setDeleteTarget(null)
+          }}
         />
       )}
     </div>
+  )
+}
+
+/**
+ * Usage-count cell. Renders "N건" — and when N > 0, clicking opens a
+ * popover with the actual reports (id + title + workspace + updated)
+ * so the admin can jump straight to any of them in a new tab. Reduces
+ * the "왜 못 지우지?" guessing cost from O(grep the whole list) to a
+ * single click.
+ */
+function UsageCell({ entity }) {
+  const [open, setOpen] = useState(false)
+  const [items, setItems] = useState(null)
+  const [error, setError] = useState(null)
+  const count = entity.usage_count ?? 0
+
+  useEffect(() => {
+    if (!open || items !== null) return
+    let cancelled = false
+    listEntityUsage(entity.id)
+      .then((res) => {
+        if (!cancelled) setItems(res?.items ?? [])
+      })
+      .catch((e) => {
+        if (cancelled) return
+        setError(e)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, items, entity.id])
+
+  if (count <= 0) {
+    return <span className="text-xs text-muted-foreground tabular-nums">0건</span>
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          onClick={(e) => e.stopPropagation()}
+          className="text-xs tabular-nums underline-offset-2 hover:underline"
+          title="이 값을 사용 중인 보고서 보기"
+        >
+          {count}건
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        className="w-80 p-2"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <UsageList items={items} error={error} />
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/**
+ * Shared list rendering used by the cell popover, the delete-confirm
+ * dialog, and the merge preview. Each item is a button that opens the
+ * report in a new tab (target=_blank) so the admin doesn't lose their
+ * place in the entities grid.
+ */
+function UsageList({ items, error, emptyLabel = '사용 중인 보고서가 없습니다.' }) {
+  if (error) {
+    return (
+      <p className="text-xs text-destructive">
+        목록을 불러올 수 없습니다.
+      </p>
+    )
+  }
+  if (items === null) {
+    return (
+      <p className="text-xs text-muted-foreground">불러오는 중...</p>
+    )
+  }
+  if (items.length === 0) {
+    return (
+      <p className="text-xs text-muted-foreground">{emptyLabel}</p>
+    )
+  }
+  return (
+    <ul className="max-h-72 overflow-y-auto divide-y">
+      {items.map((r) => (
+        <li key={r.id}>
+          <a
+            href={`/w/${r.workspace_slug}/reports/${r.id}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-start justify-between gap-2 px-2 py-1.5 text-sm hover:bg-accent"
+            title={`${r.workspace_slug} · 수정 ${formatDate(r.updated_at)}`}
+          >
+            <span className="flex-1 truncate">{r.title}</span>
+            <span className="shrink-0 text-[10px] text-muted-foreground inline-flex items-center gap-0.5">
+              {r.workspace_slug}
+              <ExternalLink className="h-3 w-3" />
+            </span>
+          </a>
+        </li>
+      ))}
+    </ul>
   )
 }
 
@@ -493,19 +606,45 @@ function EditDialog({ mode, type, target, onClose, onSaved }) {
 
 /**
  * Pick another value in the same axis as the merge target. Reuses the
- * already-fetched `allRows` so no extra request — admin lists everything
- * for the axis anyway. The source row is excluded from the pick list
- * (merging into itself is a no-op).
+ * already-fetched `allRows` so no extra request for the candidate list
+ * — admin lists everything for the axis anyway. The source row is
+ * excluded from the pick list (merging into itself is a no-op).
+ *
+ * When the source has any usage, we also fetch the actual list of
+ * affected reports so the admin can preview which reports will be
+ * re-tagged before committing.
  */
 function MergeDialog({ type, source, allRows, onClose, onMerged }) {
   const [intoId, setIntoId] = useState(null)
   const [submitting, setSubmitting] = useState(false)
+  const [usage, setUsage] = useState(null) // null = loading | array
+  const [usageError, setUsageError] = useState(null)
   const candidates = useMemo(
     () => allRows.filter((r) => r.id !== source.id),
     [allRows, source.id],
   )
   const target = candidates.find((r) => r.id === intoId)
   const canSubmit = !!target && !submitting
+  const sourceUsage = source.usage_count ?? 0
+
+  useEffect(() => {
+    if (sourceUsage <= 0) {
+      setUsage([]) // skip the network call when there's nothing to preview
+      return
+    }
+    let cancelled = false
+    listEntityUsage(source.id)
+      .then((res) => {
+        if (!cancelled) setUsage(res?.items ?? [])
+      })
+      .catch((e) => {
+        if (cancelled) return
+        setUsageError(e)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [source.id, sourceUsage])
 
   async function handleMerge() {
     if (!canSubmit) return
@@ -534,42 +673,52 @@ function MergeDialog({ type, source, allRows, onClose, onMerged }) {
             <strong>'{source.value}'</strong> 는 삭제됩니다.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-2">
-          <Label className="text-xs">합칠 대상</Label>
-          <div className="max-h-72 overflow-y-auto rounded-md border">
-            {candidates.length === 0 && (
-              <p className="px-3 py-4 text-center text-xs text-muted-foreground">
-                같은 축의 다른 값이 없습니다.
-              </p>
-            )}
-            {candidates.map((r) => (
-              <button
-                key={r.id}
-                type="button"
-                onClick={() => setIntoId(r.id)}
-                className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-accent ${
-                  intoId === r.id ? 'bg-accent' : ''
-                }`}
-              >
-                <span
-                  className={
-                    r.status === 'deprecated'
-                      ? 'text-muted-foreground line-through'
-                      : ''
-                  }
+        <div className="space-y-3">
+          {sourceUsage > 0 && (
+            <div className="rounded-md border bg-muted/30 p-2">
+              <div className="mb-1 text-[11px] font-medium text-muted-foreground">
+                재연결될 보고서 ({sourceUsage}건)
+              </div>
+              <UsageList items={usage} error={usageError} />
+            </div>
+          )}
+          <div>
+            <Label className="text-xs">합칠 대상</Label>
+            <div className="mt-1 max-h-60 overflow-y-auto rounded-md border">
+              {candidates.length === 0 && (
+                <p className="px-3 py-4 text-center text-xs text-muted-foreground">
+                  같은 축의 다른 값이 없습니다.
+                </p>
+              )}
+              {candidates.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => setIntoId(r.id)}
+                  className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-accent ${
+                    intoId === r.id ? 'bg-accent' : ''
+                  }`}
                 >
-                  {r.value}
-                  {r.code && (
-                    <span className="ml-1 text-[11px] text-muted-foreground">
-                      ({r.code})
-                    </span>
-                  )}
-                </span>
-                <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
-                  {r.usage_count ?? 0}건
-                </span>
-              </button>
-            ))}
+                  <span
+                    className={
+                      r.status === 'deprecated'
+                        ? 'text-muted-foreground line-through'
+                        : ''
+                    }
+                  >
+                    {r.value}
+                    {r.code && (
+                      <span className="ml-1 text-[11px] text-muted-foreground">
+                        ({r.code})
+                      </span>
+                    )}
+                  </span>
+                  <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
+                    {r.usage_count ?? 0}건
+                  </span>
+                </button>
+              ))}
+            </div>
           </div>
         </div>
         <DialogFooter>
@@ -586,12 +735,39 @@ function MergeDialog({ type, source, allRows, onClose, onMerged }) {
 }
 
 /**
- * Hard-delete confirm. Backend returns 400 with the in-use message if
- * the value is still linked to reports; we surface that as a toast so
- * the admin knows to use merge/deprecate instead.
+ * Hard-delete confirm. On open, fetches the actual list of reports using
+ * this entity so the admin can see them inline (instead of getting a
+ * bare "사용 중" error toast after clicking 삭제). When there's any
+ * usage the destructive action is disabled and we surface a "대신 머지"
+ * shortcut that hands off to the merge dialog with the same source.
  */
-function DeleteConfirmDialog({ target, onClose, onDeleted }) {
+function DeleteConfirmDialog({ target, onClose, onDeleted, onSwitchToMerge }) {
   const [submitting, setSubmitting] = useState(false)
+  const [usage, setUsage] = useState(null) // null = loading | array
+  const [usageError, setUsageError] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    listEntityUsage(target.id)
+      .then((res) => {
+        if (!cancelled) setUsage(res?.items ?? [])
+      })
+      .catch((e) => {
+        if (cancelled) return
+        setUsageError(e)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [target.id])
+
+  // Server's count and our just-fetched list may diverge by 1–2 if a
+  // concurrent edit landed between the grid load and now; we trust the
+  // freshly-fetched list to drive the disabled state.
+  const blockedByUsage = (usage?.length ?? 0) > 0 || usage === null
+  // While loading we keep the button disabled (`usage === null` →
+  // blockedByUsage true). After load it reflects the real number.
+  const canDelete = !submitting && usage !== null && usage.length === 0
 
   async function handleDelete() {
     setSubmitting(true)
@@ -600,8 +776,9 @@ function DeleteConfirmDialog({ target, onClose, onDeleted }) {
       toast.success(`'${target.value}' 삭제됨`)
       onDeleted()
     } catch (err) {
-      // The 400 from the in-use guard has its message in err.message
-      // (axios client interceptor copies the envelope's `message`).
+      // Defensive: even with the inline guard, a concurrent edit might
+      // have re-introduced usage between our fetch and the delete call.
+      // Surface the server's message verbatim in that case.
       toast.error(err.message || '삭제 실패')
     } finally {
       setSubmitting(false)
@@ -617,20 +794,49 @@ function DeleteConfirmDialog({ target, onClose, onDeleted }) {
             삭제 확인
           </DialogTitle>
           <DialogDescription>
-            <strong>'{target.value}'</strong> 를 완전히 삭제합니다. 이 값을
-            사용 중인 보고서가 있으면 서버가 400으로 차단하니, 먼저 머지하거나
-            비활성화 하세요.
+            <strong>'{target.value}'</strong> 를 완전히 삭제합니다.
+            {usage !== null && usage.length === 0
+              ? ' 사용 중인 보고서가 없어 안전하게 삭제할 수 있습니다.'
+              : ' 이 값을 사용 중인 보고서가 있으면 직접 삭제할 수 없습니다 — 머지하거나 비활성화 하세요.'}
           </DialogDescription>
         </DialogHeader>
-        <DialogFooter>
+
+        {blockedByUsage && (
+          <div className="rounded-md border bg-muted/30 p-2">
+            <div className="mb-1 text-[11px] font-medium text-muted-foreground">
+              {usage === null
+                ? '사용 중인 보고서 확인 중...'
+                : `사용 중인 보고서 (${usage.length}건)`}
+            </div>
+            <UsageList items={usage} error={usageError} />
+          </div>
+        )}
+
+        <DialogFooter className="gap-2 sm:gap-2">
           <Button variant="ghost" size="sm" onClick={onClose}>
             취소
           </Button>
+          {usage !== null && usage.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onSwitchToMerge}
+              className="gap-1"
+            >
+              <Combine className="h-3.5 w-3.5" />
+              대신 머지하기
+            </Button>
+          )}
           <Button
             size="sm"
             variant="destructive"
             onClick={handleDelete}
-            disabled={submitting}
+            disabled={!canDelete}
+            title={
+              usage !== null && usage.length > 0
+                ? '사용 중인 보고서가 있어서 삭제할 수 없습니다.'
+                : undefined
+            }
           >
             {submitting ? '삭제 중...' : '삭제'}
           </Button>

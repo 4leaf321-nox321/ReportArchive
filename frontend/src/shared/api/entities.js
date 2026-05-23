@@ -69,6 +69,21 @@ export async function mergeEntity(id, intoId) {
   return extractData(res)
 }
 
+/**
+ * Admin-only — slim list of reports currently tagged with this entity.
+ * Workspace-agnostic by design so the admin dialogs always show every
+ * blocker, regardless of the admin's active workspace. Used by:
+ *   - the row's "사용 N건" cell popover
+ *   - the delete dialog (to list blockers + disable when N > 0)
+ *   - the merge dialog (to preview which reports will be re-linked)
+ *
+ *   { items: [{ id, title, workspace_slug, updated_at }] }
+ */
+export async function listEntityUsage(id) {
+  const res = await apiClient.get(`${BASE}/${id}/usage`)
+  return extractData(res)
+}
+
 /** Admin-only hard delete. Server returns 400 when the entity is still in use. */
 export async function deleteEntity(id) {
   const res = await apiClient.delete(`${BASE}/${id}`)

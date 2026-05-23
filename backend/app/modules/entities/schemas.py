@@ -91,3 +91,21 @@ class EntityMergeRequest(BaseModel):
     must be on the same axis — enforced by the service."""
 
     into_id: int
+
+
+class EntityUsageReportRef(BaseModel):
+    """Slim ref to a report tagged with an entity. Used by the admin
+    page's "어떤 보고서가 막고 있나?" lookups — populated by
+    /api/entities/{id}/usage. Only the fields needed to render a list
+    row + navigate are included; full report fetch is one click away."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    workspace_slug: str
+    updated_at: datetime
+
+
+class EntityUsageResponse(BaseModel):
+    items: list[EntityUsageReportRef]

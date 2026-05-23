@@ -357,3 +357,28 @@ def get_report_entities(db: Session, report_id: int) -> list[Entity]:
         .order_by(Entity.value)
     )
     return list(db.execute(stmt).scalars())
+
+
+def list_reports_using_entity(db: Session, *, entity_id: int) -> list:
+    """Slim "어떤 보고서가 이 값을 쓰고 있나?" lookup for the admin page.
+
+    Returns rows of (id, title, workspace_slug, updated_at) tuples ordered
+    by most-recently-updated first. Workspace-agnostic by design — the
+    admin needs to see ALL blockers regardless of their current
+    workspace context (otherwise the delete dialog would silently
+    under-report and the 400 from the actual delete attempt would
+    surprise them).
+
+    Imported lazily because the reports module imports from this one
+    (entity_services.set_report_entities) and a top-level import would
+    cycle.
+    """
+    from app.modules.reports.models import Report  # local to avoid cycle
+
+    stmt = (
+        select(Report.id, Report.title, Report.workspace_slug, Report.updated_at)
+        .join(ReportEntity, ReportEntity.report_id == Report.id)
+        .where(ReportEntity.entity_id == entity_id)
+        .order_by(Report.updated_at.desc())
+    )
+    return list(db.execute(stmt).all())

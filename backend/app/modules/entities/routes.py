@@ -29,6 +29,8 @@ from app.modules.entities.schemas import (
     EntityTypeListResponse,
     EntityTypeRead,
     EntityUpdate,
+    EntityUsageReportRef,
+    EntityUsageResponse,
 )
 from app.modules.users.models import Role, User, WorkspaceMember
 from app.shared.auth import _resolve_user_from_token, bearer_scheme
@@ -224,6 +226,37 @@ def merge_entity(
     return success_response(
         data={"relinked_report_count": relinked, "into_id": into.id},
         message=f"'{src.value}' → '{into.value}' 머지 완료. {relinked}건 재연결.",
+    )
+
+
+@entities_router.get("/{entity_id}/usage")
+def list_entity_usage(
+    entity_id: int,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only. Returns the slim list of reports currently tagged with
+    this entity — used by the admin page's delete/merge dialogs and the
+    "사용 N건" cell popover to surface which reports are blocking a
+    destructive action. Workspace-agnostic on purpose: the admin needs
+    to see all blockers, not just ones in their current workspace tree."""
+    _require_admin(actor)
+    row = services.get_entity(db, entity_id)
+    if not row:
+        return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
+    items = services.list_reports_using_entity(db, entity_id=entity_id)
+    return success_response(
+        data=EntityUsageResponse(
+            items=[
+                EntityUsageReportRef(
+                    id=r_id,
+                    title=title,
+                    workspace_slug=ws,
+                    updated_at=updated_at,
+                )
+                for (r_id, title, ws, updated_at) in items
+            ]
+        )
     )
 
 

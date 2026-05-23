@@ -8,6 +8,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.modules.entities import services as entity_services
+from app.modules.entities.models import Entity, ReportEntity
 from app.modules.reports.models import Report, ReportEditLock
 from app.modules.reports.schemas import ReportCreate, ReportPage, ReportUpdate
 from app.modules.templates import services as template_services
@@ -68,16 +69,54 @@ def list_reports_in_workspace(
     workspace_slug: str,
     *,
     is_global_view: bool = False,
+    entity_ids: Optional[list[int]] = None,
 ) -> list[Report]:
     """Returns reports scoped to the workspace tree.
 
     For non-leaf workspaces, this includes all descendants. The virtual
-    `_global` workspace bypasses scoping (admin/横断 view).
+    `_global` workspace bypasses scoping (admin/횡단 view).
+
+    `entity_ids` applies the N-axis tag filter: ids are grouped by their
+    axis (entity.type_id), and the WHERE clause becomes
+    `EXISTS(axis1 IN […]) AND EXISTS(axis2 IN […])` — i.e. *OR within
+    an axis, AND across axes*. That matches standard tag-filter UX
+    (Linear/Notion/Jira): picking two values in 모델 means "either
+    model", while adding a 단계 narrows the result. An unknown id is
+    silently dropped (defense in depth — the UI sends only ids it just
+    got from /api/entities, but a stale URL could carry deleted ones).
     """
     query = select(Report).order_by(desc(Report.updated_at))
     if not is_global_view:
         scope = ws_services.get_descendants_inclusive(db, workspace_slug)
         query = query.where(Report.workspace_slug.in_(scope))
+    if entity_ids:
+        # Resolve each id → type_id so we can group. One DB roundtrip
+        # regardless of how many ids were picked.
+        rows = db.execute(
+            select(Entity.id, Entity.type_id).where(Entity.id.in_(set(entity_ids)))
+        ).all()
+        by_type: dict[int, list[int]] = {}
+        for entity_id, type_id in rows:
+            by_type.setdefault(type_id, []).append(entity_id)
+        # User explicitly asked to filter, but none of the supplied ids
+        # exist — return zero results rather than silently un-filtering.
+        # ("show reports tagged with X" + X doesn't exist → empty.)
+        if not by_type:
+            return []
+        for ids_in_axis in by_type.values():
+            # `EXISTS (SELECT 1 FROM report_entities WHERE report_id =
+            # reports.id AND entity_id IN (…))` per axis. Postgres
+            # collapses the EXISTS into a hash semi-join, so cost stays
+            # linear in the number of axes touched.
+            subq = (
+                select(ReportEntity.report_id)
+                .where(
+                    ReportEntity.report_id == Report.id,
+                    ReportEntity.entity_id.in_(ids_in_axis),
+                )
+                .exists()
+            )
+            query = query.where(subq)
     return list(db.execute(query).scalars())
 
 

@@ -44,11 +44,21 @@ def _lock_conflict_response(exc: services.LockError):
 
 @router.get("")
 def list_reports(
+    entity_ids: list[int] | None = Query(default=None, alias="entity_ids"),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
+    """List reports in the actor's workspace tree.
+
+    Optional `entity_ids` (repeated) applies the N-axis tag filter:
+    OR within an axis, AND across axes. Sent by the list-page filter
+    bar; absent for the default unfiltered view.
+    """
     reports = services.list_reports_in_workspace(
-        db, actor.workspace.slug, is_global_view=actor.workspace.virtual
+        db,
+        actor.workspace.slug,
+        is_global_view=actor.workspace.virtual,
+        entity_ids=entity_ids,
     )
     payload = [ReportSummary.model_validate(r) for r in reports]
     return success_response(data=payload)

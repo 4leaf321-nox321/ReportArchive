@@ -2,8 +2,18 @@ import { apiClient, extractData } from '@/shared/api/client'
 
 const BASE = '/api/reports'
 
-export async function listReports() {
-  const res = await apiClient.get(BASE)
+export async function listReports({ entityIds } = {}) {
+  // Build via URLSearchParams instead of axios's default params object:
+  // axios 1.x serializes arrays as `entity_ids[]=1&entity_ids[]=2`, but
+  // FastAPI's `Query(default=None)` over `list[int]` expects repeated
+  // keys with no brackets (`entity_ids=1&entity_ids=2`). URLSearchParams'
+  // append() produces exactly that form.
+  const params = new URLSearchParams()
+  if (Array.isArray(entityIds)) {
+    for (const id of entityIds) params.append('entity_ids', String(id))
+  }
+  const qs = params.toString()
+  const res = await apiClient.get(qs ? `${BASE}?${qs}` : BASE)
   return extractData(res)
 }
 

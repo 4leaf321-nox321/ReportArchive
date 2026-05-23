@@ -53,7 +53,10 @@ const GLOBAL_MENU = [
  */
 export function Sidebar() {
   return (
-    <aside className="hidden md:flex h-full w-60 shrink-0 flex-col border-r bg-card">
+    <aside
+      data-app-chrome="sidebar"
+      className="hidden md:flex h-full w-60 shrink-0 flex-col border-r bg-card"
+    >
       <SidebarBody />
     </aside>
   )

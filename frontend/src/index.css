@@ -253,3 +253,15 @@
 .annotation-rect:hover > rect:first-of-type {
   fill-opacity: 0.04;
 }
+
+/* 보고서 전체화면 모드 — ReportDetailPage가 켜질 때 body에 클래스를
+   붙이면 AppShell의 헤더/사이드바를 숨기고, 보고서 본문 div에 걸린
+   inline maxWidth(보고서 폭 설정)도 풀어 화면 전체를 채우게 한다.
+   툴바와 페이지 스트립은 종료 동선이라 그대로 둔다. */
+body.report-fullscreen [data-app-chrome],
+body.report-fullscreen .report-detail-toolbar {
+  display: none !important;
+}
+body.report-fullscreen .report-detail-content {
+  max-width: none !important;
+}

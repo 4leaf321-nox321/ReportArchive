@@ -27,7 +27,10 @@ export function Header({ onOpenMobileSidebar }) {
   const shortcut = isMac ? '⌘K' : 'Ctrl K'
 
   return (
-    <header className="flex h-14 items-center gap-2 border-b bg-background px-4">
+    <header
+      data-app-chrome="header"
+      className="flex h-14 items-center gap-2 border-b bg-background px-4"
+    >
       {/* 모바일 햄버거 */}
       <Button
         variant="ghost"

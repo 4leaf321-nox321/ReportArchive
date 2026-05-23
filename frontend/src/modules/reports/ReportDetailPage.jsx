@@ -25,6 +25,7 @@ import {
   HardDrive,
   Layers,
   Maximize2,
+  Minimize2,
   Pencil,
   Plus,
   Rows,
@@ -153,6 +154,22 @@ export default function ReportDetailPage() {
     1,
   )
   const [isEditing, setIsEditing] = useState(isNew || startEditingFromState)
+  // 보고서 전체화면 모드 — AppShell의 헤더/사이드바를 가리고, 본문의
+  // maxWidth 제한도 풀어서 보고서가 브라우저 전체 폭을 차지하게 한다.
+  // 본문 옆 패딩(p-6)과 toolbar/page-strip은 유지해 종료 동선을 남긴다.
+  const [reportFullscreen, setReportFullscreen] = useState(false)
+  useEffect(() => {
+    if (!reportFullscreen) return
+    document.body.classList.add('report-fullscreen')
+    const onKey = (e) => {
+      if (e.key === 'Escape') setReportFullscreen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      document.body.classList.remove('report-fullscreen')
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [reportFullscreen])
   // "Printing" doesn't actually leave edit mode (no lock release, no
   // unsaved-change loss); it just renders all blocks read-only and stacks
   // every page vertically so the browser's print engine sees the same
@@ -1784,6 +1801,21 @@ export default function ReportDetailPage() {
             목록
           </Button>
 
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setReportFullscreen((v) => !v)}
+            title={reportFullscreen ? '전체화면 종료 (Esc)' : '전체화면으로 보기'}
+            aria-pressed={reportFullscreen}
+          >
+            {reportFullscreen ? (
+              <Minimize2 className="mr-1 h-3 w-3" />
+            ) : (
+              <Maximize2 className="mr-1 h-3 w-3" />
+            )}
+            {reportFullscreen ? '축소' : '전체화면'}
+          </Button>
+
           {isEditing ? (
             <>
               <Button variant="outline" size="sm" onClick={onSave}>
@@ -1912,7 +1944,7 @@ export default function ReportDetailPage() {
 
         <ScrollArea className="flex-1">
           <div
-            className="p-6 space-y-8 mx-auto w-full"
+            className="p-6 space-y-8 mx-auto w-full report-detail-content"
             // Per-report content width. Falls back to the narrow default
             // (1024px ≈ Tailwind `max-w-5xl`) so reports that pre-date the
             // setting keep their look. Right-click in the empty area below
@@ -2341,6 +2373,22 @@ export default function ReportDetailPage() {
               addExtraBlock(safeCurrent, type, defaults)
             }
           />
+        </div>
+      )}
+      {/* 전체화면 모드에서는 툴바가 숨어 종료 동선이 사라지므로
+          우상단에 작은 종료 핀을 띄운다. ESC로도 빠질 수 있다. */}
+      {reportFullscreen && (
+        <div className="report-detail-floating fixed top-3 right-3 z-50 print:hidden">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setReportFullscreen(false)}
+            title="전체화면 종료 (Esc)"
+            className="shadow-md"
+          >
+            <Minimize2 className="mr-1 h-3 w-3" />
+            전체화면 종료
+          </Button>
         </div>
       )}
     </div>

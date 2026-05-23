@@ -2256,6 +2256,84 @@ NETWORK: WidgetDescriptor = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# 11j. mind_map — radial / horizontal mind map (interactive node tree)         #
+# --------------------------------------------------------------------------- #
+# Data shape mirrors Tree/Treemap/Packing's `rows: [{label, parent, color}]`
+# so authors can switch visualizations on the same hierarchy without
+# re-keying. Distinct from Tree in two ways:
+#   1. Layout — radial (root at center, branches 360°) or horizontal
+#      (root center, level-1 children split left/right).
+#   2. Editing UX — primary input is in-canvas (+ button on hover, inline
+#      label edit, Tab/Enter/Delete shortcuts). The rows table is still
+#      present for bulk edits / TSV paste.
+_MIND_MAP_LAYOUTS = ("radial", "horizontal")
+_MIND_MAP_BRANCH_STYLES = ("taper", "curve")
+
+
+def _mind_map_content(props: dict) -> dict:  # noqa: ARG001
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "maxLength": 200},
+                        "parent": {"type": "string", "maxLength": 200},
+                        "color": {"type": "string", "maxLength": 32},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            # 'radial' (default): root at center, branches radiate 360°.
+            # 'horizontal': root at center, level-1 children split left/right.
+            "layout": {
+                "type": "string",
+                "enum": list(_MIND_MAP_LAYOUTS),
+            },
+            # 'taper' (default): branches drawn as filled paths thinning
+            # from root → leaf (hand-drawn mind-map feel).
+            # 'curve': uniform stroke width bezier.
+            "branch_style": {
+                "type": "string",
+                "enum": list(_MIND_MAP_BRANCH_STYLES),
+            },
+            # When set, every level-1 child gets its own palette color and
+            # descendants inherit a lightened version (matches the
+            # treemap/packing/tree group-coloring rule). Per-row `color`
+            # still wins.
+            "color_by_group": {"type": "boolean"},
+            # Emphasize the root with a padded ellipse + bold label.
+            "show_root_emphasis": {"type": "boolean"},
+        },
+        "additionalProperties": False,
+    }
+
+
+MIND_MAP: WidgetDescriptor = {
+    "type": "mind_map",
+    "label": "마인드맵",
+    "description": "방사형/좌우 분기 마인드맵 — 가지에 라벨이 얹힌 유기적 곡선. 캔버스에서 +버튼·키보드로 가지 쳐가며 편집 (트리와 데이터 동일)",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _mind_map_content,
+    "default_props": {
+        "label": "마인드맵",
+    },
+}
+
+
 PACKING: WidgetDescriptor = {
     "type": "packing",
     "label": "원형 패킹",
@@ -2633,6 +2711,7 @@ WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
         PACKING,
         TREE,
         NETWORK,
+        MIND_MAP,
         PIE,
         WAFFLE,
         BOX,

@@ -17,7 +17,7 @@
  *   2. Create <Widget>.jsx here exporting PropsPanel + Preview + (optional) Editor
  *   3. Register the components below
  */
-import { Activity, AlignLeft, BarChartHorizontal, Box, Boxes, Circle, FileCode2, Film, Flag, GitBranch, Grid2x2, Grid3x3, Heading1, Hexagon, Image, LayoutGrid, LineChart, ListOrdered, MoreVertical, Paperclip, PieChart as PieIcon, Sigma, Table2, Type, Workflow } from 'lucide-react'
+import { Activity, AlignLeft, BarChartHorizontal, Box, Boxes, Circle, FileCode2, Film, Flag, GitBranch, Grid2x2, Grid3x3, Heading1, Hexagon, Image, LayoutGrid, LineChart, ListOrdered, MoreVertical, Paperclip, PieChart as PieIcon, Share2, Sigma, Table2, Type, Workflow } from 'lucide-react'
 
 import { HeadingPropsPanel, HeadingPreview, HeadingEditor } from './Heading'
 import { RichTextPropsPanel, RichTextPreview, RichTextEditor } from './RichText'
@@ -36,6 +36,7 @@ import { ContourPropsPanel, ContourPreview, ContourEditor } from './Contour'
 import { TreemapPropsPanel, TreemapPreview, TreemapEditor } from './Treemap'
 import { PackingPropsPanel, PackingPreview, PackingEditor } from './Packing'
 import { TreePropsPanel, TreePreview, TreeEditor } from './Tree'
+import { NetworkPropsPanel, NetworkPreview, NetworkEditor } from './Network'
 import { PiePropsPanel, PiePreview, PieEditor } from './Pie'
 import { WafflePropsPanel, WafflePreview, WaffleEditor } from './Waffle'
 import { BoxPropsPanel, BoxPreview, BoxEditor } from './Box'
@@ -150,6 +151,12 @@ export const WIDGET_RENDERERS = {
     PropsPanel: TreePropsPanel,
     Preview: TreePreview,
     Editor: TreeEditor,
+  },
+  network: {
+    Icon: Share2,
+    PropsPanel: NetworkPropsPanel,
+    Preview: NetworkPreview,
+    Editor: NetworkEditor,
   },
   pie: {
     Icon: PieIcon,

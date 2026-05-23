@@ -2124,6 +2124,138 @@ TREE: WidgetDescriptor = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# 11i. network — node-and-edge graph (force-directed + alt layouts)            #
+# --------------------------------------------------------------------------- #
+# General graph: arbitrary nodes/edges, possibly cyclic, directed or
+# undirected. Unlike tree/packing/treemap which share the long-form
+# `rows: [{label, parent, ...}]` hierarchy shape, networks need an
+# explicit `nodes[] + edges[]` model — there is no parent-child concept.
+#
+# Layout choices:
+#   force    — d3-force simulation (default; physics-based)
+#   circular — nodes on a circle
+#   grid     — nodes on a square lattice
+#   radial   — nodes grouped by `group` on concentric rings
+#
+# Node positions (x, y) are persisted in content. The frontend writes
+# them back after the force simulation stabilizes or the user drags a
+# node, so reopening / exporting reproduces the exact layout. Static
+# layouts (circular/grid/radial) compute deterministically from the
+# node list and ignore stored positions.
+#
+# Edge integrity (source/target reference an existing node id; no
+# duplicate edges) is not expressible in pure JSON Schema. The
+# renderer silently drops orphan edges and dedupes — mirroring the
+# Tree widget's frontend-only cycle guard pattern.
+_NETWORK_LAYOUTS = ("force", "circular", "grid", "radial")
+_NETWORK_NODE_SHAPES = ("circle", "rect")
+
+
+def _network_content(props: dict) -> dict:  # noqa: ARG001
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            "nodes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "minLength": 1, "maxLength": 200},
+                        "label": {"type": "string", "maxLength": 200},
+                        # Optional grouping key — drives `color_by_group`
+                        # coloring and the radial layout's ring assignment.
+                        "group": {"type": "string", "maxLength": 200},
+                        # When `node_size_by_value` is on, this maps onto
+                        # the node radius (linearly between node_size_min
+                        # and node_size_max). Null / missing → mid-size.
+                        "value": {"type": ["number", "null"]},
+                        "color": {"type": "string", "maxLength": 64},
+                        # Persisted layout position. Written by the
+                        # frontend after the force sim stabilizes or
+                        # the user drags. Optional — fresh imports
+                        # without coords trigger a new simulation.
+                        "x": {"type": "number"},
+                        "y": {"type": "number"},
+                        # When true, the node is pinned in the force
+                        # simulation (won't move). Set by the renderer
+                        # when the user "locks" a node.
+                        "fixed": {"type": "boolean"},
+                    },
+                    "required": ["id"],
+                    "additionalProperties": False,
+                },
+            },
+            "edges": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string", "minLength": 1, "maxLength": 200},
+                        "target": {"type": "string", "minLength": 1, "maxLength": 200},
+                        # Affects forceLink target distance (heavier =
+                        # shorter spring) and edge stroke-width.
+                        "weight": {"type": "number"},
+                        "label": {"type": "string", "maxLength": 200},
+                        # Per-edge override of the widget-level `directed`.
+                        # Omitted → inherit widget default.
+                        "directed": {"type": "boolean"},
+                        "color": {"type": "string", "maxLength": 64},
+                    },
+                    "required": ["source", "target"],
+                    "additionalProperties": False,
+                },
+            },
+            "directed": {"type": "boolean"},
+            "layout": {
+                "type": "string",
+                "enum": list(_NETWORK_LAYOUTS),
+            },
+            "node_shape": {
+                "type": "string",
+                "enum": list(_NETWORK_NODE_SHAPES),
+            },
+            "show_labels": {"type": "boolean"},
+            "show_edge_labels": {"type": "boolean"},
+            # When true, every node colors by its `group` from the
+            # rotating palette (matches treemap / packing). When false,
+            # all nodes share a neutral; per-node `color` still wins.
+            "color_by_group": {"type": "boolean"},
+            # When true, node radius interpolates between
+            # node_size_min and node_size_max based on `value`.
+            "node_size_by_value": {"type": "boolean"},
+            "node_size_min": {"type": "integer", "minimum": 2, "maximum": 80},
+            "node_size_max": {"type": "integer", "minimum": 2, "maximum": 200},
+            # Force-simulation knobs. Ignored by static layouts.
+            "link_distance": {"type": "integer", "minimum": 10, "maximum": 400},
+            "charge_strength": {"type": "integer", "minimum": -2000, "maximum": 0},
+        },
+        "additionalProperties": False,
+    }
+
+
+NETWORK: WidgetDescriptor = {
+    "type": "network",
+    "label": "네트워크 그래프",
+    "description": "노드·엣지 일반 그래프 — force-directed / circular / grid / radial 레이아웃. 의존성, 인용, 소셜 네트워크 등 (비계층 데이터)",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _network_content,
+    "default_props": {
+        "label": "네트워크",
+    },
+}
+
+
 PACKING: WidgetDescriptor = {
     "type": "packing",
     "label": "원형 패킹",
@@ -2500,6 +2632,7 @@ WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
         TREEMAP,
         PACKING,
         TREE,
+        NETWORK,
         PIE,
         WAFFLE,
         BOX,

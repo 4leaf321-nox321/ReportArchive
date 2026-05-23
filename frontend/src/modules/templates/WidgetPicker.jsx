@@ -7,35 +7,64 @@ import { getRenderer } from './widgets'
 // header; anything not classified falls through into a 「기타」 bucket so
 // newly added widgets remain reachable before someone updates the map.
 // Order matters — categories show in the listed sequence.
+//
+// Keep this in sync with new widget additions: a widget that lands in
+// 「기타」 means someone forgot to assign a category here. The bucket is
+// a safety net, not a target.
+//
+// Sizing intent: the columns layout renders as a fixed 4-column grid
+// with `grid-flow-row-dense`. The picker height is row1 + row2 = the
+// max of each row's tallest category. To keep the popover compact:
+//   - cap most categories at ≤ 5 entries (they fit comfortably in one
+//     row slot)
+//   - any category that genuinely needs more (currently only 좌표 차트
+//     with 8) gets `spanRows: 2` so it fills a full column instead of
+//     stretching one row to its own length. The first such category in
+//     declaration order claims column 1 thanks to dense packing.
+//   - within each category, order entries from most common / familiar
+//     at top to more specialized at the bottom.
 export const WIDGET_PICKER_CATEGORIES = [
-  { name: '텍스트', types: ['heading', 'rich_text', 'equation'] },
-  { name: '목록 / 표', types: ['bulleted_list', 'key_value', 'table', 'comparison'] },
   {
-    name: '차트',
+    // Coordinate-axis charts — XY space, regardless of dimensionality.
+    // Ordered by ubiquity: chart/scatter are the day-one defaults;
+    // scatter3d is intentionally last because the 3D viewer dominates
+    // the cell and is rarely the right first pick. 8 entries — placed
+    // first with spanRows:2 so it claims col 1 across both rows.
+    name: '좌표 차트',
+    spanRows: 2,
     types: [
       'chart',
       'scatter',
-      'scatter3d',
-      'heatmap',
-      'contour',
       'radar',
-      'pie',
       'box',
       'density',
-      'waffle',
+      'heatmap',
+      'contour',
+      'scatter3d',
     ],
   },
+  { name: '텍스트', types: ['heading', 'rich_text', 'equation'] },
+  { name: '목록 / 표', types: ['bulleted_list', 'key_value', 'table', 'comparison'] },
   {
-    name: '다이어그램',
-    types: [
-      'flowchart',
-      'milestone',
-      'progress_bar',
-      'raci_matrix',
-      'tree',
-      'treemap',
-      'packing',
-    ],
+    // Proportional / part-of-whole. pie/waffle are flat; treemap/packing
+    // are the hierarchical extensions of the same idea.
+    name: '비율',
+    types: ['pie', 'waffle', 'treemap', 'packing'],
+  },
+  {
+    // Flow, hierarchy, and general graph relations. Ordered from
+    // lightest to heaviest: flowchart (free-form), tree/mind_map
+    // (hierarchy), sankey/network (general graph).
+    name: '흐름 / 관계',
+    types: ['flowchart', 'tree', 'mind_map', 'sankey', 'network'],
+  },
+  {
+    // Strategic frameworks and progress trackers — neither charts nor
+    // free-form diagrams; they're "fill in the grid / mark the
+    // milestone" widgets. Grouped so writers reach them via the same
+    // mental model.
+    name: '매트릭스 / 진행',
+    types: ['progress_bar', 'milestone', 'quadrant', 'raci_matrix'],
   },
   {
     name: '미디어 / 첨부',
@@ -82,6 +111,7 @@ export function WidgetPicker({
   const filteredByType = new Map(filtered.map((w) => [w.type, w]))
   const groups = WIDGET_PICKER_CATEGORIES.map((cat) => ({
     name: cat.name,
+    spanRows: cat.spanRows,
     items: cat.types.map((t) => filteredByType.get(t)).filter(Boolean),
   })).filter((g) => g.items.length > 0)
   const uncategorized = filtered.filter((w) => !claimedTypes.has(w.type))
@@ -114,14 +144,20 @@ export function WidgetPicker({
           “{query}”에 일치하는 위젯이 없습니다.
         </div>
       ) : layout === 'columns' ? (
-        // Categories side by side; items stack within each column. auto-fit
-        // lets the grid collapse cleanly when search narrows the result to
-        // a few categories. Min-width matches the widest label so columns
-        // don't squish; cap with max-width so 1-2 matches don't stretch into
-        // huge columns.
-        <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(140px,180px))]">
+        // Fixed 4-column grid with dense packing. Categories flagged
+        // `spanRows: 2` claim a full column (currently 좌표 차트 — 8
+        // items would otherwise stretch one row to its own length and
+        // waste space on the other side). Dense flow then packs the
+        // remaining smaller categories into the leftover cells in
+        // declaration order. Picker height ends up at row1 + row2 ≈ the
+        // max of each row's tallest small category, far shorter than
+        // letting any single 8-item category drive the whole height.
+        <div className="grid gap-3 grid-cols-[repeat(4,minmax(140px,1fr))] grid-flow-row-dense">
           {groups.map((group) => (
-            <div key={group.name} className="min-w-0">
+            <div
+              key={group.name}
+              className={cn('min-w-0', group.spanRows === 2 && 'row-span-2')}
+            >
               <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-1 pb-1 border-b mb-1">
                 {group.name}
               </div>

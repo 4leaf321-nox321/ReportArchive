@@ -2922,6 +2922,295 @@ CAD_3D: WidgetDescriptor = {
 
 
 # --------------------------------------------------------------------------- #
+# 11. quadrant — 2x2 strategy matrix (SWOT / BCG / Eisenhower / Risk)
+# --------------------------------------------------------------------------- #
+# Single widget, two modes:
+#   bucket — 4 quadrants each hold an unordered list of text items
+#            (SWOT, Eisenhower).  No coordinates.
+#   plot   — continuous x/y plane with the 4 quadrants drawn underneath
+#            and items rendered as dots at specific (x, y) positions
+#            (BCG, Risk).  Optional bubble-size channel.
+#
+# `props.preset` is informational — it records which preset seeded the
+# template (so the UI can highlight "SWOT" in the panel) and never
+# overrides the actual labels/colors, which live in the explicit
+# `quadrant_labels` / `quadrant_colors` fields.  Writers can switch the
+# preset later; the seed-on-pick logic lives in the frontend PropsPanel.
+#
+# Both `bucket_items` and `plot_items` are kept independently in content
+# so toggling `mode` doesn't lose work — switching back restores the
+# previous side's data.
+_QUADRANT_MODES = ("bucket", "plot")
+_QUADRANT_PRESETS = ("swot", "bcg", "eisenhower", "risk", "custom")
+_QUADRANT_KEYS = ("tl", "tr", "bl", "br")
+
+_QUADRANT_LABELS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tl": {"type": "string", "maxLength": 100},
+        "tr": {"type": "string", "maxLength": 100},
+        "bl": {"type": "string", "maxLength": 100},
+        "br": {"type": "string", "maxLength": 100},
+    },
+    "additionalProperties": False,
+}
+
+_QUADRANT_COLORS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tl": {"type": "string", "pattern": r"^#[0-9a-fA-F]{6}$"},
+        "tr": {"type": "string", "pattern": r"^#[0-9a-fA-F]{6}$"},
+        "bl": {"type": "string", "pattern": r"^#[0-9a-fA-F]{6}$"},
+        "br": {"type": "string", "pattern": r"^#[0-9a-fA-F]{6}$"},
+    },
+    "additionalProperties": False,
+}
+
+_QUADRANT_RANGE_SCHEMA = {
+    "type": "array",
+    "items": {"type": "number"},
+    "minItems": 2,
+    "maxItems": 2,
+}
+
+
+def _quadrant_content(props: dict) -> dict:  # noqa: ARG001
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            # Per-report mode override.  Falls back to props.default_mode.
+            "mode": {"type": "string", "enum": list(_QUADRANT_MODES)},
+            # Bucket-mode items.  `quadrant` keys map to the 4 corner
+            # buckets; the renderer groups items by this key.  `weight`
+            # is a free numeric used to size the badge in the UI
+            # (e.g. number of votes / impact rating) — purely cosmetic.
+            "bucket_items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "minLength": 1, "maxLength": 64},
+                        "quadrant": {
+                            "type": "string",
+                            "enum": list(_QUADRANT_KEYS),
+                        },
+                        "text": {"type": "string", "maxLength": 500},
+                        "color": {
+                            "type": "string",
+                            "pattern": r"^#[0-9a-fA-F]{6}$",
+                        },
+                        "weight": {"type": "number"},
+                    },
+                    "required": ["id", "quadrant"],
+                    "additionalProperties": False,
+                },
+            },
+            # Plot-mode items.  `x`/`y` are absolute coordinates in the
+            # axis range declared by props.x_range / y_range.  `size` is
+            # used as the bubble radius when props.show_bubble_size is
+            # on; ignored otherwise.  `group` is a free string the
+            # renderer can color-code (BCG: business unit, Risk:
+            # category).
+            "plot_items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "minLength": 1, "maxLength": 64},
+                        "label": {"type": "string", "maxLength": 200},
+                        "x": {"type": "number"},
+                        "y": {"type": "number"},
+                        "size": {"type": "number", "minimum": 0},
+                        "color": {
+                            "type": "string",
+                            "pattern": r"^#[0-9a-fA-F]{6}$",
+                        },
+                        "group": {"type": "string", "maxLength": 100},
+                        "note": {"type": "string", "maxLength": 500},
+                    },
+                    "required": ["id", "x", "y"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
+QUADRANT: WidgetDescriptor = {
+    "type": "quadrant",
+    "label": "2x2 매트릭스",
+    "description": "사분면 매트릭스 — SWOT/Eisenhower(버킷형 텍스트) 또는 BCG/Risk(연속 좌표) 모드",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            # Which mode the template defaults to.  Content.mode can
+            # override per-report (writers might tweak a SWOT into a
+            # weighted plot for a particular case).
+            "default_mode": {
+                "type": "string",
+                "enum": list(_QUADRANT_MODES),
+            },
+            # Informational only — the UI uses this to highlight the
+            # matching preset chip in the panel.  Actual visual config
+            # lives in the explicit label/color fields below.
+            "preset": {
+                "type": "string",
+                "enum": list(_QUADRANT_PRESETS),
+            },
+            "x_axis_title": {"type": "string", "maxLength": 100},
+            "y_axis_title": {"type": "string", "maxLength": 100},
+            # Endpoint labels shown at the axis extremes (e.g. "Low" /
+            # "High", "내부" / "외부").  Optional — when empty the axis
+            # just shows the title.
+            "x_low_label": {"type": "string", "maxLength": 50},
+            "x_high_label": {"type": "string", "maxLength": 50},
+            "y_low_label": {"type": "string", "maxLength": 50},
+            "y_high_label": {"type": "string", "maxLength": 50},
+            "quadrant_labels": _QUADRANT_LABELS_SCHEMA,
+            "quadrant_colors": _QUADRANT_COLORS_SCHEMA,
+            "show_grid_lines": {"type": "boolean"},
+            "show_axis_arrows": {"type": "boolean"},
+            # Plot-mode knobs.  Ignored when default_mode is "bucket"
+            # *and* no per-report override flips it.
+            "x_range": _QUADRANT_RANGE_SCHEMA,
+            "y_range": _QUADRANT_RANGE_SCHEMA,
+            "show_bubble_size": {"type": "boolean"},
+            "text_style": _TEXT_STYLE_SCHEMA,
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _quadrant_content,
+    "default_props": {
+        "label": "SWOT 분석",
+        "default_mode": "bucket",
+        "preset": "swot",
+        "x_axis_title": "",
+        "y_axis_title": "",
+        "x_low_label": "내부",
+        "x_high_label": "외부",
+        "y_low_label": "부정",
+        "y_high_label": "긍정",
+        "quadrant_labels": {
+            "tl": "강점 (Strengths)",
+            "tr": "기회 (Opportunities)",
+            "bl": "약점 (Weaknesses)",
+            "br": "위협 (Threats)",
+        },
+        "quadrant_colors": {
+            "tl": "#dbeafe",
+            "tr": "#dcfce7",
+            "bl": "#fef3c7",
+            "br": "#fee2e2",
+        },
+        "show_grid_lines": True,
+        "show_axis_arrows": True,
+        "x_range": [0, 100],
+        "y_range": [0, 100],
+        "show_bubble_size": False,
+    },
+}
+
+
+# --------------------------------------------------------------------------- #
+# 12. sankey — flow diagram (Plotly type:'sankey')                            #
+# --------------------------------------------------------------------------- #
+# Hybrid data model: `links` is the required first-class table
+# (source/target/value/color?), and `nodes` is an optional override
+# table for nodes that need a custom color or a renamed display label.
+# Nodes not listed in `nodes[]` are auto-derived from the union of
+# link.source and link.target, in first-appearance order. This keeps
+# trivial sankeys ("just type the flows") to a single short table.
+#
+# Self-loops (source == target) are silently dropped on the client —
+# Plotly's sankey trace can't render them cleanly. Same for links
+# whose value is missing or <= 0.
+_SANKEY_ARRANGEMENTS = ("snap", "perpendicular", "freeform", "fixed")
+
+
+def _sankey_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            # Optional per-node overrides. Match is by `label` (string).
+            # Nodes not listed here are auto-created from link endpoints.
+            "nodes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "maxLength": 200},
+                        "color": {"type": "string", "maxLength": 32},
+                    },
+                    "required": ["label"],
+                    "additionalProperties": False,
+                },
+            },
+            # The flows. Required field of the widget.
+            "links": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string", "maxLength": 200},
+                        "target": {"type": "string", "maxLength": 200},
+                        "value": {"type": ["number", "null"], "minimum": 0},
+                        "color": {"type": "string", "maxLength": 32},
+                    },
+                    "required": ["source", "target"],
+                    "additionalProperties": False,
+                },
+            },
+            "arrangement": {
+                "type": "string",
+                "enum": list(_SANKEY_ARRANGEMENTS),
+            },
+            "node_pad": {"type": "integer", "minimum": 0, "maximum": 100},
+            "node_thickness": {"type": "integer", "minimum": 4, "maximum": 80},
+            "unit": {"type": "string", "maxLength": 32},
+        },
+        "additionalProperties": False,
+    }
+
+
+SANKEY: WidgetDescriptor = {
+    "type": "sankey",
+    "label": "Sankey 다이어그램",
+    "description": "흐름·전환을 두께로 시각화 — 자금 흐름, 사용자 funnel, 에너지 손실, 예산 분배 등",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "arrangement": {
+                "type": "string",
+                "enum": list(_SANKEY_ARRANGEMENTS),
+            },
+            "node_pad": {"type": "integer", "minimum": 0, "maximum": 100},
+            "node_thickness": {"type": "integer", "minimum": 4, "maximum": 80},
+            "unit": {"type": "string", "maxLength": 32},
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _sankey_content,
+    "default_props": {
+        "label": "Sankey 다이어그램",
+        "arrangement": "snap",
+        "node_pad": 16,
+        "node_thickness": 18,
+    },
+}
+
+
+# --------------------------------------------------------------------------- #
 # Registry
 # --------------------------------------------------------------------------- #
 WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
@@ -2958,6 +3247,8 @@ WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
         RACI_MATRIX,
         COMPARISON,
         CAD_3D,
+        QUADRANT,
+        SANKEY,
     )
 }
 

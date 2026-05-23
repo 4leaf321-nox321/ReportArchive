@@ -329,6 +329,25 @@ export const WIDGET_PROMPT_EXAMPLES = [
     ].join('\n'),
   },
   {
+    types: ['sankey'],
+    body: [
+      '### sankey (Sankey 다이어그램 — 흐름·전환의 두께 시각화)',
+      'props (required: label) : `{ "label":"자금 흐름" }`',
+      'content : `{ "links":[ {"source":"수입","target":"고정비","value":300}, {"source":"수입","target":"변동비","value":200}, {"source":"수입","target":"저축","value":500}, {"source":"고정비","target":"주거","value":180}, {"source":"고정비","target":"통신","value":60}, {"source":"고정비","target":"보험","value":60} ], "unit":"만원" }`',
+      'content (노드 색 override 예) : `{ "links":[...], "nodes":[ {"label":"수입","color":"#10b981"}, {"label":"저축","color":"#3b82f6"} ] }`',
+      '- 모델은 **`links` 가 1차 시민, `nodes` 는 선택 (override)** 인 하이브리드 — 단순 흐름이면 links 만 채우세요.',
+      '- 각 link 는 한 흐름. source · target 은 노드 이름 (문자열). `value` 는 흐름의 두께 (양수, 단위는 같은 보고서 내에서 일관).',
+      '- 같은 source/target 쌍을 여러 번 적으면 여러 개의 분리된 흐름으로 그려집니다 (Plotly sankey 의 native 동작).',
+      '- self-loop (source == target), value 가 0 이하/비어있는 link 는 자동 제외.',
+      '- `nodes` 는 비워두면 links 등장 순서로 자동 생성 + 카테고리 팔레트가 깔립니다. 특정 노드의 색이나 표시 순서를 강제할 때만 채우세요. `label` 은 links 의 source/target 과 정확히 일치해야 적용됨.',
+      '- link 의 `color` (선택) 가 있으면 그 색으로, 없으면 source 노드 색의 반투명 버전으로 자동 칠해집니다.',
+      '- `unit` (선택) : hover/표시에 붙는 단위 (예: "억원", "MW", "명").',
+      '- `arrangement` (선택, 기본 "snap") : `"snap"` | `"perpendicular"` | `"freeform"` | `"fixed"`. 보통 snap 으로 충분.',
+      '- `node_pad` (선택, 0~100, 기본 16) / `node_thickness` (선택, 4~80, 기본 18) : 레이아웃 미세 조정.',
+      '- 자금 흐름, 사용자 funnel, 예산 분배, 에너지 손실, 프로세스 전환 단계 시각화에 적합. 사이클 없는 DAG 가 가장 깔끔.',
+    ].join('\n'),
+  },
+  {
     types: ['image', 'attachment', 'cad_3d', 'html_embed', 'video'],
     body: [
       '### image / attachment / cad_3d / html_embed / video  ★ AI 가 만들지 마세요 ★',

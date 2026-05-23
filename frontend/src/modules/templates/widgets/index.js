@@ -17,7 +17,7 @@
  *   2. Create <Widget>.jsx here exporting PropsPanel + Preview + (optional) Editor
  *   3. Register the components below
  */
-import { Activity, AlignLeft, BarChartHorizontal, Box, Boxes, Brain, Circle, Columns3, FileCode2, Film, Flag, GitBranch, Grid2x2, Grid3x3, Heading1, Hexagon, Image, LayoutGrid, LineChart, ListOrdered, MoreVertical, Paperclip, PieChart as PieIcon, Share2, Sigma, Table2, Type, Workflow } from 'lucide-react'
+import { Activity, AlignLeft, BarChartHorizontal, Box, Boxes, Brain, Circle, Columns3, Crosshair, FileCode2, Film, Flag, GitBranch, Grid2x2, Grid3x3, Heading1, Hexagon, Image, LayoutGrid, LineChart, ListOrdered, MoreVertical, Paperclip, PieChart as PieIcon, Share2, Sigma, Table2, Type, Waypoints, Workflow } from 'lucide-react'
 
 import { HeadingPropsPanel, HeadingPreview, HeadingEditor } from './Heading'
 import { RichTextPropsPanel, RichTextPreview, RichTextEditor } from './RichText'
@@ -50,6 +50,8 @@ import { ProgressBarPropsPanel, ProgressBarPreview, ProgressBarEditor } from './
 import { RaciMatrixPropsPanel, RaciMatrixPreview, RaciMatrixEditor } from './RaciMatrix'
 import { Cad3dPropsPanel, Cad3dPreview, Cad3dEditor } from './Cad3d'
 import { ComparisonPropsPanel, ComparisonPreview, ComparisonEditor } from './Comparison'
+import { QuadrantPropsPanel, QuadrantPreview, QuadrantEditor } from './Quadrant'
+import { SankeyPropsPanel, SankeyPreview, SankeyEditor } from './Sankey'
 
 export const WIDGET_RENDERERS = {
   heading: {
@@ -237,6 +239,18 @@ export const WIDGET_RENDERERS = {
     PropsPanel: ComparisonPropsPanel,
     Preview: ComparisonPreview,
     Editor: ComparisonEditor,
+  },
+  quadrant: {
+    Icon: Crosshair,
+    PropsPanel: QuadrantPropsPanel,
+    Preview: QuadrantPreview,
+    Editor: QuadrantEditor,
+  },
+  sankey: {
+    Icon: Waypoints,
+    PropsPanel: SankeyPropsPanel,
+    Preview: SankeyPreview,
+    Editor: SankeyEditor,
   },
 }
 

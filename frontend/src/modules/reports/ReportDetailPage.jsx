@@ -5388,6 +5388,7 @@ const WIDGETS_DEFAULT_NO_AUTOFIT = new Set([
   'box',
   'density',
   'radar',
+  'sankey',
   'html_embed',
 ])
 
@@ -5435,6 +5436,7 @@ const WIDGETS_FULLSCREEN_VIEWER = new Set([
   'box',
   'density',
   'radar',
+  'sankey',
 ])
 
 /** Resolve whether a block is in auto_fit mode. Explicit `auto_fit`

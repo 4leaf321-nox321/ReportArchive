@@ -1798,6 +1798,95 @@ BOX: WidgetDescriptor = {
 
 
 # --------------------------------------------------------------------------- #
+# 11f-2. density — overlaid 1D KDE curves for group/time comparison           #
+# --------------------------------------------------------------------------- #
+# Each group is a flat array of measurements; the frontend computes a
+# Gaussian KDE per group and overlays the curves on a shared x-axis so
+# distribution shape, mode shift, and spread can be compared at a
+# glance. Optional rug / jittered dots surface the raw observations
+# underneath the curves.
+_DENSITY_DOT_MODES = ("none", "rug", "jitter")
+_DENSITY_BANDWIDTH_MODES = ("auto", "manual")
+
+
+def _density_content(props: dict) -> dict:  # noqa: ARG001
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            "unit": {"type": "string", "maxLength": 32},
+            "x_axis_title": {"type": "string", "maxLength": 100},
+            "y_axis_title": {"type": "string", "maxLength": 100},
+            # Group-wise raw values. The KDE is computed client-side
+            # from these — keeping raw input lets the writer toggle
+            # bandwidth / dots without losing data fidelity.
+            "groups": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "maxLength": 200},
+                        "color": {"type": "string", "maxLength": 64},
+                        "values": {
+                            "type": "array",
+                            "items": {"type": ["number", "null"]},
+                        },
+                    },
+                    "required": ["name", "values"],
+                    "additionalProperties": False,
+                },
+            },
+            # 'auto' uses Silverman's rule client-side; 'manual' honors
+            # `bandwidth` literally so writers can sharpen / smooth.
+            "bandwidth_mode": {
+                "type": "string",
+                "enum": list(_DENSITY_BANDWIDTH_MODES),
+            },
+            "bandwidth": {"type": "number", "exclusiveMinimum": 0},
+            # Sample count for the curve polyline. Higher = smoother
+            # but more SVG nodes; 128–512 is the sweet spot.
+            "samples": {"type": "integer", "minimum": 16, "maximum": 1024},
+            # Manual x-range. Either side null = auto on that side.
+            "x_min": {"type": ["number", "null"]},
+            "x_max": {"type": ["number", "null"]},
+            # Fill under each curve at low opacity for emphasis.
+            "fill": {"type": "boolean"},
+            # 'rug' = short ticks on the baseline. 'jitter' = scattered
+            # dots just under the baseline. 'none' hides raw data.
+            "show_dots": {
+                "type": "string",
+                "enum": list(_DENSITY_DOT_MODES),
+            },
+            "dot_opacity": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "additionalProperties": False,
+    }
+
+
+DENSITY: WidgetDescriptor = {
+    "type": "density",
+    "label": "밀도 곡선",
+    "description": "그룹별 1D KDE 곡선 — 시간·그룹별 분포 비교, 옵션으로 원데이터 점 표기",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "x_axis_title": {"type": "string", "maxLength": 100},
+            "y_axis_title": {"type": "string", "maxLength": 100},
+        },
+        "required": ["label"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _density_content,
+    "default_props": {
+        "label": "밀도 곡선",
+    },
+}
+
+
+# --------------------------------------------------------------------------- #
 # 11g. waffle — grid-of-cells proportion chart                                 #
 # --------------------------------------------------------------------------- #
 # Each cell is one slice of the whole (default 1% of the total). Cells
@@ -2414,6 +2503,7 @@ WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
         PIE,
         WAFFLE,
         BOX,
+        DENSITY,
         RADAR,
         EQUATION,
         MILESTONE,

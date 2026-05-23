@@ -21,6 +21,7 @@ export const WIDGET_PICKER_CATEGORIES = [
       'radar',
       'pie',
       'box',
+      'density',
       'waffle',
     ],
   },

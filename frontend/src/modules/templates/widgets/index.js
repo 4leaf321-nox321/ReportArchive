@@ -17,7 +17,7 @@
  *   2. Create <Widget>.jsx here exporting PropsPanel + Preview + (optional) Editor
  *   3. Register the components below
  */
-import { AlignLeft, BarChartHorizontal, Box, Boxes, Circle, FileCode2, Film, Flag, GitBranch, Grid2x2, Grid3x3, Heading1, Hexagon, Image, LayoutGrid, LineChart, ListOrdered, MoreVertical, Paperclip, PieChart as PieIcon, Sigma, Table2, Type, Workflow } from 'lucide-react'
+import { Activity, AlignLeft, BarChartHorizontal, Box, Boxes, Circle, FileCode2, Film, Flag, GitBranch, Grid2x2, Grid3x3, Heading1, Hexagon, Image, LayoutGrid, LineChart, ListOrdered, MoreVertical, Paperclip, PieChart as PieIcon, Sigma, Table2, Type, Workflow } from 'lucide-react'
 
 import { HeadingPropsPanel, HeadingPreview, HeadingEditor } from './Heading'
 import { RichTextPropsPanel, RichTextPreview, RichTextEditor } from './RichText'
@@ -39,6 +39,7 @@ import { TreePropsPanel, TreePreview, TreeEditor } from './Tree'
 import { PiePropsPanel, PiePreview, PieEditor } from './Pie'
 import { WafflePropsPanel, WafflePreview, WaffleEditor } from './Waffle'
 import { BoxPropsPanel, BoxPreview, BoxEditor } from './Box'
+import { DensityPropsPanel, DensityPreview, DensityEditor } from './Density'
 import { RadarPropsPanel, RadarPreview, RadarEditor } from './Radar'
 import { EquationPropsPanel, EquationPreview, EquationEditor } from './Equation'
 import { MilestonePropsPanel, MilestonePreview, MilestoneEditor } from './Milestone'
@@ -167,6 +168,12 @@ export const WIDGET_RENDERERS = {
     PropsPanel: BoxPropsPanel,
     Preview: BoxPreview,
     Editor: BoxEditor,
+  },
+  density: {
+    Icon: Activity,
+    PropsPanel: DensityPropsPanel,
+    Preview: DensityPreview,
+    Editor: DensityEditor,
   },
   radar: {
     Icon: Hexagon,

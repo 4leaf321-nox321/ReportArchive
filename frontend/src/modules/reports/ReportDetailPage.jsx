@@ -5268,6 +5268,7 @@ const WIDGETS_DEFAULT_NO_AUTOFIT = new Set([
   'pie',
   'waffle',
   'box',
+  'density',
   'radar',
   'html_embed',
 ])
@@ -5287,6 +5288,7 @@ const WIDGETS_SQUARE_AUTOFIT = new Set([
   'pie',
   'waffle',
   'box',
+  'density',
   'radar',
 ])
 
@@ -5311,6 +5313,7 @@ const WIDGETS_FULLSCREEN_VIEWER = new Set([
   'pie',
   'waffle',
   'box',
+  'density',
   'radar',
 ])
 

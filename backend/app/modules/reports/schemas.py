@@ -213,6 +213,10 @@ class ReportRead(BaseModel):
     # Per-report vertical gap (px) between top-level widget rows. None →
     # frontend default. Set via 보고서 설정 → 페이지 설정 → 위젯 간격.
     page_gap_px: Optional[int] = Field(default=None, ge=0, le=200)
+    # When True, widget container chrome (border + bg + shadow) is hidden
+    # so the page reads as a single continuous surface. None / False →
+    # default bordered cards. Set via 보고서 설정 → 페이지 설정.
+    page_blend_blocks: Optional[bool] = None
     # Optional report-type tag. `report_type_id` is the raw FK; the
     # embedded `report_type` carries name/description/status so the
     # frontend doesn't need a separate /api/report-types/<id> call.
@@ -314,6 +318,8 @@ class ReportCreate(BaseModel):
     # Per-report vertical gap (px) between top-level widget rows. None →
     # frontend default.
     page_gap_px: Optional[int] = Field(default=None, ge=0, le=200)
+    # Per-report container blending toggle. None → default bordered cards.
+    page_blend_blocks: Optional[bool] = None
     # Optional FK to a report_types row. Created via the picker dialog;
     # may be null (no tag).
     report_type_id: Optional[int] = None
@@ -341,6 +347,9 @@ class ReportUpdate(BaseModel):
     # Per-report vertical gap (px) between top-level widget rows. None
     # resets to the frontend default; an integer (0–200) sets the gap.
     page_gap_px: Optional[int] = Field(default=None, ge=0, le=200)
+    # Container blending toggle. None resets to default (False); True hides
+    # widget card chrome so the page reads as one continuous surface.
+    page_blend_blocks: Optional[bool] = None
     # Optional report-type FK. The field is consulted via model_dump's
     # `exclude_unset` so an explicit `null` clears the tag while an
     # absent key leaves the existing value alone.

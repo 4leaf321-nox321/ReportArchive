@@ -48,10 +48,13 @@ export const WIDGET_PROMPT_EXAMPLES = [
   {
     types: ['key_value'],
     body: [
-      '### key_value (키-값 카드)  ★ 자주 틀리는 형식 — 주의 ★',
-      'props (required: items) : `{ "label":"주요 결과", "items":[ {"key":"stress","label":"발생 응력","type":"number"}, {"key":"unit","label":"단위","type":"text"} ] }`',
-      'content : `{ "stress": 100, "unit": "MPa" }`   // ← 각 item.key 가 그대로 top-level 키. `values` 같은 래퍼 절대 금지.',
-      'item.type 은 text | number | integer | date | select 중 하나. `multi: true` 항목의 값은 배열 (예: `"defect_type": ["크랙","변형"]`).',
+      '### key_value (키-값 카드 — 자유 입력)  ★ 자주 틀리는 형식 — 주의 ★',
+      'props : `{ "label":"메모" }`   // items 는 선택 사항. 보고서마다 작성자가 직접 항목을 정의하는 위젯.',
+      'content : `{ "items":[ {"key":"stress","label":"발생 응력","type":"number"}, {"key":"unit","label":"단위","type":"text"} ], "stress": 100, "unit": "MPa" }`',
+      '- content.items 가 보고서별 항목 정의. 비어 있으면 props.items(있다면) 로 폴백.',
+      '- 각 항목의 값은 item.key 그대로 top-level 키로 저장. `values` 같은 래퍼 절대 금지.',
+      '- item.type 은 text | number | integer | date | select 중 하나. `multi: true` 항목의 값은 배열 (예: `"defect_type": ["크랙","변형"]`).',
+      '- 키 슬러그는 영문 소문자 시작 + [a-z0-9_]. 예약 키(`caption`, `caption_skip_autofill`, `items`) 와 충돌 금지.',
     ].join('\n'),
   },
   {

@@ -3,7 +3,20 @@ import { ChevronDown, ChevronUp, Circle, CircleCheck, CircleAlert, Plus, X } fro
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { CaptionInput, DEFAULT_BODY_FONT_PX, LabelField, PreviewLabel, TextStyleField, captionSkipProps, textStyleToClassName, textStyleToInlineStyle } from './_shared'
+import {
+  CaptionInput,
+  DEFAULT_BODY_FONT_PX,
+  EditorOptionBar,
+  EditorOptionDate,
+  LabelField,
+  PreviewLabel,
+  TextStyleField,
+  captionSkipProps,
+  effectiveString,
+  pruneOverrideKeys,
+  textStyleToClassName,
+  textStyleToInlineStyle,
+} from './_shared'
 
 // --------------------------------------------------------------------------- //
 // Status presets — shared by the editor's row select and the timeline marker. //
@@ -112,6 +125,10 @@ const SAMPLE_ITEMS = [
 export function MilestoneEditor({ props, content, onChange, readOnly }) {
   const caption = content?.caption ?? ''
   const items = Array.isArray(content?.items) ? content.items : []
+  // Per-report timeline range — content wins, then props, then auto
+  // (the timeline derives bounds from the items themselves).
+  const startDate = effectiveString(content, props, 'start_date', '')
+  const endDate = effectiveString(content, props, 'end_date', '')
   const textClass = textStyleToClassName(props.text_style)
   const textStyle = textStyleToInlineStyle(props.text_style)
 
@@ -125,6 +142,10 @@ export function MilestoneEditor({ props, content, onChange, readOnly }) {
     if (!merged.caption) delete merged.caption
     if (!merged.items || merged.items.length === 0) delete merged.items
     if (!merged.caption_skip_autofill) delete merged.caption_skip_autofill
+    pruneOverrideKeys(merged, props, {
+      start_date: undefined,
+      end_date: undefined,
+    })
     onChange(merged)
   }
 
@@ -160,8 +181,8 @@ export function MilestoneEditor({ props, content, onChange, readOnly }) {
         {items.length > 0 ? (
           <MilestoneTimeline
             items={items}
-            startDate={props.start_date}
-            endDate={props.end_date}
+            startDate={startDate || undefined}
+            endDate={endDate || undefined}
           />
         ) : (
           <p className="text-xs text-muted-foreground italic">
@@ -180,14 +201,28 @@ export function MilestoneEditor({ props, content, onChange, readOnly }) {
         placeholder={props.label}
         {...captionSkipProps({ content, patch })}
       />
+      <EditorOptionBar title="타임라인 범위">
+        <EditorOptionDate
+          label="시작"
+          value={startDate}
+          onChange={(v) => patch({ start_date: v })}
+          hint="비워두면 항목들 중 가장 이른 날짜로 자동 설정"
+        />
+        <EditorOptionDate
+          label="끝"
+          value={endDate}
+          onChange={(v) => patch({ end_date: v })}
+          hint="비워두면 항목들 중 가장 늦은 날짜로 자동 설정"
+        />
+      </EditorOptionBar>
       {/* Live timeline — fed by the table below. Stays visible while
           the writer types so they can sanity-check the date layout. */}
       <div className="rounded-md border bg-card px-3 py-3">
         {items.length > 0 ? (
           <MilestoneTimeline
             items={items}
-            startDate={props.start_date}
-            endDate={props.end_date}
+            startDate={startDate || undefined}
+            endDate={endDate || undefined}
           />
         ) : (
           <div className="text-center text-xs text-muted-foreground italic py-6">

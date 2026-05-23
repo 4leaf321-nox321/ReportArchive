@@ -309,6 +309,8 @@ def create_report(
         init_kwargs["page_width_px"] = payload.page_width_px
     if payload.page_gap_px is not None:
         init_kwargs["page_gap_px"] = payload.page_gap_px
+    if payload.page_blend_blocks is not None:
+        init_kwargs["page_blend_blocks"] = payload.page_blend_blocks
     if payload.report_type_id is not None:
         init_kwargs["report_type_id"] = payload.report_type_id
     report = Report(
@@ -520,7 +522,16 @@ def update_report(
 
     # Apply non-page scalar fields. `report_type_id` is included so the
     # picker can both set and clear (explicit None) the tag in one PATCH.
-    for key in ("title", "status", "report_date", "tags", "page_width_px", "page_gap_px", "report_type_id"):
+    for key in (
+        "title",
+        "status",
+        "report_date",
+        "tags",
+        "page_width_px",
+        "page_gap_px",
+        "page_blend_blocks",
+        "report_type_id",
+    ):
         if key in data:
             setattr(report, key, data[key])
 

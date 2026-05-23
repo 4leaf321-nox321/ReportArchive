@@ -29,9 +29,15 @@ import { fetchFileBlob, uploadFile } from '@/shared/api/files'
 import { toast } from 'sonner'
 import {
   CaptionInput,
+  EditorOptionBar,
+  EditorOptionNumber,
+  EditorOptionToggle,
   LabelField,
   PreviewLabel,
   captionSkipProps,
+  effectiveBool,
+  effectiveNumber,
+  pruneOverrideKeys,
 } from './_shared'
 
 const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mov', '.ogg', '.m4v', '.mkv']
@@ -118,22 +124,35 @@ export function VideoPreview({ props }) {
 export function VideoEditor({ props, content, onChange, readOnly }) {
   const caption = content?.caption ?? ''
   const files = Array.isArray(content?.files) ? content.files : []
-  const max = props.max_count ?? 1
+  // Per-report soft cap — content wins, then template, then 1. Hard cap
+  // stays at props.max_count via the schema's maxItems.
+  const max = Math.min(
+    effectiveNumber(content, props, 'max_count', 1),
+    props.max_count ?? 10,
+  )
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
   const fileInputRef = useRef(null)
 
-  const playback = {
-    autoplay: !!props.autoplay,
-    loop: !!props.loop,
-    // Default muted=true so autoplay actually works in modern browsers.
-    muted: props.muted !== false,
-  }
+  // Playback flags — content overrides win over props defaults.
+  // muted defaults to true so autoplay actually works in modern
+  // browsers; that legacy default carries through the effectiveBool
+  // fallback for templates that never set the field.
+  const autoplay = effectiveBool(content, props, 'autoplay', false)
+  const loop = effectiveBool(content, props, 'loop', false)
+  const muted = effectiveBool(content, props, 'muted', true)
+  const playback = { autoplay, loop, muted }
 
   function patch(next) {
     const merged = { ...(content ?? {}), caption, files, ...next }
     if (!merged.caption) delete merged.caption
     if (!merged.caption_skip_autofill) delete merged.caption_skip_autofill
+    pruneOverrideKeys(merged, props, {
+      max_count: 1,
+      autoplay: false,
+      loop: false,
+      muted: true,
+    })
     onChange(merged)
   }
   function remove(idx) {
@@ -232,6 +251,33 @@ export function VideoEditor({ props, content, onChange, readOnly }) {
         placeholder={props.label}
         {...captionSkipProps({ content, patch })}
       />
+      <EditorOptionBar title="재생">
+        <EditorOptionNumber
+          label="최대 개수"
+          value={max}
+          min={1}
+          max={props.max_count ?? 10}
+          onChange={(v) => patch({ max_count: v })}
+          suffix={`(현재 ${files.length}개)`}
+          width="w-14"
+        />
+        <EditorOptionToggle
+          label="자동 재생"
+          value={autoplay}
+          onChange={(v) => patch({ autoplay: v })}
+        />
+        <EditorOptionToggle
+          label="반복"
+          value={loop}
+          onChange={(v) => patch({ loop: v })}
+        />
+        <EditorOptionToggle
+          label="음소거"
+          value={muted}
+          onChange={(v) => patch({ muted: v })}
+          hint="음소거가 꺼져 있으면 브라우저가 자동 재생을 막을 수 있습니다."
+        />
+      </EditorOptionBar>
 
       {files.length > 0 && (
         <div className="flex-1 min-h-0 grid gap-3 grid-cols-1 overflow-y-auto">

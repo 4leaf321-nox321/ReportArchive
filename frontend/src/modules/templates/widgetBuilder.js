@@ -37,6 +37,7 @@ const DEFAULT_BLOCK_SIZE = {
   equation: { col_span: 12, row_span: 3 },
   progress_bar: { col_span: 12, row_span: 3 },
   raci_matrix: { col_span: 12, row_span: 4 },
+  comparison: { col_span: 12, row_span: 6 },
 }
 
 function defaultSize(type) {

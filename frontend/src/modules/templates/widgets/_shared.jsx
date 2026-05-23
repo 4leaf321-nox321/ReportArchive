@@ -1076,3 +1076,261 @@ export function CaptionInput({
     </div>
   )
 }
+
+// --------------------------------------------------------------------------- //
+// Editor option bar — compact "위젯 편집" toolbar primitives                  //
+//                                                                              //
+// Convention: a widget's PropsPanel sets the *template default* for a knob;   //
+// the same knob (added to content_schema_for) can be overridden per-report by //
+// surfacing it in the Editor with one of these primitives. Read-time           //
+// precedence is `content.<key> ?? props.<key> ?? fallback` via the             //
+// effective<Type> helpers below. patch() should call pruneOverrideKeys to      //
+// strip an override that matches the template default so a later template     //
+// change still reaches reports that never touched the field.                  //
+// --------------------------------------------------------------------------- //
+
+/** Compact bar container that hosts EditorOption* controls. Renders an
+ *  optional uppercase title chip on the left. */
+export function EditorOptionBar({ title = '옵션', children, className }) {
+  return (
+    <div
+      className={cn(
+        'flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-md border bg-muted/20 px-3 py-1.5 text-xs',
+        className,
+      )}
+    >
+      {title && (
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+          {title}
+        </span>
+      )}
+      {children}
+    </div>
+  )
+}
+
+/** Boolean toggle. value is coerced to bool; onChange(nextBool). */
+export function EditorOptionToggle({ label, value, onChange, hint }) {
+  return (
+    <label className="inline-flex items-center gap-1.5 cursor-pointer" title={hint}>
+      <input
+        type="checkbox"
+        checked={!!value}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span>{label}</span>
+    </label>
+  )
+}
+
+/** Numeric input. Clears to undefined on empty; clamps to [min, max] inside
+ *  onChange so callers don't have to. Pass `step` for non-integer steps. */
+export function EditorOptionNumber({
+  label,
+  value,
+  onChange,
+  min,
+  max,
+  step = 1,
+  width = 'w-16',
+  suffix,
+  hint,
+}) {
+  return (
+    <label className="inline-flex items-center gap-1.5" title={hint}>
+      <span>{label}</span>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={Number.isFinite(value) ? value : ''}
+        onChange={(e) => {
+          if (e.target.value === '') {
+            onChange(undefined)
+            return
+          }
+          const n = Number(e.target.value)
+          if (!Number.isFinite(n)) return
+          let clamped = n
+          if (Number.isFinite(min)) clamped = Math.max(min, clamped)
+          if (Number.isFinite(max)) clamped = Math.min(max, clamped)
+          onChange(clamped)
+        }}
+        className={cn(
+          'h-7 rounded-md border px-1.5 text-center text-xs',
+          width,
+        )}
+      />
+      {suffix && (
+        <span className="text-[10px] text-muted-foreground">{suffix}</span>
+      )}
+    </label>
+  )
+}
+
+/** Free-text input. Empty string → undefined so patch() can strip it. */
+export function EditorOptionText({
+  label,
+  value,
+  onChange,
+  placeholder,
+  maxLength,
+  width = 'w-24',
+  hint,
+}) {
+  return (
+    <label className="inline-flex items-center gap-1.5" title={hint}>
+      <span>{label}</span>
+      <input
+        type="text"
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value || undefined)}
+        placeholder={placeholder}
+        maxLength={maxLength}
+        className={cn(
+          'h-7 rounded-md border px-1.5 text-xs',
+          width,
+        )}
+      />
+    </label>
+  )
+}
+
+/** Native dropdown select — better than segmented when options are 5+
+ *  or contain a "기본/auto" empty choice. `options` is
+ *  `[{ value, label }]`; selecting the option whose value is `''`
+ *  invokes `onChange(undefined)` so patch() can strip it. */
+export function EditorOptionSelect({ label, value, options, onChange, hint, width = 'w-24' }) {
+  return (
+    <label className="inline-flex items-center gap-1.5" title={hint}>
+      <span>{label}</span>
+      <select
+        value={value ?? ''}
+        onChange={(e) => {
+          const v = e.target.value
+          onChange(v === '' ? undefined : v)
+        }}
+        className={cn(
+          'h-7 rounded-md border bg-background px-1.5 text-xs',
+          width,
+        )}
+      >
+        {options.map((opt) => (
+          <option key={String(opt.value)} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
+/** Date input (HTML5 yyyy-mm-dd). Empty → undefined. */
+export function EditorOptionDate({ label, value, onChange, hint }) {
+  return (
+    <label className="inline-flex items-center gap-1.5" title={hint}>
+      <span>{label}</span>
+      <input
+        type="date"
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value || undefined)}
+        className="h-7 rounded-md border px-1.5 text-xs"
+      />
+    </label>
+  )
+}
+
+/** Segmented control — small button row, one selected. options is
+ *  `[{ value, label, Icon? }]`. */
+export function EditorOptionSegmented({ label, value, options, onChange, hint }) {
+  return (
+    <div className="inline-flex items-center gap-1.5" title={hint}>
+      {label && <span>{label}</span>}
+      <div className="inline-flex rounded-md border bg-background overflow-hidden">
+        {options.map((opt) => {
+          const active = value === opt.value
+          return (
+            <button
+              key={String(opt.value)}
+              type="button"
+              onClick={() => onChange(opt.value)}
+              className={cn(
+                'inline-flex items-center gap-1 h-7 px-2 text-xs transition-colors',
+                active
+                  ? 'bg-primary text-primary-foreground'
+                  : 'hover:bg-muted',
+              )}
+            >
+              {opt.Icon && <opt.Icon className="h-3 w-3" />}
+              {opt.label}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// --------------------------------------------------------------------------- //
+// Effective-value helpers — content (per-report override) wins over            //
+// props (template default), then a hard-coded fallback. Use these inside        //
+// the Editor function so reads stay consistent across read-only / edit mode.   //
+// --------------------------------------------------------------------------- //
+
+export function effectiveBool(content, props, key, fallback = false) {
+  if (content && typeof content[key] === 'boolean') return content[key]
+  if (props && typeof props[key] === 'boolean') return props[key]
+  return fallback
+}
+
+export function effectiveNumber(content, props, key, fallback) {
+  if (content && Number.isFinite(content[key])) return content[key]
+  if (props && Number.isFinite(props[key])) return props[key]
+  return fallback
+}
+
+export function effectiveString(content, props, key, fallback = '') {
+  if (content && typeof content[key] === 'string' && content[key] !== '') {
+    return content[key]
+  }
+  if (props && typeof props[key] === 'string' && props[key] !== '') {
+    return props[key]
+  }
+  return fallback
+}
+
+/**
+ * Strip override fields from `merged` that match the template default.
+ * Mutates `merged` in place.
+ *
+ *   pruneOverrideKeys(merged, props, {
+ *     horizontal_scroll: false,   // fallback when props doesn't carry it
+ *     max_cases: 6,
+ *   })
+ *
+ * For each key K:
+ *   - if merged[K] is undefined, deletes it
+ *   - if merged[K] equals `props[K] ?? defaults[K]`, deletes it
+ *   - otherwise leaves it alone (genuine override)
+ *
+ * Arrays/objects are compared with strict equality; if you need a deep
+ * compare, prune them yourself. Boolean/number/string keys are the
+ * common case and work as expected.
+ */
+export function pruneOverrideKeys(merged, props, defaults) {
+  for (const [k, fallback] of Object.entries(defaults)) {
+    const v = merged[k]
+    if (v === undefined) {
+      delete merged[k]
+      continue
+    }
+    const templateDefault =
+      props != null && Object.prototype.hasOwnProperty.call(props, k)
+        ? props[k]
+        : fallback
+    if (v === templateDefault) {
+      delete merged[k]
+    }
+  }
+}

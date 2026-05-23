@@ -15,6 +15,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs'
 import { listEntityTypes } from '@/shared/api/entities'
 import { EntityMultiPicker } from '@/modules/entities/EntityMultiPicker'
+import { cn } from '@/shared/lib/utils'
 import { ReportTypePicker } from './ReportTypePicker'
 
 /**
@@ -55,6 +56,10 @@ export function ReportSettingsDialog({
   defaultWidthPx = DEFAULT_REPORT_WIDTH_PX,
   currentGapPx,
   defaultGapPx = DEFAULT_REPORT_GAP_PX,
+  // 컨테이너 경계(border/배경/그림자)를 페이지 배경에 녹여서 위젯끼리
+  // 시각적으로 구분되지 않게 하는 토글. null/false면 기존처럼 카드 경계가
+  // 보이고, true면 경계가 사라진다. 보고서/템플릿 양쪽에서 사용.
+  currentBlendBlocks = false,
   // 속성 탭 — editable 보고서 종류 + read-only 메타 (작성자/부서/일시 등).
   // 템플릿 편집기는 종류·메타 개념이 없으므로 이 prop을 false로 두면
   // 탭 자체가 사라진다.
@@ -75,6 +80,7 @@ export function ReportSettingsDialog({
   onClose,
   onApplyWidth,
   onApplyGap,
+  onApplyBlendBlocks,
   onApplyType,
   onApplyEntities,
 }) {
@@ -93,6 +99,7 @@ export function ReportSettingsDialog({
           defaultWidthPx={defaultWidthPx}
           currentGapPx={currentGapPx}
           defaultGapPx={defaultGapPx}
+          currentBlendBlocks={currentBlendBlocks}
           showPropertiesTab={showPropertiesTab}
           currentTypeId={currentTypeId}
           currentType={currentType}
@@ -101,6 +108,7 @@ export function ReportSettingsDialog({
           onClose={onClose}
           onApplyWidth={onApplyWidth}
           onApplyGap={onApplyGap}
+          onApplyBlendBlocks={onApplyBlendBlocks}
           onApplyType={onApplyType}
           onApplyEntities={onApplyEntities}
         />
@@ -119,6 +127,7 @@ function DialogBody({
   defaultWidthPx,
   currentGapPx,
   defaultGapPx,
+  currentBlendBlocks,
   showPropertiesTab,
   currentTypeId,
   currentType,
@@ -127,16 +136,19 @@ function DialogBody({
   onClose,
   onApplyWidth,
   onApplyGap,
+  onApplyBlendBlocks,
   onApplyType,
   onApplyEntities,
 }) {
   const initialWidth = Number.isFinite(currentWidthPx) ? currentWidthPx : null
   const initialGap = Number.isFinite(currentGapPx) ? currentGapPx : null
+  const initialBlend = currentBlendBlocks === true
   const initialEntities = Array.isArray(currentEntities) ? currentEntities : []
   const [widthDraft, setWidthDraft] = useState(initialWidth)
   const [widthValid, setWidthValid] = useState(true)
   const [gapDraft, setGapDraft] = useState(initialGap)
   const [gapValid, setGapValid] = useState(true)
+  const [blendDraft, setBlendDraft] = useState(initialBlend)
   const [typeDraft, setTypeDraft] = useState({
     id: currentTypeId ?? null,
     ref: currentType ?? null,
@@ -147,6 +159,7 @@ function DialogBody({
 
   const widthChanged = (widthDraft ?? null) !== (currentWidthPx ?? null)
   const gapChanged = (gapDraft ?? null) !== (currentGapPx ?? null)
+  const blendChanged = blendDraft !== initialBlend
   const typeChanged = (typeDraft.id ?? null) !== (currentTypeId ?? null)
   // Compare on the sorted id-set — order in the array is irrelevant to
   // the saved state (the backend stores it as an unordered link table).
@@ -157,12 +170,14 @@ function DialogBody({
   const dirty =
     widthChanged ||
     gapChanged ||
+    blendChanged ||
     (showPropertiesTab && (typeChanged || entitiesChanged))
 
   function handleApply() {
     if (!widthValid || !gapValid) return
     if (widthChanged) onApplyWidth?.(widthDraft ?? null)
     if (gapChanged) onApplyGap?.(gapDraft ?? null)
+    if (blendChanged) onApplyBlendBlocks?.(blendDraft)
     if (showPropertiesTab && typeChanged) onApplyType?.(typeDraft)
     if (showPropertiesTab && entitiesChanged) onApplyEntities?.(entitiesDraft)
     onClose()
@@ -197,6 +212,8 @@ function DialogBody({
               setGapDraft(value)
               setGapValid(valid)
             }}
+            blendValue={blendDraft}
+            onBlendChange={setBlendDraft}
           />
         </TabsContent>
         {showPropertiesTab && (
@@ -243,6 +260,8 @@ function PageSettingsTab({
   gapValue,
   defaultGapPx,
   onGapChange,
+  blendValue,
+  onBlendChange,
 }) {
   return (
     <div className="space-y-5 pr-1">
@@ -266,7 +285,54 @@ function PageSettingsTab({
           onChange={onGapChange}
         />
       </SettingRow>
+      <SettingRow
+        label="컨테이너 경계"
+        hint="끄면 각 위젯이 카드(테두리·그림자·흰 배경)로 구분되고, 켜면 위젯 경계가 페이지 배경에 녹아 한 장처럼 보입니다."
+      >
+        <InlineToggleControl
+          checked={blendValue === true}
+          onChange={onBlendChange}
+          onLabel="페이지에 녹이기"
+          offLabel="경계 표시 (기본)"
+        />
+      </SettingRow>
       {/* 후속 페이지 설정은 여기 같은 SettingRow 패턴으로 추가 */}
+    </div>
+  )
+}
+
+/**
+ * Compact two-state segmented control used for boolean page settings.
+ * Mirrors the width/gap control row chrome so the page tab reads as a
+ * cohesive column of left-labeled controls.
+ */
+function InlineToggleControl({ checked, onChange, onLabel, offLabel }) {
+  return (
+    <div className="inline-flex rounded-md border bg-background overflow-hidden">
+      <button
+        type="button"
+        onClick={() => onChange?.(false)}
+        className={cn(
+          'h-8 px-3 text-xs transition-colors',
+          !checked
+            ? 'bg-primary text-primary-foreground'
+            : 'hover:bg-muted',
+        )}
+      >
+        {offLabel}
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange?.(true)}
+        className={cn(
+          'h-8 px-3 text-xs transition-colors border-l',
+          checked
+            ? 'bg-primary text-primary-foreground'
+            : 'hover:bg-muted',
+        )}
+      >
+        {onLabel}
+      </button>
     </div>
   )
 }

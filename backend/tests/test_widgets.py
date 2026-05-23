@@ -396,18 +396,37 @@ def test_validate_content_accepts_caption_only():
     validate_report_content(template, content)
 
 
-def test_validate_content_rejects_invalid_kv_field_type():
-    """Type checks on present fields still apply — only `required` is relaxed."""
+def test_validate_content_kv_select_value_now_loose():
+    """key_value is a writer-owned arbitrary-pairs widget — per-item type
+    enforcement (e.g. rejecting a value outside a `select` item's enum)
+    no longer happens at the schema layer. items live in content and can
+    be redefined per report, so the schema only constrains key slugs and
+    primitive value shapes. Per-item type coercion is a frontend concern.
+
+    The two prior tests `test_validate_content_rejects_invalid_kv_field_type`
+    and `test_validate_content_rejects_select_value_outside_options` were
+    replaced by this one when the widget switched models."""
     template = _full_template()
-    # 'team' is a select; "ghost" not in enum.
-    content = {"meta": {"team": "ghost"}}
+    # 'team' is declared `select` in the template; the writer can still
+    # write any string — accepted at the schema layer.
+    content = {"meta": {"team": "ghost", "period": "x"}}
+    validate_report_content(template, content)  # should not raise
+
+
+def test_validate_content_kv_rejects_bad_slug_key():
+    """Even with arbitrary values, the *key* still has to match the slug
+    regex so cross-report queries / entity extraction stay deterministic."""
+    template = _full_template()
+    content = {"meta": {"Bad-Key": "x"}}
     with pytest.raises(ValueError, match="meta"):
         validate_report_content(template, content)
 
 
-def test_validate_content_rejects_select_value_outside_options():
+def test_validate_content_kv_rejects_nested_object_value():
+    """Values must be primitives or arrays of primitives — a nested object
+    under a slug key is rejected."""
     template = _full_template()
-    content = {"meta": {"period": "x", "team": "ghost"}}
+    content = {"meta": {"period": {"nested": "obj"}}}
     with pytest.raises(ValueError, match="meta"):
         validate_report_content(template, content)
 

@@ -248,6 +248,10 @@ export default function ReportDetailPage() {
       const seededGap = Number.isFinite(tplDefaults?.page_gap_px)
         ? tplDefaults.page_gap_px
         : null
+      const seededBlend =
+        typeof tplDefaults?.page_blend_blocks === 'boolean'
+          ? tplDefaults.page_blend_blocks
+          : false
       setDraft({
         title: seededTitle,
         report_date: todayIsoDate(),
@@ -255,6 +259,7 @@ export default function ReportDetailPage() {
         tags: [],
         page_width_px: seededWidth,
         page_gap_px: seededGap,
+        page_blend_blocks: seededBlend,
         report_type_id: null,
         report_type: null,
         // Entity tags (모델/부품/BOM/단계/불량/시험/시뮬레이션) — starts
@@ -307,6 +312,9 @@ export default function ReportDetailPage() {
         page_width_px: existingReport.page_width_px ?? null,
         // Per-report widget gap. null → frontend default (DEFAULT_REPORT_GAP_PX).
         page_gap_px: existingReport.page_gap_px ?? null,
+        // Container blending toggle. null/false → bordered cards;
+        // true → page blends widget chrome into the background.
+        page_blend_blocks: existingReport.page_blend_blocks === true,
         // 보고서 종류 — picker writes the FK + embedded ref so the
         // settings dialog (and the list view, once we rerender it)
         // can show the name/status without a second roundtrip.
@@ -1130,6 +1138,7 @@ export default function ReportDetailPage() {
         // frontend's narrow default at render time.
         page_width_px: Number.isFinite(draft.page_width_px) ? draft.page_width_px : null,
         page_gap_px: Number.isFinite(draft.page_gap_px) ? draft.page_gap_px : null,
+        page_blend_blocks: draft.page_blend_blocks === true,
         // 보고서 종류 — null clears the tag. The backend's update
         // schema uses `exclude_unset`, so always sending the key (even
         // when null) is the explicit "clear" signal.
@@ -1233,6 +1242,7 @@ export default function ReportDetailPage() {
         entities: existingReport.entities ?? [],
         page_width_px: existingReport.page_width_px ?? null,
         page_gap_px: existingReport.page_gap_px ?? null,
+        page_blend_blocks: existingReport.page_blend_blocks === true,
         revision: existingReport.revision ?? 1,
         pages,
       })
@@ -1300,6 +1310,7 @@ export default function ReportDetailPage() {
         // user sees the same layout immediately.
         page_width_px: Number.isFinite(draft.page_width_px) ? draft.page_width_px : null,
         page_gap_px: Number.isFinite(draft.page_gap_px) ? draft.page_gap_px : null,
+        page_blend_blocks: draft.page_blend_blocks === true,
         // The 종류 tag follows the copy too — same reasoning as width.
         report_type_id: draft.report_type_id ?? null,
         // Entity tags follow the copy as well — the new report inherits
@@ -1944,7 +1955,16 @@ export default function ReportDetailPage() {
 
         <ScrollArea className="flex-1">
           <div
-            className="p-6 space-y-8 mx-auto w-full report-detail-content"
+            className={cn(
+              'p-6 space-y-8 mx-auto w-full report-detail-content',
+              // When the writer opts into blending, drop the per-widget
+              // card chrome so the page reads as one continuous surface.
+              // The styling itself lives in index.css under
+              // `.report-detail-content.report-blend-blocks` to keep
+              // the selector authoritative and ditto for the inline
+              // composite renderer in InlineReportView.
+              draft.page_blend_blocks === true && 'report-blend-blocks',
+            )}
             // Per-report content width. Falls back to the narrow default
             // (1024px ≈ Tailwind `max-w-5xl`) so reports that pre-date the
             // setting keep their look. Right-click in the empty area below
@@ -2165,6 +2185,7 @@ export default function ReportDetailPage() {
         defaultWidthPx={DEFAULT_REPORT_WIDTH_PX}
         currentGapPx={draft?.page_gap_px ?? null}
         defaultGapPx={DEFAULT_REPORT_GAP_PX}
+        currentBlendBlocks={draft?.page_blend_blocks === true}
         showPropertiesTab
         currentTypeId={draft?.report_type_id ?? null}
         currentType={draft?.report_type ?? null}
@@ -2291,6 +2312,9 @@ export default function ReportDetailPage() {
             })
             return { ...d, page_gap_px: px, pages: nextPages }
           })
+        }}
+        onApplyBlendBlocks={(blend) => {
+          setDraft((d) => (d ? { ...d, page_blend_blocks: blend === true } : d))
         }}
         onApplyType={({ id, ref }) => {
           setDraft((d) => (d ? { ...d, report_type_id: id, report_type: ref } : d))
@@ -5036,6 +5060,13 @@ function BlockEditorCard({
   return (
     <Card
       id={`block-${block.id}`}
+      // Marker for the page-level "컨테이너 경계 녹이기" toggle — the
+      // CSS rule in index.css drops border / background / shadow on
+      // elements carrying this attribute when the wrapping page has
+      // `.report-blend-blocks`. Nested Cards inside widgets (Milestone /
+      // Flowchart preview canvases use bg-card too) intentionally don't
+      // carry this marker, so their inner chrome stays visible.
+      data-report-widget-card="true"
       onMouseDown={handleCardMouseDown}
       onClick={handleCardClick}
       className={cn(

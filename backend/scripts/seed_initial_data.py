@@ -74,17 +74,11 @@ TEMPLATES = [
         "category": "periodic",
         "description": "팀 단위 주간 진행상황 / 이슈 / 다음 주 계획",
         "blocks": [
+            # 메모 위젯 — 빈 상태로 시작. 모델/부품/BOM 같은 식별 정보는
+            # 별도의 "보고서 속성"에서 관리하기로 했고, 본문 위젯은 작성자가
+            # 필요한 메모를 직접 추가하는 자리로 사용한다.
             {"id": "meta", "type": "key_value", "props": {
-                "label": "메타정보",
-                "items": [
-                    {"key": "model_name", "label": "모델 이름", "type": "text", "multi": True},
-                    {"key": "part_name", "label": "부품 이름", "type": "text", "multi": True},
-                    {"key": "bom_code", "label": "BOM Code", "type": "text", "multi": True},
-                    {"key": "dev_stage", "label": "개발 단계", "type": "text", "multi": True},
-                    {"key": "defect_type", "label": "불량 종류", "type": "text", "multi": True},
-                    {"key": "reliability_test", "label": "신뢰성 시험", "type": "text", "multi": True},
-                    {"key": "simulation_type", "label": "시뮬레이션 종류", "type": "text", "multi": True},
-                ],
+                "label": "메모",
             }},
             {"id": "summary", "type": "rich_text", "props": {
                 "label": "주간 요약", "placeholder": "이번 주 핵심 내용을 3-5줄로", "required": True,

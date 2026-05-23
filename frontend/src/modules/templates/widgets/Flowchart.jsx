@@ -2,7 +2,20 @@ import { ChevronDown, ChevronRight, ChevronUp, Plus, X } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { CaptionInput, DEFAULT_BODY_FONT_PX, LabelField, PreviewLabel, TextStyleField, captionSkipProps, textStyleToClassName, textStyleToInlineStyle } from './_shared'
+import {
+  CaptionInput,
+  DEFAULT_BODY_FONT_PX,
+  EditorOptionBar,
+  EditorOptionSegmented,
+  LabelField,
+  PreviewLabel,
+  TextStyleField,
+  captionSkipProps,
+  effectiveString,
+  pruneOverrideKeys,
+  textStyleToClassName,
+  textStyleToInlineStyle,
+} from './_shared'
 
 // --------------------------------------------------------------------------- //
 // Visual palette                                                              //
@@ -110,8 +123,7 @@ const SAMPLE_ITEMS = [
 export function FlowchartEditor({ props, content, onChange, readOnly }) {
   const caption = content?.caption ?? ''
   const items = Array.isArray(content?.items) ? content.items : []
-  const orientation =
-    content?.orientation ?? props.orientation ?? 'horizontal'
+  const orientation = effectiveString(content, props, 'orientation', 'horizontal')
   const textClass = textStyleToClassName(props.text_style)
   const textStyle = textStyleToInlineStyle(props.text_style)
 
@@ -119,14 +131,15 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
     const merged = {
       ...(content ?? {}),
       ...(caption ? { caption } : {}),
-      ...(content?.orientation ? { orientation: content.orientation } : {}),
       items,
       ...next,
     }
     if (!merged.caption) delete merged.caption
-    if (!merged.orientation) delete merged.orientation
     if (!merged.items || merged.items.length === 0) delete merged.items
     if (!merged.caption_skip_autofill) delete merged.caption_skip_autofill
+    // Strip orientation override when it matches the template default
+    // so a later template change still propagates to untouched reports.
+    pruneOverrideKeys(merged, props, { orientation: 'horizontal' })
     onChange(merged)
   }
 
@@ -174,31 +187,20 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
 
   return (
     <div className={`space-y-3 ${textClass}`} style={textStyle}>
-      <div className="flex items-center gap-2">
-        <div className="flex-1 min-w-0">
-          <CaptionInput
-            value={caption}
-            onChange={(v) => patch({ caption: v })}
-            placeholder={props.label}
-            {...captionSkipProps({ content, patch })}
-          />
-        </div>
-        <div className="flex items-center gap-0.5 shrink-0">
-          {ORIENTATIONS.map((o) => (
-            <Button
-              key={o.value}
-              type="button"
-              variant={orientation === o.value ? 'default' : 'ghost'}
-              size="sm"
-              className="h-7 text-[11px] px-2"
-              onClick={() => setOrientation(o.value)}
-              title={o.label}
-            >
-              {o.label}
-            </Button>
-          ))}
-        </div>
-      </div>
+      <CaptionInput
+        value={caption}
+        onChange={(v) => patch({ caption: v })}
+        placeholder={props.label}
+        {...captionSkipProps({ content, patch })}
+      />
+      <EditorOptionBar>
+        <EditorOptionSegmented
+          label="방향"
+          value={orientation}
+          options={ORIENTATIONS}
+          onChange={setOrientation}
+        />
+      </EditorOptionBar>
 
       <div className="rounded-md border bg-card px-3 py-4">
         {items.length > 0 ? (

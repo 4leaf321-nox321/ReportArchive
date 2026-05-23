@@ -243,6 +243,15 @@ HEADING: WidgetDescriptor = {
             "level": {"type": "integer", "enum": [1, 2, 3]},
             "default_text": {"type": "string", "maxLength": 200},
             "text_style": _TEXT_STYLE_SCHEMA,
+            # Extra vertical space below the heading, in pixels. Lets
+            # the designer push the next block away from a section
+            # heading without dropping in a spacer widget. 0 keeps the
+            # widget's grid-cell flush against the next row.
+            "margin_bottom_px": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 200,
+            },
         },
         "required": ["level"],
         "additionalProperties": False,
@@ -251,6 +260,17 @@ HEADING: WidgetDescriptor = {
         "type": "object",
         "properties": {
             "text": {"type": "string", "maxLength": 200},
+            # Per-report overrides — let the writer tune heading level,
+            # text style, and bottom spacing from the inline popover
+            # without touching the template. Renderer reads
+            # `content.<field> ?? props.<field> ?? default`.
+            "level": {"type": "integer", "enum": [1, 2, 3]},
+            "text_style": _TEXT_STYLE_SCHEMA,
+            "margin_bottom_px": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 200,
+            },
         },
         "required": ["text"],
         "additionalProperties": False,
@@ -340,62 +360,72 @@ RICH_TEXT: WidgetDescriptor = {
 
 
 # --------------------------------------------------------------------------- #
-# 3. key_value — 라벨–값 쌍 (메타정보)
+# 3. key_value — 라벨–값 쌍 (자유 입력)                                        #
+#                                                                              #
+# 이 위젯은 보고서 작성자가 자유롭게 key/label/type을 정의해 값을 넣는           #
+# 범용 메모/메타 위젯이다. 템플릿 디자이너가 미리 필드를 정해놓지 않는 게         #
+# 기본이고, 필요하면 props.items로 초깃값을 줄 수도 있다. 보고서별 필드          #
+# 정의는 content.items로 들어가며, 이때 props.items는 무시된다.                  #
 # --------------------------------------------------------------------------- #
-def _key_value_content(props: dict) -> dict:
-    items = props.get("items", [])
-    properties = {"caption": _CAPTION_FIELD}
-    for item in items:
-        scalar = _kv_field_value_schema(item)
-        # `multi=True` items hold an array of values per key — lets one
-        # field carry multiple entries (e.g. several defect types under
-        # the single "불량 종류" key) without forking off another widget.
-        if item.get("multi"):
-            properties[item["key"]] = {"type": "array", "items": scalar}
-        else:
-            properties[item["key"]] = scalar
+def _key_value_content(props: dict) -> dict:  # noqa: ARG001
+    # Items 정의가 content로 옮겨갈 수 있어 키 셋이 동적이다 — patternProperties
+    # 로 슬러그 키만 받고 값은 프리미티브 또는 프리미티브 배열만 허용한다.
+    # 정밀한 타입 검증(예: number 항목에 문자열 금지)은 프론트엔드가 입력
+    # 단계에서 강제하고, 백엔드는 형식의 큰 골격만 본다.
+    primitive_or_array = {
+        "anyOf": [
+            {"type": ["string", "number", "boolean", "null"]},
+            {
+                "type": "array",
+                "items": {"type": ["string", "number", "boolean", "null"]},
+            },
+        ],
+    }
     return {
         "type": "object",
-        "properties": properties,
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            # 보고서별 필드 정의 — 비어 있으면 props.items로 폴백.
+            "items": {
+                "type": "array",
+                "items": _FIELD_ITEM_PROPS_SCHEMA,
+            },
+        },
+        # patternProperties applies to ALL keys matching the regex,
+        # including those listed in `properties` above. We exclude the
+        # reserved names via negative lookahead so the items/caption
+        # entries don't get clobbered by the value-shape constraint.
+        "patternProperties": {
+            r"^(?!(caption|caption_skip_autofill|items)$)[a-z][a-z0-9_]{0,63}$": primitive_or_array,
+        },
         "additionalProperties": False,
-        # Per-item `required: True` is now a UI hint only — body fields stay
-        # optional in the schema so caption-only drafts validate.
     }
 
 
 KEY_VALUE: WidgetDescriptor = {
     "type": "key_value",
     "label": "키-값",
-    "description": "메타정보 입력 (작성자, 보고일, 부서 등)",
+    "description": "자유로운 key-value 쌍을 보고서마다 직접 정의해 입력 — 메모, 사양표, 메타정보 등에 사용",
     "has_content": True,
     "props_schema": {
         "type": "object",
         "properties": {
             "label": {"type": "string", "maxLength": 200},
+            # 템플릿 차원에서 초깃값을 미리 넣고 싶을 때만 사용. 보고서마다
+            # 자유롭게 추가/삭제할 수 있는 위젯이므로 기본은 비어 있다.
             "items": {
                 "type": "array",
-                "minItems": 1,
                 "items": _FIELD_ITEM_PROPS_SCHEMA,
             },
             "text_style": _TEXT_STYLE_SCHEMA,
         },
-        "required": ["items"],
+        # items 필수 아님 — 보고서 작성자가 직접 정의하는 것이 기본 흐름.
         "additionalProperties": False,
     },
     "content_schema_for": _key_value_content,
     "default_props": {
-        "label": "메타정보",
-        # 신뢰성·시뮬레이션 분야 보고서가 공통으로 채우는 식별 필드. 어떤
-        # 필드든 한 보고서에 여러 항목이 걸릴 수 있어 multi=True로 둠.
-        "items": [
-            {"key": "model_name", "label": "모델 이름", "type": "text", "multi": True},
-            {"key": "part_name", "label": "부품 이름", "type": "text", "multi": True},
-            {"key": "bom_code", "label": "BOM Code", "type": "text", "multi": True},
-            {"key": "dev_stage", "label": "개발 단계", "type": "text", "multi": True},
-            {"key": "defect_type", "label": "불량 종류", "type": "text", "multi": True},
-            {"key": "reliability_test", "label": "신뢰성 시험", "type": "text", "multi": True},
-            {"key": "simulation_type", "label": "시뮬레이션 종류", "type": "text", "multi": True},
-        ],
+        "label": "메모",
     },
 }
 
@@ -527,6 +557,16 @@ def _image_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            # Per-report layout overrides — tunable from the 위젯 편집
+            # toolbar. `max_count` is a soft UI cap (hard cap stays in
+            # the files maxItems below). `aspect_ratio` overrides the
+            # template's preview ratio for this report.
+            "max_count": {"type": "integer", "minimum": 1, "maximum": 50},
+            "aspect_ratio": {
+                "type": "string",
+                "pattern": r"^\d+:\d+$",
+                "description": "예: '16:9', '4:3', '1:1'",
+            },
             "files": {
                 "type": "array",
                 "items": {
@@ -579,6 +619,12 @@ def _attachment_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            # Per-report soft cap on file count. The hard cap stays in
+            # props.max_count (used for the JSON Schema `maxItems`);
+            # content.max_count narrows the UI quota further so the
+            # writer can declare "this report wants only 2 files" even
+            # if the template allows 10.
+            "max_count": {"type": "integer", "minimum": 1, "maximum": 50},
             "files": {
                 "type": "array",
                 "items": {
@@ -635,6 +681,13 @@ def _video_content(props: dict) -> dict:
         "properties": {
             "caption": _CAPTION_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
+            # Per-report playback overrides — same fields as the
+            # matching props_schema entries. `max_count` is a soft UI
+            # cap (hard cap stays in the files maxItems below).
+            "max_count": {"type": "integer", "minimum": 1, "maximum": 10},
+            "autoplay": {"type": "boolean"},
+            "loop": {"type": "boolean"},
+            "muted": {"type": "boolean"},
             "files": {
                 "type": "array",
                 "items": {
@@ -801,6 +854,12 @@ def _flowchart_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            # Per-report orientation override — renderer reads
+            # `content.orientation ?? props.orientation ?? 'horizontal'`.
+            "orientation": {
+                "type": "string",
+                "enum": ["horizontal", "vertical"],
+            },
             "items": {
                 "type": "array",
                 "items": {
@@ -853,6 +912,11 @@ def _milestone_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            # Per-report timeline range overrides — same fields as
+            # `props.start_date / end_date` but tunable from the
+            # 위젯 편집 toolbar without touching the template.
+            "start_date": {"type": "string", "format": "date"},
+            "end_date": {"type": "string", "format": "date"},
             "items": {
                 "type": "array",
                 "items": {
@@ -1221,6 +1285,10 @@ def _progress_bar_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            # Per-report defaults — overrideable in the 위젯 편집 toolbar.
+            # Same shape as the matching props_schema fields.
+            "default_max": {"type": "number", "exclusiveMinimum": 0},
+            "unit": {"type": "string", "maxLength": 8},
             "items": {
                 "type": "array",
                 "items": {
@@ -2533,6 +2601,172 @@ PROGRESS_BAR: WidgetDescriptor = {
 
 
 # --------------------------------------------------------------------------- #
+# 9e. comparison — AS-IS vs TO-BE / 여러 CASE 비교 (행별 텍스트 or 이미지)
+# --------------------------------------------------------------------------- #
+# Layout is row-major: each ROW is a comparison attribute (설명, 사진, 지표 ...)
+# and each COLUMN is a CASE (AS-IS / TO-BE, or CASE A / B / C). Cells of a
+# text-kind row carry strings; cells of an image-kind row carry a single
+# uploaded file_id. Writers can mix the two kinds freely in one table —
+# the row's `kind` decides which input renders. Cases live in props
+# (template default) and may be overridden per-report via content.cases.
+_COMPARISON_ROW_KINDS = ("text", "image")
+
+# Re-use the same {key, label} pattern as raci_matrix / chart so the
+# `key` is a stable slug while `label` stays freely editable.
+_COMPARISON_CASE_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "key": {
+            "type": "string",
+            "pattern": r"^[a-z][a-z0-9_]*$",
+            "maxLength": 64,
+        },
+        "label": {"type": "string", "maxLength": 200},
+    },
+    "required": ["key"],
+    "additionalProperties": False,
+}
+
+
+def _comparison_content(props: dict) -> dict:  # noqa: ARG001
+    # Per-cell value shape — strings for text rows, {file_id, alt?} for
+    # image rows. We accept either at the schema level since `kind` is
+    # the source of truth, and the editor is responsible for keeping
+    # cell values in sync with kind. Empty cell = missing key on the
+    # `values` object (legal for partial drafts).
+    cell_value_schema = {
+        "oneOf": [
+            {"type": "string", "maxLength": 4000},
+            {
+                "type": "object",
+                "properties": {
+                    "file_id": {"type": "string", "minLength": 1},
+                    "alt": {"type": "string", "maxLength": 200},
+                    "caption": {"type": "string", "maxLength": 500},
+                },
+                "required": ["file_id"],
+                "additionalProperties": False,
+            },
+        ],
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            # Per-report case override. When set, this is the canonical
+            # column list (renamed/added/removed cases); when absent,
+            # the renderer falls back to props.cases.
+            "cases": {
+                "type": "array",
+                "items": _COMPARISON_CASE_ITEM_SCHEMA,
+            },
+            # Per-report layout overrides — same fields as the matching
+            # props but tunable by the writer in the "위젯 편집" toolbar
+            # without touching the template. Renderer reads
+            # `content.<field> ?? props.<field> ?? default`. Mirrors the
+            # `chart_type` pattern: props sets the template default,
+            # content lets the report override it.
+            "horizontal_scroll": {"type": "boolean"},
+            "max_cases": {"type": "integer", "minimum": 2, "maximum": 30},
+            "image_max_height_px": {
+                "type": "integer",
+                "minimum": 80,
+                "maximum": 600,
+            },
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "pattern": r"^[a-z][a-z0-9_]*$",
+                            "maxLength": 64,
+                        },
+                        "label": {"type": "string", "maxLength": 200},
+                        "kind": {
+                            "type": "string",
+                            "enum": list(_COMPARISON_ROW_KINDS),
+                        },
+                        "values": {
+                            "type": "object",
+                            # Cell keys are case keys — same slug shape.
+                            "patternProperties": {
+                                r"^[a-z][a-z0-9_]{0,63}$": cell_value_schema,
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                    "required": ["key", "kind"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
+COMPARISON: WidgetDescriptor = {
+    "type": "comparison",
+    "label": "비교 표",
+    "description": "AS-IS / TO-BE 또는 여러 CASE를 열로, 비교 항목을 행으로 — 행은 텍스트/숫자 행과 이미지 행을 자유롭게 섞을 수 있음",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            # Default case columns. Writers can rename / add / remove
+            # per report via content.cases (mirrors the raci_matrix
+            # "default_roles → content.roles" pattern).
+            "cases": {
+                "type": "array",
+                "minItems": 1,
+                "items": _COMPARISON_CASE_ITEM_SCHEMA,
+            },
+            # When False (default), the table fits the available width
+            # without horizontal scroll — case columns share width
+            # equally via `table-fixed`. `max_cases` caps how many can
+            # fit before columns get unreadably narrow.
+            # When True, the writer can add many cases; the table
+            # overflows horizontally with a per-column min-width so
+            # each case stays readable.
+            "horizontal_scroll": {"type": "boolean"},
+            # Soft cap on the case-column count when horizontal_scroll
+            # is False. Ignored when scroll is on. Default chosen so a
+            # 12-column-grid row stays readable at ~150px per case.
+            "max_cases": {"type": "integer", "minimum": 2, "maximum": 30},
+            # Per-image-row max height in px. Image cells use a fixed
+            # `aspect-video` ratio but cap their height here so the
+            # whole-report fullscreen view (which removes the page
+            # width cap) doesn't make image rows grow unboundedly tall
+            # — that was creating a vertical scrollbar that wasn't
+            # there in normal view.
+            "image_max_height_px": {
+                "type": "integer",
+                "minimum": 80,
+                "maximum": 600,
+            },
+            "text_style": _TEXT_STYLE_SCHEMA,
+        },
+        "required": ["label", "cases"],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _comparison_content,
+    "default_props": {
+        "label": "비교 표",
+        "cases": [
+            {"key": "as_is", "label": "AS-IS"},
+            {"key": "to_be", "label": "TO-BE"},
+        ],
+        "horizontal_scroll": False,
+        "max_cases": 6,
+        "image_max_height_px": 240,
+    },
+}
+
+
+# --------------------------------------------------------------------------- #
 # 10. cad_3d — 3D 모델 뷰어 (Phase 1: GLB/GLTF/STL/OBJ)
 # --------------------------------------------------------------------------- #
 # Single-file widget: the user uploads one 3D model and the frontend
@@ -2722,6 +2956,7 @@ WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
         FLOWCHART,
         PROGRESS_BAR,
         RACI_MATRIX,
+        COMPARISON,
         CAD_3D,
     )
 }

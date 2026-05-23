@@ -7,7 +7,32 @@ import { AuthedImage } from '@/shared/components/AuthedImage'
 import { uploadFile } from '@/shared/api/files'
 import { cn } from '@/shared/lib/utils'
 import { toast } from 'sonner'
-import { CaptionInput, LabelField, PreviewLabel, captionSkipProps } from './_shared'
+import {
+  CaptionInput,
+  EditorOptionBar,
+  EditorOptionNumber,
+  EditorOptionSelect,
+  LabelField,
+  PreviewLabel,
+  captionSkipProps,
+  effectiveNumber,
+  effectiveString,
+  pruneOverrideKeys,
+} from './_shared'
+
+// Aspect-ratio choices the renderer (`aspectRatioToClass`) actually
+// honors — any other string falls back to `aspect-video`, so exposing a
+// curated dropdown matches what the writer will actually see while also
+// preventing partial-typing values like "4:" from sneaking past the
+// content schema's strict pattern.
+const ASPECT_RATIO_OPTIONS = [
+  { value: '', label: '기본 (16:9)' },
+  { value: '16:9', label: '16:9' },
+  { value: '4:3', label: '4:3' },
+  { value: '1:1', label: '1:1' },
+  { value: '3:2', label: '3:2' },
+  { value: '2:1', label: '2:1' },
+]
 import {
   AnnotationContents,
   AnnotationCountBadge,
@@ -73,7 +98,15 @@ export function ImagePropsPanel({ props, onChange }) {
 export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
   const caption = content?.caption ?? ''
   const files = content?.files ?? []
-  const max = props.max_count ?? 1
+  // Per-report soft UI cap on the image count; hard cap stays in
+  // props.max_count via the content schema's maxItems. content wins,
+  // then template, then 1.
+  const max = Math.min(
+    effectiveNumber(content, props, 'max_count', 1),
+    props.max_count ?? 50,
+  )
+  // Per-report aspect-ratio override.
+  const aspectRatio = effectiveString(content, props, 'aspect_ratio', '')
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
   const fileInputRef = useRef(null)
@@ -81,7 +114,7 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
   // (autoFit=false) and there's a single image with no user-set aspect
   // ratio, let the image grow to fill the available space instead of
   // squeezing it into a fixed 16:9 box that leaves big gaps or overflows.
-  const hasUserAspect = Boolean(props.aspect_ratio)
+  const hasUserAspect = Boolean(aspectRatio)
   const fillCell = max === 1 && autoFit === false && !hasUserAspect
 
   // Annotations only make sense when there's a single canonical image
@@ -101,6 +134,10 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
     if (Array.isArray(next.annotations) && next.annotations.length === 0) {
       delete next.annotations
     }
+    pruneOverrideKeys(next, props, {
+      max_count: 1,
+      aspect_ratio: undefined,
+    })
     onChange(next)
   }
   function update(idx, patch) {
@@ -178,7 +215,15 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
   }
 
   const canAdd = files.length < max
-  const aspectClass = aspectRatioToClass(props.aspect_ratio)
+  const aspectClass = aspectRatioToClass(aspectRatio || undefined)
+  // In edit mode, cap the aspect-ratio cell's height so a wide
+  // surface (the 80vw "위젯 편집" modal in particular) doesn't make
+  // the cell tall enough to push the dialog's Apply/Cancel footer
+  // out of view. fillCell mode already binds height to the available
+  // flex space, so the cap is only relevant when an explicit
+  // aspect_ratio is driving the layout. Read-only renders stay
+  // uncapped so reports show the image at its full requested ratio.
+  const editCellHeightCap = !readOnly && !fillCell ? { maxHeight: '50vh' } : undefined
 
   if (readOnly) {
     if (!caption && files.length === 0) return null
@@ -253,6 +298,26 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
         placeholder={props.label}
         {...captionSkipProps({ content, patch: patchContent })}
       />
+      <EditorOptionBar>
+        <EditorOptionNumber
+          label="최대 장수"
+          value={max}
+          min={1}
+          max={props.max_count ?? 50}
+          onChange={(v) => patchContent({ max_count: v })}
+          suffix={`(현재 ${files.length}장)`}
+          width="w-14"
+          hint="1이면 단일 이미지, 2 이상이면 갤러리. 템플릿 한도 안에서만 줄일 수 있습니다."
+        />
+        <EditorOptionSelect
+          label="화면비"
+          value={aspectRatio}
+          options={ASPECT_RATIO_OPTIONS}
+          onChange={(v) => patchContent({ aspect_ratio: v })}
+          width="w-24"
+          hint="템플릿 설정을 보고서마다 다른 비율로 바꿀 수 있습니다."
+        />
+      </EditorOptionBar>
       {files.length > 0 && (
         <div
           className={cn(
@@ -271,6 +336,7 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
                   file={file}
                   aspectClass={aspectClass}
                   fillCell={fillCell}
+                  cellStyle={editCellHeightCap}
                   annotations={content?.annotations}
                   onChangeAnnotations={(next) => patchContent({ annotations: next })}
                   topRightSlot={
@@ -288,6 +354,7 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
                     'relative bg-muted/30',
                     fillCell ? 'flex-1 min-h-0' : aspectClass,
                   )}
+                  style={editCellHeightCap}
                 >
                   <AuthedImage
                     fileId={file.file_id}
@@ -436,6 +503,11 @@ function AnnotatableImageBox({
   file,
   aspectClass,
   fillCell = false,
+  // Inline style applied to the container that holds the image +
+  // annotation overlay. Used by the host to cap height in edit mode so
+  // a wide modal can't make the cell tall enough to push the dialog
+  // footer out of view.
+  cellStyle = undefined,
   annotations,
   onChangeAnnotations,
   readOnly = false,
@@ -544,6 +616,7 @@ function AnnotatableImageBox({
           'relative bg-muted/30 rounded-md overflow-hidden',
           fillCell ? 'flex-1 min-h-0' : aspectClass,
         )}
+        style={cellStyle}
       >
         <AuthedImage
           ref={imgRef}

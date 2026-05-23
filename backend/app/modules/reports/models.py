@@ -15,6 +15,7 @@ import enum
 from datetime import date, datetime
 
 from sqlalchemy import (
+    Boolean,
     Date,
     DateTime,
     Enum,
@@ -156,6 +157,14 @@ class Report(Base):
     # 페이지 설정 tab. Capped client-side at 0–200; the server only
     # enforces the integer column type.
     page_gap_px: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # When True, widget container chrome (the per-block card border /
+    # background / shadow) blends into the page so individual widgets
+    # are no longer visually delimited. NULL/False keeps the default
+    # bordered cards. Editable from the 보고서 설정 dialog's page tab.
+    page_blend_blocks: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
 
     # Optional report-type tag — system-wide controlled vocabulary
     # orthogonal to the template (templates describe shape; types

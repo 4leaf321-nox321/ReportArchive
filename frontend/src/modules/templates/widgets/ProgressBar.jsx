@@ -6,10 +6,16 @@ import { Label } from '@/shared/components/ui/label'
 import {
   CaptionInput,
   DEFAULT_BODY_FONT_PX,
+  EditorOptionBar,
+  EditorOptionNumber,
+  EditorOptionText,
   LabelField,
   PreviewLabel,
   TextStyleField,
   captionSkipProps,
+  effectiveNumber,
+  effectiveString,
+  pruneOverrideKeys,
   textStyleToClassName,
   textStyleToInlineStyle,
 } from './_shared'
@@ -208,8 +214,9 @@ export function ProgressBarEditor({ props, content, onChange, readOnly }) {
   const items = Array.isArray(content?.items) ? content.items : []
   const textClass = textStyleToClassName(props.text_style)
   const textStyle = textStyleToInlineStyle(props.text_style)
-  const unit = props.unit ?? '%'
-  const defaultMax = Number.isFinite(props.default_max) ? props.default_max : 100
+  // Per-report overrides — content wins over props.
+  const unit = effectiveString(content, props, 'unit', '%')
+  const defaultMax = effectiveNumber(content, props, 'default_max', 100)
   const maxItems = Number.isFinite(props.max_items) ? props.max_items : null
 
   function patch(next) {
@@ -222,6 +229,10 @@ export function ProgressBarEditor({ props, content, onChange, readOnly }) {
     if (!merged.caption) delete merged.caption
     if (!merged.items || merged.items.length === 0) delete merged.items
     if (!merged.caption_skip_autofill) delete merged.caption_skip_autofill
+    pruneOverrideKeys(merged, props, {
+      default_max: 100,
+      unit: '%',
+    })
     onChange(merged)
   }
 
@@ -292,6 +303,24 @@ export function ProgressBarEditor({ props, content, onChange, readOnly }) {
         placeholder={props.label}
         {...captionSkipProps({ content, patch })}
       />
+      <EditorOptionBar>
+        <EditorOptionNumber
+          label="기본 목표값"
+          value={defaultMax}
+          min={1}
+          onChange={(v) => patch({ default_max: v })}
+          hint="항목별 max를 비워두면 이 값이 100% 기준이 됩니다."
+        />
+        <EditorOptionText
+          label="단위"
+          value={unit}
+          onChange={(v) => patch({ unit: v })}
+          maxLength={8}
+          placeholder="%"
+          width="w-14"
+          hint="값/목표 표시에 붙는 접미사 (예: %, 건, h)"
+        />
+      </EditorOptionBar>
       {/* Live preview — same renderer as view mode so the writer sees
           the final layout while typing. */}
       {hydratedItems.length > 0 && (

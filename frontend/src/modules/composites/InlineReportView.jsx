@@ -165,6 +165,7 @@ function BlockBody({ block, content, propsOverride, sectionCode, sectionItemByCo
   // so the two read as one continuous card.
   return (
     <div
+      data-report-widget-card="true"
       className="rounded-md border bg-card overflow-hidden"
       style={{ borderColor: `${sectionCategory.color}40` }}
     >

@@ -9,7 +9,7 @@ import { getRenderer } from './widgets'
 // Order matters — categories show in the listed sequence.
 export const WIDGET_PICKER_CATEGORIES = [
   { name: '텍스트', types: ['heading', 'rich_text', 'equation'] },
-  { name: '목록 / 표', types: ['bulleted_list', 'key_value', 'table'] },
+  { name: '목록 / 표', types: ['bulleted_list', 'key_value', 'table', 'comparison'] },
   {
     name: '차트',
     types: [

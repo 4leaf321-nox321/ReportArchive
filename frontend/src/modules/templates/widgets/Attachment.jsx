@@ -5,7 +5,16 @@ import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { downloadFile, uploadFile } from '@/shared/api/files'
 import { toast } from 'sonner'
-import { CaptionInput, LabelField, PreviewLabel, captionSkipProps } from './_shared'
+import {
+  CaptionInput,
+  EditorOptionBar,
+  EditorOptionNumber,
+  LabelField,
+  PreviewLabel,
+  captionSkipProps,
+  effectiveNumber,
+  pruneOverrideKeys,
+} from './_shared'
 
 export function AttachmentPropsPanel({ props, onChange }) {
   return (
@@ -56,7 +65,15 @@ export function AttachmentPropsPanel({ props, onChange }) {
 export function AttachmentEditor({ props, content, onChange, readOnly }) {
   const caption = content?.caption ?? ''
   const files = content?.files ?? []
-  const max = props.max_count ?? 5
+  // Per-report soft cap — content wins, then template's max_count, then 5.
+  // The hard validation cap stays at props.max_count via the content
+  // schema's maxItems; this just narrows the UI quota further so the
+  // writer can declare "this report wants only 2 files" without
+  // editing the template.
+  const max = Math.min(
+    effectiveNumber(content, props, 'max_count', 5),
+    props.max_count ?? 50,
+  )
   const allowed = props.allowed_extensions ?? null
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
@@ -66,6 +83,7 @@ export function AttachmentEditor({ props, content, onChange, readOnly }) {
     const merged = { ...(content ?? {}), caption, files, ...next }
     if (!merged.caption) delete merged.caption
     if (!merged.caption_skip_autofill) delete merged.caption_skip_autofill
+    pruneOverrideKeys(merged, props, { max_count: 5 })
     onChange(merged)
   }
   function remove(idx) {
@@ -177,6 +195,18 @@ export function AttachmentEditor({ props, content, onChange, readOnly }) {
         placeholder={props.label}
         {...captionSkipProps({ content, patch })}
       />
+      <EditorOptionBar>
+        <EditorOptionNumber
+          label="최대 개수"
+          value={max}
+          min={1}
+          max={props.max_count ?? 50}
+          onChange={(v) => patch({ max_count: v })}
+          suffix={`(현재 ${files.length}개)`}
+          width="w-14"
+          hint="이 보고서에서 허용할 첨부 개수를 줄일 수 있습니다 (템플릿보다 늘릴 수는 없음)."
+        />
+      </EditorOptionBar>
       {files.length > 0 && (
         <ul className="space-y-1.5">
           {files.map((file, idx) => (

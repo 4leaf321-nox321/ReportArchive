@@ -10,6 +10,7 @@ import {
   HardDrive,
   MessageSquare,
   Sparkles,
+  Tags,
 } from 'lucide-react'
 import { WorkspaceSelector } from '@/shared/components/WorkspaceSelector'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
@@ -42,6 +43,7 @@ const GLOBAL_MENU = [
     requireAdmin: true,
   },
   { to: '/admin', label: '관리자', icon: Settings, requireAdmin: true },
+  { to: '/admin/entities', label: '엔티티 관리', icon: Tags, requireAdmin: true },
   { to: '/server', label: '서버', icon: HardDrive, requireAdmin: true },
 ]
 

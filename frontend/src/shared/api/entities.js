@@ -28,11 +28,13 @@ export async function listEntities({
   q,
   includeDeprecated = false,
   limit = 200,
+  withUsage = false,
 } = {}) {
   const params = { limit }
   if (typeId != null) params.type_id = typeId
   if (q && q.trim()) params.q = q.trim()
   if (includeDeprecated) params.include_deprecated = true
+  if (withUsage) params.with_usage = true
   const res = await apiClient.get(BASE, { params })
   return extractData(res)
 }

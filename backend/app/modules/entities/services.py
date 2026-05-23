@@ -73,14 +73,53 @@ def list_entities(
     q: Optional[str] = None,
     include_deprecated: bool = False,
     limit: int = 200,
-) -> list[Entity]:
+    with_usage: bool = False,
+) -> list[Entity] | list[tuple[Entity, int]]:
     """Picker list — filters on axis + search + (optionally) status.
 
     `include_deprecated=False` is the picker default so deprecated values
     drop out of the dropdown but stay viewable on the admin page
     (which sends `True` to see the full set).
+
+    `with_usage=True` makes the admin variant: each row is paired with
+    the number of reports currently linked to it. Returned as
+    `[(Entity, count)]` so the route can pack it into `EntityRead.usage_count`.
+    Picker calls leave this False — the extra LEFT JOIN COUNT is only
+    worth it for the admin grid's "사용 중" column.
     """
-    stmt = select(Entity)
+    if not with_usage:
+        stmt = select(Entity)
+        if type_id is not None:
+            stmt = stmt.where(Entity.type_id == type_id)
+        if not include_deprecated:
+            stmt = stmt.where(Entity.status == EntityStatus.active)
+        if q:
+            needle = f"%{q.strip().lower()}%"
+            stmt = stmt.where(
+                or_(
+                    func.lower(Entity.value).like(needle),
+                    func.lower(Entity.code).like(needle),
+                    func.lower(Entity.description).like(needle),
+                )
+            )
+        stmt = stmt.order_by(Entity.value).limit(limit)
+        return list(db.execute(stmt).scalars())
+
+    # Admin variant — count via a correlated subquery rather than
+    # LEFT JOIN + GROUP BY. The join approach trips over Entity's
+    # eager-loaded relationships (entity_type, created_by): Postgres
+    # demands every selected column appear in GROUP BY. A correlated
+    # subquery keeps Entity rows whole and leaves the eager loads
+    # untouched; cost is one indexed lookup per row (the entity_id
+    # index on report_entities), which stays well under a ms for the
+    # admin list's ~hundreds of rows.
+    count_subq = (
+        select(func.count(ReportEntity.report_id))
+        .where(ReportEntity.entity_id == Entity.id)
+        .correlate(Entity)
+        .scalar_subquery()
+    )
+    stmt = select(Entity, count_subq)
     if type_id is not None:
         stmt = stmt.where(Entity.type_id == type_id)
     if not include_deprecated:
@@ -95,7 +134,7 @@ def list_entities(
             )
         )
     stmt = stmt.order_by(Entity.value).limit(limit)
-    return list(db.execute(stmt).scalars())
+    return [(row, int(cnt or 0)) for row, cnt in db.execute(stmt).all()]
 
 
 def get_entity(db: Session, entity_id: int) -> Optional[Entity]:

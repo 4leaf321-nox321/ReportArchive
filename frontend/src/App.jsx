@@ -23,6 +23,7 @@ import CompositesListPage from '@/modules/composites/CompositesListPage'
 import CompositeDetailPage from '@/modules/composites/CompositeDetailPage'
 import AdminPage from '@/modules/admin/AdminPage'
 import ServerPage from '@/modules/admin/ServerPage'
+import EntitiesAdminPage from '@/modules/entities/EntitiesAdminPage'
 import VocListPage from '@/modules/voc/VocListPage'
 import VocDetailPage from '@/modules/voc/VocDetailPage'
 import AiSettingsPage from '@/modules/ai_settings/AiSettingsPage'
@@ -98,6 +99,7 @@ export default function App() {
               <Route path="/voc/:postId" element={<VocDetailPage />} />
               <Route path="/ai-settings" element={<AiSettingsPage />} />
               <Route path="/admin" element={<AdminPage />} />
+              <Route path="/admin/entities" element={<EntitiesAdminPage />} />
               <Route path="/server" element={<ServerPage />} />
 
               <Route path="*" element={<NotFoundPage />} />

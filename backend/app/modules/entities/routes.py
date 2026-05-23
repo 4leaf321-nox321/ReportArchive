@@ -78,10 +78,11 @@ def _require_admin(actor: EntityActor) -> None:
         )
 
 
-def _to_read(row) -> EntityRead:
+def _to_read(row, usage_count: Optional[int] = None) -> EntityRead:
     """Hand-flatten `type_slug` from the joined EntityType — Pydantic's
     `from_attributes` can't walk a relationship into a sibling field by
-    itself."""
+    itself. `usage_count` is None for picker reads, an int for admin
+    reads (when the route requested `with_usage=true`)."""
     return EntityRead(
         id=row.id,
         type_id=row.type_id,
@@ -93,6 +94,7 @@ def _to_read(row) -> EntityRead:
         created_by_user_id=row.created_by_user_id,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        usage_count=usage_count,
     )
 
 
@@ -129,22 +131,35 @@ def list_entities(
     q: Optional[str] = Query(default=None, max_length=128),
     include_deprecated: bool = Query(default=False),
     limit: int = Query(default=200, ge=1, le=500),
-    _actor: EntityActor = Depends(entity_actor),
+    with_usage: bool = Query(default=False),
+    actor: EntityActor = Depends(entity_actor),
     db: Session = Depends(get_db),
 ):
     """Picker list. Defaults to active-only; admin page passes
     `include_deprecated=true`. Without `type_id` returns across all
-    axes (mostly useful for global search)."""
+    axes (mostly useful for global search).
+
+    `with_usage=true` is admin-only — it adds a per-row COUNT subquery
+    to populate `usage_count`. We gate it on role to keep the picker
+    path lean and to avoid leaking "this value is used by N reports"
+    to non-admins (a minor info-disclosure, but trivial to gate)."""
+    if with_usage and not actor.is_admin:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "with_usage 는 관리자만 사용할 수 있습니다."
+        )
     rows = services.list_entities(
         db,
         type_id=type_id,
         q=q,
         include_deprecated=include_deprecated,
         limit=limit,
+        with_usage=with_usage,
     )
-    return success_response(
-        data=EntityListResponse(items=[_to_read(r) for r in rows])
-    )
+    if with_usage:
+        items = [_to_read(r, usage_count=cnt) for (r, cnt) in rows]
+    else:
+        items = [_to_read(r) for r in rows]
+    return success_response(data=EntityListResponse(items=items))
 
 
 @entities_router.post("", status_code=201)

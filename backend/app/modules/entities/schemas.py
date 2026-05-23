@@ -45,6 +45,10 @@ class EntityRead(BaseModel):
     created_by_user_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
+    # 관리 페이지에서만 채움 (admin route 가 with_usage=True 로 호출).
+    # picker 경로에서는 None — 매 행마다 COUNT 서브쿼리를 돌리는 비용을
+    # 의도적으로 회피. 화면에 "사용 중인 보고서 N건" 으로 노출.
+    usage_count: Optional[int] = None
 
 
 class EntityRefMini(BaseModel):

@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useParams, useNavigate, useLocation, Link } from 'react-router-dom'
+import {
+  useParams,
+  useNavigate,
+  useLocation,
+  useBlocker,
+  Link,
+} from 'react-router-dom'
 import {
   ArrowLeft,
   Bookmark,
@@ -298,6 +304,81 @@ export default function ReportDetailPage() {
       setCurrentPage((p) => clamp(p, 0, pages.length - 1))
     }
   }, [isNew, seedTemplate, existingReport])
+
+  // -------------------------------------------------------------------- //
+  // Unsaved-changes guard                                                //
+  //                                                                      //
+  // While editing, intercept any navigation away from this report and    //
+  // prompt the user (저장 / 포기 / 머무름). Catches:                       //
+  //  - in-SPA navigation (sidebar links, browser back, navigate() calls) //
+  //    via react-router's useBlocker                                     //
+  //  - browser unload (tab close, refresh, URL bar change) via the       //
+  //    standard beforeunload event (native browser confirm dialog)       //
+  //                                                                      //
+  // Dirty detection is a JSON.stringify diff against the draft as-of     //
+  // edit-mode entry. Cheap enough for normal report sizes; only computed //
+  // when the guard actually triggers, not on every render.               //
+  // -------------------------------------------------------------------- //
+  const draftRef = useRef(null)
+  const isEditingRef = useRef(false)
+  const editingSnapshotRef = useRef(null)
+  const [unsavedNavPrompt, setUnsavedNavPrompt] = useState(null) // { proceed, reset, saving } | null
+
+  useEffect(() => {
+    draftRef.current = draft
+  }, [draft])
+
+  // Re-snapshot whenever edit mode is entered. Intentionally NOT dependent
+  // on `draft` — we only freeze the baseline once per edit session, so any
+  // subsequent setDraft becomes a "dirty" diff. Leaving edit mode (save /
+  // cancel / takeover-lost) clears the snapshot so the guard goes silent.
+  useEffect(() => {
+    isEditingRef.current = isEditing
+    if (isEditing && draftRef.current) {
+      editingSnapshotRef.current = JSON.stringify(draftRef.current)
+    } else {
+      editingSnapshotRef.current = null
+    }
+  }, [isEditing])
+
+  function isDraftDirty() {
+    if (!isEditingRef.current) return false
+    if (!editingSnapshotRef.current) return false
+    return JSON.stringify(draftRef.current) !== editingSnapshotRef.current
+  }
+
+  // useBlocker is react-router 6.4+'s replacement for <Prompt>. The guard
+  // runs every time the router considers navigating. We pass-through same-
+  // path "navigations" (e.g. hash changes) and ignore the case where the
+  // page itself navigated via the explicit save/cancel/copy/delete paths
+  // (those flip isEditingRef synchronously before calling navigate).
+  const blocker = useBlocker(({ currentLocation, nextLocation }) => {
+    if (currentLocation.pathname === nextLocation.pathname) return false
+    return isDraftDirty()
+  })
+
+  useEffect(() => {
+    if (blocker.state === 'blocked') {
+      setUnsavedNavPrompt({
+        proceed: () => blocker.proceed(),
+        reset: () => blocker.reset(),
+      })
+    }
+  }, [blocker])
+
+  // Native browser unload — Chrome/FF show their own generic "Leave
+  // site?" prompt when returnValue is set. We don't get to customize the
+  // text (browser policy), so the in-SPA dialog above is the richer UX.
+  useEffect(() => {
+    if (!isEditing) return
+    const handler = (e) => {
+      if (!isDraftDirty()) return
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [isEditing])
 
   // Fetch the template version for every page in the draft (deduped by
   // template_id+version). Cached in a map keyed by `${id}@${version}` so
@@ -1053,6 +1134,9 @@ export default function ReportDetailPage() {
         // component instance stays mounted across the navigate (same
         // ReportDetailPage), so `isEditing` would otherwise leak from
         // the new-draft state and surface a misleading "저장" button.
+        // The ref override (vs the setState below) is what the dirty
+        // guard reads synchronously when the navigate fires.
+        isEditingRef.current = false
         setIsEditing(false)
         navigate(`/w/${slug}/reports/${created.id}`, { replace: true })
       } else {
@@ -1091,6 +1175,11 @@ export default function ReportDetailPage() {
   }
 
   function onCancelEdit() {
+    // Explicit "discard" — the dirty guard should NOT prompt on the
+    // navigate below. Flipping the ref synchronously ensures the
+    // useBlocker callback sees us as out-of-edit-mode before the route
+    // change actually fires.
+    isEditingRef.current = false
     if (isNew) {
       navigate(`/w/${slug}/reports`)
       return
@@ -1161,6 +1250,10 @@ export default function ReportDetailPage() {
     try {
       await deleteReport(draft.id)
       toast.success('보고서가 삭제되었습니다.')
+      // Bypass the dirty guard — the report we'd be guarding no longer
+      // exists, and the redirect below is a deliberate consequence of
+      // the user's destructive action.
+      isEditingRef.current = false
       navigate(`/w/${slug}/reports`)
     } catch (err) {
       toast.error(err.message || '삭제 실패')
@@ -1199,6 +1292,10 @@ export default function ReportDetailPage() {
       })
       toast.success('보고서가 복사되었습니다.')
       setCopyOpen(false)
+      // Bypass the dirty guard — copy was an explicit "leave for the
+      // new clone" action. The source draft (which may be dirty) is
+      // intentionally abandoned here; the destination is the copy.
+      isEditingRef.current = false
       navigate(`/w/${slug}/reports/${created.id}`, {
         state: { startEditing: true },
       })
@@ -2181,6 +2278,45 @@ export default function ReportDetailPage() {
         onConfirm={() => onEnterEdit({ force: true })}
       />
 
+      <UnsavedChangesDialog
+        open={!!unsavedNavPrompt}
+        saving={!!unsavedNavPrompt?.saving}
+        onSaveAndLeave={async () => {
+          // Run the same save path the toolbar's "저장" uses. On success
+          // onSave() flips isEditing=false and (for new reports) navigates
+          // away — but the explicit proceed() below is what unblocks
+          // *this* originally-blocked navigation. We flag `saving` so the
+          // dialog can show progress and stay open if onSave throws.
+          setUnsavedNavPrompt((p) => (p ? { ...p, saving: true } : p))
+          try {
+            await onSave()
+            // Mark clean for the proceed call below. onSave's setIsEditing
+            // is async, so we update the ref synchronously here too.
+            isEditingRef.current = false
+            editingSnapshotRef.current = null
+            unsavedNavPrompt?.proceed()
+            setUnsavedNavPrompt(null)
+          } catch {
+            // onSave already toasts. Drop the saving flag so the user
+            // can retry or pick a different action.
+            setUnsavedNavPrompt((p) => (p ? { ...p, saving: false } : p))
+          }
+        }}
+        onDiscardAndLeave={() => {
+          // Mark clean so the blocker (and any subsequent guards) lets
+          // navigation through. We don't roll back `draft` itself —
+          // the navigation is about to unmount this view anyway.
+          isEditingRef.current = false
+          editingSnapshotRef.current = null
+          unsavedNavPrompt?.proceed()
+          setUnsavedNavPrompt(null)
+        }}
+        onStay={() => {
+          unsavedNavPrompt?.reset()
+          setUnsavedNavPrompt(null)
+        }}
+      />
+
       <PdfPrintDialog
         open={pdfDialogOpen}
         onOpenChange={setPdfDialogOpen}
@@ -2937,6 +3073,56 @@ function TakeoverLockDialog({ holder, onCancel, onConfirm }) {
           </Button>
           <Button size="sm" onClick={onConfirm}>
             강제 인계 후 편집
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Dirty-navigation guard dialog — surfaces when the user tries to leave
+ *  the page (in-SPA navigation OR browser unload) while the report draft
+ *  has unsaved changes. Three paths out: save+leave (preserves data),
+ *  discard+leave (loses the diff), stay (no-op).
+ *
+ *  `saving` reflects an in-flight onSave from the save-and-leave button
+ *  so we can disable the buttons and show progress without dismissing
+ *  the dialog (the dialog stays open if onSave throws, e.g. lock conflict). */
+function UnsavedChangesDialog({
+  open,
+  saving = false,
+  onSaveAndLeave,
+  onDiscardAndLeave,
+  onStay,
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v && !saving) onStay?.() }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>저장하지 않은 변경사항</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm">
+          이 보고서에 저장하지 않은 편집이 있습니다. 페이지를 떠나면 변경사항이
+          사라질 수 있습니다 — 어떻게 할까요?
+        </p>
+        <p className="text-xs text-muted-foreground">
+          "저장 후 나가기" 는 일반 저장과 동일하게 처리되고, 저장이 끝나면
+          원래 이동하려던 곳으로 자동 이동합니다.
+        </p>
+        <div className="flex flex-wrap justify-end gap-2 pt-2">
+          <Button variant="ghost" size="sm" onClick={onStay} disabled={saving}>
+            취소 (머무름)
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onDiscardAndLeave}
+            disabled={saving}
+          >
+            저장 안 함
+          </Button>
+          <Button size="sm" onClick={onSaveAndLeave} disabled={saving}>
+            {saving ? '저장 중...' : '저장 후 나가기'}
           </Button>
         </div>
       </DialogContent>

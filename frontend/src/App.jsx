@@ -1,4 +1,11 @@
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import {
+  createBrowserRouter,
+  createRoutesFromElements,
+  Navigate,
+  Outlet,
+  Route,
+  RouterProvider,
+} from 'react-router-dom'
 import { AppShell } from '@/shared/layout/AppShell'
 import { WorkspaceProvider } from '@/shared/workspace/WorkspaceContext'
 import { AuthProvider, useAuth } from '@/shared/auth/AuthContext'
@@ -62,52 +69,72 @@ function RootRedirect() {
   return <Navigate to={`/w/${slug}`} replace />
 }
 
+/**
+ * Root layout — wraps everything in AuthProvider so child routes can use
+ * useAuth. Lives inside the router (not above it) because AuthProvider
+ * itself calls useNavigate, which requires the router context. Toaster
+ * is rendered here too so toasts persist across route changes.
+ */
+function RootLayout() {
+  return (
+    <AuthProvider>
+      <Outlet />
+      <Toaster />
+    </AuthProvider>
+  )
+}
+
+// Data router — required for useBlocker (the unsaved-changes nav guard
+// in ReportDetailPage). createRoutesFromElements lets us keep the same
+// JSX route definitions, so the migration from <BrowserRouter> + <Routes>
+// is mostly a wrapper swap.
+const router = createBrowserRouter(
+  createRoutesFromElements(
+    <Route element={<RootLayout />}>
+      {/* Public */}
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/signup" element={<SignupPage />} />
+
+      {/* Authenticated — AuthedShell renders <Outlet /> via AppShell */}
+      <Route element={<AuthedShell />}>
+        <Route path="/" element={<RootRedirect />} />
+
+        {/* 부서 스코프 — /reports/new* 가 :reportId 보다 먼저 매치 */}
+        <Route path="/w/:workspace" element={<WorkspaceHomePage />} />
+        <Route path="/w/:workspace/reports" element={<ReportsListPage />} />
+        <Route path="/w/:workspace/reports/new" element={<ReportNewPage />} />
+        <Route
+          path="/w/:workspace/reports/new/:templateId/:version"
+          element={<ReportDetailPage />}
+        />
+        <Route path="/w/:workspace/reports/:reportId" element={<ReportDetailPage />} />
+        <Route path="/w/:workspace/dashboard" element={<DashboardPage />} />
+        <Route path="/w/:workspace/composites" element={<CompositesListPage />} />
+        <Route path="/w/:workspace/composites/:compositeId" element={<CompositeDetailPage />} />
+        <Route path="/w/:workspace/members" element={<MembersPage />} />
+
+        {/* 공통 (부서 횡단) */}
+        <Route path="/profile" element={<ProfilePage />} />
+        <Route path="/templates" element={<TemplatesPage />} />
+        <Route path="/templates/new" element={<TemplateEditorPage />} />
+        <Route path="/templates/:templateId/edit" element={<TemplateEditorPage />} />
+        <Route path="/voc" element={<VocListPage />} />
+        <Route path="/voc/:postId" element={<VocDetailPage />} />
+        <Route path="/ai-settings" element={<AiSettingsPage />} />
+        <Route path="/admin" element={<AdminPage />} />
+        <Route path="/admin/entities" element={<EntitiesAdminPage />} />
+        <Route path="/server" element={<ServerPage />} />
+
+        <Route path="*" element={<NotFoundPage />} />
+      </Route>
+    </Route>
+  )
+)
+
 export default function App() {
   return (
     <ThemeProvider>
-      <BrowserRouter>
-        <AuthProvider>
-          <Routes>
-            {/* Public */}
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/signup" element={<SignupPage />} />
-
-            {/* Authenticated — AuthedShell renders <Outlet /> via AppShell */}
-            <Route element={<AuthedShell />}>
-              <Route path="/" element={<RootRedirect />} />
-
-              {/* 부서 스코프 — /reports/new* 가 :reportId 보다 먼저 매치 */}
-              <Route path="/w/:workspace" element={<WorkspaceHomePage />} />
-              <Route path="/w/:workspace/reports" element={<ReportsListPage />} />
-              <Route path="/w/:workspace/reports/new" element={<ReportNewPage />} />
-              <Route
-                path="/w/:workspace/reports/new/:templateId/:version"
-                element={<ReportDetailPage />}
-              />
-              <Route path="/w/:workspace/reports/:reportId" element={<ReportDetailPage />} />
-              <Route path="/w/:workspace/dashboard" element={<DashboardPage />} />
-              <Route path="/w/:workspace/composites" element={<CompositesListPage />} />
-              <Route path="/w/:workspace/composites/:compositeId" element={<CompositeDetailPage />} />
-              <Route path="/w/:workspace/members" element={<MembersPage />} />
-
-              {/* 공통 (부서 횡단) */}
-              <Route path="/profile" element={<ProfilePage />} />
-              <Route path="/templates" element={<TemplatesPage />} />
-              <Route path="/templates/new" element={<TemplateEditorPage />} />
-              <Route path="/templates/:templateId/edit" element={<TemplateEditorPage />} />
-              <Route path="/voc" element={<VocListPage />} />
-              <Route path="/voc/:postId" element={<VocDetailPage />} />
-              <Route path="/ai-settings" element={<AiSettingsPage />} />
-              <Route path="/admin" element={<AdminPage />} />
-              <Route path="/admin/entities" element={<EntitiesAdminPage />} />
-              <Route path="/server" element={<ServerPage />} />
-
-              <Route path="*" element={<NotFoundPage />} />
-            </Route>
-          </Routes>
-        </AuthProvider>
-        <Toaster />
-      </BrowserRouter>
+      <RouterProvider router={router} />
     </ThemeProvider>
   )
 }

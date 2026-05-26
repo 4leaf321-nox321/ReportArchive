@@ -24,6 +24,8 @@ import {
   GripVertical,
   HardDrive,
   Layers,
+  LayoutGrid,
+  Loader2,
   Maximize2,
   Minimize2,
   Pencil,
@@ -45,6 +47,7 @@ import { Card, CardContent } from '@/shared/components/ui/card'
 import { ScrollArea } from '@/shared/components/ui/scroll-area'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { Input } from '@/shared/components/ui/input'
+import { InlineReportView } from '@/modules/composites/InlineReportView'
 import { Textarea } from '@/shared/components/ui/textarea'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/components/ui/popover'
@@ -94,6 +97,7 @@ import { MountDialog } from './MountDialog'
 import { EditorsDialog } from './EditorsDialog'
 import { FolderPickerButton } from './FolderPickerButton'
 import { listMounts, mountReport } from '@/shared/api/mounts'
+import { listCompositesContainingReport } from '@/shared/api/composites'
 import { CommentsProvider } from '@/modules/comments/CommentsContext'
 import { CommentPanel } from '@/modules/comments/CommentPanel'
 import { CommentPin } from '@/modules/comments/CommentPin'
@@ -196,6 +200,13 @@ export default function ReportDetailPage() {
   // chrome-free, paginated layout regardless of where the user was. Used
   // by both PDF print-to-file and the Word export's html2canvas capture.
   const [printing, setPrinting] = useState(false)
+  // DOCX export progress. `null` when not exporting; otherwise a
+  // `{ phase, current?, total?, label }` snapshot fed straight from the
+  // exporter's onProgress callback. The bottom-screen overlay renders
+  // from this and disappears when set back to null. Kept separate from
+  // `printing` because `printing` also covers PDF / HTML paths that
+  // don't need the same granular progress UX.
+  const [docxProgress, setDocxProgress] = useState(null)
   const effectiveIsEditing = isEditing && !printing
   const effectiveViewMode = printing ? 'all' : viewMode
   const [currentPage, setCurrentPage] = useState(0)
@@ -709,6 +720,39 @@ export default function ReportDetailPage() {
       return { ...d, pages: next }
     })
     setCurrentPage((p) => clamp(p > idx ? p - 1 : p, 0, pageCount - 2))
+  }
+
+  /** Insert one or more deep-cloned pages right after `afterIdx`. The
+   *  page strip's Ctrl+C snapshot is delivered here for paste —
+   *  accepts either a single page or an array (multi-select copy).
+   *  Each copy's `name` gets a "(복사)" suffix so the new chips are
+   *  distinguishable in the strip; everything else (content / layout
+   *  overrides / extra_blocks / block_sections) carries over verbatim
+   *  because block_id-scoped data is page-local and never collides
+   *  across pages of the same template. */
+  function insertPageCopy(afterIdx, sourcePageOrPages) {
+    const sources = Array.isArray(sourcePageOrPages)
+      ? sourcePageOrPages
+      : sourcePageOrPages
+        ? [sourcePageOrPages]
+        : []
+    if (sources.length === 0) return
+    setDraft((d) => {
+      if (!d) return d
+      const pages = d.pages ?? []
+      const insertAt = Math.min(Math.max(0, afterIdx + 1), pages.length)
+      const copies = sources.map((p) => ({
+        ...p,
+        name: p?.name ? `${p.name} (복사)` : null,
+      }))
+      const next = [
+        ...pages.slice(0, insertAt),
+        ...copies,
+        ...pages.slice(insertAt),
+      ]
+      return { ...d, pages: next }
+    })
+    setCurrentPage(afterIdx + 1)
   }
 
   function renamePage(idx, name) {
@@ -1678,6 +1722,10 @@ export default function ReportDetailPage() {
   async function handleExportDocx() {
     if (!draft) return
     setPrinting(true)
+    // Initial spinner state — picked up by the overlay below. Updated
+    // continuously via the onProgress callback so the user sees
+    // "N/M 위젯 변환 중" tick as html2canvas works through each block.
+    setDocxProgress({ phase: 'start', current: 0, total: 0, label: '준비 중...' })
     try {
       // Same two-frame wait so the DOM the exporter snapshots reflects
       // the read-only layout (no drag handles, no edit-mode picker
@@ -1690,6 +1738,7 @@ export default function ReportDetailPage() {
         draft,
         pageTemplateMap,
         sectionItemByCode,
+        onProgress: setDocxProgress,
       })
       toast.success('Word 파일로 저장했습니다.')
     } catch (err) {
@@ -1697,6 +1746,7 @@ export default function ReportDetailPage() {
       toast.error(`Word 저장 실패: ${err?.message ?? err}`)
     } finally {
       setPrinting(false)
+      setDocxProgress(null)
     }
   }
 
@@ -1906,6 +1956,13 @@ export default function ReportDetailPage() {
               {!isEditing && existingReport?.edit_lock
                 && existingReport.edit_lock.user_id !== currentUserId && (
                 <LockHolderChip holder={existingReport.edit_lock} />
+              )}
+              {/* "포함된 종합 문서 N개" — Phase 5C 양방향 네비. 보고서가
+                  어떤 종합에 인용되어 있는지 한 클릭으로 추적. 0건이면
+                  chip 자체가 렌더 안 됨. isNew 일 때는 report id 가 없어
+                  fetch 자체 안 함. */}
+              {!isNew && existingReport?.id && (
+                <ContainingCompositesChip reportId={existingReport.id} />
               )}
             </div>
             {!isNew && existingReport && (
@@ -2241,6 +2298,8 @@ export default function ReportDetailPage() {
           }}
           onRemove={removePage}
           onAdd={() => setPickerOpen(true)}
+          onInsertCopy={insertPageCopy}
+          onRenamePage={renamePage}
           isEditing={isEditing}
           viewMode={viewMode}
         />
@@ -2327,7 +2386,7 @@ export default function ReportDetailPage() {
                       setContentHeight(idx, blockId, px)
                     }
                     onRename={(name) => renamePage(idx, name)}
-                    showPageHeader={pageCount > 1}
+                    showPageHeader={pageCount > 1 && !reportFullscreen}
                     onAddExtraBlockAt={(type, defaults, anchorId, direction) =>
                       addExtraBlockAt(idx, type, defaults, anchorId, direction)
                     }
@@ -2369,7 +2428,7 @@ export default function ReportDetailPage() {
                       setContentHeight(safeCurrent, blockId, px)
                     }
                     onRename={(name) => renamePage(safeCurrent, name)}
-                    showPageHeader={pageCount > 1}
+                    showPageHeader={pageCount > 1 && !reportFullscreen}
                     onAddExtraBlockAt={(type, defaults, anchorId, direction) =>
                       addExtraBlockAt(safeCurrent, type, defaults, anchorId, direction)
                     }
@@ -2779,9 +2838,57 @@ export default function ReportDetailPage() {
           </Button>
         </div>
       )}
+      {/* DOCX export progress overlay — fixed full-screen dim + center
+          card with spinner + step label + (when known) bar. Blocks user
+          interaction during export which is desirable: clicking around
+          while html2canvas captures the DOM yields garbage. Driven by
+          `docxProgress` state; hidden when null. */}
+      {docxProgress && <DocxExportOverlay progress={docxProgress} />}
     </div>
     </CommentsProvider>
     </PrintScaleContext.Provider>
+  )
+}
+
+/** Centered, blocking spinner shown during Word export. Reads the
+ *  progress feed from `exportReportToDocx.onProgress` so the user sees
+ *  "위젯 변환 중 (N/M)" tick instead of staring at a frozen page. */
+function DocxExportOverlay({ progress }) {
+  const isBlock = progress.phase === 'block'
+  const pct =
+    isBlock && progress.total > 0
+      ? Math.round((progress.current / progress.total) * 100)
+      : null
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <div className="rounded-lg border bg-card shadow-xl px-6 py-5 min-w-[280px] max-w-sm">
+        <div className="flex items-center gap-3 mb-2">
+          <Loader2 className="h-5 w-5 animate-spin text-primary" />
+          <div className="font-semibold text-sm">Word 파일로 저장 중</div>
+        </div>
+        <div className="text-xs text-muted-foreground mb-2">
+          {progress.label ?? '진행 중...'}
+        </div>
+        {isBlock && progress.total > 0 && (
+          <>
+            <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+              <div
+                className="h-full bg-primary transition-all duration-200"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            <div className="mt-1.5 text-[11px] text-muted-foreground tabular-nums">
+              {progress.current}/{progress.total} ({pct}%)
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -3582,6 +3689,75 @@ function PhaseChip({ phase }) {
   )
 }
 
+/** "포함된 종합 문서 N개" — Phase 5C 양방향 네비. 이 보고서가 어떤 종합
+ *  문서에 item 으로 인용되고 있는지 한 클릭에 보이고 그쪽으로 이동.
+ *
+ *  Lazy fetch: 데이터를 항상 불러오되 0건이면 컴포넌트 자체가 렌더
+ *  안 됨 → 헤더 noise 최소화. fetch 비용은 작은 JOIN (composite
+ *  count 가 보통 한 자릿수).
+ *
+ *  렌더 결정:
+ *   - 0건: null
+ *   - 1~∞건: Popover trigger (count chip) + 목록. 0건일 가능성이 흔해서
+ *     count 가 0 일 때 "포함되어 있지 않음" 같은 dead chip 은 안 띄움. */
+function ContainingCompositesChip({ reportId }) {
+  const navigate = useNavigate()
+  const { data } = useAsync(
+    () =>
+      reportId
+        ? listCompositesContainingReport(reportId)
+        : Promise.resolve([]),
+    [reportId],
+  )
+  const list = data ?? []
+  if (list.length === 0) return null
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 rounded-full bg-secondary text-secondary-foreground px-2 py-0.5 text-[11px] font-medium hover:bg-secondary/80 transition-colors"
+          title="이 보고서가 인용된 종합 문서 목록"
+        >
+          <Layers className="h-3 w-3" />
+          포함된 종합 문서 {list.length}개
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-80 p-1">
+        <div className="max-h-72 overflow-y-auto space-y-0.5">
+          {list.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() =>
+                navigate(`/w/${c.workspace_slug}/composites/${c.id}`)
+              }
+              className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left hover:bg-muted"
+            >
+              <Layers className="h-3.5 w-3.5 mt-0.5 shrink-0 text-muted-foreground" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium truncate">{c.title}</div>
+                <div className="text-[11px] text-muted-foreground flex items-center gap-1.5 flex-wrap mt-0.5">
+                  <span className="inline-flex items-center rounded-full bg-primary/10 text-primary px-1 py-0 text-[10px]">
+                    {c.kind === 'recurring' ? '정기' : '주제'}
+                  </span>
+                  {c.published_at && (
+                    <span className="text-blue-600 dark:text-blue-400">
+                      발행됨
+                    </span>
+                  )}
+                  {c.period_date && <span>· 기준 {c.period_date}</span>}
+                  {c.owner_name && <span>· {c.owner_name}</span>}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 const PHASE_META = {
   drafting: {
     label: '작성 중',
@@ -3674,6 +3850,8 @@ function PageStrip({
   onSelect,
   onRemove,
   onAdd,
+  onInsertCopy,
+  onRenamePage,
   isEditing,
   viewMode,
 }) {
@@ -3684,6 +3862,164 @@ function PageStrip({
   // whether to show the edge fades.
   const scrollRef = useRef(null)
   const [overflow, setOverflow] = useState({ left: false, right: false })
+  // Expanded "browse" panel — search box + page card grid with mini-
+  // schematic of each page's widget layout. Closed by default; opens
+  // on click of the [LayoutGrid] toggle at the right end of the strip.
+  const [expanded, setExpanded] = useState(false)
+  const [query, setQuery] = useState('')
+  // In-memory clipboard for Ctrl+C / Ctrl+V on page chips. Always stores
+  // an ARRAY of page snapshots (single-page copy → length 1). Module-
+  // local so it doesn't persist across report navigation — pasting a
+  // template-shaped clone into a different report's registry is unsafe.
+  const clipboardRef = useRef([])
+
+  // Multi-select state for the chip strip. Plain click clears + selects
+  // a single idx; Ctrl/Cmd+Click toggles individual indices; Shift+
+  // Click ranges from the last anchor. Selection drives Ctrl+C — when
+  // non-empty, *all* selected pages get copied in numeric order.
+  const [selectedIdxs, setSelectedIdxs] = useState(() => new Set())
+  // Anchor for shift+click range selection. Mirrors the DataTable
+  // pattern: last single-toggled idx; stays put across consecutive
+  // shift+clicks so the user can grow/shrink the range from one start.
+  const anchorIdxRef = useRef(null)
+  // Clear selection if the page set itself changed under us (page
+  // added / removed / reordered) — stale indices could point at
+  // shifted content.
+  useEffect(() => {
+    setSelectedIdxs(new Set())
+  }, [pages.length])
+
+  // F2 inline-rename state. `renamingIdx` is the chip whose label is
+  // currently being edited via the on-chip <Input>; null when no rename
+  // is active. `renameValue` mirrors the input's text and is flushed
+  // to the parent via `onRenamePage` on commit.
+  const [renamingIdx, setRenamingIdx] = useState(null)
+  const [renameValue, setRenameValue] = useState('')
+  // Esc cancel path: Esc tells the input to blur, which then runs the
+  // commit-on-blur logic. The flag lets that handler distinguish
+  // "user cancelled" from "user clicked outside" so Esc doesn't save
+  // partial edits.
+  const cancelRenameRef = useRef(false)
+
+  function handleChipClick(event, idx) {
+    if (event.shiftKey && anchorIdxRef.current !== null) {
+      const anchor = anchorIdxRef.current
+      const lo = Math.min(anchor, idx)
+      const hi = Math.max(anchor, idx)
+      const range = new Set()
+      for (let i = lo; i <= hi; i++) range.add(i)
+      setSelectedIdxs(range)
+      onSelect(idx)
+      return
+    }
+    if (event.ctrlKey || event.metaKey) {
+      setSelectedIdxs((prev) => {
+        const next = new Set(prev)
+        if (next.has(idx)) next.delete(idx)
+        else next.add(idx)
+        return next
+      })
+      anchorIdxRef.current = idx
+      onSelect(idx)
+      return
+    }
+    // Plain click — clear multi-selection, navigate, reseat anchor.
+    setSelectedIdxs(new Set())
+    anchorIdxRef.current = idx
+    onSelect(idx)
+  }
+
+  function handleChipKeyDown(event, idx) {
+    // F2 → enter inline rename mode for this chip.
+    if (event.key === 'F2') {
+      event.preventDefault()
+      const src = pages[idx]
+      setRenamingIdx(idx)
+      setRenameValue(src?.name ?? '')
+      return
+    }
+    const isCmdC =
+      (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c'
+    const isCmdV =
+      (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v'
+    if (!isCmdC && !isCmdV) return
+    // Skip if there's a real text selection — keep normal OS clipboard
+    // behavior for users that highlighted page label text manually.
+    if (typeof window !== 'undefined') {
+      const sel = window.getSelection?.()
+      if (sel && !sel.isCollapsed) return
+    }
+    if (isCmdC) {
+      event.preventDefault()
+      // If the user has built a multi-select, copy ALL of those (in
+      // numeric order). Otherwise fall back to the focused chip.
+      const indices =
+        selectedIdxs.size > 0
+          ? [...selectedIdxs].sort((a, b) => a - b)
+          : [idx]
+      const snapshots = indices
+        .map((i) => pages[i])
+        .filter(Boolean)
+        // Deep clone via JSON so post-copy edits to the source pages
+        // don't bleed into the clipboard. Page payloads are pure data
+        // (no Date / Map / Set) so JSON is sufficient.
+        .map((p) => JSON.parse(JSON.stringify(p)))
+      if (snapshots.length === 0) return
+      clipboardRef.current = snapshots
+      toast.success(
+        snapshots.length === 1
+          ? `페이지 ${indices[0] + 1} 복사됨 — Ctrl+V 로 새 페이지로 붙여넣기`
+          : `페이지 ${snapshots.length}개 복사됨 (${indices.map((i) => i + 1).join(', ')}) — Ctrl+V 로 붙여넣기`,
+      )
+      return
+    }
+    if (isCmdV) {
+      event.preventDefault()
+      const clip = clipboardRef.current
+      if (!clip || clip.length === 0) {
+        toast.message(
+          '복사된 페이지가 없습니다. 먼저 페이지 chip 위에서 Ctrl+C 로 복사하세요.',
+        )
+        return
+      }
+      if (typeof onInsertCopy !== 'function') return
+      onInsertCopy(idx, clip)
+      toast.success(
+        clip.length === 1
+          ? `페이지 ${idx + 1} 뒤에 복제 페이지 추가됨`
+          : `페이지 ${idx + 1} 뒤에 ${clip.length}개 복제 페이지 추가됨`,
+      )
+      setSelectedIdxs(new Set())
+    }
+  }
+
+  // Rename input handlers. Enter / Escape both blur the input which
+  // routes through `handleRenameBlur`; the cancel flag distinguishes
+  // the two paths so Esc discards instead of saving.
+  function handleRenameInputKeyDown(event) {
+    event.stopPropagation()
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      event.currentTarget.blur()
+    } else if (event.key === 'Escape') {
+      event.preventDefault()
+      cancelRenameRef.current = true
+      event.currentTarget.blur()
+    }
+  }
+  function handleRenameBlur(idx) {
+    if (cancelRenameRef.current) {
+      cancelRenameRef.current = false
+      setRenamingIdx(null)
+      setRenameValue('')
+      return
+    }
+    if (typeof onRenamePage === 'function') {
+      onRenamePage(idx, renameValue)
+    }
+    setRenamingIdx(null)
+    setRenameValue('')
+  }
 
   useEffect(() => {
     activeChipRef.current?.scrollIntoView({
@@ -3739,6 +4075,8 @@ function PageStrip({
           const fallback = tpl?.name ?? `페이지 ${idx + 1}`
           const label = p.name?.trim() ? p.name : fallback
           const isActive = viewMode === 'paginated' && idx === currentPage
+          const isSelected = selectedIdxs.has(idx)
+          const isRenaming = renamingIdx === idx
 
           return (
             <div
@@ -3748,25 +4086,45 @@ function PageStrip({
             >
               <button
                 type="button"
-                onClick={() => onSelect(idx)}
+                onClick={(e) => handleChipClick(e, idx)}
+                onKeyDown={(e) => handleChipKeyDown(e, idx)}
+                data-page-chip-idx={idx}
+                title="클릭: 이동 · Ctrl/Shift+클릭: 다중 선택 · Ctrl+C/V: 복사·붙여넣기 · F2: 이름 변경"
                 className={cn(
                   'flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors',
-                  isActive
-                    ? 'border-primary bg-primary/10 text-primary font-medium'
-                    : 'border-border bg-background hover:bg-muted'
+                  // Selection style takes precedence — explicit "this is
+                  // one of N picked for an op". Active page (the one
+                  // currently shown) layers on top via the ring so
+                  // active+selected reads as both signals.
+                  isSelected && 'border-primary bg-primary/5 ring-1 ring-primary',
+                  !isSelected && isActive && 'border-primary bg-primary/10 text-primary font-medium',
+                  !isSelected && !isActive && 'border-border bg-background hover:bg-muted',
                 )}
               >
                 <span className="text-[10px] text-muted-foreground tabular-nums">
                   {idx + 1}
                 </span>
-                <span
-                  className={cn(
-                    'max-w-[160px] truncate',
-                    !p.name?.trim() && 'italic text-muted-foreground'
-                  )}
-                >
-                  {label}
-                </span>
+                {isRenaming ? (
+                  <Input
+                    autoFocus
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onKeyDown={handleRenameInputKeyDown}
+                    onBlur={() => handleRenameBlur(idx)}
+                    onClick={(e) => e.stopPropagation()}
+                    placeholder={fallback}
+                    className="h-5 max-w-[180px] px-1 text-xs"
+                  />
+                ) : (
+                  <span
+                    className={cn(
+                      'max-w-[160px] truncate',
+                      !p.name?.trim() && 'italic text-muted-foreground'
+                    )}
+                  >
+                    {label}
+                  </span>
+                )}
               </button>
               {/* Delete button — only in edit mode and when there's more
                   than one page. Absolute-positioned so it doesn't reserve
@@ -3795,7 +4153,297 @@ function PageStrip({
             페이지 추가
           </button>
         )}
+        {/* Spacer to push the expand toggle to the right edge once the
+            chip row's natural width has been laid out. shrink-0 keeps
+            the toggle visible even when the strip overflows. */}
+        <div className="ml-auto" />
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className={cn(
+            'shrink-0 inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors',
+            expanded
+              ? 'border-primary bg-primary/10 text-primary'
+              : 'border-border bg-background hover:bg-muted'
+          )}
+          title={expanded ? '펼치기 닫기' : '페이지 펼쳐 보기 + 검색'}
+          aria-expanded={expanded}
+        >
+          <LayoutGrid className="h-3 w-3" />
+          {expanded ? '접기' : '펼치기'}
+        </button>
       </div>
+      {expanded && (
+        <PageBrowsePanel
+          pages={pages}
+          pageTemplateMap={pageTemplateMap}
+          currentPage={currentPage}
+          viewMode={viewMode}
+          query={query}
+          onQueryChange={setQuery}
+          onSelect={(idx) => {
+            onSelect(idx)
+            setExpanded(false)
+          }}
+          onClose={() => setExpanded(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── PageBrowsePanel — search + card grid with REAL screenshot thumbs ──
+//
+// Sits below the page-strip when the user opens the expand toggle.
+// Each card shows: (page #, title, template name, an html2canvas
+// screenshot of that page rendered via InlineReportView).
+//
+// Capture strategy — offscreen+sequential+progressive:
+//   1. On panel open, mount a hidden container off-screen with one
+//      <InlineReportView snapshot={{pages: [p]}} /> per page.
+//   2. Wait ~400ms for chart libs (plotly/three) to settle.
+//   3. For each page in order, html2canvas the matching offscreen
+//      DOM → PNG dataURL → setState(thumbnails[i] = url). The grid
+//      re-renders progressively as each capture lands.
+//   4. On panel close, the offscreen container unmounts, freeing memory.
+//
+// Why not parallel: plotly's WebGL contexts contend if many run at
+// once, and html2canvas reads pixels via getImageData which the
+// browser serializes anyway. Sequential is slower per-batch but
+// avoids capture artifacts.
+//
+// Why offscreen and not just visible: paginated viewMode only renders
+// the current page in the editor DOM, so other pages aren't capturable
+// without dragging the whole report into 'all' mode (heavy reflow + a
+// flicker users don't want). InlineReportView gives us a thin read-only
+// renderer we can mount anywhere.
+
+const THUMBNAIL_RENDER_WIDTH = 800 // px — offscreen container width
+const THUMBNAIL_PIXEL_RATIO = 0.4  // html2canvas scale; <1 keeps PNG tiny
+
+function PageBrowsePanel({
+  pages,
+  pageTemplateMap,
+  currentPage,
+  viewMode,
+  query,
+  onQueryChange,
+  onSelect,
+  onClose,
+}) {
+  const enriched = useMemo(
+    () =>
+      pages.map((p, idx) => {
+        const tpl = getCachedTemplate(pageTemplateMap, p)
+        const tplName = tpl?.name ?? ''
+        const label = p.name?.trim() || tplName || `페이지 ${idx + 1}`
+        return {
+          idx,
+          page: p,
+          template: tpl,
+          label,
+          searchHaystack: `${label} ${tplName}`.toLowerCase(),
+        }
+      }),
+    [pages, pageTemplateMap]
+  )
+  const trimmed = query.trim().toLowerCase()
+  const filtered = trimmed
+    ? enriched.filter((e) => e.searchHaystack.includes(trimmed))
+    : enriched
+
+  const [thumbnails, setThumbnails] = useState({})
+  const [capturedCount, setCapturedCount] = useState(0)
+  const offscreenRef = useRef(null)
+
+  // Sequential capture pipeline. Re-runs when the page set changes
+  // (page added/removed/renamed/contents edited triggers a new
+  // `pages` reference from the parent). Cancels on cleanup so a
+  // panel-close mid-capture doesn't leak state setters.
+  useEffect(() => {
+    let cancelled = false
+    setThumbnails({})
+    setCapturedCount(0)
+    async function captureAll() {
+      const container = offscreenRef.current
+      if (!container) return
+      // Give InlineReportView a chance to mount each page + plotly /
+      // three / image loads to settle before we read pixels. Without
+      // this, charts often capture as empty boxes.
+      await new Promise((r) => setTimeout(r, 450))
+      const { default: html2canvas } = await import('html2canvas')
+      for (let i = 0; i < pages.length; i++) {
+        if (cancelled) return
+        const el = container.querySelector(`[data-thumb-page="${i}"]`)
+        if (!el) continue
+        try {
+          const canvas = await html2canvas(el, {
+            scale: THUMBNAIL_PIXEL_RATIO,
+            backgroundColor: '#ffffff',
+            logging: false,
+            useCORS: true,
+          })
+          if (cancelled) return
+          const url = canvas.toDataURL('image/png')
+          setThumbnails((prev) => ({ ...prev, [i]: url }))
+        } catch {
+          // Silently fall through — the card stays on the loading skeleton.
+          // A failed page rarely blocks the whole batch.
+        }
+        setCapturedCount((n) => n + 1)
+      }
+    }
+    captureAll()
+    return () => {
+      cancelled = true
+    }
+  }, [pages])
+
+  return (
+    <>
+      <div className="border-t bg-card">
+        <div className="flex items-center gap-3 px-6 py-2.5">
+          <div className="relative flex-1 max-w-md">
+            <Input
+              value={query}
+              onChange={(e) => onQueryChange(e.target.value)}
+              placeholder="페이지 제목·템플릿 이름 검색"
+              autoFocus
+              className="h-8 text-xs"
+            />
+          </div>
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {filtered.length} / {pages.length}
+          </span>
+          {capturedCount < pages.length && (
+            <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground tabular-nums">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              썸네일 {capturedCount}/{pages.length}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-xs text-muted-foreground hover:text-foreground"
+            title="닫기"
+          >
+            닫기
+          </button>
+        </div>
+        {filtered.length === 0 ? (
+          <div className="px-6 pb-6 text-xs text-muted-foreground">
+            일치하는 페이지가 없습니다.
+          </div>
+        ) : (
+          <div className="px-6 pb-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3 max-h-[60vh] overflow-y-auto">
+            {filtered.map((e) => (
+              <PageCard
+                key={e.idx}
+                entry={e}
+                thumbnail={thumbnails[e.idx]}
+                isActive={viewMode === 'paginated' && e.idx === currentPage}
+                onClick={() => onSelect(e.idx)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Offscreen capture surface. position:fixed + far-left keeps the
+          container in layout (measurable size → chart libs render)
+          while invisible. aria-hidden so screen readers skip the
+          duplicate content. Unmounts when the panel closes via the
+          parent's conditional render. */}
+      <div
+        ref={offscreenRef}
+        aria-hidden="true"
+        style={{
+          position: 'fixed',
+          left: '-10000px',
+          top: 0,
+          width: `${THUMBNAIL_RENDER_WIDTH}px`,
+          pointerEvents: 'none',
+          opacity: 0,
+        }}
+      >
+        {pages.map((p, idx) => (
+          <div
+            key={idx}
+            data-thumb-page={idx}
+            style={{
+              width: `${THUMBNAIL_RENDER_WIDTH}px`,
+              background: '#ffffff',
+              marginBottom: 24,
+            }}
+          >
+            <InlineReportView
+              snapshot={{
+                pages: [p],
+                page_width_px: THUMBNAIL_RENDER_WIDTH,
+              }}
+            />
+          </div>
+        ))}
+      </div>
+    </>
+  )
+}
+
+function PageCard({ entry, thumbnail, isActive, onClick }) {
+  const { idx, page, template, label } = entry
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'flex flex-col rounded-md border p-2 text-left transition-colors',
+        isActive
+          ? 'border-primary bg-primary/5 ring-1 ring-primary'
+          : 'border-border bg-background hover:bg-muted/40'
+      )}
+    >
+      <div className="flex items-center gap-1.5 mb-0.5">
+        <span className="text-[10px] tabular-nums text-muted-foreground shrink-0">
+          {idx + 1}
+        </span>
+        <span
+          className={cn(
+            'text-xs font-medium truncate flex-1',
+            !page.name?.trim() && 'italic text-muted-foreground'
+          )}
+          title={label}
+        >
+          {label}
+        </span>
+      </div>
+      <div className="text-[10px] text-muted-foreground truncate mb-1.5">
+        {template?.name ? `${template.name} v${page.template_version}` : '템플릿 미지정'}
+      </div>
+      <PageThumbnail src={thumbnail} />
+    </button>
+  )
+}
+
+function PageThumbnail({ src }) {
+  // Fixed aspect (4/3) so the card grid lines up cleanly even before
+  // captures land. object-top + object-cover crop the long pages to
+  // show their first ~portion of content — that's almost always where
+  // the title / lead chart lives, so it's the most recognizable part.
+  return (
+    <div
+      className="w-full rounded border border-border/60 bg-muted/40 overflow-hidden flex items-center justify-center"
+      style={{ aspectRatio: '4 / 3' }}
+    >
+      {src ? (
+        <img
+          src={src}
+          alt=""
+          className="w-full h-full object-cover object-top"
+          draggable={false}
+        />
+      ) : (
+        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground/60" />
+      )}
     </div>
   )
 }
@@ -5276,6 +5924,11 @@ function BlockEditorCard({
     block.type !== 'heading'
       ? (
           <div
+            // data-export-skip → html2canvas ignoreElements drops this
+            // strip when capturing the widget for DOCX export, since the
+            // exporter emits the section label as a separate paragraph
+            // above the image and doesn't want it baked into the PNG.
+            data-export-skip="section-header"
             className="flex items-center px-3 rounded-t-lg border-b"
             style={{
               height: SECTION_HEADER_HEIGHT_PX,

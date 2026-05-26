@@ -83,6 +83,19 @@ class CompositeReport(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
+    # Publish state (Phase 5A). NULL = draft (recurring) OR not applicable
+    # (theme — theme composites stay live forever and never publish).
+    # When set, all `recurring` items get their content frozen into
+    # `CompositeReportItem.snapshot_content` — readers prefer that over
+    # live ref_report content. Unpublish clears these and the per-item
+    # snapshots simultaneously.
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, index=True
+    )
+    published_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )
@@ -95,6 +108,9 @@ class CompositeReport(Base):
     )
     updated_by: Mapped["User | None"] = relationship(
         "User", foreign_keys=[updated_by_user_id], lazy="joined"
+    )
+    published_by: Mapped["User | None"] = relationship(
+        "User", foreign_keys=[published_by_user_id], lazy="joined"
     )
     items: Mapped[list["CompositeReportItem"]] = relationship(
         "CompositeReportItem",
@@ -144,6 +160,14 @@ class CompositeReportItem(Base):
     snapshot_content: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     snapshot_taken_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True
+    )
+
+    # Per-item placement for the DOCX export's landscape-2col layout
+    # (Phase 5B). `1` = left column (default), `2` = right column. The
+    # portrait/1-col export ignores this entirely — column flow is
+    # only used when the user picks the two-column landscape option.
+    display_column: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1", nullable=False
     )
 
     created_at: Mapped[datetime] = mapped_column(

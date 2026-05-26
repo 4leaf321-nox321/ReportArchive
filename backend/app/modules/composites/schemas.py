@@ -24,6 +24,12 @@ def _flatten_user_refs(obj: Any) -> Any:
     if updated_by is not None:
         extras["updated_by_name"] = updated_by.name
         extras["updated_by_email"] = updated_by.email
+    # Phase 5A — publish attribution. NULL when unpublished; readers
+    # treat absence as "draft / live mode".
+    published_by = getattr(obj, "published_by", None)
+    if published_by is not None:
+        extras["published_by_name"] = published_by.name
+        extras["published_by_email"] = published_by.email
     if not extras:
         return obj
     base: dict[str, Any] = {
@@ -31,6 +37,7 @@ def _flatten_user_refs(obj: Any) -> Any:
         for key in (
             "id", "workspace_slug", "title", "kind", "period_date",
             "description", "owner_user_id", "updated_by_user_id",
+            "published_at", "published_by_user_id",
             "items", "created_at", "updated_at",
         )
         if hasattr(obj, key)
@@ -111,7 +118,14 @@ class ItemRefComposite(BaseModel):
 
 class CompositeItemRead(BaseModel):
     """One entry in a composite report. Either ref_report or ref_composite
-    is populated; the frontend uses item_type to decide which to render."""
+    is populated; the frontend uses item_type to decide which to render.
+
+    Phase 5A — `snapshot_content` / `snapshot_taken_at` carry the frozen
+    report content for items inside a published recurring composite.
+    NULL = use live (theme composites, or unpublished recurring).
+    Frontend `InlineReportView` prefers snapshot over live fetch when
+    present, so a published recurring composite renders the as-of-publish
+    state even if the source report has since been edited."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -121,6 +135,11 @@ class CompositeItemRead(BaseModel):
     item_type: str   # 'report' | 'composite' — convenience for the FE
     ref_report: Optional[ItemRefReport] = None
     ref_composite: Optional[ItemRefComposite] = None
+    snapshot_content: Optional[dict] = None
+    snapshot_taken_at: Optional[datetime] = None
+    # Phase 5B — per-item placement for the landscape-2col DOCX export.
+    # 1=left, 2=right. Portrait/1-col mode ignores this.
+    display_column: int = 1
 
     @model_validator(mode="before")
     @classmethod
@@ -135,6 +154,9 @@ class CompositeItemRead(BaseModel):
             "item_type": "report" if is_report else "composite",
             "ref_report": getattr(obj, "ref_report", None) if is_report else None,
             "ref_composite": getattr(obj, "ref_composite", None) if not is_report else None,
+            "snapshot_content": getattr(obj, "snapshot_content", None),
+            "snapshot_taken_at": getattr(obj, "snapshot_taken_at", None),
+            "display_column": getattr(obj, "display_column", 1) or 1,
         }
         return out
 
@@ -154,6 +176,10 @@ class CompositeReportRead(BaseModel):
     updated_by_user_id: Optional[int] = None
     updated_by_name: Optional[str] = None
     updated_by_email: Optional[str] = None
+    published_at: Optional[datetime] = None
+    published_by_user_id: Optional[int] = None
+    published_by_name: Optional[str] = None
+    published_by_email: Optional[str] = None
     items: list[CompositeItemRead] = []
     created_at: datetime
     updated_at: datetime
@@ -162,6 +188,42 @@ class CompositeReportRead(BaseModel):
     @classmethod
     def _flatten(cls, obj: Any) -> Any:
         return _flatten_user_refs(obj)
+
+
+class CompositeRef(BaseModel):
+    """Slim composite reference — what the report-detail header shows in
+    the "포함된 종합 N개" chip popover. No items, no description, just
+    enough to identify and navigate (Phase 5C)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    workspace_slug: str
+    title: str
+    kind: CompositeKind
+    period_date: Optional[date] = None
+    published_at: Optional[datetime] = None
+    owner_user_id: Optional[int] = None
+    owner_name: Optional[str] = None
+    updated_at: datetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flatten(cls, obj: Any) -> Any:
+        if obj is None or isinstance(obj, dict):
+            return obj
+        out: dict[str, Any] = {
+            k: getattr(obj, k)
+            for k in (
+                "id", "workspace_slug", "title", "kind", "period_date",
+                "published_at", "owner_user_id", "updated_at",
+            )
+            if hasattr(obj, k)
+        }
+        owner = getattr(obj, "owner", None)
+        if owner is not None:
+            out["owner_name"] = owner.name
+        return out
 
 
 class CompositeReportSummary(BaseModel):
@@ -180,6 +242,10 @@ class CompositeReportSummary(BaseModel):
     updated_by_user_id: Optional[int] = None
     updated_by_name: Optional[str] = None
     updated_by_email: Optional[str] = None
+    # Phase 5A — publish state. published_at != null = 발행됨 (recurring
+    # 일 때만 의미; theme 은 항상 NULL). List view 에서 "발행됨" 칩
+    # 노출용.
+    published_at: Optional[datetime] = None
     item_count: int = 0
     created_at: datetime
     updated_at: datetime
@@ -207,6 +273,8 @@ class CompositeItemPayload(BaseModel):
     note: str = ""
     ref_report_id: Optional[int] = None
     ref_composite_id: Optional[int] = None
+    # 1=left, 2=right. Defaults to left when caller omits it.
+    display_column: int = Field(default=1, ge=1, le=2)
 
     @model_validator(mode="after")
     def _exactly_one(self) -> "CompositeItemPayload":

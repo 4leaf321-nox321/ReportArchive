@@ -12,6 +12,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   Bell,
   Check,
+  Layers,
   MessageCircle,
   Send,
   Lock,
@@ -46,6 +47,10 @@ const TYPE_META = {
   'report.lock_force_unset': { icon: Unlock, color: 'text-red-600', label: '잠금 강제 해제' },
   'report.phase_to_reviewing': { icon: MessageCircle, color: 'text-amber-600', label: '리뷰 단계 진입' },
   'report.phase_to_finalized': { icon: CircleCheck, color: 'text-green-600', label: '발행됨' },
+  // Phase 5E — composite event family. Deep-links to /w/{ws}/composites/{id}.
+  'composite.included': { icon: Layers, color: 'text-indigo-600', label: '종합에 포함됨' },
+  'composite.cited_upward': { icon: Layers, color: 'text-indigo-700', label: '상위 종합 인용' },
+  'composite.published': { icon: CircleCheck, color: 'text-blue-600', label: '종합 발행됨' },
 }
 
 export function NotificationBell() {
@@ -234,6 +239,12 @@ function deepLinkFor(n) {
       return `${base}#thread=${n.ref_id}`
     }
     return base
+  }
+  // Phase 5E — composite.* lands on the composite detail page.
+  if (n.ref_table === 'composite_reports' && n.ref_id) {
+    const ws = n.workspace_slug
+    if (!ws) return null
+    return `/w/${ws}/composites/${n.ref_id}`
   }
   return null
 }

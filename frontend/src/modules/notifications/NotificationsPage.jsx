@@ -12,6 +12,7 @@ import {
   Bell,
   Check,
   CircleCheck,
+  Layers,
   Loader2,
   Lock,
   MessageCircle,
@@ -50,6 +51,11 @@ const TYPE_META = {
   'report.lock_force_unset': { icon: Unlock, color: 'text-red-600', label: '잠금 강제 해제' },
   'report.phase_to_reviewing': { icon: MessageCircle, color: 'text-amber-600', label: '리뷰 단계 진입' },
   'report.phase_to_finalized': { icon: CircleCheck, color: 'text-green-600', label: '발행됨' },
+  // Phase 5E — composite event family. All three jump to the composite
+  // detail page via deepLinkFor below.
+  'composite.included': { icon: Layers, color: 'text-indigo-600', label: '종합에 포함됨' },
+  'composite.cited_upward': { icon: Layers, color: 'text-indigo-700', label: '상위 종합 인용' },
+  'composite.published': { icon: CircleCheck, color: 'text-blue-600', label: '종합 발행됨' },
 }
 
 const TABS = [
@@ -380,6 +386,14 @@ function deepLinkFor(n) {
       return `${base}#thread=${n.ref_id}`
     }
     return base
+  }
+  // Phase 5E — composite.* notifications target the composite detail
+  // page. ref_id IS the composite id; workspace_slug is stamped at
+  // emit time (composite's workspace).
+  if (n.ref_table === 'composite_reports' && n.ref_id) {
+    const ws = n.workspace_slug
+    if (!ws) return null
+    return `/w/${ws}/composites/${n.ref_id}`
   }
   return null
 }

@@ -7,11 +7,13 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.modules.composites import services
 from app.modules.composites.schemas import (
+    CompositeRef,
     CompositeReportCreate,
     CompositeReportRead,
     CompositeReportSummary,
     CompositeReportUpdate,
 )
+from app.modules.reports import services as report_services
 from app.modules.workspaces import services as ws_services
 from app.shared.auth import CurrentUser, get_current_user, require_writer
 from app.shared.responses import (
@@ -21,6 +23,32 @@ from app.shared.responses import (
 )
 
 router = APIRouter()
+
+
+@router.get("/by-report/{report_id}")
+def list_composites_containing_report(
+    report_id: int,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """Every composite that references the given report as an item.
+    Backs the report-detail "포함된 종합 N개" chip (Phase 5C 양방향 네비).
+
+    Visibility: anyone who can see the report can see what composites
+    it's in (otherwise the chip count would be hidden context). The
+    composites themselves still scope-check on click — clicking a chip
+    that the user can't open lands on a 403 from the composite detail
+    route, not silently masked here."""
+    report = report_services.get_report(db, report_id)
+    if report is None:
+        return success_response(data=[])
+    if not actor.workspace.virtual and not report_services.is_visible_to(
+        db, report, actor.workspace.slug
+    ):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+    items = services.list_containing_report(db, report_id)
+    payload = [CompositeRef.model_validate(c) for c in items]
+    return success_response(data=payload)
 
 
 @router.get("")
@@ -114,3 +142,60 @@ def delete_composite(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
     services.delete(db, composite)
     return success_response(data=None, message="Deleted")
+
+
+# --------------------------------------------------------------------------- #
+# Publish / unpublish — Phase 5A                                              #
+# --------------------------------------------------------------------------- #
+
+
+def _resolve_publishable(
+    db: Session, composite_id: int, actor: CurrentUser
+):
+    """Shared guard: composite exists, visible to actor's workspace, and
+    actor owns it (system admin overrides via user.is_system_admin)."""
+    composite = services.get(db, composite_id)
+    if composite is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"Composite not found: {composite_id}",
+        )
+    if not actor.workspace.virtual and not services.is_visible_to(
+        db, composite, actor.workspace.slug
+    ):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+    is_owner = composite.owner_user_id == actor.user.id
+    is_sys_admin = bool(getattr(actor.user, "is_system_admin", False))
+    if not (is_owner or is_sys_admin):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "발행/발행 취소는 종합보고 작성자(또는 시스템 관리자)만 가능합니다.",
+        )
+    return composite
+
+
+@router.post("/{composite_id}/publish")
+def publish_composite(
+    composite_id: int,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_writer),
+):
+    """Owner-only: stamp `published_at` and (for recurring) freeze every
+    item's content into `snapshot_content`. Idempotent — already-
+    published returns 200 with the current state."""
+    composite = _resolve_publishable(db, composite_id, actor)
+    composite = services.publish(db, composite, actor_user_id=actor.user.id)
+    return success_response(data=CompositeReportRead.model_validate(composite))
+
+
+@router.post("/{composite_id}/unpublish")
+def unpublish_composite(
+    composite_id: int,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_writer),
+):
+    """Owner-only: clear `published_at` and per-item snapshots so the
+    composite returns to live-fetch + editable mode. Idempotent."""
+    composite = _resolve_publishable(db, composite_id, actor)
+    composite = services.unpublish(db, composite, actor_user_id=actor.user.id)
+    return success_response(data=CompositeReportRead.model_validate(composite))

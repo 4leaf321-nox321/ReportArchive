@@ -19,14 +19,27 @@ import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
  * Intentionally flat: no per-page grid layout, no edit affordances. The
  * goal is "let me skim the source without leaving the composite page",
  * not "edit the source from here".
+ *
+ * Phase 5A — `snapshot` prop: when the parent composite is published
+ * (recurring) it has a frozen `snapshot_content` blob shaped like a
+ * report payload (title + pages + width/gap + ...). Passing it here
+ * makes the renderer skip the live `getReport(id)` fetch and render
+ * that frozen content instead, so the composite always reflects the
+ * as-of-publish state even if the source report has been edited since.
  */
-export function InlineReportView({ reportId }) {
-  const { data: report, loading, error } = useAsync(
-    () => (reportId ? getReport(reportId) : Promise.resolve(null)),
-    [reportId],
+export function InlineReportView({ reportId, snapshot }) {
+  // Live fetch only when no snapshot is supplied. Snapshot-rendered
+  // items don't need a network roundtrip — the frozen blob already has
+  // everything the renderer needs.
+  const { data: liveReport, loading, error } = useAsync(
+    () =>
+      snapshot || !reportId ? Promise.resolve(null) : getReport(reportId),
+    [reportId, Boolean(snapshot)],
   )
-  if (loading) return <Skeleton className="h-24" />
-  if (error) return <div className="text-xs text-destructive">{error.message}</div>
+  const report = snapshot ?? liveReport
+  if (!snapshot && loading) return <Skeleton className="h-24" />
+  if (!snapshot && error)
+    return <div className="text-xs text-destructive">{error.message}</div>
   if (!report) return null
   const pages = Array.isArray(report.pages) && report.pages.length > 0
     ? report.pages
@@ -104,6 +117,18 @@ function InlinePage({ page, index, totalPages, rowGapPx }) {
             {items.map((it) => (
               <div
                 key={it.block.id}
+                // `id="block-<id>"` mirrors what BlockEditorCard attaches
+                // in the live editor — exposes this widget's container
+                // to the DOCX exporter's `convertVisualBlock` (which
+                // does `getElementById('block-<id>')` for html2canvas
+                // captures of chart/diagram widgets).
+                //
+                // Same id on multiple pages of a report — or across
+                // composite items that share a template — could in
+                // principle collide. The composite exporter scopes its
+                // lookup to a per-item offscreen container so that's
+                // OK; single-report path already had the same shape.
+                id={`block-${it.block.id}`}
                 style={{ gridColumn: `span ${it.colSpan} / span ${it.colSpan}` }}
                 className="min-w-0"
               >
@@ -170,6 +195,10 @@ function BlockBody({ block, content, propsOverride, sectionCode, sectionItemByCo
       style={{ borderColor: `${sectionCategory.color}40` }}
     >
       <div
+        // data-export-skip → matches the marker in ReportDetailPage's
+        // viewModeSectionHeader so the composite DOCX exporter's
+        // html2canvas pass drops this strip from the captured PNG.
+        data-export-skip="section-header"
         className="flex items-center px-3 border-b"
         style={{
           height: 34,

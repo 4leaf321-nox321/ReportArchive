@@ -736,7 +736,7 @@ export function TextStyleField({ value, onChange, defaultSizePx }) {
 /**
  * Designer-time editor for per-depth text style overrides used by the
  * RichText widget. Exposes only the three buckets actually rendered with
- * distinct prefix glyphs (□ / – / ·); depths 3+ inherit the depth-2 style.
+ * distinct prefix glyphs (▶ / – / ·); depths 3+ inherit the depth-2 style.
  *
  * Stored shape: `{ "0"?: TextStyle, "1"?: TextStyle, "2"?: TextStyle }`.
  * Each depth value is itself a sparse object — empty fields fall through
@@ -746,7 +746,9 @@ export function TextStyleField({ value, onChange, defaultSizePx }) {
  * NOTE: `value` here is the `depth_styles` map, not a flat TextStyle.
  */
 const _DEPTH_LABELS = [
-  { key: '0', glyph: '□', name: '대표 문장 (depth 0)' },
+  // depth 0 glyph changed from `□` to `▶` (Phase: prefix-rework) —
+  // `□` is now reserved for the top-level 전체 과제명 marker.
+  { key: '0', glyph: '▶', name: '대표 문장 (depth 0)' },
   { key: '1', glyph: '–', name: '상세 (depth 1)' },
   { key: '2', glyph: '·', name: '깊은 설명 (depth 2+)' },
 ]
@@ -1011,7 +1013,16 @@ export function CaptionInput({
     // View mode: only render the row when there's something to show.
     if (!effectiveText) return null
     return (
-      <div className="text-base font-semibold px-2 py-1">{effectiveText}</div>
+      // data-export-skip → html2canvas (DOCX export) drops this title
+      // from the captured PNG. The exporter emits the title as a real
+      // Heading 3 paragraph above the image, so leaving it baked into
+      // the pixels would double-print and pollute the figure body.
+      <div
+        data-export-skip="caption"
+        className="text-base font-semibold px-2 py-1"
+      >
+        {effectiveText}
+      </div>
     )
   }
 

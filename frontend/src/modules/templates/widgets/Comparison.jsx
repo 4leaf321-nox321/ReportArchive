@@ -48,9 +48,11 @@ const IMAGE_MAX_HEIGHT_PX_MAX = 600
 // case stays readable as the table overflows horizontally. Sized to fit
 // a small thumbnail comfortably.
 const SCROLL_CASE_MIN_WIDTH_PX = 200
-// Row-label (left) column width — same constant in fixed-fit and
-// scroll modes so the table doesn't visibly shift between layouts.
-const ROW_LABEL_WIDTH = '12rem'
+// Row-label (left) column width — used only by the editor view, where
+// the cell hosts an input + hover controls (move/delete) and needs a
+// stable width. The read-only report view shrinks the column to its
+// label content instead (see the readOnly branch below).
+const ROW_LABEL_WIDTH = '7rem'
 
 function clampMaxCases(raw) {
   if (!Number.isFinite(raw)) return DEFAULT_MAX_CASES
@@ -548,19 +550,23 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           >
             <table
               className={cn(
-                'text-sm',
-                horizontalScroll ? 'w-max min-w-full' : 'w-full table-fixed',
+                'text-sm w-full',
+                horizontalScroll && 'w-max min-w-full',
               )}
             >
               <colgroup>
-                <col style={{ width: ROW_LABEL_WIDTH }} />
+                {/* Row-label column: width:0 + whitespace-nowrap on the
+                    td below makes the column shrink to the longest row
+                    label's intrinsic width. CASE columns then split the
+                    remaining space evenly via percentage widths. */}
+                <col style={{ width: 0 }} />
                 {cases.map((_, i) => (
                   <col
                     key={i}
                     style={
                       horizontalScroll
                         ? { minWidth: `${SCROLL_CASE_MIN_WIDTH_PX}px` }
-                        : undefined
+                        : { width: `${100 / cases.length}%` }
                     }
                   />
                 ))}
@@ -581,7 +587,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
               <tbody>
                 {rows.map((row, ri) => (
                   <tr key={ri} className="border-b last:border-b-0">
-                    <td className="px-2 py-1.5 text-xs font-medium border-r bg-muted/20">
+                    <td className="px-2 py-1.5 text-xs font-medium border-r bg-muted/20 whitespace-nowrap">
                       {row.label || (
                         <span className="text-muted-foreground italic">
                           (이름 없음)

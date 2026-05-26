@@ -4,13 +4,23 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronRight,
+  FileType2,
+  GripVertical,
   Layers,
+  Loader2,
   Pencil,
   Plus,
   Save,
   Trash2,
   X,
 } from 'lucide-react'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/shared/components/ui/dropdown-menu'
+import { cn } from '@/shared/lib/utils'
 import { toast } from 'sonner'
 import { Badge } from '@/shared/components/ui/badge'
 import { Button } from '@/shared/components/ui/button'
@@ -21,10 +31,13 @@ import { Skeleton } from '@/shared/components/ui/skeleton'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
+import { useAuth } from '@/shared/auth/AuthContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import {
   deleteComposite,
   getComposite,
+  publishComposite,
+  unpublishComposite,
   updateComposite,
 } from '@/shared/api/composites'
 import { KIND_LABEL, KIND_VARIANT, KINDS } from './constants'
@@ -35,6 +48,7 @@ export default function CompositeDetailPage() {
   const { compositeId } = useParams()
   const navigate = useNavigate()
   const { slug, all: workspaces } = useWorkspace()
+  const { me } = useAuth()
 
   // Gate the fetch on `slug` too — on a hard reload the URL gives us
   // `compositeId` immediately but the workspace context's
@@ -53,6 +67,18 @@ export default function CompositeDetailPage() {
   const [draft, setDraft] = useState(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  // Drag-and-drop state for item reorder. Declared up here with the
+  // other hooks (not next to the reorderItems handler below) because
+  // hooks must run in the same order every render — the component has
+  // early returns for loading/error, so deferring these would skip
+  // them on first render and surface as "Rendered more hooks than
+  // during the previous render".
+  const [draggingIdx, setDraggingIdx] = useState(null)
+  const [dropOverIdx, setDropOverIdx] = useState(null)
+  // DOCX export progress (same reason as drag state — must run on every
+  // render). `null` when not exporting; otherwise the latest progress
+  // event from exportCompositeToDocx.
+  const [docxProgress, setDocxProgress] = useState(null)
   // Per-item expansion state, keyed by row index. Reset when the draft is
   // rebuilt so newly-added items start collapsed.
   const [expanded, setExpanded] = useState(new Set())
@@ -70,6 +96,7 @@ export default function CompositeDetailPage() {
           note: it.note ?? '',
           ref_report_id: it.item_type === 'report' ? it.ref_report?.id : null,
           ref_composite_id: it.item_type === 'composite' ? it.ref_composite?.id : null,
+          display_column: it.display_column ?? 1,
           // Cached display info for the table (not sent on save).
           _display: it,
         })),
@@ -109,6 +136,7 @@ export default function CompositeDetailPage() {
           note: it.note,
           ref_report_id: it.ref_report_id,
           ref_composite_id: it.ref_composite_id,
+          display_column: it.display_column ?? 1,
         })),
       })
       toast.success('저장되었습니다.')
@@ -141,7 +169,25 @@ export default function CompositeDetailPage() {
       const k = it.ref_report_id ? `r:${it.ref_report_id}` : `c:${it.ref_composite_id}`
       return !existingKeys.has(k)
     })
-    setDraft({ ...draft, items: [...draft.items, ...additions] })
+    // Auto-assign display_column alternating 1 ↔ 2 so a multi-item
+    // add fills both Word-export columns instead of stacking
+    // everything in col 1. Seed from the last existing item's column
+    // so a prior manual reassignment is respected on the next add
+    // (last in col 2 → next added starts at col 1, and so on).
+    const lastCol =
+      draft.items.length > 0
+        ? (draft.items[draft.items.length - 1].display_column ?? 1)
+        : 2 // sentinel so the very first added item lands in col 1
+    let nextCol = lastCol === 1 ? 2 : 1
+    const additionsWithCol = additions.map((it) => {
+      const placed = {
+        ...it,
+        display_column: it.display_column ?? nextCol,
+      }
+      nextCol = nextCol === 1 ? 2 : 1
+      return placed
+    })
+    setDraft({ ...draft, items: [...draft.items, ...additionsWithCol] })
   }
   function removeItem(idx) {
     setDraft({ ...draft, items: draft.items.filter((_, i) => i !== idx) })
@@ -153,9 +199,85 @@ export default function CompositeDetailPage() {
     ;[next[idx], next[j]] = [next[j], next[idx]]
     setDraft({ ...draft, items: next })
   }
+  // Drag-and-drop reorder (HTML5 native — same pattern as FolderSidebar
+  // for consistency with the rest of the app). "Drop on row X" = insert
+  // before X; dragging down through the splice math is the only edge
+  // case worth noting. (State for this lives up with the other useState
+  // calls — see comment there about hook order vs early returns.)
+  function reorderItems(fromIdx, toIdx) {
+    if (fromIdx === toIdx) return
+    setDraft((d) => {
+      if (!d) return d
+      const next = [...d.items]
+      const [moved] = next.splice(fromIdx, 1)
+      // splice removal shifts later indices down by 1, so when moving
+      // down (from < to) the target idx loses 1. Without this, dragging
+      // A → C in [A, B, C, D] lands as [B, C, A, D] instead of [B, A,
+      // C, D] which is what "drop on C" means visually.
+      const adjustedToIdx = fromIdx < toIdx ? toIdx - 1 : toIdx
+      next.splice(adjustedToIdx, 0, moved)
+      return { ...d, items: next }
+    })
+  }
   function setItemNote(idx, note) {
     const next = draft.items.map((it, i) => (i === idx ? { ...it, note } : it))
     setDraft({ ...draft, items: next })
+  }
+  function setItemColumn(idx, col) {
+    const next = draft.items.map((it, i) =>
+      i === idx ? { ...it, display_column: col } : it,
+    )
+    setDraft({ ...draft, items: next })
+  }
+
+  // Phase 5A — publish state + handlers. theme composites stay live by
+  // design so we don't surface publish UI for them (publish would only
+  // stamp `published_at` without freezing anything — cosmetic only).
+  const isPublished = Boolean(composite?.published_at)
+  // (docxProgress state lives up top with the other useState calls —
+  // see comment there about hook order vs early returns.)
+
+  async function handleExportDocx(layoutChoice) {
+    if (!composite) return
+    setDocxProgress({ phase: 'start', label: '준비 중...' })
+    try {
+      const { exportCompositeToDocx } = await import('./exportCompositeToDocx')
+      await exportCompositeToDocx({
+        composite,
+        layout: layoutChoice,
+        onProgress: setDocxProgress,
+      })
+      toast.success('Word 파일로 저장했습니다.')
+    } catch (err) {
+      console.error(err)
+      toast.error(`Word 저장 실패: ${err?.message ?? err}`)
+    } finally {
+      setDocxProgress(null)
+    }
+  }
+  const isOwner = me?.user?.id && composite?.owner_user_id === me.user.id
+  const isSysAdmin = me?.is_system_admin === true
+  const canPublish =
+    composite?.kind === 'recurring' && (isOwner || isSysAdmin)
+
+  async function handlePublish() {
+    try {
+      await publishComposite(composite.id)
+      toast.success('발행되었습니다. 모든 안건이 현 시점으로 박제됩니다.')
+      reload()
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err.message || '발행 실패')
+    }
+  }
+
+  async function handleUnpublish() {
+    try {
+      await unpublishComposite(composite.id)
+      toast.success('발행이 취소되었습니다.')
+      reload()
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err.message || '발행 취소 실패')
+    }
   }
 
   return (
@@ -228,10 +350,52 @@ export default function CompositeDetailPage() {
           </>
         ) : (
           <>
-            <Button variant="outline" size="sm" onClick={() => setIsEditing(true)}>
+            {/* 편집 — recurring 발행 후엔 차단 (보고서 finalized 와 동일
+                패턴). 발행 취소 후 편집해야 한다는 흐름을 강제. theme
+                은 publish 개념이 없어 항상 편집 가능. */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsEditing(true)}
+              disabled={isPublished && composite?.kind === 'recurring'}
+              title={
+                isPublished && composite?.kind === 'recurring'
+                  ? '발행된 종합보고는 편집할 수 없습니다. 발행 취소 후 수정하세요.'
+                  : undefined
+              }
+            >
               <Pencil className="mr-1 h-3 w-3" />
               편집
             </Button>
+            {/* 발행 / 발행 취소 — recurring + 작성자(또는 sys admin) 만.
+                publish 는 그 시점 모든 item 의 ref_report content 를 박제
+                → 6개월 뒤 봐도 발행 시점 그대로 보임. */}
+            {canPublish && (
+              <Button
+                variant={isPublished ? 'secondary' : 'default'}
+                size="sm"
+                onClick={isPublished ? handleUnpublish : handlePublish}
+              >
+                {isPublished ? '발행 취소' : '발행'}
+              </Button>
+            )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" disabled={Boolean(docxProgress)}>
+                  <FileType2 className="mr-1 h-3 w-3" />
+                  Word로 저장
+                  <ChevronDown className="ml-1 h-3 w-3 opacity-60" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => handleExportDocx('portrait-1col')}>
+                  A4 세로 (한 열)
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => handleExportDocx('landscape-2col')}>
+                  A4 가로 (두 열)
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setConfirmDelete(true)}>
               <Trash2 className="mr-1 h-3 w-3" />
               삭제
@@ -239,6 +403,24 @@ export default function CompositeDetailPage() {
           </>
         )}
       </div>
+
+      {/* 발행 배너 — recurring 발행 후만. 보고서의 phase=finalized 배너와
+          비슷한 패턴. 발행 시각 + 누가 발행했는지 + 박제 의미 안내. */}
+      {isPublished && composite?.kind === 'recurring' && (
+        <div className="rounded-md border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-900 px-4 py-2.5 text-sm">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge variant="outline" className="text-[10px]">발행됨</Badge>
+            <span className="text-foreground/80">
+              {composite.published_at?.slice(0, 16).replace('T', ' ')}
+              {composite.published_by_name &&
+                ` · ${composite.published_by_name}`}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              이 시점의 안건 내용이 박제되어 있어 원본이 수정되어도 여기 표시는 그대로 유지됩니다.
+            </span>
+          </div>
+        </div>
+      )}
 
       <Card>
         <CardContent className="pt-5 space-y-2">
@@ -327,12 +509,49 @@ export default function CompositeDetailPage() {
                   onMoveDown={() => moveItem(idx, +1)}
                   onRemove={() => removeItem(idx)}
                   onChangeNote={(n) => setItemNote(idx, n)}
+                  displayColumn={it.display_column ?? 1}
+                  onSetColumn={(c) => setItemColumn(idx, c)}
+                  isDragging={draggingIdx === idx}
+                  isDropTarget={
+                    dropOverIdx === idx &&
+                    draggingIdx !== null &&
+                    draggingIdx !== idx
+                  }
+                  onDragStart={() => setDraggingIdx(idx)}
+                  onDragOver={() => {
+                    if (draggingIdx !== null && dropOverIdx !== idx) {
+                      setDropOverIdx(idx)
+                    }
+                  }}
+                  onDrop={() => {
+                    if (draggingIdx !== null) reorderItems(draggingIdx, idx)
+                    setDraggingIdx(null)
+                    setDropOverIdx(null)
+                  }}
+                  onDragEnd={() => {
+                    setDraggingIdx(null)
+                    setDropOverIdx(null)
+                  }}
                   onOpen={() => {
+                    // Always navigate via the composite's workspace
+                    // (= `slug`). The composite is in an org workspace
+                    // and the report is mounted there (that's how it
+                    // got picked as an item), so this slug always sees
+                    // the report.
+                    //
+                    // The previous "prefer report's own workspace_slug"
+                    // logic broke post-Phase-1: every report's home is
+                    // `personal-{ownerId}`, which non-owner viewers
+                    // can't enter (is_visible_to → 403). Composites
+                    // are by definition shared, so the composite's
+                    // workspace is the always-visible landing pad.
                     if (it.ref_report_id) {
-                      const ws = it._display?.ref_report?.workspace_slug ?? slug
-                      navigate(`/w/${ws}/reports/${it.ref_report_id}`)
+                      navigate(`/w/${slug}/reports/${it.ref_report_id}`)
                     } else if (it.ref_composite_id) {
-                      const ws = it._display?.ref_composite?.workspace_slug ?? slug
+                      // Sub-composites land in their own workspace —
+                      // those are real org workspaces, not personal.
+                      const ws =
+                        it._display?.ref_composite?.workspace_slug ?? slug
                       navigate(`/w/${ws}/composites/${it.ref_composite_id}`)
                     }
                   }}
@@ -364,6 +583,49 @@ export default function CompositeDetailPage() {
         variant="destructive"
         onConfirm={onDelete}
       />
+      {docxProgress && <DocxExportOverlay progress={docxProgress} />}
+    </div>
+  )
+}
+
+/** Centered blocking spinner during composite DOCX export.
+ *  Same shape as ReportDetailPage's overlay — pulled inline here to
+ *  avoid cross-module import for one component. */
+function DocxExportOverlay({ progress }) {
+  const isBlock = progress.phase === 'block'
+  const pct =
+    isBlock && progress.total > 0
+      ? Math.round((progress.current / progress.total) * 100)
+      : null
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <div className="rounded-lg border bg-card shadow-xl px-6 py-5 min-w-[280px] max-w-sm">
+        <div className="flex items-center gap-3 mb-2">
+          <Loader2 className="h-5 w-5 animate-spin text-primary" />
+          <div className="font-semibold text-sm">Word 파일로 저장 중</div>
+        </div>
+        <div className="text-xs text-muted-foreground mb-2">
+          {progress.label ?? '진행 중...'}
+        </div>
+        {isBlock && progress.total > 0 && (
+          <>
+            <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+              <div
+                className="h-full bg-primary transition-all duration-200"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            <div className="mt-1.5 text-[11px] text-muted-foreground tabular-nums">
+              {progress.current}/{progress.total} ({pct}%)
+            </div>
+          </>
+        )}
+      </div>
     </div>
   )
 }
@@ -403,12 +665,70 @@ function ItemRow({
   onRemove,
   onChangeNote,
   onOpen,
+  // Drag-and-drop reorder. Wired only when `editing` so view mode
+  // stays read-only. `isDragging` dims the source row; `isDropTarget`
+  // draws a primary-colored top border to show where the drop will
+  // land (= insert before this row).
+  isDragging,
+  isDropTarget,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+  // Per-item layout column (1 = left, 2 = right). Only meaningful in
+  // the landscape-2col DOCX export; portrait/1-col ignores it.
+  displayColumn,
+  onSetColumn,
 }) {
   const isReport = Boolean(item.ref_report_id)
   const ref = isReport ? item._display?.ref_report : item._display?.ref_composite
   return (
-    <li className="py-3">
+    <li
+      // Whole row is draggable while editing. Buttons/inputs inside
+      // still fire their own click/focus events; HTML5 distinguishes
+      // click (mousedown+up no movement) from drag (mousedown+move).
+      // Setting draggable={false} explicitly on input prevents text-
+      // selection-drag from hijacking the row drag.
+      draggable={editing}
+      onDragStart={editing ? onDragStart : undefined}
+      onDragOver={
+        editing
+          ? (e) => {
+              // preventDefault on dragover enables the drop. Required
+              // by HTML5 spec — without it the browser refuses drop.
+              e.preventDefault()
+              onDragOver?.()
+            }
+          : undefined
+      }
+      onDrop={
+        editing
+          ? (e) => {
+              e.preventDefault()
+              onDrop?.()
+            }
+          : undefined
+      }
+      onDragEnd={editing ? onDragEnd : undefined}
+      className={cn(
+        'py-3 transition-colors',
+        editing && 'cursor-grab active:cursor-grabbing',
+        isDragging && 'opacity-40',
+        // Drop-target marker: thick primary top border = "drop lands
+        // here, inserting before this row".
+        isDropTarget && 'border-t-2 border-primary -mt-px',
+      )}
+    >
       <div className="flex items-start gap-2">
+        {editing && (
+          <span
+            className="mt-0.5 shrink-0 text-muted-foreground/60 hover:text-muted-foreground h-5 w-5 flex items-center justify-center"
+            aria-hidden="true"
+            title="끌어서 순서 변경"
+          >
+            <GripVertical className="h-3.5 w-3.5" />
+          </span>
+        )}
         <button
           type="button"
           onClick={onToggleExpand}
@@ -459,6 +779,27 @@ function ItemRow({
         </div>
         {editing && (
           <div className="flex items-center gap-0.5 shrink-0">
+            {/* 1열 / 2열 토글 — 가로 2단 Word 내보내기에서 이 안건이 좌/우
+                어느 컬럼에 들어갈지. 단일 column 내보내기에선 영향 없음
+                이지만 사전 설정해 두면 편함. 클릭 한 번에 1↔2 토글. */}
+            <button
+              type="button"
+              onClick={() => onSetColumn?.(displayColumn === 2 ? 1 : 2)}
+              className={cn(
+                'h-6 rounded border px-1.5 text-[10px] font-medium tabular-nums transition-colors',
+                displayColumn === 2
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'border-border bg-background text-muted-foreground hover:bg-muted',
+              )}
+              title={
+                displayColumn === 2
+                  ? '오른쪽 열 (클릭하면 왼쪽으로)'
+                  : '왼쪽 열 (클릭하면 오른쪽으로)'
+              }
+              aria-label="2단 내보내기 열 선택"
+            >
+              {displayColumn === 2 ? '2열' : '1열'}
+            </button>
             <Button
               variant="ghost"
               size="icon"
@@ -495,7 +836,15 @@ function ItemRow({
       {expanded && (
         <div className="mt-3 ml-12 pl-4 border-l-2">
           {isReport && item.ref_report_id ? (
-            <InlineReportView reportId={item.ref_report_id} />
+            // Phase 5A — pass snapshot when present. Published recurring
+            // composites freeze each item's content into snapshot_content
+            // so the as-of-publish state survives later edits to the
+            // source report. Theme + unpublished recurring leave snapshot
+            // NULL → live fetch via reportId.
+            <InlineReportView
+              reportId={item.ref_report_id}
+              snapshot={item.snapshot_content ?? undefined}
+            />
           ) : item.ref_composite_id ? (
             <InlineCompositeView compositeId={item.ref_composite_id} />
           ) : null}

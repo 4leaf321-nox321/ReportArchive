@@ -264,6 +264,11 @@ body.report-fullscreen .report-detail-toolbar {
 }
 body.report-fullscreen .report-detail-content {
   max-width: none !important;
+  /* 전체화면에서는 페이지 strip 과 본문 사이 여백이 너무 크게 보임 —
+     기본 p-6(상단 24px) 을 8px 로 줄여서 첫 위젯이 페이지 selector
+     바로 아래에 붙는 인상으로. 좌우/하단 padding 은 본문 폭/스크롤
+     여유를 위해 그대로 둔다. */
+  padding-top: 0.5rem !important;
 }
 
 /* 컨테이너 경계 숨김 — "보고서 설정 → 페이지 → 컨테이너 경계" 토글이

@@ -33,7 +33,17 @@ function inDateRange(value, from, to) {
 /** Item picker for the composite detail page. Two tabs (보고서 / 종합) —
  *  each lists candidates from the API and lets the user multi-select via
  *  checkboxes. Already-selected items are pre-checked and dimmed so users
- *  can see what's already in the composite without leaving the dialog. */
+ *  can see what's already in the composite without leaving the dialog.
+ *
+ *  Scope of the 보고서 tab: `listReports()` uses the current workspace
+ *  header. The dialog is opened from `/w/{composite.workspace_slug}/composites/{id}`,
+ *  so backend's `list_reports_in_workspace` (org branch) JOINs `ReportMount`
+ *  and returns only reports mounted to the composite's workspace tree
+ *  (descendants_inclusive). Reports living in another team's tree are
+ *  invisible — pulling them in is a Fork concern (Phase 8A), not picker.
+ *  Phase 5B verified this filter; the visible improvement was switching
+ *  the row meta away from the post-Phase-1 noise of `r.workspace_slug`
+ *  (= personal-{userId}) toward mount chips. */
 export function ItemPickerDialog({
   open,
   onOpenChange,
@@ -86,7 +96,9 @@ export function ItemPickerDialog({
         <DialogHeader>
           <DialogTitle>안건 추가</DialogTitle>
           <DialogDescription>
-            보고서 또는 다른 종합보고를 골라 한 번에 추가합니다.
+            이 부서 게시판(하위 부서 포함)에 게시된 보고서 또는 다른 종합보고를
+            골라 한 번에 추가합니다. 다른 부서 보고서는 [참조 복제]를 거친
+            뒤에 사용 가능합니다.
           </DialogDescription>
         </DialogHeader>
 
@@ -144,15 +156,10 @@ export function ItemPickerDialog({
 }
 
 function ReportPickerList({ open, selected, existingKeys, onToggle }) {
-  const { all: workspaces } = useWorkspace()
   const { data, loading, error } = useAsync(
     () => (open ? listReports() : Promise.resolve([])),
     [open],
   )
-  const workspaceName = useMemo(() => {
-    const map = new Map((workspaces ?? []).map((w) => [w.slug, w.name]))
-    return (s) => map.get(s) ?? s
-  }, [workspaces])
   const [query, setQuery] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
@@ -162,10 +169,16 @@ function ReportPickerList({ open, selected, existingKeys, onToggle }) {
     .filter((r) => {
       if (!query.trim()) return true
       const q = query.toLowerCase()
+      // Post-Phase-1: `r.workspace_slug` is always personal so it's not
+      // a useful search axis. Match on title / owner / mount workspace
+      // names (the boards the report is actually published to).
+      const mountNames = (r.mount_workspaces ?? [])
+        .map((m) => m.name)
+        .join(' ')
       return (
         r.title.toLowerCase().includes(q) ||
         (r.owner_name ?? '').toLowerCase().includes(q) ||
-        workspaceName(r.workspace_slug).toLowerCase().includes(q)
+        mountNames.toLowerCase().includes(q)
       )
     })
   if (loading) return <Skeleton className="h-48" />
@@ -184,14 +197,35 @@ function ReportPickerList({ open, selected, existingKeys, onToggle }) {
       isExisting={(r) => existingKeys.has(`r:${r.id}`)}
       isSelected={(r) => selected.has(`r:${r.id}`)}
       onToggle={onToggle}
-      placeholder="제목·작성자·부서 검색"
-      renderMeta={(r) => (
-        <div className="text-[11px] text-muted-foreground truncate">
-          {workspaceName(r.workspace_slug)}
-          {r.report_date && <> · 기준 {r.report_date}</>}
-          {r.owner_name && <> · {r.owner_name}</>}
-        </div>
-      )}
+      placeholder="제목·작성자·게시판 검색"
+      renderMeta={(r) => {
+        // Show the boards (mount workspaces) the report is published to.
+        // Post-Phase-1 `r.workspace_slug` is the author's personal space
+        // which carries no useful signal for a composite picker.
+        const mounts = r.mount_workspaces ?? []
+        return (
+          <div className="text-[11px] text-muted-foreground flex items-center gap-1 flex-wrap">
+            {mounts.length > 0 ? (
+              mounts.slice(0, 3).map((m) => (
+                <span
+                  key={m.slug}
+                  className="inline-flex items-center rounded-full bg-primary/10 text-primary px-1.5 py-0 text-[10px] font-medium"
+                  title={m.slug}
+                >
+                  {m.name}
+                </span>
+              ))
+            ) : (
+              <span className="text-muted-foreground/60">미게시</span>
+            )}
+            {mounts.length > 3 && (
+              <span className="text-[10px]">+{mounts.length - 3}</span>
+            )}
+            {r.report_date && <span>· 기준 {r.report_date}</span>}
+            {r.owner_name && <span>· {r.owner_name}</span>}
+          </div>
+        )
+      }}
     />
   )
 }

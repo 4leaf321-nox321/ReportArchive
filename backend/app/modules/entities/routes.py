@@ -26,6 +26,7 @@ from app.modules.entities.schemas import (
     EntityListResponse,
     EntityMergeRequest,
     EntityRead,
+    EntityTypeCreate,
     EntityTypeListResponse,
     EntityTypeRead,
     EntityUpdate,
@@ -101,14 +102,32 @@ def list_entity_types(
     _actor: EntityActor = Depends(entity_actor),
     db: Session = Depends(get_db),
 ):
-    """All 7 axes. Auth required (so anonymous probes can't enumerate
-    the taxonomy), but no role gate."""
+    """All axes. Auth required (so anonymous probes can't enumerate the
+    taxonomy), but no role gate — the picker UI needs this for every user."""
     rows = services.list_types(db)
     return success_response(
         data=EntityTypeListResponse(
             items=[EntityTypeRead.model_validate(r) for r in rows]
         )
     )
+
+
+@entity_types_router.post("", status_code=201)
+def create_entity_type(
+    payload: EntityTypeCreate,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — add a new axis. Until this route existed axes could
+    only be added via migration seed; now the entity admin page can
+    self-service when a new tagging dimension is needed (regulatory
+    field, product line split, etc.) without a deploy."""
+    _require_admin(actor)
+    try:
+        row = services.create_type(db, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return created_response(data=EntityTypeRead.model_validate(row))
 
 
 # --------------------------------------------------------------------------- #

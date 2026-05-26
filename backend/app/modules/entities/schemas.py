@@ -10,8 +10,7 @@ from app.modules.entities.models import EntityStatus
 
 
 class EntityTypeRead(BaseModel):
-    """One axis — system-managed, returned as a flat list from
-    `/api/entity-types` so the picker can render one section per axis."""
+    """One axis — picker reads a flat list from `/api/entity-types`."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -26,6 +25,21 @@ class EntityTypeRead(BaseModel):
 
 class EntityTypeListResponse(BaseModel):
     items: list[EntityTypeRead]
+
+
+class EntityTypeCreate(BaseModel):
+    """Admin-only — add a new axis. `slug` is the stable identifier; the
+    service layer normalizes it (lowercase, strip) and rejects clashes
+    against the existing axes. `sort_order` defaults to the end of the
+    list when omitted, so newly added axes land at the right side of the
+    tab strip without the admin having to compute the next index."""
+
+    slug: str = Field(..., min_length=1, max_length=32)
+    label: str = Field(..., min_length=1, max_length=64)
+    icon: str = Field(default="", max_length=32)
+    multi: bool = True
+    sort_order: Optional[int] = Field(default=None, ge=0, le=10_000)
+    description: str = Field(default="", max_length=2000)
 
 
 class EntityRead(BaseModel):

@@ -37,6 +37,7 @@ import { ErrorState } from '@/shared/components/ErrorState'
 import { useAsync } from '@/shared/hooks/useAsync'
 import {
   createEntity,
+  createEntityType,
   deleteEntity,
   listEntities,
   listEntityTypes,
@@ -63,9 +64,11 @@ export default function EntitiesAdminPage() {
     data: typesResp,
     loading: typesLoading,
     error: typesError,
+    reload: reloadTypes,
   } = useAsync(() => listEntityTypes(), [])
   const types = typesResp?.items ?? []
   const [axisSlug, setAxisSlug] = useState(null)
+  const [newAxisOpen, setNewAxisOpen] = useState(false)
 
   // Pick the first axis once the list arrives. Falls through cleanly on
   // re-mount because we treat null as "no axis chosen yet".
@@ -99,6 +102,12 @@ export default function EntitiesAdminPage() {
       <PageHeader
         title="엔티티 관리"
         description="보고서를 태깅하는 N축 통제어휘. 사용자가 picker 에서 추가한 값을 정리/머지/비활성화 합니다."
+        actions={
+          <Button size="sm" onClick={() => setNewAxisOpen(true)}>
+            <Plus className="mr-1 h-3.5 w-3.5" />
+            새 축 추가
+          </Button>
+        }
       />
 
       <Tabs value={axisSlug ?? ''} onValueChange={setAxisSlug}>
@@ -118,7 +127,182 @@ export default function EntitiesAdminPage() {
           </TabsContent>
         ))}
       </Tabs>
+
+      {newAxisOpen && (
+        <NewAxisDialog
+          existingSlugs={types.map((t) => t.slug)}
+          onClose={() => setNewAxisOpen(false)}
+          onCreated={(created) => {
+            setNewAxisOpen(false)
+            // 새 축으로 즉시 전환 — 추가한 흐름에서 자연스럽게 그 축에서
+            // 값을 등록하기 시작할 것이라 가정.
+            setAxisSlug(created.slug)
+            reloadTypes()
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+/** 새 축(엔티티 타입) 추가 다이얼로그. label/slug 가 필수, 나머지는
+ *  선택. slug 는 영어 소문자/숫자/언더스코어/대시만 — picker URL 의
+ *  ?type= 파라미터로도 쓰일 수 있는 키이므로 안전한 식별자만 허용. */
+function NewAxisDialog({ existingSlugs, onClose, onCreated }) {
+  const [label, setLabel] = useState('')
+  const [slug, setSlug] = useState('')
+  // 사용자가 slug 를 직접 만지지 않은 동안엔 label 에서 자동 파생.
+  const [slugTouched, setSlugTouched] = useState(false)
+  const [icon, setIcon] = useState('')
+  const [multi, setMulti] = useState(true)
+  const [description, setDescription] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  // label → slug 추정: 영문자만 남기고 lower-case + dash 정리. 한글
+  // label 이면 결과가 비어서 사용자가 slug 를 직접 입력하게 됨.
+  const autoSlug = useMemo(() => {
+    return label
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 32)
+  }, [label])
+
+  const effectiveSlug = slugTouched ? slug.trim() : autoSlug
+  const slugIsValid = /^[a-z0-9_-]+$/.test(effectiveSlug)
+  const slugClash =
+    !!effectiveSlug && existingSlugs.includes(effectiveSlug)
+  const canSubmit =
+    !submitting &&
+    label.trim().length > 0 &&
+    effectiveSlug.length > 0 &&
+    slugIsValid &&
+    !slugClash
+
+  async function handleSubmit() {
+    if (!canSubmit) return
+    setSubmitting(true)
+    try {
+      const created = await createEntityType({
+        slug: effectiveSlug,
+        label: label.trim(),
+        icon: icon.trim(),
+        multi,
+        description: description.trim(),
+      })
+      toast.success(`'${created.label}' 축 추가됨`)
+      onCreated(created)
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err.message || '추가 실패')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>새 축 추가</DialogTitle>
+          <DialogDescription className="text-xs">
+            새 N축을 만들면 보고서 태그 picker 에 해당 축이 노출되어
+            사용자가 값을 등록할 수 있게 됩니다. 축은 한 번 만들고 나면
+            slug 가 식별자로 굳기 때문에 신중히 정해 주세요 (라벨/설명은
+            추후 시드 마이그레이션 또는 별도 편집 기능으로 바꾸어야 함).
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label className="text-xs">라벨</Label>
+            <Input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              maxLength={64}
+              autoFocus
+              className="mt-1 h-9"
+              placeholder="예: 시험 조건"
+            />
+          </div>
+          <div>
+            <Label className="text-xs">
+              slug
+              {!slugTouched && autoSlug && (
+                <span className="ml-1 text-[10px] text-muted-foreground">
+                  (라벨에서 자동 생성됨)
+                </span>
+              )}
+            </Label>
+            <Input
+              value={effectiveSlug}
+              onChange={(e) => {
+                setSlugTouched(true)
+                setSlug(e.target.value.toLowerCase())
+              }}
+              maxLength={32}
+              className="mt-1 h-9 font-mono text-sm"
+              placeholder="예: test_condition"
+            />
+            {effectiveSlug && !slugIsValid && (
+              <p className="mt-1 text-[11px] text-destructive">
+                소문자·숫자·언더스코어(_)·대시(-) 만 사용할 수 있습니다.
+              </p>
+            )}
+            {slugClash && (
+              <p className="mt-1 text-[11px] text-destructive">
+                이미 같은 slug 의 축이 있습니다.
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-4">
+            <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer">
+              <input
+                type="checkbox"
+                checked={multi}
+                onChange={(e) => setMulti(e.target.checked)}
+                className="h-3.5 w-3.5"
+              />
+              <span>다중 선택 허용</span>
+            </label>
+            <span className="text-[11px] text-muted-foreground">
+              {multi
+                ? '한 보고서에 여러 값을 태깅할 수 있음'
+                : 'picker 가 단일 선택으로 동작 (DB 강제 아님)'}
+            </span>
+          </div>
+          <div>
+            <Label className="text-xs">
+              아이콘 (선택, Lucide 이름)
+            </Label>
+            <Input
+              value={icon}
+              onChange={(e) => setIcon(e.target.value)}
+              maxLength={32}
+              className="mt-1 h-9"
+              placeholder="예: Tags, FlaskConical"
+            />
+          </div>
+          <div>
+            <Label className="text-xs">설명 (선택)</Label>
+            <Textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              maxLength={2000}
+              rows={3}
+              className="mt-1"
+              placeholder="이 축이 무엇을 분류하는지 — picker 에 hover 도움말로도 노출됨"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            취소
+          </Button>
+          <Button size="sm" onClick={handleSubmit} disabled={!canSubmit}>
+            {submitting ? '추가 중...' : '추가'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

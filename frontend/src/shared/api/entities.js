@@ -4,13 +4,32 @@ const TYPES_BASE = '/api/entity-types'
 const BASE = '/api/entities'
 
 /**
- * List the 7 axes (model / part / bom / phase / defect / rel_test /
- * sim_type). Stable system data — safe to cache for the session.
+ * List the axes (모델 / 부품 / BOM / 단계 / 불량 / 시험 / 시뮬레이션 등).
+ * 시드된 7개 + admin 이 직접 추가한 것까지 포함. 세션 동안 큰 변동은
+ * 없지만 admin 페이지에서 축을 추가하면 즉시 다시 받아야 한다.
  *
  *   { items: EntityTypeRead[] }
  */
 export async function listEntityTypes() {
   const res = await apiClient.get(TYPES_BASE)
+  return extractData(res)
+}
+
+/**
+ * Admin-only — add a new axis. `sortOrder` 생략 시 백엔드가 max+1 로
+ * 채워 새 축이 탭 strip 의 가장 오른쪽에 붙는다.
+ */
+export async function createEntityType({
+  slug,
+  label,
+  icon = '',
+  multi = true,
+  sortOrder,
+  description = '',
+} = {}) {
+  const body = { slug, label, icon, multi, description }
+  if (sortOrder !== undefined) body.sort_order = sortOrder
+  const res = await apiClient.post(TYPES_BASE, body)
   return extractData(res)
 }
 

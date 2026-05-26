@@ -20,7 +20,13 @@ from app.modules.entities.models import (
     EntityType,
     ReportEntity,
 )
-from app.modules.entities.schemas import EntityCreate, EntityUpdate
+from app.modules.entities.schemas import (
+    EntityCreate,
+    EntityTypeCreate,
+    EntityUpdate,
+)
+
+import re
 
 
 # --------------------------------------------------------------------------- #
@@ -44,6 +50,50 @@ def get_type_by_slug(db: Session, slug: str) -> Optional[EntityType]:
     return db.execute(
         select(EntityType).where(EntityType.slug == slug)
     ).scalar_one_or_none()
+
+
+# Slug 형식: 소문자/숫자/언더스코어/대시만. seeded 축들이 모두 따르는
+# 관례라 신규 축도 같은 규칙. 길이 한계는 schema 가 1..32 로 잡음.
+_SLUG_RE = re.compile(r"^[a-z0-9_-]+$")
+
+
+def create_type(db: Session, payload: EntityTypeCreate) -> EntityType:
+    """Admin-only — add a new axis. Caller (route) enforces the role
+    check. Slug clashes raise ValueError so the route can surface 400.
+    `sort_order` defaults to max+1 (end of strip) when caller didn't set."""
+    slug = payload.slug.strip().lower()
+    if not _SLUG_RE.fullmatch(slug):
+        raise ValueError(
+            "slug 는 소문자·숫자·언더스코어(_)·대시(-) 만 사용할 수 있습니다."
+        )
+    if get_type_by_slug(db, slug) is not None:
+        raise ValueError(f"이미 같은 slug 의 축이 있습니다: {slug}")
+
+    label = payload.label.strip()
+    if not label:
+        raise ValueError("라벨은 비워둘 수 없습니다.")
+
+    if payload.sort_order is None:
+        current_max = (
+            db.execute(select(func.coalesce(func.max(EntityType.sort_order), 0))).scalar()
+            or 0
+        )
+        sort_order = int(current_max) + 1
+    else:
+        sort_order = int(payload.sort_order)
+
+    row = EntityType(
+        slug=slug,
+        label=label,
+        icon=(payload.icon or "").strip(),
+        multi=bool(payload.multi),
+        sort_order=sort_order,
+        description=(payload.description or "").strip(),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 # --------------------------------------------------------------------------- #

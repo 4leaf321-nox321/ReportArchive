@@ -443,6 +443,29 @@ export const WIDGET_EXAMPLES_TEXT = [
   ...WIDGET_PROMPT_EXAMPLES.map((e) => e.body),
 ].join('\n\n')
 
+/** Same as WIDGET_EXAMPLES_TEXT but with example blocks for widgets in
+ *  `excludedTypes` removed. A block is dropped only when *all* of its
+ *  `types` are excluded — multi-type entries (e.g. the image/attachment/
+ *  cad_3d "don't generate" warning) stay as long as at least one of
+ *  their types is still selected, so authors don't accidentally lose
+ *  the warning by unchecking just one of the bundled widgets.
+ *
+ *  The rules preamble (additionalProperties, cross-widget cheat sheet)
+ *  is preserved verbatim — it's not widget-specific, and the cheat
+ *  sheet still helps even when the AI only sees a subset of widgets.
+ *
+ *  Pass null/undefined/empty-set to short-circuit and return the
+ *  static WIDGET_EXAMPLES_TEXT directly (cheaper, identity-equal). */
+export function renderWidgetExamplesText(excludedTypes) {
+  if (!excludedTypes || excludedTypes.size === 0) {
+    return WIDGET_EXAMPLES_TEXT
+  }
+  const filtered = WIDGET_PROMPT_EXAMPLES.filter((entry) =>
+    entry.types.some((t) => !excludedTypes.has(t)),
+  )
+  return [WIDGET_RULES_PREAMBLE, ...filtered.map((e) => e.body)].join('\n\n')
+}
+
 /** Set of widget `type` strings that have at least one example block. */
 export const PROMPT_COVERED_WIDGETS = new Set(
   WIDGET_PROMPT_EXAMPLES.flatMap((e) => e.types),

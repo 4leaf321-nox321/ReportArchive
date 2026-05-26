@@ -22,8 +22,8 @@
  * data loss). Same approach the v1/v2 manual builders used.
  */
 import {
-  WIDGET_EXAMPLES_TEXT,
   getWidgetExampleBody,
+  renderWidgetExamplesText,
 } from './widgetExamples'
 import { renderSectionTaxonomy } from './sectionTaxonomy'
 
@@ -123,6 +123,15 @@ export function renderPrompt(body, context = {}) {
  *   sectionCategories    — useSectionTaxonomy() result
  *   templateBlocks       — currentTemplate?.schema?.blocks
  *   templateId/version   — page header values
+ *   excludedWidgetTypes  — optional Set<string>. When the prompt body
+ *                          uses wildcard tokens ({{widget_catalog}} /
+ *                          {{widget_examples}}) the picker dialog lets
+ *                          the user uncheck widgets to shrink the
+ *                          rendered prompt. Excluded types are dropped
+ *                          from BOTH the catalog block and the examples
+ *                          block. Individual {{widget:foo}} tokens are
+ *                          NOT touched — they're an explicit author
+ *                          choice we honor regardless of exclusion.
  */
 export function buildPromptContext({
   widgetCatalog,
@@ -130,13 +139,20 @@ export function buildPromptContext({
   templateBlocks,
   templateId,
   templateVersion,
+  excludedWidgetTypes,
 } = {}) {
+  const excluded = excludedWidgetTypes ?? null
+  const allWidgets = widgetCatalog?.widgets ?? []
+  const filteredWidgets =
+    excluded && excluded.size > 0
+      ? allWidgets.filter((w) => !excluded.has(w.type))
+      : allWidgets
   return {
     templateId: templateId || 'TEMPLATE_ID_HERE',
     templateVersion: templateVersion ?? 1,
     sectionTaxonomyText: renderSectionTaxonomy(sectionCategories),
-    widgetCatalogText: renderWidgetCatalogText(widgetCatalog?.widgets),
-    widgetExamplesText: WIDGET_EXAMPLES_TEXT,
+    widgetCatalogText: renderWidgetCatalogText(filteredWidgets),
+    widgetExamplesText: renderWidgetExamplesText(excluded),
     templateBlocksText: renderTemplateBlocksText(templateBlocks),
   }
 }

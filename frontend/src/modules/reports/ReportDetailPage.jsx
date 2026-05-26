@@ -566,37 +566,41 @@ export default function ReportDetailPage() {
     return () => window.removeEventListener('keydown', onKey)
   }, [viewMode, pageCountForKeys])
 
-  // Context that the AiPromptDialog passes into renderPrompt() — packs
-  // what the dynamic chunks ({{template_id}} / {{section_taxonomy}} / etc.)
-  // resolve to. Declared *above* the loading/error/!draft early returns
-  // so the hook order stays stable across the "still loading" → "ready"
-  // transition. Inputs that don't exist yet are tolerated via optional
-  // chaining — buildPromptContext fills sensible fallbacks.
-  const aiPromptContext = useMemo(() => {
-    const page = draft?.pages?.[currentPage] ?? draft?.pages?.[0]
-    const tpl = getCachedTemplate(pageTemplateMap, page)
-    // Prefer the latest published version of this template over the
-    // version the report is currently bound to — see comment on
-    // `latestVersionByTemplate` above. Falls back to the page's stored
-    // version while the latest-fetch is still in flight or on error.
-    const latestForPage =
-      (page?.template_id && latestVersionByTemplate[page.template_id]) ??
-      page?.template_version
-    return buildPromptContext({
+  // Context-builder that the AiPromptDialog uses to render the prompt.
+  // Returns a function instead of a fully-baked context because the
+  // dialog now has interactive widget-exclusion checkboxes — the same
+  // raw inputs need to be re-applied with a different `excludedWidgetTypes`
+  // set every time the user toggles a widget. Declared above the
+  // loading/!draft early returns so the hook order stays stable.
+  const aiPromptContextBuilder = useCallback(
+    (excludedWidgetTypes) => {
+      const page = draft?.pages?.[currentPage] ?? draft?.pages?.[0]
+      const tpl = getCachedTemplate(pageTemplateMap, page)
+      // Prefer the latest published version of this template over the
+      // version the report is currently bound to — see comment on
+      // `latestVersionByTemplate` above. Falls back to the page's stored
+      // version while the latest-fetch is still in flight or on error.
+      const latestForPage =
+        (page?.template_id && latestVersionByTemplate[page.template_id]) ??
+        page?.template_version
+      return buildPromptContext({
+        widgetCatalog,
+        sectionCategories,
+        templateBlocks: tpl?.schema?.blocks,
+        templateId: page?.template_id,
+        templateVersion: latestForPage,
+        excludedWidgetTypes,
+      })
+    },
+    [
       widgetCatalog,
       sectionCategories,
-      templateBlocks: tpl?.schema?.blocks,
-      templateId: page?.template_id,
-      templateVersion: latestForPage,
-    })
-  }, [
-    widgetCatalog,
-    sectionCategories,
-    pageTemplateMap,
-    draft,
-    currentPage,
-    latestVersionByTemplate,
-  ])
+      pageTemplateMap,
+      draft,
+      currentPage,
+      latestVersionByTemplate,
+    ],
+  )
 
   if (loading) {
     return (
@@ -1342,7 +1346,23 @@ export default function ReportDetailPage() {
         }
         return
       }
-      toast.error(err.message || '저장 실패')
+      // Schema-validation errors come back from the backend as a single
+      // multi-line string (one section per offending block — see
+      // backend/app/widgets/validation.py). Put it in `description` so
+      // sonner renders the linebreaks via the whitespace-pre-wrap class,
+      // and lift duration so the user has time to read the list before
+      // it auto-dismisses.
+      const msg = err?.message || ''
+      const isSchemaError = msg.startsWith('Content invalid')
+      if (isSchemaError) {
+        toast.error('저장 실패 — 위젯 데이터 형식 오류', {
+          description: msg,
+          duration: 20000,
+          classNames: { description: 'whitespace-pre-wrap font-mono text-[11px]' },
+        })
+      } else {
+        toast.error(err.message || '저장 실패')
+      }
     }
   }
 
@@ -2650,7 +2670,7 @@ export default function ReportDetailPage() {
         open={aiPromptActive != null}
         onOpenChange={(o) => !o && setAiPromptActive(null)}
         prompt={aiPromptActive}
-        context={aiPromptContext}
+        contextBuilder={aiPromptContextBuilder}
         widgetCatalog={widgetCatalog}
       />
 
@@ -3108,7 +3128,67 @@ function ReportCopyDialog({ open, onOpenChange, sourceTitle, onConfirm }) {
  *    - otherwise            → covered = derived_widget_types (the set
  *      of {{widget:foo}} tokens). The rest goes in the "미등록" group.
  */
-function AiPromptDialog({ open, onOpenChange, prompt, context, widgetCatalog }) {
+function AiPromptDialog({
+  open,
+  onOpenChange,
+  prompt,
+  contextBuilder,
+  widgetCatalog,
+}) {
+  // Widgets unchecked in the sidebar. Only meaningful when the prompt
+  // body has wildcard tokens ({{widget_catalog}} / {{widget_examples}})
+  // — for those, buildPromptContext strips excluded types from the
+  // catalog block + examples block, shrinking the rendered prompt so
+  // very long catalogs don't choke the AI.
+  //
+  // Persisted to localStorage per prompt id so the user's curated
+  // selection survives close/reopen of the dialog. Default = empty
+  // (everything checked) for unknown prompts.
+  const storageKey = prompt?.id ? `ai-prompt-excluded:${prompt.id}` : null
+  const [excludedTypes, setExcludedTypes] = useState(() => new Set())
+
+  // Re-seed exclusion set whenever the dialog opens onto a different
+  // prompt. Reads from localStorage first; falls back to empty set.
+  useEffect(() => {
+    if (!open || !prompt?.id) {
+      setExcludedTypes(new Set())
+      return
+    }
+    try {
+      const raw = localStorage.getItem(`ai-prompt-excluded:${prompt.id}`)
+      if (raw) {
+        const arr = JSON.parse(raw)
+        if (Array.isArray(arr)) {
+          setExcludedTypes(new Set(arr))
+          return
+        }
+      }
+    } catch {
+      /* corrupt entry — ignore */
+    }
+    setExcludedTypes(new Set())
+  }, [open, prompt?.id])
+
+  // Persist on change. Skip during initial open before the seed effect
+  // has fired (storageKey null + open false case).
+  useEffect(() => {
+    if (!open || !storageKey) return
+    try {
+      if (excludedTypes.size === 0) {
+        localStorage.removeItem(storageKey)
+      } else {
+        localStorage.setItem(storageKey, JSON.stringify([...excludedTypes]))
+      }
+    } catch {
+      /* quota / disabled storage — silently ignore */
+    }
+  }, [excludedTypes, open, storageKey])
+
+  const context = useMemo(
+    () => contextBuilder(excludedTypes),
+    [contextBuilder, excludedTypes],
+  )
+
   const text = useMemo(() => {
     if (!open || !prompt) return ''
     return renderPrompt(prompt.body, context)
@@ -3144,12 +3224,42 @@ function AiPromptDialog({ open, onOpenChange, prompt, context, widgetCatalog }) 
     }
   }, [prompt, widgetCatalog])
 
+  // Checkbox toggles only make sense for wildcard prompts — those are
+  // the ones where the catalog/examples block is the bulky part of
+  // the rendered text. Non-wildcard prompts already target specific
+  // widgets via {{widget:foo}} tokens that we honor as-is.
+  const interactive = !!prompt?.wildcard_all
+
+  function handleToggleType(type) {
+    setExcludedTypes((prev) => {
+      const next = new Set(prev)
+      if (next.has(type)) next.delete(type)
+      else next.add(type)
+      return next
+    })
+  }
+
+  function handleToggleAll(checkedAll) {
+    if (checkedAll) {
+      // All-on → nothing excluded
+      setExcludedTypes(new Set())
+    } else {
+      // All-off → exclude every covered widget. Uncovered widgets
+      // wouldn't have been in the prompt anyway, so leaving them out
+      // of the set keeps the storage tidy.
+      setExcludedTypes(new Set(widgetCoverage.covered.map((w) => w.type)))
+    }
+  }
+
   const title = prompt?.name
     ? `AI 프롬프트 — ${prompt.name}`
     : 'AI 프롬프트'
   const description =
     prompt?.description ||
     '아래 프롬프트를 AI에 보내고, 보고서 본문을 함께 입력하면 JSON 결과를 받을 수 있습니다. 그 JSON 을 "JSON 데이터 붙여넣기"로 다시 불러오세요.'
+
+  const charCount = text.length
+  const charCountKb = Math.round(charCount / 102.4) / 10
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -3162,7 +3272,13 @@ function AiPromptDialog({ open, onOpenChange, prompt, context, widgetCatalog }) 
         </DialogHeader>
         <p className="text-xs text-muted-foreground">{description}</p>
         <div className="flex-1 min-h-0 flex gap-3">
-          <WidgetCoverageSidebar coverage={widgetCoverage} />
+          <WidgetCoverageSidebar
+            coverage={widgetCoverage}
+            interactive={interactive}
+            excludedTypes={excludedTypes}
+            onToggleType={handleToggleType}
+            onToggleAll={handleToggleAll}
+          />
           <Textarea
             readOnly
             value={text}
@@ -3170,7 +3286,16 @@ function AiPromptDialog({ open, onOpenChange, prompt, context, widgetCatalog }) 
             className="flex-1 min-h-[320px] font-mono text-[11px] leading-relaxed"
           />
         </div>
-        <div className="flex justify-end gap-2 pt-2">
+        <div className="flex items-center gap-2 pt-2">
+          <span className="text-[11px] text-muted-foreground">
+            {charCount.toLocaleString()} 자 · {charCountKb} KB
+            {interactive && excludedTypes.size > 0 && (
+              <span className="ml-2 text-amber-600">
+                ({excludedTypes.size}개 위젯 제외 적용 중)
+              </span>
+            )}
+          </span>
+          <div className="flex-1" />
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
             닫기
           </Button>
@@ -3184,15 +3309,39 @@ function AiPromptDialog({ open, onOpenChange, prompt, context, widgetCatalog }) 
   )
 }
 
-/** Left-hand sidebar in AiPromptDialog: lists every catalog widget with
- *  a check (등록됨) or X (미등록) so the author can tell at a glance
- *  which widgets the currently-selected prompt covers. The coverage set
- *  comes from the prompt row itself (`derived_widget_types` /
- *  `wildcard_all`), so adding a `{{widget:foo}}` token to the body in
- *  the AI 설정 page is enough — no manual sync with this UI. */
-function WidgetCoverageSidebar({ coverage }) {
+/** Left-hand sidebar in AiPromptDialog.
+ *
+ *  Two modes share this component:
+ *    - **읽기 전용** (default, non-wildcard prompts): green check / red
+ *      X icons next to each catalog widget so the author can see at a
+ *      glance which widgets the prompt covers.
+ *    - **인터랙티브** (wildcard prompts only — body has
+ *      `{{widget_catalog}}` / `{{widget_examples}}`): each covered
+ *      widget gets a checkbox. Unchecking strips that widget from the
+ *      rendered catalog + examples blocks so the AI sees a shorter
+ *      prompt. Useful when the full catalog blows past the model's
+ *      context window or just dilutes attention. Selection persists
+ *      per prompt id in localStorage (handled by the parent dialog).
+ *
+ *  "미등록" widgets (no `{{widget:foo}}` example registered) stay
+ *  display-only even in interactive mode — toggling them does nothing
+ *  because they aren't in the prompt to begin with. */
+function WidgetCoverageSidebar({
+  coverage,
+  interactive = false,
+  excludedTypes,
+  onToggleType,
+  onToggleAll,
+}) {
   const { covered, uncovered, total, loading, wildcardAll, pageContext } =
     coverage
+  const excludedSet = excludedTypes ?? new Set()
+  const selectedCount = interactive
+    ? covered.length - covered.filter((w) => excludedSet.has(w.type)).length
+    : covered.length
+  const allSelected = interactive && selectedCount === covered.length
+  const noneSelected = interactive && selectedCount === 0
+
   return (
     <div className="w-60 shrink-0 border rounded-md overflow-auto p-2 text-xs bg-muted/20">
       {pageContext && (
@@ -3203,18 +3352,45 @@ function WidgetCoverageSidebar({ coverage }) {
           </div>
         </div>
       )}
-      <div className="font-medium">위젯 등록 현황</div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="font-medium">
+          {interactive ? '사용할 위젯 선택' : '위젯 등록 현황'}
+        </div>
+        {interactive && covered.length > 0 && (
+          <button
+            type="button"
+            onClick={() => onToggleAll?.(!allSelected)}
+            className="text-[10px] text-primary hover:underline"
+          >
+            {allSelected ? '전체 해제' : '전체 선택'}
+          </button>
+        )}
+      </div>
       <div className="text-[10px] text-muted-foreground mb-2">
         {loading
           ? '카탈로그 불러오는 중…'
-          : wildcardAll
-            ? `전체 위젯 포함 (catalog/examples wildcard)`
-            : `등록 ${covered.length} / 전체 ${total}`}
+          : interactive
+            ? `선택 ${selectedCount} / 등록 ${covered.length} (전체 ${total})`
+            : wildcardAll
+              ? `전체 위젯 포함 (catalog/examples wildcard)`
+              : `등록 ${covered.length} / 전체 ${total}`}
       </div>
+      {interactive && noneSelected && (
+        <div className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1 text-[10px] text-amber-700 leading-relaxed">
+          모든 위젯이 제외돼 있어 AI 가 어떤 위젯도 만들 수 없습니다. 최소 1개는 선택하세요.
+        </div>
+      )}
       {covered.length > 0 && (
         <div className="space-y-0.5 mb-3">
           {covered.map((w) => (
-            <WidgetCoverageRow key={w.type} widget={w} covered />
+            <WidgetCoverageRow
+              key={w.type}
+              widget={w}
+              covered
+              interactive={interactive}
+              checked={interactive ? !excludedSet.has(w.type) : true}
+              onToggle={() => onToggleType?.(w.type)}
+            />
           ))}
         </div>
       )}
@@ -3228,7 +3404,12 @@ function WidgetCoverageSidebar({ coverage }) {
           </div>
           <div className="space-y-0.5">
             {uncovered.map((w) => (
-              <WidgetCoverageRow key={w.type} widget={w} covered={false} />
+              <WidgetCoverageRow
+                key={w.type}
+                widget={w}
+                covered={false}
+                interactive={false}
+              />
             ))}
           </div>
         </>
@@ -3238,15 +3419,61 @@ function WidgetCoverageSidebar({ coverage }) {
           위젯 카탈로그가 비어 있습니다.
         </div>
       )}
+      {interactive && (
+        <div className="mt-2 pt-2 border-t text-[10px] text-muted-foreground leading-relaxed">
+          체크 해제는 <code>&#123;&#123;widget_catalog&#125;&#125;</code> /
+          {' '}<code>&#123;&#123;widget_examples&#125;&#125;</code> 토큰에만 적용됩니다.
+          본문에 직접 적힌 <code>&#123;&#123;widget:foo&#125;&#125;</code> 토큰은 그대로 유지.
+        </div>
+      )}
     </div>
   )
 }
 
-function WidgetCoverageRow({ widget, covered }) {
+function WidgetCoverageRow({
+  widget,
+  covered,
+  interactive = false,
+  checked = true,
+  onToggle,
+}) {
+  const tooltip = widget.description || widget.label || widget.type
+  // Interactive covered row: render a checkbox label so the whole row
+  // is clickable. Non-interactive (or uncovered) row: keep the
+  // original check / X icon display.
+  if (interactive && covered) {
+    return (
+      <label
+        className="flex items-start gap-1.5 py-0.5 cursor-pointer hover:bg-background/60 rounded px-1 -mx-1"
+        title={tooltip}
+      >
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={onToggle}
+          className="mt-0.5 h-3 w-3 shrink-0 accent-primary cursor-pointer"
+        />
+        <div className="min-w-0 flex-1">
+          <div
+            className={`font-mono text-[10px] leading-tight truncate ${
+              checked ? '' : 'text-muted-foreground line-through'
+            }`}
+          >
+            {widget.type}
+          </div>
+          {widget.label && widget.label !== widget.type && (
+            <div className="text-[10px] text-muted-foreground leading-tight truncate">
+              {widget.label}
+            </div>
+          )}
+        </div>
+      </label>
+    )
+  }
   return (
     <div
       className="flex items-start gap-1.5 py-0.5"
-      title={widget.description || widget.label || widget.type}
+      title={tooltip}
     >
       {covered ? (
         <Check className="h-3 w-3 mt-0.5 text-emerald-600 shrink-0" />

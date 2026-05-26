@@ -389,27 +389,134 @@ def validate_report_content(
             f"{sorted(unknown)}"
         )
 
+    # Collect errors block-by-block so the user sees every problem in one
+    # go (not "fix one → save → discover the next" loop). Each block gets
+    # its full set of jsonschema errors via iter_errors. Errors are
+    # joined with blank lines so the frontend's whitespace-pre-wrap toast
+    # / dialog can render them as a readable list.
+    block_errors: list[str] = []
     for block_id, block in blocks_by_id.items():
         if block_id not in content:
             continue  # partial draft — skip
         widget = get_widget(block["type"])
         if not widget["has_content"]:
-            raise ValueError(
-                f"Block {block_id!r} ({block['type']}) has no content slot but "
-                f"content was provided."
+            label = (block.get("props") or {}).get("label")
+            block_errors.append(
+                _format_block_header(block_id, block["type"], label)
+                + "\n  ↳ content 슬롯이 없는 위젯인데 content 가 제공됐습니다."
             )
+            continue
         # Extras own their props outright; template blocks pick up any
         # report-level override on top of their template props.
         base_props = block.get("props", {})
         override = overrides.get(block_id) if block_id in template_blocks else None
         effective_props = {**base_props, **(override or {})}
         content_schema = widget["content_schema_for"](effective_props)
-        try:
-            jsonschema.validate(instance=content[block_id], schema=content_schema)
-        except jsonschema.ValidationError as exc:
-            path = "/".join(str(p) for p in exc.absolute_path)
-            where = f"{block_id}/{path}" if path else block_id
-            raise ValueError(f"Content invalid at {where}: {exc.message}") from exc
+        validator = jsonschema.Draft7Validator(content_schema)
+        errs = list(validator.iter_errors(content[block_id]))
+        if not errs:
+            continue
+        block_errors.append(
+            _format_block_errors(block_id, block, effective_props, errs)
+        )
+
+    if block_errors:
+        # Header line + blank-separated per-block sections. "Content
+        # invalid" prefix kept for backward compatibility with anything
+        # that grep'd for the old message format.
+        raise ValueError(
+            "Content invalid — 다음 블록에서 스키마 위반이 발견됐습니다:\n\n"
+            + "\n\n".join(block_errors)
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Error formatting helpers — produce a multi-line, schema-aware message so
+# pasted-JSON authors can spot WHICH widget and WHY without re-deriving the
+# rules from a terse jsonschema string.
+# --------------------------------------------------------------------------- #
+_PY_TO_JSON_TYPE = {
+    "str": "string",
+    "int": "integer",
+    "float": "number",
+    "bool": "boolean",
+    "list": "array",
+    "dict": "object",
+    "NoneType": "null",
+}
+
+
+def _format_block_header(block_id: str, widget_type: str, label: Optional[str]) -> str:
+    """First line of a block-error section. Always includes the widget
+    type in square brackets so the user can tell which schema is being
+    violated — the block id alone is opaque when it was auto-named by
+    the AI ("distribution_box" tells you nothing about the schema)."""
+    head = f"[{widget_type}] {block_id!r}"
+    if label and label != widget_type:
+        head += f' (label="{label}")'
+    return head
+
+
+def _explain_validation_error(exc: jsonschema.ValidationError) -> list[str]:
+    """Return one or more hint lines describing *why* an individual
+    jsonschema error fired. Empty list when nothing useful to add
+    beyond exc.message."""
+    hints: list[str] = []
+    validator = exc.validator
+    if validator == "additionalProperties":
+        allowed = sorted((exc.schema.get("properties") or {}).keys())
+        if allowed:
+            hints.append("허용된 키: " + ", ".join(allowed))
+    elif validator == "required":
+        # exc.message already names the missing property; no extra hint
+        # needed beyond the list of required keys for context.
+        required = exc.validator_value
+        if isinstance(required, list) and required:
+            hints.append("필수 키: " + ", ".join(required))
+    elif validator == "type":
+        expected = exc.validator_value
+        if isinstance(expected, list):
+            expected_str = " 또는 ".join(expected)
+        else:
+            expected_str = str(expected)
+        actual = _PY_TO_JSON_TYPE.get(
+            type(exc.instance).__name__, type(exc.instance).__name__
+        )
+        hints.append(f"기대 타입: {expected_str}, 받은 타입: {actual}")
+    elif validator == "enum":
+        choices = exc.validator_value
+        hints.append(f"허용된 값: {choices}")
+    elif validator == "minLength":
+        hints.append(f"최소 길이: {exc.validator_value}")
+    elif validator == "maxLength":
+        hints.append(f"최대 길이: {exc.validator_value}")
+    elif validator == "minimum":
+        hints.append(f"최소값: {exc.validator_value}")
+    elif validator == "maximum":
+        hints.append(f"최대값: {exc.validator_value}")
+    elif validator == "pattern":
+        hints.append(f"패턴: {exc.validator_value}")
+    return hints
+
+
+def _format_block_errors(
+    block_id: str,
+    block: dict,
+    effective_props: dict,
+    errors: list[jsonschema.ValidationError],
+) -> str:
+    widget_type = block["type"]
+    label = effective_props.get("label")
+    lines = [_format_block_header(block_id, widget_type, label)]
+    for exc in errors:
+        path_parts = list(exc.absolute_path)
+        path_str = (
+            "/".join(str(p) for p in path_parts) if path_parts else "(content root)"
+        )
+        lines.append(f"  ↳ {path_str}: {exc.message}")
+        for hint in _explain_validation_error(exc):
+            lines.append(f"      {hint}")
+    return "\n".join(lines)
 
 
 def _validate_extra_blocks_shape(extra_blocks: list[dict], reserved_ids: set) -> None:

@@ -73,7 +73,7 @@ def _is_workspace_admin(db: Session, user_id: int, workspace_slug: str) -> bool:
                 WorkspaceMember.workspace_slug == cur,
             )
         ).scalar_one_or_none()
-        if m and m.role in (Role.admin, Role.manager):
+        if m and m.role == Role.manager:
             return True
         ws = db.get(Workspace, cur)
         if not ws:

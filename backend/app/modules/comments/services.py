@@ -94,7 +94,7 @@ def _role_snapshot(
             )
         ).scalar_one_or_none()
         if m is not None:
-            if m.role == Role.admin:
+            if m.role == Role.manager:
                 return AuthorRoleSnapshot.admin
             # manager/user都 → `member` for the visual snapshot. Only
             # admin gets the "보직장 의견" mark in Phase 2; manager
@@ -160,7 +160,7 @@ def _can_resolve(
                 WorkspaceMember.workspace_slug == ws_slug,
             )
         ).scalar_one_or_none()
-        if m and m.role == Role.admin:
+        if m and m.role == Role.manager:
             return True
     return False
 

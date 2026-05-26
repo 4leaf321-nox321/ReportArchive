@@ -220,7 +220,7 @@ def set_author_lock(
             leads = db.execute(
                 select(WorkspaceMember.user_id).where(
                     WorkspaceMember.workspace_slug == slug,
-                    WorkspaceMember.role == Role.admin,
+                    WorkspaceMember.role == Role.manager,
                 )
             ).scalars()
             for uid in leads:

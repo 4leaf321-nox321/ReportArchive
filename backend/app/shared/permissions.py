@@ -94,7 +94,7 @@ def can_edit(db: Session, user: User, report: Report) -> EditDecision:
         # AND the author is also a member of this workspace (ancestor
         # walk on the author side too — §4.2 "보직장" definition).
         user_role = _resolve_role(db, user.id, mount.workspace_slug)
-        if user_role == Role.admin:
+        if user_role == Role.manager:
             author_role = _resolve_role(
                 db, report.owner_user_id, mount.workspace_slug
             )

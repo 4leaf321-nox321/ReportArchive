@@ -184,7 +184,7 @@ def delete_file(
     record = services.get_file(db, file_id)
     if not record:
         return not_found_response(f"파일을 찾을 수 없습니다: {file_id}")
-    if record.owner_user_id != actor.user.id and actor.role != Role.admin:
+    if record.owner_user_id != actor.user.id and actor.role != Role.manager:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "이 파일을 삭제할 권한이 없습니다.")
     services.delete_file(db, record)
     return success_response(message="파일이 삭제되었습니다.")

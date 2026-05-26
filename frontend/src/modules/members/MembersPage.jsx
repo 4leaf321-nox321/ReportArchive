@@ -31,13 +31,12 @@ import {
 } from '@/shared/api/members'
 import { adminSetUserPassword } from '@/shared/api/me'
 
-// 부서 멤버 역할은 두 단계: 매니저 / 사용자. 기존 manager(중간 단계)는
-// p7 마이그레이션이 user 로 강등하면서 사라졌고, 백엔드 add/update 가
-// manager role 입력을 거절한다. 라벨 차원에서 '관리자' / '부서 관리자'
-// 는 모두 '매니저' 로 통일 (저장 값은 여전히 'admin').
+// 부서 멤버 역할은 두 단계: 매니저 / 사용자. p7 이 옛 manager(템플릿만)
+// 를 user 로 강등했고, p8 이 enum value 'admin' → 'manager' 로 rename.
+// 이제 DB·코드·라벨 모두 'manager' 로 일관됨.
 const ROLES = [
   {
-    value: 'admin',
+    value: 'manager',
     label: '매니저',
     icon: ShieldCheck,
     description: '부서 멤버·템플릿·폴더·AI 프롬프트 관리 (보고서 권한 포함)',
@@ -51,9 +50,7 @@ const ROLES = [
 ]
 
 const ROLE_LABEL = Object.fromEntries(ROLES.map((r) => [r.value, r.label]))
-// manager 키는 legacy — p7 마이그레이션이 user 로 강등했지만 어쩌다
-// 남은 row 가 있을 때 라벨이 비지 않도록 fallback 으로 유지.
-const ROLE_VARIANT = { admin: 'default', manager: 'secondary', user: 'outline' }
+const ROLE_VARIANT = { manager: 'default', user: 'outline' }
 
 export default function MembersPage() {
   const { me } = useAuth()
@@ -67,7 +64,7 @@ export default function MembersPage() {
     [slug]
   )
 
-  const isAdmin = me?.role === 'admin'
+  const isManager = me?.role === 'manager'
 
   // Workspaces an admin in `slug` is allowed to assign members into:
   // self + every non-virtual descendant of the current workspace.
@@ -89,7 +86,7 @@ export default function MembersPage() {
     )
   }
 
-  if (!isAdmin) {
+  if (!isManager) {
     return (
       <div className="p-6">
         <PageHeader title="멤버" description={`${workspace.name} 멤버 관리`} />

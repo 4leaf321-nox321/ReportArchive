@@ -88,7 +88,7 @@ export default function TemplateEditorPage() {
   // between "loading" and "loaded" states.
   const rglItems = useMemo(() => buildRglItems(draft.blocks), [draft.blocks])
 
-  const canManageTemplates = me?.role === 'admin' || me?.role === 'manager'
+  const canManageTemplates = me?.role === 'manager'
   if (!canManageTemplates) {
     return (
       <div className="p-6">

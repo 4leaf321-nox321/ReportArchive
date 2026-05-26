@@ -22,7 +22,7 @@ export default function TemplatesPage() {
   const { slug } = useWorkspace()
   // Template lifecycle (create / publish / delete) is the manager role's
   // responsibility. Regular users can view templates but can't author them.
-  const canManageTemplates = me?.role === 'admin' || me?.role === 'manager'
+  const canManageTemplates = me?.role === 'manager'
   const canDeleteTemplates = canManageTemplates
   // Gate on `slug` so we don't fire the request before WorkspaceProvider
   // has set the X-Workspace-Slug header on the API client.

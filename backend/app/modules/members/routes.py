@@ -20,7 +20,7 @@ from app.modules.members.schemas import (
     MemberSource,
     UpdateMemberRequest,
 )
-from app.modules.users.models import Role, User, WorkspaceMember
+from app.modules.users.models import User, WorkspaceMember
 from app.modules.workspaces import services as ws_services
 from app.modules.workspaces.models import Workspace
 from app.shared.auth import CurrentUser, require_admin
@@ -102,14 +102,6 @@ def add_member(
     """Add an existing user to this workspace. To add to a descendant, switch
     to that workspace first (admin permission cascades, so this is allowed)."""
     _resolve_target_workspace(db, workspace_slug)
-    # Role.manager 단계 폐지 — admin/user 만 받아들임. 기존 매니저 row 는
-    # p7 마이그레이션이 user 로 강등 처리.
-    if payload.role == Role.manager:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "manager role 은 더 이상 지원하지 않습니다. '매니저(admin)' 또는 "
-            "'사용자(user)' 중 하나로 지정하세요.",
-        )
     user = db.execute(
         select(User).where(User.email == payload.email)
     ).scalar_one_or_none()
@@ -139,11 +131,6 @@ def update_member(
     if payload.role is None and payload.workspace_slug is None:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "변경할 항목이 없습니다 (role 또는 workspace_slug)."
-        )
-    if payload.role == Role.manager:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "manager role 은 더 이상 지원하지 않습니다.",
         )
 
     _resolve_target_workspace(db, workspace_slug)

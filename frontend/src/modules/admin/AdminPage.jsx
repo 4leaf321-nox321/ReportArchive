@@ -1037,12 +1037,12 @@ function WorkspaceAdminsSection({ workspaceSlug }) {
     setLoading(true)
     try {
       const items = await listMembers(workspaceSlug)
-      // 'admin' role only, deduped by user (a user with admin role at
-      // ancestor + here would appear twice via the effective list).
+      // 'manager' role only (p8 이전엔 'admin'). 한 user 가 부서 트리
+      // 에서 위/아래 모두에서 매니저로 잡히면 두 번 나오므로 dedup.
       const seenUsers = new Set()
       const onlyAdmins = []
       for (const m of items ?? []) {
-        if (m.role !== 'admin') continue
+        if (m.role !== 'manager') continue
         if (seenUsers.has(m.user_id)) continue
         seenUsers.add(m.user_id)
         onlyAdmins.push(m)
@@ -1080,8 +1080,8 @@ function WorkspaceAdminsSection({ workspaceSlug }) {
   async function handleAdd(email) {
     setAdding(true)
     try {
-      await addMember(workspaceSlug, { email, role: 'admin' })
-      toast.success(`${email} 관리자 추가`)
+      await addMember(workspaceSlug, { email, role: 'manager' })
+      toast.success(`${email} 매니저 추가`)
       setQuery('')
       setPickerOpen(false)
       await refresh()

@@ -473,7 +473,7 @@ def admin_set_user_password(
         select(WorkspaceMember).where(WorkspaceMember.user_id == actor.user.id)
     ).scalars()
     for m in actor_memberships:
-        if m.role == Role.admin:
+        if m.role == Role.manager:
             actor_admin_slugs.update(
                 ws_services.get_descendants_inclusive(db, m.workspace_slug)
             )

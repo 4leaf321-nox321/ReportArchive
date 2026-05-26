@@ -11,10 +11,9 @@ import { PageHeader } from '@/shared/components/PageHeader'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { updateMyProfile, changeMyPassword } from '@/shared/api/me'
 
-// admin role 은 라벨을 '매니저'로 통일 (p7 변경). legacy manager row 가
-// 어쩌다 남아 있어도 '매니저' 라벨로 표시되므로 시각적 일관성 유지.
-const ROLE_LABEL = { admin: '매니저', manager: '매니저', user: '사용자' }
-const ROLE_VARIANT = { admin: 'default', manager: 'secondary', user: 'outline' }
+// p8 마이그레이션 후 workspace role 은 manager/user 두 값만 존재.
+const ROLE_LABEL = { manager: '매니저', user: '사용자' }
+const ROLE_VARIANT = { manager: 'default', user: 'outline' }
 
 export default function ProfilePage() {
   const { me, refresh } = useAuth()

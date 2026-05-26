@@ -40,15 +40,23 @@ class CurrentUser:
     role: Role  # role on `workspace` (after tree traversal)
 
     @property
+    def is_manager(self) -> bool:
+        """이 부서의 '매니저' (workspace_members.role=manager). p8 이전엔
+        Role.admin 이었던 것 — 이름만 바뀜, 권한 의미는 동일."""
+        return self.role == Role.manager
+
+    # 옛 이름 유지: 외부에서 actor.is_admin 으로 부르던 곳이 있을 수 있어
+    # alias. 'admin' 이라는 단어가 User.is_system_admin 과 헷갈리므로 신규
+    # 코드는 is_manager 를 쓸 것.
+    @property
     def is_admin(self) -> bool:
-        return self.role == Role.admin
+        return self.is_manager
 
     @property
     def can_write_reports(self) -> bool:
-        # All authenticated workspace members (admin/manager/user) can edit
-        # reports + composite reports. Writes in virtual aggregate views
-        # (e.g. _global) are still rejected by require_writer.
-        return self.role in (Role.admin, Role.manager, Role.user)
+        # 모든 부서 멤버(매니저/사용자)는 보고서·종합보고를 작성·편집.
+        # 가상 부서(_global 등)는 require_writer 가 별도로 거절.
+        return self.role in (Role.manager, Role.user)
 
 
 # --------------------------------------------------------------------------- #
@@ -184,8 +192,11 @@ def require_role(*allowed: Role):
     return _check
 
 
-require_admin = require_role(Role.admin)
-require_manager = require_role(Role.admin, Role.manager)
+# 부서 매니저 권한이 필요한 라우트 게이트. p8 이전엔 require_admin/
+# require_manager 가 따로 있었지만 의미가 같아져 (manager+admin 합쳐짐)
+# 하나로 통합. 기존 import 호환을 위해 require_admin 은 alias 로 유지.
+require_manager = require_role(Role.manager)
+require_admin = require_manager
 
 
 def require_system_admin(
@@ -218,7 +229,7 @@ def require_writer(actor: CurrentUser = Depends(get_current_user)) -> CurrentUse
             status.HTTP_403_FORBIDDEN,
             "가상(통합) 부서에서는 쓰기 작업을 할 수 없습니다. 실제 부서를 선택하세요.",
         )
-    if actor.role not in (Role.admin, Role.manager, Role.user):
+    if actor.role not in (Role.manager, Role.user):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             f"권한 부족 (현재: {actor.role.value})",

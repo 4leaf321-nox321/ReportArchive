@@ -20,10 +20,15 @@ The two are intentionally separate so an org-wide IT operator
 (시스템 관리자) doesn't double as everyone's 부서 관리자, and a
 부서 관리자 of one team can't reorganize the whole org chart.
 
-Roles in WorkspaceMember (3 levels):
-    admin   — 부서 관리자 — manage that workspace's members + manager rights
-    manager — write/edit/delete reports + create/edit templates
-    user    — read reports
+Roles in WorkspaceMember (2 levels, p7/p8 정리 후):
+    manager — 부서 매니저 — 그 부서의 멤버·템플릿·폴더·AI 프롬프트
+              관리 + 사용자 권한 포함. (p7 이전엔 'admin' 으로 저장됐고,
+              p8 마이그레이션이 enum value 자체를 manager 로 rename.)
+    user    — 보고서 작성·편집·삭제·조회. 템플릿/부서 관리 X.
+
+이전엔 'admin/manager/user' 3단계였는데, 중간 'manager' (템플릿만 가능)
+가 사실상 안 쓰이고 admin 의 부분집합이라 폐기. UI 에서 '부서 관리자' /
+'관리자' / '매니저' 가 같은 데이터를 가리키던 혼란도 함께 정리.
 """
 from __future__ import annotations
 
@@ -37,7 +42,8 @@ from app.database import Base
 
 
 class Role(str, enum.Enum):
-    admin = "admin"
+    # 'manager' = 부서 매니저. p8 마이그레이션이 기존 'admin' enum value 를
+    # 통째로 'manager' 로 rename. 더 이상 'admin' value 는 존재하지 않음.
     manager = "manager"
     user = "user"
 

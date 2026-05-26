@@ -131,7 +131,9 @@ def _board_lead_user_id(db: Session, workspace_slug: str) -> Optional[int]:
     ).scalars().all()
     if not rows:
         return None
-    priority = {Role.admin: 0, Role.manager: 1, Role.user: 2}
+    # 매니저가 사용자보다 우선. p8 이전엔 admin/manager/user 3단계였지만
+    # 이제 manager/user 두 단계라 두 키만 필요.
+    priority = {Role.manager: 0, Role.user: 1}
     rows.sort(key=lambda m: priority.get(m.role, 99))
     return rows[0].user_id
 
@@ -295,10 +297,8 @@ def set_mount_folder(
                 WorkspaceMember.workspace_slug == workspace_slug,
             )
         ).scalar_one_or_none()
-        is_board_admin = m is not None and m.role in (
-            Role.admin,
-            Role.manager,
-        )
+        # 매니저 (=옛 admin) 면 게시판 폴더를 옮길 수 있음.
+        is_board_admin = m is not None and m.role == Role.manager
     if not (is_owner or is_mounter or is_board_admin):
         raise MountForbiddenError(
             "이 보고서의 폴더 위치를 변경할 권한이 없습니다."
@@ -369,7 +369,7 @@ def unmount_report(
                 WorkspaceMember.workspace_slug == workspace_slug,
             )
         ).scalar_one_or_none()
-        is_board_admin = m is not None and m.role == Role.admin
+        is_board_admin = m is not None and m.role == Role.manager
     if not (is_owner or is_board_admin):
         raise MountForbiddenError(
             "본인 보고서를 게시 해제하거나 해당 게시판 관리자만 가능합니다."

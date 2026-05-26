@@ -447,7 +447,7 @@ def ensure_personal_workspace(db: Session, user: User) -> Workspace:
             WorkspaceMember(
                 user_id=user.id,
                 workspace_slug=slug,
-                role=Role.admin,
+                role=Role.manager,
             )
         )
         db.flush()

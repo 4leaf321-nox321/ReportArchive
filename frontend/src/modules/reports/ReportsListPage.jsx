@@ -97,11 +97,11 @@ export default function ReportsListPage() {
   const isOrg = workspace?.kind === 'org'
   const showFolderSidebar = isPersonal || isOrg
   // Permission gate for folder CRUD: personal always allowed for owner;
-  // org limited to workspace admin/manager. me.role reflects the current
+  // org limited to workspace manager. me.role reflects the current
   // workspace's role for the actor (resolved server-side per request).
   const canEditFolders = isPersonal
     ? true
-    : isOrg && (me?.role === 'admin' || me?.role === 'manager')
+    : isOrg && me?.role === 'manager'
 
   useEffect(() => {
     setEntityFilter([])

@@ -22,14 +22,17 @@ def _query_members_at(db: Session, workspace_slug: str):
 
 
 def list_effective_members(db: Session, workspace_slug: str) -> list[MemberRead]:
-    """Returns the workspace's effective member roster:
+    """Returns only members who actually have access to this workspace:
         1. direct      — rows on this workspace
         2. inherited   — rows on ancestor workspaces (cascades down)
-        3. descendant  — rows on child workspaces (admin can manage)
 
-    For ancestor inheritance the closest ancestor wins (one entry per user).
-    For descendants, every membership row is shown — a user assigned to two
-    different sub-workspaces shows up twice with the appropriate role + slug.
+    이전엔 descendant 부서의 멤버까지 합쳐 반환했는데, 자손 부서 멤버는
+    이 워크스페이스에 실제 권한이 없는데도 매니저 명단·멤버 명단에 섞여
+    "상속된 것처럼" 보여서 혼동을 야기했음. 자손 부서 관리는 그 부서의
+    멤버 페이지로 이동해 수행 — 한 화면에 합쳐 보지 않는다.
+
+    For ancestor inheritance the closest ancestor wins (one entry per user) —
+    a row on the workspace itself shadows any ancestor inheritance.
     """
     members: list[MemberRead] = []
 
@@ -68,28 +71,6 @@ def list_effective_members(db: Session, workspace_slug: str) -> list[MemberRead]
                     source_workspace_slug=ancestor.slug,
                     created_at=None,
                     is_home=(row.User.home_workspace_slug == ancestor.slug),
-                )
-            )
-
-    # 3. Descendants (no dedup — show each sub-workspace assignment)
-    descendants = [
-        s
-        for s in ws_services.get_descendants_inclusive(db, workspace_slug)
-        if s != workspace_slug
-    ]
-    for descendant_slug in descendants:
-        for row in _query_members_at(db, descendant_slug):
-            members.append(
-                MemberRead(
-                    id=row.WorkspaceMember.id,
-                    user_id=row.User.id,
-                    email=row.User.email,
-                    name=row.User.name,
-                    role=row.WorkspaceMember.role,
-                    source=MemberSource.descendant,
-                    source_workspace_slug=descendant_slug,
-                    created_at=row.WorkspaceMember.created_at,
-                    is_home=(row.User.home_workspace_slug == descendant_slug),
                 )
             )
 

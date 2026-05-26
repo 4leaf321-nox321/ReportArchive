@@ -138,18 +138,17 @@ export default function MembersPage() {
     }
   }
 
-  // Merge "direct on this workspace" + "direct on a descendant" into one
-  // editable roster — the distinction wasn't useful in practice.
-  const inScope = (members ?? []).filter(
-    (m) => m.source === 'direct' || m.source === 'descendant',
-  )
+  // 이 부서에서 실제로 권한을 가진 사람만 노출. 자손 부서 멤버는 여기
+  // 권한이 없는데도 명단에 끼어 있어 헷갈렸기에 백엔드에서 제거. 자손
+  // 부서 관리는 그 부서 페이지로 이동해 수행.
+  const directMembers = (members ?? []).filter((m) => m.source === 'direct')
   const inherited = (members ?? []).filter((m) => m.source === 'inherited')
 
   return (
     <div className="p-6 space-y-6">
       <PageHeader
         title="멤버"
-        description={`${workspace.name} 및 하위 부서 — ${inScope.length}명${
+        description={`${workspace.name} — ${directMembers.length}명${
           inherited.length ? ` (상위 상속 ${inherited.length}명)` : ''
         }`}
         breadcrumbs={breadcrumb}
@@ -171,15 +170,15 @@ export default function MembersPage() {
             <CardContent className="pt-6">
               <SectionHeading
                 title="멤버 명단"
-                hint={`${workspace.name} 자체 + 모든 하위 부서의 멤버. 부서·역할 드롭다운으로 즉시 변경.`}
+                hint={`${workspace.name} 에 직접 임명된 사람. 역할 드롭다운으로 즉시 변경. 자손 부서 멤버는 해당 부서 페이지에서 관리.`}
               />
-              {inScope.length === 0 ? (
+              {directMembers.length === 0 ? (
                 <p className="text-sm text-muted-foreground py-4">
-                  이 부서와 하위 부서에 등록된 멤버가 없습니다.
+                  이 부서에 등록된 멤버가 없습니다.
                 </p>
               ) : (
                 <ul className="divide-y">
-                  {inScope.map((m) => (
+                  {directMembers.map((m) => (
                     <MemberRow
                       key={m.id}
                       member={m}

@@ -1583,16 +1583,13 @@ export default function ReportDetailPage() {
     }
   }
 
-  // Local snapshot export — downloads the current working draft (title +
-  // report_date + tags + pages) as a JSON file. The `id` and `status`
-  // columns are deliberately omitted: the snapshot is meant to be portable
-  // across reports, not to round-trip server identity. A version tag lets
-  // the importer reject unrelated JSON.
-  function handleLocalSave() {
-    if (!draft) return
-    // Audit fields — informational only. They describe the server-side
-    // state of the report at export time so the JSON is self-explanatory
-    // when archived offline. They don't round-trip back through import.
+  // Build the canonical `report_archive_draft_v1` payload — shared by the
+  // local-save (file download) path and the floating "JSON 복사" button
+  // so they always emit identical shapes. `meta` carries server-side
+  // audit fields (owner / timestamps / status) for offline-archive
+  // readability; they're informational and don't round-trip through
+  // import (see parseImportPayload — it ignores meta entirely).
+  function buildDraftJsonPayload() {
     const meta = existingReport
       ? {
           workspace_slug: existingReport.workspace_slug,
@@ -1607,15 +1604,25 @@ export default function ReportDetailPage() {
           status: existingReport.status,
         }
       : null
-    const payload = {
+    return {
       _type: 'report_archive_draft_v1',
       saved_at: new Date().toISOString(),
-      title: draft.title ?? '',
-      report_date: draft.report_date ?? '',
-      tags: draft.tags ?? [],
-      pages: draft.pages ?? [],
+      title: draft?.title ?? '',
+      report_date: draft?.report_date ?? '',
+      tags: draft?.tags ?? [],
+      pages: draft?.pages ?? [],
       meta,
     }
+  }
+
+  // Local snapshot export — downloads the current working draft (title +
+  // report_date + tags + pages) as a JSON file. The `id` and `status`
+  // columns are deliberately omitted: the snapshot is meant to be portable
+  // across reports, not to round-trip server identity. A version tag lets
+  // the importer reject unrelated JSON.
+  function handleLocalSave() {
+    if (!draft) return
+    const payload = buildDraftJsonPayload()
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
       type: 'application/json',
     })
@@ -1631,6 +1638,42 @@ export default function ReportDetailPage() {
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
     toast.success('JSON 파일로 저장했습니다.')
+  }
+
+  // Copy the same draft snapshot to the clipboard. Use case: feed the
+  // current report state into an AI conversation alongside a patch
+  // prompt — the AI then has both the prompt's `{{template_blocks}}`
+  // context AND the actual content shapes to mimic, which makes
+  // `content` field outputs land in the right schema. Falls back to a
+  // hidden textarea + execCommand path so insecure-context browsers
+  // (file://, http on intranet) still work.
+  async function handleCopyJson() {
+    if (!draft) {
+      toast.error('복사할 보고서가 없습니다.')
+      return
+    }
+    const payload = buildDraftJsonPayload()
+    const text = JSON.stringify(payload, null, 2)
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+      }
+      const sizeKb = Math.round(text.length / 102.4) / 10
+      toast.success(`현재 문서 JSON 을 클립보드에 복사했습니다 (${sizeKb} KB).`)
+    } catch (e) {
+      toast.error('클립보드 복사에 실패했습니다.', {
+        description: String(e?.message ?? e),
+      })
+    }
   }
 
   // PDF export — opens a small dialog so the writer can pick a font
@@ -1885,6 +1928,91 @@ export default function ReportDetailPage() {
       return { ...(d ?? {}), pages: nextPages }
     })
     setIsEditing(true)
+  }
+
+  /** Patch-mode paste: take a `report_archive_draft_patch_v1` payload and
+   *  overlay its block_updates onto the current page. Each update lands
+   *  in two places at most:
+   *    - update.content      → page.content[id]            (overwrite)
+   *    - update.props_patch  → page.props_overrides[id]    (shallow merge)
+   *
+   *  Block ids that don't exist on the current page (template blocks +
+   *  extras + any existing content/props/sections keys, via
+   *  collectPageBlockIds) are skipped and surfaced as a warning toast so
+   *  the author notices AI hallucinations instead of seeing a silent
+   *  no-op. Save is *not* triggered — the user reviews the change in the
+   *  editor and saves manually, same flow as the other paste modes. */
+  function applyPatchToCurrentPage(text) {
+    const obj = parsePatchPayload(text)
+    if (!draft?.pages || draft.pages.length === 0) {
+      throw new Error('현재 보고서에 페이지가 없습니다.')
+    }
+    // Compute the entire next page outside the state setter so the
+    // applied/skipped tally is computed once even under React StrictMode
+    // (which double-invokes state-updater functions in dev). The setter
+    // then only swaps the precomputed page in.
+    const idx = clamp(currentPage, 0, draft.pages.length - 1)
+    const target = draft.pages[idx]
+    const targetTpl = getCachedTemplate(pageTemplateMap, target)
+    const knownIds = collectPageBlockIds(target, targetTpl)
+
+    const nextContent = { ...(target.content ?? {}) }
+    const nextPropsOverrides = { ...(target.props_overrides ?? {}) }
+    const skippedIds = []
+    let appliedCount = 0
+    for (const u of obj.block_updates) {
+      if (!knownIds.has(u.id)) {
+        skippedIds.push(u.id)
+        continue
+      }
+      if ('content' in u) {
+        nextContent[u.id] = u.content
+      }
+      if ('props_patch' in u) {
+        nextPropsOverrides[u.id] = {
+          ...(nextPropsOverrides[u.id] ?? {}),
+          ...u.props_patch,
+        }
+      }
+      appliedCount++
+    }
+
+    if (appliedCount > 0) {
+      const nextPage = {
+        ...target,
+        content: nextContent,
+        props_overrides:
+          Object.keys(nextPropsOverrides).length > 0
+            ? nextPropsOverrides
+            : null,
+      }
+      setDraft((d) => {
+        if (!d?.pages || d.pages.length === 0) return d
+        const nextPages = [...d.pages]
+        // Bound-check again in case currentPage shifted between compute
+        // and apply — fall through to the original target index since
+        // the user's intent was "the page they were looking at".
+        nextPages[Math.min(idx, nextPages.length - 1)] = nextPage
+        return { ...d, pages: nextPages }
+      })
+      setIsEditing(true)
+      toast.success(
+        `${appliedCount}개 블록을 갱신했습니다. 저장하려면 “저장” 버튼을 눌러주세요.` +
+          (skippedIds.length > 0
+            ? ` (${skippedIds.length}개는 id 가 일치하지 않아 건너뜀)`
+            : ''),
+      )
+    } else {
+      toast.warning(
+        '갱신된 블록이 없습니다. 모든 id 가 현재 페이지에 존재하지 않습니다.',
+        {
+          description:
+            skippedIds.length > 0
+              ? `건너뛴 id: ${skippedIds.slice(0, 8).join(', ')}${skippedIds.length > 8 ? ` … (+${skippedIds.length - 8})` : ''}`
+              : undefined,
+        },
+      )
+    }
   }
 
   async function handleLocalLoad(e) {
@@ -2541,6 +2669,9 @@ export default function ReportDetailPage() {
           appendImportedToCurrentPage(text)
           toast.success('JSON 의 위젯을 현재 페이지 끝에 이어 붙였습니다.')
         }}
+        onApplyPatch={(text) => {
+          applyPatchToCurrentPage(text)
+        }}
       />
 
       {pageContextMenu && (
@@ -2813,6 +2944,7 @@ export default function ReportDetailPage() {
           shot via `report-detail-floating`. */}
       {isEditing && (
         <div className="report-detail-floating fixed bottom-6 right-6 z-40 print:hidden flex flex-col items-end gap-2">
+          <FloatingCopyJson onCopy={handleCopyJson} />
           <FloatingPasteJson onOpen={() => setPasteJsonOpen(true)} />
           <FloatingReportSettings onOpen={() => setSettingsDialogOpen(true)} />
           <FloatingAddWidget
@@ -3008,6 +3140,7 @@ function AiPromptDialog({ open, onOpenChange, prompt, context, widgetCatalog }) 
       total: widgets.length,
       loading: !widgetCatalog,
       wildcardAll: !!prompt?.wildcard_all,
+      pageContext: !!prompt?.page_context,
     }
   }, [prompt, widgetCatalog])
 
@@ -3058,9 +3191,18 @@ function AiPromptDialog({ open, onOpenChange, prompt, context, widgetCatalog }) 
  *  `wildcard_all`), so adding a `{{widget:foo}}` token to the body in
  *  the AI 설정 page is enough — no manual sync with this UI. */
 function WidgetCoverageSidebar({ coverage }) {
-  const { covered, uncovered, total, loading, wildcardAll } = coverage
+  const { covered, uncovered, total, loading, wildcardAll, pageContext } =
+    coverage
   return (
     <div className="w-60 shrink-0 border rounded-md overflow-auto p-2 text-xs bg-muted/20">
+      {pageContext && (
+        <div className="mb-2 rounded-md border border-violet-500/40 bg-violet-500/10 px-2 py-1.5">
+          <div className="font-medium text-violet-700">페이지 편집 모드</div>
+          <div className="text-[10px] text-muted-foreground mt-0.5 leading-relaxed">
+            이 프롬프트는 <code>&#123;&#123;template_blocks&#125;&#125;</code> 를 사용해 현재 페이지의 블록들을 컨텍스트로 받습니다. AI 응답을 받으면 “JSON 데이터 붙여넣기 → 일부 블록 갱신” 으로 적용하세요.
+          </div>
+        </div>
+      )}
       <div className="font-medium">위젯 등록 현황</div>
       <div className="text-[10px] text-muted-foreground mb-2">
         {loading
@@ -3190,7 +3332,7 @@ function PdfPrintDialog({ open, onOpenChange, scale, onChangeScale, onConfirm })
 }
 
 /** Lets the user paste a `report_archive_draft_v1` JSON blob directly
- *  instead of uploading a file. Three commit modes — what differs is
+ *  instead of uploading a file. Four commit modes — what differs is
  *  *where* the imported content lands:
  *   - 전체 교체           → replace the whole draft (title/date/tags
  *                          + every page).
@@ -3200,6 +3342,9 @@ function PdfPrintDialog({ open, onOpenChange, scale, onChangeScale, onConfirm })
  *   - 현재 페이지 끝에 추가 → flatten the imported widgets and slot
  *                          them into the CURRENT page's extra_blocks.
  *                          Current page's template + metadata stays.
+ *   - 일부 블록 갱신       → expects a `report_archive_draft_patch_v1`
+ *                          payload; overlays its block_updates onto
+ *                          the current page's content / props_overrides.
  *
  *  Validation is delegated to the callback, which throws on schema
  *  mismatch; we surface the error inline so the user can fix the
@@ -3210,10 +3355,16 @@ function PasteJsonDialog({
   onReplace,
   onAppendNewPages,
   onAppendToCurrentPage,
+  onApplyPatch,
 }) {
   const [text, setText] = useState('')
   const [err, setErr] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  // Live "is this a patch payload?" probe — surfaces a single-line
+  // preview ("N개 블록 갱신 예정: …") so the author sees what's about
+  // to happen *before* hitting the patch button. Falls back to null
+  // for any non-patch / invalid input — no preview shown, no error.
+  const patchPreview = useMemo(() => probePatchPreview(text), [text])
   useEffect(() => {
     if (open) {
       setText('')
@@ -3276,7 +3427,22 @@ function PasteJsonDialog({
           <div>
             <strong>현재 페이지 끝에 추가</strong>: 기존 페이지·구조 유지, JSON 의 위젯들을 지금 보고 있는 페이지의 끝에 합침. (id 충돌은 자동 회피)
           </div>
+          <div>
+            <strong>일부 블록 갱신</strong>: <code>_type=&quot;report_archive_draft_patch_v1&quot;</code> 형식의 JSON 을 받아 현재 페이지의 지정 블록만 덮어씁니다. (id 가 없는 블록은 건너뜀)
+          </div>
         </div>
+        {patchPreview && (
+          <div className="rounded-md border border-primary/40 bg-primary/5 px-2 py-1.5 text-[11px] leading-relaxed">
+            <div className="font-medium">
+              패치 미리보기 — {patchPreview.count}개 블록 갱신 예정
+            </div>
+            <div className="mt-0.5 text-muted-foreground break-all">
+              {patchPreview.ids.slice(0, 12).join(', ')}
+              {patchPreview.ids.length > 12 &&
+                ` … (+${patchPreview.ids.length - 12})`}
+            </div>
+          </div>
+        )}
         {err && (
           <p className="text-xs text-destructive whitespace-pre-wrap">{err}</p>
         )}
@@ -3289,6 +3455,18 @@ function PasteJsonDialog({
           >
             취소
           </Button>
+          {onApplyPatch && (
+            <Button
+              variant={patchPreview ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => runWith(onApplyPatch)}
+              disabled={submitting}
+              title="JSON 의 block_updates 를 현재 페이지의 블록에 덮어쓰기 (id 매칭)"
+            >
+              <Sparkles className="mr-1 h-3 w-3" />
+              일부 블록 갱신
+            </Button>
+          )}
           {onAppendToCurrentPage && (
             <Button
               variant="outline"
@@ -5020,6 +5198,79 @@ function parseImportPayload(text) {
   return obj
 }
 
+/** Parse a "patch" payload — the format an AI returns when asked to update
+ *  only specific blocks of the current page, rather than emitting a full
+ *  draft. Validates structure but leaves content / props_patch values as
+ *  free-form JSON (props is freeform by design; content shape is per-widget).
+ *
+ *  Shape:
+ *    {
+ *      "_type": "report_archive_draft_patch_v1",
+ *      "block_updates": [
+ *        { "id": "...", "content": <any>?, "props_patch": <object>? },
+ *        ...
+ *      ]
+ *    }
+ *
+ *  At least one of `content` / `props_patch` must be present per entry —
+ *  an entry with only `id` is a no-op and rejected so authors notice.
+ */
+function parsePatchPayload(text) {
+  const obj = parseJsonWithLatexFix(text)
+  if (obj?._type !== 'report_archive_draft_patch_v1') {
+    throw new Error(
+      '지원하지 않는 형식입니다. (_type=report_archive_draft_patch_v1 이어야 합니다.)',
+    )
+  }
+  if (!Array.isArray(obj.block_updates) || obj.block_updates.length === 0) {
+    throw new Error('block_updates 배열이 비어 있습니다.')
+  }
+  obj.block_updates.forEach((u, i) => {
+    if (!u || typeof u !== 'object' || Array.isArray(u)) {
+      throw new Error(`block_updates[${i}] 가 객체가 아닙니다.`)
+    }
+    if (typeof u.id !== 'string' || !u.id.trim()) {
+      throw new Error(`block_updates[${i}].id 가 비어 있습니다.`)
+    }
+    const hasContent = 'content' in u
+    const hasProps = 'props_patch' in u
+    if (!hasContent && !hasProps) {
+      throw new Error(
+        `block_updates[${i}] (id="${u.id}") 에 content 도 props_patch 도 없습니다.`,
+      )
+    }
+    if (
+      hasProps &&
+      (u.props_patch == null ||
+        typeof u.props_patch !== 'object' ||
+        Array.isArray(u.props_patch))
+    ) {
+      throw new Error(
+        `block_updates[${i}] (id="${u.id}").props_patch 는 객체여야 합니다.`,
+      )
+    }
+  })
+  return obj
+}
+
+/** Lightweight "is this a patch payload?" probe for live preview in the
+ *  PasteJsonDialog — never throws. Returns the parsed update count + the
+ *  list of target ids when the text is a valid patch, otherwise null.
+ *  Cheap enough to run on every keystroke (parser cost is the JSON parse
+ *  itself, which the user pays for any payload they're about to apply). */
+function probePatchPreview(text) {
+  if (!text || !text.trim()) return null
+  try {
+    const obj = parsePatchPayload(text)
+    return {
+      count: obj.block_updates.length,
+      ids: obj.block_updates.map((u) => u.id),
+    }
+  } catch {
+    return null
+  }
+}
+
 /** Wrap JSON.parse with a single-pass LaTeX-friendly backslash repair.
  *
  *  AI responses frequently produce `"\sigma"` / `"\frac{...}"` (single
@@ -5580,6 +5831,25 @@ function FloatingPasteJson({ onOpen }) {
     >
       <ClipboardPaste className="mr-2 h-4 w-4" />
       JSON 붙여넣기
+    </Button>
+  )
+}
+
+/** Floating "JSON 복사" button — copies the current draft snapshot (same
+ *  shape as the file-download path) to the clipboard so the writer can
+ *  paste the report state into an AI conversation alongside a patch-style
+ *  prompt. Sits directly above 붙여넣기 in the floating cluster. */
+function FloatingCopyJson({ onCopy }) {
+  return (
+    <Button
+      size="lg"
+      variant="secondary"
+      className="h-12 rounded-full px-5 shadow-lg"
+      title="현재 보고서의 JSON 을 클립보드에 복사 (AI 에 줄 컨텍스트로 사용)"
+      onClick={onCopy}
+    >
+      <Copy className="mr-2 h-4 w-4" />
+      JSON 복사
     </Button>
   )
 }

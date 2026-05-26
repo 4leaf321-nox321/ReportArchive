@@ -17,6 +17,11 @@
 
 const WIDGET_TOKEN_RE = /{{\s*widget\s*:\s*([a-z][a-z0-9_]*)\s*}}/g
 const WILDCARD_RE = /{{\s*(widget_catalog|widget_examples)\s*}}/
+// {{template_blocks}} feeds the AI the CURRENT page's block list rather
+// than the global widget catalog — marks a prompt as a "page editor"
+// (patch-style edits) rather than a generator. Tracked separately so the
+// picker can render a distinct chip.
+const PAGE_CONTEXT_RE = /{{\s*template_blocks\s*}}/
 
 /** Return widget types referenced by `{{widget:foo}}` tokens, in
  *  document order, deduplicated. */
@@ -34,9 +39,18 @@ export function hasWildcard(body) {
   return WILDCARD_RE.test(body)
 }
 
+/** True iff the body uses the {{template_blocks}} token — i.e. the
+ *  prompt operates on the user's CURRENT page (patch-style edit flow)
+ *  rather than the global catalog. */
+export function hasPageContext(body) {
+  if (!body) return false
+  return PAGE_CONTEXT_RE.test(body)
+}
+
 export function detectWidgetCoverage(body) {
   return {
     widgetTypes: extractWidgetTypes(body),
     wildcardAll: hasWildcard(body),
+    pageContext: hasPageContext(body),
   }
 }

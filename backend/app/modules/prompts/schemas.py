@@ -42,6 +42,11 @@ class PromptRead(BaseModel):
     # populates them after Pydantic has filled the rest of the fields.
     derived_widget_types: list[str] = []
     wildcard_all: bool = False
+    # True iff body uses {{template_blocks}} — marks the prompt as a
+    # "current page editor" (patch-style flow) rather than a wildcard or
+    # per-widget generator. Mutually exclusive with the chip kinds but
+    # technically can coexist if an author wants both contexts.
+    page_context: bool = False
 
     @model_validator(mode="after")
     def _compute_coverage(self) -> "PromptRead":
@@ -51,6 +56,7 @@ class PromptRead(BaseModel):
         # output after the rest is built.
         object.__setattr__(self, "derived_widget_types", coverage["widget_types"])
         object.__setattr__(self, "wildcard_all", coverage["wildcard_all"])
+        object.__setattr__(self, "page_context", coverage["page_context"])
         return self
 
 

@@ -33,6 +33,12 @@ _WIDGET_TOKEN_RE = re.compile(r"{{\s*widget\s*:\s*([a-z][a-z0-9_]*)\s*}}")
 # being present means "this prompt addresses every widget type" — useful
 # for the v1/v2 seed prompts that dump the whole catalog at once.
 _WILDCARD_RE = re.compile(r"{{\s*(widget_catalog|widget_examples)\s*}}")
+# Page-context token: {{template_blocks}} feeds the AI the *current page's*
+# block list rather than the global catalog. Used by patch-style prompts
+# that edit existing blocks instead of generating new ones, so coverage
+# chips can distinguish "이 프롬프트는 페이지를 편집한다" from the wildcard /
+# per-widget categories.
+_PAGE_CONTEXT_RE = re.compile(r"{{\s*template_blocks\s*}}")
 
 
 def extract_widget_types(body: str) -> list[str]:
@@ -55,13 +61,24 @@ def has_wildcard(body: str) -> bool:
     return _WILDCARD_RE.search(body) is not None
 
 
+def has_page_context(body: str) -> bool:
+    """True iff the body uses the {{template_blocks}} token — i.e. it
+    operates on the user's CURRENT page rather than the global catalog.
+    These prompts are typically patch-style edits and warrant their own
+    badge in the picker UI."""
+    if not body:
+        return False
+    return _PAGE_CONTEXT_RE.search(body) is not None
+
+
 def detect_widget_coverage(body: str) -> dict:
-    """Bundle the two derived facts into one dict — what the prompt list
+    """Bundle the derived facts into one dict — what the prompt list
     endpoint attaches to each row so the frontend's picker can render
     chips + the AiPromptDialog sidebar without reparsing the body."""
     return {
         "widget_types": extract_widget_types(body),
         "wildcard_all": has_wildcard(body),
+        "page_context": has_page_context(body),
     }
 
 

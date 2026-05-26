@@ -301,7 +301,7 @@ function CoverageSidebar({ coverage }) {
     () => new Set((catalog?.widgets ?? []).map((w) => w.type)),
     [catalog],
   )
-  const { widgetTypes, wildcardAll } = coverage
+  const { widgetTypes, wildcardAll, pageContext } = coverage
 
   // Split detected widget tokens into "in catalog" vs "unknown" so typos
   // (e.g. `{{widget:bullet_list}}` instead of `bulleted_list`) surface
@@ -312,6 +312,18 @@ function CoverageSidebar({ coverage }) {
   return (
     <div className="w-56 shrink-0 flex flex-col gap-2 rounded-md border bg-muted/20 p-3 text-xs overflow-y-auto">
       <div className="font-semibold">검출된 위젯</div>
+      {pageContext && (
+        <>
+          <div className="text-[10px] text-muted-foreground">
+            본문에 <code>&#123;&#123;template_blocks&#125;&#125;</code> 가 있어{' '}
+            <strong>현재 페이지의 블록들</strong>을 컨텍스트로 사용합니다 (편집/patch 모드).
+          </div>
+          <Badge className="w-fit bg-violet-600 hover:bg-violet-600/90">
+            페이지 편집
+          </Badge>
+          <Separator className="my-1" />
+        </>
+      )}
       {wildcardAll && (
         <>
           <div className="text-[10px] text-muted-foreground">
@@ -322,7 +334,7 @@ function CoverageSidebar({ coverage }) {
           <Separator className="my-1" />
         </>
       )}
-      {known.length === 0 && !wildcardAll && (
+      {known.length === 0 && !wildcardAll && !pageContext && (
         <p className="text-[10px] text-muted-foreground">
           본문에 <code>&#123;&#123;widget:foo&#125;&#125;</code> 토큰을 넣으면 여기에 표시됩니다.
         </p>

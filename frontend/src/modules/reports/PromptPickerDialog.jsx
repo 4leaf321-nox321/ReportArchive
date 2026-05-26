@@ -140,12 +140,23 @@ export function PromptPickerDialog({ open, onClose, onPick }) {
 
 function PromptPickCard({ prompt, onClick }) {
   const chips = useMemo(() => {
-    if (prompt.wildcard_all) return [{ label: '전체 위젯', wildcard: true }]
-    return (prompt.derived_widget_types ?? []).map((t) => ({
-      label: t,
-      wildcard: false,
-    }))
-  }, [prompt.derived_widget_types, prompt.wildcard_all])
+    const out = []
+    if (prompt.page_context) {
+      out.push({ label: '페이지 편집', kind: 'page' })
+    }
+    if (prompt.wildcard_all) {
+      out.push({ label: '전체 위젯', kind: 'wildcard' })
+    } else {
+      for (const t of prompt.derived_widget_types ?? []) {
+        out.push({ label: t, kind: 'widget' })
+      }
+    }
+    return out
+  }, [
+    prompt.derived_widget_types,
+    prompt.wildcard_all,
+    prompt.page_context,
+  ])
 
   return (
     <button
@@ -171,8 +182,17 @@ function PromptPickCard({ prompt, onClick }) {
           {chips.slice(0, 10).map((c) => (
             <Badge
               key={c.label}
-              variant={c.wildcard ? 'default' : 'secondary'}
-              className="h-4 px-1.5 text-[10px] font-normal"
+              variant={
+                c.kind === 'wildcard' || c.kind === 'page'
+                  ? 'default'
+                  : 'secondary'
+              }
+              className={
+                'h-4 px-1.5 text-[10px] font-normal' +
+                (c.kind === 'page'
+                  ? ' bg-violet-600 hover:bg-violet-600/90'
+                  : '')
+              }
             >
               {c.label}
             </Badge>

@@ -29,6 +29,7 @@ import TemplateEditorPage from '@/modules/templates/TemplateEditorPage'
 import CompositesListPage from '@/modules/composites/CompositesListPage'
 import CompositeDetailPage from '@/modules/composites/CompositeDetailPage'
 import AdminPage from '@/modules/admin/AdminPage'
+import AccountsAdminPage from '@/modules/admin/AccountsAdminPage'
 import ServerPage from '@/modules/admin/ServerPage'
 import EntitiesAdminPage from '@/modules/entities/EntitiesAdminPage'
 import VocListPage from '@/modules/voc/VocListPage'
@@ -134,6 +135,7 @@ const router = createBrowserRouter(
         <Route path="/voc/:postId" element={<VocDetailPage />} />
         <Route path="/ai-settings" element={<AiSettingsPage />} />
         <Route path="/admin" element={<AdminPage />} />
+        <Route path="/admin/accounts" element={<AccountsAdminPage />} />
         <Route path="/admin/entities" element={<EntitiesAdminPage />} />
         <Route path="/server" element={<ServerPage />} />
 

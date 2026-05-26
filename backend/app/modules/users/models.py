@@ -62,6 +62,18 @@ class User(Base):
         nullable=False,
     )
 
+    # 소속 부서 — signup 시 선택한 부서. 어느 부서에 속하는지는 이 한
+    # 컬럼이 권위 있는 답이고, 그 외 추가 멤버십은 부서 멤버 페이지에서
+    # 별도로 관리. NULL 가능 — admin 이 만든 신규 계정이 아직 어떤 부서
+    # 도 지정 안 된 상태 또는 home 부서가 삭제된 사용자(ON DELETE SET
+    # NULL). NULL 이면 사이드바·프로필 화면이 '소속 없음' 표시.
+    home_workspace_slug: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("workspaces.slug", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )

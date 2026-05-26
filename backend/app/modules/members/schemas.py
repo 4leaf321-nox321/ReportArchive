@@ -36,6 +36,10 @@ class MemberRead(BaseModel):
     # workspace for source=direct; an ancestor or descendant slug otherwise.
     source_workspace_slug: str
     created_at: Optional[datetime] = None
+    # 이 row 가 사용자의 '소속 부서' 인지 — 부서 멤버 페이지에서 제거
+    # 버튼을 비활성으로 표시하고 '계정 관리 에서 옮긴 뒤 빼라' 라고
+    # 안내하기 위한 플래그. 기존 클라이언트는 무시 가능 (default=False).
+    is_home: bool = False
 
 
 class AddMemberRequest(BaseModel):

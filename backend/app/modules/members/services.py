@@ -46,6 +46,7 @@ def list_effective_members(db: Session, workspace_slug: str) -> list[MemberRead]
                 source=MemberSource.direct,
                 source_workspace_slug=workspace_slug,
                 created_at=row.WorkspaceMember.created_at,
+                is_home=(row.User.home_workspace_slug == workspace_slug),
             )
         )
         seen_via_inheritance.add(row.User.id)
@@ -66,6 +67,7 @@ def list_effective_members(db: Session, workspace_slug: str) -> list[MemberRead]
                     source=MemberSource.inherited,
                     source_workspace_slug=ancestor.slug,
                     created_at=None,
+                    is_home=(row.User.home_workspace_slug == ancestor.slug),
                 )
             )
 
@@ -87,6 +89,7 @@ def list_effective_members(db: Session, workspace_slug: str) -> list[MemberRead]
                     source=MemberSource.descendant,
                     source_workspace_slug=descendant_slug,
                     created_at=row.WorkspaceMember.created_at,
+                    is_home=(row.User.home_workspace_slug == descendant_slug),
                 )
             )
 
@@ -157,8 +160,21 @@ def move_member(
 
 
 def remove_member(db: Session, member: WorkspaceMember) -> None:
+    """Drop a workspace_members row. 라우트가 home 부서 보호 규칙을 먼저
+    검사한 뒤 호출 — home 인 사용자의 home 부서 row 는 계정 관리 페이지
+    에서 home 을 다른 부서로 옮긴 뒤에야 떼낼 수 있다."""
     db.delete(member)
     db.commit()
+
+
+def is_home_membership(db: Session, member: WorkspaceMember) -> bool:
+    """이 멤버십 row 가 사용자의 home(소속) 부서 row 인지 — '본인의 home
+    부서를 부서 멤버에서 빼면 모순' 이슈 방지용. 라우트가 삭제/이동 전에
+    먼저 확인."""
+    user = db.get(User, member.user_id)
+    if user is None:
+        return False
+    return user.home_workspace_slug == member.workspace_slug
 
 
 def get_direct_member(

@@ -20,7 +20,9 @@ export async function listPublicWorkspaces() {
   return extractData(res)
 }
 
-export async function register({ email, name, password }) {
-  const res = await apiClient.post('/api/auth/register', { email, name, password })
+export async function register({ email, name, password, workspaceSlug } = {}) {
+  const body = { email, name, password }
+  if (workspaceSlug) body.workspace_slug = workspaceSlug
+  const res = await apiClient.post('/api/auth/register', body)
   return extractData(res)
 }

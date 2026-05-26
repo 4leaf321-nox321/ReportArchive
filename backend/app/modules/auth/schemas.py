@@ -25,6 +25,10 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     name: str = Field(..., min_length=1, max_length=128)
     password: str = Field(..., min_length=8, max_length=128)
+    # admin 이 계정 관리에서 신규 계정을 만들 때 함께 지정하는 소속 부서.
+    # 비워두면 home 미지정 상태로 만들어지고, 나중에 PUT /users/{id}/home-
+    # workspace 로 채울 수 있다.
+    workspace_slug: str | None = Field(default=None, max_length=64)
 
 
 class RegisteredUser(BaseModel):

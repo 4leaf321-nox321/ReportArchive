@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, Trash2, ShieldCheck, UserCog, User as UserIcon, KeyRound } from 'lucide-react'
+import { Plus, Trash2, ShieldCheck, UserCog, User as UserIcon, KeyRound, Home } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
 import { Badge } from '@/shared/components/ui/badge'
@@ -266,6 +266,18 @@ function MemberRow({
           <span className="font-medium">{member.name}</span>
           <span className="text-[10px] text-muted-foreground font-mono">#{member.user_id}</span>
           {isSelf && <Badge variant="outline" className="text-[10px]">본인</Badge>}
+          {/* 소속 부서 row — 계정 관리에서 결정된 home. 부서 멤버에서는
+              제거 불가, 옮기려면 계정 관리에서 home 을 다른 부서로. */}
+          {member.is_home && (
+            <Badge
+              variant="default"
+              className="text-[10px] gap-0.5"
+              title="이 사용자의 소속 부서. 계정 관리에서만 변경 가능."
+            >
+              <Home className="h-2.5 w-2.5" />
+              소속
+            </Badge>
+          )}
           {readonly && member.source === 'inherited' && (
             <Badge variant="secondary" className="text-[10px]">
               상속: {member.source_workspace_slug}
@@ -283,7 +295,7 @@ function MemberRow({
             workspaces={assignableWorkspaces}
             value={member.source_workspace_slug}
             onChange={(s) => s && s !== member.source_workspace_slug && onChangeWorkspace?.(s)}
-            disabled={isSelf || assignableWorkspaces.length <= 1}
+            disabled={isSelf || member.is_home || assignableWorkspaces.length <= 1}
             compact
             className="min-w-[160px] max-w-[220px]"
             placeholder="부서"
@@ -317,9 +329,16 @@ function MemberRow({
             variant="ghost"
             size="icon"
             className="h-8 w-8 text-destructive"
-            disabled={isSelf}
+            disabled={isSelf || member.is_home}
             onClick={onRemove}
             aria-label="멤버 제거"
+            title={
+              member.is_home
+                ? '소속 부서입니다. 계정 관리에서 소속을 다른 부서로 옮긴 뒤 제거하세요.'
+                : isSelf
+                  ? '본인은 직접 제거할 수 없습니다.'
+                  : '멤버 제거'
+            }
           >
             <Trash2 className="h-4 w-4" />
           </Button>

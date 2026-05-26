@@ -11,11 +11,14 @@ from app.database import get_db
 from app.modules.auth.services import hash_password, verify_password
 from app.modules.users.models import Role, User, WorkspaceMember
 from app.modules.users.schemas import (
+    AccountAdminRead,
     AdminSetPasswordRequest,
     ChangePasswordRequest,
     MembershipRead,
     MeRead,
+    SetHomeWorkspaceRequest,
     SetSystemAdminRequest,
+    SetUserActiveRequest,
     SystemAdminUserRead,
     UpdateProfileRequest,
     UserRead,
@@ -30,6 +33,27 @@ from app.shared.auth import (
 from app.shared.responses import success_response
 
 router = APIRouter()
+
+
+def _account_read(db: Session, user: User, *, membership_count: int) -> AccountAdminRead:
+    """단일 사용자에 대한 AccountAdminRead 패킹. home_workspace 이름까지
+    같이 조회. set_user_active / set_user_home_workspace 가 모두 같은 응답
+    형태를 사용하기에 헬퍼로."""
+    home_name = None
+    if user.home_workspace_slug:
+        ws = db.get(Workspace, user.home_workspace_slug)
+        home_name = ws.name if ws else None
+    return AccountAdminRead(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        is_active=user.is_active,
+        is_system_admin=user.is_system_admin,
+        created_at=user.created_at,
+        membership_count=membership_count,
+        home_workspace_slug=user.home_workspace_slug,
+        home_workspace_name=home_name,
+    )
 
 
 @router.get("/me")
@@ -176,6 +200,187 @@ def search_users(
     query = query.order_by(User.email).limit(min(limit, 100))
     results = list(db.execute(query).scalars())
     return success_response(data=[UserRead.model_validate(u) for u in results])
+
+
+@router.get("/users/all")
+def list_all_accounts(
+    include_inactive: bool = True,
+    db: Session = Depends(get_db),
+    _actor: User = Depends(require_system_admin),
+):
+    """System-admin only: 모든 가입자 계정의 wide view. 부서 멤버 관리와는
+    분리된 '계정 관리' 페이지가 사용한다. include_inactive=False 면 활성
+    계정만 — 비활성화된 사용자는 로그인 차단 상태라 일상 admin 작업에선
+    숨겨 두는 게 보기 편한 선택."""
+    from sqlalchemy import func
+
+    stmt = select(User)
+    if not include_inactive:
+        stmt = stmt.where(User.is_active.is_(True))
+    stmt = stmt.order_by(User.created_at.desc())
+    users = list(db.execute(stmt).scalars())
+
+    # workspace_members count per user — 단일 쿼리로 묶어서 N+1 회피.
+    counts = dict(
+        db.execute(
+            select(
+                WorkspaceMember.user_id,
+                func.count(WorkspaceMember.id),
+            ).group_by(WorkspaceMember.user_id)
+        ).all()
+    )
+
+    # home_workspace 이름 — 화면에서 slug 가 아니라 사람이 읽는 이름으로
+    # 노출하기 위해 한 번에 가져옴. 일부 사용자는 home 미지정(NULL).
+    home_slugs = {u.home_workspace_slug for u in users if u.home_workspace_slug}
+    home_names: dict[str, str] = {}
+    if home_slugs:
+        rows = db.execute(
+            select(Workspace.slug, Workspace.name).where(
+                Workspace.slug.in_(home_slugs)
+            )
+        ).all()
+        home_names = {slug: name for (slug, name) in rows}
+
+    return success_response(
+        data=[
+            AccountAdminRead(
+                id=u.id,
+                email=u.email,
+                name=u.name,
+                is_active=u.is_active,
+                is_system_admin=u.is_system_admin,
+                created_at=u.created_at,
+                membership_count=int(counts.get(u.id, 0)),
+                home_workspace_slug=u.home_workspace_slug,
+                home_workspace_name=home_names.get(u.home_workspace_slug),
+            )
+            for u in users
+        ]
+    )
+
+
+@router.put("/users/{user_id}/home-workspace")
+def set_user_home_workspace(
+    user_id: int,
+    payload: SetHomeWorkspaceRequest,
+    db: Session = Depends(get_db),
+    _actor: User = Depends(require_system_admin),
+):
+    """System-admin: 사용자의 home(소속) 부서를 변경. 새 home 으로 지정된
+    부서에는 WorkspaceMember 행도 자동으로 확보(없으면 role=user 로 추가)
+    — home != 멤버십 모순 방지. NULL 을 주면 home 만 해제하고 기존 멤버십
+    은 건드리지 않는다(다른 부서 멤버십은 여전히 살아있을 수 있음).
+    """
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "사용자를 찾을 수 없습니다."
+        )
+
+    new_slug = (payload.workspace_slug or "").strip() or None
+    if new_slug:
+        ws = db.get(Workspace, new_slug)
+        if ws is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, f"부서를 찾을 수 없습니다: {new_slug}"
+            )
+        if ws.virtual:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "가상 부서는 소속으로 지정할 수 없습니다.",
+            )
+        # 멤버십 확보 — 이미 존재하면 그대로 두고, 없으면 user role 로 추가.
+        existing = db.execute(
+            select(WorkspaceMember).where(
+                WorkspaceMember.user_id == target.id,
+                WorkspaceMember.workspace_slug == new_slug,
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            db.add(
+                WorkspaceMember(
+                    user_id=target.id,
+                    workspace_slug=new_slug,
+                    role=Role.user,
+                )
+            )
+
+    target.home_workspace_slug = new_slug
+    db.commit()
+    db.refresh(target)
+
+    home_name = None
+    if new_slug:
+        ws = db.get(Workspace, new_slug)
+        home_name = ws.name if ws else None
+
+    return success_response(
+        data=AccountAdminRead(
+            id=target.id,
+            email=target.email,
+            name=target.name,
+            is_active=target.is_active,
+            is_system_admin=target.is_system_admin,
+            created_at=target.created_at,
+            membership_count=0,  # 화면이 reload 함
+            home_workspace_slug=target.home_workspace_slug,
+            home_workspace_name=home_name,
+        )
+    )
+
+
+@router.put("/users/{user_id}/active")
+def set_user_active(
+    user_id: int,
+    payload: SetUserActiveRequest,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_system_admin),
+):
+    """System-admin: 계정 활성/비활성 토글. 비활성화하면 로그인이 즉시 막힘
+    (auth.routes 의 login 이 is_active 를 확인). 두 가지 안전장치:
+
+      1. 본인 자신의 활성 플래그는 끌 수 없다 — 즉시 lockout 가능성.
+      2. 비활성화하려는 대상이 현재 살아 있는 마지막 시스템 관리자라면
+         거절. 시스템 관리자 self-demote 규칙과 같은 이유 (관리 권한 공백
+         방지).
+    """
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "사용자를 찾을 수 없습니다."
+        )
+
+    new_active = bool(payload.is_active)
+    if new_active == target.is_active:
+        # 멱등 — 이미 원하는 상태면 그대로 반환.
+        return success_response(data=_account_read(db, target, membership_count=0))
+
+    if not new_active:
+        if target.id == actor.id:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "본인 계정은 비활성화할 수 없습니다.",
+            )
+        if target.is_system_admin:
+            remaining = db.execute(
+                select(User.id).where(
+                    User.is_active.is_(True),
+                    User.is_system_admin.is_(True),
+                    User.id != target.id,
+                ).limit(1)
+            ).first()
+            if remaining is None:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "마지막 시스템 관리자 계정은 비활성화할 수 없습니다. "
+                    "다른 시스템 관리자를 먼저 임명하거나 본 계정의 시스템 "
+                    "관리자 권한을 해제하세요.",
+                )
+
+    target.is_active = new_active
+    db.commit()
+    return success_response(data=_account_read(db, target, membership_count=0))
 
 
 @router.get("/users/system-admins")

@@ -102,6 +102,9 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
         name=payload.name,
         password_hash=auth_services.hash_password(payload.password),
         is_active=True,
+        # signup 시 선택한 부서를 home(소속) 으로. 멤버십 row 도 함께
+        # 만들어 두므로 home != membership 모순 상태가 안 됨.
+        home_workspace_slug=workspace.slug,
     )
     db.add(user)
     db.flush()  # populate user.id before creating membership
@@ -139,23 +142,49 @@ def register(
     db: Session = Depends(get_db),
     _actor: CurrentUser = Depends(require_admin),
 ):
-    """Admin-only user creation (no membership assignment — admin then adds
-    the user to a workspace via the members endpoint)."""
+    """Admin-only user creation. `workspace_slug` 가 주어지면 home(소속)
+    부서로 지정하고 워크스페이스 멤버 row 도 같이 만들어 둠. 생략 시
+    home 미지정 상태로 생성되고 admin 이 나중에 계정 관리에서 채워야 함."""
     existing = db.execute(select(User).where(User.email == payload.email)).first()
     if existing:
         raise HTTPException(status.HTTP_409_CONFLICT, "이미 등록된 이메일입니다.")
+
+    home_slug = (payload.workspace_slug or "").strip() or None
+    if home_slug:
+        ws = db.get(Workspace, home_slug)
+        if not ws:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, f"부서를 찾을 수 없습니다: {home_slug}"
+            )
+        if ws.virtual:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "가상 부서는 소속으로 지정할 수 없습니다.",
+            )
 
     user = User(
         email=payload.email,
         name=payload.name,
         password_hash=auth_services.hash_password(payload.password),
         is_active=True,
+        home_workspace_slug=home_slug,
     )
     db.add(user)
-    db.flush()  # populate user.id for ensure_personal_workspace
+    db.flush()  # populate user.id for ensure_personal_workspace + memberships
     # Same as signup — admin-created users also need a personal workspace
     # so their first /api/reports POST doesn't FK-violate.
     ensure_personal_workspace(db, user)
+    # home 이 지정됐다면 그 부서의 멤버 row 도 함께 만들어 home/멤버십
+    # 모순을 피한다. role=user 가 기본 — admin 이 부서 멤버 페이지에서
+    # 필요 시 승급.
+    if home_slug:
+        db.add(
+            WorkspaceMember(
+                user_id=user.id,
+                workspace_slug=home_slug,
+                role=Role.user,
+            )
+        )
     db.commit()
     db.refresh(user)
     return created_response(data=RegisteredUser.model_validate(user))

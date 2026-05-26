@@ -7,6 +7,7 @@ import {
   Settings,
   Home,
   Users,
+  UserCog,
   HardDrive,
   MessageSquare,
   Sparkles,
@@ -84,6 +85,10 @@ const PUBLIC_MENU = [
  *  로 세분화되어 부서 관리자는 부서 멤버만 보이고 시스템 관리자는 나머지
  *  3개까지 보임. */
 const ADMIN_MENU = [
+  // '계정 관리' 는 가입자 계정 자체의 lifecycle (생성·활성/비활성·시스템
+  // 관리자 권한). 어느 계정이 어느 부서에 들어가는지는 그 아래 '부서
+  // 멤버' 에서 결정 — 두 책임을 분리해서 컨텍스트가 섞이지 않게.
+  { to: '/admin/accounts', label: '계정 관리', icon: UserCog, requireSystemAdmin: true },
   {
     resolve: (slug) => `/w/${slug}/members`,
     label: '부서 멤버',

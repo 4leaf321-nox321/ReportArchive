@@ -77,6 +77,7 @@ def _to_read(db: Session, member: WorkspaceMember, viewing_workspace: str) -> Me
         source=source,
         source_workspace_slug=member.workspace_slug,
         created_at=member.created_at,
+        is_home=(user.home_workspace_slug == member.workspace_slug),
     )
 
 
@@ -158,6 +159,12 @@ def update_member(
                 status.HTTP_400_BAD_REQUEST,
                 "본인의 소속 부서는 직접 변경할 수 없습니다 (다른 관리자에게 요청하세요).",
             )
+        if services.is_home_membership(db, member):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "해당 사용자의 '소속 부서' 입니다. 부서 멤버에서 옮기지 말고 "
+                "'계정 관리' 에서 소속을 변경하세요.",
+            )
         try:
             services.move_member(db, member, payload.workspace_slug)
         except ValueError as exc:
@@ -182,6 +189,12 @@ def remove_member(
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "본인을 부서에서 제거할 수 없습니다 (다른 관리자에게 요청하세요).",
+        )
+    if services.is_home_membership(db, member):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "해당 사용자의 '소속 부서' 입니다. 부서 멤버에서 빼려면 '계정 관리' "
+            "에서 다른 부서로 소속을 옮긴 뒤 시도하세요.",
         )
     services.remove_member(db, member)
     return success_response(data=None, message="삭제되었습니다.")

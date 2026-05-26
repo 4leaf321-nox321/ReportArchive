@@ -6553,9 +6553,14 @@ function BlockEditorCard({
         {dragHandle}
         {headingSectionChip}
         {/* Heading widgets get the comment pin too — anchored top-right.
-            No fullscreen for headings (nothing to expand). */}
+            No fullscreen for headings (nothing to expand). In edit mode
+            the drag-handle bar owns the top strip (and its right side
+            holds the trash button), so drop the pin below it. */}
         {reportId && (
-          <div className="absolute right-2 top-2 z-10 flex items-center gap-1">
+          <div className={cn(
+            'absolute right-2 z-10 flex items-center gap-1',
+            showDragHandle ? 'top-8' : 'top-2',
+          )}>
             <CommentPin
               reportId={reportId}
               pageIndex={pageIndex ?? 0}
@@ -6634,9 +6639,15 @@ function BlockEditorCard({
       {/* Pin + fullscreen group — anchored top-right, horizontally
           stacked so they never overlap. Each child positions inline.
           Pin appears for any widget with a comment-able report context;
-          fullscreen only for view-mode widgets that benefit from it. */}
+          fullscreen only for view-mode widgets that benefit from it.
+          In edit mode the drag-handle bar owns the top strip and holds
+          the trash button on its right side, so push this group below
+          the bar to avoid stacking the pin on top of the trash icon. */}
       {(reportId || canFullscreen) && (
-        <div className="absolute right-2 top-2 z-10 flex items-center gap-1">
+        <div className={cn(
+          'absolute right-2 z-10 flex items-center gap-1',
+          showDragHandle ? 'top-10' : 'top-2',
+        )}>
           {reportId && (
             <CommentPin
               reportId={reportId}

@@ -127,7 +127,7 @@ export function FolderPickerButton({
             <Folder className="mr-1 h-3 w-3" />
           )}
           <span className="max-w-[120px] truncate">
-            {currentFolder?.name ?? '미분류'}
+            {currentFolder?.name ?? '이동'}
           </span>
         </Button>
       </PopoverTrigger>

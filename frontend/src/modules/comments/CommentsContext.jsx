@@ -19,7 +19,24 @@ import {
 
 const CommentsContext = React.createContext(null)
 
-export function CommentsProvider({ reportId, reportPhase, children }) {
+/** CommentsProvider extras:
+ *   resolveBlock(pageIndex, blockId)
+ *     → { widgetType, widgetLabel, blockLabel, pageName, pageNumber } | null
+ *     Lets the panel render a human-readable anchor in each card header
+ *     instead of the opaque `블록 abc123` form. Optional — falls back
+ *     to the raw IDs when not provided (e.g. embedded read-only views).
+ *
+ *   navigateToBlock(pageIndex, blockId)
+ *     Page-switch + scroll-into-view. Owned by ReportDetailPage because
+ *     only it has setCurrentPage and the DOM anchors. Optional.
+ */
+export function CommentsProvider({
+  reportId,
+  reportPhase,
+  resolveBlock,
+  navigateToBlock,
+  children,
+}) {
   const [threads, setThreads] = React.useState([])
   const [loading, setLoading] = React.useState(false)
   const [error, setError] = React.useState(null)
@@ -172,6 +189,17 @@ export function CommentsProvider({ reportId, reportPhase, children }) {
     setOpenThreadId(threadId)
   }
 
+  // Derived anchor for the currently-focused thread — lets BlockCard
+  // draw a ring on the widget that the open comment is attached to, so
+  // the panel and the body stay visually linked. Null when nothing is
+  // focused or the thread isn't loaded yet.
+  const focusedAnchor = React.useMemo(() => {
+    if (!openThreadId) return null
+    const t = threads.find((x) => x.id === openThreadId)
+    if (!t) return null
+    return { pageIndex: t.page_index, blockId: t.block_id }
+  }, [openThreadId, threads])
+
   const value = {
     threads,
     loading,
@@ -193,6 +221,10 @@ export function CommentsProvider({ reportId, reportPhase, children }) {
     pendingDraft,
     beginDraft,
     discardDraft,
+    // anchor lookup + navigation provided by host (ReportDetailPage)
+    resolveBlock: resolveBlock ?? null,
+    navigateToBlock: navigateToBlock ?? null,
+    focusedAnchor,
   }
 
   return (
@@ -226,6 +258,9 @@ export function useComments() {
       pendingDraft: null,
       beginDraft: () => {},
       discardDraft: () => {},
+      resolveBlock: null,
+      navigateToBlock: null,
+      focusedAnchor: null,
     }
   }
   return ctx

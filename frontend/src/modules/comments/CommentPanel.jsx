@@ -15,6 +15,7 @@ import {
   ChevronDown,
   ChevronRight,
   CornerDownLeft,
+  Crosshair,
   Loader2,
   MessageCircle,
   Pencil,
@@ -41,6 +42,8 @@ export function CommentPanel() {
     pendingDraft,
     startThread,
     discardDraft,
+    resolveBlock,
+    navigateToBlock,
   } = useComments()
 
   const containerRef = React.useRef(null)
@@ -97,6 +100,7 @@ export function CommentPanel() {
               <DraftThreadCard
                 pageIndex={pendingDraft.pageIndex}
                 blockId={pendingDraft.blockId}
+                resolveBlock={resolveBlock}
                 onSubmit={async (text) => {
                   await startThread({
                     pageIndex: pendingDraft.pageIndex,
@@ -120,6 +124,8 @@ export function CommentPanel() {
                 thread={t}
                 isFocused={openThreadId === t.id}
                 refSetter={(el) => (rowRefs.current[t.id] = el)}
+                resolveBlock={resolveBlock}
+                navigateToBlock={navigateToBlock}
               />
             ))}
             {resolved.length > 0 && (
@@ -133,6 +139,8 @@ export function CommentPanel() {
                     thread={t}
                     isFocused={openThreadId === t.id}
                     refSetter={(el) => (rowRefs.current[t.id] = el)}
+                    resolveBlock={resolveBlock}
+                    navigateToBlock={navigateToBlock}
                     startCollapsed
                   />
                 ))}
@@ -145,9 +153,17 @@ export function CommentPanel() {
   )
 }
 
-function ThreadCard({ thread, isFocused, refSetter, startCollapsed = false }) {
+function ThreadCard({
+  thread,
+  isFocused,
+  refSetter,
+  resolveBlock,
+  navigateToBlock,
+  startCollapsed = false,
+}) {
   const { reply, toggleResolved, updateComment, removeComment } = useComments()
   const { me } = useAuth()
+  const anchor = resolveBlock?.(thread.page_index, thread.block_id) ?? null
   const [collapsed, setCollapsed] = React.useState(startCollapsed)
   const [replyText, setReplyText] = React.useState('')
   const [sending, setSending] = React.useState(false)
@@ -212,17 +228,23 @@ function ThreadCard({ thread, isFocused, refSetter, startCollapsed = false }) {
         </button>
         {isLeadComment && (
           <span
-            className="flex items-center gap-0.5 text-[10px] font-semibold text-red-600"
+            className="flex items-center gap-0.5 text-[10px] font-semibold text-red-600 shrink-0"
             title="관리자가 시작한 스레드"
           >
             <PinIcon className="h-2.5 w-2.5" />
             {thread.author?.name ? `${thread.author.name} 리뷰` : '관리자 리뷰'}
           </span>
         )}
-        <span className="text-[10px] text-muted-foreground truncate flex-1">
-          블록 {thread.block_id}
-          {thread.page_index > 0 && ` · p.${thread.page_index + 1}`}
-        </span>
+        <AnchorPill
+          anchor={anchor}
+          fallbackBlockId={thread.block_id}
+          fallbackPageIndex={thread.page_index}
+          onNavigate={
+            navigateToBlock
+              ? () => navigateToBlock(thread.page_index, thread.block_id)
+              : null
+          }
+        />
         <button
           type="button"
           onClick={() => toggleResolved(thread.id, thread.status)}
@@ -356,7 +378,8 @@ function ThreadCard({ thread, isFocused, refSetter, startCollapsed = false }) {
 /** Unsaved draft thread — appears at the top of the panel when the
  *  user clicks "+" on a comment-less block. No backend row exists
  *  yet. First submit persists; cancel/blur-with-empty discards. */
-function DraftThreadCard({ pageIndex, blockId, onSubmit, onCancel }) {
+function DraftThreadCard({ pageIndex, blockId, resolveBlock, onSubmit, onCancel }) {
+  const anchor = resolveBlock?.(pageIndex, blockId) ?? null
   const [text, setText] = React.useState('')
   const [sending, setSending] = React.useState(false)
   const inputRef = React.useRef(null)
@@ -384,15 +407,17 @@ function DraftThreadCard({ pageIndex, blockId, onSubmit, onCancel }) {
   return (
     <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50/40">
       <div className="flex items-center gap-1.5 px-3 py-2 border-b border-amber-200">
-        <span className="text-[10px] font-semibold text-amber-700">새 코멘트</span>
-        <span className="flex-1 text-[10px] text-muted-foreground truncate">
-          블록 {blockId}
-          {pageIndex > 0 && ` · p.${pageIndex + 1}`}
-        </span>
+        <span className="text-[10px] font-semibold text-amber-700 shrink-0">새 코멘트</span>
+        <AnchorPill
+          anchor={anchor}
+          fallbackBlockId={blockId}
+          fallbackPageIndex={pageIndex}
+          onNavigate={null}
+        />
         <button
           type="button"
           onClick={onCancel}
-          className="p-0.5 hover:bg-muted rounded"
+          className="p-0.5 hover:bg-muted rounded shrink-0"
           aria-label="취소"
         >
           <X className="h-3 w-3" />
@@ -431,6 +456,66 @@ function DraftThreadCard({ pageIndex, blockId, onSubmit, onCancel }) {
         </div>
       </div>
     </div>
+  )
+}
+
+/** Inline anchor pill — shows the widget the thread is attached to.
+ *  Replaces the old opaque "블록 {id} · p.N" line so reviewers can see
+ *  WHICH widget the comment talks about without leaving the panel.
+ *  When `onNavigate` is provided the pill is clickable and switches
+ *  the report to that page + scrolls the widget into view (handled by
+ *  ReportDetailPage). Falls back to the raw ids when resolveBlock
+ *  couldn't find the block (e.g. block was deleted after the thread
+ *  was created — keep the thread visible, just less detailed). */
+function AnchorPill({ anchor, fallbackBlockId, fallbackPageIndex, onNavigate }) {
+  const clickable = !!onNavigate
+  const Wrapper = clickable ? 'button' : 'span'
+
+  let body
+  if (anchor) {
+    const pageLabel = anchor.pageName?.trim()
+      ? `${anchor.pageName} (p.${anchor.pageNumber})`
+      : `p.${anchor.pageNumber}`
+    body = (
+      <>
+        <span className="rounded bg-muted px-1 py-px text-[9px] uppercase tracking-wide text-foreground/70 shrink-0">
+          {anchor.widgetLabel || anchor.widgetType}
+        </span>
+        {anchor.blockLabel && (
+          <span className="text-foreground/80 truncate">{anchor.blockLabel}</span>
+        )}
+        <span className="text-muted-foreground shrink-0">· {pageLabel}</span>
+      </>
+    )
+  } else {
+    // Block missing from current draft — surface the raw ids so the
+    // thread is still distinguishable, just without the rich context.
+    body = (
+      <span className="text-muted-foreground truncate">
+        블록 {fallbackBlockId}
+        {fallbackPageIndex > 0 && ` · p.${fallbackPageIndex + 1}`}
+      </span>
+    )
+  }
+
+  return (
+    <Wrapper
+      {...(clickable
+        ? {
+            type: 'button',
+            onClick: onNavigate,
+            title: '본문 위젯으로 이동',
+          }
+        : {})}
+      className={cn(
+        'flex items-center gap-1 text-[10px] min-w-0 flex-1 rounded px-1 py-0.5',
+        clickable &&
+          'cursor-pointer hover:bg-primary/10 hover:text-primary text-left transition-colors',
+      )}
+    >
+      {clickable && <Crosshair className="h-2.5 w-2.5 shrink-0 opacity-60" />}
+      {body}
+    </Wrapper>
   )
 }
 

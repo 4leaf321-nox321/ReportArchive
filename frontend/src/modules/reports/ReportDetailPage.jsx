@@ -98,7 +98,7 @@ import { EditorsDialog } from './EditorsDialog'
 import { FolderPickerButton } from './FolderPickerButton'
 import { listMounts, mountReport } from '@/shared/api/mounts'
 import { listCompositesContainingReport } from '@/shared/api/composites'
-import { CommentsProvider } from '@/modules/comments/CommentsContext'
+import { CommentsProvider, useComments } from '@/modules/comments/CommentsContext'
 import { CommentPanel } from '@/modules/comments/CommentPanel'
 import { CommentPin } from '@/modules/comments/CommentPin'
 import { ActivityTimelineButton } from './ActivityTimeline'
@@ -600,6 +600,51 @@ export default function ReportDetailPage() {
       currentPage,
       latestVersionByTemplate,
     ],
+  )
+
+  // Comment panel anchor → human-readable widget context. Lets each
+  // thread card in the panel show "[표] 분포 분석 · 2장 결과" instead of
+  // the opaque "블록 abc123 · p.2" — without this, reviewers can't
+  // tell which widget the message is talking about. Returns null
+  // gracefully when the block is missing (deleted after the thread was
+  // anchored) so the panel can fall back to raw ids.
+  const resolveCommentBlock = useCallback(
+    (pageIndex, blockId) => {
+      const page = draft?.pages?.[pageIndex]
+      if (!page) return null
+      const tpl = getCachedTemplate(pageTemplateMap, page)
+      const blocks = combinedBlocks(tpl, page)
+      const block = blocks.find((b) => b.id === blockId)
+      if (!block) return null
+      const widgetMeta = widgetCatalog?.byType?.[block.type] ?? null
+      const props = block.props ?? {}
+      return {
+        widgetType: block.type,
+        widgetLabel: widgetMeta?.label || block.type,
+        blockLabel: props.label || props.default_text || null,
+        pageNumber: pageIndex + 1,
+        pageName: page.name?.trim() || tpl?.name || null,
+      }
+    },
+    [draft, pageTemplateMap, widgetCatalog],
+  )
+
+  // Pair the comment thread card with "jump to that widget in the body":
+  // switch page first if needed, then scrollIntoView. setTimeout gives
+  // React a tick to mount the new page's blocks before we query the DOM
+  // — without it, scroll silently no-ops on the first cross-page click.
+  const navigateToCommentBlock = useCallback(
+    (pageIndex, blockId) => {
+      const pageCountSafe = draft?.pages?.length ?? 0
+      if (pageCountSafe === 0) return
+      const targetPage = clamp(pageIndex, 0, pageCountSafe - 1)
+      if (targetPage !== currentPage) setCurrentPage(targetPage)
+      setTimeout(() => {
+        const el = document.getElementById(`block-${blockId}`)
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }, 80)
+    },
+    [draft?.pages?.length, currentPage],
   )
 
   if (loading) {
@@ -2060,6 +2105,8 @@ export default function ReportDetailPage() {
     <CommentsProvider
       reportId={existingReport?.id ?? null}
       reportPhase={existingReport?.phase}
+      resolveBlock={resolveCommentBlock}
+      navigateToBlock={navigateToCommentBlock}
     >
     <div className="flex h-full report-detail-root">
       <div className="relative flex-1 min-w-0 flex flex-col">
@@ -6228,6 +6275,16 @@ function BlockEditorCard({
   pageIndex,
   reportPhase,
 }) {
+  // Pair the right-side comment panel with a visible marker on the
+  // body widget that the focused thread is anchored to. focusedAnchor
+  // is null when the panel is closed or no thread is selected, so the
+  // ring only appears on click — no permanent noise.
+  const { focusedAnchor } = useComments()
+  const isCommentFocused =
+    !!focusedAnchor &&
+    focusedAnchor.pageIndex === (pageIndex ?? 0) &&
+    focusedAnchor.blockId === block.id
+
   // Non-inline-editable widgets render as if in view mode while sitting
   // inside the edit grid — their "edit" happens in a separate modal that
   // the parent opens via `onOpenContentEdit`. The chrome (drag handle,
@@ -6542,6 +6599,10 @@ function BlockEditorCard({
           // same room there to keep the heading from running under it.
           (showDragHandle || headingSectionChip) && 'pt-7',
           active && !readOnly && 'ring-2 ring-primary/30 rounded-md',
+          // Mirror the right-panel focus on the body widget — amber to
+          // match the comment-pin color vocabulary (border-amber-300
+          // when threads exist).
+          isCommentFocused && 'ring-2 ring-amber-400 rounded-md',
           // Same body-text scaling as every other widget — without it the
           // heading's text-lg/xl/2xl stay at Tailwind defaults while body
           // widgets get the 1.3× boost, making a level-3 heading actually
@@ -6629,6 +6690,11 @@ function BlockEditorCard({
         'group relative h-full flex flex-col',
         autoFit ? 'overflow-visible' : 'overflow-hidden',
         active && !readOnly && 'ring-2 ring-primary/30',
+        // Mirror the right-panel focus on the body widget — amber to
+        // match the comment-pin color vocabulary. Wins over the
+        // primary-tinted active ring so a focused comment is always
+        // visually distinguishable from a merely-selected block.
+        isCommentFocused && 'ring-2 ring-amber-400',
         // Hover hint that this card opens a modal — only when in
         // edit mode and the click would actually do something.
         opensModalEditor && 'cursor-pointer hover:ring-2 hover:ring-primary/20'

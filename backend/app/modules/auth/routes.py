@@ -22,6 +22,7 @@ from app.modules.auth.schemas import (
 )
 from app.modules.users.models import Role, User, WorkspaceMember
 from app.modules.workspaces.models import Workspace
+from app.modules.workspaces.services import ensure_personal_workspace
 from app.shared.auth import CurrentUser, require_admin
 from app.shared.responses import created_response, error_response, success_response
 
@@ -112,6 +113,11 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
             role=Role.user,
         )
     )
+    # Every user needs a personal workspace — reports default-land there
+    # (reports/routes.py:139). Skipping this here would surface as an
+    # FK violation on first report-create. See ensure_personal_workspace
+    # docstring for details. Idempotent.
+    ensure_personal_workspace(db, user)
     db.commit()
     db.refresh(user)
 
@@ -146,6 +152,10 @@ def register(
         is_active=True,
     )
     db.add(user)
+    db.flush()  # populate user.id for ensure_personal_workspace
+    # Same as signup — admin-created users also need a personal workspace
+    # so their first /api/reports POST doesn't FK-violate.
+    ensure_personal_workspace(db, user)
     db.commit()
     db.refresh(user)
     return created_response(data=RegisteredUser.model_validate(user))

@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.modules.auth.services import hash_password
 from app.modules.workspaces.models import Workspace
+from app.modules.workspaces.services import ensure_personal_workspace
 from app.modules.users.models import Role, User, WorkspaceMember
 from app.modules.template_categories.models import TemplateCategory
 from app.modules.templates.models import Template
@@ -53,11 +54,19 @@ WORKSPACES = [
 SEED_USERS = [
     # Seed administrator. `email` column doubles as the login id — short
     # value lets operators log in by typing just "admin".
+    #
+    # `is_system_admin=True` here matches the Phase 0 migration's
+    # `UPDATE users SET is_system_admin = true WHERE id = 1` bootstrap.
+    # The migration only fires on existing rows, so on a fresh install
+    # (migrate → seed) the admin user is created *after* the migration
+    # and the UPDATE matches zero rows. Setting it explicitly in the
+    # seed makes the result correct regardless of execution order.
     {
         "email": "admin",
         "name": "관리자",
         "password": "32167",
         "memberships": [("dx", Role.admin)],
+        "is_system_admin": True,
     },
 ]
 
@@ -366,22 +375,38 @@ def seed_template_categories(db: Session) -> None:
         print(f"[NEW] template_category: {spec['slug']} ({spec['name']})")
 
 
-def seed_user(db: Session, email: str, name: str, password: str) -> User:
+def seed_user(
+    db: Session,
+    email: str,
+    name: str,
+    password: str,
+    is_system_admin: bool = False,
+) -> User:
     user = db.query(User).filter_by(email=email).one_or_none()
     if user:
         # Backfill password hash for users created before auth was wired up.
         if not user.password_hash:
             user.password_hash = hash_password(password)
             print(f"[..]  password set for existing user: {user.email}")
+        # Idempotently raise existing user to system admin if the seed
+        # spec says so — covers servers installed before this fix where
+        # admin was created without the flag.
+        if is_system_admin and not user.is_system_admin:
+            user.is_system_admin = True
+            print(f"[..]  promoted to system admin: {user.email}")
         return user
     user = User(
         email=email,
         name=name,
         password_hash=hash_password(password),
+        is_system_admin=is_system_admin,
     )
     db.add(user)
     db.flush()
-    print(f"[NEW] user: {user.email} (id={user.id})")
+    print(
+        f"[NEW] user: {user.email} (id={user.id})"
+        + ("  [system admin]" if is_system_admin else "")
+    )
     return user
 
 
@@ -483,12 +508,23 @@ def main() -> int:
 
         first_user_id: int | None = None
         for spec in SEED_USERS:
-            user = seed_user(db, spec["email"], spec["name"], spec["password"])
+            user = seed_user(
+                db,
+                spec["email"],
+                spec["name"],
+                spec["password"],
+                is_system_admin=spec.get("is_system_admin", False),
+            )
             db.flush()
             if first_user_id is None:
                 first_user_id = user.id
             for ws_slug, role in spec["memberships"]:
                 seed_membership(db, user, ws_slug, role)
+            # Every user owns a `personal-{id}` workspace — new reports
+            # default-land there (reports/routes.py:139). Without this
+            # call, first /api/reports POST FK-violates against
+            # workspace_slug. Idempotent.
+            ensure_personal_workspace(db, user)
 
         if first_user_id is not None:
             seed_templates(db, first_user_id)

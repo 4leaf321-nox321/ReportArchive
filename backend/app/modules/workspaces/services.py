@@ -13,8 +13,8 @@ from sqlalchemy.orm import Session
 
 from app.modules.reports.models import Report
 from app.modules.templates.models import Template
-from app.modules.users.models import WorkspaceMember
-from app.modules.workspaces.models import Workspace
+from app.modules.users.models import Role, User, WorkspaceMember
+from app.modules.workspaces.models import Workspace, WorkspaceKind
 from app.modules.workspaces.schemas import (
     WorkspaceBulkCreate,
     WorkspaceCreate,
@@ -385,3 +385,71 @@ def bulk_create_workspaces(
     for ws in created:
         db.refresh(ws)
     return created
+
+
+# --------------------------------------------------------------------------- #
+# Personal workspace provisioning
+# --------------------------------------------------------------------------- #
+def ensure_personal_workspace(db: Session, user: User) -> Workspace:
+    """Idempotent: guarantee `personal-{user.id}` workspace + the owner's
+    admin membership on it both exist. Returns the workspace row.
+
+    Background — every new report is born in the creator's personal
+    workspace (`reports/routes.py:139`), so a missing personal workspace
+    surfaces as an FK violation on first report creation. This is the
+    runtime-equivalent of the Phase 0 migration's backfill (matches its
+    column shape: name="{user.name or email-local} (개인)", color="#64748b",
+    description="개인 작업공간").
+
+    Callers: `/auth/signup`, `/auth/register`, `seed_initial_data.py` —
+    every site that creates a User must call this before commit so the
+    user can immediately create reports on their personal space.
+
+    Safe to call on existing users: returns the existing row, doesn't
+    duplicate the membership. Requires `user.id` to be populated
+    (caller's responsibility — flush before invoking).
+    """
+    if user.id is None:
+        raise ValueError(
+            "ensure_personal_workspace 호출 전 db.flush() 로 user.id 가 채워져 있어야 합니다."
+        )
+
+    slug = f"personal-{user.id}"
+    ws = db.get(Workspace, slug)
+    if ws is None:
+        # Match the migration's name format so users created at different
+        # times look consistent in admin UIs.
+        local_part = (user.email or "").split("@", 1)[0]
+        display_base = (user.name or "").strip() or local_part or f"user{user.id}"
+        ws = Workspace(
+            slug=slug,
+            name=f"{display_base} (개인)",
+            description="개인 작업공간",
+            kind=WorkspaceKind.personal,
+            personal_owner_user_id=user.id,
+            virtual=False,
+            sort_order=0,
+            color="#64748b",
+        )
+        db.add(ws)
+        db.flush()
+
+    # Self-admin membership: without this row the workspace-permission
+    # check rejects the owner from reading/editing their own reports.
+    existing_membership = db.execute(
+        select(WorkspaceMember).where(
+            WorkspaceMember.user_id == user.id,
+            WorkspaceMember.workspace_slug == slug,
+        )
+    ).scalar_one_or_none()
+    if existing_membership is None:
+        db.add(
+            WorkspaceMember(
+                user_id=user.id,
+                workspace_slug=slug,
+                role=Role.admin,
+            )
+        )
+        db.flush()
+
+    return ws

@@ -160,7 +160,7 @@ sudo INSTALL_DIR=/srv/reportarchive ./deploy.sh install
 |---|---|
 | `apptainer: command not found` | `sudo ./deploy.sh prepare` 또는 수동 `apt install apptainer` |
 | `systemctl status` → `failed` | `journalctl -u reportarchive -n 50` |
-| `connection refused :5432` | `sudo systemctl status postgresql` |
+| `connection refused :5433` | `sudo systemctl status postgresql` (postgresql.conf 의 `port = 5433` 확인) |
 | 로그인 안 됨 / 비밀번호 모름 | `sudo ./deploy.sh reset` (DB 통째로 초기화 후 시드 admin 계정 복구) |
 | 로그인은 되는데 화면 빈 페이지 | `.env`의 `SERVE_FRONTEND_DIST` 확인 |
 | 파일 업로드 시 `Permission denied` | `sudo chown -R $OPERATOR:$OPERATOR <INSTALL_DIR>/uploads` |

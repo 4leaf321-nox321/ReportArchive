@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.modules.users.models import User
 from app.modules.workspaces import services
-from app.modules.workspaces.models import Workspace
+from app.modules.workspaces.models import Workspace, WorkspaceKind
 from app.modules.workspaces.schemas import (
     WorkspaceBulkCreate,
     WorkspaceCreate,
@@ -31,12 +31,31 @@ router = APIRouter()
 @router.get("")
 def list_all_workspaces(
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user_no_workspace),
+    user: User = Depends(get_current_user_no_workspace),
 ):
-    """Return the full workspace registry. Tree shape is built on the client.
-    Doesn't require X-Workspace-Slug — this endpoint is what the client
-    calls to discover workspaces in the first place."""
-    items = [WorkspaceRead.model_validate(w) for w in services.list_workspaces(db)]
+    """Return the workspace registry visible to the caller. Tree shape is
+    built on the client. Doesn't require X-Workspace-Slug — this endpoint
+    is what the client calls to discover workspaces in the first place.
+
+    Visibility rules:
+      * org / virtual workspaces — everyone sees them (catalog data).
+      * personal workspaces — only the owner (and system admins) see
+        them. Without this filter the payload leaks every user's
+        display name (the workspace name is "{user.name} (개인)"),
+        which is a privacy issue even though the existing UI consumers
+        filter `kind=='personal'` for tree rendering.
+    """
+    all_rows = services.list_workspaces(db)
+    if user.is_system_admin:
+        visible = all_rows
+    else:
+        visible = [
+            w
+            for w in all_rows
+            if w.kind != WorkspaceKind.personal
+            or w.personal_owner_user_id == user.id
+        ]
+    items = [WorkspaceRead.model_validate(w) for w in visible]
     return success_response(data=items)
 
 
@@ -104,6 +123,17 @@ def delete_workspace(
     if ws.virtual:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "가상 부서는 삭제할 수 없습니다."
+        )
+    # personal-{user_id} workspaces are auto-provisioned per user and own
+    # the user's reports — deleting one would either CASCADE-drop those
+    # reports or RESTRICT-block, and either outcome is wrong via this
+    # API. The user's own personal space is managed by the user-lifecycle
+    # flow (signup creates it; user-delete cascades it away).
+    if ws.kind == WorkspaceKind.personal:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "개인 작업공간은 이 경로로 삭제할 수 없습니다. "
+            "사용자 계정을 삭제하면 함께 제거됩니다.",
         )
     try:
         services.delete_workspace(db, ws)

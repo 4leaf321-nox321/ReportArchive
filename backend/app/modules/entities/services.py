@@ -96,6 +96,32 @@ def create_type(db: Session, payload: EntityTypeCreate) -> EntityType:
     return row
 
 
+def delete_type(db: Session, row: EntityType) -> int:
+    """Hard-delete an axis. Blocked while the axis still has values — the
+    DB-level ondelete=RESTRICT would also catch this, but we raise the
+    friendlier ValueError up front so the route can surface a 400 with
+    a count. Caller (route) enforces the admin role check.
+
+    Returns the (now-deleted) row's id for parity with other delete_*
+    helpers in this module.
+    """
+    in_use = (
+        db.execute(
+            select(func.count(Entity.id)).where(Entity.type_id == row.id)
+        ).scalar()
+        or 0
+    )
+    if in_use:
+        raise ValueError(
+            f"이 축에는 {in_use}건의 값이 등록되어 있습니다. "
+            "축을 삭제하려면 모든 값을 먼저 삭제하거나 다른 축으로 옮겨 주세요."
+        )
+    removed_id = row.id
+    db.delete(row)
+    db.commit()
+    return removed_id
+
+
 # --------------------------------------------------------------------------- #
 # Entity — picker reads + user/admin writes
 # --------------------------------------------------------------------------- #

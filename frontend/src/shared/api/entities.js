@@ -34,6 +34,16 @@ export async function createEntityType({
 }
 
 /**
+ * Admin-only — delete an axis. 백엔드가 값이 등록돼 있으면 400 으로 거절
+ * 하므로 호출 전에 값 개수를 0 으로 만들어두어야 한다 (개별 값 삭제 또는
+ * 다른 축으로 머지).
+ */
+export async function deleteEntityType(id) {
+  const res = await apiClient.delete(`${TYPES_BASE}/${id}`)
+  return extractData(res)
+}
+
+/**
  * Picker list of entity values. Defaults to active-only; admin pages
  * pass `includeDeprecated=true` to see the full set.
  *

@@ -130,6 +130,28 @@ def create_entity_type(
     return created_response(data=EntityTypeRead.model_validate(row))
 
 
+@entity_types_router.delete("/{type_id}")
+def delete_entity_type(
+    type_id: int,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only. Blocked when the axis still has any values
+    (active or deprecated) — the response message includes the count so
+    the admin can decide whether to merge/delete the values first.
+    Matches the pattern delete_entity uses for in-use values."""
+    _require_admin(actor)
+    row = services.get_type(db, type_id)
+    if not row:
+        return not_found_response(f"엔티티 축을 찾을 수 없습니다: {type_id}")
+    name = row.label
+    try:
+        services.delete_type(db, row)
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    return success_response(data=None, message=f"'{name}' 축이 삭제됐습니다.")
+
+
 # --------------------------------------------------------------------------- #
 # entities router — `/api/entities`
 # --------------------------------------------------------------------------- #

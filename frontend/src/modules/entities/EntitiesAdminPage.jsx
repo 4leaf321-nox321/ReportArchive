@@ -39,6 +39,7 @@ import {
   createEntity,
   createEntityType,
   deleteEntity,
+  deleteEntityType,
   listEntities,
   listEntityTypes,
   listEntityUsage,
@@ -123,7 +124,20 @@ export default function EntitiesAdminPage() {
             {/* Mount fresh per axis (key on slug) so search/toggle/state
                 resets when the admin switches tabs — keeps the mental
                 model "each tab is its own grid". */}
-            {axisSlug === t.slug && <AxisPanel key={t.slug} type={t} />}
+            {axisSlug === t.slug && (
+              <AxisPanel
+                key={t.slug}
+                type={t}
+                onAxisDeleted={() => {
+                  // 다른 축으로 자동 전환 — 삭제 직후 사라진 탭에 머무를
+                  // 수 없으므로 첫 번째로 이동(없으면 null). reloadTypes
+                  // 가 끝나면 자연스럽게 첫 축이 재진입된다.
+                  const remaining = types.filter((x) => x.id !== t.id)
+                  setAxisSlug(remaining[0]?.slug ?? null)
+                  reloadTypes()
+                }}
+              />
+            )}
           </TabsContent>
         ))}
       </Tabs>
@@ -142,6 +156,83 @@ export default function EntitiesAdminPage() {
         />
       )}
     </div>
+  )
+}
+
+/** 축 자체 삭제 확인 다이얼로그. 값이 0건이어야만 백엔드가 받아주므로
+ *  안내 문구로 그 사실을 분명히 한다. 값을 직접 정리하지 않은 채 들어
+ *  오면 destructive 버튼이 disable 되고, 사용자는 값 정리 후 재시도. */
+function DeleteAxisDialog({ type, valueCount, onClose, onDeleted }) {
+  const [submitting, setSubmitting] = useState(false)
+  const canDelete = !submitting && valueCount === 0
+
+  async function handleDelete() {
+    if (!canDelete) return
+    setSubmitting(true)
+    try {
+      await deleteEntityType(type.id)
+      toast.success(`'${type.label}' 축 삭제됨`)
+      onDeleted()
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err.message || '삭제 실패')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-destructive" />
+            축 삭제 확인
+          </DialogTitle>
+          <DialogDescription>
+            <strong>'{type.label}'</strong> 축({type.slug}) 자체를 삭제합니다.
+            이 축에 속한 모든 picker 옵션이 함께 사라지고, 이미 이 축으로
+            태깅된 보고서가 있는 경우엔 삭제할 수 없습니다.
+          </DialogDescription>
+        </DialogHeader>
+
+        {valueCount > 0 ? (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs space-y-1.5">
+            <p className="font-medium text-destructive">
+              이 축에는 {valueCount}건의 값이 등록되어 있어 삭제할 수
+              없습니다.
+            </p>
+            <p className="text-muted-foreground">
+              값을 하나씩 삭제하거나 다른 축으로 머지해 0건이 된 뒤 다시
+              시도하세요. (사용 중인 보고서가 있으면 그 값 자체부터
+              머지하거나 비활성화해야 합니다.)
+            </p>
+          </div>
+        ) : (
+          <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+            현재 등록된 값이 없습니다. 안전하게 삭제할 수 있습니다.
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            취소
+          </Button>
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={handleDelete}
+            disabled={!canDelete}
+            title={
+              valueCount > 0
+                ? '이 축에 등록된 값이 있어 삭제할 수 없습니다.'
+                : undefined
+            }
+          >
+            {submitting ? '삭제 중...' : '축 삭제'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -311,10 +402,11 @@ function NewAxisDialog({ existingSlugs, onClose, onCreated }) {
  * mutations (create/update/merge/delete) reload only the current axis,
  * not the whole page.
  */
-function AxisPanel({ type }) {
+function AxisPanel({ type, onAxisDeleted }) {
   const [reloadKey, setReloadKey] = useState(0)
   const [query, setQuery] = useState('')
   const [includeDeprecated, setIncludeDeprecated] = useState(true)
+  const [deleteAxisOpen, setDeleteAxisOpen] = useState(false)
 
   const { data, loading, error } = useAsync(
     () =>
@@ -507,10 +599,22 @@ function AxisPanel({ type }) {
           />
           <span>비활성 포함</span>
         </label>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
           <Button size="sm" onClick={() => setCreateOpen(true)}>
             <Plus className="mr-1 h-3.5 w-3.5" />
             추가
+          </Button>
+          {/* 이 축 자체를 통째로 삭제. 값이 남아 있으면 백엔드가 400으로
+              막고, 다이얼로그가 그 안내를 그대로 보여준다. */}
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-destructive hover:text-destructive"
+            onClick={() => setDeleteAxisOpen(true)}
+            title="이 축(엔티티 타입) 자체를 삭제합니다"
+          >
+            <Trash2 className="mr-1 h-3.5 w-3.5" />
+            축 삭제
           </Button>
         </div>
       </div>
@@ -580,6 +684,17 @@ function AxisPanel({ type }) {
             // merge is the right next action.
             setMergeTarget(deleteTarget)
             setDeleteTarget(null)
+          }}
+        />
+      )}
+      {deleteAxisOpen && (
+        <DeleteAxisDialog
+          type={type}
+          valueCount={rows.length}
+          onClose={() => setDeleteAxisOpen(false)}
+          onDeleted={() => {
+            setDeleteAxisOpen(false)
+            onAxisDeleted?.()
           }}
         />
       )}

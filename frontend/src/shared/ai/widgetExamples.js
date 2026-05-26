@@ -257,9 +257,10 @@ export const WIDGET_PROMPT_EXAMPLES = [
   {
     types: ['box'],
     body: [
-      '### box (박스플롯 — 그룹별 분포)',
+      '### box (박스플롯 — 그룹별 분포)  ★ density 와 헷갈리지 마세요 ★',
       'props (required: label) : `{ "label":"케이스별 측정값" }`',
       'content : `{ "rows":[ {"group":"A","value":10}, {"group":"A","value":12}, {"group":"A","value":15}, {"group":"B","value":8}, {"group":"B","value":11}, {"group":"B","value":13} ], "orientation":"vertical", "box_points":"outliers", "box_mean":"line", "jitter":0.3, "unit":"mm" }`',
+      '- ★★ box 의 content 는 `rows: [{group, value}]` 만 허용. **`groups` 키 절대 사용 금지** — 그건 density 위젯 모양입니다. 잘못 쓰면 `Additional properties are not allowed (\'groups\' was unexpected)` 로 reject.',
       '- 데이터는 long-form (`{group, value}`) — 같은 `group` 의 row 들이 한 박스로 묶여 Q1/median/Q3/whiskers/outliers 자동 계산. 사전 요약 통계 불필요.',
       '- `orientation` : `"vertical"` (값=Y, 기본) | `"horizontal"` (값=X). 그룹 이름이 길면 horizontal 이 가독성 좋음.',
       '- `box_points` : `"outliers"` (기본, 이상치만 점) | `"suspectedoutliers"` (3·IQR 강조) | `"all"` (모든 점) | `"none"` (점 없음).',
@@ -331,9 +332,10 @@ export const WIDGET_PROMPT_EXAMPLES = [
   {
     types: ['density'],
     body: [
-      '### density (밀도 곡선 — 그룹별 1D KDE)',
+      '### density (밀도 곡선 — 그룹별 1D KDE)  ★ box 와 헷갈리지 마세요 ★',
       'props (required: label) : `{ "label":"라인별 두께 분포", "x_axis_title":"두께 (mm)", "y_axis_title":"밀도" }`',
       'content : `{ "groups":[ {"name":"라인 A","values":[1.20,1.28,1.30,1.32,1.35,1.40]}, {"name":"라인 B","values":[1.45,1.50,1.52,1.55,1.58,1.62]} ], "bandwidth_mode":"auto", "fill":true, "show_dots":"rug" }`',
+      '- ★★ density 의 content 는 `groups: [{name, values: [...]}]` 만 허용. **`rows` 키 절대 사용 금지** — 그건 box 위젯 모양입니다. 잘못 쓰면 스키마에서 reject.',
       '- `groups[].values` 가 원본 데이터 배열. KDE 곡선은 클라이언트가 Silverman 법칙으로 계산 — AI 는 raw values 만 채우면 됨.',
       '- `bandwidth_mode`: `"auto"` (기본) | `"manual"` (이때 `bandwidth` 숫자 같이 지정).',
       '- `show_dots`: `"none"` | `"rug"` (베이스라인 짧은 막대) | `"jitter"` (흩뿌린 점). 원데이터 확인용.',
@@ -411,8 +413,33 @@ export const WIDGET_PROMPT_EXAMPLES = [
   },
 ]
 
+// Cross-widget rules block. Sits at the head of WIDGET_EXAMPLES_TEXT so
+// the AI sees these before reading any individual widget example. The
+// "혼동되기 쉬운 위젯 쌍" cheat sheet exists because field names like
+// `rows`, `items`, `groups` are reused across widgets with *different*
+// inner-object shapes — that's the single most common source of
+// "Additional properties are not allowed" rejects (e.g. the AI fills
+// `box` with density's `groups` field). Add a new pair here whenever a
+// real-world rejection points at confusion between two widgets.
+const WIDGET_RULES_PREAMBLE = [
+  '※ 위젯 content / props 스키마 규칙:',
+  '1. 모든 위젯은 `additionalProperties: false` — 예제에 없는 키를 임의로 추가하면 백엔드가 거절합니다.',
+  '2. **다른 위젯의 키 모양을 가져다 쓰지 마세요.** `rows` / `items` / `groups` 같은 키 이름은 여러 위젯에서 재사용되지만 각각 다른 객체 모양을 요구합니다. 사용 중인 위젯의 예제에 적힌 행 / 객체 구조를 1:1 그대로 따르세요.',
+  '3. 키 이름·타입·enum 값은 절대 변형 / 의역 / 번역하지 마세요. (예: `"horizontal"` 을 `"수평"` 으로 바꾸지 않기, `"R/A"` 를 `"책임"` 으로 바꾸지 않기.)',
+  '4. 모르는 필드는 채우지 마세요. 선택 필드는 생략 가능 — 추측해서 채우는 것보다 빼는 게 낫습니다.',
+  '',
+  '※ 혼동되기 쉬운 위젯 쌍 — content 모양 차이:',
+  '- **box** vs **density** : 둘 다 분포 비교지만 모양 다름. box 는 `rows: [{group, value}]` (long-form, 관측값마다 한 행). density 는 `groups: [{name, values: [...]}]` (그룹마다 raw array). box 에 `groups` 쓰면 reject, 반대도 마찬가지.',
+  '- **chart** vs **scatter** : 둘 다 columns+rows 구조지만 chart 는 x 축이 텍스트/날짜 같은 카테고리 (x_column_key 가 가리키는 컬럼이 type≠number), scatter 는 x·y 모두 type:"number". x 도 수치면 scatter 를 쓰세요.',
+  '- **tree** vs **mind_map** vs **flowchart** : tree / mind_map 은 `rows: [{label, parent}]` (계층 — mind_map 은 같은 데이터를 방사형으로 시각화만 다름). flowchart 는 `items: [{label, description?}]` (순차, parent 개념 없음). 셋의 키를 절대 섞지 마세요.',
+  '- **table** vs **comparison** vs **raci_matrix** : 모두 표지만 다름. table 의 rows[] 객체 키 = props.columns[].key. comparison 의 rows[].values 객체 키 = cases[].key (행마다 cell). raci_matrix 의 rows[].assignments 값은 R/A/C/I 문자열 (또는 `R/A` 결합).',
+  '- **treemap** vs **packing** : content 모양 완전히 동일 (둘 다 계층 데이터). 시각만 사각/원형 차이.',
+  '- **key_value** vs **table** : key_value 는 보고서마다 항목이 다른 자유 입력 카드 (content.items 가 항목 정의 + 값은 top-level 키로 저장). table 은 모든 보고서가 같은 컬럼을 공유하는 정형 표 (rows[].column_key 로 값 저장).',
+  '- **bulleted_list** vs **rich_text.items** : bulleted_list 의 items 는 **문자열 배열** (`["a", "b"]`). rich_text 의 items 는 `[{depth, text}]` 객체 배열. 절대 섞지 마세요.',
+].join('\n')
+
 export const WIDGET_EXAMPLES_TEXT = [
-  '※ 모든 예시는 백엔드 스키마와 1:1 로 일치합니다. 키 이름·타입을 절대 변형하지 마세요.',
+  WIDGET_RULES_PREAMBLE,
   ...WIDGET_PROMPT_EXAMPLES.map((e) => e.body),
 ].join('\n\n')
 

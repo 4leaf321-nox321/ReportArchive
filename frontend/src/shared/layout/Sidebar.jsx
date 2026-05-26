@@ -67,12 +67,22 @@ const MY_ACTIVITY_MENU = [
   { to: '/notifications', label: '알림', icon: Bell, badgeKey: 'unread' },
 ]
 
-/** 공통 — 시스템 도구·관리. 본인 활동도 부서 데이터도 아닌, 워크스페이스에
- *  걸쳐 살아 있는 글로벌 자원들. */
-const GLOBAL_MENU = [
+/** 공통 — 누구나 접근 가능한 글로벌 자원들. 본인 활동도 부서 데이터도
+ *  아닌, 워크스페이스에 걸쳐 살아 있는 도구들. 템플릿 관리·AI 설정은
+ *  나중에 관리/비관리 기능 분리가 들어가면 한쪽 절반은 관리자 섹션으로
+ *  내려갈 후보. */
+const PUBLIC_MENU = [
   { to: '/templates', label: '템플릿 관리', icon: FileCode2 },
   { to: '/voc', label: 'VOC', icon: MessageSquare },
   { to: '/ai-settings', label: 'AI 설정', icon: Sparkles },
+]
+
+/** 관리자 — 부서 관리자(workspace admin) 또는 시스템 관리자만 접근 가능한
+ *  항목들. 일반 사용자에게는 섹션 자체가 숨겨지므로 의미 없는 메뉴 헤더가
+ *  남지 않음. 개별 항목은 여전히 requireWorkspaceAdmin/requireSystemAdmin
+ *  로 세분화되어 부서 관리자는 부서 멤버만 보이고 시스템 관리자는 나머지
+ *  3개까지 보임. */
+const ADMIN_MENU = [
   {
     resolve: (slug) => `/w/${slug}/members`,
     label: '부서 멤버',
@@ -197,7 +207,7 @@ function SidebarBody({ onNavigate }) {
 
         <SidebarDivider />
         <SectionLabel>공통</SectionLabel>
-        {renderMenuItems(GLOBAL_MENU, {
+        {renderMenuItems(PUBLIC_MENU, {
           slug,
           userId,
           isWorkspaceAdmin,
@@ -205,6 +215,24 @@ function SidebarBody({ onNavigate }) {
           badges,
           onNavigate,
         })}
+
+        {/* 관리자 섹션 — 부서/시스템 관리자 권한이 하나라도 있는 사람에게만
+            노출. 일반 사용자에게는 헤더까지 통째로 숨겨서 빈 영역이 남지
+            않게 한다. 내부 항목은 여전히 require* 로 더 세분화된다. */}
+        {(isWorkspaceAdmin || isSystemAdmin) && (
+          <>
+            <SidebarDivider />
+            <SectionLabel>관리자</SectionLabel>
+            {renderMenuItems(ADMIN_MENU, {
+              slug,
+              userId,
+              isWorkspaceAdmin,
+              isSystemAdmin,
+              badges,
+              onNavigate,
+            })}
+          </>
+        )}
       </nav>
 
       <div className="border-t p-3 text-[11px] text-muted-foreground">

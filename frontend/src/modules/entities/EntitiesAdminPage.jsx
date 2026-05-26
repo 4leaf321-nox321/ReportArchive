@@ -111,35 +111,50 @@ export default function EntitiesAdminPage() {
         }
       />
 
-      <Tabs value={axisSlug ?? ''} onValueChange={setAxisSlug}>
-        <TabsList className="w-fit flex-wrap h-auto">
+      {/* 좌측 세로 리스트 + 우측 활성 축 패널. 가로 strip 으로 보이던
+          이전 레이아웃은 축이 많아지면 줄바꿈이 어지러워 사용 어려웠음.
+          왼쪽 컬럼은 max-h + overflow-y-auto 로 자체 스크롤, 오른쪽은
+          페이지 흐름에 따라 자연스럽게 늘어남. */}
+      <Tabs
+        orientation="vertical"
+        value={axisSlug ?? ''}
+        onValueChange={setAxisSlug}
+        className="flex gap-4 items-start"
+      >
+        <TabsList className="flex flex-col items-stretch h-auto w-44 shrink-0 max-h-[calc(100vh-180px)] overflow-y-auto">
           {types.map((t) => (
-            <TabsTrigger key={t.slug} value={t.slug} className="text-xs">
+            <TabsTrigger
+              key={t.slug}
+              value={t.slug}
+              className="justify-start text-xs whitespace-normal text-left"
+            >
               {t.label}
             </TabsTrigger>
           ))}
         </TabsList>
-        {types.map((t) => (
-          <TabsContent key={t.slug} value={t.slug} className="mt-4">
-            {/* Mount fresh per axis (key on slug) so search/toggle/state
-                resets when the admin switches tabs — keeps the mental
-                model "each tab is its own grid". */}
-            {axisSlug === t.slug && (
-              <AxisPanel
-                key={t.slug}
-                type={t}
-                onAxisDeleted={() => {
-                  // 다른 축으로 자동 전환 — 삭제 직후 사라진 탭에 머무를
-                  // 수 없으므로 첫 번째로 이동(없으면 null). reloadTypes
-                  // 가 끝나면 자연스럽게 첫 축이 재진입된다.
-                  const remaining = types.filter((x) => x.id !== t.id)
-                  setAxisSlug(remaining[0]?.slug ?? null)
-                  reloadTypes()
-                }}
-              />
-            )}
-          </TabsContent>
-        ))}
+        <div className="flex-1 min-w-0">
+          {types.map((t) => (
+            <TabsContent key={t.slug} value={t.slug} className="mt-0">
+              {/* Mount fresh per axis (key on slug) so search/toggle/state
+                  resets when the admin switches tabs — keeps the mental
+                  model "each tab is its own grid". */}
+              {axisSlug === t.slug && (
+                <AxisPanel
+                  key={t.slug}
+                  type={t}
+                  onAxisDeleted={() => {
+                    // 다른 축으로 자동 전환 — 삭제 직후 사라진 탭에
+                    // 머무를 수 없으므로 첫 번째로 이동(없으면 null).
+                    // reloadTypes 가 끝나면 자연스럽게 첫 축이 재진입.
+                    const remaining = types.filter((x) => x.id !== t.id)
+                    setAxisSlug(remaining[0]?.slug ?? null)
+                    reloadTypes()
+                  }}
+                />
+              )}
+            </TabsContent>
+          ))}
+        </div>
       </Tabs>
 
       {newAxisOpen && (

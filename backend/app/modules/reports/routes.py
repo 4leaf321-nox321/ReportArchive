@@ -283,7 +283,7 @@ def publish_report(
     report = services.get_report(db, report_id)
     if not report:
         return not_found_response(f"Report not found: {report_id}")
-    if report.owner_user_id != actor.user.id:
+    if report.owner_user_id != actor.user.id and not actor.user.is_system_admin:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "발행은 작성자만 가능합니다."
         )
@@ -350,7 +350,7 @@ def unpublish_report(
     report = services.get_report(db, report_id)
     if not report:
         return not_found_response(f"Report not found: {report_id}")
-    if report.owner_user_id != actor.user.id:
+    if report.owner_user_id != actor.user.id and not actor.user.is_system_admin:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "발행 취소는 작성자만 가능합니다."
         )
@@ -391,7 +391,7 @@ def move_report_to_folder(
     report = services.get_report(db, report_id)
     if not report:
         return not_found_response(f"Report not found: {report_id}")
-    if report.owner_user_id != actor.user.id:
+    if report.owner_user_id != actor.user.id and not actor.user.is_system_admin:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "본인 보고서만 폴더 이동할 수 있습니다.",
@@ -401,13 +401,16 @@ def move_report_to_folder(
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "folder_id must be int or null"
         )
-    # If a folder id is given, sanity-check it belongs to the same user
-    # (don't let a forged id park reports under someone else's folder).
+    # If a folder id is given, sanity-check it belongs to the report's
+    # owner (not just the actor — for sys admin moving another user's
+    # report). Without this, forging a folder id could park a report
+    # under someone else's folder.
     if folder_id is not None:
         from app.modules.folders.models import Folder
 
         folder = db.get(Folder, folder_id)
-        if folder is None or folder.user_id != actor.user.id:
+        expected_owner = report.owner_user_id
+        if folder is None or folder.user_id != expected_owner:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 f"폴더를 찾을 수 없거나 권한이 없습니다: {folder_id}",

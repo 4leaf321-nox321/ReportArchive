@@ -8,6 +8,7 @@ import {
   Home,
   Users,
   UserCog,
+  UserSearch,
   HardDrive,
   MessageSquare,
   Sparkles,
@@ -89,6 +90,9 @@ const ADMIN_MENU = [
   // 관리자 권한). 어느 계정이 어느 부서에 들어가는지는 그 아래 '부서
   // 멤버' 에서 결정 — 두 책임을 분리해서 컨텍스트가 섞이지 않게.
   { to: '/admin/accounts', label: '계정 관리', icon: UserCog, requireSystemAdmin: true },
+  // '가입자 공간' — 다른 가입자의 personal-{id} 워크스페이스를 '내 공간'
+  // 과 같은 GUI 로 들여다보는 시스템 관리자 전용 도구.
+  { to: '/admin/user-spaces', label: '가입자 공간', icon: UserSearch, requireSystemAdmin: true },
   {
     resolve: (slug) => `/w/${slug}/members`,
     label: '부서 멤버',

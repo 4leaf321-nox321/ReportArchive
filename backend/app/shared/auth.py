@@ -156,16 +156,28 @@ def get_current_user(
         any_membership = db.execute(
             select(WorkspaceMember).where(WorkspaceMember.user_id == user.id)
         ).first()
-        if not any_membership:
+        if not any_membership and not user.is_system_admin:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "어느 부서에도 속해있지 않습니다.")
-        return CurrentUser(user=user, workspace=workspace, role=Role.user)
+        # 시스템 관리자는 가상 부서에서도 매니저 권한으로 — 다른 부서를
+        # 가로질러 데이터를 손볼 수 있어야 한다는 요구사항(시스템 내 모든
+        # 데이터 CRUD)을 만족하려면 가상 aggregate 도 read-only 가 아니라
+        # write 까지 허용해야 정합. require_writer 의 가상 거절은 그대로
+        # 두므로 _global 같은 노드에서의 쓰기는 여전히 막힘.
+        synthesized = Role.manager if user.is_system_admin else Role.user
+        return CurrentUser(user=user, workspace=workspace, role=synthesized)
 
     role = _resolve_role(db, user.id, workspace.slug)
     if role is None:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            f"{user.email}는 부서 {workspace.slug}에 접근 권한이 없습니다.",
-        )
+        # 시스템 관리자 bypass — 부서 멤버 row 가 없어도 어떤 부서든 매니저
+        # 권한으로 진입 가능. '시스템 관리자는 시스템 내 모든 데이터의 생성/
+        # 편집/삭제 권한' 정책의 구현 지점. 일반 사용자는 기존대로 403.
+        if user.is_system_admin:
+            role = Role.manager
+        else:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"{user.email}는 부서 {workspace.slug}에 접근 권한이 없습니다.",
+            )
     return CurrentUser(user=user, workspace=workspace, role=role)
 
 

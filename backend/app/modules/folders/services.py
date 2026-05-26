@@ -212,13 +212,22 @@ def count_uncategorized_org(db: Session, workspace_slug: str) -> int:
 
 
 def _get_folder_with_permission(
-    db: Session, folder_id: int, actor_user_id: int
+    db: Session,
+    folder_id: int,
+    actor_user_id: int,
+    *,
+    actor_is_system_admin: bool = False,
 ) -> Folder:
     """Fetch a folder + verify the actor may mutate it. Raises
-    FolderNotFoundError / FolderForbiddenError."""
+    FolderNotFoundError / FolderForbiddenError.
+
+    actor_is_system_admin: 시스템 관리자는 다른 가입자의 개인 폴더·다른
+    부서의 조직 폴더 모두 수정 가능 (시스템 내 모든 데이터 CRUD 정책)."""
     folder = db.get(Folder, folder_id)
     if folder is None:
         raise FolderNotFoundError(f"폴더를 찾을 수 없습니다: {folder_id}")
+    if actor_is_system_admin:
+        return folder
     if folder.kind == FolderKind.personal:
         if folder.user_id != actor_user_id:
             raise FolderForbiddenError("본인 소유 폴더만 수정할 수 있습니다.")
@@ -299,12 +308,15 @@ def update_folder(
     *,
     folder_id: int,
     actor_user_id: int,
+    actor_is_system_admin: bool = False,
     name: Optional[str] = None,
     parent_id_set: bool = False,
     parent_id: Optional[int] = None,
     sort_order: Optional[int] = None,
 ) -> Folder:
-    folder = _get_folder_with_permission(db, folder_id, actor_user_id)
+    folder = _get_folder_with_permission(
+        db, folder_id, actor_user_id, actor_is_system_admin=actor_is_system_admin
+    )
     if name is not None:
         folder.name = name.strip()
     if parent_id_set:
@@ -356,8 +368,14 @@ def update_folder(
 
 
 def delete_folder(
-    db: Session, *, folder_id: int, actor_user_id: int
+    db: Session,
+    *,
+    folder_id: int,
+    actor_user_id: int,
+    actor_is_system_admin: bool = False,
 ) -> None:
-    folder = _get_folder_with_permission(db, folder_id, actor_user_id)
+    folder = _get_folder_with_permission(
+        db, folder_id, actor_user_id, actor_is_system_admin=actor_is_system_admin
+    )
     db.delete(folder)
     db.flush()

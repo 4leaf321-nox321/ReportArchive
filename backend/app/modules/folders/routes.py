@@ -47,6 +47,19 @@ def _to_http(exc: services.FolderError):
     )
 
 
+def _parse_personal_user_id(workspace_slug: str) -> Optional[int]:
+    """personal-{N} slug → N. 그 외는 None. 시스템 관리자가 '가입자 공간'
+    페이지로 다른 사람의 personal 워크스페이스를 들여다볼 때, 폴더 API
+    가 actor 가 아니라 그 가입자의 폴더를 반환하도록 분기하기 위한 헬퍼."""
+    prefix = "personal-"
+    if not workspace_slug or not workspace_slug.startswith(prefix):
+        return None
+    try:
+        return int(workspace_slug[len(prefix):])
+    except ValueError:
+        return None
+
+
 @router.get("")
 def list_folders(
     workspace_slug: Optional[str] = Query(default=None),
@@ -60,7 +73,17 @@ def list_folders(
     reads here so a member can see "what folders my team is using"
     even before they have any reports mounted.
     """
-    if workspace_slug:
+    personal_target = _parse_personal_user_id(workspace_slug) if workspace_slug else None
+    if personal_target is not None:
+        # personal-{N} 슬러그 — N 의 개인 폴더. 본인이거나 시스템 관리자만.
+        if personal_target != actor.id and not actor.is_system_admin:
+            return error_response(
+                "다른 가입자의 개인 폴더는 시스템 관리자만 조회할 수 있습니다.",
+                status_code=403,
+            )
+        folders = services.list_personal_folders(db, personal_target)
+        uncategorized = services.count_uncategorized_personal(db, personal_target)
+    elif workspace_slug:
         folders = services.list_org_folders(db, workspace_slug)
         uncategorized = services.count_uncategorized_org(db, workspace_slug)
     else:
@@ -85,8 +108,22 @@ def create_folder(
     db: Session = Depends(get_db),
     actor: User = Depends(get_current_user_no_workspace),
 ):
+    personal_target = _parse_personal_user_id(workspace_slug) if workspace_slug else None
     try:
-        if workspace_slug:
+        if personal_target is not None:
+            if personal_target != actor.id and not actor.is_system_admin:
+                return error_response(
+                    "다른 가입자의 개인 폴더는 시스템 관리자만 생성할 수 있습니다.",
+                    status_code=403,
+                )
+            folder = services.create_personal_folder(
+                db,
+                user_id=personal_target,
+                name=payload.name,
+                parent_id=payload.parent_id,
+                sort_order=payload.sort_order,
+            )
+        elif workspace_slug:
             folder = services.create_org_folder(
                 db,
                 workspace_slug=workspace_slug,
@@ -124,6 +161,7 @@ def update_folder(
             db,
             folder_id=folder_id,
             actor_user_id=actor.id,
+            actor_is_system_admin=actor.is_system_admin,
             name=raw.get("name"),
             parent_id_set="parent_id" in raw,
             parent_id=raw.get("parent_id"),
@@ -145,7 +183,10 @@ def delete_folder(
 ):
     try:
         services.delete_folder(
-            db, folder_id=folder_id, actor_user_id=actor.id
+            db,
+            folder_id=folder_id,
+            actor_user_id=actor.id,
+            actor_is_system_admin=actor.is_system_admin,
         )
     except services.FolderError as e:
         return _to_http(e)

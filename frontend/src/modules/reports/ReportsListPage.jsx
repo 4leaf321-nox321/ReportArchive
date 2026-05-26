@@ -96,6 +96,11 @@ export default function ReportsListPage() {
   const isPersonal = workspace?.kind === 'personal'
   const isOrg = workspace?.kind === 'org'
   const showFolderSidebar = isPersonal || isOrg
+  // 시스템 관리자가 '가입자 공간' 으로 다른 가입자의 personal 워크스페이스
+  // 에 진입한 경우. 폴더 API 는 backend 가 personal-{N} 슬러그를 받아
+  // 그 가입자의 폴더로 분기 — sys admin 만 통과한다.
+  const isViewingOtherPersonal =
+    isPersonal && workspace?.personal_owner_user_id !== me?.user?.id
   // Permission gate for folder CRUD: personal always allowed for owner;
   // org limited to workspace manager. me.role reflects the current
   // workspace's role for the actor (resolved server-side per request).
@@ -619,11 +624,12 @@ export default function ReportsListPage() {
 
   return (
     <div className={cn('flex', showFolderSidebar ? 'h-[calc(100vh-3.5rem)]' : 'p-6 space-y-4 flex-col')}>
-      {/* 폴더 사이드바 — personal: 본인 트리, org: 공유 트리.
-          virtual 워크스페이스(횡단 view)에는 폴더 개념 없음. */}
+      {/* 폴더 사이드바 — personal: 그 가입자 트리(personal-{N} 슬러그를
+          backend 가 받아 분기), org: 공유 트리. virtual 워크스페이스
+          (횡단 view) 에는 폴더 개념 없음. */}
       {showFolderSidebar && (
         <FolderSidebar
-          workspaceSlug={isOrg ? slug : undefined}
+          workspaceSlug={isOrg || isPersonal ? slug : undefined}
           canEdit={canEditFolders}
           selected={folderFilter}
           onSelect={setFolderFilter}
@@ -662,7 +668,7 @@ export default function ReportsListPage() {
                 count={effectiveSelected.size}
                 busy={bulkBusy}
                 canMove={showFolderSidebar}
-                workspaceSlug={isOrg ? slug : undefined}
+                workspaceSlug={isOrg || isPersonal ? slug : undefined}
                 hasMountsInSelection={list.some(
                   (r) =>
                     effectiveSelected.has(r.id) &&

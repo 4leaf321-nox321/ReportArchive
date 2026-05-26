@@ -2658,6 +2658,44 @@ export default function ReportDetailPage() {
             onChange={setCurrentPage}
           />
         )}
+
+        {/* Floating action cluster — anchored to the report column (not
+            the viewport) so the side comment panel can sit beside it
+            without overlap. The column already has `position: relative`,
+            and the panel is a sibling flex child that pushes the column
+            narrower when open; `absolute right-6` therefore tracks the
+            panel's left edge automatically. `report-detail-floating` is
+            preserved so the DOCX exporter still strips it. */}
+        {isEditing && (
+          <div className="report-detail-floating absolute bottom-6 right-6 z-40 print:hidden flex flex-col items-end gap-2">
+            <FloatingCopyJson onCopy={handleCopyJson} />
+            <FloatingPasteJson onOpen={() => setPasteJsonOpen(true)} />
+            <FloatingReportSettings onOpen={() => setSettingsDialogOpen(true)} />
+            <FloatingAddWidget
+              onAdd={(type, defaults) =>
+                addExtraBlock(safeCurrent, type, defaults)
+              }
+            />
+          </div>
+        )}
+        {/* 전체화면 모드에서는 툴바가 숨어 종료 동선이 사라지므로
+            우상단에 작은 종료 핀을 띄운다. ESC로도 빠질 수 있다.
+            같은 이유로 보고서 컬럼 기준 절대 위치 — 코멘트 패널과
+            우상단에서 겹치지 않게. */}
+        {reportFullscreen && (
+          <div className="report-detail-floating absolute top-3 right-3 z-50 print:hidden">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setReportFullscreen(false)}
+              title="전체화면 종료 (Esc)"
+              className="shadow-md"
+            >
+              <Minimize2 className="mr-1 h-3 w-3" />
+              전체화면 종료
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* Comment side panel — sibling of main column inside the outer
@@ -3002,41 +3040,6 @@ export default function ReportDetailPage() {
         onConfirm={(s) => performPdfPrint(s)}
       />
 
-      {/* Floating action cluster pinned to the viewport's bottom-right.
-          The "위젯 추가" pill drops a new block on the current page
-          (safeCurrent — in 'all' viewMode the writer flips the active
-          page via PageStrip first); the "보고서 설정" pill opens the
-          tabbed settings dialog (currently just 폭 설정). Both live
-          inside the same container so the exporter strips them in one
-          shot via `report-detail-floating`. */}
-      {isEditing && (
-        <div className="report-detail-floating fixed bottom-6 right-6 z-40 print:hidden flex flex-col items-end gap-2">
-          <FloatingCopyJson onCopy={handleCopyJson} />
-          <FloatingPasteJson onOpen={() => setPasteJsonOpen(true)} />
-          <FloatingReportSettings onOpen={() => setSettingsDialogOpen(true)} />
-          <FloatingAddWidget
-            onAdd={(type, defaults) =>
-              addExtraBlock(safeCurrent, type, defaults)
-            }
-          />
-        </div>
-      )}
-      {/* 전체화면 모드에서는 툴바가 숨어 종료 동선이 사라지므로
-          우상단에 작은 종료 핀을 띄운다. ESC로도 빠질 수 있다. */}
-      {reportFullscreen && (
-        <div className="report-detail-floating fixed top-3 right-3 z-50 print:hidden">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => setReportFullscreen(false)}
-            title="전체화면 종료 (Esc)"
-            className="shadow-md"
-          >
-            <Minimize2 className="mr-1 h-3 w-3" />
-            전체화면 종료
-          </Button>
-        </div>
-      )}
       {/* DOCX export progress overlay — fixed full-screen dim + center
           card with spinner + step label + (when known) bar. Blocks user
           interaction during export which is desirable: clicking around

@@ -115,13 +115,22 @@ function SidebarBody({ onNavigate }) {
   // 부서 메뉴 links always target the sticky org workspace (`orgSlug`),
   // never the effective slug — visiting /personal/reports shouldn't
   // pivot the sidebar onto the user's personal space.
-  const { orgSlug } = useWorkspace()
+  const { orgSlug, isPersonalPage } = useWorkspace()
   const slug = orgSlug
   const { me } = useAuth()
   // Two orthogonal admin concepts. `isWorkspaceAdmin` reflects the
   // current workspace's role (resolved server-side per /api/me request);
   // `isSystemAdmin` is a global User flag.
-  const isWorkspaceAdmin = me?.role === 'admin'
+  //
+  // Carve-out for personal context: ensure_personal_workspace grants
+  // every user `admin` role on their OWN personal-{id} workspace, so
+  // when the URL is /personal/* the effective workspace is personal
+  // and `me.role === 'admin'` even for users with no department admin
+  // rights. That made workspace-admin-gated entries like "부서 멤버"
+  // appear on /personal/reports and /personal/inbox; clicking them
+  // would lead to a 403 on /w/{orgSlug}/members. Treat the
+  // self-admin-on-personal role as not-an-admin for menu visibility.
+  const isWorkspaceAdmin = !isPersonalPage && me?.role === 'admin'
   const isSystemAdmin = me?.is_system_admin === true
   const userId = me?.user?.id
   // Sidebar holds its own unread poller (parallel to the bell). Same

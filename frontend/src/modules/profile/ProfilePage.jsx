@@ -202,6 +202,15 @@ function PasswordForm() {
 }
 
 function MembershipsCard({ memberships }) {
+  // Personal workspaces carry an auto-provisioned self-admin row that
+  // isn't a "department" in the user's mental model — drop it from the
+  // soso list. (kind comes from the /api/users/me response now;
+  // workspace_slug fallback covers older payloads / cached responses.)
+  const orgMemberships = (memberships ?? []).filter(
+    (m) =>
+      m.workspace_kind !== 'personal' &&
+      !(m.workspace_slug || '').startsWith('personal-'),
+  )
   return (
     <Card>
       <CardHeader>
@@ -214,13 +223,25 @@ function MembershipsCard({ memberships }) {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {memberships.length === 0 ? (
+        {orgMemberships.length === 0 ? (
           <p className="text-sm text-muted-foreground">소속된 부서가 없습니다.</p>
         ) : (
           <ul className="divide-y">
-            {memberships.map((m) => (
-              <li key={m.workspace_slug} className="flex items-center justify-between py-2">
-                <span className="text-sm font-mono">{m.workspace_slug}</span>
+            {orgMemberships.map((m) => (
+              <li
+                key={m.workspace_slug}
+                className="flex items-center justify-between py-2"
+              >
+                <div className="min-w-0 flex flex-col gap-0.5">
+                  <span className="text-sm font-medium truncate">
+                    {m.workspace_name || m.workspace_slug}
+                  </span>
+                  {m.workspace_name && (
+                    <span className="text-[10px] text-muted-foreground font-mono">
+                      {m.workspace_slug}
+                    </span>
+                  )}
+                </div>
                 <Badge variant={ROLE_VARIANT[m.role]}>{ROLE_LABEL[m.role]}</Badge>
               </li>
             ))}

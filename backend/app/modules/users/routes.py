@@ -43,11 +43,19 @@ def get_me(
 
     Doesn't require a workspace header so the frontend can call /api/me
     immediately after login (before workspaces have loaded)."""
-    memberships = list(
+    # Bring back the Workspace row alongside the membership so the
+    # response carries display name + kind without forcing a second
+    # /api/workspaces lookup on the client (and so the profile page can
+    # hide self-admin memberships on personal workspaces).
+    rows = list(
         db.execute(
-            select(WorkspaceMember).where(WorkspaceMember.user_id == user.id)
-        ).scalars()
+            select(WorkspaceMember, Workspace)
+            .join(Workspace, Workspace.slug == WorkspaceMember.workspace_slug)
+            .where(WorkspaceMember.user_id == user.id)
+        )
     )
+    memberships = [m for (m, _ws) in rows]
+    workspace_by_slug = {ws.slug: ws for (_m, ws) in rows}
 
     active_slug = x_workspace_slug
     active_role: Optional[Role] = None
@@ -75,7 +83,18 @@ def get_me(
         workspace_slug=active_slug,
         role=active_role,
         memberships=[
-            MembershipRead(workspace_slug=m.workspace_slug, role=m.role)
+            MembershipRead(
+                workspace_slug=m.workspace_slug,
+                role=m.role,
+                workspace_name=(
+                    ws.name if (ws := workspace_by_slug.get(m.workspace_slug)) else None
+                ),
+                workspace_kind=(
+                    ws.kind.value
+                    if (ws := workspace_by_slug.get(m.workspace_slug))
+                    else None
+                ),
+            )
             for m in memberships
         ],
         is_system_admin=user.is_system_admin,
@@ -90,10 +109,28 @@ def update_my_profile(
     user: User = Depends(get_current_user_no_workspace),
 ):
     """User edits their own profile. Currently only `name` is editable —
-    email change is a separate verified flow (not implemented)."""
+    email change is a separate verified flow (not implemented).
+
+    Side effect: keeps the user's personal workspace display name in
+    sync. Without this, the personal workspace stays on "{old name}
+    (개인)" and shows up as that everywhere else the workspace
+    name is rendered (admin tools, dashboards). Format mirrors what
+    ensure_personal_workspace produces on creation.
+    """
     data = payload.model_dump(exclude_unset=True)
     if "name" in data and data["name"]:
-        user.name = data["name"]
+        new_name = data["name"]
+        user.name = new_name
+        personal_slug = f"personal-{user.id}"
+        personal_ws = db.get(Workspace, personal_slug)
+        if personal_ws is not None:
+            # Match ensure_personal_workspace's fallback ladder so a user
+            # who clears their name to empty still gets a sensible label.
+            local_part = (user.email or "").split("@", 1)[0]
+            display_base = (
+                new_name.strip() or local_part or f"user{user.id}"
+            )
+            personal_ws.name = f"{display_base} (개인)"
     db.commit()
     db.refresh(user)
     return success_response(data=UserRead.model_validate(user))

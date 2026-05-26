@@ -19,6 +19,13 @@ class UserRead(BaseModel):
 class MembershipRead(BaseModel):
     workspace_slug: str
     role: Role
+    # Display-side fields populated by /api/users/me from the Workspace
+    # row. Optional for backward compat — older clients reading the
+    # response can ignore them. workspace_kind lets the profile UI hide
+    # personal-workspace memberships from the "소속 부서" section, since
+    # the self-admin row on `personal-{user_id}` isn't a department.
+    workspace_name: Optional[str] = None
+    workspace_kind: Optional[str] = None
 
 
 class MeRead(BaseModel):

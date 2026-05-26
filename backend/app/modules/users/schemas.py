@@ -106,6 +106,37 @@ class AccountAdminRead(BaseModel):
     home_workspace_name: Optional[str] = None
 
 
+class AccountMembershipRead(BaseModel):
+    """계정 관리 detail 다이얼로그에서 한 부서 row 를 그리기 위한 슬림 shape.
+    role 은 라벨링용 (매니저/사용자), kind/virtual 은 personal 워크스페이스를
+    구분해 따로 표시할지 결정용. workspace_name 이 화면에서 그대로 보임."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    workspace_slug: str
+    workspace_name: str
+    workspace_kind: str
+    role: Role
+    is_home: bool = False
+
+
+class AccountAdminDetailRead(BaseModel):
+    """AccountAdminRead 와 같은 wide view + 부서 멤버십 전체 리스트.
+    계정 관리 페이지에서 한 행을 클릭했을 때 다이얼로그가 사용."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: str
+    name: str
+    is_active: bool
+    is_system_admin: bool
+    created_at: datetime
+    home_workspace_slug: Optional[str] = None
+    home_workspace_name: Optional[str] = None
+    memberships: list[AccountMembershipRead] = []
+
+
 class SetUserActiveRequest(BaseModel):
     """Toggle User.is_active. 비활성화하면 로그인이 즉시 막히고, 진행 중
     이던 모든 세션은 다음 요청에서 401. 본인 비활성 + 마지막 시스템

@@ -33,6 +33,13 @@ export async function listAllAccounts({ includeInactive = true } = {}) {
   return extractData(res)
 }
 
+/** 시스템 관리자 — 한 계정 wide view + 부서 멤버십 전체 목록. 계정 관리
+ *  페이지에서 한 행을 클릭했을 때 여는 상세 다이얼로그가 사용. */
+export async function getAccountDetail(userId) {
+  const res = await apiClient.get(`/api/users/${userId}`)
+  return extractData(res)
+}
+
 /** 시스템 관리자 — 계정 활성/비활성 토글. */
 export async function setUserActive(userId, { isActive }) {
   const res = await apiClient.put(`/api/users/${userId}/active`, {

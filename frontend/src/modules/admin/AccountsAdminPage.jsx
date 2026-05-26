@@ -16,7 +16,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Building2,
+  Home,
   KeyRound,
+  Loader2,
   ShieldCheck,
   ShieldOff,
   UserPlus,
@@ -44,6 +46,7 @@ import { ErrorState } from '@/shared/components/ErrorState'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import {
+  getAccountDetail,
   listAllAccounts,
   setUserActive,
   setUserHomeWorkspace,
@@ -82,6 +85,7 @@ export default function AccountsAdminPage() {
   const [resetPwdTarget, setResetPwdTarget] = useState(null)
   const [confirmActive, setConfirmActive] = useState(null) // {account, nextActive}
   const [homeEditTarget, setHomeEditTarget] = useState(null)
+  const [detailTarget, setDetailTarget] = useState(null) // row clicked → show detail
 
   function reload() {
     setReloadKey((k) => k + 1)
@@ -350,6 +354,7 @@ export default function AccountsAdminPage() {
           pageSizeStorageKey="accounts-admin"
           searchableKeys={['name', 'email']}
           searchPlaceholder="이름 / 이메일 검색"
+          onRowClick={(a) => setDetailTarget(a)}
         />
       )}
 
@@ -373,6 +378,13 @@ export default function AccountsAdminPage() {
             setHomeEditTarget(null)
             reload()
           }}
+        />
+      )}
+
+      {detailTarget && (
+        <AccountDetailDialog
+          target={detailTarget}
+          onClose={() => setDetailTarget(null)}
         />
       )}
 
@@ -512,6 +524,164 @@ function NewAccountDialog({ assignableWorkspaces, onClose, onCreated }) {
             </Button>
           </DialogFooter>
         </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** 한 계정의 상세를 보여주는 read-only 다이얼로그. 행 클릭으로 열림.
+ *  '부서 수' 카운트만으로는 부족한 "어느 부서들에 어떤 role 로 들어가
+ *  있나" 를 한눈에 보게. personal 워크스페이스 (자기 개인공간) 와 실제
+ *  org/virtual 부서를 시각적으로 구분해 표시. */
+function AccountDetailDialog({ target, onClose }) {
+  const [detail, setDetail] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    getAccountDetail(target.id)
+      .then((data) => {
+        if (!cancelled) setDetail(data)
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err?.message || '계정 정보를 불러오지 못했습니다.')
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [target.id])
+
+  // personal-{id} 는 누구나 자기 개인 공간을 갖고 매니저 role 로 자동
+  // 가입되므로 부서 목록과 분리해 보여줘야 의미 있음.
+  const orgMemberships =
+    detail?.memberships?.filter((m) => m.workspace_kind !== 'personal') ?? []
+  const personalMemberships =
+    detail?.memberships?.filter((m) => m.workspace_kind === 'personal') ?? []
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="w-fit min-w-[28rem] max-w-[min(95vw,48rem)]">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            {target.name || target.email}
+            {!target.is_active && (
+              <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                비활성
+              </Badge>
+            )}
+            {target.is_system_admin && (
+              <Badge variant="default" className="text-[10px] gap-1">
+                <ShieldCheck className="h-2.5 w-2.5" />
+                시스템 관리자
+              </Badge>
+            )}
+          </DialogTitle>
+          <DialogDescription className="break-all">
+            {target.email} · 가입일 {formatDate(target.created_at)}
+          </DialogDescription>
+        </DialogHeader>
+
+        {loading ? (
+          <div className="flex items-center justify-center py-8 text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+          </div>
+        ) : error ? (
+          <p className="text-sm text-destructive">{error}</p>
+        ) : (
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                소속 부서
+              </div>
+              {detail.home_workspace_slug ? (
+                <div className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-sm">
+                  <Home className="h-3.5 w-3.5 text-amber-500" />
+                  <span className="font-medium">
+                    {detail.home_workspace_name || detail.home_workspace_slug}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground font-mono">
+                    {detail.home_workspace_slug}
+                  </span>
+                </div>
+              ) : (
+                <span className="text-xs text-amber-700">
+                  소속 부서 미지정 — 계정 관리 페이지에서 지정 필요
+                </span>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <Building2 className="h-3 w-3" />
+                부서 멤버십 ({orgMemberships.length}개)
+              </div>
+              {orgMemberships.length === 0 ? (
+                <p className="text-xs text-muted-foreground py-2">
+                  어느 부서에도 멤버로 등록되어 있지 않습니다.
+                </p>
+              ) : (
+                <ul className="divide-y rounded-md border">
+                  {orgMemberships.map((m) => (
+                    <li
+                      key={m.workspace_slug}
+                      className="flex items-center gap-2 px-2.5 py-1.5 text-sm"
+                    >
+                      <span className="flex-1 truncate">
+                        {m.workspace_name}
+                        <span className="ml-1.5 text-[10px] text-muted-foreground font-mono">
+                          {m.workspace_slug}
+                        </span>
+                      </span>
+                      {m.is_home && (
+                        <Badge
+                          variant="default"
+                          className="text-[10px] gap-0.5 shrink-0"
+                          title="소속 부서"
+                        >
+                          <Home className="h-2.5 w-2.5" />
+                          소속
+                        </Badge>
+                      )}
+                      <Badge
+                        variant={m.role === 'manager' ? 'default' : 'outline'}
+                        className="text-[10px] shrink-0"
+                      >
+                        {m.role === 'manager' ? '매니저' : '사용자'}
+                      </Badge>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {personalMemberships.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                  개인 공간
+                </div>
+                <ul className="text-xs text-muted-foreground space-y-0.5">
+                  {personalMemberships.map((m) => (
+                    <li key={m.workspace_slug} className="font-mono">
+                      {m.workspace_slug}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            닫기
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   )

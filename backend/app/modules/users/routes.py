@@ -11,7 +11,9 @@ from app.database import get_db
 from app.modules.auth.services import hash_password, verify_password
 from app.modules.users.models import Role, User, WorkspaceMember
 from app.modules.users.schemas import (
+    AccountAdminDetailRead,
     AccountAdminRead,
+    AccountMembershipRead,
     AdminSetPasswordRequest,
     ChangePasswordRequest,
     MembershipRead,
@@ -257,6 +259,58 @@ def list_all_accounts(
             )
             for u in users
         ]
+    )
+
+
+@router.get("/users/{user_id}")
+def get_account_detail(
+    user_id: int,
+    db: Session = Depends(get_db),
+    _actor: User = Depends(require_system_admin),
+):
+    """System-admin: 한 계정의 wide view + 부서 멤버십 전체 목록. 계정 관리
+    페이지에서 한 행 클릭하면 여는 다이얼로그가 사용. 카운트 숫자만으로는
+    부족한 '어느 부서들에 어떤 role 로 속해 있나' 를 한눈에 보여주려면
+    개별 row 조회가 필요해서 별도 endpoint 로."""
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "사용자를 찾을 수 없습니다."
+        )
+    rows = list(
+        db.execute(
+            select(WorkspaceMember, Workspace)
+            .join(Workspace, Workspace.slug == WorkspaceMember.workspace_slug)
+            .where(WorkspaceMember.user_id == user_id)
+            .order_by(Workspace.kind, Workspace.name)
+        )
+    )
+    memberships = [
+        AccountMembershipRead(
+            workspace_slug=ws.slug,
+            workspace_name=ws.name,
+            workspace_kind=ws.kind.value,
+            role=m.role,
+            is_home=(target.home_workspace_slug == ws.slug),
+        )
+        for (m, ws) in rows
+    ]
+    home_name = None
+    if target.home_workspace_slug:
+        home_ws = db.get(Workspace, target.home_workspace_slug)
+        home_name = home_ws.name if home_ws else None
+    return success_response(
+        data=AccountAdminDetailRead(
+            id=target.id,
+            email=target.email,
+            name=target.name,
+            is_active=target.is_active,
+            is_system_admin=target.is_system_admin,
+            created_at=target.created_at,
+            home_workspace_slug=target.home_workspace_slug,
+            home_workspace_name=home_name,
+            memberships=memberships,
+        )
     )
 
 

@@ -1012,16 +1012,16 @@ function WorkspaceEditDialog({ ws, workspaces, onOpenChange, onSaved }) {
  */
 const BULK_EMPTY_ROW = { parentName: '', name: '' }
 
-/** 부서 관리자 (workspace admin) 다중 picker. 시스템 관리자가
- *  부서 편집 다이얼로그 안에서 그 부서의 관리자들을 임명/해임.
+/** 부서 매니저 다중 picker. 시스템 관리자가 부서 편집 다이얼로그 안에서
+ *  그 부서의 매니저들을 임명/해임.
  *
  *  이 섹션의 행위는 즉시 (저장 버튼과 무관) — 각 add/remove 호출 시
  *  바로 백엔드 반영. 다이얼로그를 닫지 않고도 추가 작업 가능. 부서
  *  이름·설명 등 다른 필드는 저장 버튼 눌러야 반영.
  *
- *  '부서 관리자' = WorkspaceMember.role=admin 인 사람. 한 부서에 여럿
- *  가능. 일반 manager/user는 여기서 안 보이고 '/w/:slug/members' 페이지
- *  에서 따로 관리.
+ *  '매니저' = WorkspaceMember.role=admin 인 사람 (라벨 통일, 저장 값은
+ *  여전히 admin). 한 부서에 여럿 가능. 일반 사용자는 여기서 안 보이고
+ *  '/w/:slug/members' 페이지에서 따로 관리.
  */
 function WorkspaceAdminsSection({ workspaceSlug }) {
   const [admins, setAdmins] = useState([])
@@ -1093,7 +1093,7 @@ function WorkspaceAdminsSection({ workspaceSlug }) {
   }
 
   async function handleRemove(member) {
-    if (!window.confirm(`'${member.name || member.email}'을(를) 부서 관리자에서 해임하시겠어요?\n(그 사용자의 다른 부서 멤버십은 영향 없음.)`)) {
+    if (!window.confirm(`'${member.name || member.email}'을(를) 매니저에서 해임하시겠어요?\n(그 사용자의 다른 부서 멤버십은 영향 없음.)`)) {
       return
     }
     try {
@@ -1109,11 +1109,11 @@ function WorkspaceAdminsSection({ workspaceSlug }) {
     <div className="space-y-1.5 border-t pt-3">
       <Label className="flex items-center gap-1.5">
         <ShieldCheck className="h-3.5 w-3.5 text-amber-500" />
-        부서 관리자
+        매니저
       </Label>
       <p className="text-[11px] text-muted-foreground">
-        이 부서의 멤버·보고서·폴더를 관리. 여러 명 가능. 일반 멤버는
-        부서 페이지의 '부서 멤버'에서 추가하세요.
+        이 부서의 멤버·템플릿·폴더·AI 프롬프트를 관리. 여러 명 가능.
+        일반 사용자는 부서 페이지의 '부서 멤버'에서 추가하세요.
       </p>
 
       {loading ? (
@@ -1238,7 +1238,7 @@ function WorkspaceAdminsSection({ workspaceSlug }) {
 /** 시스템 관리자 (User.is_system_admin) 카드 — admin 페이지 상단.
  *
  *  시스템 운영자(부서 트리, 카테고리, 엔티티 등 org-wide 마스터)를
- *  임명/해임. 부서 관리자(WorkspaceMember.role=admin)와 별개.
+ *  임명/해임. 부서 매니저(WorkspaceMember.role=admin)와 별개.
  *
  *  자기 자신을 해제하는 액션은 백엔드가 "마지막 시스템 관리자" 인
  *  경우에 한해 막음. 프론트에서는 항상 본인 행에서 해제 버튼을
@@ -1326,7 +1326,7 @@ function SystemAdminsCard({ meUserId }) {
           시스템 관리자
         </CardTitle>
         <CardDescription className="text-xs">
-          부서 트리·기준정보·서버 관리 권한. 부서 관리자와 별개. 소수만
+          부서 트리·기준정보·서버 관리 권한. 부서 매니저와 별개. 소수만
           가져야 안전합니다.
         </CardDescription>
       </CardHeader>

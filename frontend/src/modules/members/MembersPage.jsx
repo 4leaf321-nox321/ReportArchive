@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, Trash2, ShieldCheck, UserCog, User as UserIcon, KeyRound, Home } from 'lucide-react'
+import { Plus, Trash2, ShieldCheck, User as UserIcon, KeyRound, Home } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
 import { Badge } from '@/shared/components/ui/badge'
@@ -31,13 +31,28 @@ import {
 } from '@/shared/api/members'
 import { adminSetUserPassword } from '@/shared/api/me'
 
+// 부서 멤버 역할은 두 단계: 매니저 / 사용자. 기존 manager(중간 단계)는
+// p7 마이그레이션이 user 로 강등하면서 사라졌고, 백엔드 add/update 가
+// manager role 입력을 거절한다. 라벨 차원에서 '관리자' / '부서 관리자'
+// 는 모두 '매니저' 로 통일 (저장 값은 여전히 'admin').
 const ROLES = [
-  { value: 'admin', label: '관리자', icon: ShieldCheck, description: '멤버 + 기준정보 관리, 매니저 권한 포함' },
-  { value: 'manager', label: '매니저', icon: UserCog, description: '보고서 + 템플릿 작성/편집/삭제' },
-  { value: 'user', label: '사용자', icon: UserIcon, description: '보고서 조회' },
+  {
+    value: 'admin',
+    label: '매니저',
+    icon: ShieldCheck,
+    description: '부서 멤버·템플릿·폴더·AI 프롬프트 관리 (보고서 권한 포함)',
+  },
+  {
+    value: 'user',
+    label: '사용자',
+    icon: UserIcon,
+    description: '보고서 작성·편집·조회 (템플릿·부서 관리는 매니저 이상)',
+  },
 ]
 
 const ROLE_LABEL = Object.fromEntries(ROLES.map((r) => [r.value, r.label]))
+// manager 키는 legacy — p7 마이그레이션이 user 로 강등했지만 어쩌다
+// 남은 row 가 있을 때 라벨이 비지 않도록 fallback 으로 유지.
 const ROLE_VARIANT = { admin: 'default', manager: 'secondary', user: 'outline' }
 
 export default function MembersPage() {
@@ -80,7 +95,7 @@ export default function MembersPage() {
         <PageHeader title="멤버" description={`${workspace.name} 멤버 관리`} />
         <ErrorState
           title="권한 없음"
-          description="멤버 관리는 부서 관리자만 가능합니다."
+          description="멤버 관리는 매니저만 가능합니다."
           action={
             <Button asChild variant="outline">
               <Link to={`/w/${slug}`}>부서 홈으로</Link>

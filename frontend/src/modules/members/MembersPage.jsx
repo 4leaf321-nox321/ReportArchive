@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, Trash2, ShieldCheck, User as UserIcon, KeyRound, Home } from 'lucide-react'
+import { Plus, Trash2, ShieldCheck, User as UserIcon, KeyRound, Home, Users, Search } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
 import { Badge } from '@/shared/components/ui/badge'
@@ -28,7 +28,9 @@ import {
   addMember,
   updateMember,
   removeMember,
+  searchUsers,
 } from '@/shared/api/members'
+import { DataTable } from '@/shared/components/DataTable'
 import { adminSetUserPassword } from '@/shared/api/me'
 
 // 부서 멤버 역할은 두 단계: 매니저 / 사용자. p7 이 옛 manager(템플릿만)
@@ -56,6 +58,7 @@ export default function MembersPage() {
   const { me } = useAuth()
   const { workspace, slug, getPath, getDescendantsInclusive, all } = useWorkspace()
   const [addOpen, setAddOpen] = useState(false)
+  const [bulkAddOpen, setBulkAddOpen] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState(null)
   const [resetPwdMember, setResetPwdMember] = useState(null)
 
@@ -153,10 +156,16 @@ export default function MembersPage() {
         }`}
         breadcrumbs={breadcrumb}
         actions={
-          <Button onClick={() => setAddOpen(true)}>
-            <Plus className="mr-2 h-4 w-4" />
-            멤버 추가
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => setBulkAddOpen(true)}>
+              <Users className="mr-2 h-4 w-4" />
+              여러 멤버 추가
+            </Button>
+            <Button onClick={() => setAddOpen(true)}>
+              <Plus className="mr-2 h-4 w-4" />
+              멤버 추가
+            </Button>
+          </div>
         }
       />
 
@@ -223,6 +232,18 @@ export default function MembersPage() {
         defaultWorkspaceSlug={slug}
         assignableWorkspaces={assignableWorkspaces}
       />
+
+      {bulkAddOpen && (
+        <BulkAddMembersDialog
+          workspaceSlug={slug}
+          existingMemberIds={new Set((members ?? []).map((m) => m.user_id))}
+          onClose={() => setBulkAddOpen(false)}
+          onAdded={() => {
+            setBulkAddOpen(false)
+            reload()
+          }}
+        />
+      )}
 
       <ConfirmDialog
         open={Boolean(confirmRemove)}
@@ -453,6 +474,164 @@ function ResetPasswordDialog({ member, onOpenChange }) {
             </Button>
           </DialogFooter>
         </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** 여러 멤버 한 번에 추가. 전체 가입자 중 검색·다중 선택 후 같은 역할로
+ *  일괄 추가. 기존 멤버는 후보에서 자동 제외. 호출은 add_member 라우트
+ *  를 N번 fire-and-summary (Promise.allSettled) — 일부 실패해도 성공한
+ *  쪽은 그대로 추가되고 토스트에 요약. */
+function BulkAddMembersDialog({ workspaceSlug, existingMemberIds, onClose, onAdded }) {
+  const [query, setQuery] = useState('')
+  const [users, setUsers] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [selectedIds, setSelectedIds] = useState(() => new Set())
+  const [role, setRole] = useState('user')
+  const [submitting, setSubmitting] = useState(false)
+
+  // 검색어 변경 시 debounce 200ms 후 서버 호출. limit=100 — 더 많으면
+  // 검색어로 좁혀야 함. 후보군에서 이미 멤버인 사람은 제외.
+  useEffect(() => {
+    let cancelled = false
+    const handle = setTimeout(async () => {
+      setLoading(true)
+      try {
+        const results = await searchUsers({ search: query.trim(), limit: 100 })
+        if (cancelled) return
+        const list = (results ?? []).filter((u) => !existingMemberIds.has(u.id))
+        setUsers(list)
+      } catch (err) {
+        if (!cancelled) toast.error(err?.message || '사용자 조회 실패')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }, 200)
+    return () => {
+      cancelled = true
+      clearTimeout(handle)
+    }
+  }, [query, existingMemberIds])
+
+  async function handleSubmit() {
+    const targets = users.filter((u) => selectedIds.has(u.id))
+    if (targets.length === 0) return
+    setSubmitting(true)
+    try {
+      const results = await Promise.allSettled(
+        targets.map((u) => addMember(workspaceSlug, { email: u.email, role })),
+      )
+      const ok = results.filter((r) => r.status === 'fulfilled').length
+      const fail = results.length - ok
+      if (fail === 0) {
+        toast.success(`${ok}명이 ${ROLE_LABEL[role]}(으)로 추가됐습니다.`)
+      } else {
+        const firstErr = results.find((r) => r.status === 'rejected')?.reason
+        toast.warning(`${ok}명 추가됨, ${fail}명 실패`, {
+          description:
+            firstErr?.response?.data?.message || firstErr?.message || undefined,
+        })
+      }
+      onAdded()
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const columns = [
+    {
+      key: 'name',
+      header: '이름',
+      sortable: true,
+      render: (u) => <span className="font-medium">{u.name || '—'}</span>,
+    },
+    {
+      key: 'email',
+      header: '이메일',
+      sortable: true,
+      render: (u) => (
+        <span className="text-xs text-muted-foreground font-mono truncate">
+          {u.email}
+        </span>
+      ),
+    },
+  ]
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      {/* 동적 width — 이메일이 길면 기본 max-w 안에서 넘침. WorkspaceEdit
+          과 같은 정책. */}
+      <DialogContent className="w-fit min-w-[36rem] max-w-[min(95vw,56rem)] gap-3">
+        <DialogHeader>
+          <DialogTitle>여러 멤버 추가</DialogTitle>
+          <DialogDescription className="text-xs">
+            검색 후 체크박스로 다중 선택해 한 번에 같은 역할로 추가합니다.
+            이 부서에 이미 속한 사람은 후보에서 자동 제외. 한 번에 100명
+            까지 노출되므로 더 많으면 검색어로 좁히세요.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="이름·이메일 검색"
+                className="h-9 pl-7"
+                autoFocus
+              />
+            </div>
+            <div className="inline-flex items-center gap-1.5">
+              <Label className="text-xs">역할</Label>
+              <select
+                value={role}
+                onChange={(e) => setRole(e.target.value)}
+                className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+              >
+                {ROLES.map((r) => (
+                  <option key={r.value} value={r.value}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="min-h-[18rem]">
+            <DataTable
+              columns={columns}
+              data={users}
+              fixedLayout
+              defaultSort={{ key: 'email', dir: 'asc' }}
+              pageSizeStorageKey="members-bulk-add"
+              selectable
+              selectedIds={selectedIds}
+              onSelectionChange={setSelectedIds}
+              getRowId={(u) => u.id}
+              emptyState={
+                <span className="text-sm text-muted-foreground">
+                  {loading ? '불러오는 중...' : '추가할 수 있는 사용자가 없습니다.'}
+                </span>
+              }
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={submitting}>
+            취소
+          </Button>
+          <Button
+            onClick={handleSubmit}
+            disabled={selectedIds.size === 0 || submitting}
+          >
+            {submitting
+              ? '추가 중...'
+              : selectedIds.size === 0
+                ? '선택 후 추가'
+                : `선택한 ${selectedIds.size}명 추가`}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   )

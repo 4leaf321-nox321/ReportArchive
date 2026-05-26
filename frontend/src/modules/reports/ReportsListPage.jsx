@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Filter,
@@ -40,6 +40,14 @@ import { useAuth } from '@/shared/auth/AuthContext'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { deleteReport, listReports, moveReportToFolder } from './api'
+import { setMountFolder } from '@/shared/api/mounts'
+
+/** MIME type carried by a report-row drag. FolderSidebar checks for this
+ *  string to distinguish "user is dragging reports into me" from "user is
+ *  dragging a folder under me" (the existing folder-tree D&D). Module-
+ *  level constant so the source and the destination can't drift. */
+const REPORT_DRAG_MIME = 'application/x-report-ids'
+export { REPORT_DRAG_MIME }
 import { unmountReport } from '@/shared/api/mounts'
 import { listTemplates } from '@/shared/api/templates'
 import { listEntityTypes } from '@/shared/api/entities'
@@ -110,6 +118,15 @@ export default function ReportsListPage() {
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
   const [bulkUnmountOpen, setBulkUnmountOpen] = useState(false)
   const [bulkBusy, setBulkBusy] = useState(false)
+  // FolderSidebar 의 폴더별 카운트(report_count, uncategorized_count) 는
+  // 자체 listFolders 응답에서 오기 때문에, 여기서 보고서를 옮기거나
+  // 삭제해도 reload() 만으론 갱신이 안 된다. 이 키를 bump 하면 사이드바
+  // 가 refresh 한다 — 폴더 CRUD 와 동일한 effect 트리거.
+  const [folderReloadKey, setFolderReloadKey] = useState(0)
+  const bumpFolderReload = useCallback(
+    () => setFolderReloadKey((k) => k + 1),
+    [],
+  )
   // MountDialog opened from the 게시 cell click — `null` = closed.
   // We pass the full report row so the dialog has report.owner_user_id /
   // title without a second fetch. onChanged triggers reload() so the
@@ -490,8 +507,11 @@ export default function ReportsListPage() {
     return next
   }, [selectedIds, visibleIdSet])
 
-  async function runBulk(action, { successWord }) {
-    const ids = [...effectiveSelected]
+  /** Generic bulk action over an explicit id list. Pulled out of the
+   *  original runBulk so the drag-and-drop handler can run the SAME
+   *  toast/refresh pipeline over a one-off id set (e.g. dragging a
+   *  single unselected row) without temporarily mutating selectedIds. */
+  async function runBulkOnIds(ids, action, { successWord }) {
     if (ids.length === 0) return
     setBulkBusy(true)
     try {
@@ -511,17 +531,44 @@ export default function ReportsListPage() {
       }
       setSelectedIds(new Set())
       reload()
+      // FolderSidebar 의 보고서 카운트 갱신 트리거. 이동/삭제 어느 쪽이든
+      // 폴더별 숫자가 바뀌므로 단일 진입점에서 한 번에 처리.
+      bumpFolderReload()
     } finally {
       setBulkBusy(false)
     }
+  }
+
+  function runBulk(action, opts) {
+    return runBulkOnIds([...effectiveSelected], action, opts)
   }
 
   function handleBulkDelete() {
     runBulk((id) => deleteReport(id), { successWord: '삭제됨' })
   }
 
+  /** Bulk folder change — branches on isOrg because the two scopes use
+   *  different routes (Report.folder_id vs ReportMount.folder_id). The
+   *  same `folderId === null` sentinel means "uncategorized" in both. */
+  function moveOne(id, folderId) {
+    return isOrg
+      ? setMountFolder({ reportId: id, workspaceSlug: slug, folderId })
+      : moveReportToFolder(id, folderId)
+  }
+
   function handleBulkMove(folderId) {
-    runBulk((id) => moveReportToFolder(id, folderId), { successWord: '이동됨' })
+    runBulk((id) => moveOne(id, folderId), { successWord: '이동됨' })
+  }
+
+  /** Drop target on FolderSidebar fired — `folderId === null` = 미분류.
+   *  `ids` is whatever the row-drag carried; it may or may not match
+   *  the current selection (we drag the lone row if the drag started
+   *  on an unselected row). Filter to visible rows only so a stale id
+   *  doesn't sneak through. */
+  function handleReportsDropOnFolder(folderId, ids) {
+    const visible = (ids ?? []).filter((id) => visibleIdSet.has(id))
+    if (visible.length === 0) return
+    runBulkOnIds(visible, (id) => moveOne(id, folderId), { successWord: '이동됨' })
   }
 
   // Bulk unmount — matrix of (selected report × picked workspace).
@@ -562,6 +609,8 @@ export default function ReportsListPage() {
       }
       setSelectedIds(new Set())
       reload()
+      // org 게시판에서 unmount 하면 그 게시판의 폴더별 카운트도 줄어든다.
+      bumpFolderReload()
     } finally {
       setBulkBusy(false)
       setBulkUnmountOpen(false)
@@ -579,6 +628,8 @@ export default function ReportsListPage() {
           selected={folderFilter}
           onSelect={setFolderFilter}
           onChanged={reload}
+          onReportsDrop={handleReportsDropOnFolder}
+          reloadKey={folderReloadKey}
         />
       )}
 
@@ -640,6 +691,34 @@ export default function ReportsListPage() {
               selectable
               selectedIds={effectiveSelected}
               onSelectionChange={setSelectedIds}
+              rowProps={
+                showFolderSidebar
+                  ? (row) => {
+                      // Drag a row → drag every selected row when the
+                      // source is part of the selection; otherwise drag
+                      // just this one. Matches Finder / Gmail behavior
+                      // (lone drag from unselected row doesn't require
+                      // the user to tick a checkbox first).
+                      return {
+                        draggable: true,
+                        onDragStart: (e) => {
+                          const ids = effectiveSelected.has(row.id)
+                            ? [...effectiveSelected]
+                            : [row.id]
+                          e.dataTransfer.effectAllowed = 'move'
+                          e.dataTransfer.setData(
+                            REPORT_DRAG_MIME,
+                            JSON.stringify(ids),
+                          )
+                          // text/plain fallback so the browser still
+                          // shows a drag preview / cursor even in older
+                          // engines that ignore custom MIME types.
+                          e.dataTransfer.setData('text/plain', String(ids.length))
+                        },
+                      }
+                    }
+                  : undefined
+              }
               toolbarExtras={
                 <FilterBar
                   onlyMine={onlyMine}

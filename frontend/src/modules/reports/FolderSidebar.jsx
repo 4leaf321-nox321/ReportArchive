@@ -40,6 +40,39 @@ import { cn } from '@/shared/lib/utils'
 export const FOLDER_FILTER_ALL = null
 export const FOLDER_FILTER_UNCATEGORIZED = 'uncategorized'
 
+/** MIME type carried by a report-row drag. Kept verbatim here (not
+ *  imported) so the sidebar doesn't pull a dependency on the list page;
+ *  any caller can wire `onReportsDrop` independently as long as their
+ *  draggable rows set the same MIME key. Matches the constant in
+ *  ReportsListPage.jsx (`REPORT_DRAG_MIME`). */
+const REPORT_DRAG_MIME = 'application/x-report-ids'
+
+/** Does `e.dataTransfer` look like a report-row drag (rather than the
+ *  folder-tree's own internal folder-on-folder drag)? Checking `types`
+ *  is the only reliable read during `dragover` — `getData` returns ""
+ *  for security reasons until `drop`. */
+function isReportDrag(e) {
+  const t = e.dataTransfer?.types
+  if (!t) return false
+  // DataTransferItemList has a contains() in some browsers but not all;
+  // iterate to stay portable.
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] === REPORT_DRAG_MIME) return true
+  }
+  return false
+}
+
+function readReportIds(e) {
+  const raw = e.dataTransfer?.getData(REPORT_DRAG_MIME)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * @param workspaceSlug  Pass the workspace slug for org-scope folders.
  *                       Omit (or undefined) for personal scope.
@@ -53,6 +86,17 @@ export function FolderSidebar({
   onChanged,
   workspaceSlug,
   canEdit = true,
+  // Optional. When provided, folder rows and the "미분류" fixed row also
+  // accept drops carrying REPORT_DRAG_MIME — drop fires
+  // onReportsDrop(folderIdOrNull, ids). Wiring this is the only opt-in
+  // needed for drag-to-move from the report list.
+  onReportsDrop,
+  // Optional. Each time this changes, the sidebar re-fetches its folder
+  // list — used by the parent to refresh per-folder report counts after
+  // bulk moves/deletes/unmounts. Folder CRUD inside this component
+  // already refreshes via its own `refresh()` calls, so the parent only
+  // needs to bump this when reports (not folders) are mutated.
+  reloadKey = 0,
 }) {
   const [folders, setFolders] = React.useState([])
   const [uncategorizedCount, setUncategorizedCount] = React.useState(0)
@@ -70,10 +114,23 @@ export function FolderSidebar({
   // user sees the child they just added. Default: all expanded.
   const [collapsed, setCollapsed] = React.useState(() => new Set())
   // DnD state — `draggingId` is the folder being dragged; `dropTarget`
-  // is either a folder id or the special sentinel `'__root__'` for
-  // moving to the root level. Rendered as a highlight on the target.
+  // is either a folder id, '__root__' for the root area, or
+  // '__uncategorized__' for the 미분류 row (report drops only).
+  // Rendered as a highlight on the target.
   const [draggingId, setDraggingId] = React.useState(null)
   const [dropTarget, setDropTarget] = React.useState(null)
+
+  // Catch drag cancellation (ESC, drop on a non-target). The folder-on-
+  // folder D&D clears via the source's onDragEnd, but report-row drags
+  // start outside this component, so we don't have that hook. Listening
+  // on window catches both since dragend bubbles to the top.
+  React.useEffect(() => {
+    function handleEnd() {
+      setDropTarget(null)
+    }
+    window.addEventListener('dragend', handleEnd)
+    return () => window.removeEventListener('dragend', handleEnd)
+  }, [])
 
   const refresh = React.useCallback(async () => {
     setLoading(true)
@@ -93,7 +150,10 @@ export function FolderSidebar({
 
   React.useEffect(() => {
     refresh()
-  }, [refresh])
+    // reloadKey 는 보고서 mutation 후 부모가 bump 하는 외부 트리거 —
+    // refresh 자체는 안 바뀌지만 effect 가 재실행되어 카운트가 새로
+    // 받아온다.
+  }, [refresh, reloadKey])
 
   // Build a parent → children index for nesting.
   const childrenOf = React.useMemo(() => {
@@ -246,7 +306,11 @@ export function FolderSidebar({
     const isCollapsed = collapsed.has(folder.id)
     const hasChildren = children.length > 0
     const isDragging = draggingId === folder.id
-    const isDropHere = dropTarget === folder.id && canDropOn(folder.id)
+    // dropTarget is only set after a valid drag-source check (folder or
+    // report), so the simple equality is enough — no need to re-run
+    // canDropOn, which only knows about folder drags and would return
+    // false during a report-row drag.
+    const isDropHere = dropTarget === folder.id
     return (
       <div key={folder.id}>
         <div
@@ -270,18 +334,24 @@ export function FolderSidebar({
                 }
               : undefined
           }
-          onDragOver={
-            canEdit
-              ? (e) => {
-                  if (canDropOn(folder.id)) {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    e.dataTransfer.dropEffect = 'move'
-                    if (dropTarget !== folder.id) setDropTarget(folder.id)
-                  }
-                }
-              : undefined
-          }
+          onDragOver={(e) => {
+            // Report-row drop has priority — accept regardless of
+            // canEdit because moving a report into a folder is a
+            // separate permission from CRUDing folders themselves.
+            if (onReportsDrop && isReportDrag(e)) {
+              e.preventDefault()
+              e.stopPropagation()
+              e.dataTransfer.dropEffect = 'move'
+              if (dropTarget !== folder.id) setDropTarget(folder.id)
+              return
+            }
+            if (canEdit && canDropOn(folder.id)) {
+              e.preventDefault()
+              e.stopPropagation()
+              e.dataTransfer.dropEffect = 'move'
+              if (dropTarget !== folder.id) setDropTarget(folder.id)
+            }
+          }}
           onDragLeave={(e) => {
             // Only clear if we're leaving the row itself, not entering
             // a child element.
@@ -289,15 +359,21 @@ export function FolderSidebar({
               if (dropTarget === folder.id) setDropTarget(null)
             }
           }}
-          onDrop={
-            canEdit
-              ? (e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  handleDrop(folder.id)
-                }
-              : undefined
-          }
+          onDrop={(e) => {
+            if (onReportsDrop && isReportDrag(e)) {
+              e.preventDefault()
+              e.stopPropagation()
+              const ids = readReportIds(e)
+              setDropTarget(null)
+              if (ids?.length) onReportsDrop(folder.id, ids)
+              return
+            }
+            if (canEdit) {
+              e.preventDefault()
+              e.stopPropagation()
+              handleDrop(folder.id)
+            }
+          }}
           className={cn(
             'group flex items-center gap-1 rounded-md px-1.5 py-1 text-sm cursor-pointer transition-colors',
             isDragging && 'opacity-50',
@@ -494,12 +570,53 @@ export function FolderSidebar({
           active={selected === FOLDER_FILTER_ALL}
           onClick={() => onSelect(FOLDER_FILTER_ALL)}
         />
+        {/* "미분류" — folder_id=null 자리. 보고서 행을 여기로 드래그하면
+            폴더에서 빼낸다. "전체" 는 필터일 뿐이라 drop 대상으로 두지
+            않는다 (방향이 모호). */}
         <FixedRow
           icon={Inbox}
           label="미분류"
           count={uncategorizedCount}
           active={selected === FOLDER_FILTER_UNCATEGORIZED}
           onClick={() => onSelect(FOLDER_FILTER_UNCATEGORIZED)}
+          isDropHere={dropTarget === '__uncategorized__'}
+          onDragOver={
+            onReportsDrop
+              ? (e) => {
+                  if (isReportDrag(e)) {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    e.dataTransfer.dropEffect = 'move'
+                    if (dropTarget !== '__uncategorized__')
+                      setDropTarget('__uncategorized__')
+                  }
+                }
+              : undefined
+          }
+          onDragLeave={
+            onReportsDrop
+              ? (e) => {
+                  if (
+                    e.currentTarget === e.target &&
+                    dropTarget === '__uncategorized__'
+                  ) {
+                    setDropTarget(null)
+                  }
+                }
+              : undefined
+          }
+          onDrop={
+            onReportsDrop
+              ? (e) => {
+                  if (!isReportDrag(e)) return
+                  e.preventDefault()
+                  e.stopPropagation()
+                  const ids = readReportIds(e)
+                  setDropTarget(null)
+                  if (ids?.length) onReportsDrop(null, ids)
+                }
+              : undefined
+          }
         />
 
         <div className="h-px bg-border my-1.5" />
@@ -580,16 +697,30 @@ function InlineCreateRow({ depth, value, onChange, onSubmit, onCancel }) {
   )
 }
 
-function FixedRow({ icon: Icon, label, count, active, onClick }) {
+function FixedRow({
+  icon: Icon,
+  label,
+  count,
+  active,
+  onClick,
+  isDropHere,
+  onDragOver,
+  onDragLeave,
+  onDrop,
+}) {
   return (
     <div
       className={cn(
         'flex items-center gap-1.5 rounded-md px-2 py-1 text-sm cursor-pointer transition-colors',
-        active
+        isDropHere && 'ring-1 ring-primary bg-primary/10',
+        !isDropHere && active
           ? 'bg-primary/10 text-primary font-medium'
-          : 'hover:bg-muted text-foreground/80',
+          : !isDropHere && 'hover:bg-muted text-foreground/80',
       )}
       onClick={onClick}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
     >
       <span className="w-3 shrink-0" />
       <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />

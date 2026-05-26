@@ -70,6 +70,14 @@ export function DataTable({
   selectedIds,
   onSelectionChange,
   getRowId = (r) => r.id,
+  // Per-row prop spread — escape hatch for callers that need to attach
+  // drag handlers, custom data-* attributes, etc. without us inventing
+  // a dedicated prop for every use case. Receives (row, index); returns
+  // props merged onto the <TableRow>. Anything we already set
+  // (key/onClick/className/data-selected) is preserved — these spread
+  // BEFORE those so caller props can't accidentally clobber selection
+  // styling or click handling.
+  rowProps,
 }) {
   const [query, setQuery] = React.useState('')
   const [sort, setSort] = React.useState(
@@ -337,13 +345,16 @@ export function DataTable({
                 const rowId = selectionEnabled ? getRowId(row) : undefined
                 const isSelected =
                   selectionEnabled && selectedIds?.has(rowId) === true
+                const extraRowProps = rowProps?.(row, idx) ?? null
                 return (
                   <TableRow
+                    {...(extraRowProps || {})}
                     key={row.id ?? idx}
                     onClick={onRowClick ? () => onRowClick(row) : undefined}
                     className={cn(
                       onRowClick && 'cursor-pointer',
                       isSelected && 'bg-primary/5',
+                      extraRowProps?.className,
                     )}
                     data-selected={isSelected || undefined}
                   >

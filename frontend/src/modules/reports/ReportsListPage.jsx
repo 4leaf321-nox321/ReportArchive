@@ -1226,7 +1226,7 @@ function BulkMovePopover({ workspaceSlug, disabled, onPick }) {
           disabled={disabled}
         >
           <FolderInput className="h-3.5 w-3.5" />
-          폴더로 이동
+          폴더 변경
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-64 p-1">

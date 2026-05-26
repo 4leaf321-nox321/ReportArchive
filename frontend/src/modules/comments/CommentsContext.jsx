@@ -119,6 +119,10 @@ export function CommentsProvider({
       setPanelOpen(true)
       setOpenThreadId(created?.id ?? null)
       setPendingDraft(null)
+      // 본인 보고서에 thread 를 직접 시작하면 사이드바 '받은 코멘트'
+      // 미해결 카운트가 +1. 남의 보고서면 변동 없지만 notify 자체는
+      // 사이드바의 가벼운 재폴링만 트리거하므로 분기 없이 항상 호출.
+      notifyBadgesChanged()
       return created
     } catch (e) {
       toast.error(e?.response?.data?.message || '코멘트 추가 실패')
@@ -184,6 +188,10 @@ export function CommentsProvider({
     try {
       await deleteComment(commentId)
       await refresh()
+      // thread 의 마지막 댓글이 삭제되면 thread 자체가 사라져 인박스
+      // 카운트가 줄어들 수 있다. 어느 쪽이든 사이드바가 한 번 다시
+      // 받아오면 정확해짐.
+      notifyBadgesChanged()
     } catch (e) {
       toast.error(e?.response?.data?.message || '삭제 실패')
     }

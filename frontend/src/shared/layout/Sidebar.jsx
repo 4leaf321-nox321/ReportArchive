@@ -18,6 +18,7 @@ import {
 import * as React from 'react'
 import { getUnreadCount } from '@/shared/api/notifications'
 import { listCommentsInbox } from '@/shared/api/comments'
+import { subscribeBadgesChanged } from '@/shared/lib/badgesEvents'
 import { WorkspaceSelector } from '@/shared/components/WorkspaceSelector'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAuth } from '@/shared/auth/AuthContext'
@@ -167,9 +168,15 @@ function SidebarBody({ onNavigate }) {
     }
     tick()
     const id = setInterval(tick, 30_000)
+    // 알림/코멘트 mutation 직후 즉시 재폴링 — 새로고침 없이도 사이드바
+    // 배지가 사라지게.
+    const unsubscribe = subscribeBadgesChanged(() => {
+      if (!cancelled) tick()
+    })
     return () => {
       cancelled = true
       clearInterval(id)
+      unsubscribe()
     }
   }, [userId])
   const badges = { unread, inboxOpen }

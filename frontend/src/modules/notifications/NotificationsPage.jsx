@@ -37,6 +37,7 @@ import {
 } from '@/shared/api/notifications'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { cn } from '@/shared/lib/utils'
+import { notifyBadgesChanged } from '@/shared/lib/badgesEvents'
 
 const PAGE_SIZE = 50
 
@@ -134,6 +135,8 @@ export default function NotificationsPage() {
           x.id === n.id ? { ...x, read_at: new Date().toISOString() } : x,
         ),
       )
+      // 사이드바 알림 배지 즉시 갱신 — 30초 폴링 주기 안 기다림.
+      notifyBadgesChanged()
     }
     const url = deepLinkFor(n)
     if (url) navigate(url)
@@ -147,6 +150,7 @@ export default function NotificationsPage() {
     )
     // Unread tab: list becomes empty after mark-all-read.
     if (tab === 'unread') setItems([])
+    notifyBadgesChanged()
   }
 
   async function handleDeleteOne(n, evt) {
@@ -162,6 +166,7 @@ export default function NotificationsPage() {
     }
     try {
       await deleteNotification(n.id)
+      if (!n.read_at) notifyBadgesChanged()
     } catch (e) {
       // Rollback on failure.
       setItems(prev)
@@ -178,6 +183,9 @@ export default function NotificationsPage() {
       const removed = res?.deleted ?? 0
       setItems((arr) => arr.filter((x) => !x.read_at))
       toast.success(`읽은 알림 ${removed}건을 삭제했습니다.`)
+      // 읽은 항목만 삭제하므로 unread 카운트는 안 바뀌지만 사이드바
+      // 다른 데이터(예: 알림 총수)와 일관성 유지를 위해 가벼운 sync.
+      notifyBadgesChanged()
     } catch (e) {
       toast.error(e?.response?.data?.message || '삭제 실패')
     }

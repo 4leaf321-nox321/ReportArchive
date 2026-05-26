@@ -33,6 +33,10 @@ import {
 } from '@/shared/api/notifications'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { cn } from '@/shared/lib/utils'
+import {
+  notifyBadgesChanged,
+  subscribeBadgesChanged,
+} from '@/shared/lib/badgesEvents'
 
 const POLL_MS = 30_000
 
@@ -75,9 +79,14 @@ export function NotificationBell() {
     }
     tick()
     const id = setInterval(tick, POLL_MS)
+    // mutation 후 즉시 동기화 — 사이드바와 동일 패턴.
+    const unsubscribe = subscribeBadgesChanged(() => {
+      if (!cancelled) tick()
+    })
     return () => {
       cancelled = true
       clearInterval(id)
+      unsubscribe()
     }
   }, [me?.user?.id])
 
@@ -104,6 +113,11 @@ export function NotificationBell() {
       setItems((arr) =>
         arr.map((x) => (x.id === n.id ? { ...x, read_at: new Date().toISOString() } : x)),
       )
+      // 사이드바 배지도 즉시 동기화. markRead 가 백그라운드라서
+      // 잠깐 동안은 서버 카운트가 아직 옛값이지만, 사이드바도 자체
+      // 낙관 업데이트 없이 곧장 fetch 하므로 race 시 한 박자 늦게
+      // 맞춰진다 (다음 폴링까지 stale 보단 훨씬 짧음).
+      notifyBadgesChanged()
     }
     setOpen(false)
     const url = deepLinkFor(n)
@@ -144,6 +158,7 @@ export function NotificationBell() {
               onClick={async () => {
                 await markAllRead()
                 await loadList()
+                notifyBadgesChanged()
               }}
               className="text-[11px] text-primary hover:underline flex items-center gap-1"
             >

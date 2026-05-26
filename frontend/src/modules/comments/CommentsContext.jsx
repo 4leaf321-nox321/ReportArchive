@@ -16,6 +16,7 @@ import {
   editComment,
   deleteComment,
 } from '@/shared/api/comments'
+import { notifyBadgesChanged } from '@/shared/lib/badgesEvents'
 
 const CommentsContext = React.createContext(null)
 
@@ -160,6 +161,10 @@ export function CommentsProvider({
     try {
       await setThreadStatus(threadId, next)
       await refresh()
+      // 사이드바 '받은 코멘트' 미해결 카운트도 즉시 갱신. 본인이 받은
+      // thread 가 아니면 카운트 변화는 없지만, notify 는 사이드바에서
+      // 빠른 fetch 한 번을 트리거할 뿐이라 부작용 없음.
+      notifyBadgesChanged()
     } catch (e) {
       toast.error(e?.response?.data?.message || '상태 변경 실패')
     }

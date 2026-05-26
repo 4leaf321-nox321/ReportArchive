@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronRight,
+  Copy,
   FileType2,
   GripVertical,
   Layers,
@@ -34,12 +35,19 @@ import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import {
+  createComposite,
   deleteComposite,
   getComposite,
   publishComposite,
   unpublishComposite,
   updateComposite,
 } from '@/shared/api/composites'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/shared/components/ui/dialog'
 import { KIND_LABEL, KIND_VARIANT, KINDS } from './constants'
 import { ItemPickerDialog } from './ItemPickerDialog'
 import { InlineCompositeView, InlineReportView } from './InlineReportView'
@@ -67,6 +75,7 @@ export default function CompositeDetailPage() {
   const [draft, setDraft] = useState(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [copyOpen, setCopyOpen] = useState(false)
   // Drag-and-drop state for item reorder. Declared up here with the
   // other hooks (not next to the reorderItems handler below) because
   // hooks must run in the same order every render — the component has
@@ -154,6 +163,47 @@ export default function CompositeDetailPage() {
       navigate(`/w/${slug}/composites`)
     } catch (err) {
       toast.error(err.message || '삭제 실패')
+    }
+  }
+
+  /** Clone the current composite into a new draft owned by the current
+   *  user. Items (ref_report_id / ref_composite_id / note / display_column)
+   *  carry over verbatim — published snapshots intentionally do NOT, so the
+   *  copy starts as a live composite even when the source was 발행됨.
+   *  period_date for recurring resets to today (same convention as report
+   *  copy resetting report_date). New title comes from the dialog input;
+   *  workspace stays the same as the source so the copy lives next to the
+   *  original. After creation we navigate to the new composite. */
+  async function onCopy(newTitle) {
+    if (!composite) return
+    try {
+      const created = await createComposite({
+        workspace_slug: composite.workspace_slug,
+        title: newTitle,
+        kind: composite.kind,
+        period_date:
+          composite.kind === 'recurring'
+            ? new Date().toISOString().slice(0, 10)
+            : null,
+        description: composite.description ?? '',
+        items: composite.items.map((it) => ({
+          note: it.note ?? '',
+          ref_report_id:
+            it.item_type === 'report' ? it.ref_report?.id : null,
+          ref_composite_id:
+            it.item_type === 'composite' ? it.ref_composite?.id : null,
+          display_column: it.display_column ?? 1,
+        })),
+      })
+      toast.success('종합보고가 복사되었습니다.')
+      setCopyOpen(false)
+      // Navigate using the server-returned slug — same defensive move
+      // ReportDetailPage uses, since the copy could land in a different
+      // workspace if the user's permissions changed mid-request.
+      navigate(`/w/${created.workspace_slug}/composites/${created.id}`)
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err.message || '복사 실패')
+      throw err
     }
   }
 
@@ -396,6 +446,16 @@ export default function CompositeDetailPage() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            {/* 복사 — 일반 보고서의 복사 패턴과 동일. 발행 여부와 무관하게
+                항상 가능 (발행은 원본의 상태이고, 사본은 새 draft 로 시작). */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setCopyOpen(true)}
+            >
+              <Copy className="mr-1 h-3 w-3" />
+              복사
+            </Button>
             <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setConfirmDelete(true)}>
               <Trash2 className="mr-1 h-3 w-3" />
               삭제
@@ -583,8 +643,94 @@ export default function CompositeDetailPage() {
         variant="destructive"
         onConfirm={onDelete}
       />
+
+      <CompositeCopyDialog
+        open={copyOpen}
+        onOpenChange={setCopyOpen}
+        sourceTitle={composite.title}
+        sourceKind={composite.kind}
+        onConfirm={onCopy}
+      />
+
       {docxProgress && <DocxExportOverlay progress={docxProgress} />}
     </div>
+  )
+}
+
+/** Asks the user for the new title before kicking off a copy. Pre-fills
+ *  '{원본} 사본' so the common case is one Enter; trims and rejects empty.
+ *  Mirrors ReportDetailPage's ReportCopyDialog — kept local to the
+ *  composites module since the wording / hint copy differs slightly
+ *  (recurring 의 period_date 도 오늘로 리셋된다는 안내). */
+function CompositeCopyDialog({ open, onOpenChange, sourceTitle, sourceKind, onConfirm }) {
+  const [title, setTitle] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      const base = (sourceTitle ?? '').trim()
+      setTitle(base ? `${base} 사본` : '')
+      setSubmitting(false)
+    }
+  }, [open, sourceTitle])
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    const trimmed = title.trim()
+    if (!trimmed) return
+    setSubmitting(true)
+    try {
+      await onConfirm(trimmed)
+    } catch {
+      // onConfirm surfaces its own toast on failure; keep the dialog
+      // open so the user can retry with the same title.
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>종합보고 복사</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <label htmlFor="composite-copy-title" className="text-sm font-medium">
+              새 종합보고 제목
+            </label>
+            <Input
+              id="composite-copy-title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="새 제목"
+              autoFocus
+              required
+            />
+            <p className="text-[11px] text-muted-foreground">
+              안건·설명·열 배치는 그대로 복사되며, 작성인은 현재 사용자로
+              설정됩니다.
+              {sourceKind === 'recurring'
+                ? ' 정기 기준일은 오늘로, 발행 상태는 초기화됩니다.'
+                : ''}
+            </p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={submitting}
+            >
+              취소
+            </Button>
+            <Button type="submit" disabled={submitting || !title.trim()}>
+              {submitting ? '복사 중...' : '복사'}
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }
 

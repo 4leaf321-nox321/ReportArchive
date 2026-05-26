@@ -793,7 +793,9 @@ function WorkspaceCreateDialog({ open, onOpenChange, workspaces, onCreated }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      {/* Same dynamic-width policy as WorkspaceEditDialog — long parent
+          paths in the combobox push the modal out to fit. */}
+      <DialogContent className="w-fit min-w-[36rem] max-w-[min(95vw,56rem)]">
         <DialogHeader>
           <DialogTitle>새 부서</DialogTitle>
           <DialogDescription>슬러그는 발행 후 변경 불가합니다.</DialogDescription>
@@ -835,6 +837,7 @@ function WorkspaceCreateDialog({ open, onOpenChange, workspaces, onCreated }) {
               placeholder="(루트 — 본부)"
               allowNone
               noneLabel="(루트 — 본부)"
+              noTruncate
             />
             <p className="text-[11px] text-muted-foreground">
               상위를 선택하지 않으면 루트(본부) 부서가 됩니다. 색상은 상위
@@ -919,13 +922,18 @@ function WorkspaceEditDialog({ ws, workspaces, onOpenChange, onSaved }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      {/* 부서 편집은 상위 부서 picker + 관리자 섹션 (badge wrap + 검색
-          dropdown) 까지 들어가므로 기본 max-w-lg(512px) 보다 한 단 넓게.
-          좁은 화면(<640px) 에서는 어차피 100% 폭으로 떨어진다. */}
-      <DialogContent className="max-w-xl">
+      {/* Dynamic width — `w-fit` lets the modal grow to fit its widest
+          child (the parent-부서 combobox, when noTruncate is on, expresses
+          the full path's natural width). `min-w-[36rem]` keeps the
+          form at a comfortable baseline; `max-w-[min(95vw,56rem)]`
+          caps at 56rem or 95vw so very long names never push the
+          modal off-screen. Without these together the combobox text
+          either truncated (default max-w-xl) or extended past the
+          modal edge. */}
+      <DialogContent className="w-fit min-w-[36rem] max-w-[min(95vw,56rem)]">
         <DialogHeader>
           <DialogTitle>부서 편집</DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="break-all">
             슬러그(<code className="font-mono">{ws?.slug}</code>) 외 모든 항목 변경 가능.
             색상은 상위 부서에 따라 자동 배정.
           </DialogDescription>
@@ -950,6 +958,7 @@ function WorkspaceEditDialog({ ws, workspaces, onOpenChange, onSaved }) {
               placeholder="(루트 — 본부)"
               allowNone
               noneLabel="(루트 — 본부)"
+              noTruncate
             />
             <p className="text-[11px] text-muted-foreground">
               자기 자신 / 하위 부서는 선택할 수 없습니다 (트리 순환 방지).

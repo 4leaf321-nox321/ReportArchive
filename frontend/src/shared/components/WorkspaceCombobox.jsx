@@ -42,6 +42,13 @@ export function WorkspaceCombobox({
   // onChange('') so the caller can model an "unset" state.
   allowNone = false,
   noneLabel = '선택 없음',
+  // When true, the trigger button does NOT truncate the selected label —
+  // its text expresses natural width and (combined with a w-fit parent
+  // container) lets the parent grow to fully reveal long workspace
+  // paths. Used by the WorkspaceEdit / WorkspaceCreate dialogs so they
+  // size up to the combobox content rather than clipping the path.
+  // Default false keeps the existing truncation behavior everywhere else.
+  noTruncate = false,
 }) {
   const [open, setOpen] = React.useState(false)
 
@@ -86,6 +93,13 @@ export function WorkspaceCombobox({
           role="combobox"
           aria-expanded={open}
           disabled={disabled}
+          // Tooltip surfaces the full path when truncation hides it. Cheap
+          // to set even in noTruncate mode (just no-op there).
+          title={
+            selected
+              ? pathBySlug.get(selected.slug) || selected.name
+              : undefined
+          }
           className={cn(
             'justify-between font-normal',
             compact ? 'h-9 text-sm' : 'w-full',
@@ -93,16 +107,28 @@ export function WorkspaceCombobox({
           )}
         >
           {selected ? (
-            // `flex-1 min-w-0` on the content wrapper — without this the
-            // span sits at its natural width inside the Button's flex,
-            // so a long workspace path ("개발본부 / 플랫폼팀 / 백엔드")
-            // pushes the ChevronDown past the right edge of the parent
-            // (e.g. the WorkspaceEditDialog modal). `truncate` on the
-            // text span only works once its parent has a real width
-            // bound; flex-1+min-w-0 gives it that.
-            <span className="flex flex-1 min-w-0 items-center gap-2">
+            // Two layout modes:
+            //   default (truncate)  — `flex-1 min-w-0` on the content
+            //     wrapper bounds it so `truncate` on the text span can
+            //     clip overflow with ellipsis. Keeps the ChevronDown
+            //     inside the button regardless of label length.
+            //   noTruncate          — drops min-w-0/flex-1/truncate so
+            //     the text expresses natural width. The button itself
+            //     widens accordingly (and pushes a w-fit parent),
+            //     revealing the full workspace path.
+            <span
+              className={cn(
+                'flex items-center gap-2',
+                noTruncate ? '' : 'flex-1 min-w-0',
+              )}
+            >
               <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="truncate text-left min-w-0 flex-1">
+              <span
+                className={cn(
+                  'text-left',
+                  noTruncate ? 'whitespace-nowrap' : 'truncate min-w-0 flex-1',
+                )}
+              >
                 <span>{selected.name}</span>
                 {!compact && pathBySlug.get(selected.slug) !== selected.name && (
                   <span className="ml-2 text-xs text-muted-foreground">

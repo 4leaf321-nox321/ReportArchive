@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Calendar, BookOpen } from 'lucide-react'
+import { Plus, Calendar, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
 import { Card, CardContent } from '@/shared/components/ui/card'
@@ -33,6 +33,10 @@ export default function CompositesListPage() {
   const [newOpen, setNewOpen] = useState(false)
   const [tab, setTab] = useState('recurring')
   const period = usePeriodFilter('week')
+  // 주제 탭은 period_date 가 없어 정기와 같은 주/월 축은 안 맞지만,
+  // 연도 정도 단위는 인덱스로 의미가 있다. created_at 기준으로 한 해에
+  // 만들어진 것만 보여준다. 기본값은 현재 연도.
+  const [themeYear, setThemeYear] = useState(() => new Date().getFullYear())
 
   const { data: items, loading, error, reload } = useAsync(
     () => (slug ? listComposites() : Promise.resolve([])),
@@ -60,9 +64,20 @@ export default function CompositesListPage() {
         .filter((r) => dateInPeriodRange(r.period_date, period.range)),
     [decorated, period.range],
   )
-  const themes = useMemo(
+  const themesAll = useMemo(
     () => decorated.filter((r) => r.kind === 'theme'),
     [decorated],
+  )
+  // 선택된 연도 안에서 만들어진 것만. created_at 은 백엔드 schema 가
+  // 필수라 nullish 케이스는 거의 없지만, 혹시라도 빠져 있으면 필터에서
+  // 빠뜨려서 사용자가 의아한 항목을 보지 않게 한다.
+  const themes = useMemo(
+    () =>
+      themesAll.filter((r) => {
+        if (!r.created_at) return false
+        return new Date(r.created_at).getFullYear() === themeYear
+      }),
+    [themesAll, themeYear],
   )
 
   return (
@@ -77,6 +92,13 @@ export default function CompositesListPage() {
         actions={
           <div className="flex items-center gap-2 flex-wrap">
             {tab === 'recurring' && <PeriodFilterControls period={period} />}
+            {tab === 'theme' && (
+              <YearNavigator
+                year={themeYear}
+                onPrev={() => setThemeYear((y) => y - 1)}
+                onNext={() => setThemeYear((y) => y + 1)}
+              />
+            )}
             {!workspace?.virtual && (
               <Button onClick={() => setNewOpen(true)}>
                 <Plus className="mr-2 h-4 w-4" />
@@ -115,6 +137,7 @@ export default function CompositesListPage() {
           <TabsContent value="theme" className="mt-3">
             <ThemeList
               items={themes}
+              year={themeYear}
               workspaceName={workspaceName}
               onOpen={(r) => navigate(`/w/${slug}/composites/${r.id}`)}
             />
@@ -223,9 +246,10 @@ function formatMonthHeader(key) {
   return `${y}년 ${Number(m)}월`
 }
 
-/** 주제 종합 — period_date 가 없어서 시간축이 의미 없음. 단순
- *  sortable 테이블로 제목·작성자·부서·수정일 인덱싱. */
-function ThemeList({ items, workspaceName, onOpen }) {
+/** 주제 종합 — period_date 가 없지만 생성 연도 단위로는 인덱스가
+ *  의미가 있다. 페이지가 연도 필터를 걸어 한 해 분량만 넘겨주면 그
+ *  안에서 sortable 테이블로 제목·작성자·부서·수정일 인덱싱. */
+function ThemeList({ items, year, workspaceName, onOpen }) {
   const columns = [
     { key: 'title', header: '제목', sortable: true, cellClassName: 'font-medium' },
     {
@@ -274,19 +298,55 @@ function ThemeList({ items, workspaceName, onOpen }) {
     return (
       <Card>
         <CardContent className="py-12 text-center text-sm text-muted-foreground">
-          주제 종합이 아직 없습니다.
+          {year}년에 만들어진 주제 종합이 없습니다.
         </CardContent>
       </Card>
     )
   }
   return (
-    <DataTable
-      columns={columns}
-      data={items}
-      pageSizeStorageKey="composites-theme"
-      searchableKeys={['title', 'workspace_slug', 'workspace_name', 'owner_name', 'owner_email']}
-      searchPlaceholder="제목, 부서, 작성자 검색"
-      onRowClick={onOpen}
-    />
+    <div className="space-y-2">
+      <div className="text-[11px] text-muted-foreground">
+        범위: {year}년 · {items.length}건
+      </div>
+      <DataTable
+        columns={columns}
+        data={items}
+        pageSizeStorageKey="composites-theme"
+        searchableKeys={['title', 'workspace_slug', 'workspace_name', 'owner_name', 'owner_email']}
+        searchPlaceholder="제목, 부서, 작성자 검색"
+        onRowClick={onOpen}
+      />
+    </div>
+  )
+}
+
+/** 연도 prev/next 네비게이터 — 정기 탭의 PointNavigator 와 동일한
+ *  시각 패턴. 정기는 주/월/분기 등 여러 단위를 다뤄야 해서 별도
+ *  컴포넌트를 가져오고, 주제는 연도 한 가지만 다루므로 로컬 inline. */
+function YearNavigator({ year, onPrev, onNext }) {
+  return (
+    <div className="inline-flex items-center gap-1 h-9 rounded-md border bg-background px-1">
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-7 w-7"
+        onClick={onPrev}
+        aria-label="이전 연도"
+      >
+        <ChevronLeft className="h-4 w-4" />
+      </Button>
+      <span className="text-sm font-medium min-w-[5rem] text-center tabular-nums">
+        {year}년
+      </span>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-7 w-7"
+        onClick={onNext}
+        aria-label="다음 연도"
+      >
+        <ChevronRight className="h-4 w-4" />
+      </Button>
+    </div>
   )
 }

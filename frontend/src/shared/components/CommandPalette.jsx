@@ -82,7 +82,12 @@ function Palette({ open, onOpenChange }) {
     onOpenChange(false)
   }
 
-  const tree = React.useMemo(() => buildTree({ includeVirtual: false }), [buildTree])
+  // Command palette switcher hides personals (they're per-user and live
+  // in the dedicated "내 공간" section of the sidebar selector instead).
+  const tree = React.useMemo(
+    () => buildTree({ includeVirtual: false, includePersonal: false }),
+    [buildTree]
+  )
   const flatWorkspaces = React.useMemo(
     () => [...flattenTree(tree), ...all.filter((w) => w.virtual)],
     [tree, flattenTree, all]

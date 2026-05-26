@@ -19,7 +19,7 @@ from app.modules.users.models import User
 from app.shared.auth import (
     CurrentUser,
     get_current_user_no_workspace,
-    require_admin,
+    require_system_admin,
 )
 from app.shared.responses import (
     created_response,
@@ -52,7 +52,7 @@ def list_categories(
 def create_category(
     payload: SectionCategoryCreate,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     try:
         cat = services.create_category(db, payload)
@@ -66,7 +66,7 @@ def update_category(
     slug: str,
     payload: SectionCategoryUpdate,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     cat = services.get_category(db, slug)
     if not cat:
@@ -79,7 +79,7 @@ def update_category(
 def delete_category(
     slug: str,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     cat = services.get_category(db, slug)
     if not cat:
@@ -95,7 +95,7 @@ def delete_category(
 def create_item(
     payload: SectionItemCreate,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     try:
         item = services.create_item(db, payload)
@@ -109,7 +109,7 @@ def update_item(
     code: str,
     payload: SectionItemUpdate,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     item = services.get_item(db, code)
     if not item:
@@ -125,7 +125,7 @@ def update_item(
 def delete_item(
     code: str,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     item = services.get_item(db, code)
     if not item:

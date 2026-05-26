@@ -188,6 +188,26 @@ require_admin = require_role(Role.admin)
 require_manager = require_role(Role.admin, Role.manager)
 
 
+def require_system_admin(
+    actor: User = Depends(get_current_user_no_workspace),
+) -> User:
+    """Gate for system-wide actions — workspace tree CRUD, base data
+    masters (categories, entities, report types, etc.), server pages.
+
+    This is independent of workspace memberships: even a 부서 관리자
+    with `WorkspaceMember.role=admin` cannot manage the system unless
+    they also have `User.is_system_admin=true`. The bootstrap admin
+    (user id=1) is seeded in the migration; further system admins are
+    granted by existing ones via SQL or a future admin UI.
+    """
+    if not actor.is_system_admin:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "시스템 관리자 권한이 필요합니다.",
+        )
+    return actor
+
+
 def require_writer(actor: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     """Allow any authenticated workspace member to write reports / composites,
     but reject virtual aggregate workspaces (e.g. `_global`) — those are

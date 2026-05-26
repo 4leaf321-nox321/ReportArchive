@@ -5,6 +5,8 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.modules.workspaces.models import WorkspaceKind
+
 
 class WorkspaceRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -15,7 +17,14 @@ class WorkspaceRead(BaseModel):
     parent_slug: Optional[str]
     # #rrggbb hex — server-computed from the tree, never client-set.
     color: str
+    # Legacy aggregate flag — kept for backward-compat reads. New code
+    # should branch on `kind` instead (which carries the same signal in a
+    # 3-valued form). Frontend tree builder will switch over in Phase 1.
     virtual: bool
+    kind: WorkspaceKind
+    # Only populated when kind=personal; NULL otherwise. Lets the frontend
+    # render "내 공간" badge / scope personal-workspace-only actions.
+    personal_owner_user_id: Optional[int] = None
     sort_order: int
 
 

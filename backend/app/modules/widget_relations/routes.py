@@ -16,7 +16,7 @@ from app.modules.widget_relations.schemas import (
 from app.shared.auth import (
     CurrentUser,
     get_current_user_no_workspace,
-    require_admin,
+    require_system_admin,
 )
 from app.shared.responses import (
     created_response,
@@ -40,7 +40,7 @@ def list_relations(
 def create_relation(
     payload: RelationCreate,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     try:
         rel = services.create_relation(db, payload)
@@ -54,7 +54,7 @@ def update_relation(
     slug: str,
     payload: RelationUpdate,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     rel = services.get_relation(db, slug)
     if not rel:
@@ -67,7 +67,7 @@ def update_relation(
 def delete_relation(
     slug: str,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     rel = services.get_relation(db, slug)
     if not rel:

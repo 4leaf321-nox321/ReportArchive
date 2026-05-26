@@ -336,6 +336,7 @@ export default function TemplateEditorPage() {
                           setDraft({ ...draft, owner_workspace_slugs: next })
                         }
                         workspaces={workspaces}
+                        myUserId={me?.user?.id}
                       />
                     </div>
                     <p className="mt-1 text-[10px] text-muted-foreground">

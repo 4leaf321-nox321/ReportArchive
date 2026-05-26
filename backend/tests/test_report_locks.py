@@ -75,6 +75,16 @@ def _pick_template(client: TestClient) -> tuple[str, int]:
 
 
 def _create_report(client: TestClient, *, title: str = "락 테스트") -> dict:
+    """Create a report and mount it to ADMIN_WORKSPACE so the rest of
+    the lock-test machinery (which uses ADMIN_WORKSPACE for all GET /
+    PATCH / lock operations) can see it.
+
+    Phase 1 background: every new report now lands in the creator's
+    personal workspace (personal-{user_id}). For tests that exercise
+    org-context operations, an explicit mount is required to bridge the
+    two — that's exactly what users do via the "조직 게시판에 게시"
+    button in the UI. See 협업개선_설계.md §3.1 (mount semantics).
+    """
     template_id, version = _pick_template(client)
     res = client.post(
         "/api/reports",
@@ -87,7 +97,18 @@ def _create_report(client: TestClient, *, title: str = "락 테스트") -> dict:
         },
     )
     assert res.status_code == 201, res.text
-    return res.json()["data"]
+    report = res.json()["data"]
+    # Mount to the org workspace so the lock-test flow (which calls
+    # /api/reports/{id}/lock etc. with X-Workspace-Slug=dx) finds the
+    # report visible. Idempotent — mounting is one call regardless of
+    # how many tests run.
+    mount_res = client.post(
+        "/api/mounts",
+        headers=_admin_headers(),
+        json={"report_id": report["id"], "workspace_slugs": [ADMIN_WORKSPACE]},
+    )
+    assert mount_res.status_code == 200, mount_res.text
+    return report
 
 
 def _delete_report(client: TestClient, report_id: int) -> None:

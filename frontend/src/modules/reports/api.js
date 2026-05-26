@@ -2,7 +2,7 @@ import { apiClient, extractData } from '@/shared/api/client'
 
 const BASE = '/api/reports'
 
-export async function listReports({ entityIds } = {}) {
+export async function listReports({ entityIds, folderId } = {}) {
   // Build via URLSearchParams instead of axios's default params object:
   // axios 1.x serializes arrays as `entity_ids[]=1&entity_ids[]=2`, but
   // FastAPI's `Query(default=None)` over `list[int]` expects repeated
@@ -12,6 +12,11 @@ export async function listReports({ entityIds } = {}) {
   if (Array.isArray(entityIds)) {
     for (const id of entityIds) params.append('entity_ids', String(id))
   }
+  if (folderId !== undefined && folderId !== null && folderId !== '') {
+    // folderId can be an integer or the special "uncategorized" string —
+    // backend handles the dispatch.
+    params.append('folder_id', String(folderId))
+  }
   const qs = params.toString()
   const res = await apiClient.get(qs ? `${BASE}?${qs}` : BASE)
   return extractData(res)
@@ -19,6 +24,35 @@ export async function listReports({ entityIds } = {}) {
 
 export async function getReport(id) {
   const res = await apiClient.get(`${BASE}/${id}`)
+  return extractData(res)
+}
+
+/** Metadata-only folder placement — no lock required. Owner-only. */
+export async function moveReportToFolder(id, folderId) {
+  const res = await apiClient.put(`${BASE}/${id}/folder`, {
+    folder_id: folderId,
+  })
+  return extractData(res)
+}
+
+/** Owner-only: phase → finalized. */
+export async function publishReport(id) {
+  const res = await apiClient.post(`${BASE}/${id}/publish`)
+  return extractData(res)
+}
+
+/** Owner-only: finalized → drafting. */
+export async function unpublishReport(id) {
+  const res = await apiClient.post(`${BASE}/${id}/unpublish`)
+  return extractData(res)
+}
+
+/** Toggle author hard lock. Owner only (system admin can force-unset). */
+export async function setAuthorLock(id, { enabled, reason }) {
+  const res = await apiClient.put(`${BASE}/${id}/author-lock`, {
+    enabled,
+    reason: reason ?? '',
+  })
   return extractData(res)
 }
 

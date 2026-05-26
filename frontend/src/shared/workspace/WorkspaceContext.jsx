@@ -53,30 +53,69 @@ export function WorkspaceProvider({ children }) {
 
   const match = matchPath({ path: '/w/:workspace/*' }, location.pathname)
   const requestedSlug = match?.params?.workspace
+  // Personal page (/personal/*): use the user's personal workspace as
+  // the effective slug for API calls, but DO NOT touch the sticky org
+  // context. The sidebar's 부서 메뉴 keeps pointing at the last org.
+  const personalRoute = matchPath(
+    { path: '/personal/*' },
+    location.pathname,
+  )
+  const isPersonalPage = Boolean(personalRoute)
 
-  // Fallback ordering when the URL has no /w/:slug (e.g. /profile, /templates):
-  //   1. The user's first membership — almost always what they want.
-  //   2. DEFAULT_FALLBACK (= 'dev') if it exists in the registry.
-  //   3. Any non-virtual root workspace as a last resort.
-  // We don't want a manager-of-biz-marketing to default into 'dev' and then
-  // hit 403 walls on every API call.
-  const userFirstSlug = me?.memberships?.[0]?.workspace_slug
-  const fallbackSlug =
-    (userFirstSlug && slugMap.has(userFirstSlug) && userFirstSlug) ||
+  const isOrg = (s) => s && !s.startsWith('personal-')
+  const myPersonalSlug = me?.user?.id ? `personal-${me.user.id}` : null
+  const userFirstOrgSlug = me?.memberships?.find(
+    (m) => !m.workspace_slug.startsWith('personal-')
+  )?.workspace_slug
+
+  // ── effectiveSlug = workspace used by API calls on the current page
+  //    For org URLs: that org. For personal URLs (or /personal/*):
+  //    user's personal workspace. For neutral pages (/templates etc.):
+  //    falls through to the sticky org context.
+  // ── orgSlug = workspace shown in the sidebar selector + used to
+  //    build 부서 메뉴 URLs. NEVER personal; sticks until the user
+  //    explicitly switches via the selector.
+  const recentOrgSlug = (prefs.recent || []).find(
+    (s) => isOrg(s) && slugMap.has(s),
+  )
+  const orgFallback =
+    recentOrgSlug ||
+    (userFirstOrgSlug && slugMap.has(userFirstOrgSlug) && userFirstOrgSlug) ||
     (slugMap.has(DEFAULT_FALLBACK) && DEFAULT_FALLBACK) ||
     all.find((w) => !w.virtual && w.parent_slug === null)?.slug
 
-  const slug = requestedSlug && slugMap.has(requestedSlug) ? requestedSlug : fallbackSlug
+  let effectiveSlug
+  if (isPersonalPage && myPersonalSlug && slugMap.has(myPersonalSlug)) {
+    effectiveSlug = myPersonalSlug
+  } else if (requestedSlug && slugMap.has(requestedSlug)) {
+    effectiveSlug = requestedSlug
+  } else {
+    effectiveSlug = orgFallback
+  }
+
+  // orgSlug — never personal. If the URL is on an org, use that org;
+  // otherwise stick to the most recent org (or fallback).
+  const orgSlug =
+    (isOrg(effectiveSlug) && effectiveSlug) ||
+    orgFallback ||
+    null
+
+  const slug = effectiveSlug
   const workspace = slug ? slugMap.get(slug) : null
+  const orgWorkspace = orgSlug ? slugMap.get(orgSlug) : null
 
   // Sync header for outgoing requests + track recent visits + re-resolve
   // the user's role on the new workspace. /api/me returns role=null when no
   // X-Workspace-Slug header is present, so we re-fetch once the slug is set.
+  // Only push ORG slugs to `recent` — personal context is a separate
+  // sticky concept (always returns to the user's own personal space)
+  // and doesn't need recency tracking.
   React.useEffect(() => {
     if (workspace) {
       setCurrentWorkspace(workspace.slug)
-      prefs.pushRecent(workspace.slug)
-      // Fire-and-forget — auth context will update `me` when it returns.
+      if (isOrg(workspace.slug)) {
+        prefs.pushRecent(workspace.slug)
+      }
       refreshAuth()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -94,8 +133,17 @@ export function WorkspaceProvider({ children }) {
 
   const value = React.useMemo(
     () => ({
+      // `workspace` / `slug` = effective workspace for the CURRENT page
+      // (can be personal). API calls and page-scoped data use this.
       workspace,
       slug: workspace?.slug,
+      // `orgWorkspace` / `orgSlug` = sticky org context, never personal.
+      // 부서 메뉴 links and the workspace selector use this so that
+      // visiting personal-only routes doesn't yank the sidebar off the
+      // user's current org.
+      orgWorkspace,
+      orgSlug,
+      isPersonalPage,
       all,
       loading,
       error,
@@ -103,7 +151,18 @@ export function WorkspaceProvider({ children }) {
       prefs,
       ...helpers,
     }),
-    [workspace, all, loading, error, switchWorkspace, prefs, helpers]
+    [
+      workspace,
+      orgWorkspace,
+      orgSlug,
+      isPersonalPage,
+      all,
+      loading,
+      error,
+      switchWorkspace,
+      prefs,
+      helpers,
+    ]
   )
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>
@@ -158,18 +217,21 @@ function makeHelpers(all) {
     return [...getAncestors(slug), node]
   }
 
-  function buildTree({ includeVirtual = false } = {}) {
+  function buildTree({ includeVirtual = false, includePersonal = false } = {}) {
+    const keep = (w) =>
+      (includeVirtual || !w.virtual) &&
+      (includePersonal || w.kind !== 'personal')
     function attach(node, depth) {
       return {
         ...node,
         depth,
         children: getChildren(node.slug)
-          .filter((c) => includeVirtual || !c.virtual)
+          .filter(keep)
           .map((c) => attach(c, depth + 1)),
       }
     }
     return all
-      .filter((w) => w.parent_slug === null && (includeVirtual || !w.virtual))
+      .filter((w) => w.parent_slug === null && keep(w))
       .map((w) => attach(w, 0))
   }
 

@@ -11,7 +11,13 @@ import {
   MessageSquare,
   Sparkles,
   Tags,
+  User,
+  Bell,
+  Inbox,
 } from 'lucide-react'
+import * as React from 'react'
+import { getUnreadCount } from '@/shared/api/notifications'
+import { listCommentsInbox } from '@/shared/api/comments'
 import { WorkspaceSelector } from '@/shared/components/WorkspaceSelector'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAuth } from '@/shared/auth/AuthContext'
@@ -27,24 +33,55 @@ const WORKSPACE_MENU = [
   { to: 'dashboard', label: '대시보드', icon: LayoutDashboard },
 ]
 
-/** Common section. Items can either be:
- *   - absolute: { to: '/templates', ... }
- *   - workspace-scoped: { resolve: (slug) => `/w/${slug}/members`, ... }
- *   - admin-only: add `requireAdmin: true`
+/** Sidebar menu items share one shape:
+ *   - absolute:        { to: '/templates', ... }
+ *   - workspace-scoped:{ resolve: (slug) => `/w/${slug}/members`, ... }
+ *   - user-scoped:     { resolveUser: (userId) => `/w/personal-${userId}`, ... }
+ *
+ * Two visibility gates:
+ *   - `requireWorkspaceAdmin` — current workspace's admin/manager
+ *     (i.e. 부서 관리자). Used for member management of this workspace.
+ *   - `requireSystemAdmin` — User.is_system_admin only. Used for
+ *     org-wide settings (workspace tree, entity master, server).
  */
+
+/** 내 활동 — 본인 중심 페이지들. 부서 컨텍스트와 무관하게 동작.
+ *  사이드바에서 부서 메뉴와 공통(시스템 도구) 사이에 끼어 들어가는
+ *  중간 그룹. 4B(내 공간 enrich) · 4C(mount 현황) · 4D(받은 코멘트)
+ *  진입점이 모두 여기로 모임. */
+const MY_ACTIVITY_MENU = [
+  // 내 공간 — dedicated route. Click no longer switches the org
+  // workspace context; it just opens the personal reports view while
+  // the sidebar's 부서 메뉴 keeps pointing at the user's current org.
+  // 게시 관리(기간/게시판 필터, bulk unmount)도 여기 합쳐져 있음 —
+  // 별도 "내 게시 현황" 페이지는 4B 와 거의 복제판이라 폐기.
+  { to: '/personal/reports', label: '내 공간', icon: User },
+  // 받은 코멘트 inbox (Phase 4D). Badge counts open threads on the
+  // user's reports — poll on the same 30s cadence as the alarm bell.
+  {
+    to: '/personal/inbox',
+    label: '받은 코멘트',
+    icon: Inbox,
+    badgeKey: 'inboxOpen',
+  },
+  { to: '/notifications', label: '알림', icon: Bell, badgeKey: 'unread' },
+]
+
+/** 공통 — 시스템 도구·관리. 본인 활동도 부서 데이터도 아닌, 워크스페이스에
+ *  걸쳐 살아 있는 글로벌 자원들. */
 const GLOBAL_MENU = [
   { to: '/templates', label: '템플릿 관리', icon: FileCode2 },
   { to: '/voc', label: 'VOC', icon: MessageSquare },
   { to: '/ai-settings', label: 'AI 설정', icon: Sparkles },
   {
     resolve: (slug) => `/w/${slug}/members`,
-    label: '멤버',
+    label: '부서 멤버',
     icon: Users,
-    requireAdmin: true,
+    requireWorkspaceAdmin: true,
   },
-  { to: '/admin', label: '관리자', icon: Settings, requireAdmin: true },
-  { to: '/admin/entities', label: '엔티티 관리', icon: Tags, requireAdmin: true },
-  { to: '/server', label: '서버', icon: HardDrive, requireAdmin: true },
+  { to: '/admin', label: '시스템 관리', icon: Settings, requireSystemAdmin: true },
+  { to: '/admin/entities', label: '엔티티 관리', icon: Tags, requireSystemAdmin: true },
+  { to: '/server', label: '서버', icon: HardDrive, requireSystemAdmin: true },
 ]
 
 /**
@@ -75,9 +112,48 @@ export function MobileSidebar({ open, onOpenChange }) {
 }
 
 function SidebarBody({ onNavigate }) {
-  const { slug } = useWorkspace()
+  // 부서 메뉴 links always target the sticky org workspace (`orgSlug`),
+  // never the effective slug — visiting /personal/reports shouldn't
+  // pivot the sidebar onto the user's personal space.
+  const { orgSlug } = useWorkspace()
+  const slug = orgSlug
   const { me } = useAuth()
-  const isAdmin = me?.role === 'admin'
+  // Two orthogonal admin concepts. `isWorkspaceAdmin` reflects the
+  // current workspace's role (resolved server-side per /api/me request);
+  // `isSystemAdmin` is a global User flag.
+  const isWorkspaceAdmin = me?.role === 'admin'
+  const isSystemAdmin = me?.is_system_admin === true
+  const userId = me?.user?.id
+  // Sidebar holds its own unread poller (parallel to the bell). Same
+  // 30s cadence; the call is cheap. Putting it here avoids relying on
+  // the bell being mounted on every page.
+  const [unread, setUnread] = React.useState(0)
+  const [inboxOpen, setInboxOpen] = React.useState(0)
+  React.useEffect(() => {
+    if (!userId) return
+    let cancelled = false
+    async function tick() {
+      // Run both polls in parallel — same 30s cadence, both are
+      // cheap COUNT queries on the backend. allSettled so a transient
+      // failure of one doesn't kill the other's update.
+      const [n, inbox] = await Promise.allSettled([
+        getUnreadCount(),
+        // limit=1 is the smallest payload that still returns open_count;
+        // we only need the counter here, not the items.
+        listCommentsInbox({ status: 'open', limit: 1 }),
+      ])
+      if (cancelled) return
+      if (n.status === 'fulfilled') setUnread(n.value)
+      if (inbox.status === 'fulfilled') setInboxOpen(inbox.value.openCount)
+    }
+    tick()
+    const id = setInterval(tick, 30_000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [userId])
+  const badges = { unread, inboxOpen }
 
   return (
     <>
@@ -99,18 +175,26 @@ function SidebarBody({ onNavigate }) {
           </SidebarLink>
         ))}
 
-        <div className="py-2">
-          <Separator />
-        </div>
+        <SidebarDivider />
+        <SectionLabel>내 활동</SectionLabel>
+        {renderMenuItems(MY_ACTIVITY_MENU, {
+          slug,
+          userId,
+          isWorkspaceAdmin,
+          isSystemAdmin,
+          badges,
+          onNavigate,
+        })}
 
+        <SidebarDivider />
         <SectionLabel>공통</SectionLabel>
-        {GLOBAL_MENU.filter((item) => !item.requireAdmin || isAdmin).map((item) => {
-          const to = item.to ?? item.resolve(slug)
-          return (
-            <SidebarLink key={to} to={to} icon={item.icon} onNavigate={onNavigate}>
-              {item.label}
-            </SidebarLink>
-          )
+        {renderMenuItems(GLOBAL_MENU, {
+          slug,
+          userId,
+          isWorkspaceAdmin,
+          isSystemAdmin,
+          badges,
+          onNavigate,
         })}
       </nav>
 
@@ -129,7 +213,48 @@ function SectionLabel({ children }) {
   )
 }
 
-function SidebarLink({ to, icon: Icon, end, onNavigate, children }) {
+/** Thin horizontal rule between sidebar sections — kept as its own
+ *  component so the spacing stays consistent across all dividers and a
+ *  later restyle (e.g. dotted line, indent) only touches one place. */
+function SidebarDivider() {
+  return (
+    <div className="py-2">
+      <Separator />
+    </div>
+  )
+}
+
+/** Render a list of menu items with the standard visibility filters +
+ *  URL/badge resolution. Shared between every menu section so adding a
+ *  new section is just `<SectionLabel>...</SectionLabel> {renderMenuItems(...)}`. */
+function renderMenuItems(
+  items,
+  { slug, userId, isWorkspaceAdmin, isSystemAdmin, badges, onNavigate },
+) {
+  return items
+    .filter((item) => !item.requireWorkspaceAdmin || isWorkspaceAdmin)
+    .filter((item) => !item.requireSystemAdmin || isSystemAdmin)
+    .filter((item) => !item.resolveUser || userId)
+    .map((item) => {
+      const to =
+        item.to ??
+        (item.resolveUser ? item.resolveUser(userId) : item.resolve(slug))
+      const badgeValue = item.badgeKey ? badges[item.badgeKey] : 0
+      return (
+        <SidebarLink
+          key={to}
+          to={to}
+          icon={item.icon}
+          onNavigate={onNavigate}
+          badge={badgeValue}
+        >
+          {item.label}
+        </SidebarLink>
+      )
+    })
+}
+
+function SidebarLink({ to, icon: Icon, end, onNavigate, badge, children }) {
   return (
     <NavLink
       to={to}
@@ -144,8 +269,13 @@ function SidebarLink({ to, icon: Icon, end, onNavigate, children }) {
         )
       }
     >
-      <Icon className="h-4 w-4" />
-      {children}
+      <Icon className="h-4 w-4 shrink-0" />
+      <span className="flex-1 truncate">{children}</span>
+      {badge > 0 && (
+        <span className="min-w-[18px] h-[18px] px-1.5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
+          {badge > 99 ? '99+' : badge}
+        </span>
+      )}
     </NavLink>
   )
 }

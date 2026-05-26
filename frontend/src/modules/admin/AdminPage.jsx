@@ -82,18 +82,31 @@ import {
   deleteReportType,
 } from '@/shared/api/reportTypes'
 import { WorkspaceTreeDnD } from './WorkspaceTreeDnD'
+import {
+  listMembers,
+  addMember,
+  removeMember,
+  searchUsers,
+} from '@/shared/api/members'
+import {
+  listSystemAdmins,
+  setSystemAdmin,
+} from '@/shared/api/systemAdmins'
+import { UserPlus, X as XIcon, Loader2 } from 'lucide-react'
 
 export default function AdminPage() {
   const { me } = useAuth()
-  const isAdmin = me?.role === 'admin'
+  // 시스템 관리 페이지 — 부서 트리, 카테고리 등 org-wide masters.
+  // 부서 관리자(workspace role)가 아니라 시스템 관리자(is_system_admin)만.
+  const isAdmin = me?.is_system_admin === true
 
   if (!isAdmin) {
     return (
       <div className="p-6">
-        <PageHeader title="관리자" description="기준정보 정의 (카테고리 / 부서)" />
+        <PageHeader title="시스템 관리" description="기준정보 정의 (카테고리 / 부서)" />
         <ErrorState
           title="권한 없음"
-          description="관리자 페이지는 admin 권한이 있는 사용자만 접근 가능합니다."
+          description="시스템 관리 페이지는 시스템 관리자만 접근 가능합니다."
           action={
             <Button asChild variant="outline">
               <Link to="/">홈으로</Link>
@@ -107,9 +120,11 @@ export default function AdminPage() {
   return (
     <div className="p-6 space-y-6 max-w-5xl">
       <PageHeader
-        title="관리자"
-        description="시스템 기준정보 — 부서 트리 / 템플릿 카테고리 / 관계 라벨 / 단락 구분. 사용자 관리는 '멤버' 메뉴, 서버 상태는 '서버' 메뉴에서."
+        title="시스템 관리"
+        description="시스템 기준정보 — 부서 트리 / 템플릿 카테고리 / 관계 라벨 / 단락 구분. 부서 멤버는 '부서 멤버' 메뉴, 서버 상태는 '서버' 메뉴에서."
       />
+
+      <SystemAdminsCard meUserId={me?.user?.id} />
 
       <Tabs defaultValue="workspaces" className="space-y-4">
         <TabsList>
@@ -433,7 +448,11 @@ function WorkspacesSection() {
   const [moving, setMoving] = useState(false)
 
   const list = workspaces ?? []
-  const real = list.filter((w) => !w.virtual)
+  // Personal workspaces (`kind='personal'`) are auto-managed per-user
+  // scratch spaces — they share the `workspaces` table for FK reuse but
+  // are never edited from this admin tree. Excluding them keeps the
+  // tree usable when there are thousands of users.
+  const real = list.filter((w) => !w.virtual && w.kind !== 'personal')
   const virtuals = list.filter((w) => w.virtual)
 
   async function handleDelete(slug) {
@@ -765,9 +784,12 @@ function WorkspaceCreateDialog({ open, onOpenChange, workspaces, onCreated }) {
     }
   }
 
-  // Virtuals can't own children; filter them so the parent picker only
-  // shows pickable nodes.
-  const eligibleParents = (workspaces ?? []).filter((w) => !w.virtual)
+  // Parent picker only shows pickable nodes — exclude virtuals (can't
+  // own children) and personals (auto-managed scratch spaces, never
+  // parents of org workspaces).
+  const eligibleParents = (workspaces ?? []).filter(
+    (w) => !w.virtual && w.kind !== 'personal',
+  )
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -864,7 +886,9 @@ function WorkspaceEditDialog({ ws, workspaces, onOpenChange, onSaved }) {
     if (!ws || !workspaces) return []
     const descendants = new Set(collectDescendants(workspaces, ws.slug))
     descendants.add(ws.slug)
-    return workspaces.filter((w) => !w.virtual && !descendants.has(w.slug))
+    return workspaces.filter(
+      (w) => !w.virtual && w.kind !== 'personal' && !descendants.has(w.slug),
+    )
   }, [ws, workspaces])
 
   const movedToDifferentParent = ws && (ws.parent_slug ?? '') !== parentSlug
@@ -895,7 +919,10 @@ function WorkspaceEditDialog({ ws, workspaces, onOpenChange, onSaved }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      {/* 부서 편집은 상위 부서 picker + 관리자 섹션 (badge wrap + 검색
+          dropdown) 까지 들어가므로 기본 max-w-lg(512px) 보다 한 단 넓게.
+          좁은 화면(<640px) 에서는 어차피 100% 폭으로 떨어진다. */}
+      <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle>부서 편집</DialogTitle>
           <DialogDescription>
@@ -945,6 +972,9 @@ function WorkspaceEditDialog({ ws, workspaces, onOpenChange, onSaved }) {
               onChange={(e) => setSortOrder(e.target.value)}
             />
           </div>
+          {ws && !ws.virtual && (
+            <WorkspaceAdminsSection workspaceSlug={ws.slug} />
+          )}
           {errorMsg && (
             <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
               {errorMsg}
@@ -972,6 +1002,436 @@ function WorkspaceEditDialog({ ws, workspaces, onOpenChange, onSaved }) {
  * surfaces a per-row error for ambiguous / orphaned references.
  */
 const BULK_EMPTY_ROW = { parentName: '', name: '' }
+
+/** 부서 관리자 (workspace admin) 다중 picker. 시스템 관리자가
+ *  부서 편집 다이얼로그 안에서 그 부서의 관리자들을 임명/해임.
+ *
+ *  이 섹션의 행위는 즉시 (저장 버튼과 무관) — 각 add/remove 호출 시
+ *  바로 백엔드 반영. 다이얼로그를 닫지 않고도 추가 작업 가능. 부서
+ *  이름·설명 등 다른 필드는 저장 버튼 눌러야 반영.
+ *
+ *  '부서 관리자' = WorkspaceMember.role=admin 인 사람. 한 부서에 여럿
+ *  가능. 일반 manager/user는 여기서 안 보이고 '/w/:slug/members' 페이지
+ *  에서 따로 관리.
+ */
+function WorkspaceAdminsSection({ workspaceSlug }) {
+  const [admins, setAdmins] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [adding, setAdding] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [searching, setSearching] = useState(false)
+  const inputRef = useRef(null)
+
+  const refresh = async () => {
+    setLoading(true)
+    try {
+      const items = await listMembers(workspaceSlug)
+      // 'admin' role only, deduped by user (a user with admin role at
+      // ancestor + here would appear twice via the effective list).
+      const seenUsers = new Set()
+      const onlyAdmins = []
+      for (const m of items ?? []) {
+        if (m.role !== 'admin') continue
+        if (seenUsers.has(m.user_id)) continue
+        seenUsers.add(m.user_id)
+        onlyAdmins.push(m)
+      }
+      setAdmins(onlyAdmins)
+    } catch (e) {
+      toast.error(e?.message || '관리자 목록을 불러오지 못했습니다.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    refresh()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceSlug])
+
+  // Debounced user search when the add-picker is open.
+  useEffect(() => {
+    if (!pickerOpen) return
+    const id = setTimeout(async () => {
+      setSearching(true)
+      try {
+        const users = await searchUsers({ search: query, limit: 12 })
+        // Hide users already in the admin list — no point offering them.
+        const existing = new Set(admins.map((m) => m.user_id))
+        setSearchResults((users ?? []).filter((u) => !existing.has(u.id)))
+      } finally {
+        setSearching(false)
+      }
+    }, 200)
+    return () => clearTimeout(id)
+  }, [query, pickerOpen, admins])
+
+  async function handleAdd(email) {
+    setAdding(true)
+    try {
+      await addMember(workspaceSlug, { email, role: 'admin' })
+      toast.success(`${email} 관리자 추가`)
+      setQuery('')
+      setPickerOpen(false)
+      await refresh()
+    } catch (e) {
+      toast.error(e?.message || '관리자 추가 실패')
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  async function handleRemove(member) {
+    if (!window.confirm(`'${member.name || member.email}'을(를) 부서 관리자에서 해임하시겠어요?\n(그 사용자의 다른 부서 멤버십은 영향 없음.)`)) {
+      return
+    }
+    try {
+      await removeMember(workspaceSlug, member.id)
+      toast.success('해임 완료')
+      await refresh()
+    } catch (e) {
+      toast.error(e?.message || '해임 실패')
+    }
+  }
+
+  return (
+    <div className="space-y-1.5 border-t pt-3">
+      <Label className="flex items-center gap-1.5">
+        <ShieldCheck className="h-3.5 w-3.5 text-amber-500" />
+        부서 관리자
+      </Label>
+      <p className="text-[11px] text-muted-foreground">
+        이 부서의 멤버·보고서·폴더를 관리. 여러 명 가능. 일반 멤버는
+        부서 페이지의 '부서 멤버'에서 추가하세요.
+      </p>
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
+          <Loader2 className="h-3 w-3 animate-spin" /> 불러오는 중...
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-1.5 py-1">
+          {admins.length === 0 ? (
+            <span className="text-xs text-muted-foreground">아직 없음</span>
+          ) : (
+            admins.map((m) => (
+              <Badge
+                key={m.id}
+                variant="secondary"
+                className="gap-1 pr-1 max-w-[16rem]"
+                title={
+                  m.source_workspace_slug === workspaceSlug
+                    ? `${m.name || m.email} · 직접 추가됨`
+                    : `${m.name || m.email} · 상위 부서에서 상속됨: ${m.source_workspace_slug}`
+                }
+              >
+                {/* Long names/emails would otherwise push the badge past
+                    the dialog edge — cap + truncate, full text in title. */}
+                <span className="text-xs truncate min-w-0">
+                  {m.name || m.email}
+                  {m.source_workspace_slug !== workspaceSlug && (
+                    <span className="ml-1 text-[10px] text-muted-foreground">
+                      (상속)
+                    </span>
+                  )}
+                </span>
+                {m.source_workspace_slug === workspaceSlug && (
+                  <button
+                    type="button"
+                    onClick={() => handleRemove(m)}
+                    className="hover:bg-muted-foreground/20 rounded p-0.5 shrink-0"
+                    title="해임"
+                  >
+                    <XIcon className="h-2.5 w-2.5" />
+                  </button>
+                )}
+              </Badge>
+            ))
+          )}
+        </div>
+      )}
+
+      {!pickerOpen ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            setPickerOpen(true)
+            setTimeout(() => inputRef.current?.focus(), 30)
+          }}
+        >
+          <UserPlus className="mr-1 h-3 w-3" />
+          관리자 추가
+        </Button>
+      ) : (
+        <div className="space-y-1.5 rounded-md border bg-muted/30 p-2">
+          <Input
+            ref={inputRef}
+            placeholder="이름·이메일로 검색..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="h-7 text-xs"
+          />
+          {searching ? (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground px-1 py-1">
+              <Loader2 className="h-3 w-3 animate-spin" /> 검색 중...
+            </div>
+          ) : (
+            <div className="max-h-48 overflow-y-auto space-y-0.5">
+              {searchResults.length === 0 ? (
+                <div className="text-xs text-muted-foreground px-1 py-1">
+                  {query ? '일치하는 사용자 없음' : '검색어 입력'}
+                </div>
+              ) : (
+                searchResults.map((u) => (
+                  <button
+                    key={u.id}
+                    type="button"
+                    disabled={adding}
+                    onClick={() => handleAdd(u.email)}
+                    className="flex items-center w-full gap-2 rounded px-2 py-1 text-xs text-left hover:bg-background min-w-0"
+                  >
+                    <span className="truncate shrink-0 max-w-[40%]">{u.name}</span>
+                    {/* email gets the rest of the row + can shrink. Without
+                        truncate+min-w-0 a long company email pushes the
+                        row past the dialog edge. */}
+                    <span className="text-[10px] text-muted-foreground truncate min-w-0 flex-1 text-right">
+                      {u.email}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setPickerOpen(false)
+                setQuery('')
+              }}
+            >
+              닫기
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+/** 시스템 관리자 (User.is_system_admin) 카드 — admin 페이지 상단.
+ *
+ *  시스템 운영자(부서 트리, 카테고리, 엔티티 등 org-wide 마스터)를
+ *  임명/해임. 부서 관리자(WorkspaceMember.role=admin)와 별개.
+ *
+ *  자기 자신을 해제하는 액션은 백엔드가 "마지막 시스템 관리자" 인
+ *  경우에 한해 막음. 프론트에서는 항상 본인 행에서 해제 버튼을
+ *  비활성화로 표시 (지금 본인이 마지막인지 사전 판단 어려움 — 누른
+ *  뒤 toast로 안내). 또는 안전하게 본인 제거 버튼 자체를 숨김 처리.
+ */
+function SystemAdminsCard({ meUserId }) {
+  const [admins, setAdmins] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [adding, setAdding] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [searching, setSearching] = useState(false)
+  const inputRef = useRef(null)
+
+  const refresh = async () => {
+    setLoading(true)
+    try {
+      const rows = await listSystemAdmins()
+      setAdmins(rows ?? [])
+    } catch (e) {
+      toast.error(e?.message || '시스템 관리자 목록 로드 실패')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    refresh()
+  }, [])
+
+  // Debounced search when picker open. Hide users who are already
+  // system admins.
+  useEffect(() => {
+    if (!pickerOpen) return
+    const id = setTimeout(async () => {
+      setSearching(true)
+      try {
+        const users = await searchUsers({ search: query, limit: 12 })
+        const existing = new Set(admins.map((a) => a.id))
+        setSearchResults((users ?? []).filter((u) => !existing.has(u.id)))
+      } finally {
+        setSearching(false)
+      }
+    }, 200)
+    return () => clearTimeout(id)
+  }, [query, pickerOpen, admins])
+
+  async function handlePromote(user) {
+    setAdding(true)
+    try {
+      await setSystemAdmin(user.id, true)
+      toast.success(`${user.name || user.email} 시스템 관리자 임명`)
+      setQuery('')
+      setPickerOpen(false)
+      await refresh()
+    } catch (e) {
+      toast.error(e?.message || '임명 실패')
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  async function handleDemote(admin) {
+    const msg =
+      admin.id === meUserId
+        ? '본인을 시스템 관리자에서 해제하시겠어요?\n(마지막 시스템 관리자라면 백엔드가 거절.)'
+        : `'${admin.name || admin.email}'을(를) 시스템 관리자에서 해제하시겠어요?`
+    if (!window.confirm(msg)) return
+    try {
+      await setSystemAdmin(admin.id, false)
+      toast.success('해제됨')
+      await refresh()
+    } catch (e) {
+      toast.error(e?.response?.data?.message || e?.message || '해제 실패')
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <ShieldCheck className="h-4 w-4 text-amber-500" />
+          시스템 관리자
+        </CardTitle>
+        <CardDescription className="text-xs">
+          부서 트리·기준정보·서버 관리 권한. 부서 관리자와 별개. 소수만
+          가져야 안전합니다.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {loading ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" /> 불러오는 중...
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {admins.length === 0 ? (
+              <span className="text-sm text-muted-foreground">없음</span>
+            ) : (
+              admins.map((a) => {
+                const isSelf = a.id === meUserId
+                return (
+                  <Badge
+                    key={a.id}
+                    variant={isSelf ? 'default' : 'secondary'}
+                    className="gap-1 pr-1"
+                    title={isSelf ? '본인' : ''}
+                  >
+                    <ShieldCheck className="h-3 w-3" />
+                    <span className="text-xs">
+                      {a.name || a.email}
+                      {isSelf && (
+                        <span className="ml-1 text-[10px] opacity-70">(본인)</span>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleDemote(a)}
+                      className="hover:bg-muted-foreground/20 rounded p-0.5"
+                      title="해제"
+                    >
+                      <XIcon className="h-2.5 w-2.5" />
+                    </button>
+                  </Badge>
+                )
+              })
+            )}
+          </div>
+        )}
+
+        {!pickerOpen ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setPickerOpen(true)
+              setTimeout(() => inputRef.current?.focus(), 30)
+            }}
+          >
+            <UserPlus className="mr-1 h-3 w-3" />
+            시스템 관리자 추가
+          </Button>
+        ) : (
+          <div className="space-y-1.5 rounded-md border bg-muted/30 p-2">
+            <Input
+              ref={inputRef}
+              placeholder="이름·이메일로 검색..."
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="h-7 text-xs"
+            />
+            {searching ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground px-1 py-1">
+                <Loader2 className="h-3 w-3 animate-spin" /> 검색 중...
+              </div>
+            ) : (
+              <div className="max-h-48 overflow-y-auto space-y-0.5">
+                {searchResults.length === 0 ? (
+                  <div className="text-xs text-muted-foreground px-1 py-1">
+                    {query ? '일치하는 사용자 없음' : '검색어 입력'}
+                  </div>
+                ) : (
+                  searchResults.map((u) => (
+                    <button
+                      key={u.id}
+                      type="button"
+                      disabled={adding}
+                      onClick={() => handlePromote(u)}
+                      className="flex items-center w-full gap-2 rounded px-2 py-1 text-xs text-left hover:bg-background"
+                    >
+                      <span className="flex-1 truncate">{u.name}</span>
+                      <span className="text-[10px] text-muted-foreground">
+                        {u.email}
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setPickerOpen(false)
+                  setQuery('')
+                }}
+              >
+                닫기
+              </Button>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 
 function WorkspaceBulkCreateDialog({ open, onOpenChange, onCreated }) {
   const [rows, setRows] = useState(() => Array.from({ length: 5 }, () => ({ ...BULK_EMPTY_ROW })))

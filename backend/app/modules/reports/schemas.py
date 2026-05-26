@@ -9,7 +9,7 @@ from sqlalchemy import inspect as sa_inspect
 
 from app.modules.entities.schemas import EntityRefMini
 from app.modules.report_types.models import ReportTypeStatus
-from app.modules.reports.models import ReportStatus
+from app.modules.reports.models import ReportLifecycle, ReportPhase
 
 
 def _serialize_utc(dt: datetime) -> str:
@@ -41,6 +41,9 @@ def _flatten_user_refs(obj: Any) -> Any:
     if updated_by is not None:
         extras["updated_by_name"] = updated_by.name
         extras["updated_by_email"] = updated_by.email
+    last_editor = getattr(obj, "last_editor", None)
+    if last_editor is not None:
+        extras["last_edited_by_name"] = last_editor.name
     # Flatten the live edit-lock (if any) into a small inline dict so the
     # GET /reports/{id} consumer can render "현재 OO 편집 중" without a
     # second roundtrip. We deliberately walk the eager-loaded relationship
@@ -85,6 +88,20 @@ def _flatten_user_refs(obj: Any) -> Any:
             }
             for e in entities_rel
         ]
+    # Project mount placements into a slim list of (slug, name) so the
+    # personal-list "게시" cell renders chips without a /api/mounts call
+    # per row. Eager-loaded via Report.mounts (selectin) + mount.workspace
+    # (joined), so this is a relationship walk, not a roundtrip. Empty
+    # list = 미게시 (frontend renders a 회색 placeholder).
+    mounts_rel = getattr(obj, "mounts", None)
+    if mounts_rel is not None:
+        extras["mount_workspaces"] = [
+            {
+                "slug": m.workspace_slug,
+                "name": m.workspace.name if m.workspace else m.workspace_slug,
+            }
+            for m in mounts_rel
+        ]
     if not extras:
         return obj
     # Build a dict so Pydantic stops walking the ORM (otherwise it'd try
@@ -101,6 +118,15 @@ def _flatten_user_refs(obj: Any) -> Any:
     }
     base.update(extras)
     return base
+
+
+class MountWorkspaceMini(BaseModel):
+    """Slim mount projection — what the personal-list "게시" cell needs to
+    render chip strips ("팀1·본부A에 게시됨"). The full ReportMount payload
+    (edit_policy, mounted_by, note, folder_id) is fetchable via /api/mounts."""
+
+    slug: str
+    name: str
 
 
 class ReportTypeRef(BaseModel):
@@ -189,7 +215,15 @@ class ReportRead(BaseModel):
     template_id: str
     template_version: int
     title: str
-    status: ReportStatus
+    phase: ReportPhase
+    lifecycle: ReportLifecycle
+    closed_at: Optional[date] = None
+    author_lock_enabled: bool = False
+    author_lock_reason: str = ""
+    author_lock_set_at: Optional[UtcDatetime] = None
+    folder_id: Optional[int] = None
+    forked_from_report_id: Optional[int] = None
+    forked_at_revision: Optional[int] = None
     report_date: date
     owner_user_id: Optional[int]
     # Joined display fields — flattened so the frontend doesn't need a
@@ -201,6 +235,11 @@ class ReportRead(BaseModel):
     updated_by_user_id: Optional[int] = None
     updated_by_name: Optional[str] = None
     updated_by_email: Optional[str] = None
+    # Phase 3 — denormalized "마지막 편집자" attribution. Mirrors
+    # updated_by_* but kept separate so future logic can diverge.
+    last_edited_by_user_id: Optional[int] = None
+    last_edited_by_name: Optional[str] = None
+    last_edited_at: Optional[UtcDatetime] = None
     tags: list[str]
     content: dict
     layout_overrides: Optional[dict] = None
@@ -245,6 +284,14 @@ class ReportRead(BaseModel):
     # to clear stale rows; if it didn't, the timestamp here lets the
     # frontend decide cosmetically).
     edit_lock: Optional[LockInfo] = None
+    # Phase 3 — per-actor edit decision. Routes that have an `actor`
+    # context fill these in after `model_validate(report)` so the
+    # frontend can hide/disable edit affordances without re-implementing
+    # the rule. None on listings where the cost of per-row resolution
+    # isn't justified (frontend falls back to optimistic show + 403 on
+    # save).
+    can_edit: Optional[bool] = None
+    edit_role: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -274,7 +321,11 @@ class ReportSummary(BaseModel):
     template_id: str
     template_version: int
     title: str
-    status: ReportStatus
+    phase: ReportPhase
+    lifecycle: ReportLifecycle
+    closed_at: Optional[date] = None
+    author_lock_enabled: bool = False
+    folder_id: Optional[int] = None
     report_date: date
     owner_user_id: Optional[int]
     owner_name: Optional[str] = None
@@ -282,6 +333,9 @@ class ReportSummary(BaseModel):
     updated_by_user_id: Optional[int] = None
     updated_by_name: Optional[str] = None
     updated_by_email: Optional[str] = None
+    last_edited_by_user_id: Optional[int] = None
+    last_edited_by_name: Optional[str] = None
+    last_edited_at: Optional[UtcDatetime] = None
     tags: list[str]
     # Per-page template bindings. Pydantic pulls this from the JSONB
     # `pages` column and discards the heavy fields (content, layouts)
@@ -294,6 +348,10 @@ class ReportSummary(BaseModel):
     # Entity tags — same slim shape as ReportRead. The list page filter
     # bar reads these to render axis-keyed chips per row.
     entities: list[EntityRefMini] = []
+    # Org boards this report is mounted to. Empty list = 미게시. Used by
+    # the personal-list "게시" cell — flat list of (slug, name) sorted
+    # by mounted_at (order driven by Report.mounts.order_by).
+    mount_workspaces: list[MountWorkspaceMini] = []
     created_at: UtcDatetime
     updated_at: UtcDatetime
 
@@ -311,8 +369,13 @@ class ReportCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
     # Aggregation reference date. Omit to default to today on the server.
     report_date: Optional[date] = None
-    # Work-state status. Omit to land in `draft` (작성 중).
-    status: Optional[ReportStatus] = None
+    # Collaboration phase. Omit to land in `drafting`. Most callers should
+    # never set this directly — phase is driven by automatic triggers
+    # (first external comment, mount-to-org-board) and by the publish /
+    # unpublish actions, not by report-create payloads.
+    phase: Optional[ReportPhase] = None
+    # Work lifecycle hint. Omit to default `single_shot`.
+    lifecycle: Optional[ReportLifecycle] = None
     tags: list[str] = []
     # Legacy single-page fields — applied to page 0 when `pages` is None.
     content: dict = {}
@@ -345,7 +408,14 @@ class ReportCreate(BaseModel):
 
 class ReportUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    status: Optional[ReportStatus] = None
+    # Direct phase set is allowed but expected to be rare — most phase
+    # transitions are driven by side-effects (auto-transition on first
+    # external comment, mount/unmount) or by dedicated /publish endpoints.
+    # Surface in the UI only via the "강제로 작성/리뷰 모드로" debug menu.
+    phase: Optional[ReportPhase] = None
+    lifecycle: Optional[ReportLifecycle] = None
+    closed_at: Optional[date] = None
+    folder_id: Optional[int] = None
     report_date: Optional[date] = None
     tags: Optional[list[str]] = None
     # Legacy single-page fields — when supplied, applied to page 0 (and the

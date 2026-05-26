@@ -1,6 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Filter, Plus, ShieldCheck, ShieldQuestion, X } from 'lucide-react'
+import {
+  Filter,
+  Folder as FolderIcon,
+  FolderInput,
+  Inbox,
+  Loader2,
+  Plus,
+  ShieldCheck,
+  ShieldQuestion,
+  Trash2,
+  Unlink,
+  X,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
 import { Badge } from '@/shared/components/ui/badge'
@@ -9,20 +21,38 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/shared/components/ui/popover'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/shared/components/ui/dialog'
 import { Label } from '@/shared/components/ui/label'
 import { DataTable } from '@/shared/components/DataTable'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { Skeleton } from '@/shared/components/ui/skeleton'
+import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { WorkspaceCombobox } from '@/shared/components/WorkspaceCombobox'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
-import { listReports } from './api'
+import { deleteReport, listReports, moveReportToFolder } from './api'
+import { unmountReport } from '@/shared/api/mounts'
 import { listTemplates } from '@/shared/api/templates'
 import { listEntityTypes } from '@/shared/api/entities'
+import { listFolders } from '@/shared/api/folders'
 import { EntityMultiPicker } from '@/modules/entities/EntityMultiPicker'
-import { STATUS_LABEL, STATUS_VARIANT } from './constants'
+import { PHASES, PHASE_LABEL, PHASE_VARIANT } from './constants'
+import {
+  FolderSidebar,
+  FOLDER_FILTER_ALL,
+  FOLDER_FILTER_UNCATEGORIZED,
+} from './FolderSidebar'
+import { MountDialog } from './MountDialog'
+import { cn } from '@/shared/lib/utils'
 
 export default function ReportsListPage() {
   const { slug, workspace, all: workspaces, getAncestors, getDescendantsInclusive } = useWorkspace()
@@ -38,9 +68,53 @@ export default function ReportsListPage() {
   // workspace switch (the useAsync below is keyed by slug, but this
   // state lives on the component, so we wipe it via the effect).
   const [entityFilter, setEntityFilter] = useState([])
+  // Folder filter — `null` = 전체, 'uncategorized' = no folder, number
+  // = specific folder id. Resets on workspace switch. Applies in both
+  // personal AND org workspaces (Phase 1.6 brought folders to org).
+  const [folderFilter, setFolderFilter] = useState(FOLDER_FILTER_ALL)
+  // Phase filter — '' = 전체, otherwise a ReportPhase value. Cheap
+  // client-side filter (every row already carries `phase`); the picker
+  // is a small native select inside FilterBar to keep the toolbar tidy.
+  const [phaseFilter, setPhaseFilter] = useState('')
+  // 기간 필터 (보고서 활동 = updated_at). '' = 전체, 'd30'/'d90'/'d365'
+  // = 최근 N일, 'y2026' = 2026년에 활동한 보고서만. 10년 누적 환경에서
+  // default "전체" 가 부담스러우면 사용자가 좁힘. 클라이언트 사이드 —
+  // 페이지 크기보다 데이터셋이 크면 백엔드 필터로 옮길 자리.
+  const [periodFilter, setPeriodFilter] = useState('')
+  // 게시판 필터 — '' = 전체, otherwise 워크스페이스 slug. 그 보고서가
+  // 해당 워크스페이스에 mount 되어 있는지로 필터. 사용자의 mount 가
+  // 실제 있는 워크스페이스만 옵션으로 노출 (빈 옵션 안 생김).
+  const [mountWorkspaceFilter, setMountWorkspaceFilter] = useState('')
+  const isPersonal = workspace?.kind === 'personal'
+  const isOrg = workspace?.kind === 'org'
+  const showFolderSidebar = isPersonal || isOrg
+  // Permission gate for folder CRUD: personal always allowed for owner;
+  // org limited to workspace admin/manager. me.role reflects the current
+  // workspace's role for the actor (resolved server-side per request).
+  const canEditFolders = isPersonal
+    ? true
+    : isOrg && (me?.role === 'admin' || me?.role === 'manager')
+
   useEffect(() => {
     setEntityFilter([])
+    setFolderFilter(FOLDER_FILTER_ALL)
+    setPhaseFilter('')
+    setPeriodFilter('')
+    setMountWorkspaceFilter('')
   }, [slug])
+  // Bulk-select state — a Set of report ids the user has ticked. We
+  // clear on any context shift (workspace / folder / tag filter) so a
+  // stale id from a previous view doesn't survive into a delete/move
+  // that the user can no longer see in the table.
+  const [selectedIds, setSelectedIds] = useState(() => new Set())
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+  const [bulkUnmountOpen, setBulkUnmountOpen] = useState(false)
+  const [bulkBusy, setBulkBusy] = useState(false)
+  // MountDialog opened from the 게시 cell click — `null` = closed.
+  // We pass the full report row so the dialog has report.owner_user_id /
+  // title without a second fetch. onChanged triggers reload() so the
+  // updated mount_workspaces flow back into the table immediately.
+  const [mountDialogReport, setMountDialogReport] = useState(null)
   const entityFilterIds = useMemo(
     () => entityFilter.map((e) => e.id),
     [entityFilter],
@@ -49,19 +123,27 @@ export default function ReportsListPage() {
   // doesn't re-fire on every render — arrays of ids would be a new
   // reference each pass even when the contents match.
   const entityFilterKey = entityFilterIds.join(',')
+  // Encode folder filter into a stable string for the dep array. null
+  // is "no filter" — don't send `folder_id` at all in that case.
+  const folderQueryValue =
+    folderFilter === FOLDER_FILTER_ALL || !showFolderSidebar
+      ? undefined
+      : folderFilter
   const { data: reports, loading, error, reload } = useAsync(
     () =>
       slug
-        ? listReports({ entityIds: entityFilterIds })
+        ? listReports({
+            entityIds: entityFilterIds,
+            folderId: folderQueryValue,
+          })
         : Promise.resolve([]),
-    [slug, entityFilterKey]
+    [slug, entityFilterKey, folderQueryValue]
   )
   const { data: templates } = useAsync(
     () => (slug ? listTemplates() : Promise.resolve([])),
     [slug]
   )
   const templateName = makeTemplateNameLookup(templates)
-  const workspaceName = makeWorkspaceNameLookup(workspaces)
 
   const myUserId = me?.user?.id
   const myHomeSlug = me?.memberships?.[0]?.workspace_slug
@@ -88,22 +170,87 @@ export default function ReportsListPage() {
     return new Set(getDescendantsInclusive(scopeSlug))
   }, [scopeSlug, getDescendantsInclusive])
 
-  // Annotate each row with the resolved 부서명 so DataTable's substring
-  // search hits the Korean name too (it only inspects the row's own keys).
-  // Filter `onlyMine` / `scopedSet` here so the visible total and the
-  // table contents stay consistent.
+  // Clear selection whenever the underlying data context changes —
+  // workspace switch, folder switch, or entity-tag filter change.
+  // Search/sort don't fire this because the row set is still the same
+  // collection, just re-ordered.
+  useEffect(() => {
+    setSelectedIds(new Set())
+  }, [slug, folderQueryValue, entityFilterKey])
+
+  // 기간 필터의 lower-bound 를 ISO 문자열로 한 번 계산. 'd30'/'d90'/
+  // 'd365' → now - N일, 'y2026' → 2026-01-01. Compare 가 ISO 문자열로
+  // 곧장 가능해서 Date 객체 생성 없이 startsWith / >= 비교만.
+  const { rangeStart, rangeEnd } = useMemo(() => {
+    if (!periodFilter) return { rangeStart: null, rangeEnd: null }
+    if (periodFilter.startsWith('y')) {
+      const year = periodFilter.slice(1)
+      return { rangeStart: `${year}-01-01`, rangeEnd: `${Number(year) + 1}-01-01` }
+    }
+    const days = { d30: 30, d90: 90, d365: 365 }[periodFilter]
+    if (!days) return { rangeStart: null, rangeEnd: null }
+    const ms = Date.now() - days * 24 * 60 * 60 * 1000
+    return { rangeStart: new Date(ms).toISOString(), rangeEnd: null }
+  }, [periodFilter])
+
+  // Apply `onlyMine` / `scopedSet` / `phaseFilter` / `periodFilter` /
+  // `mountWorkspaceFilter` here so the visible total and table contents
+  // stay consistent.
   const list = (reports ?? [])
     .filter((r) => !onlyMine || r.owner_user_id === myUserId)
     .filter((r) => !scopedSet || scopedSet.has(r.workspace_slug))
+    .filter((r) => !phaseFilter || r.phase === phaseFilter)
+    .filter((r) => {
+      if (!rangeStart) return true
+      const t = r.updated_at
+      if (!t) return false
+      if (t < rangeStart) return false
+      if (rangeEnd && t >= rangeEnd) return false
+      return true
+    })
+    .filter((r) => {
+      if (!mountWorkspaceFilter) return true
+      return (r.mount_workspaces ?? []).some(
+        (m) => m.slug === mountWorkspaceFilter,
+      )
+    })
     .map((r) => ({
       ...r,
-      workspace_name: workspaceName(r.workspace_slug),
       // Flatten the embedded report_type ref into a sortable/searchable
       // string so DataTable's column sort + substring search both work
       // without bespoke comparators. `report_type` itself is kept around
       // for the cell renderer's badge.
       report_type_name: r.report_type?.name ?? '',
+      // Flatten mount targets so the search bar can hit by board name
+      // ("팀1") — DataTable only inspects each row's own keys.
+      mount_names: (r.mount_workspaces ?? []).map((m) => m.name).join(' '),
     }))
+
+  // 게시판 필터 옵션 — 실제로 mount 가 존재하는 워크스페이스만. union
+  // of every report's mount_workspaces, deduped + sorted by name. 깨끗한
+  // 옵션 리스트라 "팀1 (0건)" 같은 무의미 옵션이 안 생김.
+  const mountWorkspaceOptions = useMemo(() => {
+    const seen = new Map()
+    for (const r of reports ?? []) {
+      for (const m of r.mount_workspaces ?? []) {
+        if (!seen.has(m.slug)) seen.set(m.slug, m.name)
+      }
+    }
+    return [...seen.entries()]
+      .map(([slug, name]) => ({ slug, name }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [reports])
+
+  // 기간 필터의 "특정 연도" 옵션 — 데이터에 실제로 존재하는 updated_at
+  // 의 distinct year. 10년 지나도 자동으로 옵션이 늘어남.
+  const periodYearOptions = useMemo(() => {
+    const years = new Set()
+    for (const r of reports ?? []) {
+      const y = r.updated_at?.slice(0, 4)
+      if (y) years.add(y)
+    }
+    return [...years].sort().reverse()
+  }, [reports])
 
   // Column widths are pinned so page navigation doesn't reflow them.
   // 제목 stays flexible (no explicit width) so it absorbs whatever
@@ -131,7 +278,12 @@ export default function ReportsListPage() {
       key: 'title',
       header: '제목',
       sortable: true,
-      cellClassName: 'font-medium truncate',
+      // min-w-[260px] keeps the title legible even when the sidebar
+      // narrows the available width. Past that point the table itself
+      // scrolls horizontally (DataTable's container has overflow-x-auto)
+      // instead of squishing the title down to a few characters.
+      headerClassName: 'min-w-[260px]',
+      cellClassName: 'font-medium truncate min-w-[260px]',
       render: (r) => (
         <span className="block truncate" title={r.title}>
           {r.title}
@@ -195,42 +347,107 @@ export default function ReportsListPage() {
         )
       },
     },
+    // Post-Phase-1 (협업개선_설계.md §10.3 data migration), every report
+    // lives in the author's personal workspace — so a "부서" column on
+    // the report's own workspace_slug would render "박과장(개인)" for
+    // every row, which is noise. The "게시" column below now carries
+    // the "어느 게시판에 노출되는지" information.
     {
-      key: 'workspace_slug',
-      header: '부서',
-      sortable: true,
-      headerClassName: 'w-[110px]',
-      cellClassName: 'truncate',
-      render: (r) => (
-        <span
-          className="block truncate text-xs text-muted-foreground"
-          title={r.workspace_slug}
-        >
-          {workspaceName(r.workspace_slug)}
-        </span>
-      ),
-    },
-    {
-      key: 'status',
+      key: 'phase',
       header: '상태',
       sortable: true,
       headerClassName: 'w-[88px]',
-      render: (r) => <Badge variant={STATUS_VARIANT[r.status]}>{STATUS_LABEL[r.status]}</Badge>,
+      render: (r) => (
+        <Badge variant={PHASE_VARIANT[r.phase] ?? 'secondary'}>
+          {PHASE_LABEL[r.phase] ?? r.phase}
+        </Badge>
+      ),
+    },
+    {
+      key: 'mount_names',
+      header: '게시',
+      sortable: true,
+      headerClassName: 'w-[160px]',
+      cellClassName: 'truncate',
+      render: (r) => {
+        const mounts = r.mount_workspaces ?? []
+        // Clicking the cell opens the MountDialog for this row — both
+        // the "미게시" state (start mounting) and the chip strip (manage
+        // existing mounts) are interactive. stopPropagation so the
+        // surrounding TableRow's navigate-to-detail click doesn't fire.
+        const openMounts = (e) => {
+          e.stopPropagation()
+          setMountDialogReport(r)
+        }
+        if (mounts.length === 0) {
+          return (
+            <button
+              type="button"
+              onClick={openMounts}
+              className="text-[11px] text-muted-foreground/70 hover:text-foreground underline-offset-2 hover:underline"
+              title="이 보고서를 게시판에 게시"
+            >
+              미게시
+            </button>
+          )
+        }
+        const fullText = mounts.map((m) => m.name).join(', ')
+        const visible = mounts.slice(0, 2)
+        const overflow = mounts.length - visible.length
+        return (
+          <button
+            type="button"
+            onClick={openMounts}
+            className="inline-flex items-center gap-1 flex-wrap rounded px-1 -mx-1 hover:bg-muted/60 transition-colors"
+            title={`${fullText} (클릭: 게시 관리)`}
+          >
+            {visible.map((m) => (
+              <span
+                key={m.slug}
+                className="inline-flex items-center rounded-full bg-primary/10 text-primary px-1.5 py-0.5 text-[10px] font-medium max-w-[70px] truncate"
+              >
+                {m.name}
+              </span>
+            ))}
+            {overflow > 0 && (
+              <span className="text-[10px] text-muted-foreground">
+                +{overflow}
+              </span>
+            )}
+          </button>
+        )
+      },
     },
     {
       key: 'owner_name',
       header: '작성자',
       sortable: true,
-      headerClassName: 'w-[110px]',
+      headerClassName: 'w-[150px]',
       cellClassName: 'truncate',
-      render: (r) => (
-        <span
-          className="block truncate text-xs text-muted-foreground"
-          title={r.owner_email ? `${r.owner_name} (${r.owner_email})` : undefined}
-        >
-          {r.owner_name ?? '—'}
-        </span>
-      ),
+      render: (r) => {
+        // Phase 3 — show last editor when they're someone other than
+        // the owner. Helps the "박과장 보고서를 김부장이 손봤다"
+        // visibility that's central to the boss-edits-subordinate
+        // workflow. Same row, lighter color to keep owner primary.
+        const editor = r.last_edited_by_name
+        const showEditor =
+          editor && r.last_edited_by_user_id !== r.owner_user_id
+        return (
+          <span
+            className="block truncate text-xs text-muted-foreground"
+            title={
+              r.owner_email
+                ? `${r.owner_name} (${r.owner_email})${showEditor ? ` · 최근 수정: ${editor}` : ''}`
+                : undefined
+            }
+          >
+            <span className="text-foreground/80">{r.owner_name ?? '—'}</span>
+            {showEditor && (
+              <span className="text-muted-foreground"> · {editor} 수정</span>
+            )}
+          </span>
+        )
+      },
     },
     {
       key: 'updated_at',
@@ -263,53 +480,212 @@ export default function ReportsListPage() {
     },
   ]
 
-  return (
-    <div className="p-6 space-y-4">
-      <PageHeader
-        title="보고서"
-        description={
-          workspace ? `${workspace.name} — 총 ${list.length}건${workspace.virtual ? ' (횡단)' : ''}` : ''
-        }
-        actions={
-          !workspace?.virtual && (
-            <Button onClick={() => navigate(`/w/${slug}/reports/new`)}>
-              <Plus className="mr-2 h-4 w-4" />
-              신규 작성
-            </Button>
-          )
-        }
-      />
+  // Drop ids that no longer appear in `list` (filtered out by onlyMine /
+  // scope, or removed after a refresh). Keeps the selection count and
+  // the bulk-action target set consistent with what the user can see.
+  const visibleIdSet = useMemo(() => new Set(list.map((r) => r.id)), [list])
+  const effectiveSelected = useMemo(() => {
+    const next = new Set()
+    for (const id of selectedIds) if (visibleIdSet.has(id)) next.add(id)
+    return next
+  }, [selectedIds, visibleIdSet])
 
-      {error ? (
-        <ErrorState description={error.message} onRetry={reload} />
-      ) : loading ? (
-        <Skeleton className="h-96" />
-      ) : (
-        <DataTable
-          columns={columns}
-          data={list}
-          fixedLayout
-          // 번호 큰 순 (최신 보고서가 위) — 게시판 번호 mental model
-          // 에 맞춤. 사용자는 컬럼 헤더 클릭으로 다른 키로 바꿀 수 있음.
-          defaultSort={{ key: 'id', dir: 'desc' }}
-          pageSizeStorageKey="reports"
-          searchableKeys={['title', 'template_id', 'workspace_slug', 'workspace_name', 'owner_name', 'owner_email', 'report_type_name']}
-          searchPlaceholder="제목, 템플릿, 부서, 작성자, 종류 검색"
-          onRowClick={(r) => navigate(`/w/${slug}/reports/${r.id}`)}
-          toolbarExtras={
-            <FilterBar
-              onlyMine={onlyMine}
-              onToggleMine={() => setOnlyMine((v) => !v)}
-              scopeChoices={scopeChoices}
-              scopeSlug={scopeSlug}
-              onScopeSlug={setScopeSlug}
-              myUserId={myUserId}
-              entityFilter={entityFilter}
-              onEntityFilterChange={setEntityFilter}
-            />
-          }
+  async function runBulk(action, { successWord }) {
+    const ids = [...effectiveSelected]
+    if (ids.length === 0) return
+    setBulkBusy(true)
+    try {
+      const results = await Promise.allSettled(ids.map((id) => action(id)))
+      const ok = results.filter((r) => r.status === 'fulfilled').length
+      const fail = results.length - ok
+      if (fail === 0) {
+        toast.success(`${ok}건 ${successWord}`)
+      } else {
+        const firstErr = results.find((r) => r.status === 'rejected')?.reason
+        toast.warning(`${ok}건 ${successWord}, ${fail}건 실패`, {
+          description:
+            firstErr?.response?.data?.message ||
+            firstErr?.message ||
+            undefined,
+        })
+      }
+      setSelectedIds(new Set())
+      reload()
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
+  function handleBulkDelete() {
+    runBulk((id) => deleteReport(id), { successWord: '삭제됨' })
+  }
+
+  function handleBulkMove(folderId) {
+    runBulk((id) => moveReportToFolder(id, folderId), { successWord: '이동됨' })
+  }
+
+  // Bulk unmount — matrix of (selected report × picked workspace).
+  // Dialog supplies which workspaces; we walk the selected reports'
+  // mount_workspaces to find which (report, ws) pairs actually exist
+  // (others are skipped — the report wasn't on that workspace anyway).
+  async function handleBulkUnmount(workspaceSlugs) {
+    const slugSet = new Set(workspaceSlugs)
+    const targets = []
+    for (const r of list) {
+      if (!effectiveSelected.has(r.id)) continue
+      for (const m of r.mount_workspaces ?? []) {
+        if (slugSet.has(m.slug)) {
+          targets.push({ reportId: r.id, workspaceSlug: m.slug })
+        }
+      }
+    }
+    if (targets.length === 0) return
+    setBulkBusy(true)
+    try {
+      const results = await Promise.allSettled(
+        targets.map((t) =>
+          unmountReport({ reportId: t.reportId, workspaceSlug: t.workspaceSlug }),
+        ),
+      )
+      const ok = results.filter((r) => r.status === 'fulfilled').length
+      const fail = results.length - ok
+      if (fail === 0) {
+        toast.success(`게시 ${ok}건 해제됨`)
+      } else {
+        const firstErr = results.find((r) => r.status === 'rejected')?.reason
+        toast.warning(`${ok}건 해제, ${fail}건 실패`, {
+          description:
+            firstErr?.response?.data?.message ||
+            firstErr?.message ||
+            undefined,
+        })
+      }
+      setSelectedIds(new Set())
+      reload()
+    } finally {
+      setBulkBusy(false)
+      setBulkUnmountOpen(false)
+    }
+  }
+
+  return (
+    <div className={cn('flex', showFolderSidebar ? 'h-[calc(100vh-3.5rem)]' : 'p-6 space-y-4 flex-col')}>
+      {/* 폴더 사이드바 — personal: 본인 트리, org: 공유 트리.
+          virtual 워크스페이스(횡단 view)에는 폴더 개념 없음. */}
+      {showFolderSidebar && (
+        <FolderSidebar
+          workspaceSlug={isOrg ? slug : undefined}
+          canEdit={canEditFolders}
+          selected={folderFilter}
+          onSelect={setFolderFilter}
+          onChanged={reload}
         />
       )}
+
+      <div className={cn('flex-1 overflow-auto', showFolderSidebar && 'p-6 space-y-4')}>
+        <PageHeader
+          title="보고서"
+          description={
+            workspace
+              ? `${workspace.name} — 총 ${list.length}건${workspace.virtual ? ' (횡단)' : ''}`
+              : ''
+          }
+          actions={
+            !workspace?.virtual && (
+              <Button onClick={() => navigate(`/w/${slug}/reports/new`)}>
+                <Plus className="mr-2 h-4 w-4" />
+                신규 작성
+              </Button>
+            )
+          }
+        />
+
+        {error ? (
+          <ErrorState description={error.message} onRetry={reload} />
+        ) : loading ? (
+          <Skeleton className="h-96" />
+        ) : (
+          <>
+            {effectiveSelected.size > 0 && (
+              <BulkActionBar
+                count={effectiveSelected.size}
+                busy={bulkBusy}
+                canMove={showFolderSidebar}
+                workspaceSlug={isOrg ? slug : undefined}
+                hasMountsInSelection={list.some(
+                  (r) =>
+                    effectiveSelected.has(r.id) &&
+                    (r.mount_workspaces ?? []).length > 0,
+                )}
+                onMove={handleBulkMove}
+                onDelete={() => setBulkDeleteOpen(true)}
+                onUnmount={() => setBulkUnmountOpen(true)}
+                onClear={() => setSelectedIds(new Set())}
+              />
+            )}
+            <DataTable
+              columns={columns}
+              data={list}
+              fixedLayout
+              // 합산: 선택 40 + 번호 64 + 제목 260 + 템플릿 180 + 종류 140
+              //      + 상태 88 + 게시 160 + 작성자 150 + 수정일 100 + 보고기준일 110
+              //      ≈ 1292. 컨테이너가 이보다 좁으면 표 자체가 가로
+              // 스크롤(overflow-x-auto 는 DataTable container 에 있음).
+              minTableWidthClass="min-w-[1290px]"
+              defaultSort={{ key: 'id', dir: 'desc' }}
+              pageSizeStorageKey="reports"
+              searchableKeys={['title', 'template_id', 'owner_name', 'owner_email', 'last_edited_by_name', 'report_type_name', 'mount_names']}
+              searchPlaceholder="제목, 템플릿, 게시, 작성자/수정자, 종류 검색"
+              onRowClick={(r) => navigate(`/w/${slug}/reports/${r.id}`)}
+              selectable
+              selectedIds={effectiveSelected}
+              onSelectionChange={setSelectedIds}
+              toolbarExtras={
+                <FilterBar
+                  onlyMine={onlyMine}
+                  onToggleMine={() => setOnlyMine((v) => !v)}
+                  scopeChoices={scopeChoices}
+                  scopeSlug={scopeSlug}
+                  onScopeSlug={setScopeSlug}
+                  myUserId={myUserId}
+                  entityFilter={entityFilter}
+                  onEntityFilterChange={setEntityFilter}
+                  phaseFilter={phaseFilter}
+                  onPhaseFilterChange={setPhaseFilter}
+                  periodFilter={periodFilter}
+                  onPeriodFilterChange={setPeriodFilter}
+                  periodYearOptions={periodYearOptions}
+                  mountWorkspaceFilter={mountWorkspaceFilter}
+                  onMountWorkspaceFilterChange={setMountWorkspaceFilter}
+                  mountWorkspaceOptions={mountWorkspaceOptions}
+                />
+              }
+            />
+          </>
+        )}
+        <ConfirmDialog
+          open={bulkDeleteOpen}
+          onOpenChange={setBulkDeleteOpen}
+          title="선택한 보고서 삭제"
+          description={`선택한 ${effectiveSelected.size}건의 보고서를 삭제합니다. 되돌릴 수 없습니다.`}
+          confirmLabel="삭제"
+          variant="destructive"
+          onConfirm={handleBulkDelete}
+        />
+        <MountDialog
+          open={Boolean(mountDialogReport)}
+          onOpenChange={(v) => !v && setMountDialogReport(null)}
+          report={mountDialogReport}
+          onChanged={reload}
+        />
+        <BulkUnmountDialog
+          open={bulkUnmountOpen}
+          onOpenChange={(v) => !bulkBusy && setBulkUnmountOpen(v)}
+          selectedReports={list.filter((r) => effectiveSelected.has(r.id))}
+          busy={bulkBusy}
+          onConfirm={handleBulkUnmount}
+        />
+      </div>
     </div>
   )
 }
@@ -327,9 +703,21 @@ function FilterBar({
   myUserId,
   entityFilter,
   onEntityFilterChange,
+  phaseFilter,
+  onPhaseFilterChange,
+  periodFilter,
+  onPeriodFilterChange,
+  periodYearOptions,
+  mountWorkspaceFilter,
+  onMountWorkspaceFilterChange,
+  mountWorkspaceOptions,
 }) {
   const hasMembership = scopeChoices.length > 0
   const canFilterByOwner = myUserId != null
+  // Phase filter is always available (no permission gate). Keep the
+  // early-return only for the rare "no membership + no owner id" case
+  // so the whole bar collapses; phase filter alone wouldn't be useful
+  // for an unauthenticated/orphan user.
   if (!canFilterByOwner && !hasMembership) return null
 
   return (
@@ -344,6 +732,61 @@ function FilterBar({
           />
           <span>내 보고서만</span>
         </label>
+      )}
+      <div className="inline-flex items-center gap-1.5">
+        <span className="text-muted-foreground">상태:</span>
+        <select
+          value={phaseFilter}
+          onChange={(e) => onPhaseFilterChange(e.target.value)}
+          className="h-7 rounded border border-input bg-background px-1.5 text-xs"
+        >
+          <option value="">전체</option>
+          {PHASES.map((p) => (
+            <option key={p.value} value={p.value}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="inline-flex items-center gap-1.5">
+        <span className="text-muted-foreground">기간:</span>
+        <select
+          value={periodFilter}
+          onChange={(e) => onPeriodFilterChange(e.target.value)}
+          className="h-7 rounded border border-input bg-background px-1.5 text-xs"
+          title="보고서 최근 수정일 기준"
+        >
+          <option value="">전체</option>
+          <option value="d30">최근 30일</option>
+          <option value="d90">최근 90일</option>
+          <option value="d365">최근 1년</option>
+          {periodYearOptions.length > 0 && (
+            <optgroup label="특정 연도">
+              {periodYearOptions.map((y) => (
+                <option key={y} value={`y${y}`}>
+                  {y}년
+                </option>
+              ))}
+            </optgroup>
+          )}
+        </select>
+      </div>
+      {mountWorkspaceOptions.length > 0 && (
+        <div className="inline-flex items-center gap-1.5">
+          <span className="text-muted-foreground">게시판:</span>
+          <select
+            value={mountWorkspaceFilter}
+            onChange={(e) => onMountWorkspaceFilterChange(e.target.value)}
+            className="h-7 rounded border border-input bg-background px-1.5 text-xs max-w-[160px]"
+          >
+            <option value="">전체</option>
+            {mountWorkspaceOptions.map((ws) => (
+              <option key={ws.slug} value={ws.slug}>
+                {ws.name}
+              </option>
+            ))}
+          </select>
+        </div>
       )}
       {hasMembership && (
         <div className="inline-flex items-center gap-1.5">
@@ -503,6 +946,334 @@ function EntityFilterControl({ selected, onChange }) {
   )
 }
 
+/** Selection action bar — appears only when at least one row is ticked.
+ *  Shows the running count, an "이동" popover (when the workspace has
+ *  folders), the "삭제" trigger, and a "선택 해제" escape hatch. The bar
+ *  itself doesn't own selection state; it's a thin presentation layer
+ *  so the parent stays the single source of truth for `selectedIds`. */
+function BulkActionBar({
+  count,
+  busy,
+  canMove,
+  workspaceSlug,
+  hasMountsInSelection,
+  onMove,
+  onDelete,
+  onUnmount,
+  onClear,
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-md border bg-primary/5 px-3 py-2 text-sm">
+      <span className="font-medium">{count}건 선택됨</span>
+      <div className="ml-auto flex items-center gap-2">
+        {canMove && (
+          <BulkMovePopover
+            workspaceSlug={workspaceSlug}
+            disabled={busy}
+            onPick={onMove}
+          />
+        )}
+        {/* 게시 정리 — 선택된 보고서 중 하나라도 mount 가 있어야 의미.
+            전혀 없으면 버튼 자체를 숨겨서 dead-end 클릭 방지. */}
+        {hasMountsInSelection && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1"
+            onClick={onUnmount}
+            disabled={busy}
+            title="선택한 보고서들의 게시판 게시를 해제"
+          >
+            <Unlink className="h-3.5 w-3.5" />
+            게시 정리
+          </Button>
+        )}
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 gap-1 text-destructive hover:text-destructive"
+          onClick={onDelete}
+          disabled={busy}
+        >
+          {busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Trash2 className="h-3.5 w-3.5" />
+          )}
+          삭제
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 text-muted-foreground"
+          onClick={onClear}
+          disabled={busy}
+        >
+          선택 해제
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/** Bulk unmount picker — given the user's selected reports, computes
+ *  the distinct workspaces those reports are mounted to (with counts),
+ *  lets the user check off workspaces, and on confirm fires unmount
+ *  for the matrix of (selected report × picked workspace). The
+ *  computation is local — no fetch — because the rows already carry
+ *  `mount_workspaces` from the list response. */
+function BulkUnmountDialog({
+  open,
+  onOpenChange,
+  selectedReports,
+  busy,
+  onConfirm,
+}) {
+  // Distinct workspaces across the selection, with how many reports
+  // mount each. Sorted by name for stable order.
+  const wsRows = useMemo(() => {
+    const map = new Map()
+    for (const r of selectedReports) {
+      for (const m of r.mount_workspaces ?? []) {
+        if (!map.has(m.slug)) {
+          map.set(m.slug, { slug: m.slug, name: m.name, count: 0 })
+        }
+        map.get(m.slug).count += 1
+      }
+    }
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }, [selectedReports])
+
+  const [picked, setPicked] = useState(() => new Set())
+  // Reset selection whenever the dialog re-opens or the available
+  // workspaces change (e.g. user changed row selection while it was
+  // closed — stale picks would target workspaces no longer present).
+  useEffect(() => {
+    if (open) setPicked(new Set())
+  }, [open])
+  useEffect(() => {
+    setPicked((prev) => {
+      const valid = new Set(wsRows.map((w) => w.slug))
+      const next = new Set()
+      for (const s of prev) if (valid.has(s)) next.add(s)
+      return next
+    })
+  }, [wsRows])
+
+  function toggle(slug) {
+    setPicked((prev) => {
+      const next = new Set(prev)
+      if (next.has(slug)) next.delete(slug)
+      else next.add(slug)
+      return next
+    })
+  }
+  function toggleAll() {
+    if (picked.size === wsRows.length) {
+      setPicked(new Set())
+    } else {
+      setPicked(new Set(wsRows.map((w) => w.slug)))
+    }
+  }
+
+  // Mount-count that would actually be unmounted = sum of counts for
+  // picked workspaces.
+  const affected = wsRows.reduce(
+    (n, w) => n + (picked.has(w.slug) ? w.count : 0),
+    0,
+  )
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>게시 정리</DialogTitle>
+          <DialogDescription>
+            선택한 {selectedReports.length}개 보고서가 게시된 게시판입니다.
+            해제할 게시판을 고르세요. 보고서 자체는 삭제되지 않고, 해당
+            게시판에서만 노출이 사라집니다.
+          </DialogDescription>
+        </DialogHeader>
+        {wsRows.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-4">
+            선택한 보고서들이 어떤 게시판에도 게시되어 있지 않습니다.
+          </p>
+        ) : (
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between px-2 py-1 text-xs text-muted-foreground border-b">
+              <label className="inline-flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={picked.size === wsRows.length && wsRows.length > 0}
+                  ref={(el) => {
+                    if (el) {
+                      el.indeterminate =
+                        picked.size > 0 && picked.size < wsRows.length
+                    }
+                  }}
+                  onChange={toggleAll}
+                  className="h-3.5 w-3.5"
+                />
+                <span>전체 선택</span>
+              </label>
+              <span>총 {wsRows.length}개 게시판</span>
+            </div>
+            <div className="max-h-72 overflow-y-auto space-y-0.5">
+              {wsRows.map((ws) => (
+                <label
+                  key={ws.slug}
+                  className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted/50 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={picked.has(ws.slug)}
+                    onChange={() => toggle(ws.slug)}
+                    className="h-4 w-4"
+                  />
+                  <span className="flex-1 truncate">{ws.name}</span>
+                  <span className="text-[11px] text-muted-foreground tabular-nums shrink-0">
+                    {ws.count}건 게시
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={busy}
+          >
+            취소
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={busy || picked.size === 0}
+            onClick={() => onConfirm([...picked])}
+          >
+            {busy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+            {affected}건 게시 해제
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Folder picker for bulk move. Lazy-loads the folder list on first
+ *  open so the page's initial paint stays light. Renders the folder
+ *  tree flat with depth-indented names — same data shape as
+ *  FolderSidebar — plus a "미분류" sentinel that maps to folder_id=null.
+ *  Move is metadata-only and owner-gated server-side, so rows the
+ *  caller doesn't own fall out of the batch as 403 rejections and get
+ *  rolled up in the summary toast. */
+function BulkMovePopover({ workspaceSlug, disabled, onPick }) {
+  const [open, setOpen] = useState(false)
+  const [folders, setFolders] = useState(null)
+  const [loadError, setLoadError] = useState(null)
+
+  useEffect(() => {
+    if (!open || folders !== null) return
+    let cancelled = false
+    listFolders({ workspaceSlug })
+      .then(({ items }) => {
+        if (!cancelled) setFolders(items)
+      })
+      .catch((e) => {
+        if (!cancelled) setLoadError(e?.message || String(e))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, folders, workspaceSlug])
+
+  // Flat (folder, depth) tuples in stable order — children grouped under
+  // their parent, with name-indented rendering driven off `depth`.
+  const flat = useMemo(() => {
+    if (!folders) return []
+    const byParent = new Map()
+    for (const f of folders) {
+      const key = f.parent_id ?? null
+      if (!byParent.has(key)) byParent.set(key, [])
+      byParent.get(key).push(f)
+    }
+    const out = []
+    function walk(parentKey, depth) {
+      for (const f of byParent.get(parentKey) ?? []) {
+        out.push({ folder: f, depth })
+        walk(f.id, depth + 1)
+      }
+    }
+    walk(null, 0)
+    return out
+  }, [folders])
+
+  function pick(folderId) {
+    setOpen(false)
+    onPick(folderId)
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 gap-1"
+          disabled={disabled}
+        >
+          <FolderInput className="h-3.5 w-3.5" />
+          폴더로 이동
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-64 p-1">
+        {folders === null && !loadError && (
+          <div className="flex items-center justify-center py-4 text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          </div>
+        )}
+        {loadError && (
+          <p className="px-3 py-2 text-xs text-destructive">{loadError}</p>
+        )}
+        {folders !== null && !loadError && (
+          <div className="max-h-72 overflow-y-auto space-y-0.5">
+            <button
+              type="button"
+              onClick={() => pick(null)}
+              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-sm hover:bg-muted text-left"
+            >
+              <Inbox className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              <span className="flex-1 truncate">미분류</span>
+            </button>
+            {flat.length > 0 && <div className="h-px bg-border my-1" />}
+            {flat.map(({ folder, depth }) => (
+              <button
+                key={folder.id}
+                type="button"
+                onClick={() => pick(folder.id)}
+                className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-sm hover:bg-muted text-left"
+                style={{ paddingLeft: 8 + depth * 12 }}
+                title={folder.name}
+              >
+                <FolderIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                <span className="flex-1 truncate">{folder.name}</span>
+              </button>
+            ))}
+            {flat.length === 0 && (
+              <p className="px-3 py-2 text-xs text-muted-foreground">
+                등록된 폴더가 없습니다.
+              </p>
+            )}
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function makeTemplateNameLookup(templates) {
   const map = new Map((templates ?? []).map((t) => [t.template_id, t.name]))
   return (id) => {
@@ -511,14 +1282,6 @@ function makeTemplateNameLookup(templates) {
     if (name) return name
     if (id.length > 16) return `${id.slice(0, 8)}…`
     return id
-  }
-}
-
-function makeWorkspaceNameLookup(workspaces) {
-  const map = new Map((workspaces ?? []).map((w) => [w.slug, w.name]))
-  return (slug) => {
-    if (!slug) return ''
-    return map.get(slug) ?? slug
   }
 }
 

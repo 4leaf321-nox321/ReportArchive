@@ -93,9 +93,16 @@ export function WorkspaceCombobox({
           )}
         >
           {selected ? (
-            <span className="flex items-center gap-2 min-w-0">
+            // `flex-1 min-w-0` on the content wrapper — without this the
+            // span sits at its natural width inside the Button's flex,
+            // so a long workspace path ("개발본부 / 플랫폼팀 / 백엔드")
+            // pushes the ChevronDown past the right edge of the parent
+            // (e.g. the WorkspaceEditDialog modal). `truncate` on the
+            // text span only works once its parent has a real width
+            // bound; flex-1+min-w-0 gives it that.
+            <span className="flex flex-1 min-w-0 items-center gap-2">
               <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="truncate text-left">
+              <span className="truncate text-left min-w-0 flex-1">
                 <span>{selected.name}</span>
                 {!compact && pathBySlug.get(selected.slug) !== selected.name && (
                   <span className="ml-2 text-xs text-muted-foreground">
@@ -105,7 +112,7 @@ export function WorkspaceCombobox({
               </span>
             </span>
           ) : (
-            <span className="text-muted-foreground">{placeholder}</span>
+            <span className="text-muted-foreground truncate">{placeholder}</span>
           )}
           <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
         </Button>

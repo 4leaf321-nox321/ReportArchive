@@ -16,7 +16,7 @@ from app.modules.users.models import User
 from app.shared.auth import (
     CurrentUser,
     get_current_user_no_workspace,
-    require_admin,
+    require_system_admin,
 )
 from app.shared.responses import (
     created_response,
@@ -40,7 +40,7 @@ def list_categories(
 def create_category(
     payload: CategoryCreate,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     try:
         cat = services.create_category(db, payload)
@@ -54,7 +54,7 @@ def update_category(
     slug: str,
     payload: CategoryUpdate,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     cat = services.get_category(db, slug)
     if not cat:
@@ -67,7 +67,7 @@ def update_category(
 def delete_category(
     slug: str,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     cat = services.get_category(db, slug)
     if not cat:

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Check, ChevronsUpDown, Eraser, Globe, X } from 'lucide-react'
+import { Check, ChevronsUpDown, Eraser, Globe, User, X } from 'lucide-react'
 import { Badge } from '@/shared/components/ui/badge'
 import { Button } from '@/shared/components/ui/button'
 import {
@@ -27,13 +27,38 @@ import { cn } from '@/shared/lib/utils'
  *
  * Picking the "전사" item clears any specific selections; picking any
  * specific workspace flips out of global mode.
+ *
+ * `myUserId` (optional) — when supplied, the caller's own personal
+ * workspace is offered as a "나 자신" pseudo-option. Other users'
+ * personal workspaces are always hidden (sharing a template to "박세현
+ * 의 개인 공간" is nonsensical — personal spaces are 1-user areas).
  */
-export function WorkspaceMultiSelect({ value, onChange, workspaces, disabled }) {
+export function WorkspaceMultiSelect({
+  value,
+  onChange,
+  workspaces,
+  disabled,
+  myUserId,
+}) {
   const [open, setOpen] = useState(false)
   const selected = Array.isArray(value) ? value : []
   const isGlobal = !selected.length
-  const options = (workspaces ?? []).filter((w) => !w.virtual)
-  const bySlug = new Map(options.map((w) => [w.slug, w]))
+  // Org workspaces only — virtuals are aggregate views (not assignable),
+  // and personals belong to individuals (not pickable by name).
+  const options = (workspaces ?? []).filter(
+    (w) => !w.virtual && w.kind !== 'personal',
+  )
+  // The current user's own personal workspace gets a special "나 자신"
+  // row so personal-scoped templates are still expressible without
+  // exposing other people's private spaces.
+  const myPersonal = myUserId
+    ? (workspaces ?? []).find(
+        (w) => w.kind === 'personal' && w.personal_owner_user_id === myUserId,
+      )
+    : null
+  const bySlug = new Map(
+    [...options, myPersonal].filter(Boolean).map((w) => [w.slug, w]),
+  )
 
   function toggle(slug) {
     if (selected.includes(slug)) {
@@ -67,9 +92,18 @@ export function WorkspaceMultiSelect({ value, onChange, workspaces, disabled }) 
                   <span>전사 (글로벌)</span>
                 </>
               ) : (
-                <span className="text-sm">
-                  {selected.length}개 부서 선택됨
-                </span>
+                (() => {
+                  const orgCount = selected.filter(
+                    (s) => bySlug.get(s)?.kind !== 'personal',
+                  ).length
+                  const mine = selected.some(
+                    (s) => bySlug.get(s)?.kind === 'personal',
+                  )
+                  const parts = []
+                  if (mine) parts.push('나 자신')
+                  if (orgCount > 0) parts.push(`${orgCount}개 부서`)
+                  return <span className="text-sm">{parts.join(' + ')}</span>
+                })()
               )}
             </span>
             <ChevronsUpDown className="h-3.5 w-3.5 opacity-50 shrink-0" />
@@ -91,6 +125,27 @@ export function WorkspaceMultiSelect({ value, onChange, workspaces, disabled }) 
                   <span>전사 (글로벌)</span>
                   {isGlobal && <Check className="ml-auto h-3.5 w-3.5" />}
                 </CommandItem>
+                {myPersonal && (
+                  <CommandItem
+                    value={`나 자신 ${myPersonal.slug}`}
+                    onSelect={() => toggle(myPersonal.slug)}
+                  >
+                    <span
+                      className={cn(
+                        'h-3.5 w-3.5 rounded border flex items-center justify-center',
+                        selected.includes(myPersonal.slug)
+                          ? 'bg-primary text-primary-foreground border-primary'
+                          : 'border-input',
+                      )}
+                    >
+                      {selected.includes(myPersonal.slug) && (
+                        <Check className="h-3 w-3" />
+                      )}
+                    </span>
+                    <User className="h-3.5 w-3.5 text-amber-500" />
+                    <span className="flex-1">나 자신 (내 공간)</span>
+                  </CommandItem>
+                )}
               </CommandGroup>
               <CommandSeparator />
               <CommandGroup heading="부서">
@@ -145,9 +200,12 @@ export function WorkspaceMultiSelect({ value, onChange, workspaces, disabled }) 
         <div className="flex flex-wrap items-center gap-1">
           {selected.map((slug) => {
             const w = bySlug.get(slug)
+            const isMine = w && w.kind === 'personal'
+            const label = isMine ? '나 자신' : (w?.name ?? slug)
             return (
               <Badge key={slug} variant="secondary" className="gap-1 pr-1">
-                <span className="text-xs">{w?.name ?? slug}</span>
+                {isMine && <User className="h-3 w-3 text-amber-500" />}
+                <span className="text-xs">{label}</span>
                 <button
                   type="button"
                   onClick={() => toggle(slug)}

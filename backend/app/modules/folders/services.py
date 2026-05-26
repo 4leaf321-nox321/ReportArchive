@@ -1,0 +1,363 @@
+"""Folder service layer — personal + org scopes in one module.
+
+Two flavors, distinguished by `Folder.kind`:
+
+  * personal — owned by a user (`user_id` set). Visible & mutable only
+    by that user (workspace admin can override via a separate flow if
+    we ever need it; not in Phase 1.6).
+  * org — workspace-wide shared (`workspace_slug` set). All workspace
+    members can SEE the tree; mutate (create/rename/move/delete) is
+    restricted to workspace admin/lead.
+
+Default folder set ("진행 중", "종결", "보관") is created lazily on
+first list call — per-user for personal, per-workspace for org. Once
+the user / workspace has any folder (default or self-created), the
+helper becomes a no-op so we never reinstate folders that were
+explicitly deleted.
+"""
+from __future__ import annotations
+
+from typing import Optional
+
+from sqlalchemy import and_, func, select
+from sqlalchemy.orm import Session
+
+from app.modules.folders.models import Folder, FolderKind
+from app.modules.mounts.models import ReportMount
+from app.modules.reports.models import Report
+from app.modules.users.models import Role, WorkspaceMember
+from app.modules.workspaces.models import Workspace, WorkspaceKind
+
+
+DEFAULT_FOLDERS: list[tuple[str, int]] = [
+    ("진행 중", 0),
+    ("종결", 10),
+    ("보관", 20),
+]
+
+
+class FolderError(Exception):
+    code = "folder_error"
+    status_code = 400
+
+
+class FolderNotFoundError(FolderError):
+    code = "folder_not_found"
+    status_code = 404
+
+
+class FolderForbiddenError(FolderError):
+    code = "folder_forbidden"
+    status_code = 403
+
+
+# ──────────────────────────────────────────────────────────────────
+# Scope helpers — the "personal vs org" branch is the single source
+# of complexity in this module; centralized here so the rest of the
+# functions can stay flavor-agnostic.
+# ──────────────────────────────────────────────────────────────────
+
+
+def _is_workspace_admin(db: Session, user_id: int, workspace_slug: str) -> bool:
+    """A user can mutate an org workspace's folder tree if they have
+    admin or manager role *anywhere up the workspace tree*. Walking the
+    parent chain matches the rest of the codebase's role resolution
+    (see app/shared/auth.py:_resolve_role)."""
+    visited: set[str] = set()
+    cur: Optional[str] = workspace_slug
+    while cur and cur not in visited:
+        visited.add(cur)
+        m = db.execute(
+            select(WorkspaceMember).where(
+                WorkspaceMember.user_id == user_id,
+                WorkspaceMember.workspace_slug == cur,
+            )
+        ).scalar_one_or_none()
+        if m and m.role in (Role.admin, Role.manager):
+            return True
+        ws = db.get(Workspace, cur)
+        if not ws:
+            break
+        cur = ws.parent_slug
+    return False
+
+
+def _ensure_org_workspace(db: Session, workspace_slug: str) -> Workspace:
+    ws = db.get(Workspace, workspace_slug)
+    if ws is None:
+        raise FolderError(f"워크스페이스를 찾을 수 없습니다: {workspace_slug}")
+    if ws.kind != WorkspaceKind.org:
+        raise FolderError(
+            f"조직 워크스페이스에만 공유 폴더를 만들 수 있습니다 (kind={ws.kind.value})."
+        )
+    return ws
+
+
+# ──────────────────────────────────────────────────────────────────
+# Default folder creation
+# ──────────────────────────────────────────────────────────────────
+
+
+def ensure_default_folders_for_user(db: Session, user_id: int) -> None:
+    exists = db.execute(
+        select(Folder.id).where(Folder.user_id == user_id).limit(1)
+    ).first()
+    if exists:
+        return
+    for name, sort_order in DEFAULT_FOLDERS:
+        db.add(
+            Folder(
+                kind=FolderKind.personal,
+                user_id=user_id,
+                workspace_slug=None,
+                parent_id=None,
+                name=name,
+                sort_order=sort_order,
+            )
+        )
+    db.flush()
+
+
+def ensure_default_folders_for_workspace(db: Session, workspace_slug: str) -> None:
+    exists = db.execute(
+        select(Folder.id)
+        .where(Folder.workspace_slug == workspace_slug)
+        .limit(1)
+    ).first()
+    if exists:
+        return
+    for name, sort_order in DEFAULT_FOLDERS:
+        db.add(
+            Folder(
+                kind=FolderKind.org,
+                user_id=None,
+                workspace_slug=workspace_slug,
+                parent_id=None,
+                name=name,
+                sort_order=sort_order,
+            )
+        )
+    db.flush()
+
+
+# ──────────────────────────────────────────────────────────────────
+# Listing — with report_count annotation
+# ──────────────────────────────────────────────────────────────────
+
+
+def list_personal_folders(db: Session, user_id: int) -> list[Folder]:
+    """Personal folders, `report_count` annotated via the Reports table
+    (since personal placement lives on Report.folder_id)."""
+    ensure_default_folders_for_user(db, user_id)
+    rows = db.execute(
+        select(Folder, func.count(Report.id).label("report_count"))
+        .outerjoin(Report, Report.folder_id == Folder.id)
+        .where(Folder.kind == FolderKind.personal, Folder.user_id == user_id)
+        .group_by(Folder.id)
+        .order_by(Folder.sort_order, Folder.id)
+    ).all()
+    folders: list[Folder] = []
+    for folder, count in rows:
+        folder.report_count = int(count or 0)
+        folders.append(folder)
+    return folders
+
+
+def list_org_folders(db: Session, workspace_slug: str) -> list[Folder]:
+    """Org folders, `report_count` annotated via ReportMount (since org
+    placement lives on ReportMount.folder_id, not Report.folder_id)."""
+    ensure_default_folders_for_workspace(db, workspace_slug)
+    rows = db.execute(
+        select(Folder, func.count(ReportMount.report_id).label("report_count"))
+        .outerjoin(ReportMount, ReportMount.folder_id == Folder.id)
+        .where(
+            Folder.kind == FolderKind.org,
+            Folder.workspace_slug == workspace_slug,
+        )
+        .group_by(Folder.id)
+        .order_by(Folder.sort_order, Folder.id)
+    ).all()
+    folders: list[Folder] = []
+    for folder, count in rows:
+        folder.report_count = int(count or 0)
+        folders.append(folder)
+    return folders
+
+
+def count_uncategorized_personal(db: Session, user_id: int) -> int:
+    personal_slug = f"personal-{user_id}"
+    n = db.execute(
+        select(func.count(Report.id)).where(
+            Report.workspace_slug == personal_slug,
+            Report.folder_id.is_(None),
+        )
+    ).scalar()
+    return int(n or 0)
+
+
+def count_uncategorized_org(db: Session, workspace_slug: str) -> int:
+    """Mounts in this workspace with no folder assignment."""
+    n = db.execute(
+        select(func.count(ReportMount.report_id)).where(
+            ReportMount.workspace_slug == workspace_slug,
+            ReportMount.folder_id.is_(None),
+        )
+    ).scalar()
+    return int(n or 0)
+
+
+# ──────────────────────────────────────────────────────────────────
+# Mutation — permission-checked
+# ──────────────────────────────────────────────────────────────────
+
+
+def _get_folder_with_permission(
+    db: Session, folder_id: int, actor_user_id: int
+) -> Folder:
+    """Fetch a folder + verify the actor may mutate it. Raises
+    FolderNotFoundError / FolderForbiddenError."""
+    folder = db.get(Folder, folder_id)
+    if folder is None:
+        raise FolderNotFoundError(f"폴더를 찾을 수 없습니다: {folder_id}")
+    if folder.kind == FolderKind.personal:
+        if folder.user_id != actor_user_id:
+            raise FolderForbiddenError("본인 소유 폴더만 수정할 수 있습니다.")
+    else:  # org
+        if not _is_workspace_admin(db, actor_user_id, folder.workspace_slug):
+            raise FolderForbiddenError(
+                "조직 폴더는 워크스페이스 관리자만 수정할 수 있습니다."
+            )
+    return folder
+
+
+def create_personal_folder(
+    db: Session,
+    *,
+    user_id: int,
+    name: str,
+    parent_id: Optional[int] = None,
+    sort_order: int = 0,
+) -> Folder:
+    if parent_id is not None:
+        parent = _get_folder_with_permission(db, parent_id, user_id)
+        if parent.kind != FolderKind.personal:
+            raise FolderError(
+                "개인 폴더의 부모는 같은 개인 폴더여야 합니다."
+            )
+    folder = Folder(
+        kind=FolderKind.personal,
+        user_id=user_id,
+        workspace_slug=None,
+        parent_id=parent_id,
+        name=name.strip(),
+        sort_order=sort_order,
+    )
+    db.add(folder)
+    db.flush()
+    return folder
+
+
+def create_org_folder(
+    db: Session,
+    *,
+    workspace_slug: str,
+    actor_user_id: int,
+    name: str,
+    parent_id: Optional[int] = None,
+    sort_order: int = 0,
+) -> Folder:
+    _ensure_org_workspace(db, workspace_slug)
+    if not _is_workspace_admin(db, actor_user_id, workspace_slug):
+        raise FolderForbiddenError(
+            "조직 폴더 생성 권한이 없습니다 (admin/manager 필요)."
+        )
+    if parent_id is not None:
+        parent = db.get(Folder, parent_id)
+        if (
+            parent is None
+            or parent.kind != FolderKind.org
+            or parent.workspace_slug != workspace_slug
+        ):
+            raise FolderError(
+                "조직 폴더의 부모는 같은 워크스페이스 폴더여야 합니다."
+            )
+    folder = Folder(
+        kind=FolderKind.org,
+        user_id=None,
+        workspace_slug=workspace_slug,
+        parent_id=parent_id,
+        name=name.strip(),
+        sort_order=sort_order,
+    )
+    db.add(folder)
+    db.flush()
+    return folder
+
+
+def update_folder(
+    db: Session,
+    *,
+    folder_id: int,
+    actor_user_id: int,
+    name: Optional[str] = None,
+    parent_id_set: bool = False,
+    parent_id: Optional[int] = None,
+    sort_order: Optional[int] = None,
+) -> Folder:
+    folder = _get_folder_with_permission(db, folder_id, actor_user_id)
+    if name is not None:
+        folder.name = name.strip()
+    if parent_id_set:
+        if parent_id is not None:
+            if parent_id == folder_id:
+                raise FolderError(
+                    "폴더를 자기 자신의 하위로 이동할 수 없습니다."
+                )
+            new_parent = db.get(Folder, parent_id)
+            if new_parent is None:
+                raise FolderNotFoundError(
+                    f"새 부모 폴더를 찾을 수 없습니다: {parent_id}"
+                )
+            # Parent must be in the same scope as the moved folder —
+            # otherwise we'd silently change ownership.
+            if new_parent.kind != folder.kind:
+                raise FolderError(
+                    "다른 종류 (개인/조직) 의 폴더로 이동할 수 없습니다."
+                )
+            if (
+                folder.kind == FolderKind.org
+                and new_parent.workspace_slug != folder.workspace_slug
+            ):
+                raise FolderError(
+                    "다른 워크스페이스로 폴더를 옮길 수 없습니다."
+                )
+            if (
+                folder.kind == FolderKind.personal
+                and new_parent.user_id != folder.user_id
+            ):
+                raise FolderError(
+                    "다른 사용자 폴더 아래로 옮길 수 없습니다."
+                )
+            # Cycle detection — walk up and ensure we don't loop back.
+            cur = new_parent
+            seen = {folder_id}
+            while cur is not None:
+                if cur.id in seen:
+                    raise FolderError(
+                        "순환 구조가 됩니다 — 다른 부모를 선택하세요."
+                    )
+                seen.add(cur.id)
+                cur = db.get(Folder, cur.parent_id) if cur.parent_id else None
+        folder.parent_id = parent_id
+    if sort_order is not None:
+        folder.sort_order = sort_order
+    db.flush()
+    return folder
+
+
+def delete_folder(
+    db: Session, *, folder_id: int, actor_user_id: int
+) -> None:
+    folder = _get_folder_with_permission(db, folder_id, actor_user_id)
+    db.delete(folder)
+    db.flush()

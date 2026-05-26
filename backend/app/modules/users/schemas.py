@@ -26,6 +26,10 @@ class MeRead(BaseModel):
     workspace_slug: Optional[str] = None
     role: Optional[Role] = None
     memberships: list[MembershipRead]
+    # 시스템 관리자 flag — pulled straight from User.is_system_admin.
+    # Distinct from workspace `role`: a 부서 관리자 (role=admin in a
+    # workspace) doesn't have this unless explicitly granted.
+    is_system_admin: bool = False
 
 
 class UpdateProfileRequest(BaseModel):
@@ -48,3 +52,22 @@ class AdminSetPasswordRequest(BaseModel):
     No current_password — admin authority replaces it."""
 
     new_password: str = Field(..., min_length=8, max_length=128)
+
+
+class SystemAdminUserRead(BaseModel):
+    """One system admin row — what /api/users/system-admins returns."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: str
+    name: str
+    is_system_admin: bool
+
+
+class SetSystemAdminRequest(BaseModel):
+    """Promote / demote a user as system admin. Self-demote of the last
+    remaining system admin is rejected at the service layer (lock-out
+    prevention)."""
+
+    is_system_admin: bool

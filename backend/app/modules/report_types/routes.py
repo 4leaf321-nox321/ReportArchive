@@ -50,24 +50,15 @@ def report_type_actor(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     _x_workspace_slug: Optional[str] = Header(default=None, alias="X-Workspace-Slug"),
 ) -> ReportTypeActor:
-    """Auth dep — no workspace required. is_admin = holds admin in any
-    workspace (same broader granularity as VOC)."""
+    """Auth dep — no workspace required. `is_admin` = SYSTEM admin
+    (User.is_system_admin). Report types are org-wide vocabulary; only
+    system admins promote/demote between official/unofficial. Any
+    member can still create a new unofficial type."""
     user = _resolve_user_from_token(db, credentials)
-    is_admin = (
-        db.execute(
-            select(WorkspaceMember.id)
-            .where(
-                WorkspaceMember.user_id == user.id,
-                WorkspaceMember.role == Role.admin,
-            )
-            .limit(1)
-        ).first()
-        is not None
-    )
-    return ReportTypeActor(user=user, is_admin=is_admin)
+    return ReportTypeActor(user=user, is_admin=user.is_system_admin)
 
 
-def _require_admin(actor: ReportTypeActor) -> None:
+def _require_system_admin(actor: ReportTypeActor) -> None:
     if not actor.is_admin:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "관리자만 가능한 작업입니다."
@@ -100,7 +91,7 @@ def list_all(
     db: Session = Depends(get_db),
 ):
     """Admin tab — full list including unofficial from any user."""
-    _require_admin(actor)
+    _require_system_admin(actor)
     rows = services.list_all_for_admin(db, q=q, limit=limit)
     return success_response(
         data=ReportTypeListResponse(
@@ -159,7 +150,7 @@ def promote_type(
     actor: ReportTypeActor = Depends(report_type_actor),
     db: Session = Depends(get_db),
 ):
-    _require_admin(actor)
+    _require_system_admin(actor)
     row = services.get(db, type_id)
     if not row:
         return not_found_response(f"보고서 종류를 찾을 수 없습니다: {type_id}")
@@ -173,7 +164,7 @@ def demote_type(
     actor: ReportTypeActor = Depends(report_type_actor),
     db: Session = Depends(get_db),
 ):
-    _require_admin(actor)
+    _require_system_admin(actor)
     row = services.get(db, type_id)
     if not row:
         return not_found_response(f"보고서 종류를 찾을 수 없습니다: {type_id}")
@@ -187,7 +178,7 @@ def delete_type(
     actor: ReportTypeActor = Depends(report_type_actor),
     db: Session = Depends(get_db),
 ):
-    _require_admin(actor)
+    _require_system_admin(actor)
     row = services.get(db, type_id)
     if not row:
         return not_found_response(f"보고서 종류를 찾을 수 없습니다: {type_id}")

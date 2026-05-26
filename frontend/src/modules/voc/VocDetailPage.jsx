@@ -41,7 +41,9 @@ export default function VocDetailPage() {
   const { postId } = useParams()
   const navigate = useNavigate()
   const { me } = useAuth()
-  const isAdmin = me?.role === 'admin'
+  // VOC moderation is a system-operator task (resolving/deleting
+  // others' posts). Backend gates on is_system_admin; mirror here.
+  const isAdmin = me?.is_system_admin === true
   const userId = me?.user?.id
 
   const { data: post, loading, error, reload } = useAsync(

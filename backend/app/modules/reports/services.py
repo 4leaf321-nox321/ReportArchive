@@ -9,10 +9,12 @@ from sqlalchemy.orm import Session
 
 from app.modules.entities import services as entity_services
 from app.modules.entities.models import Entity, ReportEntity
+from app.modules.mounts.models import ReportMount
 from app.modules.reports.models import Report, ReportEditLock
 from app.modules.reports.schemas import ReportCreate, ReportPage, ReportUpdate
 from app.modules.templates import services as template_services
 from app.modules.workspaces import services as ws_services
+from app.modules.workspaces.models import Workspace, WorkspaceKind
 from app.widgets import (
     validate_layout_overrides as _validate_layout_overrides,
     validate_report_content as _validate_widget_v1_content,
@@ -70,14 +72,24 @@ def list_reports_in_workspace(
     *,
     is_global_view: bool = False,
     entity_ids: Optional[list[int]] = None,
+    folder_filter: Optional[int | str] = None,
 ) -> list[Report]:
-    """Returns reports scoped to the workspace tree.
+    """Returns reports visible in the given workspace.
 
-    For non-leaf workspaces, this includes all descendants. The virtual
-    `_global` workspace bypasses scoping (admin/횡단 view).
+    Two different visibility models depending on workspace kind:
 
-    `entity_ids` applies the N-axis tag filter: ids are grouped by their
-    axis (entity.type_id), and the WHERE clause becomes
+      * **personal** (`kind='personal'`) — direct ownership. Returns
+        reports whose `workspace_slug` equals the personal slug (i.e.
+        reports the user authored / hasn't yet promoted). The personal
+        space has no tree, so there's nothing to descend into.
+      * **org** (`kind='org'`) — visibility via mount. Returns reports
+        that have a `ReportMount` row pointing at this workspace OR
+        any descendant org workspace (the team-under-본부 case).
+      * **virtual** (`is_global_view=True`) — bypasses scoping entirely
+        for cross-workspace admin views (the `_global` aggregate).
+
+    `entity_ids` applies the N-axis tag filter on top: ids are grouped
+    by their axis (entity.type_id), and the WHERE clause becomes
     `EXISTS(axis1 IN […]) AND EXISTS(axis2 IN […])` — i.e. *OR within
     an axis, AND across axes*. That matches standard tag-filter UX
     (Linear/Notion/Jira): picking two values in 모델 means "either
@@ -86,9 +98,46 @@ def list_reports_in_workspace(
     got from /api/entities, but a stale URL could carry deleted ones).
     """
     query = select(Report).order_by(desc(Report.updated_at))
+    ws = db.get(Workspace, workspace_slug) if not is_global_view else None
     if not is_global_view:
-        scope = ws_services.get_descendants_inclusive(db, workspace_slug)
-        query = query.where(Report.workspace_slug.in_(scope))
+        # Resolve the workspace's kind once so we can branch the WHERE.
+        # personal workspaces are leaf-only (no parent_slug semantics in
+        # the user's tree), so we skip the descendants walk for them.
+        if ws is not None and ws.kind == WorkspaceKind.personal:
+            query = query.where(Report.workspace_slug == workspace_slug)
+        else:
+            # Org workspace: pull mounted reports across the descendant
+            # tree. The JOIN lets a report mounted to a child team show
+            # up on the parent 본부's listing.
+            scope = ws_services.get_descendants_inclusive(db, workspace_slug)
+            query = (
+                query.join(ReportMount, ReportMount.report_id == Report.id)
+                .where(ReportMount.workspace_slug.in_(scope))
+                .distinct()
+            )
+    # Folder filter — branches by scope. Personal: filter on
+    # `Report.folder_id`. Org: filter on `ReportMount.folder_id` for
+    # the current workspace specifically (so the filter only narrows
+    # the just-joined mounts, not other mounts of the same report).
+    if folder_filter is not None and ws is not None:
+        if ws.kind == WorkspaceKind.personal:
+            if folder_filter == "uncategorized":
+                query = query.where(Report.folder_id.is_(None))
+            elif isinstance(folder_filter, int):
+                query = query.where(Report.folder_id == folder_filter)
+        else:
+            # Re-anchor the filter to the same JOIN already in the
+            # query — ReportMount is bound to this query scope.
+            if folder_filter == "uncategorized":
+                query = query.where(
+                    ReportMount.workspace_slug == workspace_slug,
+                    ReportMount.folder_id.is_(None),
+                )
+            elif isinstance(folder_filter, int):
+                query = query.where(
+                    ReportMount.workspace_slug == workspace_slug,
+                    ReportMount.folder_id == folder_filter,
+                )
     if entity_ids:
         # Resolve each id → type_id so we can group. One DB roundtrip
         # regardless of how many ids were picked.
@@ -125,10 +174,29 @@ def get_report(db: Session, report_id: int) -> Optional[Report]:
 
 
 def is_visible_to(db: Session, report: Report, workspace_slug: str) -> bool:
-    """Workspace tree visibility check — actor's workspace must be an ancestor
-    of the report's workspace (or the same)."""
+    """Workspace visibility check — used by /api/reports/{id} and
+    similar single-report routes.
+
+    Match list_reports_in_workspace's branching: personal workspaces
+    only see directly-owned reports; org workspaces see anything mounted
+    within their descendant tree.
+    """
+    # personal-space view: direct ownership only.
+    if report.workspace_slug == workspace_slug:
+        return True
+    # org/virtual view: visible if mounted to any workspace inside the
+    # actor's descendant scope. One small query — much cheaper than
+    # walking every mount the report has.
     scope = ws_services.get_descendants_inclusive(db, workspace_slug)
-    return report.workspace_slug in scope
+    mount_exists = db.execute(
+        select(ReportMount.report_id)
+        .where(
+            ReportMount.report_id == report.id,
+            ReportMount.workspace_slug.in_(scope),
+        )
+        .limit(1)
+    ).first()
+    return mount_exists is not None
 
 
 def _validate_page(db: Session, page: ReportPage) -> None:
@@ -303,8 +371,10 @@ def create_report(
     # leaving it out lets the column's CURRENT_DATE default fill in.
     if payload.report_date is not None:
         init_kwargs["report_date"] = payload.report_date
-    if payload.status is not None:
-        init_kwargs["status"] = payload.status
+    if payload.phase is not None:
+        init_kwargs["phase"] = payload.phase
+    if payload.lifecycle is not None:
+        init_kwargs["lifecycle"] = payload.lifecycle
     if payload.page_width_px is not None:
         init_kwargs["page_width_px"] = payload.page_width_px
     if payload.page_gap_px is not None:
@@ -532,7 +602,10 @@ def update_report(
     # picker can both set and clear (explicit None) the tag in one PATCH.
     for key in (
         "title",
-        "status",
+        "phase",
+        "lifecycle",
+        "closed_at",
+        "folder_id",
         "report_date",
         "tags",
         "page_width_px",
@@ -551,6 +624,14 @@ def update_report(
     # always pass the actor id so this never silently goes None.
     if updated_by_user_id is not None:
         report.updated_by_user_id = updated_by_user_id
+        # Phase 3 — denormalized "last editor" for listing attribution.
+        # Mirrors updated_by_* for now. Kept separate so future logic
+        # (e.g. "owner edits don't count as 'last editor'") can diverge
+        # without breaking legacy consumers of updated_by_*.
+        from datetime import datetime as _dt
+
+        report.last_edited_by_user_id = updated_by_user_id
+        report.last_edited_at = _dt.utcnow()
 
     # Bump optimistic-concurrency counter. Every successful save advances
     # this, so any in-flight PATCH from a stale tab will hit

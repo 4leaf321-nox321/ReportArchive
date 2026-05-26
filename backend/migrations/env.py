@@ -25,6 +25,12 @@ from app.modules.widget_relations import models as _widget_relations_models  # n
 from app.modules.section_taxonomy import models as _section_taxonomy_models  # noqa: F401
 from app.modules.composites import models as _composites_models  # noqa: F401
 from app.modules.entities import models as _entities_models  # noqa: F401
+from app.modules.mounts import models as _mounts_models  # noqa: F401
+from app.modules.comments import models as _comments_models  # noqa: F401
+from app.modules.notifications import models as _notifications_models  # noqa: F401
+from app.modules.folders import models as _folders_models  # noqa: F401
+from app.modules.editors import models as _editors_models  # noqa: F401
+from app.modules.activities import models as _activities_models  # noqa: F401
 # auth/members modules don't have their own models — they reuse users + workspace_members
 
 config = context.config

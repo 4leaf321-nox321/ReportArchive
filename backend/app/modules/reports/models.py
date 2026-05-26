@@ -34,18 +34,34 @@ from app.database import Base
 from app.modules.users.models import User
 
 
-class ReportStatus(str, enum.Enum):
-    """Work-state status for the report's underlying task.
+class ReportPhase(str, enum.Enum):
+    """Report's collaboration lifecycle — label, not gate.
 
-    Earlier values (in_review / approved / archived) modelled an approval
-    workflow that was never wired up — the labels now describe whether
-    the work the report covers is still being written, actively in
-    progress, or wrapped up.
+    Designed to avoid the "approval workflow that nobody uses" trap:
+    phase changes happen as side-effects of natural actions (mounting to
+    an org board, getting a first external comment, hitting "publish"),
+    never via an explicit "request review" gesture. See 협업개선_설계.md
+    §8.3 for the auto-transition rules and UI behavior matrix.
     """
 
-    draft = "draft"               # 작성 중 — 보고서 자체가 작성 중
-    in_progress = "in_progress"   # 진행 업무 — 다루는 업무가 진행 중
-    completed = "completed"       # 완료 업무 — 다루는 업무가 완료됨
+    drafting = "drafting"     # 작성 중 — 편집 위주, 핀 hover로만
+    reviewing = "reviewing"   # 리뷰 중 — 피드백 수렴, 핀 항상 표시
+    finalized = "finalized"   # 발행 완료 — 편집 차단, 코멘트 read-only
+
+
+class ReportLifecycle(str, enum.Enum):
+    """Whether the work the report covers is one-shot or ongoing.
+
+    Orthogonal to `phase` (which is about collaboration state). Used by
+    the composite recurring-rollup logic (§7) to decide auto-carry-over
+    candidates. `single_shot` only appears in the week it was first
+    published; `ongoing` is automatically offered as a carry-over
+    candidate every subsequent recurring composite until `closed_at` is
+    set.
+    """
+
+    single_shot = "single_shot"
+    ongoing = "ongoing"
 
 
 class Report(Base):
@@ -61,8 +77,14 @@ class Report(Base):
         ),
         Index("ix_reports_workspace", "workspace_slug"),
         Index("ix_reports_template", "template_id", "template_version"),
-        Index("ix_reports_status", "status"),
+        Index("ix_reports_phase", "phase"),
         Index("ix_reports_owner", "owner_user_id"),
+        Index("ix_reports_folder", "folder_id"),
+        # Carried over from earlier migrations (e18e0d43a9a6, 4b5fea6acfdd)
+        # so autogen doesn't try to drop them. The dashboard filters on
+        # report_date; updated_by_user_id powers the "최근 편집자" list.
+        Index("ix_reports_report_date", "report_date"),
+        Index("ix_reports_updated_by_user_id", "updated_by_user_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -76,9 +98,14 @@ class Report(Base):
     template_version: Mapped[int] = mapped_column(Integer, nullable=False)
 
     title: Mapped[str] = mapped_column(String(255), nullable=False)
-    status: Mapped[ReportStatus] = mapped_column(
-        Enum(ReportStatus, name="report_status_enum"),
-        default=ReportStatus.draft,
+    # Collaboration lifecycle — see ReportPhase docstring.
+    # Auto-transitions: first external comment OR mount-to-org-board
+    # bumps drafting → reviewing. Explicit "publish" / "unpublish"
+    # buttons toggle finalized. No "request review" gate.
+    phase: Mapped[ReportPhase] = mapped_column(
+        Enum(ReportPhase, name="report_phase_enum"),
+        default=ReportPhase.drafting,
+        server_default=ReportPhase.drafting.value,
         nullable=False,
     )
     owner_user_id: Mapped[int | None] = mapped_column(
@@ -89,6 +116,18 @@ class Report(Base):
     # if needed; an audit-log table would be overkill at this scale.
     updated_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Phase 3 — denormalized "last editor" for listing UIs ("박과장 작성
+    # · 김부장 수정"). Updated whenever someone other than the owner
+    # saves, OR also bumped on owner edits so listings always have the
+    # most recent. updated_by_user_id stays for backward compat (some
+    # legacy views reference it).
+    last_edited_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    last_edited_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
     )
 
     # Free-form tags — small flat list. Will become a dedicated table once
@@ -189,6 +228,52 @@ class Report(Base):
         ForeignKey("report_types.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
+    # ── Personal-space organization ─────────────────────────────────────
+    # Personal-space folder this report sits in. NULL = uncategorized
+    # ("분류 안 한 보고서"). Folders are per-user (folders module owns
+    # them). Mount status / org visibility is orthogonal — folder is a
+    # purely personal organizational concern.
+    folder_id: Mapped[int | None] = mapped_column(
+        ForeignKey("folders.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # ── Lifecycle (single vs ongoing) ───────────────────────────────────
+    # See ReportLifecycle docstring. `ongoing` reports are auto-offered
+    # as carry-over candidates in the next recurring composite; `closed_at`
+    # turns that off (the work wrapped up).
+    lifecycle: Mapped[ReportLifecycle] = mapped_column(
+        Enum(ReportLifecycle, name="report_lifecycle_enum"),
+        default=ReportLifecycle.single_shot,
+        server_default=ReportLifecycle.single_shot.value,
+        nullable=False,
+    )
+    closed_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    # ── Author hard lock (max-priority edit veto) ───────────────────────
+    # When `author_lock_enabled` is True, only the owner can edit — every
+    # other path (lead role, additional editors, coauthor policy) is
+    # blocked. Reason is shown in the lock banner. Workspace admin can
+    # force-unset (audit-logged) when the owner is unavailable.
+    author_lock_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    author_lock_reason: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    author_lock_set_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
+
+    # ── Fork lineage (referenced copy from another team's report) ──────
+    # Set when this report was created via "참조 복제" from another
+    # report (Phase 8 feature; columns laid down now to avoid a later
+    # migration). `forked_from_report_id` is SET NULL on origin delete so
+    # the copy survives; `forked_at_revision` records the origin's
+    # revision number at the moment of copy for "compare to current"
+    # back-references.
+    forked_from_report_id: Mapped[int | None] = mapped_column(
+        ForeignKey("reports.id", ondelete="SET NULL"), nullable=True
+    )
+    forked_at_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # Eagerly load the two user joins — every read of a Report needs the
     # owner / last-editor display info, so paying one JOIN beats N+1 lookups
     # in the route layer.
@@ -197,6 +282,11 @@ class Report(Base):
     )
     updated_by: Mapped["User | None"] = relationship(
         "User", foreign_keys=[updated_by_user_id], lazy="joined"
+    )
+    # Phase 3 — Same JOIN cost as updated_by; tiny User row, eagerly
+    # loaded so listings can render "박과장 · 김부장 수정" without N+1.
+    last_editor: Mapped["User | None"] = relationship(
+        "User", foreign_keys=[last_edited_by_user_id], lazy="joined"
     )
 
     # Eager-load the report-type tag — list payloads need name + status
@@ -229,6 +319,22 @@ class Report(Base):
         secondary="report_entities",
         lazy="selectin",
         order_by="Entity.value",
+    )
+
+    # Org-board placements (게시). `selectin` so a list endpoint pulling
+    # 50 reports does one extra SELECT IN for all their mounts rather
+    # than 50 lazy lookups. `viewonly` because the actual mount/unmount
+    # lifecycle is owned by the mounts service — this side is read-only
+    # projection. ReportMount.workspace is `joined`, so the mount rows
+    # arrive with the Workspace name already attached for the list cell
+    # ("팀1·본부A에 게시됨").
+    mounts: Mapped[list["ReportMount"]] = relationship(  # noqa: F821
+        "ReportMount",
+        primaryjoin="Report.id == ReportMount.report_id",
+        foreign_keys="ReportMount.report_id",
+        lazy="selectin",
+        order_by="ReportMount.mounted_at",
+        viewonly=True,
     )
 
 

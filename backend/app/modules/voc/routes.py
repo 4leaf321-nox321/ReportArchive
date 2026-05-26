@@ -65,24 +65,16 @@ def voc_actor(
     x_workspace_slug: Optional[str] = Header(default=None, alias="X-Workspace-Slug"),
 ) -> VocActor:
     """Auth dep that doesn't require workspace membership. `is_admin`
-    here is broader than the usual workspace-scoped admin check: any
-    user who is admin in *any* workspace counts as a VOC admin.
-    That's the right granularity for a system-wide board where
-    triaging feedback shouldn't be gated on which team's page you
-    happen to be looking at."""
+    here = SYSTEM admin (User.is_system_admin). VOC triage (resolving
+    feedback, deleting others' posts) is a system-operator task —
+    workspace 부서 관리자 don't need to moderate the global feedback
+    board, only the system admin team does."""
     user = _resolve_user_from_token(db, credentials)
-    is_admin = (
-        db.execute(
-            select(WorkspaceMember.id)
-            .where(
-                WorkspaceMember.user_id == user.id,
-                WorkspaceMember.role == Role.admin,
-            )
-            .limit(1)
-        ).first()
-        is not None
+    return VocActor(
+        user=user,
+        is_admin=user.is_system_admin,
+        workspace_slug=x_workspace_slug,
     )
-    return VocActor(user=user, is_admin=is_admin, workspace_slug=x_workspace_slug)
 
 
 def _can_modify_post(actor: VocActor, post) -> bool:

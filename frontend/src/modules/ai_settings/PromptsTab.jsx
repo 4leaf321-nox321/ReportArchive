@@ -26,7 +26,10 @@ import { PromptEditDialog } from './PromptEditDialog'
  */
 export function PromptsTab() {
   const { me } = useAuth()
-  const isAdmin = me?.role === 'admin'
+  // Prompt master catalog (promote/demote, manage others' prompts) is
+  // a system-operator task. Backend gates on is_system_admin; mirror.
+  // Any member can still create their own unofficial prompt.
+  const isAdmin = me?.is_system_admin === true
 
   const [query, setQuery] = useState('')
   const [items, setItems] = useState([])

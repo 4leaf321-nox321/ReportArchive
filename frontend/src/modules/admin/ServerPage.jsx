@@ -27,7 +27,9 @@ import { getStorageStats } from '@/shared/api/admin'
  */
 export default function ServerPage() {
   const { me } = useAuth()
-  const isAdmin = me?.role === 'admin'
+  // Server page is a system-operator concern (disk, processes), not
+  // a per-workspace one. Gate on the global is_system_admin flag.
+  const isAdmin = me?.is_system_admin === true
 
   if (!isAdmin) {
     return (

@@ -21,7 +21,11 @@ import { cn } from '@/shared/lib/utils'
  *   3. Tree — show hierarchy for browsing the org chart
  */
 export function WorkspaceSelector() {
-  const { workspace, switchWorkspace, prefs, all, getPath } = useWorkspace()
+  // Always display the sticky ORG workspace, never the personal one —
+  // the selector represents "which 부서를 보는가" and personal pages
+  // are deliberately outside that picker.
+  const { orgWorkspace, switchWorkspace, prefs, all, getPath } = useWorkspace()
+  const workspace = orgWorkspace
   const [open, setOpen] = React.useState(false)
 
   if (!workspace) {
@@ -92,12 +96,27 @@ function WorkspacePicker({ activeSlug, onPick, prefs, all, getPath }) {
 
   const { buildTree, flattenTree } = useWorkspace()
 
-  const tree = React.useMemo(() => buildTree({ includeVirtual: false }), [buildTree])
+  // Org picker — personal workspaces are intentionally excluded; they
+  // live in the dedicated "내 공간" link above the sidebar's workspace
+  // selector. Putting personal alongside org workspaces conflates two
+  // different concepts ("선택 가능한 부서" vs "내 작업 영역").
+  const tree = React.useMemo(
+    () => buildTree({ includeVirtual: false, includePersonal: false }),
+    [buildTree]
+  )
   const flat = React.useMemo(() => flattenTree(tree), [tree, flattenTree])
   const virtuals = all.filter((w) => w.virtual)
 
   const slugMap = React.useMemo(() => new Map(all.map((w) => [w.slug, w])), [all])
-  const findWorkspace = (slug) => slugMap.get(slug)
+  // Personal workspaces never belong in the org picker — even if a user
+  // had previously landed in their personal space (which pushed it into
+  // `recent` or made it pinnable via the old code path), we filter them
+  // out here so the picker stays strictly "부서 선택".
+  const isPickable = (ws) => ws && ws.kind !== 'personal'
+  const findWorkspace = (slug) => {
+    const ws = slugMap.get(slug)
+    return isPickable(ws) ? ws : null
+  }
 
   const pinned = prefs.pinned.map(findWorkspace).filter(Boolean)
   const recent = prefs.recent

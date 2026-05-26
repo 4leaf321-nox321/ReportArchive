@@ -1,10 +1,27 @@
 """User + workspace membership models.
 
-Auth uses JWT (Bearer token) with bcrypt-hashed passwords. The
-`workspace_members` table is the per-workspace permission grant.
+Auth uses JWT (Bearer token) with bcrypt-hashed passwords.
 
-Roles (3 levels):
-    admin   — manage members + base data (categories, workspaces); + manager rights
+Two orthogonal authorization concepts:
+
+  * **시스템 관리자** (`User.is_system_admin`) — a global boolean.
+    Grants access to system-wide actions: workspace tree CRUD,
+    base data masters (categories, entities, report types, sections),
+    server/admin pages. Set by another system admin or via seed.
+    Independent of any workspace membership.
+
+  * **부서 관리자** (`WorkspaceMember.role = admin`) — per-workspace.
+    Grants management of THAT workspace's members + reports + folders.
+    Multiple admins per workspace are allowed. Ancestor walk applies
+    (admin at a parent workspace is admin in every descendant), so
+    본부 관리자 = 산하 팀들의 관리자.
+
+The two are intentionally separate so an org-wide IT operator
+(시스템 관리자) doesn't double as everyone's 부서 관리자, and a
+부서 관리자 of one team can't reorganize the whole org chart.
+
+Roles in WorkspaceMember (3 levels):
+    admin   — 부서 관리자 — manage that workspace's members + manager rights
     manager — write/edit/delete reports + create/edit templates
     user    — read reports
 """
@@ -13,7 +30,7 @@ from __future__ import annotations
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -35,6 +52,15 @@ class User(Base):
     # don't crash; password-less users can't log in until an admin sets one.
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    # 시스템 관리자 flag — global; orthogonal to workspace memberships.
+    # See module docstring. Defaults to false; only granted via seed or
+    # by another system admin (no self-promotion UI).
+    is_system_admin: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False

@@ -55,21 +55,12 @@ def prompt_actor(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     _x_workspace_slug: Optional[str] = Header(default=None, alias="X-Workspace-Slug"),
 ) -> PromptActor:
-    """Auth dep — no workspace required. is_admin = holds admin in any
-    workspace (same broader granularity as VOC / report_types)."""
+    """Auth dep — no workspace required. `is_admin` here = SYSTEM admin
+    (User.is_system_admin). Prompts are org-wide infrastructure, like
+    entity / report-type vocabularies; only system admins can manage the
+    full catalog. Any member can still create their own unofficial prompt."""
     user = _resolve_user_from_token(db, credentials)
-    is_admin = (
-        db.execute(
-            select(WorkspaceMember.id)
-            .where(
-                WorkspaceMember.user_id == user.id,
-                WorkspaceMember.role == Role.admin,
-            )
-            .limit(1)
-        ).first()
-        is not None
-    )
-    return PromptActor(user=user, is_admin=is_admin)
+    return PromptActor(user=user, is_admin=user.is_system_admin)
 
 
 def _require_admin(actor: PromptActor) -> None:

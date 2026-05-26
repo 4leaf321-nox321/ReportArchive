@@ -48,12 +48,28 @@ export function DataTable({
   // makes the layout shift around — bad UX on long lists. Title-style
   // columns (the one without an explicit width) absorb the remainder.
   fixedLayout = false,
+  // Force the underlying <table> to be at least this wide regardless
+  // of container size. Combined with the parent's overflow-x-auto, this
+  // lets pages enforce a per-column floor that *actually* expands the
+  // table (table-layout: fixed + min-width on cells doesn't grow the
+  // table by itself — the table just clips/scales columns to fit
+  // container width). Pass a Tailwind class like "min-w-[1200px]".
+  minTableWidthClass,
   // Initial sort applied on mount. The user can still click headers
   // to override. Without this, rows render in whatever order `data`
   // arrives — usually backend's `ORDER BY updated_at DESC` for our
   // list endpoints, which doesn't match user expectations on a board
   // where IDs are the visible primary key.
   defaultSort,
+  // Opt-in row selection. When `selectable` is true a leading checkbox
+  // column is rendered. Selection is controlled — pass a Set of ids
+  // via `selectedIds` and react to changes via `onSelectionChange`.
+  // `getRowId` defaults to `r => r.id` which matches every list in the
+  // app today; pass a custom one if your rows key on something else.
+  selectable = false,
+  selectedIds,
+  onSelectionChange,
+  getRowId = (r) => r.id,
 }) {
   const [query, setQuery] = React.useState('')
   const [sort, setSort] = React.useState(
@@ -142,6 +158,91 @@ export function DataTable({
     })
   }
 
+  // Selection helpers — the header checkbox toggles every row that
+  // currently matches the filter (across pages, not just the current
+  // page) so "select all" lines up with the count pill above. Toggling
+  // off when partial selection clears just the visible-filter slice;
+  // anything selected outside the filter (e.g. from a previous query)
+  // is left alone so the user doesn't silently lose work.
+  const selectionEnabled = selectable && typeof onSelectionChange === 'function'
+  const visibleIds = React.useMemo(
+    () => (selectionEnabled ? sorted.map((r) => getRowId(r)) : []),
+    [selectionEnabled, sorted, getRowId],
+  )
+  const selectedInView = React.useMemo(() => {
+    if (!selectionEnabled || !selectedIds) return 0
+    let n = 0
+    for (const id of visibleIds) if (selectedIds.has(id)) n++
+    return n
+  }, [selectionEnabled, selectedIds, visibleIds])
+  const allChecked =
+    selectionEnabled && visibleIds.length > 0 && selectedInView === visibleIds.length
+  const someChecked = selectionEnabled && selectedInView > 0 && !allChecked
+
+  function toggleAllVisible() {
+    if (!selectionEnabled) return
+    const next = new Set(selectedIds ?? [])
+    if (allChecked) {
+      for (const id of visibleIds) next.delete(id)
+    } else {
+      for (const id of visibleIds) next.add(id)
+    }
+    onSelectionChange(next)
+    // Header toggle is a bulk op — there's no meaningful "last
+    // single-toggled row" after it, so clear the anchor.
+    lastToggledIdRef.current = null
+  }
+
+  function toggleOne(id) {
+    if (!selectionEnabled) return
+    const next = new Set(selectedIds ?? [])
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    onSelectionChange(next)
+  }
+
+  // Anchor for shift+click range selection — the id of the last row
+  // toggled by a plain (non-shift) click. Stays put across consecutive
+  // shift+clicks so the user can grow/shrink the range from a single
+  // start, matching Finder / Notion behavior.
+  const lastToggledIdRef = React.useRef(null)
+  // Reset on any change that re-orders the visible set; a stale anchor
+  // could let shift+click span rows the user didn't see as adjacent.
+  React.useEffect(() => {
+    lastToggledIdRef.current = null
+  }, [sort.key, sort.dir, query])
+
+  function handleRowCheckboxClick(event, rowId) {
+    if (!selectionEnabled) return
+    const anchor = lastToggledIdRef.current
+    if (event.shiftKey && anchor != null && anchor !== rowId) {
+      const startIdx = visibleIds.indexOf(anchor)
+      const endIdx = visibleIds.indexOf(rowId)
+      if (startIdx !== -1 && endIdx !== -1) {
+        const [lo, hi] =
+          startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx]
+        // Mirror the clicked row's new state across the range — if the
+        // click would have turned the row on, the range turns on; off,
+        // the range turns off.
+        const targetState = selectedIds?.has(rowId) !== true
+        const next = new Set(selectedIds ?? [])
+        for (let i = lo; i <= hi; i++) {
+          const id = visibleIds[i]
+          if (targetState) next.add(id)
+          else next.delete(id)
+        }
+        onSelectionChange(next)
+        // Keep the anchor — consecutive shift+clicks all extend from
+        // the same start.
+        return
+      }
+    }
+    // Plain click (or shift+click without a resolvable anchor) —
+    // toggle just this row and reseat the anchor.
+    toggleOne(rowId)
+    lastToggledIdRef.current = rowId
+  }
+
   return (
     <div className={cn('space-y-3', className)}>
       <div className="flex items-center gap-3 flex-wrap">
@@ -161,10 +262,38 @@ export function DataTable({
         <span className="ml-auto text-xs text-muted-foreground">{sorted.length}건</span>
       </div>
 
-      <div className="rounded-md border">
-        <Table className={fixedLayout ? 'table-fixed' : undefined}>
+      {/* overflow-x-auto so when the sum of column widths exceeds the
+          container (e.g. sidebar open + narrow window), the table
+          scrolls horizontally on its own instead of pushing the whole
+          page sideways. The table itself gets an explicit min-width
+          via `minTableWidthClass` so columns honor their floors even
+          under `table-layout: fixed`. */}
+      <div className="rounded-md border overflow-x-auto">
+        <Table
+          className={cn(
+            fixedLayout ? 'table-fixed' : undefined,
+            minTableWidthClass,
+          )}
+        >
           <TableHeader>
             <TableRow>
+              {selectionEnabled && (
+                <TableHead className="w-[40px]">
+                  <input
+                    type="checkbox"
+                    aria-label="모두 선택"
+                    checked={allChecked}
+                    ref={(el) => {
+                      // Native indeterminate state lives only on the DOM
+                      // node — there's no React prop for it. Drive it
+                      // here so the header reflects partial selection.
+                      if (el) el.indeterminate = someChecked
+                    }}
+                    onChange={toggleAllVisible}
+                    className="h-4 w-4 cursor-pointer"
+                  />
+                </TableHead>
+              )}
               {columns.map((col) => (
                 <TableHead key={col.key} className={col.headerClassName}>
                   {col.sortable ? (
@@ -194,26 +323,57 @@ export function DataTable({
           <TableBody>
             {pageRows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={columns.length} className="py-12 text-center">
+                <TableCell
+                  colSpan={columns.length + (selectionEnabled ? 1 : 0)}
+                  className="py-12 text-center"
+                >
                   {emptyState ?? (
                     <span className="text-sm text-muted-foreground">데이터가 없습니다.</span>
                   )}
                 </TableCell>
               </TableRow>
             ) : (
-              pageRows.map((row, idx) => (
-                <TableRow
-                  key={row.id ?? idx}
-                  onClick={onRowClick ? () => onRowClick(row) : undefined}
-                  className={onRowClick ? 'cursor-pointer' : undefined}
-                >
-                  {columns.map((col) => (
-                    <TableCell key={col.key} className={col.cellClassName}>
-                      {col.render ? col.render(row) : row[col.key]}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))
+              pageRows.map((row, idx) => {
+                const rowId = selectionEnabled ? getRowId(row) : undefined
+                const isSelected =
+                  selectionEnabled && selectedIds?.has(rowId) === true
+                return (
+                  <TableRow
+                    key={row.id ?? idx}
+                    onClick={onRowClick ? () => onRowClick(row) : undefined}
+                    className={cn(
+                      onRowClick && 'cursor-pointer',
+                      isSelected && 'bg-primary/5',
+                    )}
+                    data-selected={isSelected || undefined}
+                  >
+                    {selectionEnabled && (
+                      <TableCell
+                        className="w-[40px]"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <input
+                          type="checkbox"
+                          aria-label="행 선택"
+                          checked={isSelected}
+                          onClick={(e) => handleRowCheckboxClick(e, rowId)}
+                          // Selection is fully driven by onClick (so we
+                          // can branch on shiftKey for range mode). The
+                          // noop onChange just silences React's
+                          // controlled-input warning.
+                          onChange={() => {}}
+                          className="h-4 w-4 cursor-pointer"
+                        />
+                      </TableCell>
+                    )}
+                    {columns.map((col) => (
+                      <TableCell key={col.key} className={col.cellClassName}>
+                        {col.render ? col.render(row) : row[col.key]}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                )
+              })
             )}
           </TableBody>
         </Table>

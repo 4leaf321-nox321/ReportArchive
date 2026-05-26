@@ -15,15 +15,18 @@ import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { listReports } from '@/modules/reports/api'
 import { listTemplates } from '@/shared/api/templates'
-import { STATUSES } from '@/modules/reports/constants'
+import { PHASES } from '@/modules/reports/constants'
 import { cn } from '@/shared/lib/utils'
 
-// Stable color slots for the three report statuses on the dashboard's
-// status panel — match the StatusField badge tones visually.
-const STATUS_COLORS = {
-  draft:       '#94a3b8', // slate-400 — 작성 중
-  in_progress: '#3b82f6', // blue-500  — 진행 업무
-  completed:   '#10b981', // emerald-500 — 완료 업무
+// Stable color slots for the three ReportPhase values on the dashboard's
+// 단계별 panel — match the PhaseChip badge tones visually (협업개선_설계.md
+// §8.3). Phase 0 migration replaced ReportStatus (draft/in_progress/
+// completed) with ReportPhase (drafting/reviewing/finalized); this map
+// follows that rename.
+const PHASE_COLORS = {
+  drafting:  '#94a3b8', // slate-400  — 작성 중
+  reviewing: '#3b82f6', // blue-500   — 리뷰 중
+  finalized: '#10b981', // emerald-500 — 발행됨
 }
 
 /**
@@ -92,44 +95,57 @@ export default function DashboardPage() {
     return out
   }, [slug, workspaces])
 
-  // Map every visible report's workspace to a scoped row (self or direct
-  // child). Walks up parent_slug until it lands inside scopedSlugs, so a
-  // 3-deep report still gets attributed to the right level-1 bucket.
-  const rollupForReport = useMemo(() => {
+  // Map a workspace slug → which scoped row it belongs to (self or any
+  // ancestor inside scopedSlugs). Pure parent-walk helper; reused for
+  // every mount slug on every visible report.
+  const rollupSlug = useMemo(() => {
     const wsMap = new Map((workspaces ?? []).map((w) => [w.slug, w]))
     const scopedSet = new Set(scopedSlugs)
     const cache = new Map()
-    return (reportWsSlug) => {
-      if (cache.has(reportWsSlug)) return cache.get(reportWsSlug)
-      let cur = reportWsSlug
+    return (wsSlug) => {
+      if (cache.has(wsSlug)) return cache.get(wsSlug)
+      let cur = wsSlug
       const seen = new Set()
       while (cur && !seen.has(cur)) {
         if (scopedSet.has(cur)) {
-          cache.set(reportWsSlug, cur)
+          cache.set(wsSlug, cur)
           return cur
         }
         seen.add(cur)
         cur = wsMap.get(cur)?.parent_slug ?? null
       }
-      cache.set(reportWsSlug, null)
+      cache.set(wsSlug, null)
       return null
     }
   }, [workspaces, scopedSlugs])
 
   // Workspace × template cross-tab — counts[wsSlug][templateId] = N.
-  // A multi-page report contributes once per distinct template it uses.
+  // A multi-page report contributes once per distinct template it uses,
+  // and once per distinct scoped bucket it's mounted to (so a report
+  // mounted to both dx-team1 and dx-team2 shows in both team columns).
+  //
+  // Post-Phase-1 a report's own `workspace_slug` is always its author's
+  // personal space, so attribution must walk `mount_workspaces`. Reports
+  // with no mounts in scope are dropped — they shouldn't appear in any
+  // chart column even if the date filter caught them.
   const crosstab = useMemo(() => {
     const counts = new Map()
     const templateUsage = new Map()  // for legend ordering by usage
     for (const wsSlug of scopedSlugs) counts.set(wsSlug, new Map())
     for (const r of inRange) {
-      const bucket = rollupForReport(r.workspace_slug)
-      if (!bucket) continue
+      const buckets = new Set()
+      for (const m of r.mount_workspaces ?? []) {
+        const b = rollupSlug(m.slug)
+        if (b) buckets.add(b)
+      }
+      if (buckets.size === 0) continue
       const tplIds = uniqueTemplateIds(r)
-      const inner = counts.get(bucket)
-      for (const id of tplIds) {
-        inner.set(id, (inner.get(id) ?? 0) + 1)
-        templateUsage.set(id, (templateUsage.get(id) ?? 0) + 1)
+      for (const bucket of buckets) {
+        const inner = counts.get(bucket)
+        for (const id of tplIds) {
+          inner.set(id, (inner.get(id) ?? 0) + 1)
+          templateUsage.set(id, (templateUsage.get(id) ?? 0) + 1)
+        }
       }
     }
     const orderedTemplates = [...templateUsage.entries()]
@@ -137,7 +153,7 @@ export default function DashboardPage() {
       .map(([id]) => id)
     const colorOf = new Map(orderedTemplates.map((id, i) => [id, PALETTE[i % PALETTE.length]]))
     return { counts, orderedTemplates, colorOf }
-  }, [inRange, scopedSlugs])
+  }, [inRange, scopedSlugs, rollupSlug])
 
   const trend = useMemo(
     () => bucketizeReports(inRange, unit, range, reports ?? []),
@@ -153,12 +169,12 @@ export default function DashboardPage() {
   }, [inRange])
   const distinctTemplates = crosstab.orderedTemplates.length
 
-  // Status breakdown — keep a fixed enum order so the bar layout doesn't
+  // Phase breakdown — keep a fixed enum order so the bar layout doesn't
   // reshuffle just because counts change.
-  const statusCounts = useMemo(() => {
-    const counts = new Map(STATUSES.map((s) => [s.value, 0]))
+  const phaseCounts = useMemo(() => {
+    const counts = new Map(PHASES.map((p) => [p.value, 0]))
     for (const r of inRange) {
-      if (counts.has(r.status)) counts.set(r.status, counts.get(r.status) + 1)
+      if (counts.has(r.phase)) counts.set(r.phase, counts.get(r.phase) + 1)
     }
     return counts
   }, [inRange])
@@ -206,11 +222,11 @@ export default function DashboardPage() {
 
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">상태별</CardTitle>
-          <CardDescription>업무 진행 상태 분포</CardDescription>
+          <CardTitle className="text-base">단계별</CardTitle>
+          <CardDescription>협업 단계 분포 (작성 중 / 리뷰 중 / 발행됨)</CardDescription>
         </CardHeader>
         <CardContent>
-          <StatusBreakdown counts={statusCounts} total={totalReports} />
+          <PhaseBreakdown counts={phaseCounts} total={totalReports} />
         </CardContent>
       </Card>
 
@@ -306,8 +322,8 @@ function TrendChart({ buckets }) {
   )
 }
 
-// ───────────────────────── Status breakdown ────────────────────────────
-function StatusBreakdown({ counts, total }) {
+// ───────────────────────── Phase breakdown ─────────────────────────────
+function PhaseBreakdown({ counts, total }) {
   if (total === 0) {
     return <p className="text-sm text-muted-foreground py-3">기간 내 보고서 없음</p>
   }
@@ -316,29 +332,29 @@ function StatusBreakdown({ counts, total }) {
       {/* Single proportional bar so the eye can compare relative weight
           immediately; tabular rows below for exact counts + percentages. */}
       <div className="flex h-3 w-full overflow-hidden rounded-full bg-muted/60">
-        {STATUSES.map((s) => {
-          const n = counts.get(s.value) ?? 0
+        {PHASES.map((p) => {
+          const n = counts.get(p.value) ?? 0
           if (n === 0) return null
           return (
             <div
-              key={s.value}
-              style={{ width: `${(n / total) * 100}%`, backgroundColor: STATUS_COLORS[s.value] }}
-              title={`${s.label} · ${n}건 (${Math.round((n / total) * 100)}%)`}
+              key={p.value}
+              style={{ width: `${(n / total) * 100}%`, backgroundColor: PHASE_COLORS[p.value] }}
+              title={`${p.label} · ${n}건 (${Math.round((n / total) * 100)}%)`}
             />
           )
         })}
       </div>
       <div className="grid grid-cols-3 gap-3">
-        {STATUSES.map((s) => {
-          const n = counts.get(s.value) ?? 0
+        {PHASES.map((p) => {
+          const n = counts.get(p.value) ?? 0
           const pct = total > 0 ? Math.round((n / total) * 100) : 0
           return (
-            <div key={s.value} className="flex items-center gap-2">
+            <div key={p.value} className="flex items-center gap-2">
               <span
                 className="h-2.5 w-2.5 rounded-sm shrink-0"
-                style={{ backgroundColor: STATUS_COLORS[s.value] }}
+                style={{ backgroundColor: PHASE_COLORS[p.value] }}
               />
-              <span className="text-xs text-muted-foreground">{s.label}</span>
+              <span className="text-xs text-muted-foreground">{p.label}</span>
               <span className="ml-auto text-xs tabular-nums">
                 {n}
                 <span className="text-muted-foreground/70"> · {pct}%</span>

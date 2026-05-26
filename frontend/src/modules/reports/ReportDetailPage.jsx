@@ -30,6 +30,7 @@ import {
   Plus,
   Rows,
   Save,
+  Send,
   Settings2,
   Sparkles,
   Trash2,
@@ -65,6 +66,9 @@ import {
   createReport,
   updateReport,
   deleteReport,
+  publishReport,
+  unpublishReport,
+  setAuthorLock,
   LockConflictError,
 } from './api'
 import { useReportLock } from './useReportLock'
@@ -80,13 +84,20 @@ import {
   getLatestTemplate,
 } from '@/shared/api/templates'
 import { listTemplateCategories } from '@/shared/api/templateCategories'
-import { STATUSES, STATUS_LABEL, STATUS_VARIANT } from './constants'
 import { getRenderer } from '@/modules/templates/widgets'
 import { WidgetPicker } from '@/modules/templates/WidgetPicker'
 import { DepthStyleField, TextStyleField } from '@/modules/templates/widgets/_shared'
 import { TemplatePicker } from './TemplatePicker'
 import { SectionPickerDialog } from './SectionPickerDialog'
 import { PromptPickerDialog } from './PromptPickerDialog'
+import { MountDialog } from './MountDialog'
+import { EditorsDialog } from './EditorsDialog'
+import { FolderPickerButton } from './FolderPickerButton'
+import { listMounts, mountReport } from '@/shared/api/mounts'
+import { CommentsProvider } from '@/modules/comments/CommentsContext'
+import { CommentPanel } from '@/modules/comments/CommentPanel'
+import { CommentPin } from '@/modules/comments/CommentPin'
+import { ActivityTimelineButton } from './ActivityTimeline'
 import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
 import { cn } from '@/shared/lib/utils'
 import { toast } from 'sonner'
@@ -106,7 +117,7 @@ export default function ReportDetailPage() {
   const { reportId, templateId, version } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
-  const { slug, all: workspaces } = useWorkspace()
+  const { slug, workspace, all: workspaces } = useWorkspace()
   const { me } = useAuth()
   const currentUserId = me?.user?.id ?? null
   const isNew = Boolean(templateId)
@@ -135,6 +146,14 @@ export default function ReportDetailPage() {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [copyOpen, setCopyOpen] = useState(false)
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
+  const [mountOpen, setMountOpen] = useState(false)
+  const [editorsOpen, setEditorsOpen] = useState(false)
+  // Mounts state declared here, the fetching useEffect lives further
+  // down past `existingReport`'s declaration — TDZ would fire otherwise.
+  const [mountByWorkspace, setMountByWorkspace] = useState({})
+  const isOrgContext = workspace?.kind === 'org'
+  const isPersonalContext = workspace?.kind === 'personal'
+  const currentMount = mountByWorkspace[slug]
   // AI prompt — picker + active selection. PromptPickerDialog is the
   // grid of available prompts; once the user picks one we stash the row
   // in `aiPromptActive` and the existing AiPromptDialog renders it.
@@ -205,6 +224,30 @@ export default function ReportDetailPage() {
     () => (!isNew && reportId && slug ? getReport(reportId) : Promise.resolve(null)),
     [isNew, reportId, slug]
   )
+
+  // Mounts of this report, fetched lazily — used in org workspace to
+  // surface the per-board folder placement in the toolbar. Keyed by
+  // workspace_slug so the org folder picker can read/write the right
+  // row. Lives here (not next to the other useStates above) because
+  // it depends on existingReport — placed before its declaration would
+  // hit TDZ on the dep array.
+  useEffect(() => {
+    if (isNew || !existingReport?.id) return
+    let cancelled = false
+    listMounts(existingReport.id)
+      .then((rows) => {
+        if (cancelled) return
+        const map = {}
+        for (const m of rows) map[m.workspace_slug] = m
+        setMountByWorkspace(map)
+      })
+      .catch(() => {
+        /* non-fatal; folder picker just won't show for org */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isNew, existingReport?.id])
 
   const loading = isNew ? tplLoading : rptLoading
   const error = isNew ? tplError : rptError
@@ -1181,7 +1224,34 @@ export default function ReportDetailPage() {
           template_id: first.template_id,
           template_version: first.template_version,
         })
-        toast.success('보고서가 생성되었습니다.')
+        // Auto-mount path: when the create dialog was launched from an
+        // org workspace and the user kept the "같이 게시" checkbox on,
+        // its config rides in via router state. Mount happens AFTER
+        // create (separate API call) — failure here doesn't roll back
+        // the create; we surface it as a warning and still navigate the
+        // user to their personal copy so they don't lose the report.
+        const mountConfig = location.state?.mountConfig
+        let landingSlug = created.workspace_slug
+        if (mountConfig?.slugs?.length) {
+          try {
+            await mountReport({
+              reportId: created.id,
+              workspaceSlugs: mountConfig.slugs,
+              editPolicy: mountConfig.editPolicy || 'default',
+            })
+            // Land on the first mounted board so the user stays in the
+            // org context they were browsing when they clicked 신규 작성.
+            landingSlug = mountConfig.slugs[0]
+            toast.success('보고서가 생성되고 게시판에 게시되었습니다.')
+          } catch (mountErr) {
+            toast.warning(
+              '보고서는 생성되었지만 게시판 게시에 실패했습니다.',
+              { description: mountErr?.message || '게시는 detail 페이지의 게시 버튼으로 다시 시도하세요.' },
+            )
+          }
+        } else {
+          toast.success('보고서가 생성되었습니다.')
+        }
         // Creation is the save — drop straight into view mode. The
         // component instance stays mounted across the navigate (same
         // ReportDetailPage), so `isEditing` would otherwise leak from
@@ -1190,7 +1260,13 @@ export default function ReportDetailPage() {
         // guard reads synchronously when the navigate fires.
         isEditingRef.current = false
         setIsEditing(false)
-        navigate(`/w/${slug}/reports/${created.id}`, { replace: true })
+        // `landingSlug` was set above based on whether we mounted: org
+        // slug if we did (user stays where they were), personal slug if
+        // not (the only workspace that can see the report at this
+        // point; otherwise is_visible_to → 403).
+        navigate(`/w/${landingSlug}/reports/${created.id}`, {
+          replace: true,
+        })
       } else {
         // Echo the revision we loaded so the server can detect a stale
         // save (covers the brief window where a forced takeover doesn't
@@ -1367,7 +1443,10 @@ export default function ReportDetailPage() {
       // new clone" action. The source draft (which may be dirty) is
       // intentionally abandoned here; the destination is the copy.
       isEditingRef.current = false
-      navigate(`/w/${slug}/reports/${created.id}`, {
+      // Same reason as the create-from-template path above — copy lands
+      // in the creator's personal workspace, so navigate using the
+      // server-returned slug rather than the page's current `slug`.
+      navigate(`/w/${created.workspace_slug}/reports/${created.id}`, {
         state: { startEditing: true },
       })
     } catch (err) {
@@ -1780,6 +1859,10 @@ export default function ReportDetailPage() {
 
   return (
     <PrintScaleContext.Provider value={printContextValue}>
+    <CommentsProvider
+      reportId={existingReport?.id ?? null}
+      reportPhase={existingReport?.phase}
+    >
     <div className="flex h-full report-detail-root">
       <div className="relative flex-1 min-w-0 flex flex-col">
         <div className="flex flex-wrap items-center gap-3 border-b bg-background px-6 py-3 report-detail-toolbar">
@@ -1806,11 +1889,10 @@ export default function ReportDetailPage() {
                   {pageCount}개 페이지
                 </Badge>
               )}
-              <StatusField
-                editing={isEditing}
-                value={draft.status ?? 'draft'}
-                onChange={(v) => setDraft({ ...draft, status: v })}
-              />
+              {/* ReportPhase chip — read-only here. Transitions happen
+                  via the 발행/발행취소 button and via auto-triggers
+                  (first external comment / mount). */}
+              <PhaseChip phase={existingReport?.phase ?? draft.phase ?? 'drafting'} />
               <ReportDateField
                 editing={isEditing}
                 value={draft.report_date ?? ''}
@@ -1883,10 +1965,138 @@ export default function ReportDetailPage() {
             </>
           ) : (
             <>
-              <Button variant="outline" size="sm" onClick={() => onEnterEdit()}>
-                <Pencil className="mr-1 h-3 w-3" />
-                편집
-              </Button>
+              {/* 편집 — finalized 상태에서는 차단. 작성자가 발행 취소 후 편집. */}
+              {existingReport?.phase !== 'finalized' && (
+                <Button variant="outline" size="sm" onClick={() => onEnterEdit()}>
+                  <Pencil className="mr-1 h-3 w-3" />
+                  편집
+                </Button>
+              )}
+              {/* 폴더 — context-dependent:
+                  • personal workspace: 본인 보고서면 Report.folder_id 변경
+                  • org workspace: 본 보고서가 이 게시판에 mount되어 있고
+                    사용자가 owner/mounter/admin이면 mount.folder_id 변경
+                  게시 버튼은 owner만 (개인 → 조직 흐름이라 의미). */}
+              {!isNew && isPersonalContext &&
+                existingReport?.owner_user_id === me?.user?.id && (
+                  <FolderPickerButton
+                    mode="personal"
+                    reportId={existingReport.id}
+                    folderId={existingReport.folder_id}
+                    onChanged={() => reloadReport()}
+                  />
+              )}
+              {!isNew && isOrgContext && currentMount && (
+                <FolderPickerButton
+                  mode="org"
+                  workspaceSlug={slug}
+                  reportId={existingReport.id}
+                  folderId={currentMount.folder_id}
+                  onChanged={(newFolderId) =>
+                    setMountByWorkspace((m) => ({
+                      ...m,
+                      [slug]: { ...m[slug], folder_id: newFolderId },
+                    }))
+                  }
+                />
+              )}
+              {!isNew && existingReport?.owner_user_id === me?.user?.id && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setMountOpen(true)}
+                  title="조직 게시판에 게시 / 게시 해제"
+                >
+                  <Send className="mr-1 h-3 w-3" />
+                  게시
+                </Button>
+              )}
+              {/* 발행 / 발행 취소 — owner only. phase=finalized 면 unpublish,
+                  그 외엔 publish. 한 버튼이 상황에 따라 라벨/액션 토글. */}
+              {!isNew && existingReport?.owner_user_id === me?.user?.id && (
+                <Button
+                  variant={existingReport?.phase === 'finalized' ? 'secondary' : 'default'}
+                  size="sm"
+                  onClick={async () => {
+                    try {
+                      if (existingReport.phase === 'finalized') {
+                        await unpublishReport(existingReport.id)
+                        toast.success('발행 취소됨 (작성 모드로)')
+                      } else {
+                        await publishReport(existingReport.id)
+                        toast.success('발행됨')
+                      }
+                      reloadReport()
+                    } catch (e) {
+                      toast.error(
+                        e?.response?.data?.message || '동작 실패',
+                      )
+                    }
+                  }}
+                  title={
+                    existingReport?.phase === 'finalized'
+                      ? '발행 취소 (작성 모드로 되돌림)'
+                      : '발행 — 편집 잠금, 게시판 멤버 알림'
+                  }
+                >
+                  {existingReport?.phase === 'finalized' ? '발행 취소' : '발행'}
+                </Button>
+              )}
+              {/* 활동 이력 popover — 누구나 조회. */}
+              {!isNew && existingReport?.id && (
+                <ActivityTimelineButton reportId={existingReport.id} />
+              )}
+              {/* 추가 편집자 관리 — owner는 추가/제거 가능, 그 외는
+                  목록만 (왜 누가 편집권 가졌는지 확인용). */}
+              {!isNew && existingReport?.id && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditorsOpen(true)}
+                  title="추가 편집자"
+                >
+                  편집자
+                </Button>
+              )}
+              {/* 작성자 hard lock — owner only. 클릭 시 prompt로 사유 받음
+                  (v1; 후에 dialog로 교체). 잠금 상태에선 동일 버튼이 해제로. */}
+              {!isNew && existingReport?.owner_user_id === me?.user?.id && (
+                <Button
+                  variant={existingReport?.author_lock_enabled ? 'destructive' : 'outline'}
+                  size="sm"
+                  onClick={async () => {
+                    try {
+                      if (existingReport.author_lock_enabled) {
+                        if (!window.confirm('수정 잠금을 해제하시겠어요?')) return
+                        await setAuthorLock(existingReport.id, { enabled: false })
+                        toast.success('잠금 해제')
+                      } else {
+                        const reason = window.prompt(
+                          '수정 잠금 사유 (선택, 비워두면 미기재):',
+                          '',
+                        )
+                        // null = 취소
+                        if (reason === null) return
+                        await setAuthorLock(existingReport.id, {
+                          enabled: true,
+                          reason,
+                        })
+                        toast.success('수정 잠금 활성화')
+                      }
+                      reloadReport()
+                    } catch (e) {
+                      toast.error(e?.response?.data?.message || '잠금 변경 실패')
+                    }
+                  }}
+                  title={
+                    existingReport?.author_lock_enabled
+                      ? '수정 잠금 해제'
+                      : '작성자 외 편집 차단'
+                  }
+                >
+                  {existingReport?.author_lock_enabled ? '🔒 잠금 해제' : '🔒 수정 잠금'}
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="sm"
@@ -1975,6 +2185,45 @@ export default function ReportDetailPage() {
           />
           </div>
         </div>
+
+        {/* Phase banner — explicit signal that the report is past the
+            drafting stage. drafting needs no banner (default state);
+            reviewing + finalized do. */}
+        {existingReport?.phase === 'reviewing' && (
+          <div className="border-b bg-amber-50 px-6 py-2 text-xs text-amber-900 flex items-center gap-2">
+            <span className="text-base">👀</span>
+            <span className="font-medium">리뷰 진행 중</span>
+            <span className="flex-1 text-amber-800/80">
+              외부 코멘트가 달렸거나 조직 게시판에 게시된 상태. 코멘트 패널을
+              우측에 펼쳐서 의견을 확인하세요.
+            </span>
+          </div>
+        )}
+        {existingReport?.phase === 'finalized' && (
+          <div className="border-b bg-blue-50 px-6 py-2 text-xs text-blue-900 flex items-center gap-2">
+            <span className="text-base">✅</span>
+            <span className="font-medium">발행됨</span>
+            <span className="flex-1 text-blue-800/80">
+              작성자가 발행을 완료한 보고서. 편집은 차단되어 있으며,
+              수정하려면 '발행 취소' 후 작성 모드로.
+            </span>
+          </div>
+        )}
+
+        {/* Author lock banner — sits below the toolbar so it's
+            unmissable while not blocking the title. */}
+        {existingReport?.author_lock_enabled && (
+          <div className="border-b bg-red-50 px-6 py-2 text-xs text-red-800 flex items-center gap-2">
+            <span className="text-base">🔒</span>
+            <span className="font-medium">
+              {existingReport.owner_name || '작성자'}가(이) 수정 잠금 —
+            </span>
+            <span className="flex-1 truncate">
+              {existingReport.author_lock_reason || '사유 미기재'}
+            </span>
+            <span className="text-[10px] opacity-70">작성자 외 편집 불가</span>
+          </div>
+        )}
 
         {/* Page strip — chips that select the active page (paginated mode).
             In 'all' mode they act as scroll-to anchors. Always shows the
@@ -2090,6 +2339,8 @@ export default function ReportDetailPage() {
                     sectionCategories={sectionCategories}
                     sectionItemByCode={sectionItemByCode}
                     rowGapPx={draft.page_gap_px}
+                    reportId={existingReport?.id ?? null}
+                    reportPhase={existingReport?.phase}
                   />
                 ))
               : (
@@ -2134,6 +2385,8 @@ export default function ReportDetailPage() {
                     sectionCategories={sectionCategories}
                     sectionItemByCode={sectionItemByCode}
                     rowGapPx={draft.page_gap_px}
+                    reportId={existingReport?.id ?? null}
+                    reportPhase={existingReport?.phase}
                   />
                 )}
 
@@ -2152,6 +2405,12 @@ export default function ReportDetailPage() {
           />
         )}
       </div>
+
+      {/* Comment side panel — sibling of main column inside the outer
+          flex row. Toggle/state lives in CommentsContext so the pin on
+          each widget can open it. Hidden until reportId is known (new
+          reports + template-edit don't have one). */}
+      {existingReport?.id && <CommentPanel />}
 
       <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
         <DialogContent className="max-w-5xl max-h-[80vh] overflow-hidden flex flex-col">
@@ -2236,6 +2495,25 @@ export default function ReportDetailPage() {
           }}
         />
       )}
+
+      <MountDialog
+        open={mountOpen}
+        onOpenChange={setMountOpen}
+        report={existingReport}
+        onChanged={() => {
+          /* future: refresh report meta to pick up phase auto-transition */
+        }}
+      />
+
+      <EditorsDialog
+        open={editorsOpen}
+        onOpenChange={setEditorsOpen}
+        report={existingReport}
+        onChanged={() => {
+          /* server stamps activity + notifies the new editor; no
+              local report fields to refresh */
+        }}
+      />
 
       <ReportSettingsDialog
         open={settingsDialogOpen}
@@ -2502,6 +2780,7 @@ export default function ReportDetailPage() {
         </div>
       )}
     </div>
+    </CommentsProvider>
     </PrintScaleContext.Provider>
   )
 }
@@ -3291,22 +3570,36 @@ function UnsavedChangesDialog({
 /** Inline 상태 chip. Read-only badge when viewing; switches to a small
  *  select in edit mode so users can flip between 작성 중 / 진행 업무 /
  *  완료 업무. Status is part of the dashboard's status panel aggregation. */
-function StatusField({ editing, value, onChange }) {
-  if (!editing) {
-    return <Badge variant={STATUS_VARIANT[value] ?? 'secondary'}>{STATUS_LABEL[value] ?? value}</Badge>
-  }
+/** ReportPhase chip — read-only display. Phase transitions happen via
+ *  side effects (mount, first external comment) and the 발행/발행취소
+ *  button; users never set phase via a dropdown. */
+function PhaseChip({ phase }) {
+  const meta = PHASE_META[phase] ?? PHASE_META.drafting
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="h-6 rounded border border-input bg-background px-1.5 text-[11px]"
-      aria-label="상태"
-    >
-      {STATUSES.map((s) => (
-        <option key={s.value} value={s.value}>{s.label}</option>
-      ))}
-    </select>
+    <Badge variant={meta.variant} title={meta.tooltip}>
+      {meta.label}
+    </Badge>
   )
+}
+
+const PHASE_META = {
+  drafting: {
+    label: '작성 중',
+    variant: 'secondary',
+    tooltip: '아직 외부 리뷰가 시작되지 않은 상태. 자유 편집.',
+  },
+  reviewing: {
+    label: '리뷰 중',
+    variant: 'default',
+    tooltip:
+      '게시되거나 외부 코멘트가 달려 리뷰 단계로 진입. 편집은 여전히 가능.',
+  },
+  finalized: {
+    label: '발행됨',
+    variant: 'outline',
+    tooltip:
+      '작성자가 발행 액션을 한 상태. 작성자 외 편집 차단. 발행 취소로 작성 모드 복귀.',
+  },
 }
 
 /** Inline 보고 기준일 chip. Read-only badge when not editing; switches to a
@@ -3583,6 +3876,8 @@ function PageSection({
   sectionCategories,
   sectionItemByCode,
   rowGapPx,
+  reportId,
+  reportPhase,
 }) {
   // Effective RGL vertical margin between widget rows. Per-report
   // setting (draft.page_gap_px) overrides the constant; falling back to
@@ -3784,6 +4079,9 @@ function PageSection({
               >
                 <BlockEditorCard
                   block={block}
+                  reportId={reportId}
+                  pageIndex={pageIdx}
+                  reportPhase={reportPhase}
                   content={page?.content?.[block.id]}
                   propsOverride={page?.props_overrides?.[block.id] ?? null}
                   active={isActive}
@@ -4778,6 +5076,12 @@ function BlockEditorCard({
   onOpenContentEdit,
   onMeasureContentHeight,
   onMeasureEditHeight,
+  // Comment anchoring — passed down so CommentPin can look up threads.
+  // `reportId=null` (new-report or template-edit context) just hides
+  // the pin since there's nothing to anchor against.
+  reportId,
+  pageIndex,
+  reportPhase,
 }) {
   // Non-inline-editable widgets render as if in view mode while sitting
   // inside the edit grid — their "edit" happens in a separate modal that
@@ -5081,7 +5385,7 @@ function BlockEditorCard({
         id={`block-${block.id}`}
         onClick={onActivate}
         className={cn(
-          'relative h-full flex items-center',
+          'group relative h-full flex items-center',
           // Reserve space below the absolute drag-handle bar so the heading
           // text isn't hidden behind it in edit mode. The view-mode floating
           // section chip occupies the same top-right zone, so reserve the
@@ -5098,6 +5402,17 @@ function BlockEditorCard({
       >
         {dragHandle}
         {headingSectionChip}
+        {/* Heading widgets get the comment pin too — anchored top-right.
+            No fullscreen for headings (nothing to expand). */}
+        {reportId && (
+          <div className="absolute right-2 top-2 z-10 flex items-center gap-1">
+            <CommentPin
+              reportId={reportId}
+              pageIndex={pageIndex ?? 0}
+              blockId={block.id}
+            />
+          </div>
+        )}
         <div className="relative w-full min-w-0">
           {autoFit && (
             // Heading has no Card / padding chrome, so the mirror just
@@ -5156,7 +5471,7 @@ function BlockEditorCard({
       onMouseDown={handleCardMouseDown}
       onClick={handleCardClick}
       className={cn(
-        'relative h-full flex flex-col',
+        'group relative h-full flex flex-col',
         autoFit ? 'overflow-visible' : 'overflow-hidden',
         active && !readOnly && 'ring-2 ring-primary/30',
         // Hover hint that this card opens a modal — only when in
@@ -5166,6 +5481,35 @@ function BlockEditorCard({
     >
       {dragHandle}
       {viewModeSectionHeader}
+      {/* Pin + fullscreen group — anchored top-right, horizontally
+          stacked so they never overlap. Each child positions inline.
+          Pin appears for any widget with a comment-able report context;
+          fullscreen only for view-mode widgets that benefit from it. */}
+      {(reportId || canFullscreen) && (
+        <div className="absolute right-2 top-2 z-10 flex items-center gap-1">
+          {reportId && (
+            <CommentPin
+              reportId={reportId}
+              pageIndex={pageIndex ?? 0}
+              blockId={block.id}
+            />
+          )}
+          {canFullscreen && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setFullscreenOpen(true)
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-background/95 border border-transparent text-muted-foreground opacity-0 transition-opacity hover:border-border hover:text-foreground group-hover:opacity-100 print:hidden"
+              title="전체화면으로 보기"
+            >
+              <Maximize2 className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      )}
       <CardContent
         className={cn(
           'relative pb-4',
@@ -5242,24 +5586,8 @@ function BlockEditorCard({
           )}
         </div>
       </CardContent>
-      {canFullscreen && (
-        <button
-          type="button"
-          onClick={(e) => {
-            // Don't let the click bubble up to the Card's handler — it
-            // would treat this as a content-area click and try to open
-            // the inline editor (which isn't even reachable in view mode
-            // but is still wired here for safety).
-            e.stopPropagation()
-            setFullscreenOpen(true)
-          }}
-          onMouseDown={(e) => e.stopPropagation()}
-          className="absolute right-2 top-2 z-10 inline-flex h-7 w-7 items-center justify-center rounded-md bg-background/70 text-muted-foreground opacity-50 backdrop-blur-sm transition-opacity hover:bg-background hover:text-foreground hover:opacity-100 print:hidden"
-          title="전체화면으로 보기"
-        >
-          <Maximize2 className="h-3.5 w-3.5" />
-        </button>
-      )}
+      {/* Fullscreen view button is now rendered above (next to the
+          comment pin) so they share a single top-right group. */}
       {fullscreenOpen && Editor && (
         <FullscreenWidgetDialog
           open={fullscreenOpen}

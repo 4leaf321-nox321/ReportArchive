@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Search, Bell, User, Sun, Moon, Menu } from 'lucide-react'
+import { Search, User, Sun, Moon, Menu } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 import {
   DropdownMenu,
@@ -11,7 +11,7 @@ import {
   DropdownMenuTrigger,
 } from '@/shared/components/ui/dropdown-menu'
 import { useCommandPalette } from '@/shared/components/CommandPalette'
-import { NotificationDrawer } from '@/shared/components/NotificationDrawer'
+import { NotificationBell } from '@/shared/components/NotificationBell'
 import { useTheme } from '@/shared/theme/ThemeContext'
 import { useAuth } from '@/shared/auth/AuthContext'
 
@@ -20,7 +20,6 @@ export function Header({ onOpenMobileSidebar }) {
   const { theme, toggleTheme } = useTheme()
   const { me, logout } = useAuth()
   const navigate = useNavigate()
-  const [notifOpen, setNotifOpen] = React.useState(false)
 
   const isMac =
     typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform)
@@ -82,16 +81,8 @@ export function Header({ onOpenMobileSidebar }) {
           {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
         </Button>
 
-        {/* 알림 */}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-9 w-9"
-          aria-label="알림"
-          onClick={() => setNotifOpen(true)}
-        >
-          <Bell className="h-4 w-4" />
-        </Button>
+        {/* 알림 — Phase 2D NotificationBell (실데이터 + 폴링 + 점프) */}
+        <NotificationBell />
 
         {/* 사용자 */}
         <DropdownMenu>
@@ -126,7 +117,6 @@ export function Header({ onOpenMobileSidebar }) {
         </DropdownMenu>
       </div>
 
-      <NotificationDrawer open={notifOpen} onOpenChange={setNotifOpen} />
     </header>
   )
 }

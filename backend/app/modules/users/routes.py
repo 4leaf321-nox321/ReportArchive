@@ -15,6 +15,8 @@ from app.modules.users.schemas import (
     ChangePasswordRequest,
     MembershipRead,
     MeRead,
+    SetSystemAdminRequest,
+    SystemAdminUserRead,
     UpdateProfileRequest,
     UserRead,
 )
@@ -23,6 +25,7 @@ from app.shared.auth import (
     CurrentUser,
     get_current_user_no_workspace,
     require_admin,
+    require_system_admin,
 )
 from app.shared.responses import success_response
 
@@ -75,6 +78,7 @@ def get_me(
             MembershipRead(workspace_slug=m.workspace_slug, role=m.role)
             for m in memberships
         ],
+        is_system_admin=user.is_system_admin,
     )
     return success_response(data=payload)
 
@@ -135,6 +139,72 @@ def search_users(
     query = query.order_by(User.email).limit(min(limit, 100))
     results = list(db.execute(query).scalars())
     return success_response(data=[UserRead.model_validate(u) for u in results])
+
+
+@router.get("/users/system-admins")
+def list_system_admins(
+    db: Session = Depends(get_db),
+    _actor: User = Depends(require_system_admin),
+):
+    """Returns every user with `is_system_admin=true`. System-admin only —
+    publishing the list to non-admins leaks the "who can take over the
+    system" surface area."""
+    rows = list(
+        db.execute(
+            select(User)
+            .where(User.is_active.is_(True), User.is_system_admin.is_(True))
+            .order_by(User.id)
+        ).scalars()
+    )
+    return success_response(
+        data=[SystemAdminUserRead.model_validate(u) for u in rows]
+    )
+
+
+@router.put("/users/{user_id}/system-admin")
+def set_system_admin(
+    user_id: int,
+    payload: SetSystemAdminRequest,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_system_admin),
+):
+    """Promote / demote a user as system admin. Two safety rails:
+
+      1. Self-demote of the *last* remaining system admin is blocked —
+         otherwise the org would be left with no one able to manage
+         workspaces, masters, or grant the flag back.
+      2. Target must exist + be active. Deactivated users can't be
+         promoted (they couldn't log in to use the flag anyway).
+    """
+    target = db.get(User, user_id)
+    if target is None or not target.is_active:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "사용자를 찾을 수 없습니다."
+        )
+
+    # Self-demote lockout check — only matters when demoting.
+    if (
+        not payload.is_system_admin
+        and target.id == actor.id
+    ):
+        # Count remaining admins (excluding the actor) — if zero, refuse.
+        remaining = db.execute(
+            select(User.id).where(
+                User.is_active.is_(True),
+                User.is_system_admin.is_(True),
+                User.id != actor.id,
+            ).limit(1)
+        ).first()
+        if remaining is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "마지막 시스템 관리자는 본인의 권한을 해제할 수 없습니다. "
+                "다른 시스템 관리자를 먼저 임명하세요.",
+            )
+
+    target.is_system_admin = payload.is_system_admin
+    db.commit()
+    return success_response(data=SystemAdminUserRead.model_validate(target))
 
 
 @router.post("/users/{user_id}/password")

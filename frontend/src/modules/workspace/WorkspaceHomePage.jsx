@@ -10,7 +10,7 @@ import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { listReports } from '@/modules/reports/api'
 import { listTemplates } from '@/shared/api/templates'
-import { STATUS_LABEL, STATUS_VARIANT } from '@/modules/reports/constants'
+import { PHASE_LABEL, PHASE_VARIANT } from '@/modules/reports/constants'
 
 export default function WorkspaceHomePage() {
   const { workspace, slug } = useWorkspace()
@@ -96,7 +96,9 @@ export default function WorkspaceHomePage() {
                     {templateName(r.template_id)} v{r.template_version} · {r.workspace_slug} · {r.report_date ?? '—'}
                   </div>
                 </div>
-                <Badge variant={STATUS_VARIANT[r.status]}>{STATUS_LABEL[r.status]}</Badge>
+                <Badge variant={PHASE_VARIANT[r.phase] ?? 'secondary'}>
+                  {PHASE_LABEL[r.phase] ?? r.phase}
+                </Badge>
               </Link>
             ))
           )}

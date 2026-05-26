@@ -35,6 +35,8 @@ import VocListPage from '@/modules/voc/VocListPage'
 import VocDetailPage from '@/modules/voc/VocDetailPage'
 import AiSettingsPage from '@/modules/ai_settings/AiSettingsPage'
 import MembersPage from '@/modules/members/MembersPage'
+import NotificationsPage from '@/modules/notifications/NotificationsPage'
+import InboxPage from '@/modules/inbox/InboxPage'
 
 /**
  * Layout route that wraps the entire authenticated portion of the app.
@@ -115,6 +117,16 @@ const router = createBrowserRouter(
 
         {/* 공통 (부서 횡단) */}
         <Route path="/profile" element={<ProfilePage />} />
+        <Route path="/notifications" element={<NotificationsPage />} />
+        {/* 내 공간 — dedicated route. Renders the standard reports list
+            against the user's personal workspace (slug resolved in
+            WorkspaceProvider when the URL is /personal/*). Does NOT
+            touch the sticky org context, so the sidebar's 부서 메뉴
+            keeps pointing at the user's current org. */}
+        <Route path="/personal/reports" element={<ReportsListPage />} />
+        {/* 받은 코멘트 inbox — workspace-agnostic. Lists open comment
+            threads on reports the actor owns. */}
+        <Route path="/personal/inbox" element={<InboxPage />} />
         <Route path="/templates" element={<TemplatesPage />} />
         <Route path="/templates/new" element={<TemplateEditorPage />} />
         <Route path="/templates/:templateId/edit" element={<TemplateEditorPage />} />

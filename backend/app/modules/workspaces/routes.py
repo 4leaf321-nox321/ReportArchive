@@ -17,7 +17,7 @@ from app.modules.workspaces.schemas import (
 from app.shared.auth import (
     CurrentUser,
     get_current_user_no_workspace,
-    require_admin,
+    require_system_admin,
 )
 from app.shared.responses import (
     created_response,
@@ -44,7 +44,7 @@ def list_all_workspaces(
 def create_workspace(
     payload: WorkspaceCreate,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     try:
         ws = services.create_workspace(db, payload)
@@ -57,7 +57,7 @@ def create_workspace(
 def bulk_create_workspaces(
     payload: WorkspaceBulkCreate,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     """Bulk-create from a paste table. Parent column carries the parent's
     *name*, not its slug — operators copy from a spreadsheet that doesn't
@@ -76,7 +76,7 @@ def update_workspace(
     slug: str,
     payload: WorkspaceUpdate,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     ws = db.get(Workspace, slug)
     if not ws:
@@ -96,7 +96,7 @@ def update_workspace(
 def delete_workspace(
     slug: str,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     ws = db.get(Workspace, slug)
     if not ws:
@@ -116,7 +116,7 @@ def delete_workspace(
 def workspace_dependents(
     slug: str,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    _: CurrentUser = Depends(require_system_admin),
 ):
     """Returns counts of children/members/reports/templates so the admin UI
     can show 'blocked by N items' before attempting delete."""

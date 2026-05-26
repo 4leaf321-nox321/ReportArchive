@@ -31,6 +31,7 @@ from sqlalchemy import (
     Text,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -65,6 +66,15 @@ class CompositeReport(Base):
     # Anchored period for recurring composites; NULL for theme.
     period_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+    # Optional series identifier — groups successive recurring composites
+    # of the same (workspace, owner, kind) into a chain so the frontend
+    # can offer "이전 회차 복제" + auto-carry-over of ongoing items
+    # (§7.2 / Phase 6). NULL = not part of an explicit series; chain is
+    # then inferred at query time by (workspace_slug, owner_user_id,
+    # kind=recurring, period_date - 7d). Explicit series_id wins when set
+    # because the inference rule breaks down for off-cadence reports.
+    series_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
     owner_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -123,6 +133,17 @@ class CompositeReportItem(Base):
     )
     ref_composite_id: Mapped[int | None] = mapped_column(
         ForeignKey("composite_reports.id", ondelete="CASCADE"), nullable=True
+    )
+
+    # Snapshot of the referenced report's content at the moment a recurring
+    # composite was published — fills on transition of the parent composite
+    # to its `finalized` state (§7.1). NULL means "use live" (the default
+    # for `theme` composites, which stay live forever, and for unpublished
+    # `recurring` composites being actively edited). Readers prefer
+    # `snapshot_content` when present.
+    snapshot_content: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    snapshot_taken_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
     )
 
     created_at: Mapped[datetime] = mapped_column(

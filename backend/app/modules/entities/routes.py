@@ -43,9 +43,10 @@ from app.shared.responses import (
 
 
 # --------------------------------------------------------------------------- #
-# Auth dep — mirrors report_types: no workspace required, is_admin =
-# holds admin in any workspace (so the admin page loads without picking
-# a workspace first).
+# Auth dep — no workspace required. `is_admin` here means SYSTEM admin
+# (User.is_system_admin), since entity master data is org-wide
+# infrastructure. 부서 관리자 (workspace admin) can still *use* entity
+# tags on reports; only system admins can edit the underlying vocabulary.
 # --------------------------------------------------------------------------- #
 @dataclass
 class EntityActor:
@@ -59,18 +60,7 @@ def entity_actor(
     _x_workspace_slug: Optional[str] = Header(default=None, alias="X-Workspace-Slug"),
 ) -> EntityActor:
     user = _resolve_user_from_token(db, credentials)
-    is_admin = (
-        db.execute(
-            select(WorkspaceMember.id)
-            .where(
-                WorkspaceMember.user_id == user.id,
-                WorkspaceMember.role == Role.admin,
-            )
-            .limit(1)
-        ).first()
-        is not None
-    )
-    return EntityActor(user=user, is_admin=is_admin)
+    return EntityActor(user=user, is_admin=user.is_system_admin)
 
 
 def _require_admin(actor: EntityActor) -> None:

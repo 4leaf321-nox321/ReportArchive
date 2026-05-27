@@ -1261,13 +1261,22 @@ export default function ReportDetailPage() {
       if (explicitAutoFit !== null && explicitAutoFit !== defaultEnabled) {
         newLayout.auto_fit = explicitAutoFit
       }
+      // Explicit x offset (col_offset) — only persist when non-zero.
+      // x=0 means "first in row" which is what the sibling-order fallback
+      // produces anyway, so omitting keeps overrides minimal. For zigzag
+      // 2-col layouts where a single block sits alone in its row at x=6,
+      // we MUST store col_offset=6, otherwise restore would land it at
+      // x=0 (left column) and the layout collapses on next render.
+      const offset = clamp(it.x ?? 0, 0, REPORT_GRID_COLS - 1)
+      if (offset > 0) newLayout.col_offset = offset
       const blkTpl = block.layout
       const matchesTemplate =
         blkTpl &&
         isAutoFit === defaultEnabled &&
         blkTpl.row === newLayout.row &&
         blkTpl.col_span === newLayout.col_span &&
-        blkTpl.row_span === newLayout.row_span
+        blkTpl.row_span === newLayout.row_span &&
+        (blkTpl.col_offset ?? 0) === (newLayout.col_offset ?? 0)
       if (!matchesTemplate) {
         overrides[block.id] = newLayout
       }
@@ -2813,6 +2822,14 @@ export default function ReportDetailPage() {
                   />
                 )}
 
+            {/* 편집 모드 전용 하단 여백 — 마지막 위젯 row_span 을 드래그로
+                늘릴 때 보고서 컨테이너가 같이 늘어나면서 페이지가 점프하던
+                불편함 해소. 50vh 확보해서 마지막 위젯의 핸들을 잡고 화면
+                중간 정도까지 끌어내려도 컨테이너가 변하지 않도록.
+                인쇄/뷰모드/풀스크린엔 영향 없음. */}
+            {effectiveIsEditing && (
+              <div className="h-[50vh] print:hidden" aria-hidden="true" />
+            )}
           </div>
         </ScrollArea>
 
@@ -6737,9 +6754,16 @@ function BlockEditorCard({
     const wantsSquare = WIDGETS_SQUARE_AUTOFIT.has(block.type)
     const measure = () => {
       raf = 0
-      const reported = wantsSquare
-        ? el.clientWidth || el.offsetWidth
-        : el.scrollHeight
+      // 측정 자체는 wantsSquare 든 아니든 동일: clientWidth + chrome.
+      // 그래프 위젯은 autoFit 분기에서 자기 container.clientWidth 를 그대로
+      // height 로 박으므로, 셀이 (그 height + chrome) 만큼 잡혀야 widget
+      // 이 안 넘침. 예전엔 wantsSquare 일 때만 grid item 외곽 width 를
+      // 그대로 전달했는데 (perfect external square) → widget 이 그보다
+      // 살짝 크게 (chrome 차이만큼) 자라 컨테이너 밖으로 튀어나오는
+      // overflow 가 생겼음. clientWidth + chrome 으로 일관 처리하면
+      // 외곽이 약 chrome 차 (보통 20-50px) 만큼 가로보다 길지만 widget
+      // 은 깔끔히 안에 들어맞음.
+      const reported = wantsSquare ? el.clientWidth || el.offsetWidth : el.scrollHeight
       if (reported > 0) onMeasureContentHeight(reported + chromeExtraPx)
     }
     const schedule = () => {
@@ -6774,9 +6798,9 @@ function BlockEditorCard({
     const wantsSquare = WIDGETS_SQUARE_AUTOFIT.has(block.type)
     const measure = () => {
       raf = 0
-      const reported = wantsSquare
-        ? el.clientWidth || el.offsetWidth
-        : el.scrollHeight
+      // 위 measureRef effect 와 동일 사유 — widget 의 자기-width-as-height
+      // 와 셀 chrome 을 한꺼번에 더해 보내 overflow 방지.
+      const reported = wantsSquare ? el.clientWidth || el.offsetWidth : el.scrollHeight
       if (reported > 0) onMeasureEditHeight(reported + chromeExtraPx)
     }
     const schedule = () => {
@@ -7290,9 +7314,12 @@ const REPORT_ROW_GAP = 4
 const REPORT_COL_GAP = 12
 // Placeholder row_span used by buildRglItems when a block has no layout at
 // all, and by effectiveLayouts before the first content measurement lands.
-// 12 fine rows ≈ 92px — enough for a Card with the drag handle and a line
-// of content; small enough that auto-fit shrinks visibly on most widgets.
-const AUTO_FIT_INITIAL_ROWS = 12
+// 28 fine rows ≈ 332px — 그래프 위젯이 기본 OFF 인 자동맞춤 상태에서도
+// 의미 있는 크기로 떠서 바로 데이터 보임. 텍스트성 위젯은 첫 frame 후
+// scrollHeight 가 들어오면서 자기 자연 height 로 줄어들기 때문에 큰
+// 초깃값도 사용성에 부담 없음. (예전 12 ≈ 140px 는 신규 차트가 한 줄짜리
+// strip 처럼 보여 매번 사용자가 수동으로 키워야 했음.)
+const AUTO_FIT_INITIAL_ROWS = 28
 
 // Widget types whose auto_fit DEFAULTS to false (manual cell size).
 // Charts / scatter / heatmap need a real height to paint — letting
@@ -7320,6 +7347,7 @@ const WIDGETS_DEFAULT_NO_AUTOFIT = new Set([
   'radar',
   'sankey',
   'quadrant',
+  'cad_3d',
   'html_embed',
 ])
 
@@ -7333,6 +7361,7 @@ const WIDGETS_SQUARE_AUTOFIT = new Set([
   'scatter3d',
   'heatmap',
   'contour',
+  'treemap',
   'packing',
   'tree',
   'network',
@@ -7344,6 +7373,7 @@ const WIDGETS_SQUARE_AUTOFIT = new Set([
   'radar',
   'sankey',
   'quadrant',
+  'cad_3d',
 ])
 
 // Widgets that get a "전체화면" affordance in view mode — the cell
@@ -7403,12 +7433,22 @@ function buildRglItems(blocks, effectiveLayouts) {
   const items = []
   for (const b of blocks) {
     const layout = effectiveLayouts[b.id] ?? { row: 99, col_span: REPORT_GRID_COLS, row_span: AUTO_FIT_INITIAL_ROWS }
-    const sameRow = byRow.get(layout.row) ?? []
-    let x = 0
-    for (const sib of sameRow) {
-      if (sib.id === b.id) break
-      const sibLayout = effectiveLayouts[sib.id] ?? { col_span: REPORT_GRID_COLS }
-      x += clamp(sibLayout.col_span ?? REPORT_GRID_COLS, 1, REPORT_GRID_COLS)
+    // x 우선순위:
+    //  1) layout.col_offset 가 명시되어 있으면 그 값 그대로 (지그재그
+    //     2-column 같은 외톨이 row 의 위치 복원에 필수).
+    //  2) 없으면 같은 row 의 형제들 col_span 누적 — 한 row 에 여러
+    //     블록이 왼→오른쪽으로 채워진 기본 케이스.
+    let x
+    if (Number.isFinite(layout.col_offset)) {
+      x = layout.col_offset
+    } else {
+      const sameRow = byRow.get(layout.row) ?? []
+      x = 0
+      for (const sib of sameRow) {
+        if (sib.id === b.id) break
+        const sibLayout = effectiveLayouts[sib.id] ?? { col_span: REPORT_GRID_COLS }
+        x += clamp(sibLayout.col_span ?? REPORT_GRID_COLS, 1, REPORT_GRID_COLS)
+      }
     }
     const item = {
       i: b.id,
@@ -7647,6 +7687,8 @@ function sameOverrides(a, b) {
     const xFit = x.auto_fit === false ? false : true
     const yFit = y.auto_fit === false ? false : true
     if (xFit !== yFit) return false
+    // col_offset 도 비교 — 없으면 0 으로 normalize.
+    if ((x.col_offset ?? 0) !== (y.col_offset ?? 0)) return false
   }
   return true
 }

@@ -36,6 +36,17 @@ _LAYOUT_PROPS_SCHEMA = {
         # content height (both edit and view mode). row_span still gets
         # persisted so server-side renders / list views stay deterministic.
         "auto_fit": {"type": "boolean"},
+        # Explicit x offset within the row (0..GRID_COLS-1). Optional —
+        # when omitted, the renderer falls back to placing blocks in the
+        # order they appear in the row (left-to-right based on sibling
+        # col_spans). Needed for zigzag 2-column layouts where a single
+        # block sits alone in its row but at x=6 (right column); without
+        # col_offset that block would always restore to x=0 (left).
+        "col_offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": GRID_COLS - 1,
+        },
     },
     "required": ["row", "col_span"],
     "additionalProperties": False,

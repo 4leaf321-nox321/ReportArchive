@@ -92,6 +92,12 @@ export default function CompositeDetailPage() {
   // Per-item expansion state, keyed by row index. Reset when the draft is
   // rebuilt so newly-added items start collapsed.
   const [expanded, setExpanded] = useState(new Set())
+  // "2단 미리보기" 토글 — ON 이면 안건 리스트를 display_column 기준
+  // 두 칼럼 그리드로 시각화한다. Word 의 2단 가로 출력과 동일한 분배:
+  // 1열 안건은 왼쪽에 위에서 아래로, 2열 안건은 오른쪽에 같은 방식.
+  // 행 폭이 절반으로 줄어드니 인라인 본문(InlineReportView) 은 좁아져
+  // 보기 어려우므로 ON 일 땐 펼침을 강제로 모두 접는다.
+  const [twoColPreview, setTwoColPreview] = useState(false)
 
   // Workspace section taxonomy — used by the DOCX exporter so long-text
   // widgets emit "[단락구분] : 제목" headers (same convention as the
@@ -520,29 +526,47 @@ export default function CompositeDetailPage() {
             </div>
             <div className="flex items-center gap-2">
               {draft.items.length > 0 && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    setExpanded((prev) =>
-                      prev.size === draft.items.length
-                        ? new Set()
-                        : new Set(draft.items.map((_, i) => i)),
-                    )
-                  }}
-                >
-                  {expanded.size === draft.items.length ? (
-                    <>
-                      <ChevronRight className="mr-1 h-3 w-3" />
-                      모두 접기
-                    </>
-                  ) : (
-                    <>
-                      <ChevronDown className="mr-1 h-3 w-3" />
-                      모두 펼치기
-                    </>
-                  )}
-                </Button>
+                <>
+                  {/* 2단 미리보기 — Word 가로 2단 출력 시 안건이 좌/우
+                      어디에 박힐지 미리 화면에서 시각화. ON 일 땐
+                      InlineReportView 가 좁아져서 의미가 옅으니 펼침을
+                      강제로 모두 접는다. */}
+                  <Button
+                    size="sm"
+                    variant={twoColPreview ? 'secondary' : 'ghost'}
+                    onClick={() => {
+                      const nextOn = !twoColPreview
+                      setTwoColPreview(nextOn)
+                      if (nextOn) setExpanded(new Set())
+                    }}
+                    title="1열 / 2열 배치를 좌·우 그리드로 미리 보기"
+                  >
+                    {twoColPreview ? '단일 보기' : '2단 미리보기'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setExpanded((prev) =>
+                        prev.size === draft.items.length
+                          ? new Set()
+                          : new Set(draft.items.map((_, i) => i)),
+                      )
+                    }}
+                  >
+                    {expanded.size === draft.items.length ? (
+                      <>
+                        <ChevronRight className="mr-1 h-3 w-3" />
+                        모두 접기
+                      </>
+                    ) : (
+                      <>
+                        <ChevronDown className="mr-1 h-3 w-3" />
+                        모두 펼치기
+                      </>
+                    )}
+                  </Button>
+                </>
               )}
               {isEditing && (
                 <Button size="sm" variant="outline" onClick={() => setPickerOpen(true)}>
@@ -557,12 +581,15 @@ export default function CompositeDetailPage() {
               아직 추가된 안건이 없습니다.
             </p>
           ) : (
-            <ul className="divide-y">
+            <ItemsListContainer twoColPreview={twoColPreview} items={draft.items}>
               {draft.items.map((it, idx) => (
                 <ItemRow
                   key={`${it.ref_report_id ?? ''}-${it.ref_composite_id ?? ''}-${idx}`}
                   item={it}
                   index={idx}
+                  // 2단 미리보기에서는 행이 카드처럼 보이도록 inline-card
+                  // 스타일로 분기. 단일 보기는 기존 divide-y 동작 유지.
+                  compactCard={twoColPreview}
                   editing={isEditing}
                   expanded={expanded.has(idx)}
                   onToggleExpand={() => {
@@ -640,7 +667,7 @@ export default function CompositeDetailPage() {
                   total={draft.items.length}
                 />
               ))}
-            </ul>
+            </ItemsListContainer>
           )}
         </CardContent>
       </Card>
@@ -820,6 +847,62 @@ function KindToggle({ value, onChange }) {
   )
 }
 
+/** 안건 리스트 컨테이너 — 토글에 따라 두 가지 레이아웃:
+ *
+ *  - twoColPreview=false (기본): `<ul className="divide-y">` 단일 칼럼.
+ *    기존 동작 그대로.
+ *  - twoColPreview=true: `grid grid-cols-2` — display_column 기준으로
+ *    children 을 좌/우 두 칼럼에 분배. 각 칼럼 안에서는 원래 순서 유지.
+ *    Word 가로 2단 출력과 동일한 흐름 시각화.
+ *
+ *  children 의 순서/index 는 부모가 보내준 그대로 (원본 items 배열의
+ *  index) — 각 ItemRow 의 displayColumn prop 를 보고 분배. ItemRow 자체
+ *  의 moveItem 콜백은 원본 index 를 쓰므로 미리보기 모드에서 ↑↓ 클릭도
+ *  여전히 전체 순서를 기준으로 동작한다. */
+function ItemsListContainer({ twoColPreview, items, children }) {
+  if (!twoColPreview) {
+    return <ul className="divide-y">{children}</ul>
+  }
+  const arr = Array.isArray(children) ? children : [children]
+  const col1 = []
+  const col2 = []
+  for (let i = 0; i < arr.length; i++) {
+    const child = arr[i]
+    const it = items[i]
+    const col = it?.display_column === 2 ? 2 : 1
+    if (col === 2) col2.push(child)
+    else col1.push(child)
+  }
+  return (
+    <div className="grid grid-cols-2 gap-x-3">
+      <div className="space-y-1 border-r pr-3">
+        <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium pb-1 border-b">
+          1열 · {col1.length}건
+        </div>
+        {col1.length > 0 ? (
+          col1
+        ) : (
+          <p className="text-[11px] text-muted-foreground italic py-3 text-center">
+            (비어 있음)
+          </p>
+        )}
+      </div>
+      <div className="space-y-1">
+        <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium pb-1 border-b">
+          2열 · {col2.length}건
+        </div>
+        {col2.length > 0 ? (
+          col2
+        ) : (
+          <p className="text-[11px] text-muted-foreground italic py-3 text-center">
+            (비어 있음)
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function ItemRow({
   item,
   index,
@@ -847,6 +930,9 @@ function ItemRow({
   // the landscape-2col DOCX export; portrait/1-col ignores it.
   displayColumn,
   onSetColumn,
+  // 2단 미리보기 — true 면 행을 카드(테두리/패딩) 로 감싸 좁은 그리드
+  // 셀 안에서도 시각적으로 분리되어 보이도록.
+  compactCard = false,
 }) {
   const isReport = Boolean(item.ref_report_id)
   const ref = isReport ? item._display?.ref_report : item._display?.ref_composite
@@ -879,15 +965,20 @@ function ItemRow({
       }
       onDragEnd={editing ? onDragEnd : undefined}
       className={cn(
-        'py-3 transition-colors',
+        compactCard
+          ? 'rounded-md border bg-card px-2 py-2 transition-colors'
+          : 'py-3 transition-colors',
         editing && 'cursor-grab active:cursor-grabbing',
         isDragging && 'opacity-40',
         // Drop-target marker: thick primary top border = "drop lands
         // here, inserting before this row".
-        isDropTarget && 'border-t-2 border-primary -mt-px',
+        isDropTarget &&
+          (compactCard
+            ? 'ring-2 ring-primary'
+            : 'border-t-2 border-primary -mt-px'),
       )}
     >
-      <div className="flex items-start gap-2">
+      <div className="flex items-start gap-1.5">
         {editing && (
           <span
             className="mt-0.5 shrink-0 text-muted-foreground/60 hover:text-muted-foreground h-5 w-5 flex items-center justify-center"
@@ -906,9 +997,67 @@ function ItemRow({
         >
           {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
         </button>
-        <span className="text-xs text-muted-foreground w-5 tabular-nums pt-0.5 shrink-0">
+        <span className="text-xs text-muted-foreground w-5 tabular-nums pt-0.5 shrink-0 text-right">
           {index + 1}.
         </span>
+        {/* 액션 버튼 그룹 — 안건명 앞으로 옮겨 카드 가로폭과 무관하게
+            번호 옆에 붙어 보이도록. 사용자 피드백: 카드 폭이 넓을 때
+            오른쪽 끝의 버튼이 안건명과 시각적으로 멀어 어떤 행에 속하는지
+            한눈에 안 잡힘. */}
+        {editing && (
+          <div className="flex items-center gap-0.5 shrink-0 mt-0">
+            {/* 1열 / 2열 토글 — 가로 2단 Word 내보내기에서 이 안건이 좌/우
+                어느 컬럼에 들어갈지. 단일 column 내보내기에선 영향 없음
+                이지만 사전 설정해 두면 편함. 클릭 한 번에 1↔2 토글. */}
+            <button
+              type="button"
+              onClick={() => onSetColumn?.(displayColumn === 2 ? 1 : 2)}
+              className={cn(
+                'h-6 w-6 rounded border text-[10px] font-medium tabular-nums transition-colors flex items-center justify-center',
+                displayColumn === 2
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'border-border bg-background text-muted-foreground hover:bg-muted',
+              )}
+              title={
+                displayColumn === 2
+                  ? '2열 (클릭하면 1열로) · 2단 Word 출력 시 오른쪽 컬럼'
+                  : '1열 (클릭하면 2열로) · 2단 Word 출력 시 왼쪽 컬럼'
+              }
+              aria-label="2단 내보내기 열 선택"
+            >
+              {displayColumn === 2 ? '2' : '1'}
+            </button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={onMoveUp}
+              disabled={index === 0}
+              aria-label="위로"
+            >
+              ↑
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={onMoveDown}
+              disabled={index === total - 1}
+              aria-label="아래로"
+            >
+              ↓
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 text-destructive"
+              onClick={onRemove}
+              aria-label="제거"
+            >
+              <Trash2 className="h-3 w-3" />
+            </Button>
+          </div>
+        )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <Badge variant="outline" className="text-[10px]">
@@ -945,60 +1094,6 @@ function ItemRow({
             </div>
           )}
         </div>
-        {editing && (
-          <div className="flex items-center gap-0.5 shrink-0">
-            {/* 1열 / 2열 토글 — 가로 2단 Word 내보내기에서 이 안건이 좌/우
-                어느 컬럼에 들어갈지. 단일 column 내보내기에선 영향 없음
-                이지만 사전 설정해 두면 편함. 클릭 한 번에 1↔2 토글. */}
-            <button
-              type="button"
-              onClick={() => onSetColumn?.(displayColumn === 2 ? 1 : 2)}
-              className={cn(
-                'h-6 rounded border px-1.5 text-[10px] font-medium tabular-nums transition-colors',
-                displayColumn === 2
-                  ? 'border-primary bg-primary/10 text-primary'
-                  : 'border-border bg-background text-muted-foreground hover:bg-muted',
-              )}
-              title={
-                displayColumn === 2
-                  ? '오른쪽 열 (클릭하면 왼쪽으로)'
-                  : '왼쪽 열 (클릭하면 오른쪽으로)'
-              }
-              aria-label="2단 내보내기 열 선택"
-            >
-              {displayColumn === 2 ? '2열' : '1열'}
-            </button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              onClick={onMoveUp}
-              disabled={index === 0}
-              aria-label="위로"
-            >
-              ↑
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              onClick={onMoveDown}
-              disabled={index === total - 1}
-              aria-label="아래로"
-            >
-              ↓
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 text-destructive"
-              onClick={onRemove}
-              aria-label="제거"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        )}
       </div>
 
       {expanded && (

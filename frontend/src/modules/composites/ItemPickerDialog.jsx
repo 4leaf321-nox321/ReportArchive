@@ -54,10 +54,18 @@ export function ItemPickerDialog({
   const [tab, setTab] = useState('reports')
   // Selected refs keyed by either "r:<reportId>" or "c:<compositeId>".
   const [selected, setSelected] = useState(new Set())
+  // 같은 key 로 row 메타데이터를 기억해 둔다 — confirm 때 onPick 으로
+  // 같이 넘겨야 CompositeDetailPage 가 저장 전에도 제목을 즉시 보여줄 수
+  // 있다. (예전엔 onPick 이 id 만 넘겨서 새 안건이 "report #123" 으로
+  // 보이다가 저장 후에야 실제 제목이 나타났음.)
+  const [selectedMeta, setSelectedMeta] = useState(() => new Map())
 
   // Reset selection whenever the dialog re-opens.
   useEffect(() => {
-    if (open) setSelected(new Set())
+    if (open) {
+      setSelected(new Set())
+      setSelectedMeta(new Map())
+    }
   }, [open])
 
   const existingKeys = useMemo(() => {
@@ -69,11 +77,22 @@ export function ItemPickerDialog({
     return s
   }, [existingItems])
 
-  function toggle(key) {
+  function toggle(key, item) {
     setSelected((prev) => {
       const next = new Set(prev)
       if (next.has(key)) next.delete(key)
       else next.add(key)
+      return next
+    })
+    setSelectedMeta((prev) => {
+      const next = new Map(prev)
+      // 토글이 켜는 동작이면 메타 갱신, 끄는 동작이면 정리. selected 와
+      // 같은 분기 기준 — has(key) 면 지금 제거하려는 중.
+      if (selected.has(key)) {
+        next.delete(key)
+      } else if (item) {
+        next.set(key, item)
+      }
       return next
     })
   }
@@ -81,10 +100,45 @@ export function ItemPickerDialog({
   function confirm() {
     const items = []
     for (const key of selected) {
+      const meta = selectedMeta.get(key)
       if (key.startsWith('r:')) {
-        items.push({ ref_report_id: Number(key.slice(2)), note: '' })
+        const id = Number(key.slice(2))
+        items.push({
+          ref_report_id: id,
+          note: '',
+          // _display 는 CompositeDetailPage 의 ItemRow 가 제목/메타를
+          // 즉시 보여줄 때 참조하는 클라이언트 사이드 힌트 — 저장
+          // 페이로드에는 들어가지 않는다. ref_report 모양만 맞춰 둠.
+          _display: meta
+            ? {
+                ref_report: {
+                  id,
+                  title: meta.title,
+                  owner_name: meta.owner_name,
+                  report_date: meta.report_date,
+                  mount_workspaces: meta.mount_workspaces,
+                },
+              }
+            : undefined,
+        })
       } else if (key.startsWith('c:')) {
-        items.push({ ref_composite_id: Number(key.slice(2)), note: '' })
+        const id = Number(key.slice(2))
+        items.push({
+          ref_composite_id: id,
+          note: '',
+          _display: meta
+            ? {
+                ref_composite: {
+                  id,
+                  title: meta.title,
+                  owner_name: meta.owner_name,
+                  period_date: meta.period_date,
+                  workspace_slug: meta.workspace_slug,
+                  kind: meta.kind,
+                },
+              }
+            : undefined,
+        })
       }
     }
     onPick?.(items)
@@ -382,7 +436,7 @@ function PickerBody({
                   className="h-4 w-4 shrink-0"
                   checked={checked}
                   disabled={existing}
-                  onChange={() => onToggle(k)}
+                  onChange={() => onToggle(k, it)}
                 />
                 <div className="flex-1 min-w-0">
                   <div className="font-medium text-sm truncate">{it.title}</div>

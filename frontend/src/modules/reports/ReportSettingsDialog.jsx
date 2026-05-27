@@ -47,6 +47,15 @@ export const DEFAULT_REPORT_GAP_PX = 12
 export const DEFAULT_SLIDE_GUIDE_RATIO = '16:9'
 
 /**
+ * 긴 글(rich_text) 위젯의 depth 별 기본 머리 기호. 보고서 설정 다이얼로그
+ * 에서 해당 칸을 비워두면 이 글리프가 쓰인다. 에디터 표시 / DOCX export /
+ * 종합보고 export 셋 다 같은 값을 본다. RichText.jsx / exportReportToDocx.js
+ * 의 DEPTH_PREFIX 와 동일 — 한곳을 바꾸면 세 곳을 같이 점검할 것 (검색어:
+ * DEFAULT_RICH_TEXT_PREFIXES, DEPTH_PREFIX).
+ */
+export const DEFAULT_RICH_TEXT_PREFIXES = Object.freeze(['■', '-', '·'])
+
+/**
  * 가이드를 한 번도 켜지 않은 보고서의 슬라이드 가이드 draft 시드.
  * page_slide_guide 가 null/false 인 보고서를 다이얼로그에서 열 때 이 값으로
  * 화면을 채운다. 이후 사용자가 "켬"으로 토글해야 비로소 가이드가 보인다.
@@ -84,6 +93,11 @@ export function ReportSettingsDialog({
   // null 이거나 일부 필드가 비어 있으면 DEFAULT_SLIDE_GUIDE_CONFIG 를
   // 시드로 채워서 표시.
   currentSlideGuide = null,
+  // 긴 글(rich_text) depth-별 머리 기호 override. `[d0, d1, d2]` 형태로
+  // 받고, 각 칸이 null/빈 문자열이면 그 depth 만 기본 글리프
+  // (DEFAULT_RICH_TEXT_PREFIXES[depth]) 사용. 사용자가 적용하면 같은 모양
+  // 으로 onApplyRichTextPrefixes 로 위로 넘긴다.
+  currentRichTextPrefixes = null,
   // 속성 탭 — editable 보고서 종류 + read-only 메타 (작성자/부서/일시 등).
   // 템플릿 편집기는 종류·메타 개념이 없으므로 이 prop을 false로 두면
   // 탭 자체가 사라진다.
@@ -106,6 +120,7 @@ export function ReportSettingsDialog({
   onApplyGap,
   onApplyBlendBlocks,
   onApplySlideGuide,
+  onApplyRichTextPrefixes,
   onApplyType,
   onApplyEntities,
 }) {
@@ -126,6 +141,7 @@ export function ReportSettingsDialog({
           defaultGapPx={defaultGapPx}
           currentBlendBlocks={currentBlendBlocks}
           currentSlideGuide={currentSlideGuide}
+          currentRichTextPrefixes={currentRichTextPrefixes}
           showPropertiesTab={showPropertiesTab}
           currentTypeId={currentTypeId}
           currentType={currentType}
@@ -136,6 +152,7 @@ export function ReportSettingsDialog({
           onApplyGap={onApplyGap}
           onApplyBlendBlocks={onApplyBlendBlocks}
           onApplySlideGuide={onApplySlideGuide}
+          onApplyRichTextPrefixes={onApplyRichTextPrefixes}
           onApplyType={onApplyType}
           onApplyEntities={onApplyEntities}
         />
@@ -156,6 +173,7 @@ function DialogBody({
   defaultGapPx,
   currentBlendBlocks,
   currentSlideGuide,
+  currentRichTextPrefixes,
   showPropertiesTab,
   currentTypeId,
   currentType,
@@ -166,6 +184,7 @@ function DialogBody({
   onApplyGap,
   onApplyBlendBlocks,
   onApplySlideGuide,
+  onApplyRichTextPrefixes,
   onApplyType,
   onApplyEntities,
 }) {
@@ -173,6 +192,10 @@ function DialogBody({
   const initialGap = Number.isFinite(currentGapPx) ? currentGapPx : null
   const initialBlend = currentBlendBlocks === true
   const initialSlide = normalizeSlideGuide(currentSlideGuide)
+  // depth-별 prefix draft. 길이 3 의 문자열 배열로 들고 있고, "" 과 null
+  // 은 같은 상태("그 depth 는 기본 글리프 사용")로 취급한다. 사용자가
+  // 입력했다가 다시 비워서 원상복구하면 dirty 가 false 가 된다.
+  const initialPrefixes = normalizePrefixesDraft(currentRichTextPrefixes)
   const initialEntities = Array.isArray(currentEntities) ? currentEntities : []
   const [widthDraft, setWidthDraft] = useState(initialWidth)
   const [widthValid, setWidthValid] = useState(true)
@@ -181,6 +204,7 @@ function DialogBody({
   const [blendDraft, setBlendDraft] = useState(initialBlend)
   const [slideDraft, setSlideDraft] = useState(initialSlide)
   const [slideValid, setSlideValid] = useState(true)
+  const [prefixesDraft, setPrefixesDraft] = useState(initialPrefixes)
   const [typeDraft, setTypeDraft] = useState({
     id: currentTypeId ?? null,
     ref: currentType ?? null,
@@ -193,6 +217,12 @@ function DialogBody({
   const gapChanged = (gapDraft ?? null) !== (currentGapPx ?? null)
   const blendChanged = blendDraft !== initialBlend
   const slideChanged = !sameSlideGuide(slideDraft, initialSlide)
+  // depth 3 칸 각각을 비교. "" / null 동치 처리는 normalizePrefixesDraft
+  // 가 이미 "" 로 통일해 두니 직접 문자열 비교만 하면 된다.
+  const prefixesChanged =
+    prefixesDraft[0] !== initialPrefixes[0] ||
+    prefixesDraft[1] !== initialPrefixes[1] ||
+    prefixesDraft[2] !== initialPrefixes[2]
   const typeChanged = (typeDraft.id ?? null) !== (currentTypeId ?? null)
   // Compare on the sorted id-set — order in the array is irrelevant to
   // the saved state (the backend stores it as an unordered link table).
@@ -205,6 +235,7 @@ function DialogBody({
     gapChanged ||
     blendChanged ||
     slideChanged ||
+    prefixesChanged ||
     (showPropertiesTab && (typeChanged || entitiesChanged))
 
   function handleApply() {
@@ -213,6 +244,14 @@ function DialogBody({
     if (gapChanged) onApplyGap?.(gapDraft ?? null)
     if (blendChanged) onApplyBlendBlocks?.(blendDraft)
     if (slideChanged) onApplySlideGuide?.(slideDraft)
+    if (prefixesChanged) {
+      // 빈 칸은 null 로 변환해서 backend 가 그 depth 컬럼만 NULL 로 리셋.
+      const toApply = prefixesDraft.map((v) => {
+        const t = (v || '').trim()
+        return t === '' ? null : t
+      })
+      onApplyRichTextPrefixes?.(toApply)
+    }
     if (showPropertiesTab && typeChanged) onApplyType?.(typeDraft)
     if (showPropertiesTab && entitiesChanged) onApplyEntities?.(entitiesDraft)
     onClose()
@@ -254,6 +293,8 @@ function DialogBody({
               setSlideDraft(value)
               setSlideValid(valid)
             }}
+            prefixesValue={prefixesDraft}
+            onPrefixesChange={setPrefixesDraft}
           />
         </TabsContent>
         {showPropertiesTab && (
@@ -304,6 +345,8 @@ function PageSettingsTab({
   onBlendChange,
   slideValue,
   onSlideChange,
+  prefixesValue,
+  onPrefixesChange,
 }) {
   return (
     <div className="space-y-5 pr-1">
@@ -344,9 +387,78 @@ function PageSettingsTab({
       >
         <InlineSlideGuideControl value={slideValue} onChange={onSlideChange} />
       </SettingRow>
+      <SettingRow
+        label="긴 글 머리 기호"
+        hint={`긴 글 위젯의 줄 앞에 붙는 깊이별 기호. 각 칸을 비우면 그 깊이만 기본값 (${DEFAULT_RICH_TEXT_PREFIXES[0]} / ${DEFAULT_RICH_TEXT_PREFIXES[1]} / ${DEFAULT_RICH_TEXT_PREFIXES[2]}) 으로 폴백. 깊은 들여쓰기(depth 3+)는 깊은 설명(depth 2) 기호를 그대로 이어 씁니다. 에디터·Word·종합보고에 같은 값이 적용됩니다.`}
+      >
+        <InlineRichTextPrefixesControl
+          value={prefixesValue}
+          onChange={onPrefixesChange}
+        />
+      </SettingRow>
       {/* 후속 페이지 설정은 여기 같은 SettingRow 패턴으로 추가 */}
     </div>
   )
+}
+
+const RICH_TEXT_DEPTH_LABELS = ['대표 문장', '상세', '깊은 설명']
+
+/** depth 별 머리 기호 3 칸 입력 — 각 칸은 짧은 문자열(최대 8자). 빈
+ *  칸은 그 depth 만 기본 글리프로 폴백. 입력 옆에 미리보기 행을 띄워서
+ *  실제 들여쓰기와 함께 어떻게 보일지 즉시 확인. */
+function InlineRichTextPrefixesControl({ value, onChange }) {
+  const safeValue = Array.isArray(value) ? value : ['', '', '']
+  function setAt(i, v) {
+    const next = [...safeValue]
+    next[i] = v
+    onChange(next)
+  }
+  return (
+    <div className="space-y-1.5">
+      {[0, 1, 2].map((depth) => {
+        const raw = safeValue[depth] ?? ''
+        const trimmed = raw.trim()
+        const preview = trimmed === '' ? DEFAULT_RICH_TEXT_PREFIXES[depth] : trimmed
+        const isDefault = trimmed === ''
+        return (
+          <div key={depth} className="flex items-center gap-2">
+            <Input
+              value={raw}
+              onChange={(e) => setAt(depth, e.target.value)}
+              maxLength={8}
+              placeholder={DEFAULT_RICH_TEXT_PREFIXES[depth]}
+              className="w-20 h-8 text-sm font-mono"
+            />
+            <span
+              className="text-[11px] text-muted-foreground"
+              style={{ paddingLeft: `${depth * 14}px` }}
+            >
+              <span className="font-mono">{preview}</span>{' '}
+              {RICH_TEXT_DEPTH_LABELS[depth]}
+              {depth === 2 && ' (depth 2+)'}
+              {isDefault && <span className="ml-1 italic">(기본)</span>}
+            </span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/** 입력으로 받은 prefixes 를 길이-3 의 문자열 배열로 정규화. 입력은
+ *  null / undefined / 배열 / 길이가 짧은 배열 어떤 모양이든 받고, 항상
+ *  `['', '', '']` 모양으로 채워서 돌려준다. null / undefined 칸은 모두
+ *  빈 문자열로 통일 — 이렇게 두면 비교/dirty 판정에서 "" vs null 동치
+ *  처리가 자동으로 된다. */
+function normalizePrefixesDraft(input) {
+  const out = ['', '', '']
+  if (Array.isArray(input)) {
+    for (let i = 0; i < 3; i++) {
+      const v = input[i]
+      out[i] = typeof v === 'string' ? v : ''
+    }
+  }
+  return out
 }
 
 const SLIDE_RATIO_PRESETS = ['16:9', '4:3', '16:10', 'custom']

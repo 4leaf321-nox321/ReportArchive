@@ -41,6 +41,10 @@ import {
 } from 'lucide-react'
 import GridLayout, { useContainerWidth } from 'react-grid-layout'
 import { PrintScaleContext } from './printContext'
+import {
+  ReportStyleContext,
+  useReportStyleValue,
+} from '@/shared/reports/ReportStyleContext'
 import { Button } from '@/shared/components/ui/button'
 import { Badge } from '@/shared/components/ui/badge'
 import { Card, CardContent } from '@/shared/components/ui/card'
@@ -321,6 +325,10 @@ export default function ReportDetailPage() {
         page_slide_ratio: null,
         page_slide_ratio_custom_w: null,
         page_slide_ratio_custom_h: null,
+        // 긴 글 머리 기호 — depth-별 null 이면 프런트 기본 글리프 사용.
+        page_rich_text_prefix_d0: null,
+        page_rich_text_prefix_d1: null,
+        page_rich_text_prefix_d2: null,
         report_type_id: null,
         report_type: null,
         // Entity tags (모델/부품/BOM/단계/불량/시험/시뮬레이션) — starts
@@ -382,6 +390,10 @@ export default function ReportDetailPage() {
         page_slide_ratio: existingReport.page_slide_ratio ?? null,
         page_slide_ratio_custom_w: existingReport.page_slide_ratio_custom_w ?? null,
         page_slide_ratio_custom_h: existingReport.page_slide_ratio_custom_h ?? null,
+        // 긴 글 depth-별 머리 기호 override. 각 null → 그 depth 만 기본.
+        page_rich_text_prefix_d0: existingReport.page_rich_text_prefix_d0 ?? null,
+        page_rich_text_prefix_d1: existingReport.page_rich_text_prefix_d1 ?? null,
+        page_rich_text_prefix_d2: existingReport.page_rich_text_prefix_d2 ?? null,
         // 보고서 종류 — picker writes the FK + embedded ref so the
         // settings dialog (and the list view, once we rerender it)
         // can show the name/status without a second roundtrip.
@@ -646,6 +658,21 @@ export default function ReportDetailPage() {
     },
     [draft?.pages?.length, currentPage],
   )
+
+  // ⚠ Hook — MUST sit above ALL early returns below (loading / error /
+  // !draft) so its call order is stable across renders. The first render
+  // hits the `if (loading)` bail-out before any of the later hooks would
+  // run, so any hook placed after that branch shows up as a "new" hook
+  // once loading completes → "Rendered more hooks than during the previous
+  // render" crash. draft 가 아직 null 이면 depthGlyphs 칸이 모두 undefined →
+  // helper 가 각 depth 별로 기본 글리프로 알아서 폴백한다.
+  const reportStyleValue = useReportStyleValue({
+    depthGlyphs: [
+      draft?.page_rich_text_prefix_d0,
+      draft?.page_rich_text_prefix_d1,
+      draft?.page_rich_text_prefix_d2,
+    ],
+  })
 
   if (loading) {
     return (
@@ -1301,6 +1328,11 @@ export default function ReportDetailPage() {
           draft.page_slide_ratio === 'custom'
             ? draft.page_slide_ratio_custom_h ?? null
             : null,
+        // 긴 글 depth-별 머리 기호. 빈 문자열은 다이얼로그에서 이미 null
+        // 로 정규화했지만 안전을 위해 한 번 더 trim 해서 비면 null 로 보낸다.
+        page_rich_text_prefix_d0: normalizeRichTextPrefix(draft.page_rich_text_prefix_d0),
+        page_rich_text_prefix_d1: normalizeRichTextPrefix(draft.page_rich_text_prefix_d1),
+        page_rich_text_prefix_d2: normalizeRichTextPrefix(draft.page_rich_text_prefix_d2),
         // 보고서 종류 — null clears the tag. The backend's update
         // schema uses `exclude_unset`, so always sending the key (even
         // when null) is the explicit "clear" signal.
@@ -1473,6 +1505,9 @@ export default function ReportDetailPage() {
         page_slide_ratio: existingReport.page_slide_ratio ?? null,
         page_slide_ratio_custom_w: existingReport.page_slide_ratio_custom_w ?? null,
         page_slide_ratio_custom_h: existingReport.page_slide_ratio_custom_h ?? null,
+        page_rich_text_prefix_d0: existingReport.page_rich_text_prefix_d0 ?? null,
+        page_rich_text_prefix_d1: existingReport.page_rich_text_prefix_d1 ?? null,
+        page_rich_text_prefix_d2: existingReport.page_rich_text_prefix_d2 ?? null,
         revision: existingReport.revision ?? 1,
         pages,
       })
@@ -1553,6 +1588,9 @@ export default function ReportDetailPage() {
           draft.page_slide_ratio === 'custom'
             ? draft.page_slide_ratio_custom_h ?? null
             : null,
+        page_rich_text_prefix_d0: normalizeRichTextPrefix(draft.page_rich_text_prefix_d0),
+        page_rich_text_prefix_d1: normalizeRichTextPrefix(draft.page_rich_text_prefix_d1),
+        page_rich_text_prefix_d2: normalizeRichTextPrefix(draft.page_rich_text_prefix_d2),
         // The 종류 tag follows the copy too — same reasoning as width.
         report_type_id: draft.report_type_id ?? null,
         // Entity tags follow the copy as well — the new report inherits
@@ -2116,6 +2154,7 @@ export default function ReportDetailPage() {
 
   return (
     <PrintScaleContext.Provider value={printContextValue}>
+    <ReportStyleContext.Provider value={reportStyleValue}>
     <CommentsProvider
       reportId={existingReport?.id ?? null}
       reportPhase={existingReport?.phase}
@@ -2599,6 +2638,7 @@ export default function ReportDetailPage() {
                     onAddExtraBlockAt={(type, defaults, anchorId, direction) =>
                       addExtraBlockAt(idx, type, defaults, anchorId, direction)
                     }
+                    onAddBlock={(type, defaults) => addExtraBlock(idx, type, defaults)}
                     onRemoveBlock={(blockId) => removeBlockFromPage(idx, blockId)}
                     onChangeExtraBlockProps={(blockId, newProps) =>
                       setExtraBlockProps(idx, blockId, newProps)
@@ -2641,6 +2681,7 @@ export default function ReportDetailPage() {
                     onAddExtraBlockAt={(type, defaults, anchorId, direction) =>
                       addExtraBlockAt(safeCurrent, type, defaults, anchorId, direction)
                     }
+                    onAddBlock={(type, defaults) => addExtraBlock(safeCurrent, type, defaults)}
                     onRemoveBlock={(blockId) =>
                       removeBlockFromPage(safeCurrent, blockId)
                     }
@@ -2841,6 +2882,11 @@ export default function ReportDetailPage() {
               }
             : null
         }
+        currentRichTextPrefixes={[
+          draft?.page_rich_text_prefix_d0 ?? null,
+          draft?.page_rich_text_prefix_d1 ?? null,
+          draft?.page_rich_text_prefix_d2 ?? null,
+        ]}
         showPropertiesTab
         currentTypeId={draft?.report_type_id ?? null}
         currentType={draft?.report_type ?? null}
@@ -2989,6 +3035,21 @@ export default function ReportDetailPage() {
             }
           })
         }}
+        onApplyRichTextPrefixes={(arr) => {
+          // arr = [d0, d1, d2], 각 칸은 문자열 또는 null. null/빈문자열은
+          // 그 depth 만 backend 컬럼을 NULL 로 리셋한다.
+          const safe = Array.isArray(arr) ? arr : [null, null, null]
+          setDraft((d) =>
+            d
+              ? {
+                  ...d,
+                  page_rich_text_prefix_d0: safe[0] ?? null,
+                  page_rich_text_prefix_d1: safe[1] ?? null,
+                  page_rich_text_prefix_d2: safe[2] ?? null,
+                }
+              : d,
+          )
+        }}
         onApplyType={({ id, ref }) => {
           setDraft((d) => (d ? { ...d, report_type_id: id, report_type: ref } : d))
         }}
@@ -3062,6 +3123,7 @@ export default function ReportDetailPage() {
       {docxProgress && <DocxExportOverlay progress={docxProgress} />}
     </div>
     </CommentsProvider>
+    </ReportStyleContext.Provider>
     </PrintScaleContext.Provider>
   )
 }
@@ -4276,6 +4338,15 @@ function todayIsoDate() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
+/** draft.page_rich_text_prefix_dN 값을 backend 로 보낼 형태로 정규화.
+ *  string non-empty → trim, 그 외 → null. backend 는 null 로 받으면 그
+ *  depth 컬럼만 NULL 리셋 → 프런트가 기본 글리프로 폴백. */
+function normalizeRichTextPrefix(v) {
+  if (typeof v !== 'string') return null
+  const t = v.trim()
+  return t === '' ? null : t
+}
+
 function ViewModeToggle({ value, onChange }) {
   return (
     <div className="inline-flex rounded-md border bg-background overflow-hidden">
@@ -4988,6 +5059,11 @@ function PageSection({
   onRename,
   showPageHeader,
   onAddExtraBlockAt,
+  // 빈 페이지(블록 0개) 상태에서 보여줄 "+위젯 추가" 버튼이 호출하는
+  // 콜백. onAddExtraBlockAt 와 달리 anchor 가 없으므로 페이지 끝(=첫
+  // 자리)에 새 위젯을 추가한다. 부모(ReportDetailPage) 의 addExtraBlock
+  // 을 그대로 wrap 해 전달.
+  onAddBlock,
   onRemoveBlock,
   onChangeExtraBlockProps,
   onChangeSection,
@@ -5131,8 +5207,11 @@ function PageSection({
         <Skeleton className="h-32" />
       ) : blocks.length === 0 ? (
         <Card>
-          <CardContent className="py-12 text-center text-sm text-muted-foreground">
-            템플릿에 블록이 없습니다.
+          <CardContent className="py-12 flex flex-col items-center gap-3 text-sm text-muted-foreground">
+            <span>템플릿에 블록이 없습니다.</span>
+            {isEditing && onAddBlock && (
+              <EmptyStateAddWidget onAdd={onAddBlock} />
+            )}
           </CardContent>
         </Card>
       ) : (
@@ -6074,6 +6153,42 @@ function FloatingAddWidget({ onAdd }) {
         sideOffset={8}
         // Width sized to fit all 5 category columns side by side. Radix
         // shifts the popover into view if a narrow viewport can't fit it.
+        className="w-[760px] max-w-[92vw] p-2 max-h-[70vh] overflow-y-auto"
+      >
+        <WidgetPicker
+          widgets={widgets}
+          onSelect={(w) => {
+            onAdd(w.type, w.default_props ?? {})
+            setOpen(false)
+          }}
+        />
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/** Sibling of FloatingAddWidget — sized for inline use inside the empty
+ *  state Card (no widget on the page yet). Same popover + WidgetPicker
+ *  pattern as the floating button, but a normal-sized outline button so
+ *  it fits naturally inside the centered "empty" placeholder instead of
+ *  reading like a misplaced floating action. */
+function EmptyStateAddWidget({ onAdd }) {
+  const { catalog, loading } = useWidgetCatalog()
+  const [open, setOpen] = useState(false)
+  if (loading) return null
+  const widgets = catalog?.widgets ?? []
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button size="sm" variant="outline" className="gap-1">
+          <Plus className="h-3.5 w-3.5" />
+          위젯 추가
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="center"
+        side="bottom"
+        sideOffset={8}
         className="w-[760px] max-w-[92vw] p-2 max-h-[70vh] overflow-y-auto"
       >
         <WidgetPicker

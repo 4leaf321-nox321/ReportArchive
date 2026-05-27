@@ -219,6 +219,21 @@ class Report(Base):
         Integer, nullable=True
     )
 
+    # 긴 글(rich_text) 위젯의 depth-별 머리 기호 override. 세 칸이 (depth 0
+    # 대표 문장 / depth 1 상세 / depth 2+ 깊은 설명) 에 대응하며, 깊은
+    # 들여쓰기(depth 3+) 는 depth 2 글리프를 그대로 이어 쓴다. 각 칸이 NULL
+    # 이면 그 depth 만 프런트 기본 글리프(■ / – / ·) 로 폴백 — 일부만 지정해
+    # 부분 override 가 가능하다. 다이얼로그에서 8자 컷 (컬럼도 String(8)).
+    page_rich_text_prefix_d0: Mapped[str | None] = mapped_column(
+        String(8), nullable=True
+    )
+    page_rich_text_prefix_d1: Mapped[str | None] = mapped_column(
+        String(8), nullable=True
+    )
+    page_rich_text_prefix_d2: Mapped[str | None] = mapped_column(
+        String(8), nullable=True
+    )
+
     # Optional report-type tag — system-wide controlled vocabulary
     # orthogonal to the template (templates describe shape; types
     # describe purpose, e.g. "주간 보고", "안전 점검"). Managed by

@@ -10,6 +10,10 @@ import {
   DEFAULT_REPORT_GAP_PX,
 } from '@/modules/reports/ReportSettingsDialog'
 import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
+import {
+  ReportStyleContext,
+  useReportStyleValue,
+} from '@/shared/reports/ReportStyleContext'
 
 /**
  * Read-only inline render of a source report. Resolves the report by id,
@@ -37,6 +41,17 @@ export function InlineReportView({ reportId, snapshot }) {
     [reportId, Boolean(snapshot)],
   )
   const report = snapshot ?? liveReport
+  // ⚠ Hook — sits ABOVE the early returns below so call order stays stable
+  // across loading vs loaded renders. `report` may be null on first paint;
+  // useReportStyleValue handles undefined / null inputs by returning the
+  // default-glyph value, so this is safe to call unconditionally.
+  const styleValue = useReportStyleValue({
+    depthGlyphs: [
+      report?.page_rich_text_prefix_d0,
+      report?.page_rich_text_prefix_d1,
+      report?.page_rich_text_prefix_d2,
+    ],
+  })
   if (!snapshot && loading) return <Skeleton className="h-24" />
   if (!snapshot && error)
     return <div className="text-xs text-destructive">{error.message}</div>
@@ -54,17 +69,19 @@ export function InlineReportView({ reportId, snapshot }) {
     ? report.page_gap_px
     : DEFAULT_REPORT_GAP_PX
   return (
-    <div className="space-y-4 mx-auto w-full" style={{ maxWidth: `${pageWidthPx}px` }}>
-      {pages.map((p, idx) => (
-        <InlinePage
-          key={idx}
-          page={p}
-          index={idx}
-          totalPages={pages.length}
-          rowGapPx={pageGapPx}
-        />
-      ))}
-    </div>
+    <ReportStyleContext.Provider value={styleValue}>
+      <div className="space-y-4 mx-auto w-full" style={{ maxWidth: `${pageWidthPx}px` }}>
+        {pages.map((p, idx) => (
+          <InlinePage
+            key={idx}
+            page={p}
+            index={idx}
+            totalPages={pages.length}
+            rowGapPx={pageGapPx}
+          />
+        ))}
+      </div>
+    </ReportStyleContext.Provider>
   )
 }
 

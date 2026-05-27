@@ -389,6 +389,12 @@ def create_report(
         init_kwargs["page_slide_ratio_custom_w"] = payload.page_slide_ratio_custom_w
     if payload.page_slide_ratio_custom_h is not None:
         init_kwargs["page_slide_ratio_custom_h"] = payload.page_slide_ratio_custom_h
+    if payload.page_rich_text_prefix_d0 is not None:
+        init_kwargs["page_rich_text_prefix_d0"] = payload.page_rich_text_prefix_d0
+    if payload.page_rich_text_prefix_d1 is not None:
+        init_kwargs["page_rich_text_prefix_d1"] = payload.page_rich_text_prefix_d1
+    if payload.page_rich_text_prefix_d2 is not None:
+        init_kwargs["page_rich_text_prefix_d2"] = payload.page_rich_text_prefix_d2
     if payload.report_type_id is not None:
         init_kwargs["report_type_id"] = payload.report_type_id
     report = Report(
@@ -615,6 +621,9 @@ def update_report(
         "page_slide_ratio",
         "page_slide_ratio_custom_w",
         "page_slide_ratio_custom_h",
+        "page_rich_text_prefix_d0",
+        "page_rich_text_prefix_d1",
+        "page_rich_text_prefix_d2",
         "report_type_id",
     ):
         if key in data:

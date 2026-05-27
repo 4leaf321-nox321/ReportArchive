@@ -264,6 +264,15 @@ class ReportRead(BaseModel):
     page_slide_ratio: Optional[Literal["16:9", "4:3", "16:10", "custom"]] = None
     page_slide_ratio_custom_w: Optional[int] = Field(default=None, ge=1, le=10000)
     page_slide_ratio_custom_h: Optional[int] = Field(default=None, ge=1, le=10000)
+    # 긴 글(rich_text) 위젯 depth 별 머리 기호 override.
+    #   _d0 = 대표 문장 (depth 0)
+    #   _d1 = 상세       (depth 1)
+    #   _d2 = 깊은 설명  (depth 2+, 깊은 들여쓰기까지 이어서 사용)
+    # 각 필드는 독립적으로 None / 빈 문자열이면 그 depth 만 프런트 기본
+    # 글리프(■ / – / ·)로 폴백. 다이얼로그에서 8자로 컷.
+    page_rich_text_prefix_d0: Optional[str] = Field(default=None, max_length=8)
+    page_rich_text_prefix_d1: Optional[str] = Field(default=None, max_length=8)
+    page_rich_text_prefix_d2: Optional[str] = Field(default=None, max_length=8)
     # Optional report-type tag. `report_type_id` is the raw FK; the
     # embedded `report_type` carries name/description/status so the
     # frontend doesn't need a separate /api/report-types/<id> call.
@@ -397,6 +406,11 @@ class ReportCreate(BaseModel):
     page_slide_ratio: Optional[Literal["16:9", "4:3", "16:10", "custom"]] = None
     page_slide_ratio_custom_w: Optional[int] = Field(default=None, ge=1, le=10000)
     page_slide_ratio_custom_h: Optional[int] = Field(default=None, ge=1, le=10000)
+    # 긴 글 depth 별 머리 기호 override (_d0/_d1/_d2 = 대표/상세/깊은).
+    # 각 필드 None/빈 문자열이면 그 depth 만 프런트 기본 글리프로 폴백.
+    page_rich_text_prefix_d0: Optional[str] = Field(default=None, max_length=8)
+    page_rich_text_prefix_d1: Optional[str] = Field(default=None, max_length=8)
+    page_rich_text_prefix_d2: Optional[str] = Field(default=None, max_length=8)
     # Optional FK to a report_types row. Created via the picker dialog;
     # may be null (no tag).
     report_type_id: Optional[int] = None
@@ -441,6 +455,12 @@ class ReportUpdate(BaseModel):
     page_slide_ratio: Optional[Literal["16:9", "4:3", "16:10", "custom"]] = None
     page_slide_ratio_custom_w: Optional[int] = Field(default=None, ge=1, le=10000)
     page_slide_ratio_custom_h: Optional[int] = Field(default=None, ge=1, le=10000)
+    # 긴 글 depth 별 머리 기호 override (_d0/_d1/_d2 = 대표/상세/깊은).
+    # 각 필드 None / 빈 문자열을 보내면 그 depth 만 기본 글리프로 리셋,
+    # 비어 있지 않은 문자열이면 해당 값으로 교체.
+    page_rich_text_prefix_d0: Optional[str] = Field(default=None, max_length=8)
+    page_rich_text_prefix_d1: Optional[str] = Field(default=None, max_length=8)
+    page_rich_text_prefix_d2: Optional[str] = Field(default=None, max_length=8)
     # Optional report-type FK. The field is consulted via model_dump's
     # `exclude_unset` so an explicit `null` clears the tag while an
     # absent key leaves the existing value alone.

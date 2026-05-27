@@ -750,7 +750,7 @@ const _DEPTH_LABELS = [
   // for the top-level 전체 과제명 marker, and `▶` was misread by AI as
   // "→ 결론" when drafting bodies, so we landed on a neutral solid square.
   { key: '0', glyph: '■', name: '대표 문장 (depth 0)' },
-  { key: '1', glyph: '–', name: '상세 (depth 1)' },
+  { key: '1', glyph: '-', name: '상세 (depth 1)' },
   { key: '2', glyph: '·', name: '깊은 설명 (depth 2+)' },
 ]
 

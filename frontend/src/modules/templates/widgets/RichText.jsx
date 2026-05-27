@@ -4,6 +4,7 @@ import { AlertTriangle, X } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { useWidgetRelations } from '@/shared/hooks/useWidgetRelations'
+import { useReportStyle } from '@/shared/reports/ReportStyleContext'
 import {
   CaptionInput,
   DEFAULT_BODY_FONT_PX,
@@ -160,7 +161,7 @@ const WARN_DEPTH = 4
 // accepted as depth-0 paste triggers (see PREFIX_TO_DEPTH below) so
 // older content / pastes still parse correctly; only the displayed
 // glyph changes.
-const DEPTH_PREFIX = ['■', '–', '·', '·', '·', '·']
+const DEPTH_PREFIX = ['■', '-', '·', '·', '·', '·']
 const INDENT_PX_PER_DEPTH = 24
 // Keyboard combo trigger — typed at the very start of a line to open the
 // relation picker. Picked deliberately as a sequence that's rare in body
@@ -511,6 +512,9 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
 // View mode — read-only structured render
 // --------------------------------------------------------------------------- //
 function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
+  // 보고서 단위 depth-별 글리프 override. depth 2 글리프는 depth 2+ 모두
+  // 에 그대로 적용 (= 깊은 들여쓰기는 depth 2 값을 이어 쓴다).
+  const { depthGlyphs } = useReportStyle()
   // The wrapper keeps a sensible default (text-sm) — bodyClassFor returns
   // *only* the designer-selected overrides for the row's depth, so an
   // empty style leaves the original rendering untouched. `bodyStyleFor`
@@ -550,7 +554,7 @@ function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
               } ${prefixFmt.className}`}
               style={prefixStyle}
             >
-              {DEPTH_PREFIX[depth]}
+              {depthGlyphs?.[Math.min(depth, 2)] || DEPTH_PREFIX[depth]}
             </span>
             <RelationChipStatic relation={it.relation} />
             <span
@@ -1335,6 +1339,9 @@ function OutlineRow({
   const relation = item.relation || null
   const rowText = item.text ?? ''
   const rowHtml = item.html ?? ''
+  // 보고서 단위 depth-별 글리프 override. depth 2 글리프는 depth 2+ 모두
+  // 에 적용 (깊은 들여쓰기까지 이어서 사용).
+  const { depthGlyphs } = useReportStyle()
   // Picker strip appears only on indented rows — depth 0 has no parent, so
   // a "child role relative to parent" relation makes no sense there.
   const showPicker = isFocused && depth >= 1
@@ -1557,7 +1564,7 @@ function OutlineRow({
           } ${prefixFmt.className}`}
           style={prefixStyle}
         >
-          {DEPTH_PREFIX[depth]}
+          {depthGlyphs?.[Math.min(depth, 2)] || DEPTH_PREFIX[depth]}
         </span>
         <RelationChip relation={relation} onChange={onRelationChange} />
         <div className="flex-1 min-w-0 outline-rich-row">

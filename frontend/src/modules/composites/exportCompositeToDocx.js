@@ -21,6 +21,7 @@ import {
   AlignmentType,
   Document,
   HeadingLevel,
+  LineRuleType,
   Packer,
   PageOrientation,
   Paragraph,
@@ -38,11 +39,13 @@ import {
   BODY_FULL_WIDTH_PX,
   BODY_SIZE,
   INVISIBLE_TABLE_BORDERS,
+  LINE_SPACING_AUTO_240THS,
   TITLE_SIZE,
   combinedBlocks,
   emptyParagraph,
   groupBlocksByRow,
   renderBlockPieces,
+  sanitizeDepthGlyph,
   sanitizeFileName,
   triggerDownload,
 } from '@/modules/reports/exportReportToDocx'
@@ -381,7 +384,18 @@ export async function exportCompositeToDocx({
         group.report?.page_width_px ?? 800,
       page_gap_px: group.report?.page_gap_px,
       page_blend_blocks: group.report?.page_blend_blocks,
+      page_rich_text_prefix_d0: group.report?.page_rich_text_prefix_d0,
+      page_rich_text_prefix_d1: group.report?.page_rich_text_prefix_d1,
+      page_rich_text_prefix_d2: group.report?.page_rich_text_prefix_d2,
     }
+    // 안건별 depth-별 글리프. 각 depth 칸이 null 이면 module 기본으로
+    // 폴백. 종합 차원의 일괄 override 는 아직 두지 않는다 — 사용자
+    // 피드백 받아 보고 추가하기로.
+    const itemDepthGlyphs = [
+      sanitizeDepthGlyph(group.report?.page_rich_text_prefix_d0),
+      sanitizeDepthGlyph(group.report?.page_rich_text_prefix_d1),
+      sanitizeDepthGlyph(group.report?.page_rich_text_prefix_d2),
+    ]
     await withOffscreenItemMount(snapshot, async (scopeEl) => {
       // Walk pages → row groups → blocks, same as the report exporter,
       // but scoped to the offscreen container's DOM so block-id
@@ -407,6 +421,7 @@ export async function exportCompositeToDocx({
               sectionItemByCode: sectionLookup,
               maxImageWidthPx: perItemWidthPx,
               scopeEl,
+              depthGlyphs: itemDepthGlyphs,
             })
             for (const el of pieces) out.push(el)
             out.push(emptyParagraph())
@@ -427,6 +442,7 @@ export async function exportCompositeToDocx({
               sectionItemByCode: sectionLookup,
               maxImageWidthPx: cellWidthPx,
               scopeEl,
+              depthGlyphs: itemDepthGlyphs,
             })
             cells.push(
               new TableCell({
@@ -602,7 +618,15 @@ export async function exportCompositeToDocx({
     title: composite.title || '',
     styles: {
       default: {
-        document: { run: { font: BODY_FONT, size: BODY_SIZE } },
+        document: {
+          run: { font: BODY_FONT, size: BODY_SIZE },
+          paragraph: {
+            spacing: {
+              line: LINE_SPACING_AUTO_240THS,
+              lineRule: LineRuleType.AUTO,
+            },
+          },
+        },
       },
     },
     sections: [

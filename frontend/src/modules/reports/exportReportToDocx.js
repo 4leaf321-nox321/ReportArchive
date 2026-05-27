@@ -20,6 +20,7 @@ import {
   Document,
   HeadingLevel,
   ImageRun,
+  LineRuleType,
   Packer,
   Paragraph,
   Table,
@@ -44,6 +45,14 @@ import { apiClient } from '@/shared/api/client'
 // an explicit choice and shouldn't be overridden by the document default.
 export const TITLE_SIZE = 26 //  13pt
 export const BODY_SIZE = 26 //   13pt
+
+// Default line spacing multiplier applied to every paragraph in the
+// document. docx-js encodes "multiple line spacing" in 240ths
+// (LineRuleType.AUTO) — so 240 = 1.0x, 288 = 1.2x, 360 = 1.5x. Set on
+// styles.default.document.paragraph.spacing so it cascades into table
+// cells and headings too; per-Paragraph overrides still win when an
+// explicit spacing is passed.
+export const LINE_SPACING_AUTO_240THS = 288 // 1.2x
 
 // Korean serif font for the document body. Set both as the Document
 // default (styles.default.document.run.font) AND per-TextRun where
@@ -108,6 +117,16 @@ export async function exportReportToDocx({
           }
         }
       : () => {}
+
+  // Per-report depth-별 glyph overrides for rich_text widgets — length 3
+  // array `[d0, d1, d2]`. depth 2 글리프는 depth 2+ 모두에 사용된다 (=
+  // 깊은 들여쓰기는 depth 2 값을 이어 쓴다). 각 칸이 null 이면 그 depth
+  // 만 module 기본 (DEPTH_PREFIX[depth]) 으로 폴백.
+  const depthGlyphs = [
+    sanitizeDepthGlyph(draft?.page_rich_text_prefix_d0),
+    sanitizeDepthGlyph(draft?.page_rich_text_prefix_d1),
+    sanitizeDepthGlyph(draft?.page_rich_text_prefix_d2),
+  ]
 
   // Count visual + content blocks upfront so the progress bar can show
   // a stable denominator. Heading/rich_text/etc. are fast so they go
@@ -213,6 +232,7 @@ export async function exportReportToDocx({
           page,
           sectionItemByCode,
           maxImageWidthPx: BODY_FULL_WIDTH_PX,
+          depthGlyphs,
         })
         for (const el of pieces) children.push(el)
         children.push(emptyParagraph())
@@ -248,6 +268,7 @@ export async function exportReportToDocx({
           page,
           sectionItemByCode,
           maxImageWidthPx: cellWidthPx,
+          depthGlyphs,
         })
         cells.push(
           new TableCell({
@@ -299,6 +320,12 @@ export async function exportReportToDocx({
       default: {
         document: {
           run: { font: BODY_FONT, size: BODY_SIZE },
+          paragraph: {
+            spacing: {
+              line: LINE_SPACING_AUTO_240THS,
+              lineRule: LineRuleType.AUTO,
+            },
+          },
         },
       },
     },
@@ -348,7 +375,7 @@ async function convertBlock(block, props, content, opts = {}) {
       out.push(...convertHeading(props, content))
       break
     case 'rich_text':
-      out.push(...convertRichText(content))
+      out.push(...convertRichText(content, depthGlyphs))
       break
     case 'bulleted_list':
       out.push(...convertBulletedList(content))
@@ -469,14 +496,14 @@ function convertHeading(props, content) {
 // Depth glyphs mirror the RichText widget's display set. depth 0 is
 // `■` (was `□` → `▶` → `■`); `□` stays free for the top-level 전체
 // 과제명 marker elsewhere in the document.
-const DEPTH_PREFIX = ['■', '–', '·', '·', '·', '·']
+const DEPTH_PREFIX = ['■', '-', '·', '·', '·', '·']
 const RT_INDENT_TWIPS_PER_DEPTH = 360 // ~0.25in
 // 모든 RichText 줄이 [섹션] : 제목 헤더 아래에 시각적으로 "tucked under"
 // 보이도록 기본 들여쓰기를 더한다. depth 0 (■) 도 0 이 아니라 이 값
 // 만큼 안쪽으로 들어가고, 깊은 depth 는 그 위에 360씩 더 들어감.
 const RT_BASE_INDENT_TWIPS = 360 // ~0.25in
 
-function convertRichText(content) {
+function convertRichText(content, depthGlyphs) {
   // The widget accepts two persisted shapes:
   //   - { items: [{ depth, text, html? }, ...] }  — canonical, what
   //     the TipTap editor writes back on every edit.
@@ -490,9 +517,15 @@ function convertRichText(content) {
     items = markdownToItemsForExport(content.markdown)
   }
   if (items.length === 0) return []
+  // Per-report depth-별 glyph override 적용. depth 2 글리프는 depth 2+
+  // 모두에 사용. 각 칸이 null 이면 그 depth 만 module 기본으로 폴백.
+  const glyphFor = (depth) => {
+    const overrideIdx = Math.min(depth, 2)
+    return depthGlyphs?.[overrideIdx] || DEPTH_PREFIX[depth] || '·'
+  }
   return items.map((it) => {
     const depth = clamp(it?.depth ?? 0, 0, 5)
-    const prefix = `${DEPTH_PREFIX[depth] ?? '·'} `
+    const prefix = `${glyphFor(depth)} `
     const runs = htmlToTextRuns(it?.html, it?.text ?? '')
     runs.unshift(
       new TextRun({ text: prefix, color: '888888', size: BODY_SIZE }),
@@ -1024,6 +1057,10 @@ export async function renderBlockPieces({
   // Used by the composite exporter when each item's report is mounted
   // off-screen for capture — keeps `block-<id>` collisions in check.
   scopeEl,
+  // Per-report depth-별 glyph overrides for rich_text — length-3 array
+  // `[d0, d1, d2]`. depth 2 글리프는 depth 2+ 모두에 사용된다. 각 칸이
+  // null 이면 그 depth 만 module 기본 DEPTH_PREFIX[depth] 로 폴백.
+  depthGlyphs,
 }) {
   const content = page.content?.[block.id] ?? {}
   const propsOverride = page.props_overrides?.[block.id] ?? null
@@ -1179,9 +1216,20 @@ export function emptyParagraph() {
   return new Paragraph({ children: [new TextRun({ text: '' })] })
 }
 
+/** Per-report depth glyph 입력값을 화면/문서에 쓰일 형태로 정규화. string
+ *  non-empty 면 trim, 그 외(null/undefined/whitespace) 면 null 반환 — null
+ *  은 호출부에서 module 기본 글리프로 폴백한다. */
+function sanitizeDepthGlyph(v) {
+  if (typeof v !== 'string') return null
+  const t = v.trim()
+  return t === '' ? null : t
+}
+
 function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n | 0))
 }
+
+export { sanitizeDepthGlyph }
 
 export function sanitizeFileName(name) {
   return (

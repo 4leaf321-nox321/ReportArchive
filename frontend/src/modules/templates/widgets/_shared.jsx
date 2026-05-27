@@ -736,7 +736,7 @@ export function TextStyleField({ value, onChange, defaultSizePx }) {
 /**
  * Designer-time editor for per-depth text style overrides used by the
  * RichText widget. Exposes only the three buckets actually rendered with
- * distinct prefix glyphs (▶ / – / ·); depths 3+ inherit the depth-2 style.
+ * distinct prefix glyphs (■ / – / ·); depths 3+ inherit the depth-2 style.
  *
  * Stored shape: `{ "0"?: TextStyle, "1"?: TextStyle, "2"?: TextStyle }`.
  * Each depth value is itself a sparse object — empty fields fall through
@@ -746,9 +746,10 @@ export function TextStyleField({ value, onChange, defaultSizePx }) {
  * NOTE: `value` here is the `depth_styles` map, not a flat TextStyle.
  */
 const _DEPTH_LABELS = [
-  // depth 0 glyph changed from `□` to `▶` (Phase: prefix-rework) —
-  // `□` is now reserved for the top-level 전체 과제명 marker.
-  { key: '0', glyph: '▶', name: '대표 문장 (depth 0)' },
+  // depth 0 glyph: `■` (current). Was `□` → `▶` → `■`; `□` is reserved
+  // for the top-level 전체 과제명 marker, and `▶` was misread by AI as
+  // "→ 결론" when drafting bodies, so we landed on a neutral solid square.
+  { key: '0', glyph: '■', name: '대표 문장 (depth 0)' },
   { key: '1', glyph: '–', name: '상세 (depth 1)' },
   { key: '2', glyph: '·', name: '깊은 설명 (depth 2+)' },
 ]

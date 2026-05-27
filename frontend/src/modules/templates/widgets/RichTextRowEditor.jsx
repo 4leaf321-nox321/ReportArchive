@@ -95,7 +95,7 @@ function sliceAtChar(view, charOffset) {
  * are bubbled to the parent via `onKeyDown` so depth changes and row
  * splitting still happen at the outline level, not inside the editor.
  *
- * Plain-text logic upstream (prefix auto-convert `▶ `/`- `/`· `, the `//`
+ * Plain-text logic upstream (prefix auto-convert `■ `/`- `/`· `, the `//`
  * relation combo, char counts) reads the second argument of `onChange`
  * (`text`); the first argument is the canonical HTML stored on the item.
  */

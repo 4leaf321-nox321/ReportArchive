@@ -122,7 +122,7 @@ export function RichTextPropsPanel({ props, onChange }) {
         baseSizePx={props.text_style?.font_size_px ?? DEFAULT_BODY_FONT_PX}
       />
       <p className="text-[10px] text-muted-foreground">
-        스타일은 본문 텍스트에만 적용됩니다. 깊이 기호(▶ – ·)와 들여쓰기, 관계 칩은 가독성을 위해 고정 크기로 유지됩니다.
+        스타일은 본문 텍스트에만 적용됩니다. 깊이 기호(■ – ·)와 들여쓰기, 관계 칩은 가독성을 위해 고정 크기로 유지됩니다.
       </p>
     </div>
   )
@@ -138,7 +138,7 @@ export function RichTextPreview({ props }) {
         {props.label || '(라벨 없음)'}
       </PreviewLabel>
       <div className="rounded-md border bg-muted/30 p-3 space-y-1 text-sm text-muted-foreground">
-        <div>▶ {props.placeholder || '대표 문장'}</div>
+        <div>■ {props.placeholder || '대표 문장'}</div>
         <div className="pl-6">– 상세 / 근거 / 예시</div>
         <div className="pl-12">· 더 깊은 설명</div>
       </div>
@@ -153,12 +153,14 @@ const MAX_DEPTH = 5
 const WARN_DEPTH = 4
 // Depth 0 used to render as `□` (hollow square) but that glyph is now
 // reserved for the top-level 전체 과제명 marker elsewhere in the doc.
-// Switched to `▶` — solid right-pointing triangle, "여기 주목" semantic,
-// visually distinct from `□` so 대표 문장 vs 과제명 don't blur.
-// Backward compat: `□` is still accepted as a depth-0 paste trigger
-// (see PREFIX_TO_DEPTH below) so older content / pastes still parse
-// correctly; only the displayed glyph changes.
-const DEPTH_PREFIX = ['▶', '–', '·', '·', '·', '·']
+// Switched to `■` — solid square, neutral "key point" semantic without
+// the directional bias that made `▶` get misread as "→ 결론" by AI when
+// drafting bulleted bodies. Visually distinct from `□` so 대표 문장 vs
+// 전체 과제명 don't blur. Backward compat: `□` and `▶` are still
+// accepted as depth-0 paste triggers (see PREFIX_TO_DEPTH below) so
+// older content / pastes still parse correctly; only the displayed
+// glyph changes.
+const DEPTH_PREFIX = ['■', '–', '·', '·', '·', '·']
 const INDENT_PX_PER_DEPTH = 24
 // Keyboard combo trigger — typed at the very start of a line to open the
 // relation picker. Picked deliberately as a sequence that's rare in body
@@ -168,10 +170,10 @@ const COMBO_TRIGGER = '//'
 // Symbols typed at the start of a line that auto-convert to a depth.
 // Order matters only for documentation — we match the first character.
 const PREFIX_TO_DEPTH = {
-  '▶': 0,
-  '▷': 0,
-  '□': 0, // kept for backward compat — old content + pastes still parse
   '■': 0,
+  '□': 0, // kept for backward compat — old content + pastes still parse
+  '▶': 0, // kept for backward compat — content from prior `▶` glyph
+  '▷': 0,
   '◇': 0,
   '◆': 0,
   '-': 1,
@@ -265,7 +267,7 @@ function rowFirstRunHasTag(html, tag) {
 }
 
 // Read the marks + inline style applied to the *first* text run inside the
-// row's html. We use this to style the leading prefix glyph (▶ / – / ·)
+// row's html. We use this to style the leading prefix glyph (■ / – / ·)
 // so it visually matches whatever formatting the writer applied to the
 // start of the row — bold body text gets a bold bullet, a 24px first
 // run gets a 24px bullet, etc.
@@ -325,7 +327,7 @@ function firstRunFormatting(html) {
 
 /**
  * Parse the legacy markdown blob into outline items. Each non-empty line
- * becomes one item; depth is inferred from the prefix character (▶/□/-/·).
+ * becomes one item; depth is inferred from the prefix character (■/□/▶/-/·).
  * If no recognized prefix, fall back to indent-by-two-spaces or depth 0.
  */
 function parseMarkdownToItems(md) {
@@ -528,7 +530,7 @@ function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
         const safeHtml = sanitizeRowHtml(it.html, it.text)
         const prefixFmt = firstRunFormatting(it.html)
         // Width and padding scale in `em` so the column always matches the
-        // prefix's own font-size — a 48px ▶ reserves ~48px, a 12px · reserves
+        // prefix's own font-size — a 48px ■ reserves ~48px, a 12px · reserves
         // ~12px. Baseline alignment keeps the glyph sitting on the body
         // text's baseline regardless of which font size is larger.
         const prefixStyle = {
@@ -1510,7 +1512,7 @@ function OutlineRow({
         onDepthChange(depth - 1)
         return true
       }
-      // depth === 0 (▶ row): empty → delete entire row;
+      // depth === 0 (■ row): empty → delete entire row;
       // non-empty → merge into the previous row (preserves text + html).
       if ((ctx?.text ?? '').length === 0) {
         e.preventDefault()

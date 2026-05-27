@@ -1401,8 +1401,22 @@ export default function ReportDetailPage() {
       const isSchemaError = msg.startsWith('Content invalid')
       if (isSchemaError) {
         toast.error('저장 실패 — 위젯 데이터 형식 오류', {
-          description: msg,
+          description: (
+            <div
+              onClick={(e) => {
+                const range = document.createRange()
+                range.selectNodeContents(e.currentTarget)
+                const sel = window.getSelection()
+                sel?.removeAllRanges()
+                sel?.addRange(range)
+              }}
+              style={{ cursor: 'text' }}
+            >
+              {msg}
+            </div>
+          ),
           duration: 20000,
+          closeButton: true,
           classNames: { description: 'whitespace-pre-wrap font-mono text-[11px]' },
         })
       } else {
@@ -3471,8 +3485,9 @@ function WidgetCoverageSidebar({
       )}
       {interactive && (
         <div className="mt-2 pt-2 border-t text-[10px] text-muted-foreground leading-relaxed">
-          체크 해제는 <code>&#123;&#123;widget_catalog&#125;&#125;</code> /
-          {' '}<code>&#123;&#123;widget_examples&#125;&#125;</code> 토큰에만 적용됩니다.
+          체크 해제는 <code>&#123;&#123;widget_catalog&#125;&#125;</code>,
+          {' '}<code>&#123;&#123;widget_examples&#125;&#125;</code>,
+          {' '}<code>&#123;&#123;template_blocks&#125;&#125;</code> 토큰에 적용 — 해제한 타입의 페이지 블록도 목록에서 빠집니다.
           본문에 직접 적힌 <code>&#123;&#123;widget:foo&#125;&#125;</code> 토큰은 그대로 유지.
         </div>
       )}

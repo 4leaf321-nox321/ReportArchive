@@ -49,10 +49,22 @@ export function renderWidgetCatalogText(widgets) {
 }
 
 /** Render the current page's template block list — the v2 "이미 배치된
- *  위젯" block. `blocks` is `template.schema.blocks` from useTemplate. */
-export function renderTemplateBlocksText(blocks) {
-  const list = Array.isArray(blocks) ? blocks : []
+ *  위젯" block. `blocks` is `template.schema.blocks` from useTemplate.
+ *
+ *  `excluded` (optional Set<string>) drops blocks whose widget type is
+ *  excluded — same set used to filter the catalog/examples blocks, so
+ *  the AI never sees those types anywhere in the prompt and won't try
+ *  to fill content for them. */
+export function renderTemplateBlocksText(blocks, excluded) {
+  const all = Array.isArray(blocks) ? blocks : []
+  const list =
+    excluded && excluded.size > 0
+      ? all.filter((b) => !excluded.has(b.type))
+      : all
   if (list.length === 0) {
+    if (all.length > 0) {
+      return '(현재 페이지의 모든 블록이 제외된 위젯 타입이라 목록이 비어 있습니다. 사이드바에서 사용할 위젯 타입을 다시 선택하세요.)'
+    }
     return '(현재 페이지에 바인딩된 템플릿을 아직 불러오지 못했거나 비어 있습니다. 잠시 후 다시 열어보세요. 그동안에는 모든 위젯을 `extra_blocks` 에 직접 선언하셔도 됩니다.)'
   }
   return list
@@ -128,10 +140,15 @@ export function renderPrompt(body, context = {}) {
  *                          {{widget_examples}}) the picker dialog lets
  *                          the user uncheck widgets to shrink the
  *                          rendered prompt. Excluded types are dropped
- *                          from BOTH the catalog block and the examples
- *                          block. Individual {{widget:foo}} tokens are
- *                          NOT touched — they're an explicit author
- *                          choice we honor regardless of exclusion.
+ *                          from the catalog, examples, AND the
+ *                          {{template_blocks}} listing — so a page-
+ *                          context prompt won't quietly leak unselected
+ *                          types back in through the "이미 배치된 위젯"
+ *                          section (the AI would otherwise fill content
+ *                          for those blocks too). Individual
+ *                          {{widget:foo}} tokens are NOT touched —
+ *                          they're an explicit author choice we honor
+ *                          regardless of exclusion.
  */
 export function buildPromptContext({
   widgetCatalog,
@@ -153,6 +170,6 @@ export function buildPromptContext({
     sectionTaxonomyText: renderSectionTaxonomy(sectionCategories),
     widgetCatalogText: renderWidgetCatalogText(filteredWidgets),
     widgetExamplesText: renderWidgetExamplesText(excluded),
-    templateBlocksText: renderTemplateBlocksText(templateBlocks),
+    templateBlocksText: renderTemplateBlocksText(templateBlocks, excluded),
   }
 }

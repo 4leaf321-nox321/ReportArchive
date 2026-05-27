@@ -123,7 +123,7 @@ export async function exportReportToDocx({
   const children = []
 
   // Title block. Prefix `□ ` so the top-level 전체 과제명 carries its
-  // dedicated marker (the depth-0 chevron `▶` is reserved for body
+  // dedicated marker (the depth-0 square `■` is reserved for body
   // outline rows in the RichText widget; `□` stays unique to the
   // report title).
   children.push(
@@ -466,13 +466,13 @@ function convertHeading(props, content) {
   ]
 }
 
-// Depth glyphs mirror the RichText widget's display set. depth 0
-// switched from `□` to `▶` so `□` is free for the top-level 전체
+// Depth glyphs mirror the RichText widget's display set. depth 0 is
+// `■` (was `□` → `▶` → `■`); `□` stays free for the top-level 전체
 // 과제명 marker elsewhere in the document.
-const DEPTH_PREFIX = ['▶', '–', '·', '·', '·', '·']
+const DEPTH_PREFIX = ['■', '–', '·', '·', '·', '·']
 const RT_INDENT_TWIPS_PER_DEPTH = 360 // ~0.25in
 // 모든 RichText 줄이 [섹션] : 제목 헤더 아래에 시각적으로 "tucked under"
-// 보이도록 기본 들여쓰기를 더한다. depth 0 (▶) 도 0 이 아니라 이 값
+// 보이도록 기본 들여쓰기를 더한다. depth 0 (■) 도 0 이 아니라 이 값
 // 만큼 안쪽으로 들어가고, 깊은 depth 는 그 위에 360씩 더 들어감.
 const RT_BASE_INDENT_TWIPS = 360 // ~0.25in
 
@@ -509,14 +509,14 @@ function convertRichText(content) {
 
 /** Minimal markdown → outline parser for the legacy `content.markdown`
  *  shape. Each non-empty line becomes one item; depth is inferred from
- *  bullet prefix (▶/□/–/·/-) or leading whitespace. Mirrors the spirit
+ *  bullet prefix (■/□/▶/–/·/-) or leading whitespace. Mirrors the spirit
  *  of RichText.jsx's parseMarkdownToItems but doesn't pull the whole
  *  widget into the exporter bundle.
- *  Both ▶ (current) and □ (legacy) map to depth 0 for backward compat
- *  with reports authored before the prefix swap. */
+ *  `■` (current), `□`, and `▶` (legacy glyphs) all map to depth 0 for
+ *  backward compat with reports authored before the prefix swap. */
 function markdownToItemsForExport(md) {
   if (typeof md !== 'string' || !md.trim()) return []
-  const PREFIX_DEPTH = { '▶': 0, '□': 0, '–': 1, '-': 1, '*': 1, '•': 1, '·': 2 }
+  const PREFIX_DEPTH = { '■': 0, '□': 0, '▶': 0, '–': 1, '-': 1, '*': 1, '•': 1, '·': 2 }
   const out = []
   for (const raw of md.split(/\r?\n/)) {
     const line = raw.replace(/\s+$/, '')

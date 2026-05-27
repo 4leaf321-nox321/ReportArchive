@@ -318,6 +318,7 @@ def _rich_text_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
             # Legacy single-blob field — still accepted for backward
             # compatibility. The frontend parses it into `items` on load
             # and writes back as `items`. Validators that need the body
@@ -339,7 +340,7 @@ RICH_TEXT: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             "placeholder": {"type": "string", "maxLength": 500},
             "min_length": {"type": "integer", "minimum": 0},
             "max_length": {"type": "integer", "minimum": 1},
@@ -351,7 +352,7 @@ RICH_TEXT: WidgetDescriptor = {
             "text_style": _TEXT_STYLE_SCHEMA,
             "depth_styles": _DEPTH_STYLES_SCHEMA,
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _rich_text_content,
@@ -444,6 +445,7 @@ def _bulleted_list_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
             "items": arr_schema,
         },
         "additionalProperties": False,
@@ -458,13 +460,13 @@ BULLETED_LIST: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             "placeholder": {"type": "string", "maxLength": 200},
             "min_items": {"type": "integer", "minimum": 0},
             "max_items": {"type": "integer", "minimum": 1},
             "text_style": _TEXT_STYLE_SCHEMA,
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _bulleted_list_content,
@@ -497,6 +499,7 @@ def _table_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
             # Per-report column overrides. When absent, the renderer falls
             # back to props.columns (the template-defined defaults).
             "columns": {
@@ -517,7 +520,7 @@ TABLE: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             "columns": {
                 "type": "array",
                 "minItems": 1,
@@ -527,7 +530,7 @@ TABLE: WidgetDescriptor = {
             "max_rows": {"type": "integer", "minimum": 1},
             "text_style": _TEXT_STYLE_SCHEMA,
         },
-        "required": ["label", "columns"],
+        "required": ["columns"],
         "additionalProperties": False,
     },
     "content_schema_for": _table_content,
@@ -557,6 +560,7 @@ def _image_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
             # Per-report layout overrides — tunable from the 위젯 편집
             # toolbar. `max_count` is a soft UI cap (hard cap stays in
             # the files maxItems below). `aspect_ratio` overrides the
@@ -594,7 +598,7 @@ IMAGE: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             "max_count": {"type": "integer", "minimum": 1, "maximum": 50},
             "caption_required": {"type": "boolean"},
             "aspect_ratio": {
@@ -603,7 +607,7 @@ IMAGE: WidgetDescriptor = {
                 "description": "예: '16:9', '4:3', '1:1'",
             },
         },
-        "required": ["label", "max_count"],
+        "required": ["max_count"],
         "additionalProperties": False,
     },
     "content_schema_for": _image_content,
@@ -619,6 +623,7 @@ def _attachment_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
             # Per-report soft cap on file count. The hard cap stays in
             # props.max_count (used for the JSON Schema `maxItems`);
             # content.max_count narrows the UI quota further so the
@@ -653,14 +658,14 @@ ATTACHMENT: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             "max_count": {"type": "integer", "minimum": 1, "maximum": 50},
             "allowed_extensions": {
                 "type": "array",
                 "items": {"type": "string", "pattern": r"^\.[a-zA-Z0-9]+$"},
             },
         },
-        "required": ["label", "max_count"],
+        "required": ["max_count"],
         "additionalProperties": False,
     },
     "content_schema_for": _attachment_content,
@@ -717,7 +722,7 @@ VIDEO: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             "max_count": {"type": "integer", "minimum": 1, "maximum": 10},
             # Playback defaults — author overrides per-instance via the
             # editor; the report viewer sees these exact options unless
@@ -726,7 +731,7 @@ VIDEO: WidgetDescriptor = {
             "loop": {"type": "boolean"},
             "muted": {"type": "boolean"},
         },
-        "required": ["label", "max_count"],
+        "required": ["max_count"],
         "additionalProperties": False,
     },
     "content_schema_for": _video_content,
@@ -773,9 +778,9 @@ HTML_EMBED: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _html_embed_content,
@@ -814,6 +819,7 @@ def _chart_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
             # Per-report overrides — type stored alongside data so the
             # report can flip bar↔line without going back to the template.
             "chart_type": {"type": "string", "enum": list(_CHART_TYPES)},
@@ -854,6 +860,7 @@ def _flowchart_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
             # Per-report orientation override — renderer reads
             # `content.orientation ?? props.orientation ?? 'horizontal'`.
             "orientation": {
@@ -885,14 +892,14 @@ FLOWCHART: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             "orientation": {
                 "type": "string",
                 "enum": ["horizontal", "vertical"],
             },
             "text_style": _TEXT_STYLE_SCHEMA,
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _flowchart_content,
@@ -912,6 +919,7 @@ def _milestone_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
             # Per-report timeline range overrides — same fields as
             # `props.start_date / end_date` but tunable from the
             # 위젯 편집 toolbar without touching the template.
@@ -951,7 +959,7 @@ MILESTONE: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             # Optional pinned range — when set, the timeline starts/ends
             # at these dates regardless of the data. Useful for quarterly /
             # half-year boards where the X axis should be fixed.
@@ -959,7 +967,7 @@ MILESTONE: WidgetDescriptor = {
             "end_date": {"type": "string", "format": "date"},
             "text_style": _TEXT_STYLE_SCHEMA,
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _milestone_content,
@@ -975,7 +983,7 @@ CHART: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             "chart_type": {"type": "string", "enum": list(_CHART_TYPES)},
             "x_column_key": {
                 "type": "string",
@@ -990,7 +998,7 @@ CHART: WidgetDescriptor = {
                 "items": _CHART_COLUMN_SCHEMA,
             },
         },
-        "required": ["label", "chart_type", "x_column_key", "columns"],
+        "required": ["chart_type", "x_column_key", "columns"],
         "additionalProperties": False,
     },
     "content_schema_for": _chart_content,
@@ -1037,6 +1045,7 @@ def _scatter_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
             "mode": {"type": "string", "enum": list(_SCATTER_MODES)},
             # Legacy "shared x" key — when `series` is absent, the
             # frontend derives series from this + any number column
@@ -1099,7 +1108,7 @@ SCATTER: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             "mode": {"type": "string", "enum": list(_SCATTER_MODES)},
             "x_column_key": {
                 "type": "string",
@@ -1114,7 +1123,7 @@ SCATTER: WidgetDescriptor = {
                 "items": _SCATTER_COLUMN_SCHEMA,
             },
         },
-        "required": ["label", "mode", "x_column_key", "columns"],
+        "required": ["mode", "x_column_key", "columns"],
         "additionalProperties": False,
     },
     "content_schema_for": _scatter_content,
@@ -1170,6 +1179,7 @@ def _scatter3d_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
             "mode": {"type": "string", "enum": list(_SCATTER3D_MODES)},
             # Color ramp applied to every series that uses an
             # independent color axis. Single chart-wide value because
@@ -1247,7 +1257,7 @@ SCATTER3D: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             "x_axis_title": {"type": "string", "maxLength": 100},
             "y_axis_title": {"type": "string", "maxLength": 100},
             "z_axis_title": {"type": "string", "maxLength": 100},
@@ -1257,7 +1267,7 @@ SCATTER3D: WidgetDescriptor = {
                 "items": _SCATTER_COLUMN_SCHEMA,
             },
         },
-        "required": ["label", "columns"],
+        "required": ["columns"],
         "additionalProperties": False,
     },
     "content_schema_for": _scatter3d_content,
@@ -1285,6 +1295,7 @@ def _progress_bar_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
             # Per-report defaults — overrideable in the 위젯 편집 toolbar.
             # Same shape as the matching props_schema fields.
             "default_max": {"type": "number", "exclusiveMinimum": 0},
@@ -1345,6 +1356,7 @@ def _raci_matrix_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
             "roles": {
                 "type": "array",
                 "items": _RACI_ROLE_ITEM_SCHEMA,
@@ -1388,7 +1400,7 @@ RACI_MATRIX: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             # Initial seed roles. Writers can override per-report via
             # `content.roles` (the matrix table's inline header editor).
             "default_roles": {
@@ -1397,7 +1409,7 @@ RACI_MATRIX: WidgetDescriptor = {
             },
             "text_style": _TEXT_STYLE_SCHEMA,
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _raci_matrix_content,
@@ -1491,11 +1503,11 @@ HEATMAP: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             "x_axis_title": {"type": "string", "maxLength": 100},
             "y_axis_title": {"type": "string", "maxLength": 100},
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _heatmap_content,
@@ -1616,11 +1628,11 @@ CONTOUR: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             "x_axis_title": {"type": "string", "maxLength": 100},
             "y_axis_title": {"type": "string", "maxLength": 100},
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _contour_content,
@@ -1851,11 +1863,11 @@ BOX: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             "x_axis_title": {"type": "string", "maxLength": 100},
             "y_axis_title": {"type": "string", "maxLength": 100},
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _box_content,
@@ -1940,11 +1952,11 @@ DENSITY: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             "x_axis_title": {"type": "string", "maxLength": 100},
             "y_axis_title": {"type": "string", "maxLength": 100},
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _density_content,
@@ -2018,9 +2030,9 @@ WAFFLE: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _waffle_content,
@@ -2038,9 +2050,9 @@ PIE: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _pie_content,
@@ -2180,9 +2192,9 @@ TREE: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _tree_content,
@@ -2312,9 +2324,9 @@ NETWORK: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _network_content,
@@ -2390,9 +2402,9 @@ MIND_MAP: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _mind_map_content,
@@ -2410,9 +2422,9 @@ PACKING: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _packing_content,
@@ -2430,9 +2442,9 @@ TREEMAP: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _treemap_content,
@@ -2501,9 +2513,9 @@ RADAR: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _radar_content,
@@ -2556,9 +2568,9 @@ EQUATION: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _equation_content,
@@ -2576,7 +2588,7 @@ PROGRESS_BAR: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             # Per-item default target. Most use cases are 0–100% so 100
             # is sensible, but for raw-count progress (e.g. "8 / 12 tasks
             # done") the writer overrides `max` on each item.
@@ -2588,7 +2600,7 @@ PROGRESS_BAR: WidgetDescriptor = {
             "max_items": {"type": "integer", "minimum": 1},
             "text_style": _TEXT_STYLE_SCHEMA,
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _progress_bar_content,
@@ -2715,7 +2727,7 @@ COMPARISON: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             # Default case columns. Writers can rename / add / remove
             # per report via content.cases (mirrors the raci_matrix
             # "default_roles → content.roles" pattern).
@@ -2749,7 +2761,7 @@ COMPARISON: WidgetDescriptor = {
             },
             "text_style": _TEXT_STYLE_SCHEMA,
         },
-        "required": ["label", "cases"],
+        "required": ["cases"],
         "additionalProperties": False,
     },
     "content_schema_for": _comparison_content,
@@ -2891,7 +2903,7 @@ CAD_3D: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             # mm/cm/m — used by Phase-2 measurements. Phase 1 surfaces
             # it as a label hint near the canvas.
             "unit": {"type": "string", "enum": ["mm", "cm", "m"]},
@@ -2906,7 +2918,7 @@ CAD_3D: WidgetDescriptor = {
                 "pattern": r"^#[0-9a-fA-F]{6}$",
             },
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _cad_3d_content,
@@ -3047,7 +3059,7 @@ QUADRANT: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             # Which mode the template defaults to.  Content.mode can
             # override per-report (writers might tweak a SWOT into a
             # weighted plot for a particular case).
@@ -3082,7 +3094,7 @@ QUADRANT: WidgetDescriptor = {
             "show_bubble_size": {"type": "boolean"},
             "text_style": _TEXT_STYLE_SCHEMA,
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _quadrant_content,
@@ -3188,7 +3200,7 @@ SANKEY: WidgetDescriptor = {
     "props_schema": {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "label": {"type": "string", "maxLength": 200},
             "arrangement": {
                 "type": "string",
                 "enum": list(_SANKEY_ARRANGEMENTS),
@@ -3197,7 +3209,7 @@ SANKEY: WidgetDescriptor = {
             "node_thickness": {"type": "integer", "minimum": 4, "maximum": 80},
             "unit": {"type": "string", "maxLength": 32},
         },
-        "required": ["label"],
+        "required": [],
         "additionalProperties": False,
     },
     "content_schema_for": _sankey_content,

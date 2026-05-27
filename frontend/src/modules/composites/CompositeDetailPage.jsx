@@ -46,6 +46,8 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/shared/components/ui/dialog'
@@ -75,6 +77,7 @@ export default function CompositeDetailPage() {
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState(null)
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [addGroupOpen, setAddGroupOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [copyOpen, setCopyOpen] = useState(false)
   // Drag-and-drop state for item reorder. Declared up here with the
@@ -98,6 +101,22 @@ export default function CompositeDetailPage() {
   // 행 폭이 절반으로 줄어드니 인라인 본문(InlineReportView) 은 좁아져
   // 보기 어려우므로 ON 일 땐 펼침을 강제로 모두 접는다.
   const [twoColPreview, setTwoColPreview] = useState(false)
+  // 알려진 그룹 목록 = 현재 items 안의 distinct non-empty group_name +
+  // 사용자가 "그룹 추가" 로 만들어둔 빈 그룹(아직 안건이 안 들어간). 빈
+  // 그룹은 로컬 state 라 저장 후엔 사라짐 — 사용자가 빈 그룹을 만든 뒤
+  // 적어도 한 안건을 그쪽으로 옮겨야 영구 보존.
+  // 이 두 hook 은 반드시 early-return 위에 있어야 한다 — draft 가 아직
+  // null 인 첫 render 와 로드된 두 번째 render 사이에서 hook 수가 달라지면
+  // React 의 "Rendered more hooks than during the previous render" 가 터짐.
+  const [pendingGroups, setPendingGroups] = useState([])
+  const knownGroups = useMemo(() => {
+    const set = new Set()
+    for (const it of draft?.items ?? []) {
+      if (it.group_name) set.add(it.group_name)
+    }
+    for (const g of pendingGroups) set.add(g)
+    return [...set]
+  }, [draft, pendingGroups])
 
   // Workspace section taxonomy — used by the DOCX exporter so long-text
   // widgets emit "[단락구분] : 제목" headers (same convention as the
@@ -120,6 +139,7 @@ export default function CompositeDetailPage() {
           ref_report_id: it.item_type === 'report' ? it.ref_report?.id : null,
           ref_composite_id: it.item_type === 'composite' ? it.ref_composite?.id : null,
           display_column: it.display_column ?? 1,
+          group_name: it.group_name ?? null,
           // Cached display info for the table (not sent on save).
           _display: it,
         })),
@@ -160,6 +180,7 @@ export default function CompositeDetailPage() {
           ref_report_id: it.ref_report_id,
           ref_composite_id: it.ref_composite_id,
           display_column: it.display_column ?? 1,
+          group_name: it.group_name || null,
         })),
       })
       toast.success('저장되었습니다.')
@@ -207,6 +228,7 @@ export default function CompositeDetailPage() {
           ref_composite_id:
             it.item_type === 'composite' ? it.ref_composite?.id : null,
           display_column: it.display_column ?? 1,
+          group_name: it.group_name || null,
         })),
       })
       toast.success('종합보고가 복사되었습니다.')
@@ -292,6 +314,25 @@ export default function CompositeDetailPage() {
       i === idx ? { ...it, display_column: col } : it,
     )
     setDraft({ ...draft, items: next })
+  }
+  function setItemGroup(idx, groupName) {
+    // 빈 문자열은 null 로 정규화 — backend 가 동일 의미 (그룹 없음) 로 처리.
+    const normalized = groupName && groupName.trim() ? groupName.trim() : null
+    const next = draft.items.map((it, i) =>
+      i === idx ? { ...it, group_name: normalized } : it,
+    )
+    setDraft({ ...draft, items: next })
+  }
+
+  // (pendingGroups / knownGroups hooks 는 위쪽 — early-return 앞 — 에 정의)
+  function addGroup(name) {
+    const trimmed = (name || '').trim()
+    if (!trimmed) return
+    if (knownGroups.includes(trimmed)) {
+      toast.info(`이미 있는 그룹: ${trimmed}`)
+      return
+    }
+    setPendingGroups((prev) => [...prev, trimmed])
   }
 
   // Phase 5A — publish state + handlers. theme composites stay live by
@@ -569,10 +610,21 @@ export default function CompositeDetailPage() {
                 </>
               )}
               {isEditing && (
-                <Button size="sm" variant="outline" onClick={() => setPickerOpen(true)}>
-                  <Plus className="mr-1 h-3 w-3" />
-                  안건 추가
-                </Button>
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setAddGroupOpen(true)}
+                    title="안건들을 묶을 그룹 (Word 출력 시 [그룹명] 헤더로 표시)"
+                  >
+                    <Plus className="mr-1 h-3 w-3" />
+                    그룹 추가
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setPickerOpen(true)}>
+                    <Plus className="mr-1 h-3 w-3" />
+                    안건 추가
+                  </Button>
+                </>
               )}
             </div>
           </div>
@@ -581,7 +633,12 @@ export default function CompositeDetailPage() {
               아직 추가된 안건이 없습니다.
             </p>
           ) : (
-            <ItemsListContainer twoColPreview={twoColPreview} items={draft.items}>
+            <ItemsListContainer
+              twoColPreview={twoColPreview}
+              items={draft.items}
+              editing={isEditing}
+              pendingGroups={pendingGroups}
+            >
               {draft.items.map((it, idx) => (
                 <ItemRow
                   key={`${it.ref_report_id ?? ''}-${it.ref_composite_id ?? ''}-${idx}`}
@@ -607,6 +664,9 @@ export default function CompositeDetailPage() {
                   onChangeNote={(n) => setItemNote(idx, n)}
                   displayColumn={it.display_column ?? 1}
                   onSetColumn={(c) => setItemColumn(idx, c)}
+                  groupName={it.group_name ?? null}
+                  knownGroups={knownGroups}
+                  onSetGroup={(g) => setItemGroup(idx, g)}
                   isDragging={draggingIdx === idx}
                   isDropTarget={
                     dropOverIdx === idx &&
@@ -680,6 +740,16 @@ export default function CompositeDetailPage() {
         onPick={(items) => {
           addItems(items)
           setPickerOpen(false)
+        }}
+      />
+
+      <AddGroupDialog
+        open={addGroupOpen}
+        onOpenChange={setAddGroupOpen}
+        existingGroups={knownGroups}
+        onAdd={(name) => {
+          addGroup(name)
+          setAddGroupOpen(false)
         }}
       />
 
@@ -847,6 +917,62 @@ function KindToggle({ value, onChange }) {
   )
 }
 
+/** 그룹 추가 다이얼로그 — 이름 입력 → 부모의 addGroup 호출. 동일 이름
+ *  중복 / 빈 문자열은 부모쪽 addGroup 에서 처리. dialog 자체는 단순
+ *  text input + 엔터/제출 버튼. */
+function AddGroupDialog({ open, onOpenChange, existingGroups, onAdd }) {
+  const [name, setName] = useState('')
+  useEffect(() => {
+    if (open) setName('')
+  }, [open])
+  function submit(e) {
+    e?.preventDefault?.()
+    const trimmed = name.trim()
+    if (!trimmed) return
+    onAdd?.(trimmed)
+  }
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>그룹 추가</DialogTitle>
+          <DialogDescription>
+            안건들을 묶을 그룹 이름을 입력하세요. Word 출력 시 그 그룹의
+            첫 안건 직전에 <code className="font-mono text-xs">[그룹명]</code>
+            한 줄이 헤더로 들어갑니다.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={submit} className="space-y-2">
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="예: 1팀 주간 / 본부 종합 / 기획"
+            maxLength={128}
+            autoFocus
+          />
+          {existingGroups && existingGroups.length > 0 && (
+            <div className="text-[11px] text-muted-foreground">
+              기존 그룹: {existingGroups.join(' · ')}
+            </div>
+          )}
+          <DialogFooter className="pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+            >
+              취소
+            </Button>
+            <Button type="submit" disabled={!name.trim()}>
+              추가
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 /** 안건 리스트 컨테이너 — 토글에 따라 두 가지 레이아웃:
  *
  *  - twoColPreview=false (기본): `<ul className="divide-y">` 단일 칼럼.
@@ -859,25 +985,92 @@ function KindToggle({ value, onChange }) {
  *  index) — 각 ItemRow 의 displayColumn prop 를 보고 분배. ItemRow 자체
  *  의 moveItem 콜백은 원본 index 를 쓰므로 미리보기 모드에서 ↑↓ 클릭도
  *  여전히 전체 순서를 기준으로 동작한다. */
-function ItemsListContainer({ twoColPreview, items, children }) {
-  if (!twoColPreview) {
-    return <ul className="divide-y">{children}</ul>
-  }
+function ItemsListContainer({
+  twoColPreview,
+  items,
+  children,
+  editing,
+  pendingGroups,
+}) {
+  // 그룹 헤더 시각화 — children 배열 안에서 group_name 이 직전과 다른
+  // 지점마다 `[그룹명]` 헤더 행을 삽입. items[i] 와 children[i] 가
+  // 1:1 매칭. children 한 묶음을 (header? + item-row) 시퀀스로 풀어 낸 뒤
+  // 단일/2단 컨테이너에 흘려보낸다.
   const arr = Array.isArray(children) ? children : [children]
-  const col1 = []
-  const col2 = []
-  for (let i = 0; i < arr.length; i++) {
-    const child = arr[i]
-    const it = items[i]
-    const col = it?.display_column === 2 ? 2 : 1
-    if (col === 2) col2.push(child)
-    else col1.push(child)
+  // 1) 그룹 헤더 + 행으로 풀기 (단일 보기에서만 사용; 2단 보기는 자체
+  //    그룹 헤더를 따로 그리므로 raw 행만 필요).
+  function buildWithHeaders() {
+    const out = []
+    let prev = null
+    for (let i = 0; i < arr.length; i++) {
+      const it = items[i]
+      const gn = it?.group_name || null
+      if (gn !== prev) {
+        if (gn) {
+          out.push(
+            <GroupHeader
+              key={`grp-${i}-${gn}`}
+              name={gn}
+              variant="single"
+            />,
+          )
+        } else if (prev) {
+          // 그룹 → 그룹 없음 전환 — 헤더는 안 그리지만 시각적 구분이
+          // 필요하면 여기서 spacer 를 넣을 수 있다. 지금은 divide-y 가
+          // 라인을 그어주므로 생략.
+        }
+      }
+      out.push(arr[i])
+      prev = gn
+    }
+    // pendingGroups (아직 비어 있는 그룹) 가 있으면 단일 보기 맨 끝에
+    // empty 헤더 + "비어 있음" 안내. 사용자가 그룹을 만들었다는 신호.
+    if (editing && (pendingGroups ?? []).length > 0) {
+      const seen = new Set(items.map((it) => it.group_name).filter(Boolean))
+      for (const g of pendingGroups) {
+        if (seen.has(g)) continue
+        out.push(
+          <li key={`empty-grp-${g}`} className="py-2">
+            <GroupHeader name={g} variant="single" />
+            <p className="text-[11px] text-muted-foreground italic pl-3">
+              (비어 있음 — 위 안건들의 그룹 selector 에서 이 그룹을 선택하세요)
+            </p>
+          </li>,
+        )
+      }
+    }
+    return out
   }
+  if (!twoColPreview) {
+    return <ul className="divide-y">{buildWithHeaders()}</ul>
+  }
+  // 2단 미리보기 — display_column 기준 분배. 각 컬럼 안에서 그룹 헤더는
+  // 그 컬럼에 들어온 안건들 사이에서만 발생.
+  function buildBucket(targetCol) {
+    const out = []
+    let prev = null
+    for (let i = 0; i < arr.length; i++) {
+      const it = items[i]
+      const col = it?.display_column === 2 ? 2 : 1
+      if (col !== targetCol) continue
+      const gn = it?.group_name || null
+      if (gn !== prev && gn) {
+        out.push(
+          <GroupHeader key={`grp-c${targetCol}-${i}-${gn}`} name={gn} variant="bucket" />,
+        )
+      }
+      out.push(arr[i])
+      prev = gn
+    }
+    return out
+  }
+  const col1 = buildBucket(1)
+  const col2 = buildBucket(2)
   return (
     <div className="grid grid-cols-2 gap-x-3">
       <div className="space-y-1 border-r pr-3">
         <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium pb-1 border-b">
-          1열 · {col1.length}건
+          1열
         </div>
         {col1.length > 0 ? (
           col1
@@ -889,7 +1082,7 @@ function ItemsListContainer({ twoColPreview, items, children }) {
       </div>
       <div className="space-y-1">
         <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium pb-1 border-b">
-          2열 · {col2.length}건
+          2열
         </div>
         {col2.length > 0 ? (
           col2
@@ -901,6 +1094,23 @@ function ItemsListContainer({ twoColPreview, items, children }) {
       </div>
     </div>
   )
+}
+
+/** 그룹 헤더 — 단일 보기에선 `<li>`(divide-y 흐름 안), 2단 보기 컬럼
+ *  안에선 `<div>` (carded items 사이의 인라인 헤더). */
+function GroupHeader({ name, variant }) {
+  const content = (
+    <div className="flex items-center gap-2 py-2">
+      <span className="text-[11px] font-semibold text-primary">
+        [{name}]
+      </span>
+      <span className="flex-1 border-t border-primary/30" />
+    </div>
+  )
+  if (variant === 'single') {
+    return <li className="list-none">{content}</li>
+  }
+  return content
 }
 
 function ItemRow({
@@ -930,6 +1140,10 @@ function ItemRow({
   // the landscape-2col DOCX export; portrait/1-col ignores it.
   displayColumn,
   onSetColumn,
+  // 그룹 지정 — null = 그룹 없음. knownGroups 는 dropdown 옵션.
+  groupName,
+  knownGroups,
+  onSetGroup,
   // 2단 미리보기 — true 면 행을 카드(테두리/패딩) 로 감싸 좁은 그리드
   // 셀 안에서도 시각적으로 분리되어 보이도록.
   compactCard = false,
@@ -1027,6 +1241,31 @@ function ItemRow({
             >
               {displayColumn === 2 ? '2' : '1'}
             </button>
+            {/* 그룹 selector — 옵션: [그룹 없음] + knownGroups. 같은
+                그룹의 연속 안건들이 Word export 에서 [그룹명] 헤더로
+                묶임. dropdown 폭이 너무 늘어나지 않게 max-w 제한. */}
+            <select
+              value={groupName ?? ''}
+              onChange={(e) => onSetGroup?.(e.target.value || null)}
+              className={cn(
+                'h-6 rounded border bg-background px-1 text-[10px] max-w-[7rem] truncate transition-colors',
+                groupName
+                  ? 'border-primary text-primary font-medium'
+                  : 'border-border text-muted-foreground',
+              )}
+              title={
+                groupName
+                  ? `그룹: ${groupName} · Word 에서 [${groupName}] 헤더로 묶임`
+                  : '그룹 없음'
+              }
+            >
+              <option value="">(그룹 없음)</option>
+              {(knownGroups ?? []).map((g) => (
+                <option key={g} value={g}>
+                  {g}
+                </option>
+              ))}
+            </select>
             <Button
               variant="ghost"
               size="icon"

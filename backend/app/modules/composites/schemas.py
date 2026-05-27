@@ -140,6 +140,9 @@ class CompositeItemRead(BaseModel):
     # Phase 5B — per-item placement for the landscape-2col DOCX export.
     # 1=left, 2=right. Portrait/1-col mode ignores this.
     display_column: int = 1
+    # Optional grouping name — consecutive items sharing a value are
+    # rendered under one `[group_name]` header in DOCX. NULL = ungrouped.
+    group_name: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -157,6 +160,7 @@ class CompositeItemRead(BaseModel):
             "snapshot_content": getattr(obj, "snapshot_content", None),
             "snapshot_taken_at": getattr(obj, "snapshot_taken_at", None),
             "display_column": getattr(obj, "display_column", 1) or 1,
+            "group_name": getattr(obj, "group_name", None),
         }
         return out
 
@@ -275,12 +279,18 @@ class CompositeItemPayload(BaseModel):
     ref_composite_id: Optional[int] = None
     # 1=left, 2=right. Defaults to left when caller omits it.
     display_column: int = Field(default=1, ge=1, le=2)
+    # Optional group name (max 128 chars). Empty string normalized to None
+    # so "no group" round-trips as NULL in the DB, not "".
+    group_name: Optional[str] = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
     def _exactly_one(self) -> "CompositeItemPayload":
         ref_count = (self.ref_report_id is not None) + (self.ref_composite_id is not None)
         if ref_count != 1:
             raise ValueError("item must reference exactly one of ref_report_id / ref_composite_id")
+        if self.group_name is not None:
+            trimmed = self.group_name.strip()
+            self.group_name = trimmed if trimmed else None
         return self
 
 

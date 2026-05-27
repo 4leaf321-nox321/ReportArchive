@@ -200,6 +200,7 @@ def _replace_items(
                 ref_report_id=payload.ref_report_id,
                 ref_composite_id=payload.ref_composite_id,
                 display_column=payload.display_column or 1,
+                group_name=payload.group_name,
             )
         )
 

@@ -170,6 +170,16 @@ class CompositeReportItem(Base):
         Integer, default=1, server_default="1", nullable=False
     )
 
+    # Optional group name — items sharing the same value are visually
+    # grouped on screen and Word export emits a "[group_name]" header
+    # paragraph before the first item of each group. NULL / "" = no
+    # group (ungrouped flow). Plain free text, no separate `groups`
+    # master table — the set of groups is just the distinct non-empty
+    # values across this composite's items.
+    group_name: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )

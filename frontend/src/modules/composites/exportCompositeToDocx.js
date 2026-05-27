@@ -508,6 +508,40 @@ export async function exportCompositeToDocx({
     itemsChildren.push({ group: resolved[i], children: ch })
   }
 
+  // 그룹 헤더 `[그룹명]` — 같은 group_name 을 가진 연속 안건들 중 첫
+  // 안건 직전에 한 줄. 그룹이 바뀔 때 (또는 처음 그룹이 등장할 때) emit.
+  function groupHeaderParagraph(name) {
+    return new Paragraph({
+      heading: HeadingLevel.HEADING_2,
+      children: [
+        new TextRun({
+          text: `[${name}]`,
+          bold: true,
+          size: TITLE_SIZE,
+          font: BODY_FONT,
+          color: '000000',
+        }),
+      ],
+    })
+  }
+
+  /** itemsChildren 의 일부(또는 전부)를 받아 group 헤더가 적절히 끼워진
+   *  flat paragraph 배열을 돌려준다. prev 는 이전 (다른 컬럼 / 흐름) 의
+   *  마지막 그룹을 모를 때 null. 같은 컬럼 / 단일 흐름 안에서만 비교. */
+  function flattenWithGroupHeaders(entries) {
+    const out = []
+    let prevGroup = null
+    for (const { group, children } of entries) {
+      const gn = group.item?.group_name || null
+      if (gn && gn !== prevGroup) {
+        out.push(groupHeaderParagraph(gn))
+      }
+      out.push(...children)
+      prevGroup = gn
+    }
+    return out
+  }
+
   // Compose section children honoring the layout choice.
   let sectionChildren
   if (isTwoCol) {
@@ -518,11 +552,16 @@ export async function exportCompositeToDocx({
     // Borders intentionally NOT overridden — falls back to docx-js
     // defaults which render Word's thin black grid. Different from
     // the invisible-borders pattern used elsewhere in this file.
-    const leftChildren = []
-    const rightChildren = []
-    for (const { group, children } of itemsChildren) {
-      ;(group.displayColumn === 2 ? rightChildren : leftChildren).push(...children)
+    // 컬럼별로 entries 분리한 뒤 각자 그룹 헤더를 끼워 flatten.
+    // 같은 그룹 안건이 좌/우 양쪽에 흩어져 있으면 각 컬럼마다 헤더가
+    // 한 번씩 들어간다 (사용자가 굳이 그렇게 배치했다면 그게 의도).
+    const leftEntries = []
+    const rightEntries = []
+    for (const entry of itemsChildren) {
+      ;(entry.group.displayColumn === 2 ? rightEntries : leftEntries).push(entry)
     }
+    const leftChildren = flattenWithGroupHeaders(leftEntries)
+    const rightChildren = flattenWithGroupHeaders(rightEntries)
     if (leftChildren.length === 0) leftChildren.push(emptyParagraph())
     if (rightChildren.length === 0) rightChildren.push(emptyParagraph())
     sectionChildren = [
@@ -605,10 +644,10 @@ export async function exportCompositeToDocx({
       }),
     ]
   } else {
-    // 1-col: items in declaration order, no special column handling.
+    // 1-col: items in declaration order. 그룹 헤더는 flatten 시 끼움.
     sectionChildren = [
       ...headChildren,
-      ...itemsChildren.flatMap(({ children }) => children),
+      ...flattenWithGroupHeaders(itemsChildren),
     ]
   }
 

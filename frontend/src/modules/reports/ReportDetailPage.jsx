@@ -22,8 +22,10 @@ import {
   FileCode,
   FileText,
   FileType2,
+  Folder,
   GripVertical,
   HardDrive,
+  Inbox,
   Layers,
   LayoutGrid,
   Loader2,
@@ -82,6 +84,7 @@ import {
   publishReport,
   unpublishReport,
   setAuthorLock,
+  moveReportToFolder,
   LockConflictError,
 } from './api'
 import { useReportLock } from './useReportLock'
@@ -108,6 +111,7 @@ import { MountDialog } from './MountDialog'
 import { EditorsDialog } from './EditorsDialog'
 import { FolderPickerButton } from './FolderPickerButton'
 import { listMounts, mountReport } from '@/shared/api/mounts'
+import { listFolders } from '@/shared/api/folders'
 import { listCompositesContainingReport } from '@/shared/api/composites'
 import { CommentsProvider, useComments } from '@/modules/comments/CommentsContext'
 import { CommentPanel } from '@/modules/comments/CommentPanel'
@@ -1591,7 +1595,7 @@ export default function ReportDetailPage() {
    *  Status drops back to 'draft' since a copy represents fresh work.
    *  After creation we navigate to the new report's URL with `startEditing`
    *  in router state so it lands directly in the edit screen. */
-  async function onCopy(newTitle) {
+  async function onCopy(newTitle, folderId) {
     if (!draft) return
     const first = draft.pages[0]
     try {
@@ -1630,6 +1634,19 @@ export default function ReportDetailPage() {
         // confirmed on the source. Cleared/edited in 보고서 설정.
         entity_ids: (draft.entities ?? []).map((e) => e.id),
       })
+      // 사용자가 폴더를 골랐다면 새 보고서를 그 폴더로 이동. createReport
+      // 페이로드 자체가 folder_id 를 안 받으므로 (current ReportCreate
+      // 스키마) 후속 PUT 으로 분리. 실패해도 복사 자체는 성공한 상태라
+      // 토스트만 띄우고 이동 — 사용자가 수동으로 옮길 수 있음.
+      if (folderId != null) {
+        try {
+          await moveReportToFolder(created.id, folderId)
+        } catch (moveErr) {
+          toast.warning('복사는 됐지만 폴더 이동 실패 — 미분류에 남음', {
+            description: moveErr?.message,
+          })
+        }
+      }
       toast.success('보고서가 복사되었습니다.')
       setCopyOpen(false)
       // Bypass the dirty guard — copy was an explicit "leave for the
@@ -3267,19 +3284,57 @@ function DocxExportOverlay({ progress }) {
   )
 }
 
-/** Asks the user for the new title before kicking off a copy. Pre-fills
- *  '{원본} 사본' so the common case is one Enter; trims and rejects empty. */
+/** Asks the user for the new title + 내 공간의 폴더 before kicking off a copy.
+ *  Pre-fills '{원본} 사본' so the common case is one Enter; trims and rejects empty.
+ *  폴더는 listFolders() (workspaceSlug 없음 → 본인 personal) 로 lazy-load. 미분류
+ *  (folder_id=null) 가 기본값. onConfirm(title, folderId) 시그니처. */
 function ReportCopyDialog({ open, onOpenChange, sourceTitle, onConfirm }) {
   const [title, setTitle] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [folderId, setFolderId] = useState(null) // null = 미분류
+  const [folders, setFolders] = useState(null) // null = 로딩 중
 
   useEffect(() => {
     if (open) {
       const base = (sourceTitle ?? '').trim()
       setTitle(base ? `${base} 사본` : '')
       setSubmitting(false)
+      setFolderId(null)
+      setFolders(null)
+      let cancelled = false
+      listFolders()
+        .then(({ items }) => {
+          if (!cancelled) setFolders(items)
+        })
+        .catch(() => {
+          if (!cancelled) setFolders([])
+        })
+      return () => {
+        cancelled = true
+      }
     }
   }, [open, sourceTitle])
+
+  // 폴더 트리를 flat (folder, depth) 로 펼침 — FolderSidebar / BulkMovePopover
+  // 가 쓰는 동일 패턴. 자식 폴더는 부모 바로 아래에 depth+1 로 들여쓰기.
+  const flatFolders = useMemo(() => {
+    if (!folders) return []
+    const byParent = new Map()
+    for (const f of folders) {
+      const key = f.parent_id ?? null
+      if (!byParent.has(key)) byParent.set(key, [])
+      byParent.get(key).push(f)
+    }
+    const out = []
+    function walk(parentKey, depth) {
+      for (const f of byParent.get(parentKey) ?? []) {
+        out.push({ folder: f, depth })
+        walk(f.id, depth + 1)
+      }
+    }
+    walk(null, 0)
+    return out
+  }, [folders])
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -3287,7 +3342,7 @@ function ReportCopyDialog({ open, onOpenChange, sourceTitle, onConfirm }) {
     if (!trimmed) return
     setSubmitting(true)
     try {
-      await onConfirm(trimmed)
+      await onConfirm(trimmed, folderId)
     } catch {
       // onConfirm surfaces its own toast on failure; keep the dialog
       // open so the user can retry with the same title.
@@ -3318,6 +3373,57 @@ function ReportCopyDialog({ open, onOpenChange, sourceTitle, onConfirm }) {
               본문·레이아웃은 그대로 복사되며, 작성인은 현재 사용자, 작성일과
               보고 기준일은 오늘로 설정됩니다.
             </p>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">
+              복사 위치 (내 공간)
+            </label>
+            {folders === null ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                폴더 목록 불러오는 중...
+              </div>
+            ) : (
+              <div className="max-h-48 overflow-y-auto rounded-md border space-y-0.5 p-1">
+                <button
+                  type="button"
+                  onClick={() => setFolderId(null)}
+                  className={
+                    'flex w-full items-center gap-1.5 rounded px-2 py-1 text-sm text-left transition-colors ' +
+                    (folderId === null
+                      ? 'bg-primary/10 text-primary font-medium'
+                      : 'hover:bg-muted')
+                  }
+                >
+                  <Inbox className="h-3.5 w-3.5 shrink-0" />
+                  <span className="flex-1 truncate">미분류</span>
+                </button>
+                {flatFolders.length > 0 && <div className="h-px bg-border my-1" />}
+                {flatFolders.map(({ folder, depth }) => (
+                  <button
+                    key={folder.id}
+                    type="button"
+                    onClick={() => setFolderId(folder.id)}
+                    className={
+                      'flex w-full items-center gap-1.5 rounded px-2 py-1 text-sm text-left transition-colors ' +
+                      (folderId === folder.id
+                        ? 'bg-primary/10 text-primary font-medium'
+                        : 'hover:bg-muted')
+                    }
+                    style={{ paddingLeft: 8 + depth * 12 }}
+                    title={folder.name}
+                  >
+                    <Folder className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    <span className="flex-1 truncate">{folder.name}</span>
+                  </button>
+                ))}
+                {flatFolders.length === 0 && (
+                  <p className="px-2 py-2 text-[11px] text-muted-foreground italic">
+                    등록된 폴더가 없습니다 — 미분류로 들어갑니다.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
           <div className="flex justify-end gap-2">
             <Button

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   ChevronDown,
   ChevronLeft,
@@ -19,6 +19,7 @@ import { uploadFile } from '@/shared/api/files'
 import { toast } from 'sonner'
 import { cn } from '@/shared/lib/utils'
 import {
+  AutoGrowTextarea,
   CaptionInput,
   DEFAULT_BODY_FONT_PX,
   EditorOptionBar,
@@ -33,6 +34,7 @@ import {
   pruneOverrideKeys,
   textStyleToClassName,
   textStyleToInlineStyle,
+  useGridNavigation,
 } from './_shared'
 
 // Hard guards for the optional layout props — match the backend's
@@ -422,6 +424,9 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
   const storedRowLabelWidth = Number.isFinite(content?.row_label_width)
     ? content.row_label_width
     : null
+  // 셀간 화살표 네비게이션. 컬럼 좌표: 0 = 행 라벨, 1..M = case 셀.
+  // 행 좌표: 0..N-1 = 데이터 행 (헤더는 Tab 으로만 이동).
+  const grid = useGridNavigation()
 
   function patch(next) {
     const merged = {
@@ -810,6 +815,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
         </div>
       ) : (
         <div
+          ref={grid.gridRef}
           className={cn(
             'rounded-md border',
             horizontalScroll ? 'overflow-x-auto' : 'overflow-x-hidden',
@@ -943,13 +949,13 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                           <TypeIcon className="h-3 w-3" />
                         )}
                       </span>
-                      <Input
+                      <AutoGrowTextarea
                         value={row.label ?? ''}
-                        onChange={(e) =>
-                          updateRow(ri, { label: e.target.value })
-                        }
+                        onChange={(v) => updateRow(ri, { label: v })}
+                        onKeyDown={(e) => grid.handleKey(e, ri, 0)}
+                        data-grid-cell={`${ri}:0`}
                         placeholder="행 이름"
-                        className="h-7 text-xs flex-1 min-w-0"
+                        className="flex-1 min-w-0 resize-none rounded-md border border-input bg-background px-2 py-0.5 text-xs leading-snug focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring whitespace-pre-wrap break-words"
                       />
                       <div className="flex flex-col">
                         <Button
@@ -994,6 +1000,8 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                         <TextCellEditor
                           value={row.values?.[c.key]}
                           onChange={(v) => setCellText(ri, c.key, v)}
+                          onKeyDown={(e) => grid.handleKey(e, ri, ci + 1)}
+                          gridCellKey={`${ri}:${ci + 1}`}
                         />
                       )}
                     </td>
@@ -1059,39 +1067,18 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
 // Cell editors                                                                //
 // --------------------------------------------------------------------------- //
 
-/** CASE 헤더 라벨 입력에 쓰는 자동 grow textarea. 단일 라인 input 으로는
- *  긴 case 이름이 가로로 흐르거나 잘려서, 컬럼 폭이 좁을 때 입력이 매우
- *  불편했음. textarea 로 바꾸고 매 입력마다 scrollHeight 만큼 키를 맞춰
- *  서 줄바꿈이 자연스럽게 보이도록 한다. resize 핸들로 컬럼 폭을 늘리
- *  거나 줄여도 textarea 가 같이 따라 와서 입력 영역이 자동으로 wrap. */
-function AutoGrowTextarea({ value, onChange, className, ...rest }) {
-  const ref = useRef(null)
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${el.scrollHeight}px`
-  }, [value])
-  return (
-    <textarea
-      ref={ref}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      rows={1}
-      className={className}
-      {...rest}
-    />
-  )
-}
-
-function TextCellEditor({ value, onChange }) {
+function TextCellEditor({ value, onChange, onKeyDown, gridCellKey }) {
   // `value` is a plain string for text rows. We render a multi-line textarea
   // so writers can compare longer descriptions side by side without
-  // truncating; rows naturally grow as content gets longer.
+  // truncating; rows naturally grow as content gets longer. Enter inserts a
+  // newline; arrow keys at the cell boundary jump to the neighbor cell
+  // (wired via the `useGridNavigation` hook on the editor).
   return (
     <textarea
       value={typeof value === 'string' ? value : ''}
       onChange={(e) => onChange(e.target.value)}
+      onKeyDown={onKeyDown}
+      data-grid-cell={gridCellKey}
       rows={2}
       placeholder="텍스트 / 숫자"
       className="w-full min-h-[2.5rem] resize-y rounded-md border border-input bg-background px-2 py-1 text-xs leading-snug focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"

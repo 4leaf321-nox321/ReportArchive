@@ -2,7 +2,7 @@ import { createContext, useContext, useState } from 'react'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, PreviewLabel, TextStyleField, captionSkipProps, textStyleToClassName, textStyleToInlineStyle, toTsv } from './_shared'
+import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, PreviewLabel, TextStyleField, captionSkipProps, textStyleToClassName, textStyleToInlineStyle, toTsv, useGridNavigation } from './_shared'
 
 /**
  * "표 전체 펼치기" 토글의 공유 state. BlockEditorCard 가 위젯마다
@@ -109,6 +109,9 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   // 본체가 같은 expanded 를 공유 — 그래야 펼침 시 컨테이너 높이도 같이
   // 자란다.
   const [expanded, setExpanded] = useTableExpanded()
+  // 셀간 화살표 네비게이션 — 텍스트 셀은 boundary 기준, 그 외 입력
+  // (number/date/select) 은 left/right boundary 이동만 (up/down 은 native).
+  const grid = useGridNavigation()
 
   function patch(next) {
     const merged = {
@@ -140,7 +143,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
         />
         {rows.length > 0 && cols.length > 0 && (
           <>
-            <div className="flex justify-end">
+            <div className="flex justify-end" data-export-skip="table-expand-toggle">
               <Button
                 variant="ghost"
                 size="sm"
@@ -380,7 +383,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           onClear={() => patch({ rows: [] })}
         />
       </div>
-      <div className={`overflow-x-auto rounded-md border ${bodyTextClass}`} style={bodyTextStyle}>
+      <div ref={grid.gridRef} className={`overflow-x-auto rounded-md border ${bodyTextClass}`} style={bodyTextStyle}>
         {/* Edit mode: same column structure as the read-only render. Row
             action buttons (move/delete) and per-column delete render as
             hover overlays inside the existing cells, so neither view nor
@@ -441,6 +444,9 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                         value={row[c.key]}
                         onChange={(v) => updateCell(rowIdx, c.key, v)}
                         onMultiPaste={(text) => pasteGrid(rowIdx, ci, text)}
+                        rowIdx={rowIdx}
+                        colIdx={ci}
+                        onKeyDown={(e) => grid.handleKey(e, rowIdx, ci)}
                       />
                       {/* Row action overlay — only on the last cell of a row.
                           Hidden until the row is hovered, then floats over
@@ -514,8 +520,11 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   )
 }
 
-function CellInput({ column, value, onChange, onMultiPaste }) {
+function CellInput({ column, value, onChange, onMultiPaste, rowIdx, colIdx, onKeyDown }) {
   const t = column.type
+  // 그리드 네비게이션이 querySelector 로 셀을 찾을 때 키. focusCell 의
+  // 셀렉터와 1:1 매칭 — 형식이 바뀌면 useGridNavigation 도 같이 고쳐야 함.
+  const gridCellKey = `${rowIdx}:${colIdx}`
 
   // Intercept clipboard pastes that look like TSV (tab/newline → multi-cell).
   // Single-value pastes fall through to the normal input behavior.
@@ -529,11 +538,14 @@ function CellInput({ column, value, onChange, onMultiPaste }) {
   }
 
   if (t === 'select') {
-    // Native <select> doesn't accept paste; nothing to wire.
+    // Native <select> 의 ArrowUp/Down 은 option 선택 동작이라 셀 이동을
+    // 강제하지 않는다 — Tab 이동만으로 충분. data-grid-cell 은 타깃이
+    // 되도록만 달아 둠 (이웃 셀에서 화살표로 도달했을 때 focus 가 가도록).
     return (
       <select
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value || undefined)}
+        data-grid-cell={gridCellKey}
         className="flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs text-center"
       >
         <option value="">—</option>
@@ -552,6 +564,8 @@ function CellInput({ column, value, onChange, onMultiPaste }) {
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value || undefined)}
         onPaste={handlePaste}
+        onKeyDown={onKeyDown}
+        data-grid-cell={gridCellKey}
         className="h-8 text-xs text-center"
       />
     )
@@ -566,16 +580,22 @@ function CellInput({ column, value, onChange, onMultiPaste }) {
           onChange(e.target.value === '' ? undefined : Number(e.target.value))
         }
         onPaste={handlePaste}
+        onKeyDown={onKeyDown}
+        data-grid-cell={gridCellKey}
         className="h-8 text-xs text-center"
       />
     )
   }
+  // 텍스트 셀 — multi-line textarea. Enter 로 줄바꿈, 화살표로 셀 이동
+  // (boundary 기준). 행 높이는 내용에 따라 auto-grow.
   return (
-    <Input
+    <AutoGrowTextarea
       value={value ?? ''}
-      onChange={(e) => onChange(e.target.value || undefined)}
+      onChange={(v) => onChange(v || undefined)}
       onPaste={handlePaste}
-      className="h-8 text-xs text-center"
+      onKeyDown={onKeyDown}
+      data-grid-cell={gridCellKey}
+      className="w-full min-h-[2rem] resize-none rounded-md border border-input bg-background px-2 py-1 text-xs leading-snug text-center focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring whitespace-pre-wrap break-words"
     />
   )
 }

@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useRef } from 'react'
 import { ChevronDown, ChevronUp, Copy, Eraser, Plus, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
@@ -1345,4 +1346,131 @@ export function pruneOverrideKeys(merged, props, defaults) {
       delete merged[k]
     }
   }
+}
+
+/**
+ * 표/비교표 셀에 쓰는 자동 grow textarea — `rows=1` 로 시작해 scrollHeight
+ * 만큼 키를 맞춰 줄바꿈이 자연스럽게 보이도록 한다. `...rest` 로 들어오는
+ * data-* / onKeyDown 같은 prop 은 그대로 통과시켜 그리드 네비게이션 hook
+ * 과 함께 쓸 수 있다.
+ */
+export function AutoGrowTextarea({ value, onChange, className, rows = 1, ...rest }) {
+  const ref = useRef(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [value])
+  return (
+    <textarea
+      ref={ref}
+      value={value ?? ''}
+      onChange={(e) => onChange(e.target.value)}
+      rows={rows}
+      className={className}
+      {...rest}
+    />
+  )
+}
+
+/**
+ * 표 / 비교표 공용 그리드 네비게이션 훅.
+ *
+ * 동작:
+ *  - ArrowUp/Down: textarea 면 커서가 첫/마지막 줄일 때만 행 이동.
+ *    input(단일행) 이면 항상 행 이동.
+ *  - ArrowLeft: 커서가 0 일 때 왼쪽 셀로.
+ *  - ArrowRight: 커서가 끝일 때 오른쪽 셀로.
+ *  - Cmd/Ctrl/Alt 조합은 건너뜀 (브라우저 단축키 / 단어단위 이동 보호).
+ *  - 대상 셀이 없으면(테두리) preventDefault 안 하고 native 동작 그대로.
+ *
+ * 사용:
+ *   const grid = useGridNavigation()
+ *   <div ref={grid.gridRef}>
+ *     ...
+ *     <textarea
+ *       data-grid-cell={`${rowIdx}:${colIdx}`}
+ *       onKeyDown={(e) => grid.handleKey(e, rowIdx, colIdx)}
+ *       ...
+ *     />
+ *
+ * 주의 — number/date input 의 ArrowUp/Down 은 native 가 값을 증감시키므로
+ * 굳이 셀 이동을 강제하지 않는다 (cursor 위치를 못 읽어 결국 fall-through).
+ * 그쪽은 Tab 이동을 권장.
+ */
+export function useGridNavigation() {
+  const gridRef = useRef(null)
+
+  const focusCell = useCallback((rowIdx, colIdx, position = 'end') => {
+    const root = gridRef.current
+    if (!root) return false
+    if (rowIdx < 0 || colIdx < 0) return false
+    const sel = `[data-grid-cell="${rowIdx}:${colIdx}"]`
+    const el = root.querySelector(sel)
+    if (!el) return false
+    el.focus()
+    try {
+      const len = el.value?.length ?? 0
+      const pos = position === 'start' ? 0 : len
+      el.setSelectionRange?.(pos, pos)
+    } catch (_) {
+      /* setSelectionRange 가 number/date/select 에서 throw 하는 브라우저 — 무시 */
+    }
+    return true
+  }, [])
+
+  const handleKey = useCallback(
+    (e, rowIdx, colIdx) => {
+      if (e.defaultPrevented) return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.key === 'IME') return
+      const el = e.currentTarget
+      // 한글 등 IME 조합 중 — 키 이벤트가 이중으로 들어와 셀이 점프하면 안 됨.
+      if (e.nativeEvent?.isComposing || e.isComposing) return
+      const isTextarea = el.tagName === 'TEXTAREA'
+      const value = el.value ?? ''
+      let selStart = null
+      let selEnd = null
+      try {
+        selStart = el.selectionStart
+        selEnd = el.selectionEnd
+      } catch (_) {
+        /* number/date input 등은 selection API 미지원 */
+      }
+      const valLen = value.length
+
+      if (e.key === 'ArrowUp') {
+        if (isTextarea && selStart != null) {
+          const before = value.slice(0, selStart)
+          if (before.includes('\n')) return
+        }
+        if (focusCell(rowIdx - 1, colIdx, 'end')) e.preventDefault()
+        return
+      }
+      if (e.key === 'ArrowDown') {
+        if (isTextarea && selEnd != null) {
+          const after = value.slice(selEnd)
+          if (after.includes('\n')) return
+        }
+        if (focusCell(rowIdx + 1, colIdx, 'start')) e.preventDefault()
+        return
+      }
+      if (e.key === 'ArrowLeft') {
+        if (selStart == null || selStart === 0) {
+          if (focusCell(rowIdx, colIdx - 1, 'end')) e.preventDefault()
+        }
+        return
+      }
+      if (e.key === 'ArrowRight') {
+        if (selEnd == null || selEnd === valLen) {
+          if (focusCell(rowIdx, colIdx + 1, 'start')) e.preventDefault()
+        }
+        return
+      }
+    },
+    [focusCell],
+  )
+
+  return { gridRef, focusCell, handleKey }
 }

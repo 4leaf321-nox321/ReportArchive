@@ -564,7 +564,7 @@ function BoxCanvas({
     const measure = () => {
       const w = el.clientWidth
       if (w <= 0) return
-      const next = autoFit ? Math.max(240, Math.min(720, w)) : w
+      const next = autoFit ? Math.max(240, w) : w
       setSize((prev) => (prev === next ? prev : next))
       if (firstCall) {
         firstCall = false

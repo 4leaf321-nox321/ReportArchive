@@ -465,7 +465,7 @@ function TreeCanvas({
     if (!el) return undefined
     const measure = () => {
       const w = el.clientWidth
-      const h = autoFit ? Math.max(240, Math.min(720, w)) : el.clientHeight
+      const h = autoFit ? Math.max(240, w) : el.clientHeight
       setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }))
     }
     measure()
@@ -646,7 +646,7 @@ function TreeCanvas({
       className="relative w-full rounded-md border bg-background overflow-hidden"
       style={
         autoFit
-          ? { height: size.w ? `${Math.max(240, Math.min(720, size.w))}px` : '20rem' }
+          ? { height: size.w ? `${Math.max(240, size.w)}px` : '20rem' }
           : { height: '100%', minHeight: '12rem' }
       }
     >

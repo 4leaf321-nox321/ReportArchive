@@ -735,7 +735,7 @@ function ScatterCanvas({
       const w = el.clientWidth
       if (autoFit && w > 0) {
         setSquareSize((prev) => {
-          const next = Math.max(240, Math.min(720, w))
+          const next = Math.max(240, w)
           return prev === next ? prev : next
         })
       }

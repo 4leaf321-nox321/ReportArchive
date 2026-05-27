@@ -549,7 +549,7 @@ function MindMapCanvas({
     if (!el) return undefined
     const measure = () => {
       const w = el.clientWidth
-      const h = autoFit ? Math.max(260, Math.min(720, w)) : el.clientHeight
+      const h = autoFit ? Math.max(260, w) : el.clientHeight
       setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }))
     }
     measure()
@@ -675,7 +675,7 @@ function MindMapCanvas({
       className="relative w-full rounded-md border bg-background overflow-hidden focus:outline-none focus:ring-2 focus:ring-primary/40"
       style={
         autoFit
-          ? { height: size.w ? `${Math.max(260, Math.min(720, size.w))}px` : '20rem' }
+          ? { height: size.w ? `${Math.max(260, size.w)}px` : '20rem' }
           : { height: '100%', minHeight: '14rem' }
       }
       tabIndex={readOnly ? -1 : 0}

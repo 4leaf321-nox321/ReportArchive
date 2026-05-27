@@ -158,17 +158,40 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
   const searching = trimmedQuery.length > 0
   const searchResults = React.useMemo(() => {
     if (!searching) return []
-    return eligible.filter((w) => {
+    // 매칭 위치별 우선순위 — 같은 이름이 부모/자식 양쪽에 매칭될 때
+    // (예: "CAE그룹" 검색 → CAE그룹 본체 + 그 하위 파트들 모두 path 매칭)
+    // 사용자가 진짜 찾는 본체가 위로 올라오도록 점수 매겨 정렬.
+    //   0: 이름 완전 일치
+    //   1: 이름 prefix
+    //   2: 이름 substring
+    //   3: slug 완전 일치
+    //   4: slug prefix
+    //   5: slug substring
+    //   6: 경로(상위 조직명) substring 만 매칭
+    // 동점은 알파벳 순.
+    const scored = []
+    for (const w of eligible) {
+      const name = w.name.toLowerCase()
+      const slug = w.slug.toLowerCase()
       const pathName = getPath(w.slug)
         .map((p) => p.name)
         .join(' / ')
         .toLowerCase()
-      return (
-        w.slug.toLowerCase().includes(trimmedQuery) ||
-        w.name.toLowerCase().includes(trimmedQuery) ||
-        pathName.includes(trimmedQuery)
-      )
-    })
+      let score
+      if (name === trimmedQuery) score = 0
+      else if (name.startsWith(trimmedQuery)) score = 1
+      else if (name.includes(trimmedQuery)) score = 2
+      else if (slug === trimmedQuery) score = 3
+      else if (slug.startsWith(trimmedQuery)) score = 4
+      else if (slug.includes(trimmedQuery)) score = 5
+      else if (pathName.includes(trimmedQuery)) score = 6
+      else continue
+      scored.push({ w, score })
+    }
+    scored.sort(
+      (a, b) => a.score - b.score || a.w.name.localeCompare(b.w.name),
+    )
+    return scored.map((s) => s.w)
   }, [eligible, searching, trimmedQuery, getPath])
 
   function toggleExpand(slug) {

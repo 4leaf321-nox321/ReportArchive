@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+  Building2,
+  ChevronDown,
+  ChevronRight,
   Filter,
   Folder as FolderIcon,
   FolderInput,
   Inbox,
+  Link2,
   Loader2,
   Plus,
+  Search,
   ShieldCheck,
   ShieldQuestion,
   Trash2,
@@ -29,6 +34,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/shared/components/ui/dialog'
+import { Input } from '@/shared/components/ui/input'
+import { Textarea } from '@/shared/components/ui/textarea'
 import { Label } from '@/shared/components/ui/label'
 import { DataTable } from '@/shared/components/DataTable'
 import { PageHeader } from '@/shared/components/PageHeader'
@@ -48,7 +55,7 @@ import { setMountFolder } from '@/shared/api/mounts'
  *  level constant so the source and the destination can't drift. */
 const REPORT_DRAG_MIME = 'application/x-report-ids'
 export { REPORT_DRAG_MIME }
-import { unmountReport } from '@/shared/api/mounts'
+import { mountReport, unmountReport } from '@/shared/api/mounts'
 import { listTemplates } from '@/shared/api/templates'
 import { listEntityTypes } from '@/shared/api/entities'
 import { listFolders } from '@/shared/api/folders'
@@ -122,6 +129,7 @@ export default function ReportsListPage() {
   const [selectedIds, setSelectedIds] = useState(() => new Set())
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
   const [bulkUnmountOpen, setBulkUnmountOpen] = useState(false)
+  const [bulkMountOpen, setBulkMountOpen] = useState(false)
   const [bulkBusy, setBulkBusy] = useState(false)
   // FolderSidebar 의 폴더별 카운트(report_count, uncategorized_count) 는
   // 자체 listFolders 응답에서 오기 때문에, 여기서 보고서를 옮기거나
@@ -622,6 +630,53 @@ export default function ReportsListPage() {
     }
   }
 
+  /** Bulk mount — matrix of (선택 보고서 × picked 게시판).
+   *  mountReport 가 (report_id, workspace_slugs[]) 묶음 단위로 idempotent
+   *  하므로 보고서 단위로 한 번씩만 호출. 작성자가 아닌 보고서는 서버가
+   *  403 으로 거절 → Promise.allSettled 의 fail 카운트에 잡혀 토스트에
+   *  요약 보고. note / editPolicy 는 모든 보고서에 동일 적용. */
+  async function handleBulkMount({ workspaceSlugs, note, editPolicy }) {
+    if (!workspaceSlugs || workspaceSlugs.length === 0) return
+    const reportIds = list
+      .filter((r) => effectiveSelected.has(r.id))
+      .map((r) => r.id)
+    if (reportIds.length === 0) return
+    setBulkBusy(true)
+    try {
+      const results = await Promise.allSettled(
+        reportIds.map((id) =>
+          mountReport({
+            reportId: id,
+            workspaceSlugs,
+            editPolicy: editPolicy || 'default',
+            note: note || '',
+          }),
+        ),
+      )
+      const ok = results.filter((r) => r.status === 'fulfilled').length
+      const fail = results.length - ok
+      const wsCount = workspaceSlugs.length
+      if (fail === 0) {
+        toast.success(`${ok}건 × ${wsCount}개 게시판 게시 완료`)
+      } else {
+        const firstErr = results.find((r) => r.status === 'rejected')?.reason
+        toast.warning(`${ok}건 게시, ${fail}건 실패`, {
+          description:
+            firstErr?.response?.data?.message ||
+            firstErr?.message ||
+            undefined,
+        })
+      }
+      setSelectedIds(new Set())
+      reload()
+      // 대상 게시판의 폴더 카운트가 늘어남.
+      bumpFolderReload()
+    } finally {
+      setBulkBusy(false)
+      setBulkMountOpen(false)
+    }
+  }
+
   return (
     <div className={cn('flex', showFolderSidebar ? 'h-[calc(100vh-3.5rem)]' : 'p-6 space-y-4 flex-col')}>
       {/* 폴더 사이드바 — personal: 그 가입자 트리(personal-{N} 슬러그를
@@ -675,6 +730,7 @@ export default function ReportsListPage() {
                     (r.mount_workspaces ?? []).length > 0,
                 )}
                 onMove={handleBulkMove}
+                onMount={() => setBulkMountOpen(true)}
                 onDelete={() => setBulkDeleteOpen(true)}
                 onUnmount={() => setBulkUnmountOpen(true)}
                 onClear={() => setSelectedIds(new Set())}
@@ -769,6 +825,13 @@ export default function ReportsListPage() {
           selectedReports={list.filter((r) => effectiveSelected.has(r.id))}
           busy={bulkBusy}
           onConfirm={handleBulkUnmount}
+        />
+        <BulkMountDialog
+          open={bulkMountOpen}
+          onOpenChange={(v) => !bulkBusy && setBulkMountOpen(v)}
+          selectedReports={list.filter((r) => effectiveSelected.has(r.id))}
+          busy={bulkBusy}
+          onConfirm={handleBulkMount}
         />
       </div>
     </div>
@@ -1043,6 +1106,7 @@ function BulkActionBar({
   workspaceSlug,
   hasMountsInSelection,
   onMove,
+  onMount,
   onDelete,
   onUnmount,
   onClear,
@@ -1058,6 +1122,20 @@ function BulkActionBar({
             onPick={onMove}
           />
         )}
+        {/* 일괄 게시 — 게시 정리 의 반대 동작. 선택된 N개 보고서를 한 번에
+            여러 게시판에 mount. 본인이 작성자 아닌 보고서는 서버가 거절하고
+            나머지만 처리된 뒤 토스트로 ok/fail 카운트 보고. */}
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 gap-1"
+          onClick={onMount}
+          disabled={busy}
+          title="선택한 보고서들을 한 번에 여러 게시판에 게시"
+        >
+          <Link2 className="h-3.5 w-3.5" />
+          게시
+        </Button>
         {/* 게시 정리 — 선택된 보고서 중 하나라도 mount 가 있어야 의미.
             전혀 없으면 버튼 자체를 숨겨서 dead-end 클릭 방지. */}
         {hasMountsInSelection && (
@@ -1245,6 +1323,340 @@ function BulkUnmountDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** Bulk mount picker — 선택한 N개 보고서를 한 번에 여러 조직 게시판에 mount.
+ *  MountDialog 의 트리 + 검색 UI 를 단순화 (per-mount controls 없이 단순
+ *  체크박스 트리만). 검색은 같은 정렬 규칙 (이름 완전 일치 → prefix →
+ *  substring → 경로) 으로 본체가 먼저 나오도록 정렬. 게시 메모와
+ *  편집 정책은 모든 보고서 / 모든 게시판에 동일 적용. */
+function BulkMountDialog({
+  open,
+  onOpenChange,
+  selectedReports,
+  busy,
+  onConfirm,
+}) {
+  const { all, getDescendantsInclusive, getAncestors, getPath } = useWorkspace()
+  const { me } = useAuth()
+
+  // Eligible boards = 사용자가 멤버인 모든 org 워크스페이스. ancestor
+  // walk 권한 모델과 동일 — 본부 멤버는 하위 팀 모두에 게시 가능.
+  const eligibleSlugs = useMemo(() => {
+    const set = new Set()
+    for (const m of me?.memberships ?? []) {
+      const slug = m.workspace_slug
+      if (!slug || slug.startsWith('personal-')) continue
+      for (const s of getDescendantsInclusive(slug)) set.add(s)
+    }
+    return set
+  }, [me, getDescendantsInclusive])
+
+  const eligible = useMemo(
+    () =>
+      all
+        .filter(
+          (w) =>
+            w.kind === 'org' && !w.virtual && eligibleSlugs.has(w.slug),
+        )
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [all, eligibleSlugs],
+  )
+
+  // eligible 만 가지고 부모-자식 서브트리 구성. eligible 에 없는 중간
+  // 노드는 표시 안 함 (MountDialog 와 동일 규칙).
+  const treeData = useMemo(() => {
+    const eligibleSet = new Set(eligible.map((w) => w.slug))
+    const childrenOf = new Map()
+    const roots = []
+    for (const w of eligible) {
+      if (w.parent_slug && eligibleSet.has(w.parent_slug)) {
+        if (!childrenOf.has(w.parent_slug)) childrenOf.set(w.parent_slug, [])
+        childrenOf.get(w.parent_slug).push(w)
+      } else {
+        roots.push(w)
+      }
+    }
+    const byName = (a, b) => a.name.localeCompare(b.name)
+    for (const list of childrenOf.values()) list.sort(byName)
+    roots.sort(byName)
+    return { roots, childrenOf }
+  }, [eligible])
+
+  const [query, setQuery] = useState('')
+  const [expanded, setExpanded] = useState(() => new Set())
+  const [picked, setPicked] = useState(() => new Set())
+  const [note, setNote] = useState('')
+
+  // dialog 가 열릴 때마다 본인 직접 멤버 라인 펼치고 picked / note 초기화.
+  useEffect(() => {
+    if (!open) return
+    const next = new Set()
+    for (const m of me?.memberships ?? []) {
+      const slug = m.workspace_slug
+      if (!slug || slug.startsWith('personal-')) continue
+      next.add(slug)
+      for (const a of getAncestors(slug)) next.add(a.slug)
+    }
+    setExpanded(next)
+    setQuery('')
+    setPicked(new Set())
+    setNote('')
+  }, [open, me, getAncestors])
+
+  const trimmedQuery = query.trim().toLowerCase()
+  const searching = trimmedQuery.length > 0
+  // MountDialog 와 동일한 정렬 점수 규칙 — 본체가 위로 올라오게.
+  const searchResults = useMemo(() => {
+    if (!searching) return []
+    const scored = []
+    for (const w of eligible) {
+      const name = w.name.toLowerCase()
+      const slug = w.slug.toLowerCase()
+      const pathName = getPath(w.slug)
+        .map((p) => p.name)
+        .join(' / ')
+        .toLowerCase()
+      let score
+      if (name === trimmedQuery) score = 0
+      else if (name.startsWith(trimmedQuery)) score = 1
+      else if (name.includes(trimmedQuery)) score = 2
+      else if (slug === trimmedQuery) score = 3
+      else if (slug.startsWith(trimmedQuery)) score = 4
+      else if (slug.includes(trimmedQuery)) score = 5
+      else if (pathName.includes(trimmedQuery)) score = 6
+      else continue
+      scored.push({ w, score })
+    }
+    scored.sort(
+      (a, b) => a.score - b.score || a.w.name.localeCompare(b.w.name),
+    )
+    return scored.map((s) => s.w)
+  }, [eligible, searching, trimmedQuery, getPath])
+
+  function toggleExpand(slug) {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(slug)) next.delete(slug)
+      else next.add(slug)
+      return next
+    })
+  }
+  function togglePick(slug) {
+    setPicked((prev) => {
+      const next = new Set(prev)
+      if (next.has(slug)) next.delete(slug)
+      else next.add(slug)
+      return next
+    })
+  }
+
+  const wsCount = picked.size
+  const reportCount = selectedReports.length
+  const totalMounts = wsCount * reportCount
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-auto max-w-[min(40rem,92vw)]">
+        <DialogHeader>
+          <DialogTitle>일괄 게시</DialogTitle>
+          <DialogDescription>
+            선택한 {reportCount}개 보고서를 한 번에 여러 조직 게시판에 게시합니다.
+            본인이 작성자가 아닌 보고서는 자동으로 건너뜁니다. 게시판은 이미
+            게시된 것을 다시 골라도 안전합니다 (중복 게시 안 됨).
+          </DialogDescription>
+        </DialogHeader>
+
+        {eligible.length === 0 ? (
+          <div className="text-sm text-muted-foreground py-4">
+            게시할 수 있는 조직 게시판이 없습니다. 워크스페이스에 멤버로
+            등록되어 있어야 게시 가능합니다.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="조직명 / 경로 검색 (비우면 트리 보기)"
+                className="pl-7 h-8 text-sm"
+              />
+            </div>
+            <div className="max-h-72 overflow-y-auto -mx-2 px-2 space-y-0.5">
+              {searching ? (
+                searchResults.length === 0 ? (
+                  <div className="text-xs text-muted-foreground py-4 text-center">
+                    매칭되는 조직이 없습니다.
+                  </div>
+                ) : (
+                  searchResults.map((ws) => (
+                    <BulkMountRow
+                      key={ws.slug}
+                      ws={ws}
+                      depth={0}
+                      hasChildren={false}
+                      isExpanded={false}
+                      onToggleExpand={null}
+                      pathLabel={getPath(ws.slug)
+                        .map((p) => p.name)
+                        .slice(0, -1)
+                        .join(' / ')}
+                      picked={picked.has(ws.slug)}
+                      onTogglePick={() => togglePick(ws.slug)}
+                    />
+                  ))
+                )
+              ) : (
+                <BulkMountTree
+                  nodes={treeData.roots}
+                  depth={0}
+                  childrenOf={treeData.childrenOf}
+                  expanded={expanded}
+                  onToggleExpand={toggleExpand}
+                  picked={picked}
+                  onTogglePick={togglePick}
+                />
+              )}
+            </div>
+
+            <div className="border-t pt-3">
+              <label className="text-xs text-muted-foreground block mb-1">
+                게시 메모 (선택, 모든 게시에 동일 적용)
+              </label>
+              <Textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="예: 본부 보고 자료로 활용 부탁드립니다."
+                rows={2}
+                className="resize-none text-sm"
+              />
+            </div>
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={busy}
+          >
+            취소
+          </Button>
+          <Button
+            type="button"
+            disabled={busy || picked.size === 0 || reportCount === 0}
+            onClick={() =>
+              onConfirm({
+                workspaceSlugs: [...picked],
+                note,
+                editPolicy: 'default',
+              })
+            }
+          >
+            {busy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+            {reportCount}건 × {wsCount}개 = {totalMounts}건 게시
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** 트리 재귀 렌더 — 펼친 노드의 자식들이 들여쓰기되어 나타남. 검색
+ *  모드일 땐 이 컴포넌트를 거치지 않고 평면 결과를 BulkMountRow 로
+ *  직접 매핑한다. */
+function BulkMountTree({
+  nodes,
+  depth,
+  childrenOf,
+  expanded,
+  onToggleExpand,
+  picked,
+  onTogglePick,
+}) {
+  return nodes.map((ws) => {
+    const kids = childrenOf.get(ws.slug) ?? []
+    const hasChildren = kids.length > 0
+    const isExpanded = expanded.has(ws.slug)
+    return (
+      <div key={ws.slug}>
+        <BulkMountRow
+          ws={ws}
+          depth={depth}
+          hasChildren={hasChildren}
+          isExpanded={isExpanded}
+          onToggleExpand={hasChildren ? () => onToggleExpand(ws.slug) : null}
+          pathLabel=""
+          picked={picked.has(ws.slug)}
+          onTogglePick={() => onTogglePick(ws.slug)}
+        />
+        {hasChildren && isExpanded && (
+          <BulkMountTree
+            nodes={kids}
+            depth={depth + 1}
+            childrenOf={childrenOf}
+            expanded={expanded}
+            onToggleExpand={onToggleExpand}
+            picked={picked}
+            onTogglePick={onTogglePick}
+          />
+        )}
+      </div>
+    )
+  })
+}
+
+function BulkMountRow({
+  ws,
+  depth,
+  hasChildren,
+  isExpanded,
+  onToggleExpand,
+  pathLabel,
+  picked,
+  onTogglePick,
+}) {
+  return (
+    <label
+      className="flex items-center gap-1.5 rounded px-1 py-1 text-sm hover:bg-muted/50 cursor-pointer"
+      style={{ paddingLeft: 4 + depth * 14 }}
+    >
+      {/* chevron / spacer — 트리 깊이 정렬 유지 */}
+      {hasChildren ? (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault()
+            onToggleExpand && onToggleExpand()
+          }}
+          className="h-4 w-4 inline-flex items-center justify-center text-muted-foreground hover:text-foreground"
+        >
+          {isExpanded ? (
+            <ChevronDown className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5" />
+          )}
+        </button>
+      ) : (
+        <span className="h-4 w-4 inline-block" />
+      )}
+      <input
+        type="checkbox"
+        checked={picked}
+        onChange={onTogglePick}
+        className="h-4 w-4 shrink-0"
+      />
+      <Building2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+      <span className="flex-1 truncate">{ws.name}</span>
+      {pathLabel && (
+        <span className="text-[10px] text-muted-foreground truncate max-w-[12rem]">
+          {pathLabel}
+        </span>
+      )}
+    </label>
   )
 }
 

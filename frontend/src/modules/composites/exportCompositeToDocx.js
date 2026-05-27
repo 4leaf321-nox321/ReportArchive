@@ -89,9 +89,19 @@ const CONTENT_WIDTH_1COL_PX = BODY_FULL_WIDTH_PX // ~560
 const CONTENT_WIDTH_2COL_PX = LANDSCAPE_CELL_INNER_PX - 20 // ~487
 
 /**
- * @param {object} composite           the composite read (with items[])
+ * @param {object} composite                       the composite read (with items[])
  * @param {object} options
  * @param {'portrait-1col'|'landscape-2col'} options.layout
+ * @param {object} [options.sectionItemByCode]     workspace section taxonomy
+ *                                                 lookup ({ [code]: { item,
+ *                                                 category } }). Passed
+ *                                                 through to renderBlockPieces
+ *                                                 so long-text widgets emit
+ *                                                 the "[단락구분] : 제목"
+ *                                                 header same as the single-
+ *                                                 report exporter. Omit /
+ *                                                 leave empty to skip the
+ *                                                 section prefix entirely.
  * @param {Function} [options.onProgress] same shape as report exporter
  */
 /** Mount one item's report content offscreen, wait for charts to
@@ -119,7 +129,13 @@ async function withOffscreenItemMount(snapshot, runWithScope) {
   }
 }
 
-export async function exportCompositeToDocx({ composite, layout, onProgress }) {
+export async function exportCompositeToDocx({
+  composite,
+  layout,
+  sectionItemByCode,
+  onProgress,
+}) {
+  const sectionLookup = sectionItemByCode ?? {}
   const emit =
     typeof onProgress === 'function'
       ? (ev) => {
@@ -388,7 +404,7 @@ export async function exportCompositeToDocx({ composite, layout, onProgress }) {
             const pieces = await renderBlockPieces({
               block: blk,
               page,
-              sectionItemByCode: {},
+              sectionItemByCode: sectionLookup,
               maxImageWidthPx: perItemWidthPx,
               scopeEl,
             })
@@ -408,7 +424,7 @@ export async function exportCompositeToDocx({ composite, layout, onProgress }) {
             const pieces = await renderBlockPieces({
               block,
               page,
-              sectionItemByCode: {},
+              sectionItemByCode: sectionLookup,
               maxImageWidthPx: cellWidthPx,
               scopeEl,
             })

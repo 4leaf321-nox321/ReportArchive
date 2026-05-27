@@ -34,6 +34,7 @@ import { ErrorState } from '@/shared/components/ErrorState'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useAsync } from '@/shared/hooks/useAsync'
+import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
 import {
   createComposite,
   deleteComposite,
@@ -91,6 +92,13 @@ export default function CompositeDetailPage() {
   // Per-item expansion state, keyed by row index. Reset when the draft is
   // rebuilt so newly-added items start collapsed.
   const [expanded, setExpanded] = useState(new Set())
+
+  // Workspace section taxonomy — used by the DOCX exporter so long-text
+  // widgets emit "[단락구분] : 제목" headers (same convention as the
+  // single-report exporter). Without this, the composite export would
+  // collapse to bare titles because the renderer's section lookup map
+  // is empty.
+  const { itemByCode: sectionItemByCode } = useSectionTaxonomy()
 
   // Snapshot existing → draft when the row loads or after a successful save.
   useEffect(() => {
@@ -295,6 +303,7 @@ export default function CompositeDetailPage() {
       await exportCompositeToDocx({
         composite,
         layout: layoutChoice,
+        sectionItemByCode,
         onProgress: setDocxProgress,
       })
       toast.success('Word 파일로 저장했습니다.')

@@ -363,6 +363,10 @@ async function convertBlock(block, props, content, opts = {}) {
   // `block-<id>` doesn't collide with copies live in other places
   // (e.g. an already-expanded item in the composite detail page).
   const scopeEl = opts.scopeEl ?? null
+  // `opts.depthGlyphs` — per-report rich_text glyph override array
+  // (length 3, `[d0, d1, d2]`). null/missing → falls through to
+  // module default DEPTH_PREFIX in convertRichText.
+  const depthGlyphs = opts.depthGlyphs ?? null
   const out = []
 
   // NB: caption emission moved to `renderBlockPieces` — it composes a
@@ -384,7 +388,20 @@ async function convertBlock(block, props, content, opts = {}) {
       out.push(...convertKeyValue(props, content))
       break
     case 'table':
-      out.push(...convertTable(props, content))
+      // 표/비교표/RACI 는 GUI 에서 사용자가 컬럼 폭·셀 정렬·텍스트 스타일을
+      // 직접 조절하는데, 예전 native docx Table 경로는 그 조정을 거의 못
+      // 가져갔음 (열 폭 무시·셀 내 줄바꿈 손실 등). 다른 시각 위젯과 같이
+      // html2canvas 로 화면을 그대로 떠서 PNG 로 박는 방식으로 통일 — 표가
+      // 세로로 길 수 있으니 height 상한은 가로폭의 8배까지 풀어 둠.
+      out.push(
+        ...(await convertVisualBlock(
+          block.id,
+          'table',
+          maxImageWidthPx,
+          scopeEl,
+          maxImageWidthPx * 8,
+        )),
+      )
       break
     case 'image': {
       // Annotated single-image cells go through the html2canvas path
@@ -442,8 +459,22 @@ async function convertBlock(block, props, content, opts = {}) {
     case 'quadrant':
     case 'sankey':
     case 'video':
-    case 'html_embed':
-      out.push(...(await convertVisualBlock(block.id, block.type, maxImageWidthPx, scopeEl)))
+    case 'html_embed': {
+      // comparison / raci_matrix 도 표와 같은 사유 — GUI 에서 조절한 컬럼
+      // 폭이 docx 에 안 실리고, 행 수가 늘면 세로로 길어진다. 캡처 height
+      // 상한을 가로 폭의 8배까지 풀어 자연 비율을 보존.
+      const tallVisual =
+        block.type === 'comparison' || block.type === 'raci_matrix'
+      const heightCap = tallVisual ? maxImageWidthPx * 8 : null
+      out.push(
+        ...(await convertVisualBlock(
+          block.id,
+          block.type,
+          maxImageWidthPx,
+          scopeEl,
+          heightCap,
+        )),
+      )
       // Generic annotation echo — any widget whose content carries a
       // non-empty `annotations` array gets its label text appended.
       // For widgets without annotations the call is a no-op (the array
@@ -454,6 +485,7 @@ async function convertBlock(block, props, content, opts = {}) {
         out.push(...convertAnnotationLabels(content.annotations))
       }
       break
+    }
     default:
       // Truly unknown type (e.g. a custom widget added after this file
       // was last touched, or a stale block from a renamed widget). Keep
@@ -807,6 +839,12 @@ async function convertVisualBlock(
   blockType,
   maxWidthPx = BODY_FULL_WIDTH_PX,
   scopeEl = null,
+  // 캡처 이미지 height 상한. 기본은 historical 4:3 (= maxWidth × 0.75) —
+  // 차트류는 셀 비율에 맞춰 캔버스가 이미 그 안에 들어오므로 영향 없음.
+  // 표/RACI 처럼 세로로 길 수 있는 위젯은 caller 가 더 큰 값으로 풀어서
+  // 자연 비율을 보존하도록 해야 한다 (가로폭만 셀에 맞추고 세로는 행
+  // 개수만큼 늘어남).
+  maxHeightPx = null,
 ) {
   // `scopeEl` lets callers scope the DOM lookup to a specific container —
   // critical for composite exports where multiple report items (possibly
@@ -852,9 +890,14 @@ async function convertVisualBlock(
     const buf = await blob.arrayBuffer()
     // Maintain ~0.75 aspect (560×420 historical default) but scale to
     // the caller-supplied width so cells in multi-column layouts get
-    // a properly-sized capture rather than overflowing.
-    const maxHeightPx = Math.round(maxWidthPx * 0.75)
-    const fitted = fitInto(canvas.width, canvas.height, maxWidthPx, maxHeightPx)
+    // a properly-sized capture rather than overflowing. Caller can pass
+    // an explicit maxHeightPx (e.g. table / raci) to relax the height
+    // cap when natural aspect is portrait.
+    const effectiveMaxHeightPx =
+      maxHeightPx != null && Number.isFinite(maxHeightPx)
+        ? maxHeightPx
+        : Math.round(maxWidthPx * 0.75)
+    const fitted = fitInto(canvas.width, canvas.height, maxWidthPx, effectiveMaxHeightPx)
     return [
       new Paragraph({
         alignment: AlignmentType.CENTER,
@@ -1141,6 +1184,7 @@ export async function renderBlockPieces({
     const els = await convertBlock(block, effectiveProps, content, {
       maxImageWidthPx,
       scopeEl,
+      depthGlyphs,
     })
     for (const el of els) out.push(el)
   } catch (err) {

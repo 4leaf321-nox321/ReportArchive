@@ -593,6 +593,9 @@ function RadarCell({ value, onChange, onMultiPaste }) {
     e.preventDefault()
     onMultiPaste(text)
   }
+  // 고정 폭 (w-20 / w-28) 대신 셀(td) 의 가로폭을 그대로 채우게 w-full.
+  // td 의 폭은 table-layout 이 컬럼 헤더(시리즈 라벨 input) 의 크기에
+  // 맞춰 잡으므로, 데이터 셀도 그 폭 안에서 가득 차게 늘어남.
   return (
     <Input
       type="number"
@@ -600,7 +603,7 @@ function RadarCell({ value, onChange, onMultiPaste }) {
       value={value === undefined || value === null ? '' : value}
       onChange={(e) => onChange(e.target.value)}
       onPaste={handlePaste}
-      className="h-7 w-20 text-[11px] text-center border-0"
+      className="h-7 w-full text-xs text-center border-0"
     />
   )
 }
@@ -637,7 +640,7 @@ function RadarCanvas({
       const w = el.clientWidth
       if (autoFit && w > 0) {
         setSquareSize((prev) => {
-          const next = Math.max(240, Math.min(720, w))
+          const next = Math.max(240, w)
           return prev === next ? prev : next
         })
       }

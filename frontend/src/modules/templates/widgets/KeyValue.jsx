@@ -249,6 +249,75 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
     }
   }
 
+  /**
+   * Excel / Sheets 클립보드(TSV) → label / value 그리드에 한 번에 채움.
+   * tab = 셀 구분 (col 0 = label, col 1 = value), newline = 행 구분.
+   * startCol: 0 = label 셀에서 paste 시작, 1 = value 셀에서 paste 시작
+   * (이때 grid col 0 → value 로 매핑되고 col 1 이상은 무시).
+   * 필요한 만큼 items 가 자동 push 되고, 그때 만든 새 key 는 자동 생성.
+   * 값은 type 에 맞춰 best-effort 변환 (number/integer/date), 실패하면
+   * 원본 문자열 그대로 — Table.jsx 와 같은 패턴.
+   */
+  function pasteGrid(startRow, startCol, text) {
+    const grid = parseTsv(text)
+    if (grid.length === 0) return
+    const COL_LABEL = 0
+    const COL_VALUE = 1
+    const nextItems = [...items]
+    const nextData = { ...data }
+    for (let r = 0; r < grid.length; r += 1) {
+      const targetIdx = startRow + r
+      // 행이 모자라면 신규 item 만들기. key 는 후속 paste 가 또 같은
+      // 자리에 들어와도 충돌 안 나도록 nextItems 기준으로 unique 추출.
+      while (nextItems.length <= targetIdx) {
+        const k = nextItemKey(nextItems)
+        nextItems.push({ key: k, label: '', type: 'text' })
+      }
+      const row = grid[r]
+      for (let c = 0; c < row.length; c += 1) {
+        const rawVal = row[c]
+        const effectiveCol = startCol + c
+        if (effectiveCol === COL_LABEL) {
+          nextItems[targetIdx] = { ...nextItems[targetIdx], label: rawVal ?? '' }
+        } else if (effectiveCol === COL_VALUE) {
+          const item = nextItems[targetIdx]
+          // multi / select 는 paste-aware 가 아니라 single-cell 만 지원.
+          // multi 면 그냥 첫 값을 배열로 감싸 저장. select 는 무시
+          // (옵션과 정확히 일치하지 않으면 무효).
+          if (item.type === 'select') continue
+          const coerced = coerceValueForType(item.type, rawVal)
+          if (coerced === undefined) {
+            delete nextData[item.key]
+          } else if (item.multi) {
+            nextData[item.key] = Array.isArray(coerced) ? coerced : [coerced]
+          } else {
+            nextData[item.key] = coerced
+          }
+        }
+        // 그 외 column 은 KeyValue 의 2-컬럼 스키마 밖이라 무시.
+      }
+    }
+    onChange({
+      ...nextData,
+      items: nextItems,
+      ...(caption ? { caption } : {}),
+      ...(content?.caption_skip_autofill
+        ? { caption_skip_autofill: true }
+        : {}),
+    })
+  }
+
+  function handlePasteAt(rowIdx, colIdx) {
+    return (e) => {
+      const text = e.clipboardData?.getData('text/plain')
+      if (!text) return
+      // 탭/줄바꿈 없는 단일 값 paste 는 native 동작 그대로 — 한 셀만 채움.
+      if (text.indexOf('\t') === -1 && text.indexOf('\n') === -1) return
+      e.preventDefault()
+      pasteGrid(rowIdx, colIdx, text)
+    }
+  }
+
   // ─── Read-only render ──────────────────────────────────────────────
   if (readOnly) {
     const filledItems = items.filter((item) => isFilled(item, data[item.key]))
@@ -321,6 +390,8 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
               onChangeItem={(partial) => updateItem(idx, partial)}
               onRemove={() => removeItem(idx)}
               onMove={(dir) => moveItem(idx, dir)}
+              onPasteLabel={handlePasteAt(idx, 0)}
+              onPasteValue={handlePasteAt(idx, 1)}
             />
           ))}
         </div>
@@ -352,6 +423,8 @@ function KvRow({
   onChangeItem,
   onRemove,
   onMove,
+  onPasteLabel,
+  onPasteValue,
 }) {
   const [open, setOpen] = useState(false)
 
@@ -378,6 +451,7 @@ function KvRow({
           type="text"
           value={item.label ?? ''}
           onChange={(e) => onChangeItem({ label: e.target.value })}
+          onPaste={onPasteLabel}
           placeholder={item.key}
           className={cn(
             'min-w-0 max-w-[10rem] bg-transparent border-0 outline-none',
@@ -394,6 +468,7 @@ function KvRow({
           item={item}
           value={value}
           onChange={onChangeValue}
+          onPaste={onPasteValue}
         />
       </div>
 
@@ -549,11 +624,20 @@ function formatKvValue(item, value) {
   return String(value)
 }
 
-function KvFieldInput({ item, value, onChange }) {
+function KvFieldInput({ item, value, onChange, onPaste }) {
   if (item.multi) {
+    // multi value 는 자체 list 편집 UX 라 multi-cell paste 와 충돌. 단일
+    // cell paste 는 native input 동작 그대로 — onPaste 안 달아 둠.
     return <MultiValueInput item={item} value={value} onChange={onChange} />
   }
-  return <SingleValueInput item={item} value={value} onChange={onChange} />
+  return (
+    <SingleValueInput
+      item={item}
+      value={value}
+      onChange={onChange}
+      onPaste={onPaste}
+    />
+  )
 }
 
 /** Repeatable input list for `multi=true` items. Same UX as before the
@@ -649,9 +733,10 @@ function MultiValueInput({ item, value, onChange }) {
   )
 }
 
-function SingleValueInput({ item, value, onChange, inputRef, onKeyDown }) {
+function SingleValueInput({ item, value, onChange, inputRef, onKeyDown, onPaste }) {
   const t = item.type
   if (t === 'select') {
+    // native <select> 는 paste 안 받음. onPaste 무시.
     return (
       <select
         ref={inputRef}
@@ -674,6 +759,7 @@ function SingleValueInput({ item, value, onChange, inputRef, onKeyDown }) {
       <Input
         ref={inputRef}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
         type="date"
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value || undefined)}
@@ -686,6 +772,7 @@ function SingleValueInput({ item, value, onChange, inputRef, onKeyDown }) {
       <Input
         ref={inputRef}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
         type="number"
         step={t === 'integer' ? 1 : 'any'}
         value={value ?? ''}
@@ -700,9 +787,42 @@ function SingleValueInput({ item, value, onChange, inputRef, onKeyDown }) {
     <Input
       ref={inputRef}
       onKeyDown={onKeyDown}
+      onPaste={onPaste}
       value={value ?? ''}
       onChange={(e) => onChange(e.target.value || undefined)}
       className="h-9"
     />
   )
+}
+
+/** Excel / Sheets 클립보드 (TSV) 파서. tab = 셀, CRLF/LF = 행. 인용
+ *  부호로 둘러싼 임베디드 탭/줄바꿈은 의도적으로 미지원 — 보고서
+ *  편집에서 드문 케이스 + 파서 복잡도. Table.jsx / Flowchart.jsx 의
+ *  동일 함수와 동일 시그니처. */
+function parseTsv(text) {
+  const trimmed = text.replace(/\r?\n$/, '')
+  if (!trimmed) return []
+  return trimmed.split(/\r?\n/).map((line) => line.split('\t'))
+}
+
+/** Best-effort 값 변환 — pasted TSV cell 을 item.type 에 맞춰 캐스팅.
+ *  number/integer 는 숫자로, date 는 yyyy-mm-dd 형식이면 그대로,
+ *  나머지는 trimmed string. 빈 문자열은 undefined (값 삭제). 변환
+ *  실패한 number 는 원본 문자열을 그대로 두어 loose content schema 가
+ *  허용하는 한도까지 살리고 작성자가 확인 후 정정. */
+function coerceValueForType(type, raw) {
+  if (raw === undefined || raw === null) return undefined
+  const s = typeof raw === 'string' ? raw.trim() : raw
+  if (s === '') return undefined
+  if (type === 'number') {
+    const n = Number(s)
+    return Number.isFinite(n) ? n : s
+  }
+  if (type === 'integer') {
+    const n = parseInt(s, 10)
+    return Number.isFinite(n) ? n : s
+  }
+  // date / text / select 모두 문자열 그대로 (select 는 paste 경로에서
+  // 이미 reject 되므로 여기까지 오지 않음).
+  return s
 }

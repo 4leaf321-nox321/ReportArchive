@@ -164,6 +164,47 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
     patch({ orientation: value })
   }
 
+  /**
+   * Excel / Sheets 클립보드(TSV) 를 항목 표에 붙여넣기. tab = 셀 구분,
+   * newline = 행 구분. label / description 2-컬럼 고정 스키마라
+   * Table.pasteGrid 의 column-extend 분기는 없음. startCol = 0(label)
+   * 부터 시작하면 둘 다 채우고, 1(description) 부터면 description 만.
+   * 필요한 만큼 items 가 자동으로 늘어남.
+   */
+  function pasteGrid(startRow, startCol, text) {
+    const grid = parseTsv(text)
+    if (grid.length === 0) return
+    const COLS = ['label', 'description']
+    const next = [...items]
+    while (next.length < startRow + grid.length) next.push({ label: '' })
+    for (let r = 0; r < grid.length; r += 1) {
+      const target = { ...next[startRow + r] }
+      for (let c = 0; c < grid[r].length; c += 1) {
+        const key = COLS[startCol + c]
+        if (!key) continue
+        const raw = grid[r][c]
+        if (key === 'description') {
+          target.description = raw ? raw : undefined
+        } else {
+          target[key] = raw ?? ''
+        }
+      }
+      next[startRow + r] = target
+    }
+    patch({ items: next })
+  }
+
+  function handlePasteFor(rowIdx, colIdx) {
+    return (e) => {
+      const text = e.clipboardData?.getData('text/plain')
+      if (!text) return
+      // 탭/줄바꿈 없는 단일 값은 native input 동작 그대로 — 한 셀에만 들어감.
+      if (text.indexOf('\t') === -1 && text.indexOf('\n') === -1) return
+      e.preventDefault()
+      pasteGrid(rowIdx, colIdx, text)
+    }
+  }
+
   if (readOnly) {
     if (!caption && items.length === 0) return null
     return (
@@ -243,6 +284,7 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
                   <Input
                     value={it.label ?? ''}
                     onChange={(e) => updateItem(idx, { label: e.target.value })}
+                    onPaste={handlePasteFor(idx, 0)}
                     placeholder="항목명"
                     className="h-8 text-xs"
                   />
@@ -255,6 +297,7 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
                         description: e.target.value || undefined,
                       })
                     }
+                    onPaste={handlePasteFor(idx, 1)}
                     placeholder="상세 내용 (선택)"
                     className="h-8 text-xs"
                   />
@@ -416,4 +459,14 @@ function FlowStep({ index, color, label, description, orientation }) {
       )}
     </div>
   )
+}
+
+/** Excel / Sheets 클립보드 (TSV) 파서. tab = 셀, CRLF/LF = 행. 인용
+ *  부호로 둘러싼 임베디드 탭/줄바꿈은 일부러 지원하지 않음 — 보고서
+ *  편집에서 드문 케이스 + 파서 복잡도. Table.jsx 의 동일 함수와
+ *  의도적으로 동일 시그니처. */
+function parseTsv(text) {
+  const trimmed = text.replace(/\r?\n$/, '')
+  if (!trimmed) return []
+  return trimmed.split(/\r?\n/).map((line) => line.split('\t'))
 }

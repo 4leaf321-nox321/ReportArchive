@@ -1292,7 +1292,12 @@ export function triggerDownload(blob, filename) {
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  // Revoke 를 즉시 하면 일부 브라우저(특히 Chromium)에서 다운로드 fetch
+  // 가 비동기로 실제 blob 을 읽기 전에 URL 이 사라져 콘솔에 GET blob:...
+  // net::ERR_FILE_NOT_FOUND 가 찍힌다. 다음 이벤트 루프 + 충분한 여유
+  // (60s) 를 두고 정리. blob 자체는 a.click() 가 시작시킨 download 가
+  // 끝나면 브라우저가 알아서 메모리에서 풀어준다.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
 async function fetchAsArrayBuffer(url) {

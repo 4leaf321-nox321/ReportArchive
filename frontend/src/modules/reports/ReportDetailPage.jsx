@@ -1785,7 +1785,9 @@ export default function ReportDetailPage() {
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
-    URL.revokeObjectURL(url)
+    // Defer — 즉시 revoke 시 다운로드 fetch 가 진행 중일 때 콘솔에
+    // GET blob:... ERR_FILE_NOT_FOUND. 충분한 여유 두고 정리.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000)
     toast.success('JSON 파일로 저장했습니다.')
   }
 

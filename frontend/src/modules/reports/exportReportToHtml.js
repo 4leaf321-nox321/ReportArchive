@@ -276,5 +276,8 @@ function triggerDownload(blob, filename) {
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  // Defer revoke — 즉시 revoke 시 Chromium 다운로드 fetch 가 끝나기 전에
+  // URL 이 사라져 콘솔에 ERR_FILE_NOT_FOUND. (자세한 사유는 exportReportToDocx
+  // 의 같은 함수 주석 참고.)
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }

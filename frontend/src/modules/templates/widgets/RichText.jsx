@@ -1,4 +1,5 @@
 import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import DOMPurify from 'dompurify'
 import { AlertTriangle, X } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
@@ -1622,7 +1623,14 @@ const CrossRowToolbarShell = forwardRef(function CrossRowToolbarShell(
   const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1024
   const top = Math.max(8, rect.top - 40)
   const left = Math.max(8, Math.min(viewportWidth - 320, rect.left))
-  return (
+  // 부모 chain 의 react-grid-layout grid item 이 CSS transform 으로
+  // 배치되므로, 같은 트리에 자식으로 둔 position:fixed 는 viewport 가
+  // 아닌 그 transformed 박스 기준으로 잡혀 toolbar 가 엉뚱한 위치로
+  // 가는 버그가 있었음. document.body 에 portal 로 마운트해서 transformed
+  // 조상 chain 을 우회 — 그러면 fixed + viewport 좌표 (getBoundingClientRect)
+  // 가 정확히 들어맞는다.
+  if (typeof document === 'undefined') return null
+  return createPortal(
     <div
       ref={ref}
       style={{ position: 'fixed', top, left }}
@@ -1639,7 +1647,8 @@ const CrossRowToolbarShell = forwardRef(function CrossRowToolbarShell(
           setColor: onSetColor,
         }}
       />
-    </div>
+    </div>,
+    document.body,
   )
 })
 

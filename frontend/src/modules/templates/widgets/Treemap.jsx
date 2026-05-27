@@ -538,7 +538,7 @@ function TreemapCanvas({
     const measure = () => {
       const w = el.clientWidth
       if (w <= 0) return
-      const next = autoFit ? Math.max(240, Math.min(720, w)) : w
+      const next = autoFit ? Math.max(240, w) : w
       setSize((prev) => (prev === next ? prev : next))
       if (firstCall) {
         firstCall = false
@@ -834,9 +834,22 @@ function aggregateRowValues(rows) {
     childrenOf.get(p).push(r.label)
   }
   const cache = new Map()
+  // 'COMPUTING' sentinel = 이 노드의 compute 가 진행 중. 같은 노드가 자기
+  // 호출 스택 위에서 다시 들어오면 cycle 이므로 0 반환하고 끊는다.
+  // 가장 흔한 발생: "행 추가" 직후 새 행이 label='' parent='' 로 들어
+  // 가서, childrenOf.get('') 에 '' 가 들어가고 → compute('') 가 자기
+  // 자식 ''를 다시 호출 → Maximum call stack size exceeded. 빈/사이클
+  // 데이터에 대한 방어.
+  const COMPUTING = Symbol('computing')
   function compute(label) {
-    if (cache.has(label)) return cache.get(label)
-    const kids = childrenOf.get(label) ?? []
+    if (cache.has(label)) {
+      const v = cache.get(label)
+      return v === COMPUTING ? 0 : v
+    }
+    cache.set(label, COMPUTING)
+    // 자기 자신을 자식으로 갖는 self-loop (label === parent) 도 같은 사유로
+    // 제거. cycle guard 가 잡긴 하지만 한 단계 일찍 잘라 성능 / 가독성 ↑.
+    const kids = (childrenOf.get(label) ?? []).filter((k) => k !== label)
     const row = byLabel.get(label)
     let val
     if (kids.length === 0) {

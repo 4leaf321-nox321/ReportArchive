@@ -512,7 +512,7 @@ function WaffleCanvas({
     if (!el) return undefined
     const measure = () => {
       const w = el.clientWidth
-      const h = autoFit ? Math.max(240, Math.min(720, w)) : el.clientHeight
+      const h = autoFit ? Math.max(240, w) : el.clientHeight
       setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }))
     }
     measure()
@@ -602,7 +602,7 @@ function WaffleCanvas({
       className="relative w-full rounded-md border bg-background overflow-hidden"
       style={
         autoFit
-          ? { height: size.w ? `${Math.max(240, Math.min(720, size.w))}px` : '20rem' }
+          ? { height: size.w ? `${Math.max(240, size.w)}px` : '20rem' }
           : { height: '100%', minHeight: '12rem' }
       }
     >
@@ -630,9 +630,16 @@ function WaffleCanvas({
                 if (gi < 0) return
                 const r = safeRows[gi]
                 const pct = totalValue > 0 ? (r.value / totalValue) * 100 : 0
+                // 컨테이너 기준 로컬 좌표. fixed + clientX/Y 조합이
+                // 부모 chain 의 CSS transform (react-grid-layout 의
+                // grid item) 안에선 viewport 가 아닌 transformed box
+                // 기준으로 잡혀 엉뚱한 위치로 튀어 나오던 문제 해결.
+                const box = containerRef.current?.getBoundingClientRect()
+                const localX = box ? e.clientX - box.left : e.clientX
+                const localY = box ? e.clientY - box.top : e.clientY
                 setHover({
-                  x: e.clientX,
-                  y: e.clientY,
+                  x: localX,
+                  y: localY,
                   label: r.label,
                   value: r.value,
                   pct,
@@ -640,7 +647,10 @@ function WaffleCanvas({
                 })
               },
               onMouseMove: (e) => {
-                setHover((h) => (h ? { ...h, x: e.clientX, y: e.clientY } : h))
+                const box = containerRef.current?.getBoundingClientRect()
+                const localX = box ? e.clientX - box.left : e.clientX
+                const localY = box ? e.clientY - box.top : e.clientY
+                setHover((h) => (h ? { ...h, x: localX, y: localY } : h))
               },
               onMouseLeave: () => setHover(null),
             }
@@ -723,7 +733,7 @@ function WaffleCanvas({
       )}
       {hover && (
         <div
-          className="pointer-events-none fixed z-50 rounded-md px-2 py-1.5 text-[11px] shadow-lg"
+          className="pointer-events-none absolute z-50 rounded-md px-2 py-1.5 text-[11px] shadow-lg"
           style={{
             left: hover.x + 12,
             top: hover.y + 12,

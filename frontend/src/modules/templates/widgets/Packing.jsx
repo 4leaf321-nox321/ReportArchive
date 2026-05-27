@@ -537,7 +537,7 @@ function PackingCanvas({
     if (!el) return undefined
     const measure = () => {
       const w = el.clientWidth
-      const h = autoFit ? Math.max(240, Math.min(720, w)) : el.clientHeight
+      const h = autoFit ? Math.max(240, w) : el.clientHeight
       setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }))
     }
     measure()
@@ -668,7 +668,7 @@ function PackingCanvas({
       className="relative w-full rounded-md border bg-background overflow-hidden"
       style={
         autoFit
-          ? { height: size.w ? `${Math.max(240, Math.min(720, size.w))}px` : '20rem' }
+          ? { height: size.w ? `${Math.max(240, size.w)}px` : '20rem' }
           : { height: '100%', minHeight: '12rem' }
       }
     >
@@ -704,9 +704,18 @@ function PackingCanvas({
                     const total = layout.root.value || 1
                     const parent = node.parent
                     const parentTotal = parent?.value || total
+                    // 부모 컨테이너 기준 좌표로 계산. clientX/Y 절대값
+                    // 그대로 쓰던 예전 코드는 react-grid-layout 의 grid
+                    // item 이 CSS transform 으로 배치돼서 position:fixed
+                    // 가 viewport 가 아닌 그 transformed box 기준으로
+                    // 잡혀 툴팁이 엉뚱한 위치로 가는 버그가 있었음.
+                    const box =
+                      containerRef.current?.getBoundingClientRect()
+                    const localX = box ? e.clientX - box.left : e.clientX
+                    const localY = box ? e.clientY - box.top : e.clientY
                     setHover({
-                      x: e.clientX,
-                      y: e.clientY,
+                      x: localX,
+                      y: localY,
                       label: node.data.name,
                       value: node.value,
                       pct: (node.value / total) * 100,
@@ -714,7 +723,13 @@ function PackingCanvas({
                     })
                   }}
                   onMouseMove={(e) => {
-                    setHover((h) => (h ? { ...h, x: e.clientX, y: e.clientY } : h))
+                    const box =
+                      containerRef.current?.getBoundingClientRect()
+                    const localX = box ? e.clientX - box.left : e.clientX
+                    const localY = box ? e.clientY - box.top : e.clientY
+                    setHover((h) =>
+                      h ? { ...h, x: localX, y: localY } : h,
+                    )
                   }}
                   onMouseLeave={() => setHover(null)}
                 />
@@ -745,8 +760,11 @@ function PackingCanvas({
       )}
       {hover && (
         <div
-          className="pointer-events-none fixed z-50 rounded-md px-2 py-1.5 text-[11px] shadow-lg"
+          className="pointer-events-none absolute z-50 rounded-md px-2 py-1.5 text-[11px] shadow-lg"
           style={{
+            // 부모(컨테이너)의 position: relative 와 같이 절대 좌표로
+            // 박는다. 컨테이너 우측에서 잘리지 않게 transform 으로 살짝
+            // 띄움 — left+12 만 두면 우측 경계 근처에서 잘림.
             left: hover.x + 12,
             top: hover.y + 12,
             background: 'rgba(15, 23, 42, 0.96)',

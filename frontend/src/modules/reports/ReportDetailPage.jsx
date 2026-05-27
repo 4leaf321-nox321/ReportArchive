@@ -10,6 +10,7 @@ import {
   ArrowLeft,
   Bookmark,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -26,6 +27,8 @@ import {
   Layers,
   LayoutGrid,
   Loader2,
+  Lock,
+  LockOpen,
   Maximize2,
   Minimize2,
   Pencil,
@@ -36,7 +39,9 @@ import {
   Settings2,
   Sparkles,
   Trash2,
+  Undo2,
   Upload,
+  Users,
   X,
 } from 'lucide-react'
 import GridLayout, { useContainerWidth } from 'react-grid-layout'
@@ -47,6 +52,7 @@ import {
 } from '@/shared/reports/ReportStyleContext'
 import { Button } from '@/shared/components/ui/button'
 import { Badge } from '@/shared/components/ui/badge'
+import { Separator } from '@/shared/components/ui/separator'
 import { Card, CardContent } from '@/shared/components/ui/card'
 import { ScrollArea } from '@/shared/components/ui/scroll-area'
 import { Skeleton } from '@/shared/components/ui/skeleton'
@@ -2257,8 +2263,29 @@ export default function ReportDetailPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2 ml-auto">
-          <ViewModeToggle value={viewMode} onChange={setViewMode} />
-
+          {/* ─── Group 1: Navigation (왼쪽으로 빠짐) ───
+              종합보고에서 진입한 경우에만 보이는 "돌아가기" 버튼. 진입 시
+              location.state.fromComposite 로 어느 종합보고에서 왔는지가
+              전달되고, 클릭하면 그 종합보고 페이지로 navigate. 새로고침 시
+              state 가 사라져 버튼도 함께 사라진다. */}
+          {location.state?.fromComposite?.id && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                const fc = location.state.fromComposite
+                navigate(`/w/${fc.slug ?? slug}/composites/${fc.id}`)
+              }}
+              title={
+                location.state.fromComposite.title
+                  ? `종합보고 «${location.state.fromComposite.title}» 로 돌아가기`
+                  : '종합보고로 돌아가기'
+              }
+            >
+              <Layers className="mr-1 h-3 w-3" />
+              종합보고로
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -2268,6 +2295,10 @@ export default function ReportDetailPage() {
             목록
           </Button>
 
+          <Separator orientation="vertical" className="h-6 mx-1" />
+
+          {/* ─── Group 2: View options ─── */}
+          <ViewModeToggle value={viewMode} onChange={setViewMode} />
           <Button
             variant="ghost"
             size="sm"
@@ -2283,9 +2314,15 @@ export default function ReportDetailPage() {
             {reportFullscreen ? '축소' : '전체화면'}
           </Button>
 
+          <Separator orientation="vertical" className="h-6 mx-1" />
+
+          {/* ─── Group 3: Primary edit action ───
+              편집 ↔ 저장/취소 토글. 편집 모드에 진입하면 "지금 해야 할 액션"
+              인 저장이 default variant(primary 색)로 강조되어 시선을 끈다.
+              finalized 보고서는 편집 버튼 자체가 안 보임 — 발행 취소 후 편집. */}
           {isEditing ? (
             <>
-              <Button variant="outline" size="sm" onClick={onSave}>
+              <Button variant="default" size="sm" onClick={onSave}>
                 <Save className="mr-1 h-3 w-3" />
                 {isNew ? '생성' : '저장'}
               </Button>
@@ -2295,19 +2332,21 @@ export default function ReportDetailPage() {
               </Button>
             </>
           ) : (
+            existingReport?.phase !== 'finalized' && (
+              <Button variant="outline" size="sm" onClick={() => onEnterEdit()}>
+                <Pencil className="mr-1 h-3 w-3" />
+                편집
+              </Button>
+            )
+          )}
+
+          {!isEditing && (
             <>
-              {/* 편집 — finalized 상태에서는 차단. 작성자가 발행 취소 후 편집. */}
-              {existingReport?.phase !== 'finalized' && (
-                <Button variant="outline" size="sm" onClick={() => onEnterEdit()}>
-                  <Pencil className="mr-1 h-3 w-3" />
-                  편집
-                </Button>
-              )}
-              {/* 폴더 — context-dependent:
-                  • personal workspace: 본인 보고서면 Report.folder_id 변경
-                  • org workspace: 본 보고서가 이 게시판에 mount되어 있고
-                    사용자가 owner/mounter/admin이면 mount.folder_id 변경
-                  게시 버튼은 owner만 (개인 → 조직 흐름이라 의미). */}
+              <Separator orientation="vertical" className="h-6 mx-1" />
+
+              {/* ─── Group 4: Collaboration / Sharing ───
+                  폴더 → 게시 → 발행 → 편집자 → 활동 → 잠금. 보고서가 다른
+                  이해관계자에게 어떻게 노출되는지를 다루는 묶음. */}
               {!isNew && isPersonalContext &&
                 existingReport?.owner_user_id === me?.user?.id && (
                   <FolderPickerButton
@@ -2370,15 +2409,20 @@ export default function ReportDetailPage() {
                       : '발행 — 편집 잠금, 게시판 멤버 알림'
                   }
                 >
-                  {existingReport?.phase === 'finalized' ? '발행 취소' : '발행'}
+                  {existingReport?.phase === 'finalized' ? (
+                    <>
+                      <Undo2 className="mr-1 h-3 w-3" />
+                      발행 취소
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="mr-1 h-3 w-3" />
+                      발행
+                    </>
+                  )}
                 </Button>
               )}
-              {/* 활동 이력 popover — 누구나 조회. */}
-              {!isNew && existingReport?.id && (
-                <ActivityTimelineButton reportId={existingReport.id} />
-              )}
-              {/* 추가 편집자 관리 — owner는 추가/제거 가능, 그 외는
-                  목록만 (왜 누가 편집권 가졌는지 확인용). */}
+              {/* 추가 편집자 — owner는 추가/제거, 그 외는 목록만. */}
               {!isNew && existingReport?.id && (
                 <Button
                   variant="outline"
@@ -2386,11 +2430,16 @@ export default function ReportDetailPage() {
                   onClick={() => setEditorsOpen(true)}
                   title="추가 편집자"
                 >
+                  <Users className="mr-1 h-3 w-3" />
                   편집자
                 </Button>
               )}
-              {/* 작성자 hard lock — owner only. 클릭 시 prompt로 사유 받음
-                  (v1; 후에 dialog로 교체). 잠금 상태에선 동일 버튼이 해제로. */}
+              {/* 활동 이력 popover — 누구나 조회. 내부에 Activity 아이콘 + "활동" */}
+              {!isNew && existingReport?.id && (
+                <ActivityTimelineButton reportId={existingReport.id} />
+              )}
+              {/* 작성자 hard lock — owner only. 잠금 상태에선 같은 버튼이 해제로
+                  전환. Lock/LockOpen 아이콘으로 통일 (이전엔 🔒 emoji 섞임). */}
               {!isNew && existingReport?.owner_user_id === me?.user?.id && (
                 <Button
                   variant={existingReport?.author_lock_enabled ? 'destructive' : 'outline'}
@@ -2406,7 +2455,6 @@ export default function ReportDetailPage() {
                           '수정 잠금 사유 (선택, 비워두면 미기재):',
                           '',
                         )
-                        // null = 취소
                         if (reason === null) return
                         await setAuthorLock(existingReport.id, {
                           enabled: true,
@@ -2425,9 +2473,25 @@ export default function ReportDetailPage() {
                       : '작성자 외 편집 차단'
                   }
                 >
-                  {existingReport?.author_lock_enabled ? '🔒 잠금 해제' : '🔒 수정 잠금'}
+                  {existingReport?.author_lock_enabled ? (
+                    <>
+                      <LockOpen className="mr-1 h-3 w-3" />
+                      잠금 해제
+                    </>
+                  ) : (
+                    <>
+                      <Lock className="mr-1 h-3 w-3" />
+                      수정 잠금
+                    </>
+                  )}
                 </Button>
               )}
+
+              <Separator orientation="vertical" className="h-6 mx-1" />
+
+              {/* ─── Group 5: Report variants ───
+                  복사·템플릿화·삭제. 삭제는 destructive variant 로 시각적
+                  위험성을 분명히 — 복사·템플릿 같은 무해한 액션과 톤 분리. */}
               <Button
                 variant="outline"
                 size="sm"
@@ -2446,7 +2510,7 @@ export default function ReportDetailPage() {
                 템플릿으로 저장
               </Button>
               <Button
-                variant="outline"
+                variant="destructive"
                 size="sm"
                 onClick={() => setConfirmDelete(true)}
               >
@@ -2455,6 +2519,11 @@ export default function ReportDetailPage() {
               </Button>
             </>
           )}
+
+          <Separator orientation="vertical" className="h-6 mx-1" />
+          {/* ─── Group 6: Output / AI ───
+              AI 프롬프트 + 로컬 파일 입출력. 편집/뷰 모드와 무관하게 항상
+              노출 (편집 중에도 AI 도움이나 로컬 백업이 필요할 수 있음). */}
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

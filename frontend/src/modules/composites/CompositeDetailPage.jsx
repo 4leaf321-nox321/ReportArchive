@@ -615,7 +615,20 @@ export default function CompositeDetailPage() {
                     // are by definition shared, so the composite's
                     // workspace is the always-visible landing pad.
                     if (it.ref_report_id) {
-                      navigate(`/w/${slug}/reports/${it.ref_report_id}`)
+                      // location.state.fromComposite 로 진입 컨텍스트를 넘긴다.
+                      // ReportDetailPage 는 이 값이 있을 때만 toolbar 에
+                      // "종합보고로 돌아가기" 버튼을 노출한다. 페이지 새로고침
+                      // 시엔 state 가 사라져 버튼도 사라짐 (그땐 사이드바로
+                      // 돌아가면 됨 — 일반적인 web 백 동선과 일치).
+                      navigate(`/w/${slug}/reports/${it.ref_report_id}`, {
+                        state: {
+                          fromComposite: {
+                            id: composite.id,
+                            slug,
+                            title: composite.title,
+                          },
+                        },
+                      })
                     } else if (it.ref_composite_id) {
                       // Sub-composites land in their own workspace —
                       // those are real org workspaces, not personal.

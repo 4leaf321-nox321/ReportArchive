@@ -7204,12 +7204,14 @@ const WIDGETS_DEFAULT_NO_AUTOFIT = new Set([
   'packing',
   'tree',
   'network',
+  'mind_map',
   'pie',
   'waffle',
   'box',
   'density',
   'radar',
   'sankey',
+  'quadrant',
   'html_embed',
 ])
 
@@ -7226,11 +7228,14 @@ const WIDGETS_SQUARE_AUTOFIT = new Set([
   'packing',
   'tree',
   'network',
+  'mind_map',
   'pie',
   'waffle',
   'box',
   'density',
   'radar',
+  'sankey',
+  'quadrant',
 ])
 
 // Widgets that get a "전체화면" affordance in view mode — the cell
@@ -7252,12 +7257,14 @@ const WIDGETS_FULLSCREEN_VIEWER = new Set([
   'packing',
   'tree',
   'network',
+  'mind_map',
   'pie',
   'waffle',
   'box',
   'density',
   'radar',
   'sankey',
+  'quadrant',
 ])
 
 /** Resolve whether a block is in auto_fit mode. Explicit `auto_fit`

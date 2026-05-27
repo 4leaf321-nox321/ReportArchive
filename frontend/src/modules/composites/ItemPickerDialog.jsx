@@ -355,6 +355,28 @@ function CompositePickerList({
   )
 }
 
+/** 오늘 ~ N 일 전 범위. `<input type="date">` 가 yyyy-mm-dd 를 요구하므로
+ *  toISOString 대신 로컬 시간 기준으로 포맷해야 한다 — UTC 변환을 거치면
+ *  한국(+09) 시간대에선 자정 전후로 하루 어긋날 수 있다. */
+function _fmtLocalDate(d) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+function _presetRange(daysBack) {
+  const today = new Date()
+  const start = new Date(today)
+  start.setDate(start.getDate() - daysBack)
+  return { from: _fmtLocalDate(start), to: _fmtLocalDate(today) }
+}
+const _DATE_PRESETS = [
+  { label: '지난 1주', days: 7 },
+  { label: '지난 1개월', days: 30 },
+  { label: '지난 3개월', days: 90 },
+  { label: '지난 1년', days: 365 },
+]
+
 function PickerBody({
   items,
   query,
@@ -385,32 +407,63 @@ function PickerBody({
         />
       </div>
       {showDateFilter && (
-        <div className="flex items-center gap-2 flex-wrap text-xs">
-          <span className="text-muted-foreground shrink-0">{dateLabel ?? '날짜'}:</span>
-          <Input
-            type="date"
-            value={dateFrom}
-            onChange={(e) => setDateFrom(e.target.value)}
-            className="h-8 w-[150px] text-xs font-mono"
-            aria-label="시작일"
-          />
-          <span className="text-muted-foreground">~</span>
-          <Input
-            type="date"
-            value={dateTo}
-            onChange={(e) => setDateTo(e.target.value)}
-            className="h-8 w-[150px] text-xs font-mono"
-            aria-label="종료일"
-          />
-          {dateFilterActive && (
-            <button
-              type="button"
-              onClick={() => { setDateFrom(''); setDateTo('') }}
-              className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
-            >
-              지우기
-            </button>
-          )}
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2 flex-wrap text-xs">
+            <span className="text-muted-foreground shrink-0">{dateLabel ?? '날짜'}:</span>
+            <Input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="h-8 w-[150px] text-xs font-mono"
+              aria-label="시작일"
+            />
+            <span className="text-muted-foreground">~</span>
+            <Input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="h-8 w-[150px] text-xs font-mono"
+              aria-label="종료일"
+            />
+            {dateFilterActive && (
+              <button
+                type="button"
+                onClick={() => { setDateFrom(''); setDateTo('') }}
+                className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+              >
+                지우기
+              </button>
+            )}
+          </div>
+          {/* 빠른 범위 프리셋 — 클릭 시 from = 오늘에서 N일 전, to = 오늘.
+              현재 dateFrom/dateTo 가 정확히 그 범위와 같으면 활성 표시 (한 번 더
+              누르면 그대로). 사용자가 직접 입력으로 어긋나게 잡으면 모든
+              프리셋이 비활성으로 보여 어떤 preset 도 안 걸린 상태임이 드러남. */}
+          <div className="flex items-center gap-1 flex-wrap text-xs pl-[3.4rem]">
+            {_DATE_PRESETS.map((p) => {
+              const r = _presetRange(p.days)
+              const active = dateFrom === r.from && dateTo === r.to
+              return (
+                <button
+                  key={p.days}
+                  type="button"
+                  onClick={() => {
+                    setDateFrom(r.from)
+                    setDateTo(r.to)
+                  }}
+                  className={
+                    'h-6 rounded border px-2 transition-colors ' +
+                    (active
+                      ? 'border-primary bg-primary/10 text-primary font-medium'
+                      : 'border-border bg-background text-muted-foreground hover:bg-muted')
+                  }
+                  title={`${r.from} ~ ${r.to}`}
+                >
+                  {p.label}
+                </button>
+              )
+            })}
+          </div>
         </div>
       )}
       <div className="border rounded-md max-h-[360px] overflow-y-auto divide-y">

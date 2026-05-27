@@ -146,7 +146,11 @@ export function ItemPickerDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl">
+      {/* 화면 80% 고정 — 작은 화면에선 max-w-3xl 로 답답했음. flex column
+          으로 짜서 header / tabs body / footer 가 자연 stacking 되고,
+          tabs body 안의 리스트가 남은 height 를 채우도록 (안의
+          PickerBody 가 flex-1 min-h-0 + overflow-y-auto). */}
+      <DialogContent className="w-[80vw] max-w-none h-[80vh] max-h-none flex flex-col">
         <DialogHeader>
           <DialogTitle>안건 추가</DialogTitle>
           <DialogDescription>
@@ -156,13 +160,20 @@ export function ItemPickerDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <Tabs value={tab} onValueChange={setTab}>
+        <Tabs
+          value={tab}
+          onValueChange={setTab}
+          className="flex flex-col flex-1 min-h-0"
+        >
           <TabsList>
             <TabsTrigger value="reports">보고서</TabsTrigger>
             <TabsTrigger value="composites_recurring">정기 종합</TabsTrigger>
             <TabsTrigger value="composites_theme">주제 종합</TabsTrigger>
           </TabsList>
-          <TabsContent value="reports" className="mt-3">
+          <TabsContent
+            value="reports"
+            className="mt-3 flex-1 min-h-0 data-[state=inactive]:hidden"
+          >
             <ReportPickerList
               open={open && tab === 'reports'}
               selected={selected}
@@ -170,7 +181,10 @@ export function ItemPickerDialog({
               onToggle={toggle}
             />
           </TabsContent>
-          <TabsContent value="composites_recurring" className="mt-3">
+          <TabsContent
+            value="composites_recurring"
+            className="mt-3 flex-1 min-h-0 data-[state=inactive]:hidden"
+          >
             {/* 정기: period_date 기반 날짜 필터 활성. */}
             <CompositePickerList
               open={open && tab === 'composites_recurring'}
@@ -181,7 +195,10 @@ export function ItemPickerDialog({
               kindFilter="recurring"
             />
           </TabsContent>
-          <TabsContent value="composites_theme" className="mt-3">
+          <TabsContent
+            value="composites_theme"
+            className="mt-3 flex-1 min-h-0 data-[state=inactive]:hidden"
+          >
             {/* 주제: period_date 가 NULL 이라 날짜 필터 자체를 숨김.
                 예전엔 한 탭에 합쳐져서 날짜 필터만 켜면 주제가 통째로
                 사라지는 버그가 있었다. */}
@@ -396,7 +413,10 @@ function PickerBody({
 }) {
   const dateFilterActive = Boolean(dateFrom || dateTo)
   return (
-    <div className="space-y-2">
+    // h-full + flex column 으로 부모(TabsContent) 의 남은 height 를 모두
+    // 채우고, 마지막 리스트 컨테이너가 flex-1 로 늘어나면서 그 안에서만
+    // 스크롤 (검색/날짜 필터 row 는 sticky 처럼 항상 보임).
+    <div className="space-y-2 h-full flex flex-col min-h-0">
       <div className="relative">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
@@ -466,7 +486,7 @@ function PickerBody({
           </div>
         </div>
       )}
-      <div className="border rounded-md max-h-[360px] overflow-y-auto divide-y">
+      <div className="border rounded-md flex-1 min-h-0 overflow-y-auto divide-y">
         {items.length === 0 ? (
           <div className="p-6 text-center text-sm text-muted-foreground">
             결과가 없습니다.

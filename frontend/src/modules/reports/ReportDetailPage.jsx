@@ -92,6 +92,7 @@ import {
 } from '@/shared/api/templates'
 import { listTemplateCategories } from '@/shared/api/templateCategories'
 import { getRenderer } from '@/modules/templates/widgets'
+import { TableViewContext } from '@/modules/templates/widgets/Table'
 import { WidgetPicker } from '@/modules/templates/WidgetPicker'
 import { DepthStyleField, TextStyleField } from '@/modules/templates/widgets/_shared'
 import { TemplatePicker } from './TemplatePicker'
@@ -577,6 +578,31 @@ export default function ReportDetailPage() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [viewMode, pageCountForKeys])
+
+  // Edit-mode shortcut: Delete 키로 선택된 위젯 삭제. activeBlock 이 있을
+  // 때만 동작하고, 사용자가 텍스트 입력 중(input/textarea/contenteditable)
+  // 이거나 모달 다이얼로그가 열려 있으면 무시 — 그런 컨텍스트에서는 Del 키
+  // 가 다른 의미를 가짐. Backspace 는 너무 흔히 쓰여 충돌 위험이 커서 일부러
+  // 묶지 않는다.
+  useEffect(() => {
+    if (!isEditing || !activeBlock) return
+    function onKey(e) {
+      if (e.key !== 'Delete') return
+      const ae = document.activeElement
+      if (ae instanceof HTMLElement) {
+        if (ae.matches('input, textarea, select')) return
+        if (ae.isContentEditable) return
+      }
+      // Radix Dialog / Popover 등이 열려 있으면 그쪽이 우선. role="dialog"
+      // 가 있는 노드가 페이지에 하나라도 떠 있으면 위젯 삭제 단축키 차단.
+      if (document.querySelector('[role="dialog"]')) return
+      e.preventDefault()
+      removeBlockFromPage(activeBlock.pageIdx, activeBlock.blockId)
+      setActiveBlock(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isEditing, activeBlock])
 
   // Context-builder that the AiPromptDialog uses to render the prompt.
   // Returns a function instead of a fully-baked context because the
@@ -5171,6 +5197,31 @@ function PageSection({
     [blocks, effectiveLayouts]
   )
 
+  // 리사이즈 핸들을 잡아 드래그를 시작할 때, 해당 블록이 자동맞춤(auto_fit)
+  // 상태면 즉시 꺼서 사용자가 끌어서 크기 조정을 할 수 있게 한다. 한 번의
+  // 마찰 없는 액션으로 끝나도록 — 자동맞춤이 켜진 줄 모르고 핸들만 잡았다
+  // 가 동작 안 하는 케이스가 가장 흔한 발견성 문제였다. 의도와 다르게
+  // 꺼졌으면 토스트의 "되돌리기" 버튼으로 한 번에 복구 가능.
+  const handleResizeStart = useCallback(
+    (_layout, oldItem) => {
+      if (!isEditing || !onToggleAutoFit) return
+      const blockId = oldItem?.i
+      if (!blockId) return
+      const block = blocks.find((b) => b.id === blockId)
+      if (!block) return
+      const isAutoFit = autoFitForBlock(block, effectiveLayouts[blockId])
+      if (!isAutoFit) return
+      onToggleAutoFit(blockId, false)
+      toast.info('자동맞춤을 껐습니다 — 이제 크기를 조정할 수 있어요.', {
+        action: {
+          label: '되돌리기',
+          onClick: () => onToggleAutoFit(blockId, true),
+        },
+      })
+    },
+    [isEditing, onToggleAutoFit, blocks, effectiveLayouts],
+  )
+
   return (
     <section
       id={`report-page-${pageIdx}`}
@@ -5218,6 +5269,7 @@ function PageSection({
         <ResizableGrid
           items={rglItems}
           onLayoutChange={isEditing ? onLayoutChange : undefined}
+          onResizeStart={isEditing ? handleResizeStart : undefined}
           isStatic={!isEditing}
           rowGapPx={effectiveRowGap}
         >
@@ -6464,6 +6516,16 @@ function BlockEditorCard({
   const [fullscreenOpen, setFullscreenOpen] = useState(false)
   const canFullscreen =
     readOnly && WIDGETS_FULLSCREEN_VIEWER.has(block.type)
+  // 표 위젯의 "전체 펼치기" 토글 상태. autoFit 측정용 mirror Editor 와
+  // 본체 Editor 두 인스턴스가 같은 expanded 를 봐야 mirror 가 같이 자라고
+  // 컨테이너 row_span 도 따라서 늘어난다. Card 전체를 TableViewContext.
+  // Provider 로 감싸서 두 곳 모두 같은 state 참조. 비-table 위젯은 이
+  // Context 를 무시한다.
+  const [tableExpanded, setTableExpanded] = useState(false)
+  const tableViewValue = useMemo(
+    () => ({ expanded: tableExpanded, setExpanded: setTableExpanded }),
+    [tableExpanded],
+  )
   // Card chrome that adds to the measured `scrollHeight` to produce the
   // final cell height. In edit mode (`showDragHandle` true), the top
   // padding is bumped from pt-4 → pt-9 so the widget's own caption /
@@ -6808,6 +6870,7 @@ function BlockEditorCard({
     if (opensModalEditor) onOpenContentEdit()
   }
   return (
+    <TableViewContext.Provider value={tableViewValue}>
     <Card
       id={`block-${block.id}`}
       // Marker for the page-level "컨테이너 경계 녹이기" toggle — the
@@ -6964,6 +7027,7 @@ function BlockEditorCard({
         </FullscreenWidgetDialog>
       )}
     </Card>
+    </TableViewContext.Provider>
   )
 }
 
@@ -7172,12 +7236,11 @@ function buildRglItems(blocks, effectiveLayouts) {
       maxW: REPORT_GRID_COLS,
       minH: 1,
     }
-    // Auto-fit blocks: hide the vertical / corner resize handles since
-    // height is content-driven. Per-type default applies when the
-    // layout doesn't explicitly set auto_fit — see `autoFitForBlock`.
-    if (autoFitForBlock(b, layout)) {
-      item.resizeHandles = ['e']
-    }
+    // 자동맞춤 블록도 일반 블록과 동일하게 기본 핸들(코너) 노출 — 이전엔
+    // height 가 content-driven 이라는 의미로 east 핸들만 남겼는데, "리사이즈
+    // 하려는데 핸들이 안 보인다" 가 가장 흔한 발견성 문제였다. 사용자가
+    // 코너 핸들을 잡는 순간 ResizableGrid 의 onResizeStart 가 자동맞춤을
+    // 꺼주고 정상 드래그로 이어진다 (의도가 아니면 토스트의 "되돌리기").
     items.push(item)
   }
   return compactVerticalLayout(items)
@@ -7220,6 +7283,7 @@ function collidesWithAny(item, candidateY, others) {
 function ResizableGrid({
   items,
   onLayoutChange,
+  onResizeStart,
   children,
   isStatic = false,
   rowGapPx,
@@ -7248,6 +7312,7 @@ function ResizableGrid({
             enabled: !isStatic,
           }}
           onLayoutChange={onLayoutChange}
+          onResizeStart={onResizeStart}
         >
           {children}
         </GridLayout>

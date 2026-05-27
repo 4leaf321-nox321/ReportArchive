@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   ChevronDown,
   ChevronLeft,
@@ -48,11 +48,16 @@ const IMAGE_MAX_HEIGHT_PX_MAX = 600
 // case stays readable as the table overflows horizontally. Sized to fit
 // a small thumbnail comfortably.
 const SCROLL_CASE_MIN_WIDTH_PX = 200
-// Row-label (left) column width — used only by the editor view, where
-// the cell hosts an input + hover controls (move/delete) and needs a
-// stable width. The read-only report view shrinks the column to its
-// label content instead (see the readOnly branch below).
-const ROW_LABEL_WIDTH = '7rem'
+// 행 라벨(첫 열) 기본 폭 — 사용자가 핸들로 따로 조절하지 않았을 때 두 모드
+// 모두에 적용되는 default. 사용자 지정값은 content.row_label_width 에 px 로
+// 저장되고 우선 적용된다.
+const ROW_LABEL_DEFAULT_PX = 112 // ≒ 7rem
+
+// 사용자가 헤더 드래그로 직접 설정한 CASE 컬럼 폭(px)의 허용 범위.
+// 컬럼이 너무 좁아 입력이 막히거나, 한 컬럼이 표 전체를 차지하는 사고
+// 둘 다 막는다. backend 스키마와 같은 값.
+const CASE_WIDTH_MIN_PX = 60
+const CASE_WIDTH_MAX_PX = 1200
 
 function clampMaxCases(raw) {
   if (!Number.isFinite(raw)) return DEFAULT_MAX_CASES
@@ -400,6 +405,23 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     ),
   )
   const canAddCase = horizontalScroll || cases.length < maxCases
+  // CASE 컬럼 폭 override — 사용자가 헤더 드래그 핸들로 조절한 값.
+  // key 는 case slug 와 동일하고, 빠진 key 는 자동 균등 분배로 폴백.
+  // 같은 값을 편집/뷰 두 모드 모두 같이 봐서 폭이 일관되게 보임.
+  const columnWidths =
+    content?.column_widths && typeof content.column_widths === 'object'
+      ? content.column_widths
+      : {}
+  // 드래그 중인 컬럼의 임시 폭 프리뷰 — 매 mousemove 마다 content 를
+  // patch 하면 무거우니 로컬 state 로 화면만 갱신하다가 mouseup 시점에
+  // 한 번만 commit. resizePreview 가 set 되어 있는 동안 caseColStyle /
+  // rowLabelColStyle 이 그 값을 우선 사용한다. caseKey === '__row__' 면
+  // 행 라벨 컬럼 드래그를 의미.
+  const [resizePreview, setResizePreview] = useState(null) // { caseKey, px } | null
+  // 사용자가 지정한 행 라벨 컬럼 폭 — 미지정 시 ROW_LABEL_DEFAULT_PX 폴백.
+  const storedRowLabelWidth = Number.isFinite(content?.row_label_width)
+    ? content.row_label_width
+    : null
 
   function patch(next) {
     const merged = {
@@ -413,6 +435,15 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     if (!merged.rows || merged.rows.length === 0) delete merged.rows
     if (!merged.cases || merged.cases.length === 0) delete merged.cases
     if (!merged.caption_skip_autofill) delete merged.caption_skip_autofill
+    if (
+      !merged.column_widths ||
+      Object.keys(merged.column_widths).length === 0
+    ) {
+      delete merged.column_widths
+    }
+    if (!Number.isFinite(merged.row_label_width)) {
+      delete merged.row_label_width
+    }
     // Layout overrides — strip when undefined or when matching the
     // template default, so per-report content stays small and a
     // template default change still reaches reports that never
@@ -423,6 +454,94 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       image_max_height_px: DEFAULT_IMAGE_MAX_HEIGHT_PX,
     })
     onChange(merged)
+  }
+
+  // 행 라벨 드래그 식별자 — case slug 규칙(^[a-z]…)과 충돌하지 않는 토큰
+  // 으로 골라 resizePreview / startCaseResize 가 두 종류 모두 처리.
+  const ROW_LABEL_KEY = '__row__'
+
+  /** 컬럼 폭 commit — 드래그 종료 시 한 번. 행 라벨은 별도 필드, case 는
+   *  column_widths 맵에 저장. clamp 동일. */
+  function commitColumnWidth(caseKey, px) {
+    if (!Number.isFinite(px)) return
+    const clamped = Math.min(
+      Math.max(CASE_WIDTH_MIN_PX, Math.round(px)),
+      CASE_WIDTH_MAX_PX,
+    )
+    if (caseKey === ROW_LABEL_KEY) {
+      patch({ row_label_width: clamped })
+      return
+    }
+    patch({ column_widths: { ...columnWidths, [caseKey]: clamped } })
+  }
+
+  /** 편집/뷰 모드 공용 — 한 CASE 컬럼의 <col> 인라인 스타일.
+   *  우선순위:
+   *    1) 드래그 중인 프리뷰 → 그 px 값
+   *    2) 저장된 columnWidths[key] → 그 px 값
+   *    3) horizontalScroll → minWidth (가로 스크롤 모드)
+   *    4) 그 외 → width 지정 안 함 (undefined)
+   *
+   *  *주의* — 4번에서 굳이 `100/N%` 를 줬더니, table-fixed 안에서 px(사용
+   *  자가 잡은 한 컬럼) + %(나머지) 가 섞이면 브라우저가 백분율을 더 우선
+   *  시켜서 px 컬럼이 자기 값을 못 잡아가는 버그가 있었음. width 를 안
+   *  주면 table-fixed 가 "explicit 합을 뺀 나머지를 width 없는 col 들끼리
+   *  균등 분배" 하므로 동일한 결과 + px 컬럼은 정확히 그 px 로 고정. */
+  function caseColStyle(caseKey) {
+    if (resizePreview?.caseKey === caseKey) {
+      return { width: `${resizePreview.px}px` }
+    }
+    const stored = columnWidths[caseKey]
+    if (Number.isFinite(stored)) {
+      return { width: `${stored}px` }
+    }
+    if (horizontalScroll) {
+      return { minWidth: `${SCROLL_CASE_MIN_WIDTH_PX}px` }
+    }
+    return undefined
+  }
+
+  /** 행 라벨 컬럼 폭 — 드래그 중이면 프리뷰, 저장된 값이 있으면 그 값,
+   *  없으면 기본 폴백. 편집/뷰 두 모드에 동일하게 적용. */
+  function rowLabelColStyle() {
+    if (resizePreview?.caseKey === ROW_LABEL_KEY) {
+      return { width: `${resizePreview.px}px` }
+    }
+    if (storedRowLabelWidth != null) {
+      return { width: `${storedRowLabelWidth}px` }
+    }
+    return { width: `${ROW_LABEL_DEFAULT_PX}px` }
+  }
+
+  /** 헤더 핸들 mousedown → 윈도우 mousemove/mouseup 으로 드래그 처리.
+   *  진행 중엔 resizePreview 로 화면만 갱신, mouseup 에 commit. */
+  function startCaseResize(caseKey, startThEl, startEvent) {
+    if (!startThEl) return
+    const startWidth = startThEl.offsetWidth
+    const startX = startEvent.clientX
+    function clamp(px) {
+      return Math.min(
+        Math.max(CASE_WIDTH_MIN_PX, Math.round(px)),
+        CASE_WIDTH_MAX_PX,
+      )
+    }
+    function onMove(ev) {
+      const next = clamp(startWidth + (ev.clientX - startX))
+      setResizePreview({ caseKey, px: next })
+    }
+    function onUp(ev) {
+      const next = clamp(startWidth + (ev.clientX - startX))
+      setResizePreview(null)
+      commitColumnWidth(caseKey, next)
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
   }
 
   // ─── Case (column) handlers ──────────────────────────────────────────
@@ -455,6 +574,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       i === idx ? { ...c, ...p, ...(nextKey ? { key: nextKey } : {}) } : c,
     )
     let nextRows = rows
+    let nextColumnWidths = columnWidths
     if (nextKey) {
       const oldKey = current.key
       nextRows = rows.map((row) => {
@@ -463,8 +583,16 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
         const { [oldKey]: _drop, ...keep } = row.values
         return { ...row, values: { ...keep, [nextKey]: v } }
       })
+      if (oldKey in columnWidths) {
+        const { [oldKey]: oldVal, ...keep } = columnWidths
+        nextColumnWidths = { ...keep, [nextKey]: oldVal }
+      }
     }
-    patch({ cases: nextCases, rows: nextRows })
+    patch({
+      cases: nextCases,
+      rows: nextRows,
+      column_widths: nextColumnWidths,
+    })
   }
   function removeCase(idx) {
     if (cases.length <= 1) return
@@ -475,7 +603,16 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       const { [removedKey]: _drop, ...keep } = row.values
       return { ...row, values: keep }
     })
-    patch({ cases: nextCases, rows: nextRows })
+    let nextColumnWidths = columnWidths
+    if (removedKey in columnWidths) {
+      const { [removedKey]: _drop, ...keep } = columnWidths
+      nextColumnWidths = keep
+    }
+    patch({
+      cases: nextCases,
+      rows: nextRows,
+      column_widths: nextColumnWidths,
+    })
   }
   function moveCase(idx, dir) {
     const newIdx = idx + dir
@@ -550,25 +687,17 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           >
             <table
               className={cn(
-                'text-sm w-full',
+                'text-sm w-full table-fixed',
                 horizontalScroll && 'w-max min-w-full',
               )}
             >
               <colgroup>
-                {/* Row-label column: width:0 + whitespace-nowrap on the
-                    td below makes the column shrink to the longest row
-                    label's intrinsic width. CASE columns then split the
-                    remaining space evenly via percentage widths. */}
-                <col style={{ width: 0 }} />
-                {cases.map((_, i) => (
-                  <col
-                    key={i}
-                    style={
-                      horizontalScroll
-                        ? { minWidth: `${SCROLL_CASE_MIN_WIDTH_PX}px` }
-                        : { width: `${100 / cases.length}%` }
-                    }
-                  />
+                {/* 편집 모드와 동일한 7rem 으로 row-label 폭을 잡아 두 모드
+                    의 CASE 컬럼 시작점이 정확히 일치하도록. 긴 행 이름은
+                    아래 td 의 whitespace-pre-wrap break-words 로 wrap. */}
+                <col style={rowLabelColStyle()} />
+                {cases.map((c) => (
+                  <col key={c.key} style={caseColStyle(c.key)} />
                 ))}
               </colgroup>
               <thead className="bg-muted/40">
@@ -577,7 +706,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                   {cases.map((c, i) => (
                     <th
                       key={i}
-                      className="px-2 py-1.5 text-center font-medium text-xs text-muted-foreground border-b"
+                      className="px-2 py-1.5 text-center font-medium text-xs text-muted-foreground border-b whitespace-pre-wrap break-words"
                     >
                       {c.label || c.key}
                     </th>
@@ -587,7 +716,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
               <tbody>
                 {rows.map((row, ri) => (
                   <tr key={ri} className="border-b last:border-b-0">
-                    <td className="px-2 py-1.5 text-xs font-medium border-r bg-muted/20 whitespace-nowrap">
+                    <td className="px-2 py-1.5 text-xs font-medium border-r bg-muted/20 align-top whitespace-pre-wrap break-words">
                       {row.label || (
                         <span className="text-muted-foreground italic">
                           (이름 없음)
@@ -651,6 +780,21 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           onChange={(v) => patch({ image_max_height_px: v })}
           suffix="px"
         />
+        {/* CASE 폭 균등하게 — 사용자가 드래그로 조절해 둔 case 컬럼 폭을
+            모두 비워서, table-fixed 가 다시 모든 case 를 균등 분배하도록
+            한다. 첫 열(행 라벨)의 row_label_width 는 의도적으로 건드리지
+            않음 — 사용자 요청 "첫열은 제외". 지정된 폭이 하나도 없으면
+            disabled 로 두어 의미 없는 클릭을 차단. */}
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-[11px] px-2"
+          disabled={Object.keys(columnWidths).length === 0}
+          onClick={() => patch({ column_widths: undefined })}
+          title="사용자가 조절한 CASE 컬럼 폭을 모두 기본값(균등 분배)으로 되돌립니다. 첫 열(행 라벨) 폭은 유지됩니다."
+        >
+          CASE 폭 균등하게
+        </Button>
       </EditorOptionBar>
       {cases.length === 0 ? (
         <div className="rounded-md border border-dashed bg-muted/20 px-3 py-4 text-center text-xs text-muted-foreground">
@@ -673,57 +817,69 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
         >
           <table
             className={cn(
-              'text-sm',
-              horizontalScroll ? 'w-max min-w-full' : 'w-full table-fixed',
+              'text-sm w-full table-fixed',
+              horizontalScroll && 'w-max min-w-full',
             )}
           >
             <colgroup>
-              <col style={{ width: ROW_LABEL_WIDTH }} />
-              {cases.map((_, i) => (
-                <col
-                  key={i}
-                  style={
-                    horizontalScroll
-                      ? { minWidth: `${SCROLL_CASE_MIN_WIDTH_PX}px` }
-                      : undefined
-                  }
-                />
+              <col style={rowLabelColStyle()} />
+              {cases.map((c) => (
+                <col key={c.key} style={caseColStyle(c.key)} />
               ))}
             </colgroup>
             <thead className="bg-muted/40">
               <tr>
-                <th className="px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b border-r">
+                <th className="px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b border-r relative">
                   <span className="text-[10px]">행 / CASE</span>
+                  {/* 행 라벨 컬럼도 case 컬럼과 동일한 핸들 패턴으로 폭 조절.
+                      더블클릭 시 기본 폭으로 리셋. */}
+                  <div
+                    role="separator"
+                    aria-orientation="vertical"
+                    title="끌어서 행 라벨 폭 조절 · 더블클릭하면 기본값으로"
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      const th = e.currentTarget.closest('th')
+                      startCaseResize(ROW_LABEL_KEY, th, e)
+                    }}
+                    onDoubleClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      if (storedRowLabelWidth == null) return
+                      patch({ row_label_width: undefined })
+                    }}
+                    className="absolute right-0 top-0 h-full w-2 cursor-col-resize flex items-center justify-end group/handle z-10"
+                  >
+                    <span className="block w-0.5 h-1/2 bg-border group-hover/handle:bg-primary transition-colors" />
+                  </div>
                 </th>
                 {cases.map((c, ci) => (
                   <th
                     key={ci}
                     className="px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b group relative"
                   >
-                    <div className="flex items-center gap-0.5">
+                    <div className="flex items-start gap-0.5">
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-5 w-5 opacity-0 group-hover:opacity-100"
+                        className="h-5 w-5 shrink-0 opacity-0 group-hover:opacity-100"
                         disabled={ci === 0}
                         onClick={() => moveCase(ci, -1)}
                         title="왼쪽으로"
                       >
                         <ChevronLeft className="h-3 w-3" />
                       </Button>
-                      <input
-                        type="text"
+                      <AutoGrowTextarea
                         value={c.label || ''}
-                        onChange={(e) =>
-                          updateCase(ci, { label: e.target.value })
-                        }
+                        onChange={(v) => updateCase(ci, { label: v })}
                         placeholder={c.key}
-                        className="bg-transparent border-0 outline-none focus:ring-1 focus:ring-ring rounded px-1 py-0.5 text-xs text-center flex-1 min-w-0 font-semibold"
+                        className="bg-transparent border-0 outline-none focus:ring-1 focus:ring-ring rounded px-1 py-0.5 text-xs text-center flex-1 min-w-0 font-semibold resize-none whitespace-pre-wrap break-words"
                       />
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-5 w-5 opacity-0 group-hover:opacity-100"
+                        className="h-5 w-5 shrink-0 opacity-0 group-hover:opacity-100"
                         disabled={ci === cases.length - 1}
                         onClick={() => moveCase(ci, 1)}
                         title="오른쪽으로"
@@ -733,13 +889,40 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-5 w-5 opacity-0 group-hover:opacity-100 text-destructive"
+                        className="h-5 w-5 shrink-0 opacity-0 group-hover:opacity-100 text-destructive"
                         onClick={() => removeCase(ci)}
                         disabled={cases.length <= 1}
                         title="CASE 삭제"
                       >
                         <X className="h-3 w-3" />
                       </Button>
+                    </div>
+                    {/* 우측 가장자리 드래그 핸들 — 끌어서 컬럼 폭 조절.
+                        외곽 8px 는 잡기 쉬운 hit area (cursor: col-resize),
+                        내부 2px 시각적 바는 항상 살짝 보여 발견성 확보.
+                        호버 시 primary 색으로 진해짐. 더블클릭 = 기본 폭.
+                        편집/뷰 두 모드 모두 같은 column_widths 를 보므로
+                        한 번 설정한 폭이 뷰 모드에서도 그대로 적용. */}
+                    <div
+                      role="separator"
+                      aria-orientation="vertical"
+                      title="끌어서 컬럼 폭 조절 · 더블클릭하면 기본값으로"
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        const th = e.currentTarget.closest('th')
+                        startCaseResize(c.key, th, e)
+                      }}
+                      onDoubleClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        if (!(c.key in columnWidths)) return
+                        const { [c.key]: _drop, ...keep } = columnWidths
+                        patch({ column_widths: keep })
+                      }}
+                      className="absolute right-0 top-0 h-full w-2 cursor-col-resize flex items-center justify-end group/handle z-10"
+                    >
+                      <span className="block w-0.5 h-1/2 bg-border group-hover/handle:bg-primary transition-colors" />
                     </div>
                   </th>
                 ))}
@@ -875,6 +1058,31 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
 // --------------------------------------------------------------------------- //
 // Cell editors                                                                //
 // --------------------------------------------------------------------------- //
+
+/** CASE 헤더 라벨 입력에 쓰는 자동 grow textarea. 단일 라인 input 으로는
+ *  긴 case 이름이 가로로 흐르거나 잘려서, 컬럼 폭이 좁을 때 입력이 매우
+ *  불편했음. textarea 로 바꾸고 매 입력마다 scrollHeight 만큼 키를 맞춰
+ *  서 줄바꿈이 자연스럽게 보이도록 한다. resize 핸들로 컬럼 폭을 늘리
+ *  거나 줄여도 textarea 가 같이 따라 와서 입력 영역이 자동으로 wrap. */
+function AutoGrowTextarea({ value, onChange, className, ...rest }) {
+  const ref = useRef(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [value])
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      rows={1}
+      className={className}
+      {...rest}
+    />
+  )
+}
 
 function TextCellEditor({ value, onChange }) {
   // `value` is a plain string for text rows. We render a multi-line textarea

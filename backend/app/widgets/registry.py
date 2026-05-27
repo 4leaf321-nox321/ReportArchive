@@ -2714,6 +2714,28 @@ def _comparison_content(props: dict) -> dict:  # noqa: ARG001
                     "additionalProperties": False,
                 },
             },
+            # 사용자가 헤더 핸들로 직접 조절한 CASE 컬럼 폭 (px). 키는 case
+            # slug 와 동일하고, 빠진 키는 자동 폭(N개 균등)으로 폴백. 편집
+            # 모드와 뷰 모드 모두 같은 값을 사용해 폭이 일관되게 보임.
+            "column_widths": {
+                "type": "object",
+                "patternProperties": {
+                    r"^[a-z][a-z0-9_]{0,63}$": {
+                        "type": "integer",
+                        "minimum": 60,
+                        "maximum": 1200,
+                    },
+                },
+                "additionalProperties": False,
+            },
+            # 첫 열(행 라벨) 폭 (px). column_widths 와 같은 핸들 패턴으로 따로
+            # 두는 이유 — column_widths 키는 case slug 규칙(^[a-z]…)이라 특수
+            # 키 추가가 어색하고, 행 라벨은 의미적으로 별개 축.
+            "row_label_width": {
+                "type": "integer",
+                "minimum": 60,
+                "maximum": 1200,
+            },
         },
         "additionalProperties": False,
     }

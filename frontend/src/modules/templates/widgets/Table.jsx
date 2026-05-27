@@ -1,6 +1,32 @@
+import { createContext, useContext, useState } from 'react'
+import { Maximize2, Minimize2 } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, PreviewLabel, TextStyleField, captionSkipProps, textStyleToClassName, textStyleToInlineStyle, toTsv } from './_shared'
+
+/**
+ * "표 전체 펼치기" 토글의 공유 state. BlockEditorCard 가 위젯마다
+ * Provider 로 감싸서, 자동맞춤 측정용 mirror 와 사용자가 보는 본체 두
+ * TableEditor 인스턴스가 같은 expanded 값을 보게 한다. 같은 인스턴스를
+ * 두 번 렌더하는 widget 측정 패턴 때문에 로컬 useState 로는 동기화가
+ * 안 돼서 (본체만 펴지고 mirror 는 compact 유지 → 측정된 높이가 그대로
+ * → 컨테이너가 안 자람) Context 로 끌어올렸음.
+ *
+ * Provider 없는 일반적인 렌더(예: 다이얼로그 미리보기, InlineReportView)
+ * 에서는 default value 가 적용 — local useState 와 동일한 fallback 으로
+ * 동작한다. */
+export const TableViewContext = createContext(null)
+
+function useTableExpanded() {
+  const ctx = useContext(TableViewContext)
+  // Provider 가 없으면 컴포넌트 내부 useState 로 폴백. Hook 호출 위치는
+  // 컴포넌트 함수 본문 한 곳이라 React 의 Rules of Hooks 와 충돌 안 함.
+  // (ctx 가 null/undefined 인 경우에만 useState 가 의미 있는 값을 들고
+  // 가고, ctx 가 있으면 useState 의 setter 는 그냥 무시된다.)
+  const local = useState(false)
+  if (ctx) return [ctx.expanded, ctx.setExpanded]
+  return local
+}
 
 export function TablePropsPanel({ props, onChange }) {
   return (
@@ -77,6 +103,12 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   const rows = content?.rows ?? []
   const bodyTextClass = textStyleToClassName(props.text_style)
   const bodyTextStyle = textStyleToInlineStyle(props.text_style)
+  // 읽기 모드 전용 — "전체 펼치기" 토글. 기본은 compact (셀이 잘림 +
+  // 호버 시 툴팁). 펼치면 모든 셀이 줄바꿈으로 풀려서 길어진 행도 한
+  // 눈에 보인다. BlockEditorCard 가 Provider 로 감싸서 측정용 mirror 와
+  // 본체가 같은 expanded 를 공유 — 그래야 펼침 시 컨테이너 높이도 같이
+  // 자란다.
+  const [expanded, setExpanded] = useTableExpanded()
 
   function patch(next) {
     const merged = {
@@ -107,40 +139,65 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           skipAutofill={content?.caption_skip_autofill}
         />
         {rows.length > 0 && cols.length > 0 && (
-          <div className={`overflow-x-auto rounded-md border ${bodyTextClass}`} style={bodyTextStyle}>
-            {/* No trailing column here — edit mode reserves an action column
-                for row buttons, but in view mode that would just leave a
-                blank ~80px gap on the right. Data columns fill the full
-                width instead; widths differ slightly between modes by the
-                action column's size. */}
-            <table className="w-full text-sm table-fixed">
-              <thead className="bg-muted/40">
-                <tr>
-                  {cols.map((c, i) => (
-                    <th
-                      key={i}
-                      className="px-2 py-1.5 text-center font-medium text-xs text-muted-foreground border-b"
-                    >
-                      {c.label || c.key}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row, ri) => (
-                  <tr key={ri} className="border-b last:border-b-0">
-                    {cols.map((c, ci) => (
-                      <td key={ci} className="px-2 py-1.5 text-center truncate">
-                        {row[c.key] === undefined || row[c.key] === ''
-                          ? <span className="text-muted-foreground">—</span>
-                          : String(row[c.key])}
-                      </td>
+          <>
+            <div className="flex justify-end">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setExpanded((v) => !v)}
+                className="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                title={
+                  expanded
+                    ? '셀 내용 압축 (긴 글은 ...로 줄임)'
+                    : '셀 내용 전체 펼치기 (긴 글도 모두 표시)'
+                }
+              >
+                {expanded ? (
+                  <>
+                    <Minimize2 className="mr-1 h-3 w-3" /> 압축
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="mr-1 h-3 w-3" /> 전체 펼치기
+                  </>
+                )}
+              </Button>
+            </div>
+            <div className={`overflow-x-auto rounded-md border ${bodyTextClass}`} style={bodyTextStyle}>
+              {/* No trailing column here — edit mode reserves an action column
+                  for row buttons, but in view mode that would just leave a
+                  blank ~80px gap on the right. Data columns fill the full
+                  width instead; widths differ slightly between modes by the
+                  action column's size. */}
+              <table className="w-full text-sm table-fixed">
+                <thead className="bg-muted/40">
+                  <tr>
+                    {cols.map((c, i) => (
+                      <th
+                        key={i}
+                        className="px-2 py-1.5 text-center font-medium text-xs text-muted-foreground border-b"
+                      >
+                        {c.label || c.key}
+                      </th>
                     ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {rows.map((row, ri) => (
+                    <tr key={ri} className="border-b last:border-b-0">
+                      {cols.map((c, ci) => (
+                        <ReadOnlyCell
+                          key={ci}
+                          value={row[c.key]}
+                          expanded={expanded}
+                        />
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </div>
     )
@@ -554,6 +611,49 @@ function coerceCellValue(column, raw) {
     return Number.isFinite(n) ? n : s
   }
   return s
+}
+
+/** 읽기 모드 표 셀.
+ *
+ *  Compact 모드 (default): 셀이 한 줄로 truncate 되고, 호버 시 fade-in
+ *  되는 작은 popover 가 셀 아래에 떠서 전체 내용 보여줌. 빈 셀에는 — 만
+ *  보이고 호버 popover 도 안 뜸. native `title` 도 같이 박아 접근성
+ *  보조 도구 / 키보드 focus 에서도 잡히도록.
+ *
+ *  Expanded 모드: 전체 펼치기 토글이 켜진 상태 — 셀이 줄바꿈 되어 자연
+ *  스럽게 늘어남. 이미 다 보이므로 hover popover 는 띄우지 않는다. */
+function ReadOnlyCell({ value, expanded }) {
+  const isEmpty = value === undefined || value === null || value === ''
+  const text = isEmpty ? '' : String(value)
+  if (isEmpty) {
+    return (
+      <td className="px-2 py-1.5 text-center text-muted-foreground">—</td>
+    )
+  }
+  if (expanded) {
+    return (
+      <td className="px-2 py-1.5 text-center whitespace-pre-wrap break-words align-top">
+        {text}
+      </td>
+    )
+  }
+  return (
+    <td className="px-2 py-1.5 text-center truncate relative group">
+      <span title={text} className="block truncate">
+        {text}
+      </span>
+      {/* 호버 popover — Tailwind group-hover 만으로 동작. 셀 아래에 떠서
+          row 위로 z-index 올림. 긴 글도 줄바꿈 / 폭 제한으로 깔끔하게
+          표시. pointer-events: none 이라 popover 자체가 다른 호버를
+          방해하지 않음. */}
+      <span
+        role="tooltip"
+        className="pointer-events-none invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-opacity absolute left-1/2 -translate-x-1/2 top-full mt-1 z-50 max-w-[min(28rem,80vw)] min-w-[8rem] whitespace-pre-wrap break-words rounded-md border bg-popover text-popover-foreground shadow-md px-2 py-1.5 text-xs text-left"
+      >
+        {text}
+      </span>
+    </td>
+  )
 }
 
 export function TablePreview({ props }) {

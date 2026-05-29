@@ -938,7 +938,7 @@ function ReportSettingsPropertiesTab({
  * subtle placeholder rather than collapsing entirely (avoids a layout
  * shift when the data arrives).
  */
-function EntityTagsSection({ entities, onChange }) {
+export function EntityTagsSection({ entities, onChange }) {
   const [types, setTypes] = useState(null) // null = loading, [] = empty (impossible post-seed but safe)
   const [error, setError] = useState(null)
 

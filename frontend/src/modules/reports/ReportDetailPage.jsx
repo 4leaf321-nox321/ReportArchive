@@ -42,6 +42,7 @@ import {
   Send,
   Settings2,
   Sparkles,
+  Tag,
   Trash2,
   Undo2,
   Upload,
@@ -93,8 +94,10 @@ import { useReportLock } from './useReportLock'
 import {
   DEFAULT_REPORT_WIDTH_PX,
   DEFAULT_REPORT_GAP_PX,
+  EntityTagsSection,
   ReportSettingsDialog,
 } from './ReportSettingsDialog'
+import { ReportTypePicker } from './ReportTypePicker'
 import { SlideGuideOverlay } from './SlideGuideOverlay'
 import {
   getTemplateVersion,
@@ -3067,22 +3070,32 @@ export default function ReportDetailPage() {
         </div>
 
         {/* Phase banner — explicit signal that the report is past the
-            drafting stage. drafting needs no banner (default state);
-            reviewing + finalized do.
-            data-export-exclude: these banners describe transient
-            editor state ("리뷰 진행 중", "발행됨", "수정 잠금")
-            irrelevant to a portable archive; export strips them. */}
+            drafting stage. 우측엔 보고서 메타(종류·관련 정보) 등록 칩이
+            얹혀서 사용자가 banner 영역 한 곳에서 모두 처리 가능. drafting
+            상태엔 phase 색이 없으므로 메타가 비어있을 때만 amber 전용
+            banner 가 동등 위치에 뜬다 — phase 와 메타 양쪽이 같은 시각
+            언어를 공유.
+
+            data-export-exclude: 모든 banner 가 transient editor state
+            ("리뷰 진행 중", "발행됨", "수정 잠금", "메타데이터 등록")
+            라 export 에선 제외. */}
         {existingReport?.phase === 'reviewing' && (
           <div
             data-export-exclude
             className="border-b bg-amber-50 px-6 py-2 text-xs text-amber-900 flex items-center gap-2"
           >
             <span className="text-base">👀</span>
-            <span className="font-medium">리뷰 진행 중</span>
-            <span className="flex-1 text-amber-800/80">
+            <span className="font-medium shrink-0">리뷰 진행 중</span>
+            <span className="flex-1 min-w-0 truncate text-amber-800/80">
               외부 코멘트가 달렸거나 조직 게시판에 게시된 상태. 코멘트 패널을
               우측에 펼쳐서 의견을 확인하세요.
             </span>
+            <ReportMetaChips
+              draft={draft}
+              setDraft={setDraft}
+              isEditing={effectiveIsEditing}
+              tone="amber"
+            />
           </div>
         )}
         {existingReport?.phase === 'finalized' && (
@@ -3091,11 +3104,17 @@ export default function ReportDetailPage() {
             className="border-b bg-blue-50 px-6 py-2 text-xs text-blue-900 flex items-center gap-2"
           >
             <span className="text-base">✅</span>
-            <span className="font-medium">발행됨</span>
-            <span className="flex-1 text-blue-800/80">
+            <span className="font-medium shrink-0">발행됨</span>
+            <span className="flex-1 min-w-0 truncate text-blue-800/80">
               작성자가 발행을 완료한 보고서. 편집은 차단되어 있으며,
               수정하려면 '발행 취소' 후 작성 모드로.
             </span>
+            <ReportMetaChips
+              draft={draft}
+              setDraft={setDraft}
+              isEditing={effectiveIsEditing}
+              tone="blue"
+            />
           </div>
         )}
 
@@ -3107,15 +3126,30 @@ export default function ReportDetailPage() {
             className="border-b bg-red-50 px-6 py-2 text-xs text-red-800 flex items-center gap-2"
           >
             <span className="text-base">🔒</span>
-            <span className="font-medium">
+            <span className="font-medium shrink-0">
               {existingReport.owner_name || '작성자'}가(이) 수정 잠금 —
             </span>
-            <span className="flex-1 truncate">
+            <span className="flex-1 min-w-0 truncate">
               {existingReport.author_lock_reason || '사유 미기재'}
             </span>
-            <span className="text-[10px] opacity-70">작성자 외 편집 불가</span>
+            <span className="text-[10px] opacity-70 shrink-0">작성자 외 편집 불가</span>
+            <ReportMetaChips
+              draft={draft}
+              setDraft={setDraft}
+              isEditing={effectiveIsEditing}
+              tone="red"
+            />
           </div>
         )}
+        {/* Drafting + 메타 미등록 — 다른 phase banner 가 없을 때만 자체
+            banner 를 띄워 사용자가 같은 자리에서 메타를 등록할 수 있도록.
+            메타 두 가지 모두 채워지면 자동으로 사라져 노이즈 0. */}
+        <DraftingMetaBanner
+          existingReport={existingReport}
+          draft={draft}
+          setDraft={setDraft}
+          isEditing={effectiveIsEditing}
+        />
 
         {/* Page strip — chips that select the active page (paginated mode).
             In 'all' mode they act as scroll-to anchors. Always shows the
@@ -5865,6 +5899,174 @@ function PageThumbnail({ src }) {
       ) : (
         <Loader2 className="h-4 w-4 animate-spin text-muted-foreground/60" />
       )}
+    </div>
+  )
+}
+
+/**
+// --- 보고서 메타 (보고서 종류 + 관련 정보) 칩 / banner ---------------- //
+//
+// 사용자가 「⚙ 설정 → 속성 탭 → 스크롤」 3-hop 깊이까지 들어가야 만지던
+// 「보고서 종류」 와 「관련 정보」 두 필드를, 보고서 화면 상단의 phase
+// banner 영역 우측 (또는 전용 amber banner) 에 chip 으로 노출해 1-클릭
+// 발견성을 확보한다.
+//
+//   - 둘 다 채워져 있고 phase banner 가 없으면 → 아무것도 안 보임 (편집
+//     완료된 보고서는 노이즈 0)
+//   - 비어있고 phase banner 가 있으면      → 그 banner 의 우측에 amber
+//     CTA chip 으로 얹힘
+//   - 비어있고 phase banner 가 없으면      → 그 자리에 「📋 보고서
+//     메타데이터」 전용 amber banner 한 줄
+//
+// chip 클릭 → 작은 Popover 가 떠서 기존 ReportTypePicker /
+// EntityTagsSection 컴포넌트를 그대로 사용 — 「⚙ 설정」 경로의 정식
+// editor 와 동일한 UI 라 학습 비용 0.
+
+/** Phase banner 우측에 얹히는 메타 등록 chip 2개. 편집모드일 때만 노출.
+ *
+ *  두 chip 모두 항상 표시 — 뷰 모드에선 어차피 안 보이고, 편집모드에서
+ *  채워진 값도 클릭 한 번으로 변경/추가/제거할 수 있어야 하므로 사라지면
+ *  접근성이 떨어짐. fill 상태에 따라 톤만 바꿈:
+ *    - 비어있음 → amber CTA "+ 보고서 종류" / "+ 관련 정보"
+ *    - 등록됨 → muted "🏷 {종류명}" / "🏷 관련 정보 N건"
+ *
+ *  tone prop 은 amber CTA 상태일 때만 호스트 banner 색에 매칭. muted
+ *  상태는 호스트와 무관한 중립 톤. */
+function ReportMetaChips({ draft, setDraft, isEditing, tone = 'amber' }) {
+  if (!isEditing || !draft) return null
+  const hasType = !!draft.report_type_id
+  const hasEntities =
+    Array.isArray(draft.entities) && draft.entities.length > 0
+  const ctaTones = {
+    amber: 'border-amber-400 bg-amber-100/70 text-amber-900 hover:bg-amber-200/70',
+    blue:  'border-blue-400  bg-blue-100/70  text-blue-900  hover:bg-blue-200/70',
+    red:   'border-red-400   bg-red-100/70   text-red-900   hover:bg-red-200/70',
+  }
+  const ctaCls = ctaTones[tone] || ctaTones.amber
+  const mutedCls =
+    'border-border bg-background/80 text-foreground/80 hover:bg-muted'
+  const typeName = draft.report_type?.name ?? '보고서 종류'
+  return (
+    <div className="flex items-center gap-1.5 shrink-0">
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors',
+              hasType ? mutedCls : ctaCls,
+            )}
+            title={hasType ? '보고서 종류 변경' : '이 보고서의 종류를 등록'}
+          >
+            {hasType ? (
+              <Tag className="h-3 w-3" />
+            ) : (
+              <Plus className="h-3 w-3" />
+            )}
+            <span className="max-w-[140px] truncate">
+              {hasType ? typeName : '보고서 종류'}
+            </span>
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[420px] p-3" align="end">
+          <ReportTypePicker
+            value={draft.report_type_id}
+            currentType={draft.report_type}
+            onChange={(t) => {
+              if (t) {
+                setDraft((d) =>
+                  d ? { ...d, report_type_id: t.id, report_type: t } : d,
+                )
+              } else {
+                setDraft((d) =>
+                  d ? { ...d, report_type_id: null, report_type: null } : d,
+                )
+              }
+            }}
+          />
+        </PopoverContent>
+      </Popover>
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors',
+              hasEntities ? mutedCls : ctaCls,
+            )}
+            title={
+              hasEntities
+                ? '관련 정보 추가/편집'
+                : '모델·부품·시험 등 관련 정보 태그'
+            }
+          >
+            {hasEntities ? (
+              <Tag className="h-3 w-3" />
+            ) : (
+              <Plus className="h-3 w-3" />
+            )}
+            {hasEntities
+              ? `관련 정보 ${draft.entities.length}건`
+              : '관련 정보'}
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[480px] p-3" align="end">
+          <EntityTagsSection
+            entities={draft.entities ?? []}
+            onChange={(entities) =>
+              setDraft((d) => (d ? { ...d, entities } : d))
+            }
+          />
+        </PopoverContent>
+      </Popover>
+    </div>
+  )
+}
+
+/** Phase banner 가 없는 (drafting) 편집 상태에서, 메타 chip 을 같은 위치에
+ *  호스팅하는 전용 row. chip 두 개 모두 항상 노출 정책이므로 banner 도
+ *  편집모드 + drafting + no-other-banner 동안 항상 유지된다. 톤만 fill
+ *  상태에 따라 토글:
+ *    - 둘 중 하나라도 비어있음 → amber (등록 prompt)
+ *    - 둘 다 등록 완료 → muted (chip 은 여전히 클릭 가능, 시각 부담 ↓)
+ *
+ *  finalized/reviewing/lock 같은 다른 banner 가 있으면 그쪽 우측에 chip
+ *  이 이미 얹히므로 이 banner 는 중복 노출 안 함. */
+function DraftingMetaBanner({ existingReport, draft, setDraft, isEditing }) {
+  if (!isEditing || !draft) return null
+  const hasOtherBanner =
+    existingReport?.phase === 'reviewing' ||
+    existingReport?.phase === 'finalized' ||
+    existingReport?.author_lock_enabled
+  if (hasOtherBanner) return null
+  const hasType = !!draft.report_type_id
+  const hasEntities =
+    Array.isArray(draft.entities) && draft.entities.length > 0
+  const isAmber = !hasType || !hasEntities
+  const bannerCls = isAmber
+    ? 'bg-amber-50 text-amber-900'
+    : 'bg-muted/30 text-muted-foreground'
+  const descCls = isAmber ? 'text-amber-800/80' : ''
+  const descText = isAmber
+    ? '종류와 관련 정보를 등록하면 검색·집계·필터 정확도가 올라갑니다.'
+    : '추가/변경은 우측 칩 클릭.'
+  return (
+    <div
+      data-export-exclude
+      className={cn(
+        'border-b px-6 py-2 text-xs flex items-center gap-2',
+        bannerCls,
+      )}
+    >
+      <span className="text-base">📋</span>
+      <span className="font-medium shrink-0">보고서 메타데이터</span>
+      <span className={cn('flex-1 min-w-0 truncate', descCls)}>{descText}</span>
+      <ReportMetaChips
+        draft={draft}
+        setDraft={setDraft}
+        isEditing={isEditing}
+        tone="amber"
+      />
     </div>
   )
 }

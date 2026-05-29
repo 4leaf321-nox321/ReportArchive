@@ -35,6 +35,10 @@ import html2canvas from 'html2canvas'
 // pulling auth helpers in, and the apiClient already handles refresh /
 // 401 retries uniformly.
 import { apiClient } from '@/shared/api/client'
+// Post-process docx-js`s output to remove the always-empty `comments`
+// part that triggers Word`s "복구하겠습니까?" recovery dialog on every
+// open. See exportDocxStripOrphans.js for the full rationale.
+import { stripOrphanDocxParts } from './exportDocxStripOrphans'
 
 // docx `size` is in half-points (26 = 13pt). The user wants the whole
 // document at 13pt 바탕체 so both constants resolve to the same value;
@@ -104,6 +108,7 @@ export async function exportReportToDocx({
   pageTemplateMap,
   sectionItemByCode,
   onProgress,
+  signal,
 }) {
   // Best-effort progress emit — wrap so a buggy callback doesn't crash
   // the export. Falls back to no-op when caller didn't pass one.
@@ -117,6 +122,15 @@ export async function exportReportToDocx({
           }
         }
       : () => {}
+  // Cancellation hook — caller wires the overlay`s 취소 button to an
+  // AbortController and passes signal here. The per-block loop polls
+  // this between captures, so the user gets near-instant feedback;
+  // each html2canvas call is the slowest blocking step and pausing
+  // before it bounds the wait to that single block.
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError')
+  }
+  throwIfAborted()
 
   // Per-report depth-별 glyph overrides for rich_text widgets — length 3
   // array `[d0, d1, d2]`. depth 2 글리프는 depth 2+ 모두에 사용된다 (=
@@ -219,6 +233,7 @@ export async function exportReportToDocx({
       // Skipping the Table wrapper keeps the docx smaller and avoids
       // an unnecessary nesting layer.
       if (isFullWidthSole) {
+        throwIfAborted()
         const { block } = rowItems[0]
         processed += 1
         emit({
@@ -249,6 +264,7 @@ export async function exportReportToDocx({
       //     their proportional width like on the web
       const cells = []
       for (const { block, layout } of rowItems) {
+        throwIfAborted()
         processed += 1
         emit({
           phase: 'block',
@@ -332,7 +348,9 @@ export async function exportReportToDocx({
     sections: [{ properties: {}, children }],
   })
 
-  const blob = await Packer.toBlob(doc)
+  throwIfAborted()
+  const blob = await stripOrphanDocxParts(await Packer.toBlob(doc))
+  throwIfAborted()
   const filename = `${sanitizeFileName(draft.title || 'report')}-${new Date()
     .toISOString()
     .slice(0, 10)}.docx`

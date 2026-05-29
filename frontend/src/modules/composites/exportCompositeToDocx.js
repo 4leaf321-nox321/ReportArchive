@@ -49,6 +49,9 @@ import {
   sanitizeFileName,
   triggerDownload,
 } from '@/modules/reports/exportReportToDocx'
+// Same Word "복구하겠습니까?" mitigation as the report exporter — see
+// exportDocxStripOrphans.js for the full rationale.
+import { stripOrphanDocxParts } from '@/modules/reports/exportDocxStripOrphans'
 import { InlineReportView } from './InlineReportView'
 
 // A4 dimensions in twips (1/1440 inch). Portrait = tall; landscape =
@@ -137,6 +140,7 @@ export async function exportCompositeToDocx({
   layout,
   sectionItemByCode,
   onProgress,
+  signal,
 }) {
   const sectionLookup = sectionItemByCode ?? {}
   const emit =
@@ -149,6 +153,13 @@ export async function exportCompositeToDocx({
           }
         }
       : () => {}
+  // Cancellation hook — same shape as exportReportToDocx. Polled
+  // before each item resolve / item render so the overlay`s 취소
+  // button stays responsive even on long composites.
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError')
+  }
+  throwIfAborted()
 
   const items = Array.isArray(composite?.items) ? composite.items : []
   const totalItems = items.length
@@ -166,6 +177,7 @@ export async function exportCompositeToDocx({
   //    frozen blob; live items fetch via getReport(id).
   const resolved = []
   for (let i = 0; i < items.length; i++) {
+    throwIfAborted()
     const it = items[i]
     emit({
       phase: 'block',
@@ -504,6 +516,7 @@ export async function exportCompositeToDocx({
   // long capture of a single item.
   const itemsChildren = []
   for (let i = 0; i < resolved.length; i++) {
+    throwIfAborted()
     const ch = await buildItemChildren(resolved[i])
     itemsChildren.push({ group: resolved[i], children: ch })
   }
@@ -713,7 +726,9 @@ export async function exportCompositeToDocx({
     ],
   })
 
-  const blob = await Packer.toBlob(doc)
+  throwIfAborted()
+  const blob = await stripOrphanDocxParts(await Packer.toBlob(doc))
+  throwIfAborted()
   const suffix = isTwoCol ? '-landscape-2col' : ''
   const filename = `${sanitizeFileName(composite.title || 'composite')}-${new Date()
     .toISOString()

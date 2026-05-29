@@ -64,7 +64,10 @@ export function CommentPanel() {
   const resolved = threads.filter((t) => t.status === 'resolved')
 
   return (
-    <aside className="w-[360px] shrink-0 border-l bg-background flex flex-col h-full">
+    <aside
+      data-comment-panel-root
+      className="w-[360px] shrink-0 border-l bg-background flex flex-col h-full"
+    >
       <div className="flex items-center justify-between px-3 py-2 border-b">
         <div className="flex items-center gap-2 text-sm font-medium">
           <MessageCircle className="h-4 w-4" />

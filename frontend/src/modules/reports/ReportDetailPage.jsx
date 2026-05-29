@@ -8,6 +8,7 @@ import {
 } from 'react-router-dom'
 import {
   ArrowLeft,
+  ArrowRightLeft,
   Bookmark,
   Check,
   CheckCircle2,
@@ -37,6 +38,7 @@ import {
   Plus,
   Rows,
   Save,
+  Scissors,
   Send,
   Settings2,
   Sparkles,
@@ -222,6 +224,15 @@ export default function ReportDetailPage() {
   // `printing` because `printing` also covers PDF / HTML paths that
   // don't need the same granular progress UX.
   const [docxProgress, setDocxProgress] = useState(null)
+  // HTML export progress — uses the same {phase, current, total, label}
+  // shape as docxProgress so the shared ExportOverlay component can read
+  // both. Set to null when no export is running.
+  const [htmlProgress, setHtmlProgress] = useState(null)
+  // Abort controller for the currently-running export (HTML or DOCX —
+  // they`re mutually exclusive thanks to setPrinting). Wired to the
+  // overlay`s 취소 button; aborted state triggers AbortError inside the
+  // exporter at the next polled checkpoint.
+  const exportAbortRef = useRef(null)
   const effectiveIsEditing = isEditing && !printing
   const effectiveViewMode = printing ? 'all' : viewMode
   const [currentPage, setCurrentPage] = useState(0)
@@ -541,6 +552,23 @@ export default function ReportDetailPage() {
   // Active block tracking — composite key so the same block id across two
   // pages doesn't collide. `null` = nothing focused.
   const [activeBlock, setActiveBlock] = useState(null) // { pageIdx, blockId } | null
+  // Latest `safeCurrent` page index in a ref so the keyboard-shortcut
+  // useEffect can read it without listing it in deps — the const itself
+  // is declared AFTER the loading early returns (Rules of Hooks forbid
+  // moving the effect past the early returns, and listing safeCurrent
+  // in deps from up here triggers TDZ on render). Synced inside the
+  // component body after the safeCurrent declaration; reads via
+  // safeCurrentRef.current always pick up the latest page.
+  const safeCurrentRef = useRef(0)
+  // In-memory single-slot clipboard for widget copy/cut/paste. Holds
+  // an effective snapshot — props / content / layout / section all
+  // merged so the destination page can paste as a self-contained
+  // extra block without dragging template-vs-override semantics
+  // along. `cutSource` tracks the origin when we want to clear the
+  // clipboard after the FIRST paste (cut should be a true move, not
+  // a duplicate). Copy leaves cutSource null → user can paste many
+  // times.
+  const [blockClipboard, setBlockClipboard] = useState(null)
 
   // File input for "로컬 불러오기" — declared up here so the hook order
   // stays stable across the loading → ready transition (the button itself
@@ -589,30 +617,67 @@ export default function ReportDetailPage() {
     return () => window.removeEventListener('keydown', onKey)
   }, [viewMode, pageCountForKeys])
 
-  // Edit-mode shortcut: Delete 키로 선택된 위젯 삭제. activeBlock 이 있을
-  // 때만 동작하고, 사용자가 텍스트 입력 중(input/textarea/contenteditable)
-  // 이거나 모달 다이얼로그가 열려 있으면 무시 — 그런 컨텍스트에서는 Del 키
-  // 가 다른 의미를 가짐. Backspace 는 너무 흔히 쓰여 충돌 위험이 커서 일부러
-  // 묶지 않는다.
+  // Edit-mode shortcuts:
+  //   Delete        — 선택 위젯 삭제 (activeBlock 필요)
+  //   Ctrl/Cmd+C    — 선택 위젯 복사 (activeBlock 필요)
+  //   Ctrl/Cmd+X    — 선택 위젯 잘라내기 (activeBlock 필요)
+  //   Ctrl/Cmd+V    — 클립보드 위젯을 현재 페이지에 붙여넣기
+  //
+  // 사용자가 텍스트 입력 중(input/textarea/contenteditable)이거나 모달
+  // 다이얼로그가 열려 있으면 모두 무시 — 그쪽 키 동작이 우선.
+  // Backspace 는 너무 흔히 쓰여 일부러 묶지 않는다. Ctrl+C 는 텍스트
+  // 선택 복사와 충돌하지 않도록 selection 이 비어 있을 때만 hijack.
   useEffect(() => {
-    if (!isEditing || !activeBlock) return
+    if (!isEditing) return
     function onKey(e) {
-      if (e.key !== 'Delete') return
       const ae = document.activeElement
       if (ae instanceof HTMLElement) {
         if (ae.matches('input, textarea, select')) return
         if (ae.isContentEditable) return
       }
-      // Radix Dialog / Popover 등이 열려 있으면 그쪽이 우선. role="dialog"
-      // 가 있는 노드가 페이지에 하나라도 떠 있으면 위젯 삭제 단축키 차단.
       if (document.querySelector('[role="dialog"]')) return
-      e.preventDefault()
-      removeBlockFromPage(activeBlock.pageIdx, activeBlock.blockId)
-      setActiveBlock(null)
+
+      // Plain Delete — 기존 동작 유지
+      if (!(e.ctrlKey || e.metaKey)) {
+        if (e.key !== 'Delete' || !activeBlock) return
+        e.preventDefault()
+        removeBlockFromPage(activeBlock.pageIdx, activeBlock.blockId)
+        setActiveBlock(null)
+        return
+      }
+
+      // Ctrl/Cmd 조합
+      const key = e.key.toLowerCase()
+      if (key === 'c') {
+        if (!activeBlock) return
+        // 사용자가 위젯 안의 텍스트를 선택해 둔 상태면 그쪽 복사가
+        // 우선. selection 이 비어 있을 때만 위젯 복사로 hijack.
+        const sel = window.getSelection?.()
+        if (sel && sel.toString().length > 0) return
+        e.preventDefault()
+        copyBlockToClipboard(activeBlock.pageIdx, activeBlock.blockId)
+      } else if (key === 'x') {
+        if (!activeBlock) return
+        e.preventDefault()
+        copyBlockToClipboard(activeBlock.pageIdx, activeBlock.blockId, { cut: true })
+      } else if (key === 'v') {
+        if (!blockClipboard) return
+        e.preventDefault()
+        // 항상 현재 보고 있는 페이지로 붙여넣기 (activeBlock 이 다른
+        // 페이지에 남아있을 수 있어 그쪽 기준은 헷갈림). 다만 active
+        // 위젯이 현재 페이지에 있다면 그걸 anchor 로 써서 "지금 보고
+        // 있는 위젯 아래" 로 paste — 마우스 우클릭 패턴과 동일한
+        // mental model.
+        const targetPage = safeCurrentRef.current
+        const anchor =
+          activeBlock?.pageIdx === targetPage ? activeBlock.blockId : null
+        pasteBlockOnPage(targetPage, anchor)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [isEditing, activeBlock])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing, activeBlock, blockClipboard])
 
   // Context-builder that the AiPromptDialog uses to render the prompt.
   // Returns a function instead of a fully-baked context because the
@@ -741,6 +806,20 @@ export default function ReportDetailPage() {
   const pages = draft.pages
   const pageCount = pages.length
   const safeCurrent = clamp(currentPage, 0, pageCount - 1)
+  // 우클릭 메뉴의 「다른 페이지로 옮기기」 stage 가 보여줄 페이지 목록.
+  // 라벨 fallback 은 PageStrip 의 chip label 규칙과 동일: 사용자 지정
+  // 이름 → 템플릿 이름 → "페이지 N".
+  const pagesMeta = pages.map((p, idx) => {
+    const tpl = getCachedTemplate(pageTemplateMap, p)
+    return {
+      idx,
+      label: p.name?.trim() || tpl?.name || `페이지 ${idx + 1}`,
+    }
+  })
+  // Keep the keyboard-shortcut effect in sync without putting
+  // `safeCurrent` in its deps array — that would TDZ-throw at render
+  // because the effect runs before this line.
+  safeCurrentRef.current = safeCurrent
   const currentPageData = pages[safeCurrent]
   const currentTemplate = getCachedTemplate(pageTemplateMap, currentPageData)
 
@@ -1121,6 +1200,296 @@ export default function ReportDetailPage() {
       )
       return { ...d, pages: nextPages }
     })
+  }
+
+  /** Snapshot a block`s full EFFECTIVE state into a serializable
+   *  descriptor — used by both copy and cut. We merge the template /
+   *  override layers (props_overrides, layout_overrides,
+   *  block_sections) into a flat shape so the paste site can recreate
+   *  the widget as a standalone extra block with no template parent.
+   *  Returns `null` when the block can`t be resolved. */
+  function snapshotBlock(pageIdx, blockId) {
+    const page = draft?.pages?.[pageIdx]
+    if (!page) return null
+    const tpl = getCachedTemplate(pageTemplateMap, page)
+    const block = combinedBlocks(tpl, page).find((b) => b.id === blockId)
+    if (!block) return null
+    const propsOverride = page.props_overrides?.[blockId] ?? null
+    const layoutOverride = page.layout_overrides?.[blockId] ?? null
+    const content = page.content?.[blockId] ?? null
+    const section = resolveBlockSection(page, block)
+    const effectiveProps = propsOverride
+      ? { ...(block.props ?? {}), ...propsOverride }
+      : block.props ?? {}
+    const effectiveLayout = layoutOverride ?? block.layout ?? null
+    return {
+      type: block.type,
+      props: effectiveProps,
+      content,
+      layout: effectiveLayout,
+      section,
+    }
+  }
+
+  /** Copy a block to the in-memory clipboard. `cut=true` also removes
+   *  the source so the gesture reads as a move; the clipboard then
+   *  carries a `cutSource` flag that auto-clears the slot after the
+   *  first paste (= a cut block can`t be pasted twice; that would be
+   *  a duplicate, not a move). */
+  function copyBlockToClipboard(pageIdx, blockId, { cut = false } = {}) {
+    const snap = snapshotBlock(pageIdx, blockId)
+    if (!snap) return
+    setBlockClipboard({ ...snap, cutSource: cut ? { pageIdx, blockId } : null })
+    if (cut) {
+      removeBlockFromPage(pageIdx, blockId)
+      // 활성 선택이 잘려나간 블록이었으면 같이 비워줘야 다른 단축키
+      // (Del, Ctrl+C 등) 가 stale block id 를 잡지 않음.
+      if (
+        activeBlock?.pageIdx === pageIdx &&
+        activeBlock?.blockId === blockId
+      ) {
+        setActiveBlock(null)
+      }
+    }
+    toast.success(cut ? '위젯을 잘라냈습니다' : '위젯을 복사했습니다')
+  }
+
+  /** Paste the clipboard onto the target page as a brand-new extra
+   *  block. Behavior by `anchorId`:
+   *    - anchorId === null      → append at end of page (drag-reorder
+   *                               afterward)
+   *    - anchorId === <block>   → insert as a new full-row right BELOW
+   *                               the anchor; everything at/after the
+   *                               anchor`s row bumps down by 1. Original
+   *                               col_span / row_span / auto_fit are
+   *                               preserved verbatim (paste keeps shape).
+   *  Auto-clears the clipboard when the source was a cut (move
+   *  semantics) — copy keeps it so the user can repeat-paste. */
+  function pasteBlockOnPage(pageIdx, anchorId = null) {
+    if (!blockClipboard) return
+    const clip = blockClipboard
+    let pastedId = null
+    setDraft((d) => {
+      if (!d) return d
+      const page = d.pages[pageIdx]
+      if (!page) return d
+      const tpl = getCachedTemplate(pageTemplateMap, page)
+      const allBlocks = combinedBlocks(tpl, page)
+      const existingIds = collectPageBlockIds(page, tpl)
+      const newId = freshExtraId(clip.type, existingIds)
+      pastedId = newId
+      const newBlock = {
+        id: newId,
+        type: clip.type,
+        props: { ...(clip.props ?? {}) },
+        // Layout carries col_span / row_span / auto_fit verbatim so
+        // the pasted widget keeps the source`s shape. row will be
+        // overridden by the anchor branch below; the append branch
+        // doesn`t care since blocks_order drives initial placement.
+        layout: clip.layout ? { ...clip.layout } : null,
+      }
+      const nextExtras = [...(page.extra_blocks ?? []), newBlock]
+      const nextContent =
+        clip.content != null
+          ? { ...(page.content ?? {}), [newId]: clip.content }
+          : page.content
+      const nextSections = clip.section
+        ? { ...(page.block_sections ?? {}), [newId]: clip.section }
+        : page.block_sections
+
+      const overrides = page?.layout_overrides ?? {}
+      const baseOrder = page.blocks_order?.length
+        ? [...page.blocks_order]
+        : allBlocks.map((b) => b.id)
+
+      function resolvedLayout(block) {
+        const ov = overrides[block.id]
+        const base = ov ?? block.layout ?? null
+        return base
+          ? { row: base.row, col_span: base.col_span, row_span: base.row_span ?? 4 }
+          : { row: 1, col_span: REPORT_GRID_COLS, row_span: AUTO_FIT_INITIAL_ROWS }
+      }
+
+      const anchor = anchorId
+        ? allBlocks.find((b) => b.id === anchorId)
+        : null
+
+      let nextOverrides = overrides
+      let nextOrder
+
+      if (anchor) {
+        // "기준 위젯 바로 아래" — anchor 행 다음에 새 행 끼우고 그 아래
+        // 모든 블록의 row 를 +1. addExtraBlockAt('down') 와 같은 패턴이지만
+        // 새 블록의 col_span/row_span 은 clip 원본 그대로 유지.
+        const anchorLayout = resolvedLayout(anchor)
+        const insertRow = anchorLayout.row + 1
+        nextOverrides = { ...overrides }
+        for (const b of allBlocks) {
+          const lay = resolvedLayout(b)
+          if (lay.row >= insertRow) {
+            nextOverrides[b.id] = {
+              ...(nextOverrides[b.id] ?? lay),
+              row: lay.row + 1,
+            }
+          }
+        }
+        nextOverrides[newId] = {
+          row: insertRow,
+          col_span: clip.layout?.col_span ?? REPORT_GRID_COLS,
+          row_span: clip.layout?.row_span ?? AUTO_FIT_INITIAL_ROWS,
+          ...(clip.layout?.col_offset != null
+            ? { col_offset: clip.layout.col_offset }
+            : {}),
+          ...(clip.layout?.auto_fit != null
+            ? { auto_fit: clip.layout.auto_fit }
+            : {}),
+        }
+        const anchorIdx = baseOrder.indexOf(anchorId)
+        nextOrder =
+          anchorIdx >= 0
+            ? [...baseOrder.slice(0, anchorIdx + 1), newId, ...baseOrder.slice(anchorIdx + 1)]
+            : [...baseOrder, newId]
+      } else {
+        // Anchor 없음 → 페이지 끝에 추가. blocks_order 가 비어있으면
+        // combinedBlocks 가 "template 다음 extras" fallback 으로 살려줌.
+        nextOrder = page.blocks_order?.length
+          ? [...page.blocks_order, newId]
+          : page.blocks_order ?? []
+      }
+
+      const nextPages = d.pages.map((p, i) =>
+        i === pageIdx
+          ? {
+              ...p,
+              extra_blocks: nextExtras,
+              content: nextContent,
+              blocks_order: nextOrder,
+              block_sections: nextSections,
+              ...(anchor
+                ? { layout_overrides: nextOverrides }
+                : {}),
+            }
+          : p,
+      )
+      return { ...d, pages: nextPages }
+    })
+    // Move-semantics: a cut block survives in the clipboard only until
+    // its first paste. Plain copy stays so the user can paste again.
+    if (clip.cutSource) setBlockClipboard(null)
+    if (pastedId) {
+      // 붙여넣은 직후 그 위젯을 active 로 표시 → 그 다음 Ctrl+V 면
+      // 또 paste, Del 면 그 위젯 삭제 같은 후속 동작이 자연스럽게.
+      setActiveBlock({ pageIdx, blockId: pastedId })
+    }
+    toast.success('위젯을 붙여 넣었습니다')
+  }
+
+  /** Move a single block from one page to another in one atomic
+   *  setDraft call. Same effective state copies over (props / content
+   *  / layout / section) as copy-paste, but source page sheds the
+   *  block, destination page appends it at the end. No-op when src and
+   *  dst are the same page (UI doesn`t even surface that option). */
+  function moveBlockToPage(srcPageIdx, blockId, dstPageIdx) {
+    if (srcPageIdx === dstPageIdx) return
+    setDraft((d) => {
+      if (!d) return d
+      const srcPage = d.pages[srcPageIdx]
+      const dstPage = d.pages[dstPageIdx]
+      if (!srcPage || !dstPage) return d
+
+      // ---- Build the snapshot from the LIVE draft `d` so we`re not
+      // racing against any pending state from outside this updater.
+      const srcTpl = getCachedTemplate(pageTemplateMap, srcPage)
+      const srcBlocks = combinedBlocks(srcTpl, srcPage)
+      const block = srcBlocks.find((b) => b.id === blockId)
+      if (!block) return d
+      const propsOverride = srcPage.props_overrides?.[blockId] ?? null
+      const layoutOverride = srcPage.layout_overrides?.[blockId] ?? null
+      const content = srcPage.content?.[blockId] ?? null
+      const section = resolveBlockSection(srcPage, block)
+      const effProps = propsOverride
+        ? { ...(block.props ?? {}), ...propsOverride }
+        : block.props ?? {}
+      const effLayout = layoutOverride ?? block.layout ?? null
+
+      // ---- Strip everything tied to blockId from the SOURCE page.
+      // Mirrors removeBlockFromPage so the source page reads exactly
+      // like the block was deleted there.
+      const srcOrder = srcPage.blocks_order?.length
+        ? srcPage.blocks_order
+        : srcBlocks.map((b) => b.id)
+      const nextSrcOrder = srcOrder.filter((id) => id !== blockId)
+      const nextSrcExtras = (srcPage.extra_blocks ?? []).filter(
+        (b) => b.id !== blockId,
+      )
+      const nextSrcContent = { ...(srcPage.content ?? {}) }
+      delete nextSrcContent[blockId]
+      const nextSrcLayout = { ...(srcPage.layout_overrides ?? {}) }
+      delete nextSrcLayout[blockId]
+      const nextSrcPropsOv = { ...(srcPage.props_overrides ?? {}) }
+      delete nextSrcPropsOv[blockId]
+      const nextSrcSections = { ...(srcPage.block_sections ?? {}) }
+      delete nextSrcSections[blockId]
+
+      // ---- Append to the DESTINATION page as a fresh extra block.
+      const dstTpl = getCachedTemplate(pageTemplateMap, dstPage)
+      const existingIds = collectPageBlockIds(dstPage, dstTpl)
+      const newId = freshExtraId(block.type, existingIds)
+      const newBlock = {
+        id: newId,
+        type: block.type,
+        props: { ...effProps },
+        layout: effLayout ? { ...effLayout } : null,
+      }
+      const nextDstExtras = [...(dstPage.extra_blocks ?? []), newBlock]
+      const nextDstContent =
+        content != null
+          ? { ...(dstPage.content ?? {}), [newId]: content }
+          : dstPage.content
+      const nextDstSections = section
+        ? { ...(dstPage.block_sections ?? {}), [newId]: section }
+        : dstPage.block_sections
+      const nextDstOrder = dstPage.blocks_order?.length
+        ? [...dstPage.blocks_order, newId]
+        : dstPage.blocks_order ?? []
+
+      const nextPages = d.pages.map((p, i) => {
+        if (i === srcPageIdx) {
+          return {
+            ...p,
+            blocks_order: nextSrcOrder,
+            extra_blocks: nextSrcExtras,
+            content: nextSrcContent,
+            layout_overrides: Object.keys(nextSrcLayout).length
+              ? nextSrcLayout
+              : null,
+            props_overrides: Object.keys(nextSrcPropsOv).length
+              ? nextSrcPropsOv
+              : null,
+            block_sections: nextSrcSections,
+          }
+        }
+        if (i === dstPageIdx) {
+          return {
+            ...p,
+            extra_blocks: nextDstExtras,
+            content: nextDstContent,
+            blocks_order: nextDstOrder,
+            block_sections: nextDstSections,
+          }
+        }
+        return p
+      })
+      return { ...d, pages: nextPages }
+    })
+    // 옮긴 블록이 active 였으면 active 상태도 비워줘야 stale id 가 안 남음.
+    if (
+      activeBlock?.pageIdx === srcPageIdx &&
+      activeBlock?.blockId === blockId
+    ) {
+      setActiveBlock(null)
+    }
+    toast.success('다른 페이지로 옮겼습니다')
   }
 
   /** Reorder a block within a page by absolute index. Materializes
@@ -1920,19 +2289,92 @@ export default function ReportDetailPage() {
   // Keeps the on-screen visual layout exactly as the writer sees it.
   async function handleExportHtml() {
     if (!draft) return
+    // Belt + suspenders: cancel any leftover controller before starting
+    // (shouldn`t happen — setPrinting blocks re-entry — but cheap.)
+    exportAbortRef.current?.abort()
+    const controller = new AbortController()
+    exportAbortRef.current = controller
     setPrinting(true)
+    // Seed the overlay immediately so the user sees feedback the
+    // instant they click — the chart-settle wait alone can take a few
+    // seconds on chart-heavy reports.
+    setHtmlProgress({ phase: 'settle', label: '차트 렌더링 안정화 중...' })
     try {
+      // Two RAFs let React commit the printing=true render. Then poll
+      // until every "크기 조정 중…" placeholder is gone — these are the
+      // Chart / Scatter / Heatmap / Box / Treemap / Density / Sankey
+      // widgets cycling through their 200ms ResizeObserver debounce
+      // after the print-mode layout shift remeasures every grid cell.
+      // Without waiting them out, captured DOM contains placeholders
+      // that have no JS to flip back, so charts appear permanently
+      // resizing in the saved HTML. Cap at ~5s so a stuck widget
+      // doesn't hang the export indefinitely; the exporter scrubs any
+      // survivor's text so a stragglers' placeholder shows as empty,
+      // not as a fake "still computing" lie.
       await new Promise((r) =>
         requestAnimationFrame(() => requestAnimationFrame(r)),
       )
+      if (controller.signal.aborted) throw new DOMException('Export cancelled', 'AbortError')
+      await waitForChartsToSettle(5000, controller.signal)
+      if (controller.signal.aborted) throw new DOMException('Export cancelled', 'AbortError')
+      setHtmlProgress({ phase: 'load', label: '내보내기 모듈 로드 중...' })
       const { exportReportToHtml } = await import('./exportReportToHtml')
-      await exportReportToHtml({ draft })
+      await exportReportToHtml({
+        draft,
+        onProgress: setHtmlProgress,
+        signal: controller.signal,
+      })
       toast.success('HTML 파일로 저장했습니다.')
     } catch (err) {
-      console.error(err)
-      toast.error(`HTML 저장 실패: ${err?.message ?? err}`)
+      if (err?.name === 'AbortError') {
+        toast.info('HTML 내보내기를 취소했습니다.')
+      } else {
+        console.error(err)
+        toast.error(`HTML 저장 실패: ${err?.message ?? err}`)
+      }
     } finally {
       setPrinting(false)
+      setHtmlProgress(null)
+      if (exportAbortRef.current === controller) exportAbortRef.current = null
+    }
+  }
+
+  // Poll the live DOM at 100ms intervals until no widget is showing the
+  // "크기 조정 중…" placeholder, or the budget runs out. Polling is
+  // cheap (one querySelectorAll + textContent scan per tick), and the
+  // loop unblocks the instant all charts settle.
+  //
+  // Quiet-period gate: after a tick comes back clean, we re-check 250ms
+  // later — comfortably past the widgets' 200ms ResizeObserver debounce.
+  // Without this, a chart whose debounce was about to fire when we
+  // checked (`resizing` would flip true ~5ms after our scan) sneaks
+  // its placeholder into the clone with no React left to flip it back.
+  async function waitForChartsToSettle(budgetMs, signal) {
+    const root = document.querySelector('.report-detail-root')
+    if (!root) return
+    const start = performance.now()
+    const isResizing = () =>
+      Array.from(root.querySelectorAll('div')).some(
+        (el) =>
+          el.children.length === 0 &&
+          el.textContent?.trim() === '크기 조정 중…',
+      )
+    while (performance.now() - start < budgetMs) {
+      if (signal?.aborted) return
+      if (!isResizing()) {
+        // 250ms > 200ms ResizeObserver debounce in every chart widget,
+        // so a tail debounce arming right after our scan will have
+        // either fired (placeholder appears → re-loop) or be safely
+        // past its window.
+        await new Promise((r) => setTimeout(r, 250))
+        if (!isResizing()) {
+          await new Promise((r) => requestAnimationFrame(r))
+          return
+        }
+        // Re-armed during the quiet window — fall back into the poll.
+        continue
+      }
+      await new Promise((r) => setTimeout(r, 100))
     }
   }
 
@@ -1941,6 +2383,9 @@ export default function ReportDetailPage() {
   // blocks come out clean. The builder lives in exportReportToDocx.
   async function handleExportDocx() {
     if (!draft) return
+    exportAbortRef.current?.abort()
+    const controller = new AbortController()
+    exportAbortRef.current = controller
     setPrinting(true)
     // Initial spinner state — picked up by the overlay below. Updated
     // continuously via the onProgress callback so the user sees
@@ -1953,20 +2398,27 @@ export default function ReportDetailPage() {
       await new Promise((r) =>
         requestAnimationFrame(() => requestAnimationFrame(r)),
       )
+      if (controller.signal.aborted) throw new DOMException('Export cancelled', 'AbortError')
       const { exportReportToDocx } = await import('./exportReportToDocx')
       await exportReportToDocx({
         draft,
         pageTemplateMap,
         sectionItemByCode,
         onProgress: setDocxProgress,
+        signal: controller.signal,
       })
       toast.success('Word 파일로 저장했습니다.')
     } catch (err) {
-      console.error(err)
-      toast.error(`Word 저장 실패: ${err?.message ?? err}`)
+      if (err?.name === 'AbortError') {
+        toast.info('Word 내보내기를 취소했습니다.')
+      } else {
+        console.error(err)
+        toast.error(`Word 저장 실패: ${err?.message ?? err}`)
+      }
     } finally {
       setPrinting(false)
       setDocxProgress(null)
+      if (exportAbortRef.current === controller) exportAbortRef.current = null
     }
   }
 
@@ -2616,9 +3068,15 @@ export default function ReportDetailPage() {
 
         {/* Phase banner — explicit signal that the report is past the
             drafting stage. drafting needs no banner (default state);
-            reviewing + finalized do. */}
+            reviewing + finalized do.
+            data-export-exclude: these banners describe transient
+            editor state ("리뷰 진행 중", "발행됨", "수정 잠금")
+            irrelevant to a portable archive; export strips them. */}
         {existingReport?.phase === 'reviewing' && (
-          <div className="border-b bg-amber-50 px-6 py-2 text-xs text-amber-900 flex items-center gap-2">
+          <div
+            data-export-exclude
+            className="border-b bg-amber-50 px-6 py-2 text-xs text-amber-900 flex items-center gap-2"
+          >
             <span className="text-base">👀</span>
             <span className="font-medium">리뷰 진행 중</span>
             <span className="flex-1 text-amber-800/80">
@@ -2628,7 +3086,10 @@ export default function ReportDetailPage() {
           </div>
         )}
         {existingReport?.phase === 'finalized' && (
-          <div className="border-b bg-blue-50 px-6 py-2 text-xs text-blue-900 flex items-center gap-2">
+          <div
+            data-export-exclude
+            className="border-b bg-blue-50 px-6 py-2 text-xs text-blue-900 flex items-center gap-2"
+          >
             <span className="text-base">✅</span>
             <span className="font-medium">발행됨</span>
             <span className="flex-1 text-blue-800/80">
@@ -2641,7 +3102,10 @@ export default function ReportDetailPage() {
         {/* Author lock banner — sits below the toolbar so it's
             unmissable while not blocking the title. */}
         {existingReport?.author_lock_enabled && (
-          <div className="border-b bg-red-50 px-6 py-2 text-xs text-red-800 flex items-center gap-2">
+          <div
+            data-export-exclude
+            className="border-b bg-red-50 px-6 py-2 text-xs text-red-800 flex items-center gap-2"
+          >
             <span className="text-base">🔒</span>
             <span className="font-medium">
               {existingReport.owner_name || '작성자'}가(이) 수정 잠금 —
@@ -2767,6 +3231,16 @@ export default function ReportDetailPage() {
                       setExtraBlockProps(idx, blockId, newProps)
                     }
                     onChangeSection={(blockId, code) => setBlockSection(idx, blockId, code)}
+                    onCopyBlock={(blockId) => copyBlockToClipboard(idx, blockId)}
+                    onCutBlock={(blockId) =>
+                      copyBlockToClipboard(idx, blockId, { cut: true })
+                    }
+                    onPasteBlock={(anchorId) => pasteBlockOnPage(idx, anchorId)}
+                    canPaste={!!blockClipboard}
+                    pagesMeta={pagesMeta}
+                    onMoveToPage={(blockId, dstIdx) =>
+                      moveBlockToPage(idx, blockId, dstIdx)
+                    }
                     sectionCategories={sectionCategories}
                     sectionItemByCode={sectionItemByCode}
                     rowGapPx={draft.page_gap_px}
@@ -2813,6 +3287,20 @@ export default function ReportDetailPage() {
                     }
                     onChangeSection={(blockId, code) =>
                       setBlockSection(safeCurrent, blockId, code)
+                    }
+                    onCopyBlock={(blockId) =>
+                      copyBlockToClipboard(safeCurrent, blockId)
+                    }
+                    onCutBlock={(blockId) =>
+                      copyBlockToClipboard(safeCurrent, blockId, { cut: true })
+                    }
+                    onPasteBlock={(anchorId) =>
+                      pasteBlockOnPage(safeCurrent, anchorId)
+                    }
+                    canPaste={!!blockClipboard}
+                    pagesMeta={pagesMeta}
+                    onMoveToPage={(blockId, dstIdx) =>
+                      moveBlockToPage(safeCurrent, blockId, dstIdx)
                     }
                     sectionCategories={sectionCategories}
                     sectionItemByCode={sectionItemByCode}
@@ -3246,12 +3734,28 @@ export default function ReportDetailPage() {
         onConfirm={(s) => performPdfPrint(s)}
       />
 
-      {/* DOCX export progress overlay — fixed full-screen dim + center
-          card with spinner + step label + (when known) bar. Blocks user
+      {/* Export progress overlay — fixed full-screen dim + center card
+          with spinner + step label + (when known) bar. Blocks user
           interaction during export which is desirable: clicking around
           while html2canvas captures the DOM yields garbage. Driven by
-          `docxProgress` state; hidden when null. */}
-      {docxProgress && <DocxExportOverlay progress={docxProgress} />}
+          per-exporter progress state; hidden when null. Both Word and
+          HTML exports share the overlay component, distinguished by
+          title. They are mutually exclusive (each setPrinting=true,
+          one runs at a time) so we render at most one. */}
+      {docxProgress && (
+        <ExportOverlay
+          title="Word 파일로 저장 중"
+          progress={docxProgress}
+          onCancel={() => exportAbortRef.current?.abort()}
+        />
+      )}
+      {htmlProgress && (
+        <ExportOverlay
+          title="HTML 파일로 저장 중"
+          progress={htmlProgress}
+          onCancel={() => exportAbortRef.current?.abort()}
+        />
+      )}
     </div>
     </CommentsProvider>
     </ReportStyleContext.Provider>
@@ -3259,17 +3763,24 @@ export default function ReportDetailPage() {
   )
 }
 
-/** Centered, blocking spinner shown during Word export. Reads the
- *  progress feed from `exportReportToDocx.onProgress` so the user sees
- *  "위젯 변환 중 (N/M)" tick instead of staring at a frozen page. */
-function DocxExportOverlay({ progress }) {
-  const isBlock = progress.phase === 'block'
-  const pct =
-    isBlock && progress.total > 0
-      ? Math.round((progress.current / progress.total) * 100)
-      : null
+/** Centered, blocking spinner shown during a long-running export
+ *  (Word, HTML — anything that holds the page for >1s). Reads the
+ *  progress feed from the exporter`s `onProgress` so the user sees
+ *  e.g. "위젯 변환 중 (N/M)" tick instead of staring at a frozen page.
+ *  `title` differentiates the export type at a glance. The progress
+ *  bar shows whenever `total > 0` — phase string is only used to drive
+ *  the label (exporter`s choice). */
+function ExportOverlay({ title, progress, onCancel }) {
+  const total = Number.isFinite(progress?.total) ? progress.total : 0
+  const current = Number.isFinite(progress?.current) ? progress.current : 0
+  const pct = total > 0 ? Math.round((current / total) * 100) : null
   return (
     <div
+      // html2canvas captures the page within the overlay`s bounding
+      // box and would otherwise bake "페이지 썸네일 생성 중 N/M" into
+      // every thumbnail. The export script passes ignoreElements to
+      // html2canvas matching this attribute to skip the overlay.
+      data-export-overlay
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 backdrop-blur-sm"
       role="status"
       aria-live="polite"
@@ -3278,12 +3789,12 @@ function DocxExportOverlay({ progress }) {
       <div className="rounded-lg border bg-card shadow-xl px-6 py-5 min-w-[280px] max-w-sm">
         <div className="flex items-center gap-3 mb-2">
           <Loader2 className="h-5 w-5 animate-spin text-primary" />
-          <div className="font-semibold text-sm">Word 파일로 저장 중</div>
+          <div className="font-semibold text-sm">{title}</div>
         </div>
         <div className="text-xs text-muted-foreground mb-2">
-          {progress.label ?? '진행 중...'}
+          {progress?.label ?? '진행 중...'}
         </div>
-        {isBlock && progress.total > 0 && (
+        {pct != null && (
           <>
             <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
               <div
@@ -3292,9 +3803,22 @@ function DocxExportOverlay({ progress }) {
               />
             </div>
             <div className="mt-1.5 text-[11px] text-muted-foreground tabular-nums">
-              {progress.current}/{progress.total} ({pct}%)
+              {current}/{total} ({pct}%)
             </div>
           </>
+        )}
+        {/* 취소 버튼 — 클릭 시 AbortController.abort() 호출. exporter 의
+            checkpoint 에서 AbortError 가 던져지고 핸들러가 토스트로
+            "취소되었습니다" 안내. 다음 체크포인트 도달까지의 지연만 있고
+            (대개 < 1 widget 캡처) 즉시 멈춤. */}
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="mt-4 w-full rounded-md border border-border bg-background text-xs text-muted-foreground hover:bg-muted hover:text-foreground py-1.5 transition-colors"
+          >
+            취소
+          </button>
         )}
       </div>
     </div>
@@ -5053,6 +5577,7 @@ function PageStrip({
         <div className="ml-auto" />
         <button
           type="button"
+          data-page-strip-toggle
           onClick={() => setExpanded((v) => !v)}
           className={cn(
             'shrink-0 inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors',
@@ -5064,7 +5589,9 @@ function PageStrip({
           aria-expanded={expanded}
         >
           <LayoutGrid className="h-3 w-3" />
-          {expanded ? '접기' : '펼치기'}
+          <span data-page-strip-toggle-label>
+            {expanded ? '접기' : '펼치기'}
+          </span>
         </button>
       </div>
       {expanded && (
@@ -5420,6 +5947,19 @@ function PageSection({
   onRemoveBlock,
   onChangeExtraBlockProps,
   onChangeSection,
+  // 위젯 복사/잘라내기/붙여넣기 콜백. 부모(ReportDetailPage) 가
+  // clipboard state 와 핸들러를 들고 있고, 이 PageSection 은 우클릭
+  // 컨텍스트 메뉴에 연결만 한다. `canPaste` 는 클립보드에 뭔가
+  // 들어있는지 boolean 으로 받아 메뉴의 disabled 상태를 결정.
+  onCopyBlock,
+  onCutBlock,
+  onPasteBlock,
+  canPaste,
+  // 다른 페이지로 옮기기 — `pagesMeta` 는 컨텍스트 메뉴의 페이지 선택
+  // 단계가 보여줄 (idx, label) 목록. onMoveToPage(blockId, dstPageIdx)
+  // 가 실제 이동을 수행. 현재 페이지 자신은 메뉴 측에서 자동으로 제외.
+  pagesMeta,
+  onMoveToPage,
   sectionCategories,
   sectionItemByCode,
   rowGapPx,
@@ -5687,6 +6227,16 @@ function PageSection({
                       : undefined
                   }
                   onOpenProps={canEditProps ? () => setPropsEditingId(block.id) : undefined}
+                  onOpenSection={
+                    // 우클릭 컨텍스트 메뉴 대비 발견성이 떨어진다는
+                    // 피드백 → 편집모드에서 드래그 핸들 바에 명시적
+                    // 「단락 구분」버튼 노출. 컨텍스트 메뉴와 동일하게
+                    // onChangeSection 핸들러가 부모에 있어야 의미가
+                    // 있으므로 그 prop 유무로 가드.
+                    isEditing && onChangeSection
+                      ? () => setSectionEditingId(block.id)
+                      : undefined
+                  }
                   onOpenContentEdit={
                     isEditing && !INLINE_EDITABLE_WIDGETS.has(block.type)
                       ? () => setContentEditingId(block.id)
@@ -5729,6 +6279,47 @@ function PageSection({
             onChangeSection
               ? () => {
                   setSectionEditingId(contextMenu.blockId)
+                  setContextMenu(null)
+                }
+              : undefined
+          }
+          onCopy={
+            onCopyBlock
+              ? () => {
+                  onCopyBlock(contextMenu.blockId)
+                  setContextMenu(null)
+                }
+              : undefined
+          }
+          onCut={
+            onCutBlock
+              ? () => {
+                  onCutBlock(contextMenu.blockId)
+                  setContextMenu(null)
+                }
+              : undefined
+          }
+          onPaste={
+            onPasteBlock
+              ? () => {
+                  // 우클릭 → 붙여넣기: 이 위젯 바로 아래 새 행에 paste.
+                  // 마우스 기반 사용자가 "여기서 paste 하자" 라고 의도한
+                  // 위치가 anchor 의 바로 아래라는 게 가장 자연스러움.
+                  onPasteBlock(contextMenu.blockId)
+                  setContextMenu(null)
+                }
+              : undefined
+          }
+          canPaste={!!canPaste}
+          movePages={
+            onMoveToPage
+              ? (pagesMeta ?? []).filter((p) => p.idx !== pageIdx)
+              : null
+          }
+          onMoveToPage={
+            onMoveToPage
+              ? (dstPageIdx) => {
+                  onMoveToPage(contextMenu.blockId, dstPageIdx)
                   setContextMenu(null)
                 }
               : undefined
@@ -6229,7 +6820,27 @@ function extractBlocks(schema) {
  *  Kept as a vanilla div + portal-less render — radix-ui doesn't ship
  *  a context-menu primitive in this project and a single item doesn't
  *  warrant pulling one in. */
-function BlockContextMenu({ x, y, onClose, onEditProps, onEditSection, onRemove }) {
+function BlockContextMenu({
+  x,
+  y,
+  onClose,
+  onEditProps,
+  onEditSection,
+  onCopy,
+  onCut,
+  onPaste,
+  canPaste,
+  // 다른 페이지로 옮기기 — `movePages` 가 비어있거나 null 이면 메뉴 항목
+  // 자체를 숨김 (페이지가 한 개뿐인 보고서, 또는 prop 미주입). 클릭 시
+  // 메뉴 내부 stage 가 picker 로 전환되고, 페이지를 고르면 onMoveToPage
+  // 가 호출된다.
+  movePages,
+  onMoveToPage,
+  onRemove,
+}) {
+  // 메뉴 stage — `null` 이면 기본 메뉴, `'move'` 면 페이지 선택 단계.
+  // 같은 popup 안에서 단계 전환해서 별도 sub-menu 컴포넌트 없이 처리.
+  const [stage, setStage] = useState(null)
   useEffect(() => {
     function handleClick() { onClose() }
     function handleKey(e) { if (e.key === 'Escape') onClose() }
@@ -6240,12 +6851,44 @@ function BlockContextMenu({ x, y, onClose, onEditProps, onEditSection, onRemove 
       window.removeEventListener('keydown', handleKey)
     }
   }, [onClose])
+  const canMove =
+    Array.isArray(movePages) && movePages.length > 0 && !!onMoveToPage
   return (
     <div
-      className="fixed z-50 min-w-[180px] rounded-md border bg-popover py-1 shadow-md"
+      className="fixed z-50 min-w-[200px] max-h-[70vh] overflow-y-auto rounded-md border bg-popover py-1 shadow-md"
       style={{ left: x, top: y }}
       onMouseDown={(e) => e.stopPropagation()}
     >
+      {stage === 'move' ? (
+        <>
+          <button
+            type="button"
+            onClick={() => setStage(null)}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted text-left"
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+            뒤로
+          </button>
+          <div className="my-1 h-px bg-border" aria-hidden="true" />
+          <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+            옮길 페이지 선택
+          </div>
+          {movePages.map((p) => (
+            <button
+              key={p.idx}
+              type="button"
+              onClick={() => onMoveToPage(p.idx)}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-muted text-left"
+            >
+              <span className="text-[10px] text-muted-foreground tabular-nums w-5 text-right shrink-0">
+                {p.idx + 1}.
+              </span>
+              <span className="truncate">{p.label}</span>
+            </button>
+          ))}
+        </>
+      ) : (
+      <>
       <button
         type="button"
         onClick={onEditProps}
@@ -6264,15 +6907,78 @@ function BlockContextMenu({ x, y, onClose, onEditProps, onEditSection, onRemove 
           단락 구분
         </button>
       )}
-      {onRemove && (
+      {/* 복사/잘라내기/붙여넣기 — clipboard-based widget transfer. 단축키
+          Ctrl+C / Ctrl+X / Ctrl+V 가 동일 동작을 수행. 붙여넣기는
+          클립보드가 비어있을 땐 disabled 상태로 표시 (사용자가 "지금
+          paste 할게 없음"을 알 수 있도록). */}
+      <div className="my-1 h-px bg-border" aria-hidden="true" />
+      {onCopy && (
         <button
           type="button"
-          onClick={onRemove}
-          className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-destructive/10 text-destructive text-left"
+          onClick={onCopy}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-muted text-left"
         >
-          <Trash2 className="h-3.5 w-3.5" />
-          위젯 제거
+          <Copy className="h-3.5 w-3.5" />
+          <span className="flex-1">복사</span>
+          <span className="text-[10px] text-muted-foreground">Ctrl+C</span>
         </button>
+      )}
+      {onCut && (
+        <button
+          type="button"
+          onClick={onCut}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-muted text-left"
+        >
+          <Scissors className="h-3.5 w-3.5" />
+          <span className="flex-1">잘라내기</span>
+          <span className="text-[10px] text-muted-foreground">Ctrl+X</span>
+        </button>
+      )}
+      {onPaste && (
+        <button
+          type="button"
+          onClick={canPaste ? onPaste : undefined}
+          disabled={!canPaste}
+          className={cn(
+            'flex w-full items-center gap-2 px-3 py-1.5 text-sm text-left',
+            canPaste ? 'hover:bg-muted' : 'opacity-40 cursor-not-allowed',
+          )}
+        >
+          <ClipboardPaste className="h-3.5 w-3.5" />
+          <span className="flex-1">붙여넣기</span>
+          <span className="text-[10px] text-muted-foreground">Ctrl+V</span>
+        </button>
+      )}
+      {canMove && (
+        <button
+          type="button"
+          onClick={(e) => {
+            // 클릭이 바깥으로 전파되어 menu 가 자동 닫히는 걸 방지 —
+            // 우리는 같은 menu 안에서 단계만 바꾼다.
+            e.stopPropagation()
+            setStage('move')
+          }}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-muted text-left"
+        >
+          <ArrowRightLeft className="h-3.5 w-3.5" />
+          <span className="flex-1">다른 페이지로 옮기기</span>
+          <ChevronRight className="h-3 w-3 text-muted-foreground" />
+        </button>
+      )}
+      {onRemove && (
+        <>
+          <div className="my-1 h-px bg-border" aria-hidden="true" />
+          <button
+            type="button"
+            onClick={onRemove}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-destructive/10 text-destructive text-left"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            위젯 제거
+          </button>
+        </>
+      )}
+      </>
       )}
     </div>
   )
@@ -6841,6 +7547,11 @@ function BlockEditorCard({
   onToggleAutoFit,
   onRemove,
   onOpenProps,
+  // 우클릭 → 컨텍스트 메뉴 → 단락 구분 경로가 사용자한테 안 보이는
+  // 진입점이라는 피드백을 받아, 드래그 핸들 바에 같은 동작을 여는
+  // 명시적 버튼을 추가했다. 이 prop 이 있으면 핸들 바에 「단락 구분」
+  // 버튼이 노출되고, 클릭 시 SectionPickerDialog 가 뜬다.
+  onOpenSection,
   onOpenContentEdit,
   onMeasureContentHeight,
   onMeasureEditHeight,
@@ -7139,6 +7850,32 @@ function BlockEditorCard({
           자동 맞춤
         </label>
       )}
+      {onOpenSection && (
+        <button
+          type="button"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation()
+            onOpenSection()
+          }}
+          className={cn(
+            // sectionItem 이 이미 있으면 카테고리 컬러를 가볍게 띄워서
+            // "지정됨" 상태를 한눈에. 없으면 회색-호버 톤 — 그래도
+            // 단순 회색 아이콘만 두는 것보다 텍스트가 옆에 있으면
+            // 발견성이 훨씬 좋아진다 (사용자 피드백).
+            'flex items-center gap-1 rounded px-1 py-0.5 text-[10px] font-medium select-none',
+            sectionItem
+              ? 'bg-primary/10 text-primary'
+              : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+            !onToggleAutoFit && 'ml-auto',
+          )}
+          title={sectionItem ? '단락 구분 변경 (또는 우클릭)' : '단락 구분 추가 (또는 우클릭)'}
+          aria-label={sectionItem ? '단락 구분 변경' : '단락 구분 추가'}
+        >
+          <Bookmark className="h-3 w-3" />
+          단락 구분
+        </button>
+      )}
       {onOpenProps && (
         <button
           type="button"
@@ -7149,7 +7886,7 @@ function BlockEditorCard({
           }}
           className={cn(
             'rounded p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted',
-            !onToggleAutoFit && !onRemove && 'ml-auto',
+            !onToggleAutoFit && !onOpenSection && !onRemove && 'ml-auto',
           )}
           title="속성 편집 (또는 우클릭)"
           aria-label="속성 편집"
@@ -7167,7 +7904,7 @@ function BlockEditorCard({
           }}
           className={cn(
             'rounded p-0.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10',
-            !onToggleAutoFit && !onOpenProps && 'ml-auto',
+            !onToggleAutoFit && !onOpenSection && !onOpenProps && 'ml-auto',
           )}
           title="이 위젯 제거"
           aria-label="이 위젯 제거"

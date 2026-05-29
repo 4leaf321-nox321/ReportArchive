@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -92,6 +92,14 @@ export default function CompositeDetailPage() {
   // render). `null` when not exporting; otherwise the latest progress
   // event from exportCompositeToDocx.
   const [docxProgress, setDocxProgress] = useState(null)
+  // HTML export progress — same {phase, current, total, label} shape
+  // so the ExportOverlay reads both.
+  const [htmlProgress, setHtmlProgress] = useState(null)
+  // Abort controller for the running export (Word or HTML — mutually
+  // exclusive because both disable their buttons while either runs).
+  // Wired to the overlay`s 취소 button; exporter throws AbortError at
+  // its next polled checkpoint.
+  const exportAbortRef = useRef(null)
   // Per-item expansion state, keyed by row index. Reset when the draft is
   // rebuilt so newly-added items start collapsed.
   const [expanded, setExpanded] = useState(new Set())
@@ -344,6 +352,9 @@ export default function CompositeDetailPage() {
 
   async function handleExportDocx(layoutChoice) {
     if (!composite) return
+    exportAbortRef.current?.abort()
+    const controller = new AbortController()
+    exportAbortRef.current = controller
     setDocxProgress({ phase: 'start', label: '준비 중...' })
     try {
       const { exportCompositeToDocx } = await import('./exportCompositeToDocx')
@@ -352,13 +363,96 @@ export default function CompositeDetailPage() {
         layout: layoutChoice,
         sectionItemByCode,
         onProgress: setDocxProgress,
+        signal: controller.signal,
       })
       toast.success('Word 파일로 저장했습니다.')
     } catch (err) {
-      console.error(err)
-      toast.error(`Word 저장 실패: ${err?.message ?? err}`)
+      if (err?.name === 'AbortError') {
+        toast.info('Word 내보내기를 취소했습니다.')
+      } else {
+        console.error(err)
+        toast.error(`Word 저장 실패: ${err?.message ?? err}`)
+      }
     } finally {
       setDocxProgress(null)
+      if (exportAbortRef.current === controller) exportAbortRef.current = null
+    }
+  }
+
+  // HTML export — captures the composite DOM with every item expanded
+  // and bundles the cloned tree into a single self-contained .html.
+  // Forces all items into the expanded state before capture so the
+  // InlineReportView for each item is actually mounted; otherwise the
+  // saved file would just show the collapsed item header rows.
+  async function handleExportHtml() {
+    if (!composite) return
+    exportAbortRef.current?.abort()
+    const controller = new AbortController()
+    exportAbortRef.current = controller
+    setHtmlProgress({ phase: 'expand', label: '안건 펼치는 중...' })
+    // Force ALL items expanded. Even if some were already expanded,
+    // this is a no-op for them and the React commit just adds the rest.
+    setExpanded(new Set(draft.items.map((_, i) => i)))
+    try {
+      // Let React commit the expansion + each InlineReportView mount
+      // its content + nested chart widgets do their initial paint. Two
+      // RAFs guarantee the commit; the chart-settle poll waits out the
+      // ResizeObserver debounce that fires on first paint.
+      await new Promise((r) =>
+        requestAnimationFrame(() => requestAnimationFrame(r)),
+      )
+      if (controller.signal.aborted) throw new DOMException('Export cancelled', 'AbortError')
+      setHtmlProgress({ phase: 'settle', label: '차트 렌더링 안정화 중...' })
+      await waitForChartsToSettle(5000, controller.signal)
+      if (controller.signal.aborted) throw new DOMException('Export cancelled', 'AbortError')
+      setHtmlProgress({ phase: 'load', label: '내보내기 모듈 로드 중...' })
+      const { exportCompositeToHtml } = await import('./exportCompositeToHtml')
+      await exportCompositeToHtml({
+        composite,
+        title: draft.title,
+        onProgress: setHtmlProgress,
+        signal: controller.signal,
+      })
+      toast.success('HTML 파일로 저장했습니다.')
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        toast.info('HTML 내보내기를 취소했습니다.')
+      } else {
+        console.error(err)
+        toast.error(`HTML 저장 실패: ${err?.message ?? err}`)
+      }
+    } finally {
+      setHtmlProgress(null)
+      if (exportAbortRef.current === controller) exportAbortRef.current = null
+    }
+  }
+
+  // Poll the live DOM at 100ms intervals until no widget is showing
+  // the "크기 조정 중…" placeholder. Same logic as the report
+  // exporter — composite embeds InlineReportView which mounts the
+  // same chart widgets that flash this placeholder during initial
+  // ResizeObserver debounce.
+  async function waitForChartsToSettle(budgetMs, signal) {
+    const root = document.querySelector('.composite-detail-root')
+    if (!root) return
+    const start = performance.now()
+    const isResizing = () =>
+      Array.from(root.querySelectorAll('div')).some(
+        (el) =>
+          el.children.length === 0 &&
+          el.textContent?.trim() === '크기 조정 중…',
+      )
+    while (performance.now() - start < budgetMs) {
+      if (signal?.aborted) return
+      if (!isResizing()) {
+        await new Promise((r) => setTimeout(r, 250))
+        if (!isResizing()) {
+          await new Promise((r) => requestAnimationFrame(r))
+          return
+        }
+        continue
+      }
+      await new Promise((r) => setTimeout(r, 100))
     }
   }
   const isOwner = me?.user?.id && composite?.owner_user_id === me.user.id
@@ -387,7 +481,7 @@ export default function CompositeDetailPage() {
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-6 space-y-6 composite-detail-root">
       <div className="flex items-start gap-3">
         <div className="flex-1 min-w-0">
           {isEditing ? (
@@ -439,6 +533,10 @@ export default function CompositeDetailPage() {
             )}
           </div>
         </div>
+        {/* 액션 버튼 그룹 — HTML export 시 통째로 제거. 편집기 전용
+            chrome (목록 이동·편집·발행·Word/HTML 저장·복사·삭제) 은
+            저장된 아카이브에서 의미가 없음. */}
+        <div data-export-exclude className="flex items-center gap-2 flex-wrap">
         <Button variant="ghost" size="sm" onClick={() => navigate(`/w/${slug}/composites`)}>
           <ArrowLeft className="mr-1 h-3 w-3" />
           목록
@@ -487,7 +585,7 @@ export default function CompositeDetailPage() {
             )}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" disabled={Boolean(docxProgress)}>
+                <Button variant="outline" size="sm" disabled={Boolean(docxProgress) || Boolean(htmlProgress)}>
                   <FileType2 className="mr-1 h-3 w-3" />
                   Word로 저장
                   <ChevronDown className="ml-1 h-3 w-3 opacity-60" />
@@ -502,6 +600,18 @@ export default function CompositeDetailPage() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            {/* HTML 저장 — 모든 안건을 펼친 상태로 단일 자족 HTML 로
+                내보냄. 발행 시점 박제(snapshot_content)나 라이브 fetch
+                결과를 그 시점 그대로 보존. */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleExportHtml}
+              disabled={Boolean(docxProgress) || Boolean(htmlProgress)}
+            >
+              <FileType2 className="mr-1 h-3 w-3" />
+              HTML로 저장
+            </Button>
             {/* 복사 — 일반 보고서의 복사 패턴과 동일. 발행 여부와 무관하게
                 항상 가능 (발행은 원본의 상태이고, 사본은 새 draft 로 시작). */}
             <Button
@@ -518,6 +628,7 @@ export default function CompositeDetailPage() {
             </Button>
           </>
         )}
+        </div>
       </div>
 
       {/* 발행 배너 — recurring 발행 후만. 보고서의 phase=finalized 배너와
@@ -565,7 +676,7 @@ export default function CompositeDetailPage() {
                 보고서 또는 다른 종합보고를 선택해 추가
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div data-export-exclude className="flex items-center gap-2">
               {draft.items.length > 0 && (
                 <>
                   {/* 2단 미리보기 — Word 가로 2단 출력 시 안건이 좌/우
@@ -771,7 +882,20 @@ export default function CompositeDetailPage() {
         onConfirm={onCopy}
       />
 
-      {docxProgress && <DocxExportOverlay progress={docxProgress} />}
+      {docxProgress && (
+        <DocxExportOverlay
+          title="Word 파일로 저장 중"
+          progress={docxProgress}
+          onCancel={() => exportAbortRef.current?.abort()}
+        />
+      )}
+      {htmlProgress && (
+        <DocxExportOverlay
+          title="HTML 파일로 저장 중"
+          progress={htmlProgress}
+          onCancel={() => exportAbortRef.current?.abort()}
+        />
+      )}
     </div>
   )
 }
@@ -853,17 +977,20 @@ function CompositeCopyDialog({ open, onOpenChange, sourceTitle, sourceKind, onCo
   )
 }
 
-/** Centered blocking spinner during composite DOCX export.
- *  Same shape as ReportDetailPage's overlay — pulled inline here to
- *  avoid cross-module import for one component. */
-function DocxExportOverlay({ progress }) {
-  const isBlock = progress.phase === 'block'
-  const pct =
-    isBlock && progress.total > 0
-      ? Math.round((progress.current / progress.total) * 100)
-      : null
+/** Centered blocking spinner during a long-running composite export
+ *  (Word or HTML). Same shape as ReportDetailPage`s overlay — pulled
+ *  inline to avoid cross-module import. `title` differentiates the
+ *  exporter; progress bar shows whenever `total > 0`.
+ *  data-export-overlay marker keeps the overlay out of any DOM clone
+ *  (HTML exporter strips matching elements) so the saved file doesn`t
+ *  carry the spinner / dim backdrop. */
+function DocxExportOverlay({ title, progress, onCancel }) {
+  const total = Number.isFinite(progress?.total) ? progress.total : 0
+  const current = Number.isFinite(progress?.current) ? progress.current : 0
+  const pct = total > 0 ? Math.round((current / total) * 100) : null
   return (
     <div
+      data-export-overlay
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 backdrop-blur-sm"
       role="status"
       aria-live="polite"
@@ -872,12 +999,12 @@ function DocxExportOverlay({ progress }) {
       <div className="rounded-lg border bg-card shadow-xl px-6 py-5 min-w-[280px] max-w-sm">
         <div className="flex items-center gap-3 mb-2">
           <Loader2 className="h-5 w-5 animate-spin text-primary" />
-          <div className="font-semibold text-sm">Word 파일로 저장 중</div>
+          <div className="font-semibold text-sm">{title ?? '저장 중'}</div>
         </div>
         <div className="text-xs text-muted-foreground mb-2">
-          {progress.label ?? '진행 중...'}
+          {progress?.label ?? '진행 중...'}
         </div>
-        {isBlock && progress.total > 0 && (
+        {pct != null && (
           <>
             <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
               <div
@@ -886,9 +1013,21 @@ function DocxExportOverlay({ progress }) {
               />
             </div>
             <div className="mt-1.5 text-[11px] text-muted-foreground tabular-nums">
-              {progress.current}/{progress.total} ({pct}%)
+              {current}/{total} ({pct}%)
             </div>
           </>
+        )}
+        {/* 취소 버튼 — 클릭 시 AbortController.abort() → exporter 의
+            checkpoint 에서 AbortError. 다음 체크포인트까지의 지연만
+            (대개 < 1 widget 캡처) 있고 즉시 멈춤. */}
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="mt-4 w-full rounded-md border border-border bg-background text-xs text-muted-foreground hover:bg-muted hover:text-foreground py-1.5 transition-colors"
+          >
+            취소
+          </button>
         )}
       </div>
     </div>
@@ -1195,6 +1334,7 @@ function ItemRow({
       <div className="flex items-start gap-1.5">
         {editing && (
           <span
+            data-export-exclude
             className="mt-0.5 shrink-0 text-muted-foreground/60 hover:text-muted-foreground h-5 w-5 flex items-center justify-center"
             aria-hidden="true"
             title="끌어서 순서 변경"
@@ -1202,8 +1342,11 @@ function ItemRow({
             <GripVertical className="h-3.5 w-3.5" />
           </span>
         )}
+        {/* 펼치기/접기 토글 — HTML export 시 모든 안건은 펼쳐진 상태
+            로 캡처되고 정적 파일에선 toggle 동작이 불가능하므로 제거 */}
         <button
           type="button"
+          data-export-exclude
           onClick={onToggleExpand}
           className="mt-0.5 shrink-0 rounded hover:bg-muted h-5 w-5 flex items-center justify-center text-muted-foreground"
           aria-label={expanded ? '접기' : '펼치기'}
@@ -1219,7 +1362,7 @@ function ItemRow({
             오른쪽 끝의 버튼이 안건명과 시각적으로 멀어 어떤 행에 속하는지
             한눈에 안 잡힘. */}
         {editing && (
-          <div className="flex items-center gap-0.5 shrink-0 mt-0">
+          <div data-export-exclude className="flex items-center gap-0.5 shrink-0 mt-0">
             {/* 1열 / 2열 토글 — 가로 2단 Word 내보내기에서 이 안건이 좌/우
                 어느 컬럼에 들어갈지. 단일 column 내보내기에선 영향 없음
                 이지만 사전 설정해 두면 편함. 클릭 한 번에 1↔2 토글. */}

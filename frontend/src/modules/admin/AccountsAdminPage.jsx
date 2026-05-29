@@ -16,6 +16,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Building2,
+  Check,
+  ChevronDown,
+  ClipboardCopy,
   Home,
   KeyRound,
   Loader2,
@@ -24,6 +27,7 @@ import {
   UserPlus,
   UserX,
   UserCheck,
+  X as XIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
@@ -39,6 +43,19 @@ import {
   DialogTitle,
 } from '@/shared/components/ui/dialog'
 import { Skeleton } from '@/shared/components/ui/skeleton'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/shared/components/ui/popover'
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/shared/components/ui/command'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { DataTable } from '@/shared/components/DataTable'
 import { PageHeader } from '@/shared/components/PageHeader'
@@ -79,16 +96,194 @@ export default function AccountsAdminPage() {
         : Promise.resolve([]),
     [isSystemAdmin, includeInactive, reloadKey],
   )
-  const accounts = data ?? []
+  // Wrap in useMemo so the `?? []` fallback doesn`t alias to a fresh
+  // empty array every render — would otherwise churn the downstream
+  // useMemos (homeOptions / hasNoHome / filteredAccounts) on each tick.
+  const accounts = useMemo(() => data ?? [], [data])
 
   const [newAccountOpen, setNewAccountOpen] = useState(false)
   const [resetPwdTarget, setResetPwdTarget] = useState(null)
   const [confirmActive, setConfirmActive] = useState(null) // {account, nextActive}
   const [homeEditTarget, setHomeEditTarget] = useState(null)
   const [detailTarget, setDetailTarget] = useState(null) // row clicked → show detail
+  // 소속 필터 — `null` 이면 전체 (필터 없음), 그 외엔 선택된 키들의
+  // `Set<string>`. 각 키는 workspace slug 거나 특수값 `__none__` (소속
+  // 미지정). 여러 부서를 동시에 선택 가능 — 선택된 부서 중 어느 하나라도
+  // 매칭되면 통과 (OR 매칭). 빈 Set 상태가 발생하면 null 로 자동
+  // 정규화해 "전체" 와 동일하게 다룬다 (UI 에 "0개 선택" 같은 어색한
+  // 상태가 노출되지 않도록).
+  const [homeFilter, setHomeFilter] = useState(null)
+  // Popover open/close. 복수선택이라 항목 클릭으로는 닫지 않고, 「전체」
+  // 만 한 번에 clear + close.
+  const [filterOpen, setFilterOpen] = useState(false)
 
   function reload() {
     setReloadKey((k) => k + 1)
+  }
+
+  // slug → 그 부서의 모든 자손(자기 자신 포함) slug Set. 부모 부서를
+  // 선택하면 자손까지 매칭되게 하기 위한 인덱스. 한 번 빌드해두면
+  // filter 단계가 O(1) lookup.
+  const descendantsBySlug = useMemo(() => {
+    const list = assignableWorkspaces
+    const childrenMap = new Map()
+    for (const w of list) {
+      const parent = w.parent_slug ?? null
+      const arr = childrenMap.get(parent) ?? []
+      arr.push(w.slug)
+      childrenMap.set(parent, arr)
+    }
+    const out = new Map()
+    for (const w of list) {
+      const set = new Set([w.slug])
+      const stack = [w.slug]
+      while (stack.length > 0) {
+        const cur = stack.pop()
+        for (const child of childrenMap.get(cur) ?? []) {
+          if (!set.has(child)) {
+            set.add(child)
+            stack.push(child)
+          }
+        }
+      }
+      out.set(w.slug, set)
+    }
+    return out
+  }, [assignableWorkspaces])
+
+  // 드롭다운에 보여줄 부서 옵션 — 트리 순회 (parent 먼저, 그 다음 자식
+  // 재귀) 로 정렬되어 popover 에서 들여쓰기 (`depth`) 가 부모/자식
+  // 관계를 시각적으로 드러냄. WorkspaceCombobox 와 같은 패턴.
+  //
+  // count 는 해당 부서의 **자손 전체 합계** — 부모를 보고 "이 본부에
+  // 총 N명 있구나" 가 한눈에 보이도록. 자손합이 0 인 가지는 (= 누구도
+  // 그 서브트리에 home 으로 등록되지 않음) UI 노이즈라서 숨김.
+  const homeOptions = useMemo(() => {
+    // direct: 정확히 이 slug 를 home 으로 가진 계정 수
+    const direct = new Map()
+    for (const a of accounts) {
+      if (!a.home_workspace_slug) continue
+      direct.set(
+        a.home_workspace_slug,
+        (direct.get(a.home_workspace_slug) ?? 0) + 1,
+      )
+    }
+    const childrenMap = new Map()
+    for (const w of assignableWorkspaces) {
+      const parent = w.parent_slug ?? null
+      const arr = childrenMap.get(parent) ?? []
+      arr.push(w)
+      childrenMap.set(parent, arr)
+    }
+    // 한국어 locale 로 자식 정렬 — 같은 부모 아래에서만 의미 있음.
+    for (const arr of childrenMap.values()) {
+      arr.sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '', 'ko'))
+    }
+    const out = []
+    function walk(parentSlug, depth) {
+      for (const w of childrenMap.get(parentSlug ?? null) ?? []) {
+        const desc = descendantsBySlug.get(w.slug) ?? new Set([w.slug])
+        let count = 0
+        for (const d of desc) count += direct.get(d) ?? 0
+        if (count > 0) {
+          out.push({
+            slug: w.slug,
+            label: w.name || w.slug,
+            depth,
+            count,
+          })
+        }
+        walk(w.slug, depth + 1)
+      }
+    }
+    walk(null, 0)
+    return out
+  }, [accounts, assignableWorkspaces, descendantsBySlug])
+
+  const noHomeCount = useMemo(
+    () => accounts.reduce((n, a) => (a.home_workspace_slug ? n : n + 1), 0),
+    [accounts],
+  )
+
+  // 적용된 필터 결과. 다중 선택의 OR 매칭 + 선택된 각 부서의 자손까지
+  // 포함. 동작:
+  //   1) 선택된 slug 들의 자손 집합 union 을 `passing` 으로 펼침
+  //   2) 각 account 의 home_workspace_slug 가 그 집합에 있으면 통과
+  //   3) `__none__` 이 선택돼 있으면 home 없는 account 도 추가로 통과
+  // 트리에 없는 orphan slug (이미 사라진 부서의 잔존 home 값) 는 자기
+  // 자신만 매칭되도록 fallback — 사라진 부서 사용자도 검색할 수 있게.
+  const filteredAccounts = useMemo(() => {
+    if (!homeFilter || homeFilter.size === 0) return accounts
+    const passing = new Set()
+    let includesNone = false
+    for (const sel of homeFilter) {
+      if (sel === '__none__') {
+        includesNone = true
+        continue
+      }
+      const desc = descendantsBySlug.get(sel)
+      if (desc) {
+        for (const d of desc) passing.add(d)
+      } else {
+        passing.add(sel)
+      }
+    }
+    return accounts.filter((a) => {
+      if (!a.home_workspace_slug) return includesNone
+      return passing.has(a.home_workspace_slug)
+    })
+  }, [accounts, homeFilter, descendantsBySlug])
+
+  // 필터 트리거 버튼에 표시할 현재 선택 라벨.
+  //   null/빈 Set → "전체"
+  //   단 1개       → 그 항목의 라벨 (특수값 __none__ 은 "소속 없음")
+  //   여러 개      → "N개 선택"
+  const homeFilterLabel = useMemo(() => {
+    if (!homeFilter || homeFilter.size === 0) return '전체'
+    if (homeFilter.size === 1) {
+      const only = homeFilter.values().next().value
+      if (only === '__none__') return '소속 없음'
+      const opt = homeOptions.find((o) => o.slug === only)
+      return opt?.label ?? only
+    }
+    return `${homeFilter.size}개 선택`
+  }, [homeFilter, homeOptions])
+
+  // 항목 toggle — popover 는 열린 상태 유지. 빈 Set 이 되면 null 로
+  // 정규화해서 "전체" 와 동일한 상태로.
+  function toggleHomeFilter(key) {
+    setHomeFilter((prev) => {
+      const next = new Set(prev ?? [])
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next.size === 0 ? null : next
+    })
+  }
+
+  /** 현재 필터된 계정들의 이메일을 `email1;email2;...` 로 묶어 클립보드.
+   *  세미콜론은 Outlook / 다수 사내 메일 클라이언트가 To 필드 구분자로
+   *  쓰는 포맷이라 그대로 paste 하면 수신자 리스트로 인식된다. 빈 이메일은
+   *  필터링 (가입은 됐는데 이메일이 비어있는 잘못된 row 가 있는 경우). */
+  async function handleCopyEmails() {
+    const emails = filteredAccounts
+      .map((a) => a.email?.trim())
+      .filter(Boolean)
+      .join(';')
+    if (!emails) {
+      toast.error('복사할 이메일이 없습니다.')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(emails)
+      const n = emails.split(';').length
+      toast.success(
+        homeFilter
+          ? `필터된 ${n}개의 이메일을 복사했습니다.`
+          : `${n}개의 이메일을 복사했습니다.`,
+      )
+    } catch (err) {
+      toast.error('클립보드 복사 실패: ' + (err?.message ?? String(err)))
+    }
   }
 
   if (!isSystemAdmin) {
@@ -335,8 +530,149 @@ export default function AccountsAdminPage() {
           />
           <span>비활성 포함</span>
         </label>
-        <span className="text-[11px] text-muted-foreground">
-          총 {accounts.length}건
+        {/* 소속 필터 — 검색 가능한 cmdk 기반 popover. 부서가 많아져도
+            CommandInput 으로 좁혀가며 도달 가능. 「전체」/「소속 없음」 도
+            동일 리스트의 항목으로 두어 검색만으로도 모든 옵션 도달.
+            라벨 옆 카운트는 모집단 직관: "이 부서 N명" 한 줄로. */}
+        <div className="inline-flex items-center gap-1.5 text-xs">
+          <span className="text-muted-foreground">소속</span>
+          <Popover open={filterOpen} onOpenChange={setFilterOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                role="combobox"
+                aria-expanded={filterOpen}
+                className="h-7 gap-1.5 text-xs font-normal"
+              >
+                <Building2 className="h-3.5 w-3.5 text-muted-foreground" />
+                <span
+                  className={
+                    'max-w-[180px] truncate ' +
+                    (homeFilter ? 'text-foreground' : 'text-muted-foreground')
+                  }
+                >
+                  {homeFilterLabel}
+                </span>
+                <ChevronDown className="h-3 w-3 opacity-50" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[280px] p-0" align="start">
+              <Command
+                filter={(value, search) =>
+                  value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0
+                }
+              >
+                <CommandInput placeholder="부서명 / slug 검색..." />
+                <CommandList className="max-h-[320px]">
+                  <CommandEmpty>일치하는 부서가 없습니다.</CommandEmpty>
+                  <CommandGroup>
+                    {/* 「전체」 — clear-all 단일 액션. 토글이 아니라 명시
+                        지시여서 클릭 시 popover 도 닫음. */}
+                    <CommandItem
+                      value="전체 all clear"
+                      onSelect={() => {
+                        setHomeFilter(null)
+                        setFilterOpen(false)
+                      }}
+                      className="cursor-pointer"
+                    >
+                      <span className="flex-1 font-medium">전체</span>
+                      <span className="text-[10px] text-muted-foreground tabular-nums mr-2">
+                        {accounts.length}
+                      </span>
+                      {(!homeFilter || homeFilter.size === 0) && (
+                        <Check className="h-4 w-4 text-primary shrink-0" />
+                      )}
+                    </CommandItem>
+                    {noHomeCount > 0 && (
+                      <CommandItem
+                        value="소속 없음 none unset 미지정"
+                        onSelect={() => toggleHomeFilter('__none__')}
+                        className="cursor-pointer"
+                      >
+                        <span className="flex-1 italic text-muted-foreground">
+                          소속 없음
+                        </span>
+                        <span className="text-[10px] text-muted-foreground tabular-nums mr-2">
+                          {noHomeCount}
+                        </span>
+                        {homeFilter?.has('__none__') && (
+                          <Check className="h-4 w-4 text-primary shrink-0" />
+                        )}
+                      </CommandItem>
+                    )}
+                  </CommandGroup>
+                  <CommandGroup heading="부서">
+                    {homeOptions.map((opt) => (
+                      <CommandItem
+                        key={opt.slug}
+                        value={`${opt.slug} ${opt.label}`}
+                        onSelect={() => toggleHomeFilter(opt.slug)}
+                        className="cursor-pointer"
+                      >
+                        <span
+                          className="flex items-center gap-1 min-w-0 flex-1"
+                          // depth 별 들여쓰기 — 트리 구조 시각화. 각 단계
+                          // 10px 씩 (WorkspaceCombobox 12px 와 유사하지만
+                          // 좁은 popover 폭에 맞춰 조금 줄임).
+                          style={{ paddingLeft: opt.depth * 10 }}
+                        >
+                          <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <div className="flex flex-col min-w-0 flex-1">
+                            <span className="truncate">{opt.label}</span>
+                            {opt.label !== opt.slug && (
+                              <span className="truncate text-[10px] text-muted-foreground font-mono">
+                                {opt.slug}
+                              </span>
+                            )}
+                          </div>
+                        </span>
+                        <span
+                          className="text-[10px] text-muted-foreground tabular-nums mr-2 shrink-0"
+                          title="이 부서와 모든 하위 부서의 합계 인원"
+                        >
+                          {opt.count}
+                        </span>
+                        {homeFilter?.has(opt.slug) && (
+                          <Check className="h-4 w-4 text-primary shrink-0" />
+                        )}
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+          {homeFilter && (
+            <button
+              type="button"
+              onClick={() => setHomeFilter(null)}
+              className="inline-flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted"
+              title="필터 해제"
+              aria-label="필터 해제"
+            >
+              <XIcon className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+        {/* 이메일 복사 — 현재 필터된 모집단의 이메일을 ";" 구분자로 묶어
+            클립보드. Outlook / Gmail / 다수 사내 메일 클라이언트 To 필드
+            그대로 paste 가능. */}
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={handleCopyEmails}
+          disabled={filteredAccounts.length === 0}
+          title="이메일 주소를 세미콜론(;) 구분자로 클립보드에 복사"
+        >
+          <ClipboardCopy className="mr-1 h-3.5 w-3.5" />
+          이메일 복사
+        </Button>
+        <span className="text-[11px] text-muted-foreground ml-auto">
+          {homeFilter
+            ? `${filteredAccounts.length} / ${accounts.length}건`
+            : `총 ${accounts.length}건`}
         </span>
       </div>
 
@@ -347,7 +683,7 @@ export default function AccountsAdminPage() {
       ) : (
         <DataTable
           columns={columns}
-          data={accounts}
+          data={filteredAccounts}
           fixedLayout
           minTableWidthClass="min-w-[900px]"
           defaultSort={{ key: 'created_at', dir: 'desc' }}

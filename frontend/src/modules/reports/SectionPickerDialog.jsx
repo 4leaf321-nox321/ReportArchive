@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { ArrowLeft, Trash2, X } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { ArrowLeft, Search, Trash2, X } from 'lucide-react'
 import { cn } from '@/shared/lib/utils'
 import { findItemInCategories } from './sections'
 
@@ -25,7 +25,15 @@ export function SectionPickerDialog({
   onClose,
 }) {
   const [activeCategoryCode, setActiveCategoryCode] = useState(null)
-  const cats = categories ?? []
+  // Free-text query — case-insensitive substring match against each
+  // item`s label / en / code. Matching items radiate with a glow ring
+  // and pop scale; non-matching dim down. The first matching category
+  // auto-opens so the user sees the hit without an extra click; Enter
+  // commits the first matched item straight away (spotlight-style).
+  const [query, setQuery] = useState('')
+  // Stabilize the cats reference so the search useMemo + open-effect
+  // deps don`t fire every render when `categories` is null/undefined.
+  const cats = useMemo(() => categories ?? [], [categories])
 
   useEffect(() => {
     if (!open) return
@@ -33,17 +41,70 @@ export function SectionPickerDialog({
     // block doesn't keep the previous block's stage state.
     const hit = currentSection ? findItemInCategories(cats, currentSection) : null
     setActiveCategoryCode(hit?.category?.slug ?? null)
+    setQuery('')
   }, [open, currentSection, cats])
 
-  // Esc closes the whole picker regardless of stage.
+  // Build the search result set whenever the query changes. Returns
+  // `null` when no query — callers use that as the "no filtering"
+  // sentinel so default rendering paths stay untouched. Otherwise a
+  // {Set<itemCode>, firstItem, hasMatches} bundle.
+  const search = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return null
+    const matchedCodes = new Set()
+    const matchedCategories = []
+    let firstItem = null
+    for (const cat of cats) {
+      const localHits = []
+      for (const it of cat.items ?? []) {
+        const label = (it.label ?? '').toLowerCase()
+        const en = (it.en ?? '').toLowerCase()
+        const code = (it.code ?? '').toLowerCase()
+        if (label.includes(q) || en.includes(q) || code.includes(q)) {
+          matchedCodes.add(it.code)
+          localHits.push(it)
+          if (!firstItem) firstItem = { item: it, category: cat }
+        }
+      }
+      if (localHits.length > 0) matchedCategories.push(cat.slug)
+    }
+    return {
+      codes: matchedCodes,
+      categorySlugs: new Set(matchedCategories),
+      firstItem,
+      hasMatches: matchedCodes.size > 0,
+    }
+  }, [query, cats])
+
+  // Auto-activate the first category that contains a search hit so the
+  // user lands on stage 2 with the item ring visible. Skipped when the
+  // currently active category already contains a hit — that way typing
+  // doesn`t bounce the user out of the category they`re already in.
+  useEffect(() => {
+    if (!open || !search?.hasMatches) return
+    if (activeCategoryCode && search.categorySlugs.has(activeCategoryCode)) return
+    setActiveCategoryCode(search.firstItem.category.slug)
+    // We intentionally do NOT depend on `activeCategoryCode` here — the
+    // check above already guards against unwanted bounces, and adding it
+    // to deps would re-fire the effect every time the user clicks back
+    // to stage 1 mid-search.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, search])
+
+  // Esc closes the whole picker; if a query is active, Esc clears it
+  // first so the user can recover the unfiltered view without losing
+  // the dialog.
   useEffect(() => {
     if (!open) return
     function handleKey(e) {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') {
+        if (query) setQuery('')
+        else onClose()
+      }
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [open, onClose])
+  }, [open, onClose, query])
 
   if (!open) return null
 
@@ -65,22 +126,53 @@ export function SectionPickerDialog({
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* Header — fixed up top, doesn't compete with the radial canvas. */}
-        <div className="absolute inset-x-0 top-0 flex items-center justify-between px-4 py-3 z-10">
+        <div className="absolute inset-x-0 top-0 flex items-center gap-2 px-4 py-3 z-10">
           {activeCategory ? (
             <button
               type="button"
               onClick={() => setActiveCategoryCode(null)}
-              className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground rounded-md px-2 py-1 hover:bg-muted"
+              className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground rounded-md px-2 py-1 hover:bg-muted shrink-0"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
               뒤로
             </button>
           ) : (
-            <span className="text-xs text-muted-foreground font-medium">
+            <span className="text-xs text-muted-foreground font-medium shrink-0">
               단락 구분 선택
             </span>
           )}
-          <div className="flex items-center gap-1">
+          {/* 검색 입력 — 카테고리에 무관하게 모든 항목의 label / en /
+              code 를 case-insensitive 부분일치로 매칭. 입력 시 첫 매칭
+              카테고리가 자동으로 열리고, Enter 로 첫 매칭 항목 즉시 선택. */}
+          <div className="relative flex-1 max-w-md mx-auto">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && search?.firstItem) {
+                  onPick(search.firstItem.item.code)
+                  onClose()
+                }
+              }}
+              placeholder="검색 (예: 배경)"
+              className="w-full h-7 pl-7 pr-7 text-xs rounded-md border bg-background/80 focus:outline-none focus:ring-2 focus:ring-primary/40 placeholder:text-muted-foreground"
+              autoFocus
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted"
+                aria-label="검색 지우기"
+                tabIndex={-1}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
             {currentSection && (
               <button
                 type="button"
@@ -109,6 +201,7 @@ export function SectionPickerDialog({
         <CategoryWheel
           categories={cats}
           activeSlug={activeCategoryCode}
+          search={search}
           onPick={setActiveCategoryCode}
         />
 
@@ -118,6 +211,7 @@ export function SectionPickerDialog({
             categories={cats}
             category={activeCategory}
             currentItemCode={currentSection}
+            search={search}
             onPick={(itemCode) => {
               onPick(itemCode)
               onClose()
@@ -132,9 +226,21 @@ export function SectionPickerDialog({
           </div>
         )}
 
+        {/* Search miss — keep the radial visible (dimmed) so the user
+            still sees the topology, but call out the empty result. */}
+        {cats.length > 0 && search && !search.hasMatches && (
+          <div className="absolute inset-x-0 bottom-12 flex justify-center pointer-events-none">
+            <div className="rounded-md bg-background/90 border px-3 py-1.5 text-xs text-muted-foreground shadow-sm">
+              "{query}" 검색 결과 없음
+            </div>
+          </div>
+        )}
+
         {/* Footer hint */}
         <div className="absolute inset-x-0 bottom-0 px-4 py-2 text-[10px] text-center text-muted-foreground/70">
-          {activeCategory
+          {search?.hasMatches
+            ? `매칭 ${search.codes.size}건 · Enter 로 첫 항목 선택`
+            : activeCategory
             ? '항목을 선택하면 자동으로 닫힙니다 · 뒤로 가서 다른 분류를 고를 수 있습니다'
             : '분류를 클릭하면 그 안의 항목이 펼쳐집니다'}
         </div>
@@ -172,14 +278,18 @@ function categoryPos(idx, total) {
  *  ones shrink hard in stage 2 so the active category's item ring can
  *  occupy the same visual real estate without crashing into its
  *  neighbors. */
-function CategoryWheel({ categories, activeSlug, onPick }) {
+function CategoryWheel({ categories, activeSlug, search, onPick }) {
   const total = categories.length
   return (
     <div className="absolute inset-0 pointer-events-none">
       <div className="relative w-full h-full">
         {categories.map((cat, i) => {
           const { x, y } = categoryPos(i, total)
-          const dimmed = activeSlug && activeSlug !== cat.slug
+          // Search dimming layers ON TOP of the stage-2 dimming: a
+          // category gets dimmed if (a) another category is active, or
+          // (b) a search is active and THIS category has no hits.
+          const searchMiss = search && !search.categorySlugs.has(cat.slug)
+          const dimmed = (activeSlug && activeSlug !== cat.slug) || searchMiss
           const active = activeSlug === cat.slug
           return (
             <button
@@ -239,7 +349,7 @@ function CategoryWheel({ categories, activeSlug, onPick }) {
 /** Items form a concentric ring around the active category — they orbit
  *  the category's own center (not the wheel's center). Evenly spaced over
  *  360° starting from the top of the orbit; selection commits and closes. */
-function ItemRadial({ categories, category, currentItemCode, onPick }) {
+function ItemRadial({ categories, category, currentItemCode, search, onPick }) {
   const total = categories.length
   const catIdx = categories.findIndex((c) => c.slug === category.slug)
   const { x: cx, y: cy } = categoryPos(catIdx, total)
@@ -267,6 +377,11 @@ function ItemRadial({ categories, category, currentItemCode, onPick }) {
         const left = cx + WHEEL.ITEM_ORBIT * Math.cos(rad)
         const top = cy + WHEEL.ITEM_ORBIT * Math.sin(rad)
         const selected = currentItemCode === item.code
+        // Search highlight: matched items pop with an extra ring +
+        // scale boost; unmatched items in this category fade so the
+        // matched ones are visually loud. `search == null` keeps the
+        // pre-search rendering unchanged.
+        const searchMatch = search ? search.codes.has(item.code) : null
         return (
           <button
             key={item.code}
@@ -279,6 +394,8 @@ function ItemRadial({ categories, category, currentItemCode, onPick }) {
               'animate-in fade-in zoom-in-90',
               'hover:scale-110 hover:shadow-md focus:outline-none focus:ring-2',
               selected && 'ring-2 shadow-md scale-105',
+              searchMatch === true && 'ring-4 shadow-lg scale-125 z-10',
+              searchMatch === false && 'opacity-25 blur-[1px]',
             )}
             style={{
               left,

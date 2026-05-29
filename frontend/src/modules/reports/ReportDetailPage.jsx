@@ -3462,6 +3462,113 @@ function ReportCopyDialog({ open, onOpenChange, sourceTitle, onConfirm }) {
 }
 
 
+/** Rough token estimator for the AI-prompt size badge. Conservative —
+ *  errs on the side of *over*-counting so users don't get blindsided by
+ *  a real-AI tokenizer being stricter than we predicted. Heuristic:
+ *    - Hangul (가-힣 etc.) : ~1 token per character. Modern BPE
+ *      tokenizers (cl100k for GPT-4, Claude's tokenizer) usually split
+ *      Korean syllables into 1-2 tokens; 1.0 is the safer floor.
+ *    - Everything else (ASCII, JSON punctuation, code) : ~4 chars per
+ *      token. Matches the well-known "4 chars per token" rule of thumb
+ *      for English-ish prose.
+ *
+ *  Not a real tokenizer — the AI you paste into will report exact
+ *  counts. This is just a fast in-dialog signal so users can decide
+ *  whether to trim widgets before pasting. */
+function estimatePromptTokens(text) {
+  if (!text) return 0
+  let hangul = 0
+  let other = 0
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i)
+    // U+AC00–U+D7A3 = Hangul syllables (가–힣)
+    // U+1100–U+11FF = Hangul jamo
+    // U+3130–U+318F = Hangul compatibility jamo
+    if (
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0x1100 && code <= 0x11ff) ||
+      (code >= 0x3130 && code <= 0x318f)
+    ) {
+      hangul++
+    } else {
+      other++
+    }
+  }
+  return Math.round(hangul + other / 4)
+}
+
+/** Classify a token estimate into a tier with a user-facing label,
+ *  icon, color class, and detail explanation. Thresholds reflect the
+ *  practical AI input limits authors will hit in 2026 when pasting
+ *  into a chat UI:
+ *
+ *    < 16k   safe : 거의 모든 모델 (GPT-3.5 16k, Claude Haiku, Gemini Flash 포함)
+ *    < 32k   ok   : 무료 ChatGPT 기준 위험 임계 접근 — 단순 호출은 OK
+ *    < 128k  warn : GPT-4o(128k) / Claude Sonnet(200k) / Gemini 같은 큰 모델 필요
+ *    < 200k  large: Claude(200k) / Gemini(1M) 권장
+ *    >=200k  huge : Gemini long-context 만 안전, 다른 대부분 잘림
+ *
+ *  Anchored on input-window limits (not output) because the user pastes
+ *  the prompt — output budget is a separate concern surfaced as the
+ *  "AI 가 응답이 잘렸다" symptom. */
+function classifyTokenTier(tokens) {
+  if (tokens < 16000) {
+    return {
+      tier: 'safe',
+      icon: '🟢',
+      label: '안전',
+      color: 'text-emerald-600',
+      detail: '거의 모든 AI 모델에서 동작합니다 (GPT-3.5 16k 포함).',
+    }
+  }
+  if (tokens < 32000) {
+    return {
+      tier: 'ok',
+      icon: '🟢',
+      label: '일반',
+      color: 'text-emerald-600',
+      detail: '일반적인 무료 AI 에서 안전합니다 (GPT-4o-mini · Claude Sonnet · Gemini 등).',
+    }
+  }
+  if (tokens < 128000) {
+    return {
+      tier: 'warn',
+      icon: '🟡',
+      label: '주의 — 일부 무료 AI 한계',
+      color: 'text-amber-600',
+      detail:
+        '구형 무료 AI (GPT-3.5 16k · 일부 챗봇) 에서는 입력이 잘릴 수 있습니다. GPT-4o (128k) · Claude Sonnet (200k) · Gemini 권장.',
+    }
+  }
+  if (tokens < 200000) {
+    return {
+      tier: 'large',
+      icon: '🟠',
+      label: '큰 모델 필요',
+      color: 'text-orange-600',
+      detail:
+        '128k 이상 context 가 필요합니다. Claude Sonnet (200k) · Gemini 만 안전, GPT-4o (128k) 도 한계 접근.',
+    }
+  }
+  return {
+    tier: 'huge',
+    icon: '🔴',
+    label: '거의 모든 AI 초과',
+    color: 'text-red-600',
+    detail:
+      '200k 초과 — Gemini 1M+ 같은 초장-context 모델만 처리 가능. 위젯을 줄이거나 페이지를 나누어 작성하세요.',
+  }
+}
+
+/** Compact thousands/millions formatter for the token badge — keeps
+ *  the dialog footer scannable instead of showing 6-digit raw counts. */
+function formatTokenCount(n) {
+  if (n < 1000) return String(n)
+  if (n < 10000) return `${(n / 1000).toFixed(1)}k`
+  if (n < 1000000) return `${Math.round(n / 1000)}k`
+  return `${(n / 1000000).toFixed(1)}M`
+}
+
 /** Renders the selected prompt's body — with placeholder tokens already
  *  expanded via renderPrompt(prompt.body, context) — in a read-only
  *  textarea with a "복사" button + a widget-coverage sidebar. The dialog
@@ -3606,6 +3713,8 @@ function AiPromptDialog({
 
   const charCount = text.length
   const charCountKb = Math.round(charCount / 102.4) / 10
+  const tokenEstimate = useMemo(() => estimatePromptTokens(text), [text])
+  const tokenTier = classifyTokenTier(tokenEstimate)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -3632,23 +3741,47 @@ function AiPromptDialog({
             className="flex-1 min-h-[320px] font-mono text-[11px] leading-relaxed"
           />
         </div>
-        <div className="flex items-center gap-2 pt-2">
-          <span className="text-[11px] text-muted-foreground">
-            {charCount.toLocaleString()} 자 · {charCountKb} KB
+        <div className="flex flex-col gap-1 pt-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[11px] text-muted-foreground">
+              {charCount.toLocaleString()} 자 · {charCountKb} KB · ~
+              {formatTokenCount(tokenEstimate)} 토큰 (추정)
+            </span>
+            <span
+              className={`text-[11px] font-medium ${tokenTier.color}`}
+              title={tokenTier.detail}
+            >
+              {tokenTier.icon} {tokenTier.label}
+            </span>
             {interactive && excludedTypes.size > 0 && (
-              <span className="ml-2 text-amber-600">
-                ({excludedTypes.size}개 위젯 제외 적용 중)
+              <span className="text-[11px] text-amber-600">
+                ({excludedTypes.size}개 위젯 제외 중)
               </span>
             )}
-          </span>
-          <div className="flex-1" />
-          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
-            닫기
-          </Button>
-          <Button size="sm" onClick={handleCopy} disabled={!text}>
-            <Copy className="mr-1 h-3 w-3" />
-            복사
-          </Button>
+            <div className="flex-1" />
+            <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
+              닫기
+            </Button>
+            <Button size="sm" onClick={handleCopy} disabled={!text}>
+              <Copy className="mr-1 h-3 w-3" />
+              복사
+            </Button>
+          </div>
+          {tokenTier.tier !== 'safe' && tokenTier.tier !== 'ok' && (
+            <p
+              className={`text-[10px] leading-relaxed ${tokenTier.color}`}
+            >
+              ↳ {tokenTier.detail}
+              {interactive && (
+                <>
+                  {' '}
+                  <span className="text-muted-foreground">
+                    (왼쪽 사이드바에서 위젯을 체크 해제해 줄일 수 있습니다.)
+                  </span>
+                </>
+              )}
+            </p>
+          )}
         </div>
       </DialogContent>
     </Dialog>
@@ -5888,33 +6021,34 @@ function probePatchPreview(text) {
   }
 }
 
-/** Wrap JSON.parse with a single-pass LaTeX-friendly backslash repair.
+/** Wrap JSON.parse with two pre-parse repair passes that absorb the
+ *  most common AI output quirks:
  *
- *  AI responses frequently produce `"\sigma"` / `"\frac{...}"` (single
- *  backslash) instead of the JSON-correct `"\\sigma"` / `"\\frac{...}"`.
- *  JSON.parse fails on `\s` (Bad escaped character) and silently
- *  corrupts `\f` (form feed) / `\b` (backspace) into control chars,
- *  which then breaks KaTeX rendering downstream.
+ *  1. **Code-fence / prose wrappers** — Despite "JSON only, no fences"
+ *     instructions, Claude/GPT still emit ```json ... ``` blocks (or
+ *     leading "Here's the JSON:" preambles) ~5-10% of the time. The
+ *     literal backtick then surfaces as `Unexpected token '\`'` to the
+ *     user. stripCodeFences pulls the JSON out before parsing.
+ *  2. **Single-backslash LaTeX** — Equation widget bodies frequently
+ *     come back as `"\sigma"` / `"\frac{...}"` instead of the
+ *     JSON-correct `"\\sigma"`. JSON.parse fails on `\s`
+ *     (Bad escaped character) and silently corrupts `\f` (form feed) /
+ *     `\b` (backspace) into control chars, which then breaks KaTeX
+ *     rendering downstream. escapeUnescapedLatexBackslashes patches
+ *     these in a single pass.
  *
- *  Repair strategy: scan the text, find any odd-length run of
- *  backslashes immediately before an ASCII letter, and add one more
- *  backslash so the run is even (= single literal `\` in the resulting
- *  string). Excludes letters that are unambiguous JSON-only escapes
- *  (n/r/t/u) so `\n` newlines, `\t` tabs, `\uXXXX` Unicode escapes
- *  inside genuine prose keep working. `\b` / `\f` are included in the
- *  fix-up because LaTeX commands like `\beta` / `\frac` start with
- *  them, and a stray BS/FF char inside a string is extremely unlikely
- *  in this app's payloads.
- *
- *  If the repaired text still won't parse, we fall back to the raw
- *  text so the user sees the original error, not a derived one. */
+ *  If the repaired text still won't parse, we fall back to the
+ *  fence-stripped (but not LaTeX-repaired) text so the user sees the
+ *  original error class, not a derived one from our heuristics. */
 function parseJsonWithLatexFix(text) {
-  const repaired = escapeUnescapedLatexBackslashes(text)
+  const stripped = stripCodeFences(text)
+  const dekeyed = fixMarkdownConfusedKeys(stripped)
+  const repaired = escapeUnescapedLatexBackslashes(dekeyed)
   try {
     return JSON.parse(repaired)
   } catch (e1) {
     try {
-      return JSON.parse(text)
+      return JSON.parse(dekeyed)
     } catch {
       // Surface the repaired-version error — it's typically more
       // diagnostic because the LaTeX issues have already been
@@ -5922,6 +6056,69 @@ function parseJsonWithLatexFix(text) {
       throw e1
     }
   }
+}
+
+/** Patch known underscore-prefixed JSON keys that some AIs auto-render
+ *  as Markdown italics (`_type` → `*type`). The collision is rare in
+ *  hand-typed JSON because `*` makes a string non-conforming when used
+ *  as a bare identifier — but as a quoted key the parse still succeeds,
+ *  it just fails our `_type === "..."` shape check downstream with a
+ *  confusing "지원하지 않는 형식" message. Patching back at the parse
+ *  boundary lets users keep pasting AI output unmodified.
+ *
+ *  Conservative scope: only the exact quoted-key form `"*type"` (with
+ *  optional whitespace before the colon). Free-form text containing
+ *  `*type` is left untouched. */
+function fixMarkdownConfusedKeys(text) {
+  if (!text || typeof text !== 'string') return text
+  return text.replace(/"\*type"(\s*:)/g, '"_type"$1')
+}
+
+/** Strip Markdown code-fence wrappers and prose preamble/postamble that
+ *  AIs sometimes emit despite explicit "JSON only" instructions. Handles:
+ *    "```json\n{...}\n```"          ← fence + language hint
+ *    "```\n{...}\n```"              ← bare fence
+ *    "Here's the JSON:\n```json\n{...}\n```\nLet me know..." ← prose + fence
+ *    "Here is the JSON:\n{...}\n"   ← bare prose around plain JSON
+ *  Returns the text unchanged when none of these patterns apply (so a
+ *  clean payload is never truncated by accident). All branches return
+ *  trimmed text. */
+function stripCodeFences(text) {
+  if (!text || typeof text !== 'string') return text
+  const s = text.trim()
+  // Case 1 — full triple-backtick wrap around the entire payload.
+  // Optional `json` / `JSON` language hint and surrounding whitespace.
+  const fullFence = s.match(/^```(?:json|JSON)?\s*\n?([\s\S]*?)\n?```\s*$/)
+  if (fullFence) return fullFence[1].trim()
+  // Case 2 — fence in the middle of prose (AI added a preamble or
+  // postamble). Take everything between the first and last ```, drop
+  // the optional language hint right after the opening fence.
+  if (s.includes('```')) {
+    const open = s.indexOf('```')
+    const close = s.lastIndexOf('```')
+    if (close > open) {
+      let inner = s.slice(open + 3, close)
+      inner = inner.replace(/^[ \t]*(?:json|JSON)?\s*\n?/, '')
+      return inner.trim()
+    }
+  }
+  // Case 3 — no fence but extra prose around plain JSON. Only kick in
+  // when the trimmed text doesn't already look like raw JSON, so a
+  // clean `{...}` payload skips this branch entirely. Conservative:
+  // only takes the first `{` … last `}` slice (or `[` … `]`).
+  if (s[0] !== '{' && s[0] !== '[') {
+    const firstObj = s.indexOf('{')
+    const lastObj = s.lastIndexOf('}')
+    if (firstObj !== -1 && lastObj > firstObj) {
+      return s.slice(firstObj, lastObj + 1)
+    }
+    const firstArr = s.indexOf('[')
+    const lastArr = s.lastIndexOf(']')
+    if (firstArr !== -1 && lastArr > firstArr) {
+      return s.slice(firstArr, lastArr + 1)
+    }
+  }
+  return s
 }
 
 function escapeUnescapedLatexBackslashes(text) {

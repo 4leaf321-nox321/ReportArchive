@@ -48,6 +48,30 @@ export function renderWidgetCatalogText(widgets) {
     .join('\n\n')
 }
 
+/** Build the strict-allowlist warning prepended to the catalog + examples
+ *  blocks when the user has un-checked some widgets in AiPromptDialog.
+ *
+ *  Filtering alone (removing types from catalog/examples) isn't enough to
+ *  stop the AI from generating excluded widgets — it still knows them
+ *  from its training data, and the v1 body even lists "key_value" by name
+ *  in its writing-rule cheat sheet. So we inject an explicit "ONLY these
+ *  types — reject anything else" block at the head of the catalog text.
+ *
+ *  Returns null when there's nothing to constrain (no exclusion or empty
+ *  allow set) so callers can skip the prepend cleanly. */
+export function renderWidgetAllowlistHeader(allowedTypes) {
+  if (!Array.isArray(allowedTypes) || allowedTypes.length === 0) return null
+  const list = allowedTypes.join(', ')
+  return [
+    '※ 이 프롬프트는 다음 위젯 타입만 허용합니다 (엄격 화이트리스트):',
+    `  ${list}`,
+    '',
+    '위 목록에 없는 type 으로 `extra_blocks` 를 만들거나 `content` 항목을 채우면 자동 거절됩니다. body 의 작성 예시 / 규칙 문구에 다른 위젯 이름(key_value, table, chart 등)이 언급되더라도 이 화이트리스트가 우선합니다. 화이트리스트 밖 데이터는 `rich_text` 메모로만 남기세요.',
+    '----',
+    '',
+  ].join('\n')
+}
+
 /** Render the current page's template block list — the v2 "이미 배치된
  *  위젯" block. `blocks` is `template.schema.blocks` from useTemplate.
  *
@@ -160,16 +184,30 @@ export function buildPromptContext({
 } = {}) {
   const excluded = excludedWidgetTypes ?? null
   const allWidgets = widgetCatalog?.widgets ?? []
-  const filteredWidgets =
-    excluded && excluded.size > 0
-      ? allWidgets.filter((w) => !excluded.has(w.type))
-      : allWidgets
+  const hasExclusion = excluded && excluded.size > 0
+  const filteredWidgets = hasExclusion
+    ? allWidgets.filter((w) => !excluded.has(w.type))
+    : allWidgets
+  // Inject the strict-allowlist warning at the head of the catalog +
+  // examples blocks so the AI sees it regardless of which token the
+  // prompt body uses ({{widget_catalog}} for v1, {{widget_examples}}
+  // for v2). Skip when nothing is excluded — keeps the baseline prompt
+  // identical to the pre-exclusion behavior.
+  const allowlistHeader = hasExclusion
+    ? renderWidgetAllowlistHeader(filteredWidgets.map((w) => w.type))
+    : null
+  const catalogText = renderWidgetCatalogText(filteredWidgets)
+  const examplesText = renderWidgetExamplesText(excluded)
   return {
     templateId: templateId || 'TEMPLATE_ID_HERE',
     templateVersion: templateVersion ?? 1,
     sectionTaxonomyText: renderSectionTaxonomy(sectionCategories),
-    widgetCatalogText: renderWidgetCatalogText(filteredWidgets),
-    widgetExamplesText: renderWidgetExamplesText(excluded),
+    widgetCatalogText: allowlistHeader
+      ? `${allowlistHeader}${catalogText}`
+      : catalogText,
+    widgetExamplesText: allowlistHeader
+      ? `${allowlistHeader}${examplesText}`
+      : examplesText,
     templateBlocksText: renderTemplateBlocksText(templateBlocks, excluded),
   }
 }

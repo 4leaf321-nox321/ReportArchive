@@ -88,6 +88,7 @@ export const WIDGET_PROMPT_EXAMPLES = [
       '### table (표)',
       'props (required: label, columns) : `{ "label":"검토 내용", "columns":[ {"key":"category","label":"구분","type":"text"}, {"key":"amount","label":"금액","type":"number"} ] }`',
       'content : `{ "rows":[ {"category":"배경","amount":1200}, {"category":"결과","amount":3400} ] }`   // 행 객체의 키 = column.key',
+      '- (선택) **셀 병합** `content.merges`: `[ {"r":0,"c":0,"rs":2,"cs":1}, ... ]` — 각 항목은 anchor (r=행 인덱스, c=열 인덱스, 둘 다 0-based) + 그 자리에서 몇 행 × 몇 열을 합칠지 (rs/cs ≥ 1). 사각형이어야 하고, anchor 외 셀의 값은 무시됨 (= anchor 의 값만 표시). 1×1 (rs=cs=1) 은 무의미해서 자동 drop. 같은 영역을 두 merge 가 덮으면 후행이 이김.',
     ].join('\n'),
   },
   {
@@ -398,6 +399,7 @@ export const WIDGET_PROMPT_EXAMPLES = [
       '- `values` 객체의 키는 cases 의 `key` 와 정확히 일치. 빈 칸은 키 생략.',
       '- ★ `kind="image"` 는 file_id 를 요구하므로 **AI 가 만들지 마세요** — image 행이 필요하면 rich_text 로 "여기에 비교 이미지 행 추가 필요" 정도만 메모.',
       '- AS-IS/TO-BE 개선안, 안 A/B/C 후보 비교, 경쟁사 비교, before/after 같은 정형 비교에 적합.',
+      '- (선택) **셀 병합** `content.merges`: `[ {"r":0,"c":1,"rs":1,"cs":2} ]` — table 과 동일 모델 + 비교표 좌표계는 **c=0 이 행 라벨 컬럼, c=1..M 이 cases[c-1]**. 행 라벨 ↔ case 구역 가로지르는 cross-zone 병합은 자동 dissolve (예: c=0,cs=3 같은 형식은 reject). 같은 case 행을 가로로 묶거나 (rs=1, cs≥2), 같은 라벨 컬럼을 세로로 묶는 (rs≥2, cs=1) 패턴이 자연스러움.',
     ].join('\n'),
   },
   {

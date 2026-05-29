@@ -2,7 +2,7 @@ import { createContext, useContext, useState } from 'react'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, PreviewLabel, TextStyleField, captionSkipProps, textStyleToClassName, textStyleToInlineStyle, toTsv, useGridNavigation } from './_shared'
+import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, PreviewLabel, TextStyleField, captionSkipProps, computeMergeMap, normalizeMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation } from './_shared'
 
 /**
  * "표 전체 펼치기" 토글의 공유 state. BlockEditorCard 가 위젯마다
@@ -101,6 +101,11 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   const cols = Array.isArray(overrideCols) ? overrideCols : templateCols
   const caption = content?.caption ?? ''
   const rows = content?.rows ?? []
+  // 셀 병합 side-table. `merges = [{r,c,rs,cs}]` 형태. 빈 배열/없음이면
+  // 기존 렌더와 100% 동일하게 동작. anchor 가 아닌 covered 셀은 출력 단계
+  // 에서 건너뛰고, anchor 에만 rowSpan/colSpan attr 가 붙는다.
+  const merges = Array.isArray(content?.merges) ? content.merges : []
+  const mergeMap = computeMergeMap(merges, rows.length, cols.length)
   const bodyTextClass = textStyleToClassName(props.text_style)
   const bodyTextStyle = textStyleToInlineStyle(props.text_style)
   // 읽기 모드 전용 — "전체 펼치기" 토글. 기본은 compact (셀이 잘림 +
@@ -188,13 +193,21 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                 <tbody>
                   {rows.map((row, ri) => (
                     <tr key={ri} className="border-b last:border-b-0">
-                      {cols.map((c, ci) => (
-                        <ReadOnlyCell
-                          key={ci}
-                          value={row[c.key]}
-                          expanded={expanded}
-                        />
-                      ))}
+                      {cols.map((c, ci) => {
+                        // covered cell — 이미 다른 anchor 의 rowSpan/colSpan
+                        // 영역에 흡수되었으므로 출력 자체를 건너뜀.
+                        if (mergeMap.covered.has(`${ri},${ci}`)) return null
+                        const span = mergeMap.anchors.get(`${ri},${ci}`)
+                        return (
+                          <ReadOnlyCell
+                            key={ci}
+                            value={row[c.key]}
+                            expanded={expanded}
+                            rowSpan={span?.rs}
+                            colSpan={span?.cs}
+                          />
+                        )
+                      })}
                     </tr>
                   ))}
                 </tbody>
@@ -210,21 +223,49 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     patch({ rows: nextRows })
   }
   function addRow() {
+    // 끝에 추가는 merges 영향 없음 (모든 anchor 가 이미 작은 r 인덱스).
     patch({ rows: [...rows, {}] })
   }
   function removeRow(rowIdx) {
-    patch({ rows: rows.filter((_, i) => i !== rowIdx) })
+    // merges 의 r 축 재배치 — anchor 가 그 행에 있으면 한 행 아래로
+    // 미루거나 (rs>1), 1×1 이 되어버리면 drop.
+    const nextMerges = shiftMergesForRow(
+      merges,
+      'remove',
+      rowIdx,
+      rows.length,
+      cols.length,
+    )
+    patch({
+      rows: rows.filter((_, i) => i !== rowIdx),
+      ...(merges.length || nextMerges.length ? { merges: nextMerges } : {}),
+    })
   }
   function moveRow(rowIdx, dir) {
+    // 행 위/아래로 이동 — 두 행의 r 인덱스만 바뀌므로 merges 도
+    // 따라가야 함. 단순화: anchor 가 두 행 중 하나에 있으면 그 anchor 도
+    // 같이 이동. 영역이 두 행을 동시에 덮는 multi-row merge 면 의미가
+    // 모호하니 그대로 둠 (= 시각상 동일 위치 유지).
     const newIdx = rowIdx + dir
     if (newIdx < 0 || newIdx >= rows.length) return
     const next = [...rows]
     const [item] = next.splice(rowIdx, 1)
     next.splice(newIdx, 0, item)
-    patch({ rows: next })
+    const swapped = (merges ?? []).map((m) => {
+      if (m.r === rowIdx) return { ...m, r: newIdx }
+      if (m.r === newIdx) return { ...m, r: rowIdx }
+      return m
+    })
+    patch({
+      rows: next,
+      ...(merges.length || swapped.length
+        ? { merges: normalizeMerges(swapped, rows.length, cols.length) }
+        : {}),
+    })
   }
 
   function addColumn() {
+    // 끝에 추가 → 모든 anchor 의 c 인덱스는 이미 작아 영향 없음.
     const existing = new Set(cols.map((c) => c.key))
     let n = cols.length + 1
     while (existing.has(`col_${n}`)) n += 1
@@ -242,8 +283,77 @@ export function TableEditor({ props, content, onChange, readOnly }) {
       const { [removed.key]: _drop, ...rest } = r
       return rest
     })
-    patch({ columns: nextCols, rows: nextRows })
+    const nextMerges = shiftMergesForCol(
+      merges,
+      'remove',
+      idx,
+      rows.length,
+      cols.length,
+    )
+    patch({
+      columns: nextCols,
+      rows: nextRows,
+      ...(merges.length || nextMerges.length ? { merges: nextMerges } : {}),
+    })
   }
+
+  // ─── 셀 병합 / 분할 ──────────────────────────────────────────────
+  // 셀 안 텍스트 편집과 셀 단위 선택이 같은 마우스 동작을 두고 충돌하지만
+  // 명시적 토글 없이 처리 — mousedown 한 셀 안에서 드래그하면 텍스트가
+  // 선택되고, 셀 경계를 넘어가는 순간 useCellSelection 이 자동으로
+  // promote 해 multi-cell 선택으로 전환된다.
+  // 사용자가 드래그/Shift+클릭으로 만든 사각형 selection 을 기반으로
+  // anchor 셀에만 rs/cs 부여 — 나머지 셀은 자동으로 covered 처리되어
+  // 렌더 단계에서 skip 된다. 데이터 (각 셀 값) 자체는 보존 — anchor 가
+  // 변경되지 않는 한 unmerge 시 같은 자리에 같은 값이 복원됨.
+  const selection = useCellSelection({
+    rowCount: rows.length,
+    colCount: cols.length,
+  })
+  function mergeSelection() {
+    const r = selection.rect
+    if (!r) return
+    const rs = r.r2 - r.r1 + 1
+    const cs = r.c2 - r.c1 + 1
+    if (rs === 1 && cs === 1) return
+    const nextMerges = normalizeMerges(
+      [...(merges ?? []), { r: r.r1, c: r.c1, rs, cs }],
+      rows.length,
+      cols.length,
+    )
+    patch({ merges: nextMerges })
+    selection.clear()
+  }
+  function unmergeSelection() {
+    const r = selection.rect
+    if (!r) return
+    // 선택 영역에 (anchor 가 또는 covered 가) 겹치는 모든 merge 제거.
+    const kept = (merges ?? []).filter((m) => {
+      const last_r = m.r + m.rs - 1
+      const last_c = m.c + m.cs - 1
+      const overlaps =
+        m.r <= r.r2 && last_r >= r.r1 && m.c <= r.c2 && last_c >= r.c1
+      return !overlaps
+    })
+    patch({ merges: normalizeMerges(kept, rows.length, cols.length) })
+    selection.clear()
+  }
+  // 액션 바 상태 — 선택 영역 안에 기존 merge 가 있으면 「분할」, 없으면
+  // 사각형이 2셀 이상일 때만 「합치기」.
+  const selectionHasMerge = (() => {
+    const r = selection.rect
+    if (!r) return false
+    return (merges ?? []).some((m) => {
+      const last_r = m.r + m.rs - 1
+      const last_c = m.c + m.cs - 1
+      return m.r <= r.r2 && last_r >= r.r1 && m.c <= r.c2 && last_c >= r.c1
+    })
+  })()
+  const selectionSpansMultiple = (() => {
+    const r = selection.rect
+    if (!r) return false
+    return r.r2 > r.r1 || r.c2 > r.c1
+  })()
 
   /**
    * Paste landing on a column header. The first TSV row becomes column
@@ -372,7 +482,49 @@ export function TableEditor({ props, content, onChange, readOnly }) {
         placeholder={props.label}
         {...captionSkipProps({ content, patch })}
       />
-      <div className="flex justify-end">
+      <div
+        className="flex justify-end items-center gap-2"
+        // outside-click 핸들러가 액션 바 클릭으로 selection 을 지우지
+        // 못하게 면역 영역으로 표시.
+        data-cell-selection-allow
+      >
+        {/* 선택 영역 액션 — 사각형이 2셀 이상이거나 선택 영역에 기존
+            merge 가 걸쳐 있으면 합치기 / 분할 버튼이 나옴. */}
+        {(selectionSpansMultiple || selectionHasMerge) && (
+          <div className="flex items-center gap-1 rounded-md border bg-muted/40 px-1.5 py-0.5">
+            {selectionHasMerge && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={unmergeSelection}
+                className="h-6 px-2 text-[11px]"
+                title="선택한 영역의 셀 병합을 해제"
+              >
+                셀 분할
+              </Button>
+            )}
+            {!selectionHasMerge && selectionSpansMultiple && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={mergeSelection}
+                className="h-6 px-2 text-[11px]"
+                title="선택한 사각형을 한 셀로 합치기"
+              >
+                셀 합치기
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={selection.clear}
+              className="h-6 px-1.5 text-[11px] text-muted-foreground"
+              title="선택 해제"
+            >
+              <X className="h-3 w-3" />
+            </Button>
+          </div>
+        )}
         <DataTableActions
           label="표 데이터"
           onCopy={() => {
@@ -383,7 +535,19 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           onClear={() => patch({ rows: [] })}
         />
       </div>
-      <div ref={grid.gridRef} className={`overflow-x-auto rounded-md border ${bodyTextClass}`} style={bodyTextStyle}>
+      <div
+        ref={(el) => {
+          // 두 훅 모두 같은 wrapper 를 root 로 씀 — grid 키보드 nav 는
+          // 셀 querySelector 용, selection 은 바깥 클릭 감지용.
+          grid.gridRef.current = el
+          selection.containerRef.current = el
+        }}
+        className={`overflow-x-auto rounded-md border ${bodyTextClass} ${
+          selection.crossCellDragging ? 'select-none cursor-cell' : ''
+        }`}
+        style={bodyTextStyle}
+        onMouseUp={selection.handleMouseUp}
+      >
         {/* Edit mode: same column structure as the read-only render. Row
             action buttons (move/delete) and per-column delete render as
             hover overlays inside the existing cells, so neither view nor
@@ -433,11 +597,34 @@ export function TableEditor({ props, content, onChange, readOnly }) {
             {rows.map((row, rowIdx) => (
               <tr key={rowIdx} className="border-b last:border-b-0 group">
                 {cols.map((c, ci) => {
+                  // 편집모드에서도 covered 셀은 출력하지 않음 — 옆 anchor 의
+                  // rowSpan/colSpan 이 자리를 덮음. 단 행 끝 action overlay
+                  // 가 사라지지 않게 isLast 판정은 *원래* 마지막 컬럼 기준.
+                  if (mergeMap.covered.has(`${rowIdx},${ci}`)) return null
+                  const span = mergeMap.anchors.get(`${rowIdx},${ci}`)
                   const isLast = ci === cols.length - 1
+                  const selected = selection.isCellSelected(rowIdx, ci)
                   return (
                     <td
                       key={ci}
-                      className={`px-1 py-1 ${isLast ? 'relative' : ''}`}
+                      data-cell-coord={`${rowIdx},${ci}`}
+                      // 일반 클릭은 input focus 가 그대로 — 셀 안 텍스트
+                      // 편집/커서 이동 정상. 드래그가 셀 경계를 넘는 순간
+                      // hook 이 promote 해서 multi-cell 선택으로 전환.
+                      onMouseDown={(e) =>
+                        selection.handleMouseDown(e, rowIdx, ci)
+                      }
+                      onMouseEnter={() =>
+                        selection.handleMouseEnter(rowIdx, ci)
+                      }
+                      onMouseLeave={() =>
+                        selection.handleMouseLeave(rowIdx, ci)
+                      }
+                      {...(span?.rs > 1 ? { rowSpan: span.rs } : {})}
+                      {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
+                      className={`px-1 py-1 ${isLast ? 'relative' : ''} ${
+                        selected ? 'bg-primary/10 ring-1 ring-primary/40' : ''
+                      }`}
                     >
                       <CellInput
                         column={c}
@@ -642,23 +829,39 @@ function coerceCellValue(column, raw) {
  *
  *  Expanded 모드: 전체 펼치기 토글이 켜진 상태 — 셀이 줄바꿈 되어 자연
  *  스럽게 늘어남. 이미 다 보이므로 hover popover 는 띄우지 않는다. */
-function ReadOnlyCell({ value, expanded }) {
+function ReadOnlyCell({ value, expanded, rowSpan, colSpan }) {
   const isEmpty = value === undefined || value === null || value === ''
   const text = isEmpty ? '' : String(value)
+  // rowSpan / colSpan 은 1 일 땐 HTML attr 자체를 비워둠 — DOM 상 깔끔.
+  const spanAttrs = {
+    ...(rowSpan && rowSpan > 1 ? { rowSpan } : {}),
+    ...(colSpan && colSpan > 1 ? { colSpan } : {}),
+  }
   if (isEmpty) {
     return (
-      <td className="px-2 py-1.5 text-center text-muted-foreground">—</td>
+      <td
+        {...spanAttrs}
+        className="px-2 py-1.5 text-center text-muted-foreground"
+      >
+        —
+      </td>
     )
   }
   if (expanded) {
     return (
-      <td className="px-2 py-1.5 text-center whitespace-pre-wrap break-words align-top">
+      <td
+        {...spanAttrs}
+        className="px-2 py-1.5 text-center whitespace-pre-wrap break-words align-top"
+      >
         {text}
       </td>
     )
   }
   return (
-    <td className="px-2 py-1.5 text-center truncate relative group">
+    <td
+      {...spanAttrs}
+      className="px-2 py-1.5 text-center truncate relative group"
+    >
       <span title={text} className="block truncate">
         {text}
       </span>

@@ -507,6 +507,23 @@ def _table_content(props: dict) -> dict:
                 "items": _FIELD_ITEM_PROPS_SCHEMA,
             },
             "rows": rows_schema,
+            # 셀 병합 사각형 — 0-기반 행/열 좌표와 rs/cs 스팬. 비어있으면
+            # 일반 표와 동일하게 렌더링되고, 항목이 있으면 anchor 외 셀은
+            # 옆 셀이 rowSpan/colSpan 으로 덮어 가린다.
+            "merges": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "r": {"type": "integer", "minimum": 0},
+                        "c": {"type": "integer", "minimum": 0},
+                        "rs": {"type": "integer", "minimum": 1},
+                        "cs": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["r", "c", "rs", "cs"],
+                    "additionalProperties": False,
+                },
+            },
         },
         "additionalProperties": False,
     }
@@ -2735,6 +2752,23 @@ def _comparison_content(props: dict) -> dict:  # noqa: ARG001
                 "type": "integer",
                 "minimum": 60,
                 "maximum": 1200,
+            },
+            # 셀 병합 사각형 — 좌표 규약: c=0 → 행 라벨 열, c=1..M → cases[c-1].
+            # 행 라벨과 case 영역을 가로지르는 사각형은 클라이언트에서 막지만
+            # 서버 스키마는 좌표만 검증한다.
+            "merges": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "r": {"type": "integer", "minimum": 0},
+                        "c": {"type": "integer", "minimum": 0},
+                        "rs": {"type": "integer", "minimum": 1},
+                        "cs": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["r", "c", "rs", "cs"],
+                    "additionalProperties": False,
+                },
             },
         },
         "additionalProperties": False,

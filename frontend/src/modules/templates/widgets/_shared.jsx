@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronUp, Copy, Eraser, Plus, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
@@ -1473,4 +1473,461 @@ export function useGridNavigation() {
   )
 
   return { gridRef, focusCell, handleKey }
+}
+
+// --- Cell-merge utilities ------------------------------------------- //
+//
+// 표 / 비교표 (그리고 향후 RACI 같은 grid 위젯) 가 공유하는 셀 병합 로직.
+// 데이터 모델은 side-table 한 줄:
+//
+//   content.merges = [
+//     { r: 0, c: 2, rs: 2, cs: 3 },  // (행 0, 열 2) anchor → 2행 × 3열 사각형
+//     ...
+//   ]
+//
+// - r, c 는 0-based row / column 인덱스 (열 key 가 아니라 위치 — rename 후에도
+//   안정적). col 0 부터 N-1 까지 visible 컬럼 기준.
+// - rs, cs ≥ 1. rs===1 && cs===1 이면 무의미한 1×1 병합 → drop.
+// - merges 가 빈 배열이거나 없으면 기존 렌더와 100% 동일 (= 폴백).
+//
+// 두 위젯 모두 render 시 `computeMergeMap(merges, rowCount, colCount)` 한 번
+// 호출 → `{ anchors, covered }` 받아 rows.map / cells.map 안에서:
+//   - covered.has(`${r},${c}`)  → 그 셀은 skip (출력 안 함, 옆 anchor 가 덮음)
+//   - anchors.get(...)         → rowSpan / colSpan attr 부여
+//
+// 정규화는 `normalizeMerges(...)` 가 담당:
+//   1) 사각형이 grid 범위 안에 들어가도록 clamp
+//   2) 다른 병합과 겹치면 후행 입력 우선 (= 사용자가 합치기 다시 누른 의미)
+//   3) 1×1 사각형 drop
+//   4) 정렬 (r, c 순) — 직렬화 안정성
+//
+// JSON 직렬화 / 저장은 content.merges 그대로. 백엔드 schema 변경 0.
+
+/** 한 셀 좌표 key — Map / Set 의 표준화된 문자열 키. */
+function _mkey(r, c) {
+  return `${r},${c}`
+}
+
+/**
+ * @param {Array<{r:number,c:number,rs:number,cs:number}>} merges
+ * @param {number} rowCount
+ * @param {number} colCount
+ * @returns {{
+ *   anchors: Map<string, {rs:number,cs:number}>,  // "r,c" → span
+ *   covered: Set<string>,                          // "r,c" 가 다른 anchor 의 영역에 포함됨
+ * }}
+ *
+ * 렌더 hot path 라 cheap. anchors 셀 자기 자신은 covered 에 포함 안 함 (anchor
+ * 가 자기 자리에서 span attr 로 렌더링됨). 잘못된 merge (범위 밖 / 1×1) 는
+ * 조용히 무시 — 정규화는 호출자가 patch 시점에 한 번씩 돌리는 게 정석.
+ */
+export function computeMergeMap(merges, rowCount, colCount) {
+  const anchors = new Map()
+  const covered = new Set()
+  if (!Array.isArray(merges) || merges.length === 0) {
+    return { anchors, covered }
+  }
+  for (const m of merges) {
+    if (!m) continue
+    const r = Number(m.r)
+    const c = Number(m.c)
+    const rs = Math.max(1, Math.floor(Number(m.rs ?? 1)))
+    const cs = Math.max(1, Math.floor(Number(m.cs ?? 1)))
+    if (
+      !Number.isFinite(r) ||
+      !Number.isFinite(c) ||
+      r < 0 ||
+      c < 0 ||
+      r >= rowCount ||
+      c >= colCount
+    ) {
+      continue
+    }
+    if (rs === 1 && cs === 1) continue
+    // clamp to grid edges
+    const rsClamped = Math.min(rs, rowCount - r)
+    const csClamped = Math.min(cs, colCount - c)
+    if (rsClamped < 1 || csClamped < 1) continue
+    anchors.set(_mkey(r, c), { rs: rsClamped, cs: csClamped })
+    for (let dr = 0; dr < rsClamped; dr++) {
+      for (let dc = 0; dc < csClamped; dc++) {
+        if (dr === 0 && dc === 0) continue
+        covered.add(_mkey(r + dr, c + dc))
+      }
+    }
+  }
+  return { anchors, covered }
+}
+
+/**
+ * 두 병합 사각형이 겹치는지.
+ */
+function _mergesOverlap(a, b) {
+  return (
+    a.r < b.r + b.rs &&
+    b.r < a.r + a.rs &&
+    a.c < b.c + b.cs &&
+    b.c < a.c + a.cs
+  )
+}
+
+/**
+ * 사용자/AI 입력을 안전한 모양으로 정규화.
+ *
+ *   1) 정수 + 양수 + grid 범위 내 → 통과
+ *   2) 1×1 → drop (의미 없음)
+ *   3) 후행 병합이 기존과 겹치면 → 기존을 dissolve (사용자가 다시 누른 의도)
+ *   4) (r, c) 오름차순 정렬
+ *
+ * patch 시점에 한 번 호출해서 content.merges 자리에 넣으면 됨.
+ */
+export function normalizeMerges(merges, rowCount, colCount) {
+  if (!Array.isArray(merges) || merges.length === 0) return []
+  const out = []
+  for (const raw of merges) {
+    if (!raw) continue
+    const r = Math.floor(Number(raw.r))
+    const c = Math.floor(Number(raw.c))
+    const rs = Math.floor(Number(raw.rs ?? 1))
+    const cs = Math.floor(Number(raw.cs ?? 1))
+    if (!Number.isFinite(r) || !Number.isFinite(c)) continue
+    if (r < 0 || c < 0 || r >= rowCount || c >= colCount) continue
+    const rsClamped = Math.max(1, Math.min(rs, rowCount - r))
+    const csClamped = Math.max(1, Math.min(cs, colCount - c))
+    if (rsClamped === 1 && csClamped === 1) continue
+    const next = { r, c, rs: rsClamped, cs: csClamped }
+    // 겹치는 기존 병합 모두 제거 (last-wins)
+    for (let i = out.length - 1; i >= 0; i--) {
+      if (_mergesOverlap(out[i], next)) out.splice(i, 1)
+    }
+    out.push(next)
+  }
+  out.sort((a, b) => (a.r - b.r) || (a.c - b.c))
+  return out
+}
+
+/**
+ * 행 삽입 / 삭제 시 merges 의 r 축을 재배치.
+ *
+ *   action: 'insert' | 'remove'
+ *   at:     영향 받는 행 인덱스 (insert 면 그 자리에 끼움, remove 면 그 행이 사라짐)
+ *
+ * 정책:
+ *   - insert: r >= at 인 merge 는 r += 1
+ *   - remove:
+ *       - anchor 가 삭제 행 위쪽에 있고 영역이 그 행을 덮는다 → rs -= 1
+ *       - anchor 자체가 삭제 행이면: 영역에 따라 anchor 를 한 행 아래로 이동 + rs-=1,
+ *         만약 rs 이미 1이면 그 merge 자체 drop
+ *       - anchor 가 삭제 행 아래쪽 → r -= 1
+ *
+ * 결과는 rowCount 변화 후 grid 에 대해 재정규화 통과한 배열.
+ */
+export function shiftMergesForRow(merges, action, at, prevRowCount, prevColCount) {
+  if (!Array.isArray(merges) || merges.length === 0) return []
+  const shifted = []
+  for (const m of merges) {
+    if (!m) continue
+    const r = m.r
+    const c = m.c
+    const rs = m.rs
+    const cs = m.cs
+    if (action === 'insert') {
+      if (r >= at) {
+        shifted.push({ r: r + 1, c, rs, cs })
+      } else if (r + rs > at) {
+        // 삽입 위치가 영역 한가운데 → 그 행 하나만큼 영역 확장 (= 빈 행이 끼움)
+        shifted.push({ r, c, rs: rs + 1, cs })
+      } else {
+        shifted.push({ r, c, rs, cs })
+      }
+    } else {
+      // remove
+      if (r > at) {
+        shifted.push({ r: r - 1, c, rs, cs })
+      } else if (r === at) {
+        // anchor 자체가 사라짐 → 한 행 아래로 anchor 이동
+        if (rs > 1) shifted.push({ r, c, rs: rs - 1, cs })
+        // else: drop
+      } else if (r + rs > at) {
+        // anchor 위쪽이고 영역이 삭제 행을 덮음 → rs 줄임
+        shifted.push({ r, c, rs: rs - 1, cs })
+      } else {
+        shifted.push({ r, c, rs, cs })
+      }
+    }
+  }
+  const nextRowCount = action === 'insert' ? prevRowCount + 1 : prevRowCount - 1
+  return normalizeMerges(shifted, Math.max(0, nextRowCount), prevColCount)
+}
+
+// --- useCellSelection 훅 -------------------------------------------- //
+//
+// 표 / 비교표 의 셀 선택 모델. data-cell-coord="r,c" 가 박혀있는 셀들에
+// 대해 마우스 drag / Shift+클릭 / Shift+화살표로 사각형 선택을 만든다.
+//
+//   { anchor: {r,c}, head: {r,c} } | null
+//     anchor = drag 시작 셀 (= 첫 클릭). 변하지 않음.
+//     head   = drag 중인 현재 셀. anchor 와 함께 정규화하면 사각형.
+//
+// data 모델은 의도적으로 widget agnostic — anchor/head 로만 표현하고
+// "어떻게 그릴지" / "어떤 셀이 선택됐는지" 는 호출자가 normalizeRange
+// helper 로 계산. label-column 같은 위젯 특화 zone 제약도 호출자가
+// merge 적용 시 검사.
+//
+// 사용 패턴:
+//   const sel = useCellSelection({ rowCount, colCount, onClear })
+//   <div ref={sel.containerRef} onMouseUp={sel.handleMouseUp} ...>
+//     <table>
+//       {rows.map((_, r) => (
+//         <tr>
+//           {cols.map((_, c) => (
+//             <td
+//               data-cell-coord={`${r},${c}`}
+//               onMouseDown={(e) => sel.handleMouseDown(e, r, c)}
+//               onMouseEnter={() => sel.handleMouseEnter(r, c)}
+//               className={sel.isCellSelected(r, c) ? 'ring-2 ring-primary/40' : ''}
+//             >...</td>
+//           ))}
+//         </tr>
+//       ))}
+//     </table>
+//   </div>
+
+/** 두 좌표를 사각형으로 정규화. (r1, c1, r2, c2) 의 minmax. */
+export function selectionRect(sel) {
+  if (!sel) return null
+  const { anchor, head } = sel
+  return {
+    r1: Math.min(anchor.r, head.r),
+    c1: Math.min(anchor.c, head.c),
+    r2: Math.max(anchor.r, head.r),
+    c2: Math.max(anchor.c, head.c),
+  }
+}
+
+/** 사각형 영역에 셀이 포함되는지. */
+function rectContains(rect, r, c) {
+  if (!rect) return false
+  return r >= rect.r1 && r <= rect.r2 && c >= rect.c1 && c <= rect.c2
+}
+
+export function useCellSelection({ rowCount, colCount, onClear } = {}) {
+  const [sel, setSel] = useState(null)
+  // 드래그 동안만 true — 셀 안 text 드래그가 셀 경계를 넘어가는 순간
+  // promote 해서 multi-cell 선택으로 전환. select-none 클래스 등 UI
+  // 신호로도 쓰여서 ref 가 아닌 state.
+  const [crossCellDragging, setCrossCellDragging] = useState(false)
+  // mousedown 한 셀 좌표 — handleMouseEnter 에서 "다른 셀로 넘어갔는가"
+  // 판정에 사용. promote 되거나 mouseup 시점에 null 로 리셋.
+  const pendingAnchorRef = useRef(null)
+  const draggingRef = useRef(false)
+
+  const containerRef = useRef(null)
+
+  // 바깥 mousedown → 선택 해제. container 자기 자신, 혹은 명시적으로
+  // `data-cell-selection-allow` 가 붙어있는 트리 (예: 합치기/분할 액션바)
+  // 안의 클릭은 면역 — 액션 바가 selection container 바깥에 살아도
+  // outside-handler 가 sel 을 null 로 만들어버려 그 다음 click 에서
+  // mergeSelection 이 빈 사각형을 보는 버그 방지.
+  useEffect(() => {
+    if (!sel) return
+    function onDown(e) {
+      const root = containerRef.current
+      if (root && root.contains(e.target)) return
+      if (e.target?.closest?.('[data-cell-selection-allow]')) return
+      setSel(null)
+      onClear?.()
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') {
+        setSel(null)
+        onClear?.()
+      }
+    }
+    window.addEventListener('mousedown', onDown, true)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', onDown, true)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [sel, onClear])
+
+  // 일반 mousedown 은 preventDefault 안 함 — input 이 그대로 focus 받고
+  // 셀 안 텍스트 드래그도 정상. anchor 만 기록해뒀다가 mouse 가 다른 셀로
+  // 진입하는 순간 multi-cell 선택으로 promote.
+  const handleMouseDown = useCallback((e, r, c) => {
+    if (e.button !== 0) return
+    draggingRef.current = true
+    if (e.shiftKey && sel) {
+      // Shift+클릭 — 기존 anchor 에서 확장. 이때는 input focus 가
+      // 의미없으니 preventDefault.
+      e.preventDefault()
+      setSel({ anchor: sel.anchor, head: { r, c } })
+      pendingAnchorRef.current = null
+      setCrossCellDragging(true)
+      return
+    }
+    pendingAnchorRef.current = { r, c }
+    // 새 클릭이 들어오면 이전 multi-cell 선택은 더 이상 의미 없음.
+    if (sel) {
+      setSel(null)
+      onClear?.()
+    }
+  }, [sel, onClear])
+
+  // promote 공통 처리 — 텍스트 선택 끄고 input 포커스 떼고 sel 세팅.
+  const promote = useCallback((anchor, head) => {
+    try {
+      window.getSelection()?.removeAllRanges()
+    } catch {
+      /* old browsers — 무시 */
+    }
+    const ae = document.activeElement
+    if (
+      ae &&
+      (ae.tagName === 'INPUT' ||
+        ae.tagName === 'TEXTAREA' ||
+        ae.isContentEditable)
+    ) {
+      ae.blur?.()
+    }
+    setSel({ anchor, head })
+    pendingAnchorRef.current = null
+    setCrossCellDragging(true)
+  }, [])
+
+  const handleMouseEnter = useCallback((r, c) => {
+    if (!draggingRef.current) return
+    const pending = pendingAnchorRef.current
+    if (pending) {
+      // 같은 셀이면 promote 안 함 — input 안에서 드래그 중일 수 있음.
+      if (pending.r === r && pending.c === c) return
+      // 다른 셀로 진입 — promote 후 head 를 들어온 셀로.
+      promote(pending, { r, c })
+      return
+    }
+    // 이미 promote 된 상태 — head 만 늘림.
+    setSel((prev) => (prev ? { anchor: prev.anchor, head: { r, c } } : prev))
+  }, [promote])
+
+  // 드래그 중 mousedown 한 셀의 경계를 벗어나는 순간 promote — 병합된
+  // 큰 셀처럼 cell-area 안에서만 움직여도 enter 가 안 잡히는 경우, 또는
+  // 표 바깥으로 드래그아웃 하는 경우를 모두 처리. head 는 일단 anchor
+  // 자체 (= 선택 영역에 anchor 셀 하나만 포함). 이후 다른 셀에 mouseenter
+  // 하면 그쪽으로 head 가 확장됨.
+  const handleMouseLeave = useCallback(
+    (r, c) => {
+      if (!draggingRef.current) return
+      const pending = pendingAnchorRef.current
+      if (!pending) return
+      // mousedown 한 셀에서 빠져나갈 때만 의미가 있음. 그 외 셀의
+      // mouseleave 는 무시 (promote 후의 head 이동은 enter 가 처리).
+      if (pending.r !== r || pending.c !== c) return
+      promote(pending, pending)
+    },
+    [promote],
+  )
+
+  const handleMouseUp = useCallback(() => {
+    draggingRef.current = false
+    pendingAnchorRef.current = null
+    setCrossCellDragging(false)
+  }, [])
+
+  // 사용자가 mousedown 후 container 바깥으로 마우스를 빼고 떼면 위
+  // onMouseUp 이 안 잡힘 → 글로벌로도 한 번. drag 중에만 등록해 비용 ↓.
+  useEffect(() => {
+    if (!draggingRef.current) return
+    const onUp = () => {
+      draggingRef.current = false
+      pendingAnchorRef.current = null
+      setCrossCellDragging(false)
+    }
+    window.addEventListener('mouseup', onUp)
+    return () => window.removeEventListener('mouseup', onUp)
+  }, [sel])
+
+  // Shift+화살표 키로 head 확장.
+  const handleKeyExpand = useCallback(
+    (e) => {
+      if (!sel) return false
+      if (!e.shiftKey) return false
+      let dr = 0
+      let dc = 0
+      if (e.key === 'ArrowUp') dr = -1
+      else if (e.key === 'ArrowDown') dr = 1
+      else if (e.key === 'ArrowLeft') dc = -1
+      else if (e.key === 'ArrowRight') dc = 1
+      else return false
+      const nr = Math.max(0, Math.min((rowCount ?? 1) - 1, sel.head.r + dr))
+      const nc = Math.max(0, Math.min((colCount ?? 1) - 1, sel.head.c + dc))
+      setSel({ anchor: sel.anchor, head: { r: nr, c: nc } })
+      e.preventDefault()
+      return true
+    },
+    [sel, rowCount, colCount],
+  )
+
+  const isCellSelected = useCallback(
+    (r, c) => rectContains(selectionRect(sel), r, c),
+    [sel],
+  )
+
+  const clear = useCallback(() => {
+    setSel(null)
+    onClear?.()
+  }, [onClear])
+
+  return {
+    sel,
+    setSel,
+    containerRef,
+    handleMouseDown,
+    handleMouseEnter,
+    handleMouseLeave,
+    handleMouseUp,
+    handleKeyExpand,
+    isCellSelected,
+    clear,
+    rect: selectionRect(sel),
+    // 셀 경계를 넘긴 promote 가 일어난 시점부터 mouseup 까지만 true —
+    // 위젯 wrapper 가 select-none / cursor-cell 을 켜는 신호로 사용.
+    crossCellDragging,
+  }
+}
+
+/**
+ * 열 삽입 / 삭제 — shiftMergesForRow 와 같은 패턴의 c 축 버전.
+ */
+export function shiftMergesForCol(merges, action, at, prevRowCount, prevColCount) {
+  if (!Array.isArray(merges) || merges.length === 0) return []
+  const shifted = []
+  for (const m of merges) {
+    if (!m) continue
+    const r = m.r
+    const c = m.c
+    const rs = m.rs
+    const cs = m.cs
+    if (action === 'insert') {
+      if (c >= at) {
+        shifted.push({ r, c: c + 1, rs, cs })
+      } else if (c + cs > at) {
+        shifted.push({ r, c, rs, cs: cs + 1 })
+      } else {
+        shifted.push({ r, c, rs, cs })
+      }
+    } else {
+      if (c > at) {
+        shifted.push({ r, c: c - 1, rs, cs })
+      } else if (c === at) {
+        if (cs > 1) shifted.push({ r, c, rs, cs: cs - 1 })
+      } else if (c + cs > at) {
+        shifted.push({ r, c, rs, cs: cs - 1 })
+      } else {
+        shifted.push({ r, c, rs, cs })
+      }
+    }
+  }
+  const nextColCount = action === 'insert' ? prevColCount + 1 : prevColCount - 1
+  return normalizeMerges(shifted, prevRowCount, Math.max(0, nextColCount))
 }

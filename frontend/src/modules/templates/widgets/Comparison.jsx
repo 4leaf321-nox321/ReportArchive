@@ -21,18 +21,23 @@ import { cn } from '@/shared/lib/utils'
 import {
   AutoGrowTextarea,
   CaptionInput,
+  computeMergeMap,
   DEFAULT_BODY_FONT_PX,
   EditorOptionBar,
   EditorOptionNumber,
   EditorOptionToggle,
   LabelField,
+  normalizeMerges,
   PreviewLabel,
+  shiftMergesForCol,
+  shiftMergesForRow,
   TextStyleField,
   captionSkipProps,
   effectiveBool,
   effectiveNumber,
   pruneOverrideKeys,
   textStyleToClassName,
+  useCellSelection,
   textStyleToInlineStyle,
   useGridNavigation,
 } from './_shared'
@@ -385,6 +390,14 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       ? props.cases
       : []
   const rows = Array.isArray(content?.rows) ? content.rows : []
+  // 셀 병합 side-table. 비교표 좌표계:
+  //   c = 0      → 행 라벨 컬럼
+  //   c = 1..M   → case 컬럼 (cases[c-1])
+  // 행 라벨 ↔ case 구역 cross-zone 병합은 정규화 단계에서 자동 dissolve.
+  // 빈 배열/없음이면 기존 렌더와 100% 동일.
+  const merges = Array.isArray(content?.merges) ? content.merges : []
+  const totalColCount = cases.length + 1 // row label + each case
+  const mergeMap = computeMergeMap(merges, rows.length, totalColCount)
   const textClass = textStyleToClassName(props.text_style)
   const textStyle = textStyleToInlineStyle(props.text_style)
   // Layout knobs — content (per-report) wins over props (template);
@@ -613,10 +626,21 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       const { [removedKey]: _drop, ...keep } = columnWidths
       nextColumnWidths = keep
     }
+    // 비교표 좌표계에서 case[idx] 는 c=idx+1 자리. merges 의 c 축
+    // shift 도 그 위치로 호출 — 총 컬럼 수는 cases.length+1.
+    const totalCol = cases.length + 1
+    const nextMerges = shiftMergesForCol(
+      merges,
+      'remove',
+      idx + 1,
+      rows.length,
+      totalCol,
+    )
     patch({
       cases: nextCases,
       rows: nextRows,
       column_widths: nextColumnWidths,
+      ...(merges.length || nextMerges.length ? { merges: nextMerges } : {}),
     })
   }
   function moveCase(idx, dir) {
@@ -639,7 +663,20 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     })
   }
   function removeRow(idx) {
-    patch({ rows: rows.filter((_, i) => i !== idx) })
+    // 비교표는 c=0 (행 라벨) + c=1..M (cases) 라 총 컬럼 수 = cases.length+1.
+    // merges 의 r 축 재배치는 totalCol 과 무관한 row 차원의 일이라 그대로 호출.
+    const totalCol = cases.length + 1
+    const nextMerges = shiftMergesForRow(
+      merges,
+      'remove',
+      idx,
+      rows.length,
+      totalCol,
+    )
+    patch({
+      rows: rows.filter((_, i) => i !== idx),
+      ...(merges.length || nextMerges.length ? { merges: nextMerges } : {}),
+    })
   }
   function moveRow(idx, dir) {
     const newIdx = idx + dir
@@ -647,7 +684,20 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     const next = [...rows]
     const [item] = next.splice(idx, 1)
     next.splice(newIdx, 0, item)
-    patch({ rows: next })
+    // 두 행만 r 좌표 swap. multi-row anchor 가 둘에 걸치면 단순 swap 으로
+    // 의미가 깨질 수 있어 normalizeMerges 가 마지막 검증.
+    const totalCol = cases.length + 1
+    const swapped = (merges ?? []).map((m) => {
+      if (m.r === idx) return { ...m, r: newIdx }
+      if (m.r === newIdx) return { ...m, r: idx }
+      return m
+    })
+    patch({
+      rows: next,
+      ...(merges.length || swapped.length
+        ? { merges: normalizeMerges(swapped, rows.length, totalCol) }
+        : {}),
+    })
   }
   function setCellText(rowIdx, caseKey, text) {
     patch({
@@ -671,6 +721,62 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       }),
     })
   }
+
+  // ─── 셀 병합 / 분할 ──────────────────────────────────────────────
+  // 비교표 좌표계: c=0 → 행 라벨 컬럼, c=1..M → cases[c-1]. 행 라벨
+  // 컬럼과 case 구역을 가로지르는 cross-zone 병합은 시각적으로
+  // 의미가 모호하므로 차단 — selection 범위가 그 경계를 넘으면 합치기
+  // 버튼이 비활성화된다. 합치기 후엔 normalizeMerges 가 다시 한번
+  // grid clamp / overlap dissolve / 1×1 drop 까지 보정.
+  const selection = useCellSelection({
+    rowCount: rows.length,
+    colCount: cases.length + 1,
+  })
+  function mergeSelection() {
+    const r = selection.rect
+    if (!r) return
+    const rs = r.r2 - r.r1 + 1
+    const cs = r.c2 - r.c1 + 1
+    if (rs === 1 && cs === 1) return
+    const nextMerges = normalizeMerges(
+      [...(merges ?? []), { r: r.r1, c: r.c1, rs, cs }],
+      rows.length,
+      cases.length + 1,
+    )
+    patch({ merges: nextMerges })
+    selection.clear()
+  }
+  function unmergeSelection() {
+    const r = selection.rect
+    if (!r) return
+    const kept = (merges ?? []).filter((m) => {
+      const last_r = m.r + m.rs - 1
+      const last_c = m.c + m.cs - 1
+      return !(m.r <= r.r2 && last_r >= r.r1 && m.c <= r.c2 && last_c >= r.c1)
+    })
+    patch({
+      merges: normalizeMerges(kept, rows.length, cases.length + 1),
+    })
+    selection.clear()
+  }
+  const selectionRect_ = selection.rect
+  const selectionCrossesZone =
+    selectionRect_ != null &&
+    selectionRect_.c1 === 0 &&
+    selectionRect_.c2 >= 1
+  const selectionHasMerge = (() => {
+    const r = selectionRect_
+    if (!r) return false
+    return (merges ?? []).some((m) => {
+      const last_r = m.r + m.rs - 1
+      const last_c = m.c + m.cs - 1
+      return m.r <= r.r2 && last_r >= r.r1 && m.c <= r.c2 && last_c >= r.c1
+    })
+  })()
+  const selectionSpansMultiple =
+    !!selectionRect_ &&
+    (selectionRect_.r2 > selectionRect_.r1 ||
+      selectionRect_.c2 > selectionRect_.c1)
 
   // ─── Read-only render ────────────────────────────────────────────────
   if (readOnly) {
@@ -719,29 +825,49 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, ri) => (
-                  <tr key={ri} className="border-b last:border-b-0">
-                    <td className="px-2 py-1.5 text-xs font-medium border-r bg-muted/20 align-top whitespace-pre-wrap break-words">
-                      {row.label || (
-                        <span className="text-muted-foreground italic">
-                          (이름 없음)
-                        </span>
+                {rows.map((row, ri) => {
+                  // 좌표 c=0 → 행 라벨, c=1..M → cases[c-1]. covered 셀
+                  // 출력 skip + anchor 에만 rowSpan/colSpan.
+                  const labelKey = `${ri},0`
+                  const labelCovered = mergeMap.covered.has(labelKey)
+                  const labelSpan = mergeMap.anchors.get(labelKey)
+                  return (
+                    <tr key={ri} className="border-b last:border-b-0">
+                      {!labelCovered && (
+                        <td
+                          {...(labelSpan?.rs > 1 ? { rowSpan: labelSpan.rs } : {})}
+                          {...(labelSpan?.cs > 1 ? { colSpan: labelSpan.cs } : {})}
+                          className="px-2 py-1.5 text-xs font-medium border-r bg-muted/20 align-top whitespace-pre-wrap break-words"
+                        >
+                          {row.label || (
+                            <span className="text-muted-foreground italic">
+                              (이름 없음)
+                            </span>
+                          )}
+                        </td>
                       )}
-                    </td>
-                    {cases.map((c, ci) => (
-                      <td
-                        key={ci}
-                        className="px-2 py-1.5 align-top"
-                      >
-                        <ReadOnlyCell
-                          row={row}
-                          caseKey={c.key}
-                          imageMaxHeightPx={imageMaxHeightPx}
-                        />
-                      </td>
-                    ))}
-                  </tr>
-                ))}
+                      {cases.map((c, ci) => {
+                        const coord = `${ri},${ci + 1}`
+                        if (mergeMap.covered.has(coord)) return null
+                        const span = mergeMap.anchors.get(coord)
+                        return (
+                          <td
+                            key={ci}
+                            {...(span?.rs > 1 ? { rowSpan: span.rs } : {})}
+                            {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
+                            className="px-2 py-1.5 align-top"
+                          >
+                            <ReadOnlyCell
+                              row={row}
+                              caseKey={c.key}
+                              imageMaxHeightPx={imageMaxHeightPx}
+                            />
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -814,12 +940,68 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           </Button>
         </div>
       ) : (
+        <>
         <div
-          ref={grid.gridRef}
+          className="flex justify-end items-center gap-2"
+          // outside-click 핸들러가 액션 바 클릭으로 selection 을 지우지
+          // 못하게 면역 영역으로 표시.
+          data-cell-selection-allow
+        >
+          {/* 셀 병합 / 분할 액션 바 — 선택이 1셀 이상이고 의미있는
+              범위일 때만 표시. cross-zone (행 라벨 ↔ case) 선택은
+              비활성. */}
+          {(selectionSpansMultiple || selectionHasMerge) && (
+            <div className="flex items-center gap-1 rounded-md border bg-muted/40 px-1.5 py-0.5">
+              {selectionHasMerge && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={unmergeSelection}
+                  className="h-6 px-2 text-[11px]"
+                  title="선택한 영역의 셀 병합을 해제"
+                >
+                  셀 분할
+                </Button>
+              )}
+              {!selectionHasMerge && selectionSpansMultiple && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={mergeSelection}
+                  className="h-6 px-2 text-[11px]"
+                  disabled={selectionCrossesZone}
+                  title={
+                    selectionCrossesZone
+                      ? '행 라벨 컬럼과 CASE 컬럼은 같이 합칠 수 없습니다.'
+                      : '선택한 사각형을 한 셀로 합치기'
+                  }
+                >
+                  셀 합치기
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={selection.clear}
+                className="h-6 px-1.5 text-[11px] text-muted-foreground"
+                title="선택 해제"
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            </div>
+          )}
+        </div>
+        <div
+          ref={(el) => {
+            grid.gridRef.current = el
+            selection.containerRef.current = el
+          }}
           className={cn(
             'rounded-md border',
             horizontalScroll ? 'overflow-x-auto' : 'overflow-x-hidden',
+            selection.crossCellDragging && 'select-none cursor-cell',
           )}
+          onMouseUp={selection.handleMouseUp}
         >
           <table
             className={cn(
@@ -935,79 +1117,128 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row, ri) => (
-                <tr key={row.key ?? ri} className="border-b last:border-b-0 group">
-                  <td className="px-1 py-1 align-top border-r bg-muted/10">
-                    <div className="flex items-start gap-0.5">
-                      <span
-                        className="mt-1 text-muted-foreground shrink-0"
-                        title={row.kind === 'image' ? '이미지 행' : '텍스트 행'}
-                      >
-                        {row.kind === 'image' ? (
-                          <ImageIcon className="h-3 w-3" />
-                        ) : (
-                          <TypeIcon className="h-3 w-3" />
+              {rows.map((row, ri) => {
+                // 편집모드에서도 covered 셀은 skip + anchor 에만 span attr.
+                // 좌표: c=0 → 행 라벨, c=1..M → cases[c-1].
+                const labelKey = `${ri},0`
+                const labelCovered = mergeMap.covered.has(labelKey)
+                const labelSpan = mergeMap.anchors.get(labelKey)
+                return (
+                  <tr key={row.key ?? ri} className="border-b last:border-b-0 group">
+                    {!labelCovered && (
+                      <td
+                        data-cell-coord={`${ri},0`}
+                        // 일반 클릭은 input focus 그대로. 드래그가 셀
+                        // 경계를 넘으면 hook 이 promote 해 multi-cell 전환.
+                        onMouseDown={(e) =>
+                          selection.handleMouseDown(e, ri, 0)
+                        }
+                        onMouseEnter={() => selection.handleMouseEnter(ri, 0)}
+                        onMouseLeave={() => selection.handleMouseLeave(ri, 0)}
+                        {...(labelSpan?.rs > 1 ? { rowSpan: labelSpan.rs } : {})}
+                        {...(labelSpan?.cs > 1 ? { colSpan: labelSpan.cs } : {})}
+                        className={cn(
+                          'px-1 py-1 align-top border-r bg-muted/10',
+                          selection.isCellSelected(ri, 0) &&
+                            'bg-primary/10 ring-1 ring-primary/40',
                         )}
-                      </span>
-                      <AutoGrowTextarea
-                        value={row.label ?? ''}
-                        onChange={(v) => updateRow(ri, { label: v })}
-                        onKeyDown={(e) => grid.handleKey(e, ri, 0)}
-                        data-grid-cell={`${ri}:0`}
-                        placeholder="행 이름"
-                        className="flex-1 min-w-0 resize-none rounded-md border border-input bg-background px-2 py-0.5 text-xs leading-snug focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring whitespace-pre-wrap break-words"
-                      />
-                      <div className="flex flex-col">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-5 w-5 opacity-0 group-hover:opacity-100"
-                          disabled={ri === 0}
-                          onClick={() => moveRow(ri, -1)}
-                        >
-                          <ChevronUp className="h-3 w-3" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-5 w-5 opacity-0 group-hover:opacity-100"
-                          disabled={ri === rows.length - 1}
-                          onClick={() => moveRow(ri, 1)}
-                        >
-                          <ChevronDown className="h-3 w-3" />
-                        </Button>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-5 w-5 opacity-0 group-hover:opacity-100 text-destructive"
-                        onClick={() => removeRow(ri)}
-                        title="행 삭제"
                       >
-                        <X className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  </td>
-                  {cases.map((c, ci) => (
-                    <td key={ci} className="px-1 py-1 align-top">
-                      {row.kind === 'image' ? (
-                        <ImageCellEditor
-                          value={row.values?.[c.key]}
-                          onChange={(v) => setCellImage(ri, c.key, v)}
-                          maxHeightPx={imageMaxHeightPx}
-                        />
-                      ) : (
-                        <TextCellEditor
-                          value={row.values?.[c.key]}
-                          onChange={(v) => setCellText(ri, c.key, v)}
-                          onKeyDown={(e) => grid.handleKey(e, ri, ci + 1)}
-                          gridCellKey={`${ri}:${ci + 1}`}
-                        />
-                      )}
-                    </td>
-                  ))}
-                </tr>
-              ))}
+                        <div className="flex items-start gap-0.5">
+                          <span
+                            className="mt-1 text-muted-foreground shrink-0"
+                            title={row.kind === 'image' ? '이미지 행' : '텍스트 행'}
+                          >
+                            {row.kind === 'image' ? (
+                              <ImageIcon className="h-3 w-3" />
+                            ) : (
+                              <TypeIcon className="h-3 w-3" />
+                            )}
+                          </span>
+                          <AutoGrowTextarea
+                            value={row.label ?? ''}
+                            onChange={(v) => updateRow(ri, { label: v })}
+                            onKeyDown={(e) => grid.handleKey(e, ri, 0)}
+                            data-grid-cell={`${ri}:0`}
+                            placeholder="행 이름"
+                            className="flex-1 min-w-0 resize-none rounded-md border border-input bg-background px-2 py-0.5 text-xs leading-snug focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring whitespace-pre-wrap break-words"
+                          />
+                          <div className="flex flex-col">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-5 w-5 opacity-0 group-hover:opacity-100"
+                              disabled={ri === 0}
+                              onClick={() => moveRow(ri, -1)}
+                            >
+                              <ChevronUp className="h-3 w-3" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-5 w-5 opacity-0 group-hover:opacity-100"
+                              disabled={ri === rows.length - 1}
+                              onClick={() => moveRow(ri, 1)}
+                            >
+                              <ChevronDown className="h-3 w-3" />
+                            </Button>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-5 w-5 opacity-0 group-hover:opacity-100 text-destructive"
+                            onClick={() => removeRow(ri)}
+                            title="행 삭제"
+                          >
+                            <X className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </td>
+                    )}
+                    {cases.map((c, ci) => {
+                      const coord = `${ri},${ci + 1}`
+                      if (mergeMap.covered.has(coord)) return null
+                      const span = mergeMap.anchors.get(coord)
+                      const selected = selection.isCellSelected(ri, ci + 1)
+                      return (
+                        <td
+                          key={ci}
+                          data-cell-coord={`${ri},${ci + 1}`}
+                          onMouseDown={(e) =>
+                            selection.handleMouseDown(e, ri, ci + 1)
+                          }
+                          onMouseEnter={() =>
+                            selection.handleMouseEnter(ri, ci + 1)
+                          }
+                          onMouseLeave={() =>
+                            selection.handleMouseLeave(ri, ci + 1)
+                          }
+                          {...(span?.rs > 1 ? { rowSpan: span.rs } : {})}
+                          {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
+                          className={cn(
+                            'px-1 py-1 align-top',
+                            selected && 'bg-primary/10 ring-1 ring-primary/40',
+                          )}
+                        >
+                          {row.kind === 'image' ? (
+                            <ImageCellEditor
+                              value={row.values?.[c.key]}
+                              onChange={(v) => setCellImage(ri, c.key, v)}
+                              maxHeightPx={imageMaxHeightPx}
+                            />
+                          ) : (
+                            <TextCellEditor
+                              value={row.values?.[c.key]}
+                              onChange={(v) => setCellText(ri, c.key, v)}
+                              onKeyDown={(e) => grid.handleKey(e, ri, ci + 1)}
+                              gridCellKey={`${ri}:${ci + 1}`}
+                            />
+                          )}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                )
+              })}
               {rows.length === 0 && (
                 <tr>
                   <td
@@ -1022,6 +1253,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
             </tbody>
           </table>
         </div>
+        </>
       )}
       <div className="flex items-center gap-2 flex-wrap">
         <Button

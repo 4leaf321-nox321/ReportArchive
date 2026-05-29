@@ -26,7 +26,12 @@ def main() -> None:
     env = os.environ.get("APP_ENV", "development")
     host = os.environ.get("APP_HOST", "0.0.0.0")
     port = int(os.environ.get("APP_PORT", "3000"))
-    workers = int(os.environ.get("UVICORN_WORKERS", "4"))
+    # 워커 수는 관리자-서버 UI 에서 DB 행으로 저장 가능 — 그쪽이 있으면
+    # 우선, 없으면 env 의 UVICORN_WORKERS, 마지막은 4. runtime_tuning
+    # 모듈이 모두 fallback 하므로 단일 호출로 충분.
+    from app.shared.runtime_tuning import get_int
+
+    workers = get_int("uvicorn_workers")
 
     banner = f"""
     ================================================================

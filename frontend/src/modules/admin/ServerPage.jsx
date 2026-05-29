@@ -1,6 +1,18 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { HardDrive, RefreshCw } from 'lucide-react'
+import {
+  AlertTriangle,
+  Cpu,
+  Database,
+  HardDrive,
+  MemoryStick,
+  RefreshCw,
+  Server,
+  Sliders,
+} from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
+import { Input } from '@/shared/components/ui/input'
 import {
   Card,
   CardContent,
@@ -13,7 +25,12 @@ import { ErrorState } from '@/shared/components/ErrorState'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useAsync } from '@/shared/hooks/useAsync'
-import { getStorageStats } from '@/shared/api/admin'
+import {
+  getRuntimeTuning,
+  getServerInfo,
+  getStorageStats,
+  setRuntimeTuning,
+} from '@/shared/api/admin'
 
 /** Server / storage admin page — sibling of /admin in the sidebar.
  *
@@ -52,11 +69,403 @@ export default function ServerPage() {
     <div className="p-6 space-y-6 max-w-5xl">
       <PageHeader
         title="서버"
-        description="업로드 디스크 잔여 용량 + 앱 footprint. 잔여가 안전 마진 이하로 떨어지면 업로드는 자동으로 거부됩니다."
+        description="호스트 스펙 · 업로드 디스크 잔여 용량 · 앱 footprint. 잔여 용량이 안전 마진 이하로 떨어지면 업로드는 자동 거부됩니다."
       />
+      <SpecSection />
+      <TuningSection />
       <StorageSection />
     </div>
   )
+}
+
+/** 동시 처리량 / DB 풀 등 다음 부팅 시 적용될 값을 편집. 실시간 hot-reload
+ *  가 아니라 운영자가 systemctl restart 후 워커가 새 값을 읽음 — 그래서
+ *  각 키마다 "저장된 값 ≠ 실행 중 값" 일 땐 「재시작 필요」 배지를 띄움. */
+function TuningSection() {
+  const { data, loading, error, reload } = useAsync(() => getRuntimeTuning(), [])
+  if (loading) return <Skeleton className="h-72 w-full" />
+  if (error) return <ErrorState description={error.message} onRetry={reload} />
+  if (!data) return null
+
+  const migrationRequired = data.__meta__?.migration_required === true
+  const rows = { ...data }
+  delete rows.__meta__
+  const anyRestart = Object.values(rows).some((row) => row.restart_required)
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Sliders className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">동시 처리량 튜닝</CardTitle>
+          </div>
+          {anyRestart && (
+            <span className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800">
+              <AlertTriangle className="h-3 w-3" />
+              재시작 필요
+            </span>
+          )}
+        </div>
+        <CardDescription>
+          여기서 바꾼 값은 <strong>다음 워커 부팅</strong>부터 반영됩니다.
+          서비스를 운영자 권한으로 재시작해야 적용 — SIF/systemd 환경에선{' '}
+          <code className="font-mono text-[11px]">sudo systemctl restart reportarchive</code>
+          {' '}또는 동등한 절차.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {migrationRequired && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 flex items-start gap-2">
+            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <div className="space-y-1">
+              <div>
+                <strong>runtime_settings 테이블이 아직 없습니다.</strong> 백엔드에서{' '}
+                <code className="font-mono">alembic upgrade head</code> 를 실행해
+                마이그레이션을 적용한 뒤 이 페이지를 새로고침하세요. (현재는
+                실행 중 effective 값만 표시됩니다.)
+              </div>
+            </div>
+          </div>
+        )}
+        <TuningRow
+          k="uvicorn_workers"
+          row={rows.uvicorn_workers}
+          label="uvicorn workers"
+          hint="동시에 처리되는 worker 프로세스 수. 보통 CPU 코어의 1–2배. 늘릴수록 동시 요청을 더 받지만 메모리·DB 커넥션도 비례해서 늘어남."
+          onSaved={reload}
+        />
+        <TuningRow
+          k="db_pool_size"
+          row={rows.db_pool_size}
+          label="DB pool_size (worker 당)"
+          hint="SQLAlchemy 가 상시 보유하는 connection 수. 평상시 동시 in-flight 쿼리 수를 받는다."
+          onSaved={reload}
+        />
+        <TuningRow
+          k="db_max_overflow"
+          row={rows.db_max_overflow}
+          label="DB max_overflow (worker 당)"
+          hint="peak 때만 일시적으로 열리는 추가 connection 한도. 워커당 최대 DB 연결 = pool_size + max_overflow."
+          onSaved={reload}
+        />
+        <div className="rounded-md border border-muted bg-muted/30 p-3 text-[11px] text-muted-foreground space-y-1">
+          <div>
+            <strong>주의:</strong> 총 DB connection = workers × (pool_size + max_overflow).
+            예: 8 × (10 + 10) = 160 — PostgreSQL{' '}
+            <code className="font-mono">max_connections</code> 기본 100 을 넘기지
+            않도록 주의.
+          </div>
+          <div>
+            <code className="font-mono">max_connections</code> 변경은 앱 권한
+            밖이라 운영자가 <code className="font-mono">postgresql.conf</code>{' '}
+            에서 별도로 조정해야 합니다.
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function TuningRow({ k, row, label, hint, onSaved }) {
+  const limits = row?.limits ?? { min: 1, max: 32 }
+  const initial = row?.stored ?? row?.effective ?? limits.min
+  const [draft, setDraft] = useState(initial)
+  const [saving, setSaving] = useState(false)
+  const draftNum = Number(draft)
+  const valid =
+    Number.isFinite(draftNum) &&
+    Number.isInteger(draftNum) &&
+    draftNum >= limits.min &&
+    draftNum <= limits.max
+  const stored = row?.stored
+  const effective = row?.effective
+  const dirty = valid && draftNum !== (stored ?? effective)
+
+  async function handleSave() {
+    if (!valid || !dirty) return
+    setSaving(true)
+    try {
+      await setRuntimeTuning(k, draftNum)
+      toast.success(`${label} 저장됨 — 재시작 후 적용`)
+      onSaved?.()
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err?.message || '저장 실패',
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="rounded-md border p-3 space-y-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="space-y-0.5">
+          <div className="text-sm font-medium">{label}</div>
+          <div className="text-[11px] text-muted-foreground">{hint}</div>
+        </div>
+        {row?.restart_required && (
+          <span className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-800 shrink-0">
+            <AlertTriangle className="h-2.5 w-2.5" />
+            재시작 필요
+          </span>
+        )}
+      </div>
+      <div className="flex items-end gap-3 flex-wrap">
+        <label className="flex flex-col gap-1">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            저장값
+          </span>
+          <Input
+            type="number"
+            min={limits.min}
+            max={limits.max}
+            step={1}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            className="h-8 w-24 text-sm font-mono"
+          />
+        </label>
+        <div className="text-[11px] text-muted-foreground space-y-0.5">
+          <div>
+            범위 <span className="font-mono">{limits.min}–{limits.max}</span>
+          </div>
+          <div>
+            실행 중{' '}
+            <span className="font-mono tabular-nums">
+              {effective ?? '—'}
+            </span>
+            {stored != null && stored !== effective && (
+              <>
+                {' '}· 저장됨{' '}
+                <span className="font-mono tabular-nums">{stored}</span>
+              </>
+            )}
+          </div>
+        </div>
+        <Button
+          size="sm"
+          variant={dirty ? 'default' : 'outline'}
+          disabled={!valid || !dirty || saving}
+          onClick={handleSave}
+          className="ml-auto"
+        >
+          {saving ? '저장 중...' : '저장'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/** 호스트 스펙 카드 — OS / CPU / 메모리 / 런타임 / DB 현재 상태. */
+function SpecSection() {
+  const { data, loading, error, reload } = useAsync(() => getServerInfo(), [])
+
+  if (loading) return <Skeleton className="h-72 w-full" />
+  if (error) return <ErrorState description={error.message} onRetry={reload} />
+  if (!data) return null
+
+  const { host, cpu, memory, process: proc, runtime, database } = data
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Server className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">서버 스펙</CardTitle>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => reload()}
+            className="h-7 text-xs"
+          >
+            <RefreshCw className="mr-1 h-3 w-3" />
+            새로고침
+          </Button>
+        </div>
+        <CardDescription>
+          이 ReportArchive 가 돌고 있는 호스트의 OS · CPU · 메모리 와
+          uvicorn worker 수, DB connection pool 사용량. 동시접속 가능
+          인원은 이 표 + 워커 수가 큰 결정 요인입니다.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        {/* CPU + load average */}
+        <div className="space-y-2">
+          <SectionLabel icon={Cpu} text="CPU" />
+          <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm font-mono break-all">
+            {cpu.model}
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
+            <Stat label="논리 CPU" value={`${cpu.logical_cpus} 개`} />
+            <Stat
+              label="물리 소켓"
+              value={cpu.physical_sockets ? `${cpu.physical_sockets} 개` : '—'}
+            />
+            <Stat
+              label="Load (1m)"
+              value={cpu.load_avg_1m.toFixed(2)}
+              tone={
+                cpu.logical_cpus && cpu.load_avg_1m > cpu.logical_cpus * 0.85
+                  ? 'danger'
+                  : 'normal'
+              }
+            />
+            <Stat
+              label="Load (5m / 15m)"
+              value={`${cpu.load_avg_5m.toFixed(2)} / ${cpu.load_avg_15m.toFixed(2)}`}
+            />
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Load average 가 논리 CPU 수에 가깝거나 넘어가면 새 요청이 대기
+            큐에 쌓입니다 (= 응답 지연 시작).
+          </p>
+        </div>
+
+        {/* Memory */}
+        <div className="space-y-2">
+          <SectionLabel icon={MemoryStick} text="메모리" />
+          <UsageBar
+            percent={memory.percent_used}
+            label={`${formatBytes(memory.used_bytes)} / ${formatBytes(memory.total_bytes)} 사용`}
+          />
+          <div className="grid grid-cols-3 gap-2 text-sm">
+            <Stat label="총 메모리" value={formatBytes(memory.total_bytes)} />
+            <Stat
+              label="사용 가능"
+              value={formatBytes(memory.available_bytes)}
+              tone={
+                memory.total_bytes &&
+                memory.available_bytes < memory.total_bytes * 0.1
+                  ? 'danger'
+                  : 'normal'
+              }
+            />
+            <Stat
+              label="이 워커 RSS"
+              value={formatBytes(proc.rss_bytes)}
+            />
+          </div>
+        </div>
+
+        {/* 호스트 / 런타임 */}
+        <div className="space-y-2">
+          <SectionLabel icon={Server} text="호스트 / 런타임" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+            <KeyValue label="호스트네임" value={host.hostname || '—'} mono />
+            <KeyValue label="OS" value={host.os || '—'} />
+            <KeyValue label="아키텍처" value={host.arch || '—'} mono />
+            <KeyValue
+              label="가동 시간"
+              value={formatUptime(host.uptime_seconds)}
+            />
+            <KeyValue
+              label="uvicorn workers"
+              value={`${runtime.uvicorn_workers} 개`}
+            />
+            <KeyValue
+              label="Python"
+              value={proc.python_version}
+              mono
+            />
+            <KeyValue label="환경" value={runtime.app_env} mono />
+            <KeyValue
+              label="정적 자산 서빙"
+              value={runtime.serve_frontend_dist ? 'FastAPI 직접' : 'nginx 등 외부'}
+            />
+          </div>
+        </div>
+
+        {/* DB */}
+        <div className="space-y-2">
+          <SectionLabel icon={Database} text="PostgreSQL" />
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
+            <KeyValue label="버전" value={database.version} mono />
+            <Stat
+              label="Pool 보유"
+              value={
+                Number.isFinite(database.pool?.size)
+                  ? `${database.pool.size}`
+                  : '—'
+              }
+            />
+            <Stat
+              label="사용 중"
+              value={
+                Number.isFinite(database.pool?.checkedout)
+                  ? `${database.pool.checkedout}`
+                  : '—'
+              }
+              tone={
+                Number.isFinite(database.pool?.checkedout) &&
+                Number.isFinite(database.pool?.size) &&
+                database.pool.size > 0 &&
+                database.pool.checkedout / database.pool.size > 0.8
+                  ? 'danger'
+                  : 'normal'
+              }
+            />
+            <Stat
+              label="Overflow"
+              value={
+                Number.isFinite(database.pool?.overflow)
+                  ? `${database.pool.overflow}`
+                  : '—'
+              }
+            />
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Worker 당 SQLAlchemy pool. 「사용 중」 이 「Pool 보유」 + overflow
+            합계에 자주 도달하면 connection 부족으로 요청이 대기합니다.
+            (이 카드는 새로고침한 *그 워커* 의 풀만 보여줍니다 — 워커가
+            여러 개면 합계는 worker 수배.)
+          </p>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function SectionLabel({ icon: Icon, text }) {
+  return (
+    <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">
+      <Icon className="h-3 w-3" />
+      {text}
+    </div>
+  )
+}
+
+function KeyValue({ label, value, mono = false }) {
+  return (
+    <div className="rounded-md border p-2">
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+        {label}
+      </div>
+      <div
+        className={
+          'mt-0.5 text-sm break-all ' + (mono ? 'font-mono' : 'font-medium')
+        }
+      >
+        {value}
+      </div>
+    </div>
+  )
+}
+
+/** 초 단위 가동시간을 "Nd Nh Nm" 식으로. 0 이면 — 표시. */
+function formatUptime(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '—'
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const parts = []
+  if (days > 0) parts.push(`${days}일`)
+  if (hours > 0) parts.push(`${hours}시간`)
+  if (days === 0) parts.push(`${minutes}분`)
+  return parts.join(' ')
 }
 
 function StorageSection() {

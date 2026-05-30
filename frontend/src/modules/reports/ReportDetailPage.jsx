@@ -34,6 +34,7 @@ import {
   LockOpen,
   Maximize2,
   Minimize2,
+  Network,
   Pencil,
   Plus,
   Rows,
@@ -98,6 +99,12 @@ import {
   ReportSettingsDialog,
 } from './ReportSettingsDialog'
 import { ReportTypePicker } from './ReportTypePicker'
+import {
+  LinkedReportsChip,
+  ReportLinksSection,
+  useReportLinks,
+} from './ReportLinks'
+import { ReportGraphModal } from './ReportGraphModal'
 import { SlideGuideOverlay } from './SlideGuideOverlay'
 import {
   getTemplateVersion,
@@ -170,6 +177,8 @@ export default function ReportDetailPage() {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [copyOpen, setCopyOpen] = useState(false)
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
+  // 보고서 관계도 모달 (지식그래프 Phase 1a). 저장된 보고서일 때만 의미.
+  const [graphOpen, setGraphOpen] = useState(false)
   const [mountOpen, setMountOpen] = useState(false)
   const [editorsOpen, setEditorsOpen] = useState(false)
   // Mounts state declared here, the fetching useEffect lives further
@@ -264,6 +273,12 @@ export default function ReportDetailPage() {
     () => (!isNew && reportId && slug ? getReport(reportId) : Promise.resolve(null)),
     [isNew, reportId, slug]
   )
+
+  // 보고서 간 link (참조 / 후속 …). 칩과 본문 하단 섹션 양쪽에서 같은
+  // 데이터를 봐야 하므로 페이지 레벨에서 hook 을 한 번만 호출하고 결과를
+  // 둘 다에게 prop 으로 흘려준다. existingReport.id 가 없으면 (새 보고서
+  // 작성 단계) hook 은 빈 배열 반환 + 추가 폼도 비활성.
+  const linkedReports = useReportLinks(existingReport?.id)
 
   // Mounts of this report, fetched lazily — used in org workspace to
   // surface the per-board folder placement in the toolbar. Keyed by
@@ -3008,6 +3023,21 @@ export default function ReportDetailPage() {
               AI 프롬프트 + 로컬 파일 입출력. 편집/뷰 모드와 무관하게 항상
               노출 (편집 중에도 AI 도움이나 로컬 백업이 필요할 수 있음). */}
 
+          {/* 관계도 — 이 보고서를 중심으로 연결된 보고서들의 그래프.
+              저장된 보고서(existingReport.id)일 때만 의미가 있어 새 보고서
+              작성 중엔 숨김. */}
+          {existingReport?.id != null && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setGraphOpen(true)}
+              title="연결된 보고서 관계도 보기"
+            >
+              <Network className="mr-1 h-3 w-3" />
+              관계도
+            </Button>
+          )}
+
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -3095,6 +3125,9 @@ export default function ReportDetailPage() {
               setDraft={setDraft}
               isEditing={effectiveIsEditing}
               tone="amber"
+              reportId={existingReport?.id}
+              linkedReports={linkedReports}
+              canEdit={existingReport?.can_edit}
             />
           </div>
         )}
@@ -3114,6 +3147,9 @@ export default function ReportDetailPage() {
               setDraft={setDraft}
               isEditing={effectiveIsEditing}
               tone="blue"
+              reportId={existingReport?.id}
+              linkedReports={linkedReports}
+              canEdit={existingReport?.can_edit}
             />
           </div>
         )}
@@ -3138,6 +3174,9 @@ export default function ReportDetailPage() {
               setDraft={setDraft}
               isEditing={effectiveIsEditing}
               tone="red"
+              reportId={existingReport?.id}
+              linkedReports={linkedReports}
+              canEdit={existingReport?.can_edit}
             />
           </div>
         )}
@@ -3149,6 +3188,7 @@ export default function ReportDetailPage() {
           draft={draft}
           setDraft={setDraft}
           isEditing={effectiveIsEditing}
+          linkedReports={linkedReports}
         />
 
         {/* Page strip — chips that select the active page (paginated mode).
@@ -3344,6 +3384,15 @@ export default function ReportDetailPage() {
                   />
                 )}
 
+            {/* 연결된 보고서 섹션 — link 가 0건이면 자체적으로 null 렌더라
+                기존 레이아웃을 흩뜨리지 않음. 본문 마지막 페이지 아래에 한
+                번만 노출 (paginated 든 all 이든 동일). export 에서도 보이게
+                두기 — 인쇄/HTML 본에 같이 따라가야 의미 있음. */}
+            <ReportLinksSection
+              links={linkedReports.links}
+              onRemove={linkedReports.removeLink}
+              editable={effectiveIsEditing && !!existingReport?.can_edit}
+            />
             {/* 편집 모드 전용 하단 여백 — 마지막 위젯 row_span 을 드래그로
                 늘릴 때 보고서 컨테이너가 같이 늘어나면서 페이지가 점프하던
                 불편함 해소. 50vh 확보해서 마지막 위젯의 핸들을 잡고 화면
@@ -3439,6 +3488,15 @@ export default function ReportDetailPage() {
         sourceTitle={draft?.title ?? ''}
         onConfirm={onCopy}
       />
+
+      {existingReport?.id != null && (
+        <ReportGraphModal
+          open={graphOpen}
+          onOpenChange={setGraphOpen}
+          reportId={existingReport.id}
+          reportTitle={draft?.title ?? existingReport.title}
+        />
+      )}
 
       <SaveAsTemplateDialog
         open={saveTemplateOpen}
@@ -5932,7 +5990,18 @@ function PageThumbnail({ src }) {
  *
  *  tone prop 은 amber CTA 상태일 때만 호스트 banner 색에 매칭. muted
  *  상태는 호스트와 무관한 중립 톤. */
-function ReportMetaChips({ draft, setDraft, isEditing, tone = 'amber' }) {
+function ReportMetaChips({
+  draft,
+  setDraft,
+  isEditing,
+  tone = 'amber',
+  // 페이지에서 lift 한 link 상태. 새 보고서 작성 단계 (reportId 없음) 면
+  // linkedReports.links 는 빈 배열이고 칩은 그냥 "0건" 표시 + 추가는 저장
+  // 후로 미뤄짐 (백엔드가 reportId 를 모르므로 폼 비활성).
+  reportId,
+  linkedReports,
+  canEdit,
+}) {
   if (!isEditing || !draft) return null
   const hasType = !!draft.report_type_id
   const hasEntities =
@@ -6019,6 +6088,19 @@ function ReportMetaChips({ draft, setDraft, isEditing, tone = 'amber' }) {
           />
         </PopoverContent>
       </Popover>
+      {/* 연결된 보고서 — 저장된 보고서 (reportId 있음) 일 때만 의미가 있다.
+          새 보고서 작성 중엔 link 를 걸 수 없으므로 칩 자체를 숨김. */}
+      {reportId != null && linkedReports && (
+        <LinkedReportsChip
+          reportId={reportId}
+          links={linkedReports.links}
+          loading={linkedReports.loading}
+          onAdd={linkedReports.addLink}
+          onRemove={linkedReports.removeLink}
+          editable={!!canEdit}
+          tone={tone}
+        />
+      )}
     </div>
   )
 }
@@ -6032,7 +6114,13 @@ function ReportMetaChips({ draft, setDraft, isEditing, tone = 'amber' }) {
  *
  *  finalized/reviewing/lock 같은 다른 banner 가 있으면 그쪽 우측에 chip
  *  이 이미 얹히므로 이 banner 는 중복 노출 안 함. */
-function DraftingMetaBanner({ existingReport, draft, setDraft, isEditing }) {
+function DraftingMetaBanner({
+  existingReport,
+  draft,
+  setDraft,
+  isEditing,
+  linkedReports,
+}) {
   if (!isEditing || !draft) return null
   const hasOtherBanner =
     existingReport?.phase === 'reviewing' ||
@@ -6066,6 +6154,9 @@ function DraftingMetaBanner({ existingReport, draft, setDraft, isEditing }) {
         setDraft={setDraft}
         isEditing={isEditing}
         tone="amber"
+        reportId={existingReport?.id}
+        linkedReports={linkedReports}
+        canEdit={existingReport?.can_edit}
       />
     </div>
   )

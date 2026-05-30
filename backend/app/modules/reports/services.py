@@ -1,17 +1,25 @@
 """Business logic for reports — workspace scoping + widget-v1 validation."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Iterable, Optional
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
+from app.modules.composites.models import CompositeReport, CompositeReportItem
 from app.modules.entities import services as entity_services
 from app.modules.entities.models import Entity, ReportEntity
 from app.modules.mounts.models import ReportMount
-from app.modules.reports.models import Report, ReportEditLock
+from app.modules.reports.models import (
+    Report,
+    ReportEditLock,
+    ReportLink,
+    ReportLinkKind,
+)
 from app.modules.reports.schemas import ReportCreate, ReportPage, ReportUpdate
+from app.modules.users.models import User
+from app.shared.link_kinds import is_valid_color
 from app.modules.templates import services as template_services
 from app.modules.workspaces import services as ws_services
 from app.modules.workspaces.models import Workspace, WorkspaceKind
@@ -666,4 +674,785 @@ def update_report(
 
 def delete_report(db: Session, report: Report) -> None:
     db.delete(report)
+    db.commit()
+
+
+# --------------------------------------------------------------------------- #
+# Report links — 보고서 간 의미 link                                          #
+# --------------------------------------------------------------------------- #
+
+
+class LinkError(Exception):
+    """Service-layer link error — route 레이어가 400/404/409 로 매핑."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def list_links_for_report(db: Session, report_id: int) -> list[ReportLink]:
+    """이 보고서의 outgoing + incoming link 를 한 번에 반환.
+
+    프론트는 ``direction`` 필드로 둘을 구분 — 같은 row 가 양쪽에 따로
+    나오는 게 아니라, 한 row 가 두 보고서 화면에서 각각 다른 라벨로
+    보이는 식이다 (단방향 저장).
+    """
+    outgoing = list(
+        db.execute(
+            select(ReportLink).where(ReportLink.from_report_id == report_id)
+        ).scalars()
+    )
+    incoming = list(
+        db.execute(
+            select(ReportLink).where(ReportLink.to_report_id == report_id)
+        ).scalars()
+    )
+    return outgoing + incoming
+
+
+def _kind_exists(db: Session, kind: str) -> bool:
+    return (
+        db.execute(
+            select(ReportLinkKind.key).where(ReportLinkKind.key == kind)
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
+def create_link(
+    db: Session,
+    *,
+    from_report_id: int,
+    to_report_id: int,
+    kind: str,
+    note: Optional[str],
+    created_by_user_id: int,
+) -> ReportLink:
+    if from_report_id == to_report_id:
+        raise LinkError("self_link", "보고서를 자기 자신과 연결할 수 없습니다.")
+    if not _kind_exists(db, kind):
+        raise LinkError("unknown_kind", f"알 수 없는 link 유형: {kind}")
+    target = db.get(Report, to_report_id)
+    if target is None:
+        raise LinkError("target_not_found", "연결 대상 보고서를 찾을 수 없습니다.")
+    # 중복 (from, to, kind) — UniqueConstraint 가 잡지만 친절한 메시지를 위해
+    # 미리 한 번 조회.
+    existing = db.execute(
+        select(ReportLink).where(
+            ReportLink.from_report_id == from_report_id,
+            ReportLink.to_report_id == to_report_id,
+            ReportLink.kind == kind,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise LinkError("duplicate", "이미 같은 종류로 연결되어 있습니다.")
+    link = ReportLink(
+        from_report_id=from_report_id,
+        to_report_id=to_report_id,
+        kind=kind,
+        note=(note or None),
+        created_by_user_id=created_by_user_id,
+    )
+    db.add(link)
+    db.commit()
+    db.refresh(link)
+    return link
+
+
+def delete_link(db: Session, link: ReportLink) -> None:
+    db.delete(link)
+    db.commit()
+
+
+def get_link(db: Session, link_id: int) -> Optional[ReportLink]:
+    return db.get(ReportLink, link_id)
+
+
+# --------------------------------------------------------------------------- #
+# Link graph — 보고서 관계도 (지식그래프 Phase 1a)                            #
+# --------------------------------------------------------------------------- #
+
+# 관계도 한 화면의 노드 상한 — Canvas force layout 이 부드럽게 도는 한계의
+# 한참 아래로 둔 backstop. 로컬 그래프는 보통 수~수십 노드라 거의 닿지 않음.
+# 닿으면 응답에 truncated=True 를 실어 프론트가 "더 좁히세요" 안내를 띄움.
+LINK_GRAPH_MAX_NODES = 300
+
+# 글로벌 관계도(Phase 1b) 노드 상한 — 넘으면 degree 높은 노드부터 잘라
+# truncated=True. 로컬보다 크게 잡되 Canvas force layout 한계 아래로.
+LINK_GRAPH_GLOBAL_LIMIT = 500
+
+
+def _report_node(r: Report, *, degree: int, is_center: bool = False) -> dict:
+    """Report ORM → 관계도 노드 dict. owner 는 lazy='joined' 라 따라온다."""
+    return {
+        "id": f"report:{r.id}",
+        "type": "report",
+        "report_id": r.id,
+        "title": r.title,
+        "owner_name": getattr(r.owner, "name", None) if r.owner else None,
+        "workspace_slug": r.workspace_slug,
+        "report_type_id": r.report_type_id,
+        "report_date": r.report_date,
+        "degree": degree,
+        "is_center": is_center,
+    }
+
+
+def _link_edge(lk: ReportLink) -> dict:
+    return {
+        "source": f"report:{lk.from_report_id}",
+        "target": f"report:{lk.to_report_id}",
+        "kind": lk.kind,
+    }
+
+
+def _entity_node(entity: Entity, *, degree: int) -> dict:
+    """Entity ORM → 관계도 entity 노드. entity_type 은 lazy='joined'."""
+    et = entity.entity_type
+    return {
+        "id": f"entity:{entity.id}",
+        "type": "entity",
+        "entity_id": entity.id,
+        "label": entity.value,
+        "axis": et.slug if et else None,
+        "axis_label": et.label if et else None,
+        "degree": degree,
+    }
+
+
+def _entity_layer(
+    db: Session,
+    report_ids: set[int],
+    *,
+    axes: Optional[set[str]] = None,
+    min_degree: int = 1,
+) -> tuple[list[dict], list[dict]]:
+    """주어진 보고서들에 달린 관련정보(entity) 레이어 — (노드, has_tag 엣지).
+
+    그래프에 이미 있는 report 들에만 entity 를 매단다 (새 보고서를 끌어오지
+    않는다 — 토글로 켜는 '레이어' 성격 유지). report → entity 엣지의 kind 는
+    고정 ``"has_tag"`` (프론트가 회색으로).
+
+    부품처럼 값이 많은 축은 1회성 태그가 잎사귀로 매달려 헤어볼이 되므로
+    두 가지로 거른다 (plan §2.1 개선):
+      - ``axes``      : 보여줄 축(entity_type.slug) 집합. None = 전체.
+      - ``min_degree``: *이 그래프 안에서* N개 이상 보고서가 공유한 태그만.
+                        2 면 "여러 보고서를 잇는 허브"만 남아 1회성 잡음 제거.
+    entity degree = 그래프 안에서 공유한 보고서 수 (허브일수록 큰 노드).
+    """
+    if not report_ids:
+        return [], []
+    rows = db.execute(
+        select(ReportEntity.report_id, ReportEntity.entity_id).where(
+            ReportEntity.report_id.in_(report_ids)
+        )
+    ).all()
+    if not rows:
+        return [], []
+    # entity 별로 (그래프 안에서) 공유한 보고서 목록 — degree = 길이.
+    reports_by_entity: dict[int, list[int]] = {}
+    for rid, eid in rows:
+        reports_by_entity.setdefault(eid, []).append(rid)
+    entities = list(
+        db.execute(select(Entity).where(Entity.id.in_(reports_by_entity))).scalars()
+    )
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    for e in entities:
+        if axes is not None:
+            slug = e.entity_type.slug if e.entity_type else None
+            if slug not in axes:
+                continue
+        rids = reports_by_entity.get(e.id, [])
+        if len(rids) < min_degree:
+            continue
+        nodes.append(_entity_node(e, degree=len(rids)))
+        for rid in rids:
+            edges.append(
+                {"source": f"report:{rid}", "target": f"entity:{e.id}", "kind": "has_tag"}
+            )
+    return nodes, edges
+
+
+def _composite_node(c: CompositeReport, *, degree: int) -> dict:
+    """CompositeReport ORM → 종합보고 hub 노드. owner 는 lazy='joined'."""
+    return {
+        "id": f"composite:{c.id}",
+        "type": "composite",
+        "composite_id": c.id,
+        "title": c.title,
+        "workspace_slug": c.workspace_slug,
+        "owner_name": getattr(c.owner, "name", None) if c.owner else None,
+        "composite_kind": c.kind.value if c.kind else None,
+        "degree": degree,
+    }
+
+
+def _composite_layer(
+    db: Session, report_ids: set[int]
+) -> tuple[list[dict], list[dict]]:
+    """주어진 보고서들을 안건으로 묶는 종합보고(composite) 레이어 — (노드,
+    composite_member 엣지). entity 레이어와 같은 성격: 그래프에 이미 있는
+    report 를 멤버로 가진 종합보고만 hub 노드로 띄우고, composite → member
+    report 엣지(kind="composite_member")를 단다. degree = 그래프 안 멤버 수.
+    """
+    if not report_ids:
+        return [], []
+    rows = db.execute(
+        select(
+            CompositeReportItem.composite_id, CompositeReportItem.ref_report_id
+        ).where(CompositeReportItem.ref_report_id.in_(report_ids))
+    ).all()
+    if not rows:
+        return [], []
+    members_by_comp: dict[int, list[int]] = {}
+    for cid, rid in rows:
+        members_by_comp.setdefault(cid, []).append(rid)
+    composites = list(
+        db.execute(
+            select(CompositeReport).where(CompositeReport.id.in_(members_by_comp))
+        ).scalars()
+    )
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    for c in composites:
+        rids = members_by_comp.get(c.id, [])
+        nodes.append(_composite_node(c, degree=len(rids)))
+        for rid in rids:
+            edges.append(
+                {
+                    "source": f"composite:{c.id}",
+                    "target": f"report:{rid}",
+                    "kind": "composite_member",
+                }
+            )
+    return nodes, edges
+
+
+def build_link_graph(
+    db: Session,
+    center_report_id: int,
+    *,
+    depth: int = 2,
+    max_nodes: int = LINK_GRAPH_MAX_NODES,
+    include_tags: bool = False,
+    tag_axes: Optional[list[str]] = None,
+    tag_min_degree: int = 1,
+    include_composites: bool = False,
+) -> Optional[dict]:
+    """중심 보고서에서 explicit link 를 따라 ±depth hop BFS 한 관계도.
+
+    report 노드 + report↔report explicit_link 엣지가 기본. include_tags 면
+    BFS 로 모인 보고서들의 관련정보(entity) 레이어를 더한다 (Phase 2). link
+    은 방향이 있지만 BFS 는 양방향으로 확장한다 (선행/후속 어느 쪽이든 이웃).
+
+    반환 shape (None 이면 center 보고서 없음):
+        {
+          "nodes": [LinkGraphNode-dict, ...],   # degree 채워짐
+          "edges": [{source, target, kind}, ...],
+          "truncated": bool,                     # max_nodes 에 걸렸는지
+          "center_id": "report:<id>",
+        }
+    가시성 가드는 라우트 레이어 책임 — 여기선 순수하게 그래프만 만든다.
+    """
+    center = db.get(Report, center_report_id)
+    if center is None:
+        return None
+    depth = max(1, min(depth, 3))
+
+    # ── BFS: hop 단위로 frontier 를 한 번의 IN 쿼리로 확장 ────────────────
+    visited: set[int] = {center_report_id}
+    frontier: set[int] = {center_report_id}
+    truncated = False
+    for _ in range(depth):
+        if not frontier:
+            break
+        rows = db.execute(
+            select(ReportLink.from_report_id, ReportLink.to_report_id).where(
+                ReportLink.from_report_id.in_(frontier)
+                | ReportLink.to_report_id.in_(frontier)
+            )
+        ).all()
+        next_frontier: set[int] = set()
+        for from_id, to_id in rows:
+            for nid in (from_id, to_id):
+                if nid not in visited:
+                    next_frontier.add(nid)
+        if not next_frontier:
+            break
+        # 노드 상한 — 넘으면 들어갈 수 있는 만큼만 채우고 BFS 중단.
+        if len(visited) + len(next_frontier) > max_nodes:
+            for nid in next_frontier:
+                if len(visited) >= max_nodes:
+                    break
+                visited.add(nid)
+            truncated = True
+            break
+        visited |= next_frontier
+        frontier = next_frontier
+
+    # ── 엣지: 양 끝이 모두 visited 안인 link 만 (밖으로 매달리지 않게) ────
+    link_rows = list(
+        db.execute(
+            select(ReportLink).where(
+                ReportLink.from_report_id.in_(visited),
+                ReportLink.to_report_id.in_(visited),
+            )
+        ).scalars()
+    )
+    edges: list[dict] = []
+    degree: dict[int, int] = {rid: 0 for rid in visited}
+    for lk in link_rows:
+        edges.append(_link_edge(lk))
+        degree[lk.from_report_id] += 1
+        degree[lk.to_report_id] += 1
+
+    # ── 노드: visited 보고서들. owner 는 lazy="joined" 라 같이 따라온다 ───
+    report_rows = list(
+        db.execute(select(Report).where(Report.id.in_(visited))).scalars()
+    )
+    nodes = [
+        _report_node(
+            r, degree=degree.get(r.id, 0), is_center=(r.id == center_report_id)
+        )
+        for r in report_rows
+    ]
+
+    # 관련정보 레이어 (Phase 2) — 토글 ON 일 때만. degree 는 report 쪽엔
+    # 더하지 않아(엣지만 추가) 토글에 따라 보고서 노드 크기가 흔들리지 않는다.
+    if include_tags:
+        ent_nodes, ent_edges = _entity_layer(
+            db,
+            visited,
+            axes=set(tag_axes) if tag_axes else None,
+            min_degree=tag_min_degree,
+        )
+        nodes.extend(ent_nodes)
+        edges.extend(ent_edges)
+
+    # 종합보고 레이어 (Phase 4) — visited 보고서를 묶는 hub 노드.
+    if include_composites:
+        comp_nodes, comp_edges = _composite_layer(db, visited)
+        nodes.extend(comp_nodes)
+        edges.extend(comp_edges)
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "truncated": truncated,
+        "center_id": f"report:{center_report_id}",
+    }
+
+
+def _scoped_report_ids(
+    db: Session, workspace_slug: str, is_global_view: bool
+) -> Optional[set[int]]:
+    """워크스페이스에서 보이는 보고서 id 집합. None = 스코핑 없음(virtual
+    글로벌 뷰). list_reports_in_workspace 의 가시성 분기와 동일한 규칙을
+    id 만 가볍게 뽑아 재현한다 (personal: 직접 소유, org: descendant mount)."""
+    if is_global_view:
+        return None
+    ws = db.get(Workspace, workspace_slug)
+    if ws is not None and ws.kind == WorkspaceKind.personal:
+        return set(
+            db.execute(
+                select(Report.id).where(Report.workspace_slug == workspace_slug)
+            ).scalars()
+        )
+    scope = ws_services.get_descendants_inclusive(db, workspace_slug)
+    return set(
+        db.execute(
+            select(ReportMount.report_id).where(
+                ReportMount.workspace_slug.in_(scope)
+            )
+        ).scalars()
+    )
+
+
+def build_global_link_graph(
+    db: Session,
+    *,
+    workspace_slug: str,
+    is_global_view: bool = False,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    type_ids: Optional[list[int]] = None,
+    kinds: Optional[list[str]] = None,
+    entity_ids: Optional[list[int]] = None,
+    include_tags: bool = False,
+    tag_axes: Optional[list[str]] = None,
+    tag_min_degree: int = 1,
+    include_composites: bool = False,
+    include_isolated: bool = False,
+    limit: int = LINK_GRAPH_GLOBAL_LIMIT,
+) -> dict:
+    """워크스페이스 범위의 글로벌 관계도 (지식그래프 Phase 1b/2/4).
+
+    로컬(build_link_graph)이 한 보고서에서 BFS 하는 것과 달리, 여기선
+    *연결된 보고서들의 구조 전체* 를 그린다. 고립 노드(어떤 link 에도 안 낀
+    보고서)는 기본 제외 — 글로벌 화면을 점 구름으로 만들지 않기 위해서다.
+    include_isolated=True 면 필터에 맞는 스코프 내 모든 보고서를 점으로 더
+    그린다(Phase 4 토글). 고립 노드는 degree 0 이라 limit 초과 시 가장 먼저
+    잘린다(허브 우선 보존).
+
+    필터:
+      - date_from/date_to : report_date 범위
+      - type_ids          : 보고서 종류 (OR)
+      - kinds             : link kind (OR)
+      - entity_ids        : 관련정보 — axis 별 AND, axis 안에서는 OR
+                            (모델X AND 시험Y; plan §6.1)
+    include_tags 면 살아남은 보고서들의 관련정보(entity) 레이어를 더한다.
+    스코핑: is_global_view=False 면 actor 워크스페이스 트리 안 보고서로 한정
+    (양 끝이 모두 스코프 안인 link 만). limit 초과 시 degree 높은 노드부터
+    남기고 truncated=True.
+    """
+    scope_ids = _scoped_report_ids(db, workspace_slug, is_global_view)
+    type_set = set(type_ids) if type_ids else None
+
+    # 시스템 전체 link (kind 필터만 SQL 로) — report_links 는 수동 생성이라
+    # 작은 테이블. 스코프/날짜/종류 필터는 endpoint 보고서 단계에서 적용.
+    edge_q = select(ReportLink)
+    if kinds:
+        edge_q = edge_q.where(ReportLink.kind.in_(kinds))
+    link_rows = list(db.execute(edge_q).scalars())
+
+    endpoint_ids: set[int] = set()
+    for lk in link_rows:
+        endpoint_ids.add(lk.from_report_id)
+        endpoint_ids.add(lk.to_report_id)
+
+    # 후보 보고서 = 연결된 것(endpoints) + (고립 표시면) 스코프 내 모든 보고서.
+    candidate_ids: set[int] = set(endpoint_ids)
+    if include_isolated:
+        iso_q = select(Report.id)
+        if scope_ids is not None:
+            iso_q = iso_q.where(Report.id.in_(scope_ids))
+        candidate_ids |= set(db.execute(iso_q).scalars())
+    if not candidate_ids:
+        return {"nodes": [], "edges": [], "truncated": False, "center_id": None}
+
+    # entity 필터 — 선택값을 axis(type_id) 별로 묶어 AND, 묶음 안에서는 OR.
+    # 후보 보고서별로 어떤 (선택된) entity 가 달렸는지 미리 적재.
+    ent_groups: Optional[list[set[int]]] = None
+    ent_hits: dict[int, set[int]] = {}
+    if entity_ids:
+        sel = db.execute(
+            select(Entity.id, Entity.type_id).where(Entity.id.in_(entity_ids))
+        ).all()
+        groups: dict[int, set[int]] = {}
+        for eid, type_id in sel:
+            groups.setdefault(type_id, set()).add(eid)
+        ent_groups = list(groups.values())
+        if not ent_groups:  # 선택 id 가 전부 무효 → 매칭 보고서 없음
+            return {"nodes": [], "edges": [], "truncated": False, "center_id": None}
+        hit_rows = db.execute(
+            select(ReportEntity.report_id, ReportEntity.entity_id).where(
+                ReportEntity.report_id.in_(candidate_ids),
+                ReportEntity.entity_id.in_([e for e, _ in sel]),
+            )
+        ).all()
+        for rid, eid in hit_rows:
+            ent_hits.setdefault(rid, set()).add(eid)
+
+    reports = list(
+        db.execute(select(Report).where(Report.id.in_(candidate_ids))).scalars()
+    )
+
+    def _eligible(r: Report) -> bool:
+        if scope_ids is not None and r.id not in scope_ids:
+            return False
+        if date_from is not None and (
+            r.report_date is None or r.report_date < date_from
+        ):
+            return False
+        if date_to is not None and (
+            r.report_date is None or r.report_date > date_to
+        ):
+            return False
+        if type_set is not None and r.report_type_id not in type_set:
+            return False
+        if ent_groups is not None:
+            hits = ent_hits.get(r.id, set())
+            if any(hits.isdisjoint(group) for group in ent_groups):
+                return False
+        return True
+
+    eligible: dict[int, Report] = {r.id: r for r in reports if _eligible(r)}
+
+    kept_links = [
+        lk
+        for lk in link_rows
+        if lk.from_report_id in eligible and lk.to_report_id in eligible
+    ]
+
+    def _degree(links: list[ReportLink], ids: set[int]) -> dict[int, int]:
+        deg = {i: 0 for i in ids}
+        for lk in links:
+            deg[lk.from_report_id] += 1
+            deg[lk.to_report_id] += 1
+        return deg
+
+    # 고립 표시면 적격 보고서 전체가 노드(연결 안 된 것은 점으로), 아니면
+    # 살아남은 엣지의 양 끝만.
+    if include_isolated:
+        node_ids: set[int] = set(eligible.keys())
+    else:
+        node_ids = set()
+        for lk in kept_links:
+            node_ids.add(lk.from_report_id)
+            node_ids.add(lk.to_report_id)
+    degree = _degree(kept_links, node_ids)
+
+    truncated = False
+    if len(node_ids) > limit:
+        # degree 높은 노드(허브)부터 남겨 관계 구조의 핵심을 보존.
+        node_ids = set(
+            sorted(node_ids, key=lambda i: degree[i], reverse=True)[:limit]
+        )
+        kept_links = [
+            lk
+            for lk in kept_links
+            if lk.from_report_id in node_ids and lk.to_report_id in node_ids
+        ]
+        degree = _degree(kept_links, node_ids)
+        truncated = True
+
+    nodes = [
+        _report_node(eligible[rid], degree=degree.get(rid, 0)) for rid in node_ids
+    ]
+    edges = [_link_edge(lk) for lk in kept_links]
+
+    # 관련정보 레이어 (Phase 2) — 살아남은 보고서 노드에만 entity 를 매단다.
+    if include_tags:
+        ent_nodes, ent_edges = _entity_layer(
+            db,
+            node_ids,
+            axes=set(tag_axes) if tag_axes else None,
+            min_degree=tag_min_degree,
+        )
+        nodes.extend(ent_nodes)
+        edges.extend(ent_edges)
+
+    # 종합보고 레이어 (Phase 4) — 살아남은 보고서를 묶는 hub 노드.
+    if include_composites:
+        comp_nodes, comp_edges = _composite_layer(db, node_ids)
+        nodes.extend(comp_nodes)
+        edges.extend(comp_edges)
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "truncated": truncated,
+        "center_id": None,
+    }
+
+
+def is_linkable_target(db: Session, target: Report) -> bool:
+    """Link 의 *대상* 으로 적합한지 — 다른 사용자에게 접근 권한이 있을
+    가능성이 있는 보고서만 허용한다. 개인 워크스페이스 + 미게시 보고서는
+    작성자 본인만 접근 가능하므로 link 대상으로 부적합 (다른 사용자가
+    클릭해도 안 열림).
+
+    OK 조건:
+      - 작성된 워크스페이스가 org / virtual 인 경우 (= 조직 보고서),
+      - 또는 어디든 mount(게시) 되어 있어 다른 워크스페이스 사용자에게도
+        보이는 경우.
+    """
+    # Report 모델에 workspace relationship 이 정의돼 있지 않아 직접 조회.
+    ws = db.get(Workspace, target.workspace_slug)
+    if ws is not None and ws.kind != WorkspaceKind.personal:
+        return True
+    has_mount = (
+        db.execute(
+            select(ReportMount.report_id)
+            .where(ReportMount.report_id == target.id)
+            .limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+    return has_mount
+
+
+def _linkable_report_ids(db: Session) -> list[int]:
+    """시스템 전체에서 link 대상 적격(=is_linkable_target 조건)인 보고서
+    id 들을 한 번의 query 로. 가시성 제약 없음 — picker 는 actor 의 워크스페이스
+    바깥에 있는 보고서도 검색할 수 있어야 한다 (개인 공간 사용자도 다른
+    조직 보고서를 link 가능). 단일-테넌트 환경에서 자연스러운 정책.
+    """
+    rows = db.execute(
+        select(Report.id)
+        .join(Workspace, Report.workspace_slug == Workspace.slug)
+        .where(
+            (Workspace.kind != WorkspaceKind.personal)
+            | Report.id.in_(select(ReportMount.report_id))
+        )
+    ).scalars()
+    return list(rows)
+
+
+def list_linkable_reports(db: Session) -> list[Report]:
+    """Picker 의 후보 풀 — 전 시스템 linkable. order: updated_at DESC."""
+    rows = db.execute(
+        select(Report)
+        .join(Workspace, Report.workspace_slug == Workspace.slug)
+        .where(
+            (Workspace.kind != WorkspaceKind.personal)
+            | Report.id.in_(select(ReportMount.report_id))
+        )
+        .order_by(desc(Report.updated_at))
+    ).scalars()
+    return list(rows)
+
+
+def list_linkable_facets(db: Session, actor) -> dict:
+    """Link 대상으로 적격인 보고서들로부터 작성자 / 게시조직 옵션 카탈로그를
+    한 번에 반환. picker 의 단순 옵션 채움용이라 응답이 가벼움 (수십 KB).
+
+    actor 인자는 호환을 위해 받지만 현재 정책은 시스템 전체 linkable —
+    개인 공간 사용자도 조직 보고서를 검색 가능해야 하기 때문.
+    """
+    del actor  # 시그니처 호환용 — 정책 변경 시 사용
+    linkable_ids = _linkable_report_ids(db)
+    if not linkable_ids:
+        return {"authors": [], "mounts": []}
+
+    # 작성자 집계 — Report 를 기준으로 join 해서 owner 가 없는 (anonymous /
+    # 삭제된 사용자) 보고서는 자동 제외. select_from(Report) 으로 FROM 모호성도
+    # 제거.
+    author_rows = db.execute(
+        select(User.name, func.count(Report.id).label("cnt"))
+        .select_from(Report)
+        .join(User, User.id == Report.owner_user_id)
+        .where(Report.id.in_(linkable_ids))
+        .group_by(User.name)
+        .order_by(User.name)
+    ).all()
+    authors = [
+        {"name": row[0], "count": int(row[1])} for row in author_rows
+    ]
+
+    # 게시조직 집계 — ReportMount 기준 join. ReportMount 는 composite PK
+    # (report_id, workspace_slug) 라 `id` 컬럼이 없어 count(report_id) 사용.
+    mount_rows = db.execute(
+        select(
+            Workspace.slug,
+            Workspace.name,
+            func.count(ReportMount.report_id).label("cnt"),
+        )
+        .select_from(ReportMount)
+        .join(Workspace, Workspace.slug == ReportMount.workspace_slug)
+        .where(ReportMount.report_id.in_(linkable_ids))
+        .group_by(Workspace.slug, Workspace.name)
+        .order_by(Workspace.name)
+    ).all()
+    mounts = [
+        {"slug": row[0], "name": row[1], "count": int(row[2])}
+        for row in mount_rows
+    ]
+    return {"authors": authors, "mounts": mounts}
+
+
+# --------------------------------------------------------------------------- #
+# Link kind catalog — admin-managed                                           #
+# --------------------------------------------------------------------------- #
+
+
+class LinkKindError(Exception):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def list_link_kinds(db: Session) -> list[ReportLinkKind]:
+    """sort_order ASC, key ASC. 칩/popover 가 그대로 순서대로 보여줌."""
+    return list(
+        db.execute(
+            select(ReportLinkKind).order_by(
+                ReportLinkKind.sort_order, ReportLinkKind.key
+            )
+        ).scalars()
+    )
+
+
+def get_link_kind(db: Session, key: str) -> Optional[ReportLinkKind]:
+    return db.get(ReportLinkKind, key)
+
+
+def create_link_kind(
+    db: Session,
+    *,
+    key: str,
+    forward_label: str,
+    reverse_label: str,
+    color: str,
+    sort_order: int,
+) -> ReportLinkKind:
+    if not is_valid_color(color):
+        raise LinkKindError(
+            "invalid_color",
+            f"허용되지 않은 색: {color} (blue/green/purple/amber/slate/rose/sky/teal/orange/pink 중 하나)",
+        )
+    if db.get(ReportLinkKind, key) is not None:
+        raise LinkKindError("duplicate_key", f"이미 같은 key 의 라벨이 있습니다: {key}")
+    row = ReportLinkKind(
+        key=key,
+        forward_label=forward_label,
+        reverse_label=reverse_label,
+        color=color,
+        sort_order=sort_order,
+        system_locked=False,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def update_link_kind(
+    db: Session,
+    kind: ReportLinkKind,
+    *,
+    forward_label: Optional[str] = None,
+    reverse_label: Optional[str] = None,
+    color: Optional[str] = None,
+    sort_order: Optional[int] = None,
+) -> ReportLinkKind:
+    """라벨/색/순서 변경. system_locked 행도 라벨/색은 바꿀 수 있다 — key
+    와 row 자체만 immutable. 빈 값은 그대로 둠."""
+    if color is not None:
+        if not is_valid_color(color):
+            raise LinkKindError(
+                "invalid_color",
+                f"허용되지 않은 색: {color}",
+            )
+        kind.color = color
+    if forward_label is not None:
+        kind.forward_label = forward_label
+    if reverse_label is not None:
+        kind.reverse_label = reverse_label
+    if sort_order is not None:
+        kind.sort_order = sort_order
+    db.commit()
+    db.refresh(kind)
+    return kind
+
+
+def delete_link_kind(db: Session, kind: ReportLinkKind) -> None:
+    """system_locked 거부, 사용 중이면 거부. 둘 다 LinkKindError."""
+    if kind.system_locked:
+        raise LinkKindError(
+            "system_locked",
+            "기본 제공 라벨이라 삭제할 수 없습니다 (라벨/색은 편집 가능).",
+        )
+    in_use = db.execute(
+        select(ReportLink).where(ReportLink.kind == kind.key).limit(1)
+    ).scalar_one_or_none()
+    if in_use is not None:
+        # 사용 중 — admin 이 먼저 해당 link 들을 다른 kind 로 옮기든 끊든
+        # 한 다음 다시 시도해야 한다.
+        raise LinkKindError(
+            "in_use",
+            "이 라벨을 사용하는 link 가 있어 삭제할 수 없습니다. 먼저 해당 link 들을 정리하세요.",
+        )
+    db.delete(kind)
     db.commit()

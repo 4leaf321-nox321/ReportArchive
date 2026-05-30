@@ -23,6 +23,7 @@ import WorkspaceHomePage from '@/modules/workspace/WorkspaceHomePage'
 import ReportsListPage from '@/modules/reports/ReportsListPage'
 import ReportNewPage from '@/modules/reports/ReportNewPage'
 import ReportDetailPage from '@/modules/reports/ReportDetailPage'
+import ReportGraphPage from '@/modules/reports/ReportGraphPage'
 import DashboardPage from '@/modules/dashboard/DashboardPage'
 import TemplatesPage from '@/modules/templates/TemplatesPage'
 import TemplateEditorPage from '@/modules/templates/TemplateEditorPage'
@@ -106,6 +107,7 @@ const router = createBrowserRouter(
         {/* 부서 스코프 — /reports/new* 가 :reportId 보다 먼저 매치 */}
         <Route path="/w/:workspace" element={<WorkspaceHomePage />} />
         <Route path="/w/:workspace/reports" element={<ReportsListPage />} />
+        <Route path="/w/:workspace/report-graph" element={<ReportGraphPage />} />
         <Route path="/w/:workspace/reports/new" element={<ReportNewPage />} />
         <Route
           path="/w/:workspace/reports/new/:templateId/:version"

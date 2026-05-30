@@ -476,3 +476,153 @@ class ReportUpdate(BaseModel):
     # field can roll out without breaking older clients, but the frontend
     # is expected to send it on every save.
     expected_revision: Optional[int] = Field(default=None, ge=1)
+
+
+# ───────────────────────────────────────────────────────────────────────── #
+# Report links                                                              #
+# ───────────────────────────────────────────────────────────────────────── #
+
+
+class ReportLinkRefMini(BaseModel):
+    """링크 카드 한 줄을 그릴 때 필요한 최소 정보 — 상대 보고서 쪽.
+
+    workspace_slug 는 프론트가 ``/w/{slug}/reports/{id}`` 라우트를 만들
+    때 필요. 없으면 링크가 잘못된 주소로 가게 된다.
+    """
+
+    id: int
+    workspace_slug: str
+    title: str
+    owner_name: Optional[str] = None
+    report_date: Optional[date] = None
+
+
+class ReportLinkRead(BaseModel):
+    """단방향 link 한 줄. ``direction`` 이 outgoing / incoming 인지에 따라
+    프론트는 forward_label / reverse_label 중 하나를 골라 표시한다."""
+
+    id: int
+    kind: str
+    note: Optional[str] = None
+    direction: Literal["outgoing", "incoming"]
+    # 화면 카드에 그릴 상대 보고서 (outgoing 이면 to, incoming 이면 from).
+    counterpart: ReportLinkRefMini
+    created_at: UtcDatetime
+    created_by_name: Optional[str] = None
+
+
+class ReportLinkCreate(BaseModel):
+    """현재 보고서 (URL path 의 보고서) 와 ``to_report_id`` 사이 link 생성.
+
+    ``direction`` 으로 단방향 저장 방향을 결정 — 양쪽 모두 자신의 보고서
+    화면에서 ``forward_label`` 로 부르며 link 를 등록할 수 있게 하려는 것:
+      - outgoing (기본): from = path 의 보고서, to = ``to_report_id``
+                         ("이 보고서 → 다른 보고서" — 예: "후속")
+      - incoming       : from = ``to_report_id``, to = path 의 보고서
+                         ("다른 보고서 → 이 보고서" — 예: "선행")
+
+    DB 에는 같은 row 가 한 번만 들어가고, 보는 쪽에 따라 forward/reverse
+    라벨이 자동으로 갈라진다. 권한 검사는 양쪽 모두 *path 의 보고서* 쪽
+    can_edit 만 본다 — 사용자가 보고 있는 자기 보고서에 대한 link 정리
+    권한은 자기 손에 있다는 게 자연스럽기 때문.
+    """
+
+    to_report_id: int
+    kind: str
+    note: Optional[str] = Field(default=None, max_length=200)
+    direction: Literal["outgoing", "incoming"] = "outgoing"
+
+
+# ───────────────────────────────────────────────────────────────────────── #
+# Link graph — 보고서 관계도 (지식그래프 Phase 1a)                            #
+# ───────────────────────────────────────────────────────────────────────── #
+
+
+class LinkGraphNode(BaseModel):
+    """관계도의 노드 하나. ``id`` 는 react-force-graph 가 쓰는 unique
+    string ("report:123" / "entity:9") — report 와 entity 가 같은 숫자
+    id 를 가져도 충돌하지 않게 ``type:numericId`` 형태를 쓴다.
+
+    report 노드는 ``report_id``/``title``/``workspace_slug`` 를, entity 노드
+    (Phase 2 관련정보 레이어)는 ``entity_id``/``label``/``axis`` 를 채운다.
+    type 으로 갈라 프론트가 모양·색·클릭 동작을 다르게 준다."""
+
+    id: str
+    type: Literal["report", "entity", "composite"] = "report"
+    degree: int = 0  # 연결 수 — 노드 크기 매핑
+
+    # ── report 노드 전용 ────────────────────────────────────────────────
+    report_id: Optional[int] = None  # 클릭 시 보고서 라우팅용 raw id
+    title: Optional[str] = None
+    owner_name: Optional[str] = None
+    workspace_slug: Optional[str] = None
+    report_type_id: Optional[int] = None  # 색 매핑(종류) — id 만 무비용 동봉
+    report_date: Optional[date] = None
+    is_center: bool = False  # 중심 보고서 강조(로컬 모달)
+
+    # ── entity 노드 전용 (관련정보 레이어) ──────────────────────────────
+    entity_id: Optional[int] = None
+    label: Optional[str] = None  # entity 값 (예: "모델X")
+    axis: Optional[str] = None  # entity_type.slug (예: "model")
+    axis_label: Optional[str] = None  # entity_type.label (예: "모델명")
+
+    # ── composite 노드 전용 (종합보고 hub, Phase 4) ─────────────────────
+    composite_id: Optional[int] = None
+    composite_kind: Optional[str] = None  # recurring / theme
+
+
+class LinkGraphEdge(BaseModel):
+    """단방향 link 한 개. force-graph 기본 accessor 에 맞춰 source/target.
+    ``kind`` 는 report_link_kinds 카탈로그의 key (프론트가 색 매핑) 또는
+    관련정보 레이어의 ``"has_tag"`` (report → entity, 회색 고정)."""
+
+    source: str
+    target: str
+    kind: str
+
+
+class LinkGraphResponse(BaseModel):
+    nodes: list[LinkGraphNode] = []
+    edges: list[LinkGraphEdge] = []
+    # max_nodes 에 걸려 일부만 담긴 경우 True — 프론트가 안내 배지를 띄움.
+    truncated: bool = False
+    # 모달을 연 중심 보고서의 노드 id ("report:123"). 글로벌 그래프(1b)에선
+    # None.
+    center_id: Optional[str] = None
+
+
+# ───────────────────────────────────────────────────────────────────────── #
+# Report link kinds (admin-managed catalog)                                 #
+# ───────────────────────────────────────────────────────────────────────── #
+
+
+class ReportLinkKindRead(BaseModel):
+    """일반 사용자 / admin 양쪽이 같은 모양 — admin UI 도 system_locked 만
+    추가로 본다 (disable 표시용)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    key: str
+    forward_label: str
+    reverse_label: str
+    color: str
+    sort_order: int = 0
+    system_locked: bool = False
+
+
+class ReportLinkKindCreate(BaseModel):
+    # 영문 snake_case 강제 — 새 kind 가 URL safe 이고 prefix 충돌이 없도록.
+    key: str = Field(..., min_length=2, max_length=32, pattern=r"^[a-z][a-z0-9_]*$")
+    forward_label: str = Field(..., min_length=1, max_length=40)
+    reverse_label: str = Field(..., min_length=1, max_length=40)
+    color: str = Field(..., min_length=1, max_length=16)
+    sort_order: int = 0
+
+
+class ReportLinkKindUpdate(BaseModel):
+    """key 와 system_locked 는 immutable. 나머지만 PATCH 가능."""
+
+    forward_label: Optional[str] = Field(default=None, min_length=1, max_length=40)
+    reverse_label: Optional[str] = Field(default=None, min_length=1, max_length=40)
+    color: Optional[str] = Field(default=None, min_length=1, max_length=16)
+    sort_order: Optional[int] = None

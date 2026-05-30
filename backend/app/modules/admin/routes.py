@@ -7,8 +7,19 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.modules.admin import services
+from app.modules.reports import services as report_services
+from app.modules.reports.schemas import (
+    ReportLinkKindCreate,
+    ReportLinkKindRead,
+    ReportLinkKindUpdate,
+)
 from app.shared.auth import CurrentUser, require_system_admin
-from app.shared.responses import success_response
+from app.shared.responses import (
+    created_response,
+    error_response,
+    not_found_response,
+    success_response,
+)
 
 router = APIRouter()
 
@@ -64,3 +75,93 @@ def runtime_tuning_set(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return success_response(data=data)
+
+
+# ─── Report link kinds — admin CRUD ──────────────────────────────────────── #
+#
+# 일반 사용자용 list 는 /api/reports/link-kinds (reports router). 여기는
+# 편집 권한이 필요한 entries 만.
+
+
+def _link_kind_error(exc: report_services.LinkKindError):
+    """Service-layer LinkKindError → 표준 envelope. duplicate/in_use 는
+    409, 그 외 400."""
+    status_map = {"duplicate_key": 409, "in_use": 409}
+    return error_response(
+        str(exc),
+        errors=[{"code": exc.code, "message": str(exc)}],
+        status_code=status_map.get(exc.code, 400),
+    )
+
+
+@router.get("/link-kinds")
+def admin_list_link_kinds(
+    db: Session = Depends(get_db),
+    _: CurrentUser = Depends(require_system_admin),
+):
+    rows = report_services.list_link_kinds(db)
+    return success_response(
+        data=[ReportLinkKindRead.model_validate(r) for r in rows]
+    )
+
+
+@router.post("/link-kinds")
+def admin_create_link_kind(
+    payload: ReportLinkKindCreate,
+    db: Session = Depends(get_db),
+    _: CurrentUser = Depends(require_system_admin),
+):
+    try:
+        row = report_services.create_link_kind(
+            db,
+            key=payload.key,
+            forward_label=payload.forward_label,
+            reverse_label=payload.reverse_label,
+            color=payload.color,
+            sort_order=payload.sort_order,
+        )
+    except report_services.LinkKindError as exc:
+        return _link_kind_error(exc)
+    return created_response(data=ReportLinkKindRead.model_validate(row))
+
+
+@router.patch("/link-kinds/{key}")
+def admin_update_link_kind(
+    key: str,
+    payload: ReportLinkKindUpdate,
+    db: Session = Depends(get_db),
+    _: CurrentUser = Depends(require_system_admin),
+):
+    """key 와 system_locked 는 immutable. system_locked 라벨도 forward/
+    reverse 텍스트와 색은 자유롭게 편집 가능 — 운영 중 표현만 바뀐다."""
+    row = report_services.get_link_kind(db, key)
+    if row is None:
+        return not_found_response(f"Link kind not found: {key}")
+    try:
+        row = report_services.update_link_kind(
+            db,
+            row,
+            forward_label=payload.forward_label,
+            reverse_label=payload.reverse_label,
+            color=payload.color,
+            sort_order=payload.sort_order,
+        )
+    except report_services.LinkKindError as exc:
+        return _link_kind_error(exc)
+    return success_response(data=ReportLinkKindRead.model_validate(row))
+
+
+@router.delete("/link-kinds/{key}")
+def admin_delete_link_kind(
+    key: str,
+    db: Session = Depends(get_db),
+    _: CurrentUser = Depends(require_system_admin),
+):
+    row = report_services.get_link_kind(db, key)
+    if row is None:
+        return not_found_response(f"Link kind not found: {key}")
+    try:
+        report_services.delete_link_kind(db, row)
+    except report_services.LinkKindError as exc:
+        return _link_kind_error(exc)
+    return success_response(data=None, message="Deleted")

@@ -25,6 +25,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
@@ -381,3 +382,87 @@ class ReportEditLock(Base):
         "Report", back_populates="edit_lock"
     )
     user: Mapped["User"] = relationship("User", lazy="joined")
+
+
+class ReportLink(Base):
+    """보고서 간 단방향 의미 link — (from_report) → (to_report).
+
+    같은 쌍에 여러 kind 를 동시에 둘 수 있다 (예: A 가 B 를 「참조」하면서
+    동시에 「후속」으로도 표시). 양방향 backlink 는 별도 row 가 아니라
+    동일 row 를 to_report 쪽 화면에서 reverseLabel 로 뒤집어 보여주는
+    방식 — 데이터 중복 없음.
+
+    kind 는 self-validating 하지 않고 app/shared/link_kinds.py 의
+    LINK_KINDS 상수 안 key 들만 허용 (서비스 레이어에서 검증). 새 유형은
+    그 상수에 한 줄 추가 — 마이그레이션 불필요.
+    """
+
+    __tablename__ = "report_links"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    from_report_id: Mapped[int] = mapped_column(
+        ForeignKey("reports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    to_report_id: Mapped[int] = mapped_column(
+        ForeignKey("reports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+    from_report: Mapped["Report"] = relationship(
+        "Report", foreign_keys=[from_report_id]
+    )
+    to_report: Mapped["Report"] = relationship(
+        "Report", foreign_keys=[to_report_id]
+    )
+    created_by: Mapped["User | None"] = relationship("User", lazy="joined")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "from_report_id",
+            "to_report_id",
+            "kind",
+            name="uq_report_links_from_to_kind",
+        ),
+    )
+
+
+class ReportLinkKind(Base):
+    """관리자가 정의하는 link 의미 카탈로그.
+
+    seed 시 ``reference`` / ``successor`` 두 row 가 system_locked=True 로
+    들어가 있다 — 라벨/색은 바꿀 수 있지만 key 와 row 자체는 못 건드린다
+    (기존 ``report_links.kind`` 와의 호환성 유지). 그 외 row 는 admin 이
+    자유롭게 추가/편집/삭제 가능. 단, 사용 중 (= 같은 key 를 가진
+    report_links 가 존재) 인 row 는 삭제 거부 — 서비스 레이어에서 검사.
+
+    ``report_links.kind`` 와 FK 로 묶지 않는 이유: cascade 정책이 복잡하고
+    (실수로 link 까지 같이 날아가는 게 위험), "사용 중이면 거부" 정책을
+    서비스 레이어에서 더 표현력 있게 다룰 수 있어서.
+    """
+
+    __tablename__ = "report_link_kinds"
+
+    key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    forward_label: Mapped[str] = mapped_column(String(40), nullable=False)
+    reverse_label: Mapped[str] = mapped_column(String(40), nullable=False)
+    color: Mapped[str] = mapped_column(String(16), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    system_locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )

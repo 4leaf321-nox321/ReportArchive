@@ -18,6 +18,8 @@ import {
   FileType2,
   CheckCircle2,
   Undo2,
+  Link2,
+  Lock,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
@@ -73,6 +75,17 @@ import {
   deleteSectionItem,
 } from '@/shared/api/sectionTaxonomy'
 import { invalidateSectionTaxonomyCache } from '@/shared/hooks/useSectionTaxonomy'
+import {
+  adminListLinkKinds,
+  adminCreateLinkKind,
+  adminUpdateLinkKind,
+  adminDeleteLinkKind,
+} from '@/shared/api/linkKinds'
+import {
+  ALLOWED_COLORS,
+  colorClasses,
+} from '@/shared/reports/linkKinds'
+import { invalidateLinkKindsCache } from '@/modules/reports/ReportLinks'
 import {
   listAllReportTypes,
   createReportType,
@@ -148,6 +161,10 @@ export default function AdminPage() {
             <FileType2 className="mr-1 h-3 w-3" />
             보고서 종류
           </TabsTrigger>
+          <TabsTrigger value="link-kinds">
+            <Link2 className="mr-1 h-3 w-3" />
+            연결 라벨
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="workspaces">
@@ -165,7 +182,384 @@ export default function AdminPage() {
         <TabsContent value="report-types">
           <ReportTypesSection />
         </TabsContent>
+        <TabsContent value="link-kinds">
+          <LinkKindsSection />
+        </TabsContent>
       </Tabs>
+    </div>
+  )
+}
+
+// =========================================================================
+// 연결 라벨 — 보고서 간 link 의 의미 유형 카탈로그
+// =========================================================================
+function LinkKindsSection() {
+  const { data, loading, error, reload } = useAsync(adminListLinkKinds, [])
+  const [editing, setEditing] = useState(null) // key | null
+  const [confirmDelete, setConfirmDelete] = useState(null)
+  const [adding, setAdding] = useState(false)
+  const kinds = data ?? []
+
+  function bust() {
+    // ReportLinks 의 모듈 캐시도 무효화 — 다음 보고서 페이지 진입 때 신선한
+    // 카탈로그를 받는다 (현재 열려 있는 페이지는 새로고침 필요).
+    invalidateLinkKindsCache()
+    reload()
+  }
+
+  async function handleDelete(key) {
+    try {
+      await adminDeleteLinkKind(key)
+      toast.success('삭제되었습니다.')
+      bust()
+    } catch (err) {
+      const msg = err?.response?.data?.message || '삭제에 실패했습니다.'
+      toast.error(msg)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Link2 className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">연결 라벨</CardTitle>
+          </div>
+          <Button size="sm" onClick={() => setAdding(true)} disabled={adding}>
+            <Plus className="mr-1 h-3 w-3" />
+            추가
+          </Button>
+        </div>
+        <CardDescription>
+          보고서 간 link 의 의미 유형 카탈로그. key 는 영문 snake_case 로
+          저장되며 (예: <code>reference</code>, <code>decision_basis</code>),
+          정방향 / 역방향 라벨은 각 보고서 화면에서 자동으로 골라 표시됩니다.
+          <span className="ml-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+            <Lock className="h-3 w-3" />
+            은 기본 제공 라벨 — 삭제만 막혀 있고 라벨/색은 편집 가능.
+          </span>
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {loading ? (
+          <Skeleton className="h-32" />
+        ) : error ? (
+          <ErrorState description={error.message} onRetry={reload} />
+        ) : (
+          <ul className="divide-y rounded-md border">
+            {kinds.map((k) => (
+              <LinkKindRow
+                key={k.key}
+                kind={k}
+                editing={editing === k.key}
+                onStartEdit={() => setEditing(k.key)}
+                onCancel={() => setEditing(null)}
+                onSaved={() => {
+                  setEditing(null)
+                  bust()
+                }}
+                onDelete={() => setConfirmDelete(k)}
+              />
+            ))}
+            {kinds.length === 0 && (
+              <li className="px-3 py-4 text-xs text-muted-foreground italic">
+                등록된 라벨이 없습니다.
+              </li>
+            )}
+          </ul>
+        )}
+        {adding && (
+          <LinkKindAddRow
+            existingKeys={new Set(kinds.map((k) => k.key))}
+            onCancel={() => setAdding(false)}
+            onCreated={() => {
+              setAdding(false)
+              bust()
+            }}
+          />
+        )}
+      </CardContent>
+
+      <ConfirmDialog
+        open={Boolean(confirmDelete)}
+        onOpenChange={() => setConfirmDelete(null)}
+        title="연결 라벨 삭제"
+        description={
+          confirmDelete
+            ? `'${confirmDelete.forward_label}' (${confirmDelete.key}) 라벨을 삭제하시겠습니까? 사용 중인 link 가 있으면 거부됩니다.`
+            : ''
+        }
+        confirmLabel="삭제"
+        variant="destructive"
+        onConfirm={() => confirmDelete && handleDelete(confirmDelete.key)}
+      />
+    </Card>
+  )
+}
+
+function LinkKindRow({ kind, editing, onStartEdit, onCancel, onSaved, onDelete }) {
+  const [forward, setForward] = useState(kind.forward_label)
+  const [reverse, setReverse] = useState(kind.reverse_label)
+  const [color, setColor] = useState(kind.color)
+  const [sortOrder, setSortOrder] = useState(kind.sort_order)
+  const [saving, setSaving] = useState(false)
+  useEffect(() => {
+    setForward(kind.forward_label)
+    setReverse(kind.reverse_label)
+    setColor(kind.color)
+    setSortOrder(kind.sort_order)
+  }, [kind])
+  async function onSave() {
+    setSaving(true)
+    try {
+      await adminUpdateLinkKind(kind.key, {
+        forwardLabel: forward,
+        reverseLabel: reverse,
+        color,
+        sortOrder: Number(sortOrder),
+      })
+      toast.success('저장되었습니다.')
+      onSaved?.()
+    } catch (err) {
+      const msg = err?.response?.data?.message || '저장에 실패했습니다.'
+      toast.error(msg)
+    } finally {
+      setSaving(false)
+    }
+  }
+  if (editing) {
+    return (
+      <li className="px-3 py-2 space-y-2 bg-muted/30">
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <Label className="text-[11px]">정방향 (from 쪽 라벨)</Label>
+            <Input
+              value={forward}
+              onChange={(e) => setForward(e.target.value)}
+              className="h-8 text-xs"
+            />
+          </div>
+          <div>
+            <Label className="text-[11px]">역방향 (to 쪽 라벨)</Label>
+            <Input
+              value={reverse}
+              onChange={(e) => setReverse(e.target.value)}
+              className="h-8 text-xs"
+            />
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          <div className="col-span-2">
+            <Label className="text-[11px]">색</Label>
+            <ColorSwatchSelect value={color} onChange={setColor} />
+          </div>
+          <div>
+            <Label className="text-[11px]">정렬</Label>
+            <Input
+              type="number"
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value)}
+              className="h-8 text-xs"
+            />
+          </div>
+        </div>
+        <div className="flex justify-end gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onCancel}
+            className="h-7 text-xs"
+          >
+            <X className="mr-1 h-3 w-3" />
+            취소
+          </Button>
+          <Button
+            size="sm"
+            onClick={onSave}
+            disabled={saving}
+            className="h-7 text-xs"
+          >
+            <Save className="mr-1 h-3 w-3" />
+            저장
+          </Button>
+        </div>
+      </li>
+    )
+  }
+  return (
+    <li className="flex items-center gap-3 px-3 py-2 text-xs">
+      <span
+        className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium ${colorClasses(
+          kind.color,
+        )}`}
+      >
+        {kind.forward_label}
+      </span>
+      <span className="text-muted-foreground">↔ {kind.reverse_label}</span>
+      <code className="ml-auto text-[10px] text-muted-foreground">
+        {kind.key}
+      </code>
+      {kind.system_locked && (
+        <Lock className="h-3 w-3 text-muted-foreground" title="기본 제공" />
+      )}
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-6 w-6"
+        onClick={onStartEdit}
+        title="편집"
+      >
+        <Pencil className="h-3 w-3" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-6 w-6 text-destructive"
+        onClick={onDelete}
+        disabled={kind.system_locked}
+        title={
+          kind.system_locked
+            ? '기본 제공 라벨이라 삭제 불가'
+            : '삭제'
+        }
+      >
+        <Trash2 className="h-3 w-3" />
+      </Button>
+    </li>
+  )
+}
+
+function LinkKindAddRow({ existingKeys, onCancel, onCreated }) {
+  const [key, setKey] = useState('')
+  const [forward, setForward] = useState('')
+  const [reverse, setReverse] = useState('')
+  const [color, setColor] = useState(ALLOWED_COLORS[0])
+  const [sortOrder, setSortOrder] = useState(100)
+  const [saving, setSaving] = useState(false)
+  const keyValid =
+    /^[a-z][a-z0-9_]*$/.test(key) && !existingKeys.has(key)
+  const canSubmit =
+    keyValid && forward.trim() && reverse.trim() && !saving
+  async function onSubmit() {
+    setSaving(true)
+    try {
+      await adminCreateLinkKind({
+        key,
+        forwardLabel: forward.trim(),
+        reverseLabel: reverse.trim(),
+        color,
+        sortOrder: Number(sortOrder),
+      })
+      toast.success('추가되었습니다.')
+      onCreated?.()
+    } catch (err) {
+      const msg = err?.response?.data?.message || '추가에 실패했습니다.'
+      toast.error(msg)
+    } finally {
+      setSaving(false)
+    }
+  }
+  return (
+    <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+      <div className="text-[11px] font-semibold text-muted-foreground">
+        새 연결 라벨
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <Label className="text-[11px]">key (영문 snake_case)</Label>
+          <Input
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            placeholder="decision_basis"
+            className="h-8 text-xs"
+          />
+          {!keyValid && key.length > 0 && (
+            <div className="text-[10px] text-destructive mt-0.5">
+              {existingKeys.has(key)
+                ? '이미 사용 중인 key 입니다.'
+                : '소문자/숫자/_ 로 시작은 소문자.'}
+            </div>
+          )}
+        </div>
+        <div>
+          <Label className="text-[11px]">정렬 순서</Label>
+          <Input
+            type="number"
+            value={sortOrder}
+            onChange={(e) => setSortOrder(e.target.value)}
+            className="h-8 text-xs"
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <Label className="text-[11px]">정방향 (예: "결정 근거")</Label>
+          <Input
+            value={forward}
+            onChange={(e) => setForward(e.target.value)}
+            className="h-8 text-xs"
+          />
+        </div>
+        <div>
+          <Label className="text-[11px]">역방향 (예: "근거로 인용됨")</Label>
+          <Input
+            value={reverse}
+            onChange={(e) => setReverse(e.target.value)}
+            className="h-8 text-xs"
+          />
+        </div>
+      </div>
+      <div>
+        <Label className="text-[11px]">색</Label>
+        <ColorSwatchSelect value={color} onChange={setColor} />
+      </div>
+      <div className="flex justify-end gap-1">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onCancel}
+          className="h-7 text-xs"
+        >
+          <X className="mr-1 h-3 w-3" />
+          취소
+        </Button>
+        <Button
+          size="sm"
+          onClick={onSubmit}
+          disabled={!canSubmit}
+          className="h-7 text-xs"
+        >
+          <Plus className="mr-1 h-3 w-3" />
+          추가
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function ColorSwatchSelect({ value, onChange }) {
+  // 화이트리스트 (Tailwind purge 대응) 안에서만 고를 수 있는 색 swatch
+  // — 자유 hex 가 아니라서 더 단순. 시각 미리보기는 colorClasses 의 chip.
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 py-1">
+      {ALLOWED_COLORS.map((c) => {
+        const cls = colorClasses(c)
+        const active = c === value
+        return (
+          <button
+            key={c}
+            type="button"
+            onClick={() => onChange?.(c)}
+            className={`rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors ${cls} ${
+              active ? 'ring-2 ring-foreground/40' : 'opacity-70 hover:opacity-100'
+            }`}
+            title={c}
+          >
+            {c}
+          </button>
+        )
+      })}
     </div>
   )
 }

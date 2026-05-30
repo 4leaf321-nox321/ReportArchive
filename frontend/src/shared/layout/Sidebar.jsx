@@ -4,6 +4,7 @@ import {
   FileText,
   FileCode2,
   Layers,
+  Network,
   Settings,
   Home,
   Users,
@@ -32,6 +33,7 @@ import { cn } from '@/shared/lib/utils'
 const WORKSPACE_MENU = [
   { to: '', label: '홈', icon: Home, end: true },
   { to: 'reports', label: '보고서', icon: FileText },
+  { to: 'report-graph', label: '관계도', icon: Network },
   { to: 'composites', label: '종합보고', icon: Layers },
   { to: 'dashboard', label: '대시보드', icon: LayoutDashboard },
 ]

@@ -22,6 +22,7 @@ import {
   useState,
 } from 'react'
 import { Loader2, Download } from 'lucide-react'
+import { polygonHull } from 'd3-polygon'
 import { colorHex } from '@/shared/reports/linkKinds'
 import { axisColor } from '@/shared/reports/graphColors'
 import { useLinkKinds } from './ReportLinks'
@@ -56,6 +57,21 @@ const FIT_ZOOM_BOOST = 1.6
 // 힘(음수일수록 강하게 밀어냄), link.distance 는 연결된 노드 사이 목표 거리.
 const CHARGE_STRENGTH = -180
 const LINK_DISTANCE = 80
+// 클러스터 외곽선(§11.4 4b) — convex hull 채움/외곽선 투명도 + 노드 바깥 패딩.
+const HULL_FILL_ALPHA = 0.09
+const HULL_STROKE_ALPHA = 0.5
+const HULL_PAD = 12 // world 단위, 노드 반지름 위에 더해 원을 감싸게
+const HULL_MIN_NODES = 3 // 이 미만 커뮤니티는 hull 안 그림
+
+// hex(#rrggbb) → rgba(). 외곽선은 ctx.globalAlpha 대신 색 자체에 알파를 실어
+// 채움/선 알파를 따로 준다.
+function hexToRgba(hex, alpha) {
+  const h = hex.replace('#', '')
+  const r = parseInt(h.slice(0, 2), 16)
+  const g = parseInt(h.slice(2, 4), 16)
+  const b = parseInt(h.slice(4, 6), 16)
+  return `rgba(${r},${g},${b},${alpha})`
+}
 
 function nodeRadius(node) {
   // degree 가 큰 노드일수록 크게 — sqrt 로 완만하게. 중심은 최소 크기 보장.
@@ -180,6 +196,10 @@ function useElementSize(active) {
  *                                   (3)). 이 기간 밖 report 노드·엣지를 흐리게.
  * @param {string=} props.searchQuery  검색어 (Phase 4). 제목/라벨이 매칭되는
  *                                   노드만 또렷하게, 나머지는 흐리게.
+ * @param {{keyOf:(node:object)=>any, colorOf:Map<any,string>}|null=} props.clusters
+ *                                   클러스터 외곽선 (§11.4 4b). keyOf 가 커뮤니티
+ *                                   키를 주는 report 노드를 묶어 convex hull 을
+ *                                   colorOf 색으로 그린다. timeline 모드에선 무시.
  */
 export function LinkGraphCanvas({
   graph,
@@ -191,6 +211,7 @@ export function LinkGraphCanvas({
   laneOf = null,
   timeFilter = null,
   searchQuery = '',
+  clusters = null,
 }) {
   const fgRef = useRef(null)
   const [containerRef, size] = useElementSize(active)
@@ -231,6 +252,18 @@ export function LinkGraphCanvas({
     applyForces(fgRef.current)
     fgRef.current?.d3ReheatSimulation?.()
   }, [graph, timeline, laneOf, applyForces])
+
+  // 클러스터 외곽선(§11.4 4b)은 onRenderFramePre 로 그리는데, 이 prop 은
+  // force-graph 의 linkedProps 가 아니라 토글만 바뀌면 idle 상태(시뮬레이션이
+  // 식은 뒤)에선 needsRedraw 가 안 켜져 다음 인터랙션까지 다시 안 그려진다.
+  // 줌을 같은 값으로 재설정해 needsRedraw 를 켜 한 프레임 다시 그리게 한다
+  // (스케일 변화 없음 → 화면은 그대로, hull 만 즉시 반영).
+  useEffect(() => {
+    const fg = fgRef.current
+    if (!fg || !ready) return
+    const z = fg.zoom?.()
+    if (z) fg.zoom(z)
+  }, [clusters, ready])
 
   // 타임라인 축 — report 노드들의 report_date 범위. timeline ON 일 때만 계산.
   const timeAxis = useMemo(() => {
@@ -474,6 +507,70 @@ export function LinkGraphCanvas({
     [timeFilter, edgeInWindow, focusSet],
   )
 
+  // ── 클러스터 외곽선(§11.4 4b) ────────────────────────────────────────────
+  // 같은 커뮤니티 report 노드를 convex hull 로 감싼다. 매 프레임 노드의 현재
+  // x,y 로 hull 을 다시 계산(force 가 위치를 갱신). timeline 모드는 노드를 시간
+  // 순으로 재배열해 hull 이 무의미하므로 건너뛴다. dim(검색·hover·타임바)되면
+  // hull 도 함께 옅게.
+  const paintHulls = useCallback(
+    (ctx, globalScale) => {
+      if (!clusters || timeline) return
+      const groups = new Map()
+      for (const n of graphData.nodes) {
+        if (n.type !== 'report' || typeof n.x !== 'number') continue
+        const key = clusters.keyOf(n)
+        if (key == null) continue
+        if (!groups.has(key)) groups.set(key, [])
+        groups.get(key).push(n)
+      }
+      for (const [key, ns] of groups) {
+        if (ns.length < HULL_MIN_NODES) continue
+        const color = clusters.colorOf.get(key)
+        if (!color) continue
+        // 각 노드 둘레 8방향 점을 더해 hull 이 노드 원을 감싸게(패딩).
+        const pts = []
+        for (const n of ns) {
+          const r = nodeRadius(n) + HULL_PAD
+          const d = r * 0.7071
+          pts.push(
+            [n.x + r, n.y],
+            [n.x - r, n.y],
+            [n.x, n.y + r],
+            [n.x, n.y - r],
+            [n.x + d, n.y + d],
+            [n.x - d, n.y + d],
+            [n.x + d, n.y - d],
+            [n.x - d, n.y - d],
+          )
+        }
+        const hull = polygonHull(pts)
+        if (!hull || hull.length < 3) continue
+        // 멤버가 전부 흐림이면 hull 도 더 옅게(강조 맥락 보존).
+        const k = ns.some((n) => !dimNode(n)) ? 1 : 0.3
+        ctx.beginPath()
+        ctx.moveTo(hull[0][0], hull[0][1])
+        for (let i = 1; i < hull.length; i += 1) ctx.lineTo(hull[i][0], hull[i][1])
+        ctx.closePath()
+        ctx.fillStyle = hexToRgba(color, HULL_FILL_ALPHA * k)
+        ctx.fill()
+        ctx.strokeStyle = hexToRgba(color, HULL_STROKE_ALPHA * k)
+        ctx.lineWidth = 1.5 / globalScale
+        ctx.stroke()
+      }
+    },
+    [clusters, timeline, graphData, dimNode],
+  )
+
+  // onRenderFramePre 합성 — 클러스터 hull(아래) + 스윔레인 배경(위). 둘은 모드가
+  // 배타적(hull=평소, 레인=타임라인)이라 실제로 겹치진 않는다.
+  const handleRenderFramePre = useCallback(
+    (ctx, globalScale) => {
+      paintHulls(ctx, globalScale)
+      paintBackground(ctx, globalScale)
+    },
+    [paintHulls, paintBackground],
+  )
+
   // 엣지 색 — report↔report 는 link kind 색, has_tag 회색, composite_member
   // 앰버. 흐림 대상(기간 밖·강조 밖)이면 아주 옅게.
   const linkColor = useCallback(
@@ -679,7 +776,7 @@ export function LinkGraphCanvas({
               linkDirectionalArrowRelPos={1}
               linkDirectionalParticles={0}
               cooldownTicks={80}
-              onRenderFramePre={paintBackground}
+              onRenderFramePre={handleRenderFramePre}
               onNodeHover={(node) => setHoveredId(node?.id ?? null)}
               onEngineStop={handleEngineStop}
             />

@@ -19,6 +19,7 @@ import { cn } from '@/shared/lib/utils'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { colorClasses, labelForKind } from '@/shared/reports/linkKinds'
 import { useGraphColors, GraphColorLegend } from './graphColorMapping'
+import { useCommunities, COMMUNITY_MIN_NODES, SMALL_KEY } from './useCommunities'
 import { listLinkKinds } from '@/shared/api/linkKinds'
 import { listReportTypes } from '@/shared/api/reportTypes'
 import { getGlobalLinkGraph } from '@/shared/api/reportLinks'
@@ -111,8 +112,18 @@ export default function ReportGraphPage() {
     [selectedEntities],
   )
   // 노드 색 기준 (Phase 2). 'type' = 보고서 종류(plan 기본), 'owner' = 작성자,
-  // 'none' = 회색 단색.
+  // 'community' = 자동 클러스터(§11.4 4a), 'none' = 회색 단색.
   const [colorBy, setColorBy] = useState(() => searchParams.get('color') || 'type')
+  // 클러스터링에 관련정보(entity has_tag)를 브릿지로 쓸지 (§11.4) — 켜면 같은
+  // 관련정보를 공유한 보고서가 한 덩어리로 묶인다. community 모드일 때만 의미.
+  const [communityBridge, setCommunityBridge] = useState(
+    () => searchParams.get('club') === '1',
+  )
+  // 클러스터 외곽선(§11.4 4b) — 커뮤니티를 convex hull 로 감싼다. 색 기준과 독립
+  // (색=종류여도 외곽선=구조). 타임라인 모드에선 캔버스가 무시.
+  const [clusterHull, setClusterHull] = useState(
+    () => searchParams.get('clu') === '1',
+  )
 
   // 필터 옵션 카탈로그
   const [typeOptions, setTypeOptions] = useState([]) // [{id,name}]
@@ -200,6 +211,8 @@ export default function ReportGraphPage() {
     if (typeIds.length) p.set('types', typeIds.join(','))
     if (kindKeys.length) p.set('kinds', kindKeys.join(','))
     if (colorBy !== 'type') p.set('color', colorBy)
+    if (colorBy === 'community' && communityBridge) p.set('club', '1')
+    if (clusterHull) p.set('clu', '1')
     if (timeline) p.set('tl', '1')
     if (timeline && laneBy !== 'none') p.set('lane', laneBy)
     if (timeBar) p.set('play', '1')
@@ -217,6 +230,8 @@ export default function ReportGraphPage() {
     typeIds,
     kindKeys,
     colorBy,
+    communityBridge,
+    clusterHull,
     timeline,
     laneBy,
     timeBar,
@@ -379,11 +394,41 @@ export default function ReportGraphPage() {
     setPlayRange(r)
   }, [])
 
+  // ── 자동 클러스터링 (§11.4 4a/4b) ──────────────────────────────────────
+  // 색 기준이 community 거나 외곽선이 켜졌을 때 Louvain 계산. 노드 적으면
+  // ready=false (회색 폴백 + 안내).
+  const communityActive = colorBy === 'community' || clusterHull
+  const community = useCommunities({
+    graph,
+    enabled: communityActive,
+    includeBridges: communityBridge,
+    typeNameById,
+  })
+  // 클러스터링을 요청했는데 노드가 적어 미적용된 경우 안내(드롭다운/토글은
+  // 켜졌는데 색·외곽선이 안 보이는 이유 설명).
+  const communityNotApplied = communityActive && !community.ready && nodeCount > 0
+
+  // 외곽선(4b) 프롭 — 켜졌고 클러스터가 산출됐을 때만. 소규모(SMALL_KEY)는 한
+  // 덩어리가 아니므로 keyOf 에서 제외(전체를 감싸는 거대 hull 방지).
+  const { communityOf, colorOf: communityColorOf } = community
+  const clusters = useMemo(() => {
+    if (!clusterHull || !communityOf || !communityColorOf) return null
+    return {
+      keyOf: (node) => {
+        const k = communityOf.get(node.id)
+        return k === SMALL_KEY ? null : k
+      },
+      colorOf: communityColorOf,
+    }
+  }, [clusterHull, communityOf, communityColorOf])
+
   // 색 매핑 — 페이지·모달 공유 훅 (entity/composite 제외, report 만 집계).
   const { colors, nodeColor, labelFor } = useGraphColors({
     graph,
     colorBy,
     typeNameById,
+    communityOf: community.communityOf,
+    communityLabelOf: community.labelOf,
   })
 
   const overlay = (
@@ -576,9 +621,45 @@ export default function ReportGraphPage() {
             >
               <option value="type">보고서 종류</option>
               <option value="owner">작성자</option>
+              <option value="community">자동 클러스터</option>
               <option value="none">단색</option>
             </select>
           </label>
+
+          {/* 클러스터 브릿지 (§11.4) — 관련정보(entity)로 보고서를 잇는다. 같은
+              관련정보를 공유한 보고서가 한 덩어리로. 색=community 거나 외곽선이
+              켜졌을 때(클러스터링이 도는 상황) 노출 */}
+          {communityActive && (
+            <button
+              type="button"
+              onClick={() => setCommunityBridge((v) => !v)}
+              className={cn(
+                'h-7 rounded-md border px-2 text-[11px] font-medium transition-colors',
+                communityBridge
+                  ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
+                  : 'border-border bg-background text-muted-foreground hover:bg-muted',
+              )}
+              title="같은 관련정보(모델·시험 등)를 공유한 보고서를 한 덩어리로 묶어 클러스터링"
+            >
+              관련정보로 묶기
+            </button>
+          )}
+
+          {/* 클러스터 외곽선 (§11.4 4b) — 커뮤니티를 convex hull 로 감싼다. 색
+              기준과 독립이라 색=종류여도 덩어리=구조를 동시에 볼 수 있다 */}
+          <button
+            type="button"
+            onClick={() => setClusterHull((v) => !v)}
+            className={cn(
+              'h-7 rounded-md border px-2 text-[11px] font-medium transition-colors',
+              clusterHull
+                ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
+                : 'border-border bg-background text-muted-foreground hover:bg-muted',
+            )}
+            title="자동 클러스터를 외곽선(덩어리)으로 감싸 구조를 드러냄 (타임라인 정렬 중엔 비활성)"
+          >
+            클러스터 외곽선
+          </button>
 
           {/* 타임라인 정렬 (Phase 3) — x 를 보고서 일자로 고정, 좌→우 시간 흐름 */}
           <button
@@ -675,6 +756,48 @@ export default function ReportGraphPage() {
 
         {/* 색 범례 — 색 기준이 켜져 있고 범주가 있을 때만 */}
         <GraphColorLegend colors={colors} labelFor={labelFor} className="pt-0.5" />
+
+        {/* 클러스터링 상태 (§11.4 4a/4b) — 적용 결과/미적용 사유 안내 */}
+        {communityActive && community.ready && (
+          <p className="pt-0.5 text-[11px] text-muted-foreground">
+            자동 클러스터 {community.count}개
+            {communityBridge ? ' · 관련정보로 묶음' : ''}
+            {graph?.truncated ? ' · 표시된 노드 기준' : ''}
+          </p>
+        )}
+        {communityNotApplied && (
+          <p className="pt-0.5 text-[11px] text-muted-foreground">
+            노드가 적어 자동 클러스터링을 적용하지 않았습니다 (보고서{' '}
+            {COMMUNITY_MIN_NODES}개 이상 + 연결 필요).
+          </p>
+        )}
+
+        {/* 클러스터 전용 범례 — 외곽선만 켜서 색 기준이 클러스터가 아닐 때, 덩어리
+            색이 뭘 뜻하는지 보여준다. 색=자동 클러스터면 위 범례가 이미 같은 역할 */}
+        {community.ready &&
+          clusterHull &&
+          colorBy !== 'community' &&
+          community.colorOf && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-0.5">
+              <span className="text-[11px] font-medium text-muted-foreground">
+                클러스터
+              </span>
+              {[...community.labelOf]
+                .filter(([k]) => k !== SMALL_KEY)
+                .map(([k, label]) => (
+                  <span
+                    key={String(k)}
+                    className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"
+                  >
+                    <span
+                      className="inline-block h-2.5 w-2.5 rounded-full"
+                      style={{ backgroundColor: community.colorOf.get(k) }}
+                    />
+                    {label}
+                  </span>
+                ))}
+            </div>
+          )}
       </div>
 
       <LinkGraphCanvas
@@ -687,6 +810,7 @@ export default function ReportGraphPage() {
         laneOf={timeline ? laneOf : null}
         timeFilter={timeBar ? playRange : null}
         searchQuery={searchQuery}
+        clusters={clusters}
       />
 
       {/* 타임바 (Phase 3 (3)) — 캔버스 아래 전용 스트립 */}

@@ -17,6 +17,7 @@ import { listReportTypes } from '@/shared/api/reportTypes'
 import { LinkGraphCanvas } from './LinkGraphCanvas'
 import { GraphTagLayer, DEFAULT_TAG_AXES } from './GraphTagLayer'
 import { useGraphColors, GraphColorLegend } from './graphColorMapping'
+import { useCommunities } from './useCommunities'
 
 /**
  * @param {object}  props
@@ -64,10 +65,19 @@ export function ReportGraphModal({ open, onOpenChange, reportId, reportTitle }) 
     () => new Map(typeOptions.map((t) => [t.id, t.name])),
     [typeOptions],
   )
+  // 자동 클러스터링 (§11.4 4a) — 로컬 그래프는 보통 노드가 적어 임계값에 못 미쳐
+  // 회색 폴백이 되지만, 일관성을 위해 옵션은 공유한다. 브릿지는 기본 OFF.
+  const community = useCommunities({
+    graph,
+    enabled: colorBy === 'community',
+    typeNameById,
+  })
   const { colors, nodeColor, labelFor } = useGraphColors({
     graph,
     colorBy,
     typeNameById,
+    communityOf: community.communityOf,
+    communityLabelOf: community.labelOf,
   })
 
   // open + reportId + depth + tagLayer 변화에 반응해 fetch. 닫히면 비움.
@@ -204,6 +214,7 @@ export function ReportGraphModal({ open, onOpenChange, reportId, reportTitle }) 
               >
                 <option value="type">보고서 종류</option>
                 <option value="owner">작성자</option>
+                <option value="community">자동 클러스터</option>
                 <option value="none">단색</option>
               </select>
             </label>

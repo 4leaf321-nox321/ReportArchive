@@ -9,35 +9,49 @@ import { buildCategoricalColors, OTHER_COLOR } from '@/shared/reports/graphColor
 /**
  * @param {object} opts
  * @param {object|null} opts.graph        서버 응답 {nodes,...}
- * @param {'type'|'owner'|'none'} opts.colorBy
+ * @param {'type'|'owner'|'community'|'none'} opts.colorBy
  * @param {Map<number,string>} opts.typeNameById  종류 id→이름 (type 범례용)
+ * @param {Map<string,any>|null=} opts.communityOf  report 노드 id → 커뮤니티 키
+ *                                  (community 모드, useCommunities 제공)
+ * @param {Map<any,string>|null=} opts.communityLabelOf  커뮤니티 키 → 라벨
  * @returns {{colors:object|null, nodeColor:Function|null, labelFor:Function}}
  */
-export function useGraphColors({ graph, colorBy, typeNameById }) {
-  // 노드 → 범주 키. type 은 report_type_id(미지정 '__none__'), owner 는 이름.
+export function useGraphColors({
+  graph,
+  colorBy,
+  typeNameById,
+  communityOf = null,
+  communityLabelOf = null,
+}) {
+  // 노드 → 범주 키. type 은 report_type_id(미지정 '__none__'), owner 는 이름,
+  // community 는 useCommunities 가 배정한 커뮤니티 키(없으면 소규모).
   const keyOf = useCallback(
     (node) => {
       if (colorBy === 'type') return node.report_type_id ?? '__none__'
       if (colorBy === 'owner') return node.owner_name ?? '__none__'
+      if (colorBy === 'community') return communityOf?.get(node.id) ?? '__small__'
       return null
     },
-    [colorBy],
+    [colorBy, communityOf],
   )
   const labelFor = useCallback(
     (key) => {
+      if (colorBy === 'community') return communityLabelOf?.get(key) ?? '클러스터'
       if (key === '__none__') return '미지정'
       if (colorBy === 'type') return typeNameById.get(key) ?? `#${key}`
       return String(key)
     },
-    [colorBy, typeNameById],
+    [colorBy, typeNameById, communityLabelOf],
   )
   const colors = useMemo(() => {
     if (colorBy === 'none' || !graph?.nodes?.length) return null
+    // community 모드인데 클러스터 미산출(노드 적음 등)이면 색 안 입힘 → 회색 단색.
+    if (colorBy === 'community' && !communityOf?.size) return null
     // report 노드만 — entity/composite 노드는 자체 색이라 집계 제외.
     const reportNodes = graph.nodes.filter((n) => n.type === 'report')
     if (!reportNodes.length) return null
     return buildCategoricalColors(reportNodes.map((n) => keyOf(n)))
-  }, [colorBy, graph, keyOf])
+  }, [colorBy, graph, keyOf, communityOf])
   const nodeColor = useMemo(() => {
     if (!colors) return null
     return (node) => colors.colorOf.get(keyOf(node)) ?? OTHER_COLOR

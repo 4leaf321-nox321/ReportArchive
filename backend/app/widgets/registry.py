@@ -786,6 +786,15 @@ def _html_embed_content(props: dict) -> dict:
             # (cross-origin assets, async-rendered content). When unset
             # the widget falls back to its grid cell height.
             "height_px": {"type": "integer", "minimum": 60, "maximum": 4000},
+            # Display mode / entry-point (HTML임베드_번들_설계.md §8.1) — all
+            # optional. display="card" (cover + open buttons, the default when
+            # unset) treats the embed as a standalone doc; "inline" renders the
+            # iframe in-place (height_px / responsive 70vh). title/description/
+            # cover_file_id populate the card; cover_file_id is a /api/files id.
+            "display": {"type": "string", "enum": ["card", "inline"]},
+            "title": {"type": "string", "maxLength": 200},
+            "description": {"type": "string", "maxLength": 1000},
+            "cover_file_id": {"type": "string", "minLength": 1},
         },
         # file_id is *not* required at the schema level so a freshly-
         # inserted widget with no upload yet still validates — the

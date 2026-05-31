@@ -1,5 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
-import { FileCode2, Folder, FolderUp, Loader2, Upload, X } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import {
+  ExternalLink,
+  FileCode2,
+  Folder,
+  FolderUp,
+  ImagePlus,
+  Loader2,
+  Maximize2,
+  Upload,
+  X,
+} from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 import { fetchFileBlob, uploadFile } from '@/shared/api/files'
 import {
@@ -149,6 +160,57 @@ export function HtmlEmbedEditor({ props, content, onChange, readOnly }) {
   const [staged, setStaged] = useState(null) // {entries:[{file,path}], entryPath} | null
   const singleInputRef = useRef(null)
   const folderInputRef = useRef(null)
+  const migratedRef = useRef(false)
+  const [migrating, setMigrating] = useState(false)
+
+  // 레거시 자동 마이그레이션 — 기존 단일 파일(file_id srcdoc) 블록을 편집 모드로
+  // 열면 1-파일 번들로 옮긴다(§8.1). 그래야 옛 블록도 새 탭/CSP sandbox 격리를
+  // 얻는다. 이미 가져오는 srcdoc 바이트를 그대로 재업로드. readOnly(열람)는 건드림
+  // 금지.
+  //
+  // ⚠️ StrictMode(dev)는 effect 를 mount→cleanup→mount 로 두 번 돈다. ref 는
+  // 재마운트에도 유지되므로 `migratedRef` 가드가 단 한 번 실행을 보장한다.
+  // **cleanup 에서 작업을 취소(cancel)하면 안 된다** — 1차(취소된) 마운트가
+  // 번들 생성·patch 를 건너뛰고 2차 마운트는 가드에 막혀, "전환 중…"만 남고
+  // 영영 전환이 안 되는 버그가 됨. 그래서 cancel 플래그 없이 patch 를 끝까지
+  // 수행한다(번들 생성은 멱등이 아니지만 ref 가드로 1회만 실행되니 안전).
+  useEffect(() => {
+    if (readOnly) return
+    if (!fileId || bundleId) return
+    if (migratedRef.current) return
+    migratedRef.current = true
+    setMigrating(true)
+    ;(async () => {
+      try {
+        const blob = await fetchFileBlob(fileId)
+        const name = filename || 'index.html'
+        const file = new File([blob], name, {
+          type: blob.type || 'text/html',
+        })
+        const meta = await createEmbedBundle([{ file, path: name }], name)
+        patch({
+          bundle_id: meta.id,
+          entry_path: meta.entry_path,
+          filename: name,
+          file_id: undefined,
+        })
+      } catch (err) {
+        // 레거시 srcdoc 렌더는 살아 있으므로 치명적이진 않지만, 원인을 알 수
+        // 있게 노출한다. 자동 재시도는 안 함(무한 재시도/토스트 폭탄 방지) —
+        // 사용자가 같은 파일을 다시 올리면 수동 전환 가능.
+        // eslint-disable-next-line no-console
+        console.error('[HtmlEmbed] 레거시 번들 전환 실패:', err)
+        toast.error(
+          `새 탭 지원 전환 실패: ${err?.message || err}. 파일을 다시 올리면 재시도됩니다.`,
+        )
+      } finally {
+        setMigrating(false)
+      }
+    })()
+    // file_id 가 바뀌면(다른 파일로 교체) 다시 평가. patch/filename 은 의도적으로
+    // 제외 — 매 patch 마다 재실행되면 안 됨.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fileId, bundleId, readOnly])
 
   function patch(next) {
     const merged = { ...(content ?? {}), ...next }
@@ -160,10 +222,27 @@ export function HtmlEmbedEditor({ props, content, onChange, readOnly }) {
       delete merged.entry_path
     }
     if (!merged.file_id && !merged.bundle_id) delete merged.filename
+    // 표시 모드 / 표지 필드 — 비면 기본값을 타도록 키 자체를 제거(§8.1).
+    if (merged.display !== 'inline') delete merged.display // 기본 card 는 저장 안 함
+    if (!merged.height_px) delete merged.height_px // 미설정 시 반응형 70vh
+    if (!merged.title) delete merged.title
+    if (!merged.description) delete merged.description
+    if (!merged.cover_file_id) delete merged.cover_file_id
+    // 미디어가 없으면 표시 옵션도 의미 없음 → 정리.
+    if (!merged.file_id && !merged.bundle_id) {
+      delete merged.display
+      delete merged.height_px
+      delete merged.title
+      delete merged.description
+      delete merged.cover_file_id
+    }
     onChange(merged)
   }
 
-  // 단일 .html 업로드 (레거시 srcdoc 경로).
+  // 단일 .html 업로드 — **1-파일 번들**로 만든다(§8.1). srcdoc 이 아니라 번들
+  // 서빙 URL 을 가져야 새 탭/전체화면이 단일·폴더 구분 없이 일관되게 동작하고,
+  // 서빙 응답의 CSP sandbox 로 최상위 탭에서도 토큰 탈취가 막힌다. (레거시
+  // file_id srcdoc 경로는 이미 저장된 보고서 하위호환용으로만 렌더에 남겨둠.)
   async function handleSingleFiles(fileList) {
     const incoming = Array.from(fileList || [])
     if (incoming.length === 0) return
@@ -177,10 +256,18 @@ export function HtmlEmbedEditor({ props, content, onChange, readOnly }) {
     }
     setUploading(true)
     try {
-      const meta = await uploadFile(file)
-      // 단일로 바꾸면 기존 번들은 정리.
-      if (bundleId) deleteEmbedBundle(bundleId).catch(() => {})
-      patch({ file_id: meta.id, filename: meta.filename, bundle_id: undefined })
+      // 엔트리 = 파일명(폴더 없는 단일 파일이라 상대경로 == 이름).
+      const entry = file.name
+      const meta = await createEmbedBundle([{ file, path: entry }], entry)
+      // 이전 번들이 있으면(다시 올리는 경우) 정리.
+      if (bundleId && bundleId !== meta.id)
+        deleteEmbedBundle(bundleId).catch(() => {})
+      patch({
+        bundle_id: meta.id,
+        entry_path: meta.entry_path,
+        filename: file.name,
+        file_id: undefined,
+      })
     } catch (err) {
       toast.error(err.message || '업로드 실패')
     } finally {
@@ -217,7 +304,8 @@ export function HtmlEmbedEditor({ props, content, onChange, readOnly }) {
     if (readOnly) return
     const entries = await entriesFromDataTransfer(e.dataTransfer)
     if (entries.length === 0) return
-    // 단일 html 한 개만 떨군 경우는 레거시 단일 경로로(서버 번들 안 만듦).
+    // 단일 html 한 개만 떨군 경우는 staging 없이 바로 1-파일 번들로(§8.1) —
+    // 엔트리가 자명하므로 지정 단계를 건너뛴다.
     if (
       entries.length === 1 &&
       isHtml(entries[0].path) &&
@@ -289,15 +377,19 @@ export function HtmlEmbedEditor({ props, content, onChange, readOnly }) {
         <>
           {!readOnly && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              {bundleId ? (
+              {bundleId && (entryPath || '').includes('/') ? (
                 <Folder className="h-3.5 w-3.5 shrink-0" />
               ) : (
                 <FileCode2 className="h-3.5 w-3.5 shrink-0" />
               )}
               <span className="truncate flex-1">
                 {bundleId
-                  ? `${entryPath || filename} · 폴더 번들`
-                  : filename || fileId}
+                  ? (entryPath || '').includes('/')
+                    ? `${entryPath} · 폴더 번들`
+                    : `${entryPath || filename} · HTML`
+                  : migrating
+                    ? `${filename || fileId} · 새 탭 지원으로 전환 중…`
+                    : filename || fileId}
               </span>
               <Button
                 variant="ghost"
@@ -310,12 +402,10 @@ export function HtmlEmbedEditor({ props, content, onChange, readOnly }) {
               </Button>
             </div>
           )}
-          <HtmlEmbedFrame
-            fileId={fileId}
-            bundleId={bundleId}
-            entryPath={entryPath}
-            title={filename || props.label}
-          />
+          {!readOnly && (
+            <HtmlEmbedDisplayControls content={content} patch={patch} />
+          )}
+          <HtmlEmbedView content={content} label={props.label} />
         </>
       ) : (
         !readOnly &&
@@ -448,68 +538,75 @@ export function HtmlEmbedEditor({ props, content, onChange, readOnly }) {
   )
 }
 
-/**
- * Renders the embed. Bundle mode loads /api/embed/{bundle_id}/{entry_path}
- * via `src` (relative URL → host-agnostic); single-file mode fetches the
- * bytes and inlines via `srcdoc`. Both use `sandbox="allow-scripts"`
- * (null origin) so author scripts run but stay isolated from the report.
- */
-function HtmlEmbedFrame({ fileId, bundleId, entryPath, title }) {
-  const [html, setHtml] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
+// ── 렌더 헬퍼 ────────────────────────────────────────────────────────────────
 
+// 단일 파일(srcdoc) 모드의 HTML 바이트 로드. 번들 모드면 안 가져옴(src 직접 로드).
+function useSingleFileHtml(fileId, bundleId) {
+  const [state, setState] = useState({ html: '', loading: false, error: '' })
   useEffect(() => {
-    // 번들 모드는 src 로 직접 로드 — 바이트를 안 가져온다.
     if (bundleId || !fileId) {
-      setHtml('')
+      setState({ html: '', loading: false, error: '' })
       return undefined
     }
     let cancelled = false
-    setLoading(true)
-    setError('')
+    setState({ html: '', loading: true, error: '' })
     ;(async () => {
       try {
         const blob = await fetchFileBlob(fileId)
         const text = await blob.text()
-        if (!cancelled) setHtml(text)
+        if (!cancelled) setState({ html: text, loading: false, error: '' })
       } catch (e) {
-        if (!cancelled) setError(e?.message || '불러오기 실패')
-      } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled)
+          setState({ html: '', loading: false, error: e?.message || '불러오기 실패' })
       }
     })()
     return () => {
       cancelled = true
     }
   }, [fileId, bundleId])
+  return state
+}
 
-  const frameClass =
-    'flex-1 w-full min-h-[12rem] rounded-md border bg-background'
+// file_id → objectURL (표지 썸네일 표시용). 언마운트 시 revoke.
+function useFileObjectUrl(fileId) {
+  const [url, setUrl] = useState(null)
+  useEffect(() => {
+    if (!fileId) {
+      setUrl(null)
+      return undefined
+    }
+    let cancelled = false
+    let obj = null
+    ;(async () => {
+      try {
+        const blob = await fetchFileBlob(fileId)
+        if (cancelled) return
+        obj = URL.createObjectURL(blob)
+        setUrl(obj)
+      } catch {
+        if (!cancelled) setUrl(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+      if (obj) URL.revokeObjectURL(obj)
+    }
+  }, [fileId])
+  return url
+}
 
+// 격리된 iframe. 번들=src(상대 URL·호스트 무관), 단일=srcdoc. 둘 다
+// sandbox="allow-scripts"(null origin) → 스크립트는 돌되 보고서엔 격리.
+function EmbedIframe({ bundleId, entryPath, html, title, className, style }) {
   if (bundleId) {
     return (
       <iframe
         title={title || 'HTML embed'}
         src={embedBundleUrl(bundleId, entryPath || 'index.html')}
         sandbox="allow-scripts"
-        className={frameClass}
+        className={className}
+        style={style}
       />
-    )
-  }
-  if (loading) {
-    return (
-      <div className="flex-1 min-h-[12rem] flex items-center justify-center text-xs text-muted-foreground">
-        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-        HTML 불러오는 중…
-      </div>
-    )
-  }
-  if (error) {
-    return (
-      <div className="flex-1 min-h-[12rem] flex items-center justify-center text-xs text-destructive">
-        {error}
-      </div>
     )
   }
   return (
@@ -517,7 +614,287 @@ function HtmlEmbedFrame({ fileId, bundleId, entryPath, title }) {
       title={title || 'HTML embed'}
       srcDoc={html}
       sandbox="allow-scripts"
-      className={frameClass}
+      className={className}
+      style={style}
     />
+  )
+}
+
+// 전체화면 오버레이 — 앱 레벨 CSS(position:fixed). 브라우저 Fullscreen API 가
+// 아니라 sandbox 제약·권한 문제 없음. iframe 격리(null origin)는 그대로 유지.
+function FullscreenEmbed({ title, onClose, children }) {
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prev
+    }
+  }, [onClose])
+  return createPortal(
+    <div className="fixed inset-0 z-[200] flex flex-col bg-black/80 backdrop-blur-sm">
+      <div className="flex items-center justify-between gap-2 px-4 py-2 text-white/90">
+        <span className="truncate text-sm font-medium">{title}</span>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded p-1 hover:bg-white/10"
+          title="닫기 (ESC)"
+        >
+          <X className="h-5 w-5" />
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 px-4 pb-4">{children}</div>
+    </div>,
+    document.body,
+  )
+}
+
+/**
+ * 임베드 표시(§8.1). 위젯을 "관문(gateway)"으로 — display="card"(기본)면
+ * 표지 + 열기 버튼만 보이고, "inline"이면 박스 안 iframe 을 바로 펼친다.
+ * 전체화면·새 탭 버튼은 모드와 무관하게 항상 노출.
+ */
+function HtmlEmbedView({ content, label }) {
+  const fileId = content?.file_id ?? null
+  const bundleId = content?.bundle_id ?? null
+  const entryPath = content?.entry_path ?? ''
+  const filename = content?.filename ?? ''
+  const display = content?.display === 'inline' ? 'inline' : 'card'
+  // 미설정 시 반응형 70vh, 지정 시 고정 px(§8.1 — 임의 HTML 은 자동맞춤 불가).
+  const height = content?.height_px ? `${content.height_px}px` : '70vh'
+  const title =
+    content?.title || content?.caption || filename || label || 'HTML'
+  const description = content?.description || ''
+  const coverUrl = useFileObjectUrl(content?.cover_file_id || null)
+  const { html, loading, error } = useSingleFileHtml(fileId, bundleId)
+  const [fullscreen, setFullscreen] = useState(false)
+  // 새 탭은 자기 URL 이 있는 번들만(단일 srcdoc 은 URL 없음).
+  const newTabUrl = bundleId
+    ? embedBundleUrl(bundleId, entryPath || 'index.html')
+    : null
+
+  const toolbar = (
+    <div className="flex items-center gap-1">
+      <Button variant="outline" size="sm" onClick={() => setFullscreen(true)}>
+        <Maximize2 className="mr-1 h-3.5 w-3.5" />
+        전체화면
+      </Button>
+      {newTabUrl && (
+        <Button variant="outline" size="sm" asChild>
+          <a href={newTabUrl} target="_blank" rel="noopener noreferrer">
+            <ExternalLink className="mr-1 h-3.5 w-3.5" />새 탭
+          </a>
+        </Button>
+      )}
+    </div>
+  )
+
+  const fullscreenNode = fullscreen ? (
+    <FullscreenEmbed title={title} onClose={() => setFullscreen(false)}>
+      <EmbedIframe
+        bundleId={bundleId}
+        entryPath={entryPath}
+        html={html}
+        title={title}
+        className="h-full w-full rounded-md border-0 bg-white"
+      />
+    </FullscreenEmbed>
+  ) : null
+
+  // 단일 파일 로딩/에러는 인라인 본문 자리에 표시.
+  if (display === 'inline') {
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-end">{toolbar}</div>
+        {loading ? (
+          <div
+            className="flex items-center justify-center rounded-md border bg-background text-xs text-muted-foreground"
+            style={{ height }}
+          >
+            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+            HTML 불러오는 중…
+          </div>
+        ) : error ? (
+          <div
+            className="flex items-center justify-center rounded-md border bg-background text-xs text-destructive"
+            style={{ height }}
+          >
+            {error}
+          </div>
+        ) : (
+          <EmbedIframe
+            bundleId={bundleId}
+            entryPath={entryPath}
+            html={html}
+            title={title}
+            className="w-full rounded-md border bg-background"
+            style={{ height }} // 임의 단위(vh/px) 허용
+          />
+        )}
+        {fullscreenNode}
+      </div>
+    )
+  }
+
+  // card 모드 — 표지 + 열기 버튼.
+  return (
+    <div className="rounded-md border bg-muted/20">
+      <div className="flex items-stretch gap-3 p-3">
+        {coverUrl ? (
+          <img
+            src={coverUrl}
+            alt=""
+            className="h-16 w-24 shrink-0 rounded border object-cover"
+          />
+        ) : (
+          <div className="flex h-16 w-24 shrink-0 items-center justify-center rounded border bg-background text-muted-foreground">
+            {bundleId ? (
+              <Folder className="h-6 w-6" />
+            ) : (
+              <FileCode2 className="h-6 w-6" />
+            )}
+          </div>
+        )}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="truncate text-sm font-medium">{title}</div>
+          {description && (
+            <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+              {description}
+            </div>
+          )}
+          <div className="mt-auto pt-2">{toolbar}</div>
+        </div>
+      </div>
+      {fullscreenNode}
+    </div>
+  )
+}
+
+/**
+ * 편집 중 표시 옵션 컨트롤(§8.1) — 표시 모드 / 표지 제목·설명·이미지 / inline 높이.
+ * 모두 Optional, 비우면 기본값(card · 70vh)을 탄다.
+ */
+function HtmlEmbedDisplayControls({ content, patch }) {
+  const display = content?.display === 'inline' ? 'inline' : 'card'
+  const [coverUploading, setCoverUploading] = useState(false)
+  const coverInputRef = useRef(null)
+
+  async function handleCover(fileList) {
+    const file = Array.from(fileList || [])[0]
+    if (!file) return
+    setCoverUploading(true)
+    try {
+      const meta = await uploadFile(file)
+      patch({ cover_file_id: meta.id })
+    } catch (err) {
+      toast.error(err.message || '표지 업로드 실패')
+    } finally {
+      setCoverUploading(false)
+      if (coverInputRef.current) coverInputRef.current.value = ''
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-md border bg-muted/10 p-2 text-xs">
+      <div className="flex items-center gap-2">
+        <span className="text-muted-foreground">표시</span>
+        <div className="flex overflow-hidden rounded-md border">
+          <button
+            type="button"
+            onClick={() => patch({ display: 'card' })}
+            className={`px-2 py-1 ${
+              display === 'card'
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-background hover:bg-muted'
+            }`}
+          >
+            카드
+          </button>
+          <button
+            type="button"
+            onClick={() => patch({ display: 'inline' })}
+            className={`px-2 py-1 ${
+              display === 'inline'
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-background hover:bg-muted'
+            }`}
+          >
+            인라인
+          </button>
+        </div>
+        {display === 'inline' && (
+          <label className="ml-auto flex items-center gap-1">
+            <span className="text-muted-foreground">높이(px)</span>
+            <input
+              type="number"
+              min={60}
+              max={4000}
+              value={content?.height_px || ''}
+              placeholder="자동"
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10)
+                patch({ height_px: Number.isFinite(n) ? n : undefined })
+              }}
+              className="w-20 rounded border bg-background px-1.5 py-1 text-[11px]"
+            />
+          </label>
+        )}
+      </div>
+
+      {display === 'card' && (
+        <div className="space-y-2">
+          <input
+            value={content?.title || ''}
+            placeholder="표지 제목 (비우면 캡션·파일명)"
+            onChange={(e) => patch({ title: e.target.value })}
+            className="w-full rounded border bg-background px-1.5 py-1 text-[11px]"
+          />
+          <textarea
+            value={content?.description || ''}
+            placeholder="표지 설명 (선택)"
+            rows={2}
+            onChange={(e) => patch({ description: e.target.value })}
+            className="w-full resize-none rounded border bg-background px-1.5 py-1 text-[11px]"
+          />
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={coverUploading}
+              onClick={() => coverInputRef.current?.click()}
+            >
+              {coverUploading ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <ImagePlus className="mr-1 h-3.5 w-3.5" />
+              )}
+              표지 이미지
+            </Button>
+            {content?.cover_file_id && (
+              <button
+                type="button"
+                onClick={() => patch({ cover_file_id: undefined })}
+                className="text-muted-foreground hover:text-destructive"
+              >
+                표지 제거
+              </button>
+            )}
+            <input
+              ref={coverInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => handleCover(e.target.files)}
+            />
+          </div>
+        </div>
+      )}
+    </div>
   )
 }

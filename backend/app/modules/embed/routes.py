@@ -151,6 +151,15 @@ def serve_bundle_file(
             "Access-Control-Allow-Origin": "*",
             "Cross-Origin-Resource-Policy": "cross-origin",
             "X-Content-Type-Options": "nosniff",
+            # CSP sandbox makes the served document opaque-origin even when
+            # opened as a *top-level* tab (the "새 탭" / open-in-new-tab UX) —
+            # not just inside our sandboxed iframe. Without this, a top-level
+            # /api/embed/... page would run author JS on the app's own origin
+            # and could read the viewer's localStorage access token. The
+            # directive mirrors the iframe's sandbox="allow-scripts" (no
+            # allow-same-origin) so behaviour is identical everywhere; the
+            # null origin + ACAO:* keeps sibling fetch() working (§4, §8.1).
+            "Content-Security-Policy": "sandbox allow-scripts",
             # Bundle contents are immutable per id; let browsers cache.
             "Cache-Control": "public, max-age=3600",
         },

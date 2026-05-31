@@ -301,6 +301,12 @@ class ReportRead(BaseModel):
     # save).
     can_edit: Optional[bool] = None
     edit_role: Optional[str] = None
+    # 조직 간 공개(조직간공개_설계.md §6) — 외부 공개 열람자 여부와 곁다리
+    # 가능 여부. is_public_view=True 면 프런트가 "다른 조직의 공개 보고서 ·
+    # 읽기 전용" 배너를 띄우고 댓글/편집/이력 UI 를 숨긴다. can_comment 는
+    # 공개 열람자에게 False(멤버 열람자는 평소대로 True). None = 비결정(목록).
+    is_public_view: Optional[bool] = None
+    can_comment: Optional[bool] = None
 
     @model_validator(mode="before")
     @classmethod

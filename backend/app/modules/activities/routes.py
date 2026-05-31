@@ -20,9 +20,10 @@ from app.modules.activities.schemas import (
     ActivityListResponse,
     ActivityRead,
 )
+from app.modules.reports import services as report_services
 from app.modules.users.models import User
-from app.shared.auth import get_current_user_no_workspace
-from app.shared.responses import success_response
+from app.shared.auth import CurrentUser, get_current_user
+from app.shared.responses import error_response, not_found_response, success_response
 
 
 router = APIRouter()
@@ -34,17 +35,30 @@ def list_report_activities(
     limit: int = Query(default=50, ge=1, le=200),
     before_id: int | None = Query(default=None, ge=1),
     db: Session = Depends(get_db),
-    actor: User = Depends(get_current_user_no_workspace),
+    actor: CurrentUser = Depends(get_current_user),
 ):
     """Newest-first timeline for the report. Cursor pagination via
     `before_id` — passing the smallest id of the previous page returns
     the next page.
 
-    Visibility: any authenticated user can read (matches the comments
-    permission model — if you can see the report you can see what
-    happened to it). Activity rows don't carry secrets; private edits
-    are differentiated only by who the actor was.
+    Visibility: 보고서를 볼 수 있는 멤버 열람자만(코멘트 권한 모델과 동일).
+    외부 공개 열람자(조직간공개_설계.md §6)에겐 수정 이력을 숨긴다(빈 목록) —
+    "본문+첨부만 읽기전용" 원칙. 스코프 밖이면 403.
     """
+    report = report_services.get_report(db, report_id)
+    if report is None:
+        return not_found_response(f"보고서를 찾을 수 없습니다: {report_id}")
+    if not actor.workspace.virtual and not report_services.is_visible_to(
+        db, report, actor.workspace.slug
+    ):
+        return error_response("Out of workspace scope", status_code=403)
+    # 외부 공개 열람자에겐 이력 숨김(빈 목록).
+    if not actor.workspace.virtual and report_services.is_public_only_viewer(
+        db, report, actor.workspace.slug
+    ):
+        return success_response(
+            data=ActivityListResponse(items=[]).model_dump(mode="json")
+        )
     rows = services.list_activities_for_report(
         db, report_id=report_id, limit=limit, before_id=before_id
     )

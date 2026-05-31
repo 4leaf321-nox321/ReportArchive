@@ -58,6 +58,18 @@ def _to_http(exc: services.CommentError):
     )
 
 
+def _public_only(db: Session, actor: CurrentUser, report) -> bool:
+    """이 보고서를 *공개 경로로만* 보고 있는 외부 열람자인가 — 댓글 차단
+    가드(조직간공개_설계.md §6). 읽기 게이트(is_visible_to)는 공개분을
+    통과시키므로, "본문+첨부만 읽기전용" 을 지키려면 댓글 조회/작성은 여기서
+    별도로 막는다. virtual(글로벌/관리자)·멤버 열람자는 False(평소대로 허용)."""
+    return (
+        not actor.workspace.virtual
+        and report is not None
+        and report_services.is_public_only_viewer(db, report, actor.workspace.slug)
+    )
+
+
 def _thread_payload(db: Session, thread: CommentThread) -> dict:
     """Build CommentThreadRead with nested comments and author info
     resolved. Done route-side so the schema stays declarative."""
@@ -155,6 +167,9 @@ def list_threads(
         db, report, actor.workspace.slug
     ):
         return error_response("Out of workspace scope", status_code=403)
+    # 외부 공개 열람자에겐 댓글을 숨긴다(빈 목록) — 본문+첨부만 노출(§6).
+    if _public_only(db, actor, report):
+        return success_response(data={"items": []})
 
     threads = services.list_threads_for_report(db, report_id)
     payload = CommentThreadListResponse(
@@ -181,6 +196,10 @@ def create_thread(
         db, report, actor.workspace.slug
     ):
         return error_response("Out of workspace scope", status_code=403)
+    if _public_only(db, actor, report):
+        return error_response(
+            "다른 조직의 공개 보고서에는 댓글을 작성할 수 없습니다.", status_code=403
+        )
 
     try:
         thread = services.create_thread(
@@ -220,6 +239,10 @@ def reply_to_thread(
         db, report, actor.workspace.slug
     ):
         return error_response("Out of workspace scope", status_code=403)
+    if _public_only(db, actor, report):
+        return error_response(
+            "다른 조직의 공개 보고서에는 댓글을 작성할 수 없습니다.", status_code=403
+        )
 
     try:
         comment = services.add_comment(
@@ -241,6 +264,15 @@ def set_status(
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
+    # 공개 열람자는 스레드 해결/재오픈도 불가(§6) — thread→report 로 판정.
+    thread_row = db.get(CommentThread, thread_id)
+    if thread_row is not None and _public_only(
+        db, actor, report_services.get_report(db, thread_row.report_id)
+    ):
+        return error_response(
+            "다른 조직의 공개 보고서에는 댓글 상태를 변경할 수 없습니다.",
+            status_code=403,
+        )
     try:
         thread = services.set_thread_status(
             db,

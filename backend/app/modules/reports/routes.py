@@ -42,6 +42,14 @@ def _read_with_perms(db: Session, actor: CurrentUser, report) -> ReportRead:
     decision = can_edit(db, actor.user, report)
     obj.can_edit = decision.allowed
     obj.edit_role = decision.role
+    # 조직 간 공개(§6) — 외부 공개 열람자면 읽기전용 플래그를 세워 프런트가
+    # 배너·곁다리 숨김을 그린다. virtual(글로벌/관리자)은 공개 열람자가 아님.
+    is_public_view = (
+        not actor.workspace.virtual
+        and services.is_public_only_viewer(db, report, actor.workspace.slug)
+    )
+    obj.is_public_view = is_public_view
+    obj.can_comment = not is_public_view
     return obj
 
 

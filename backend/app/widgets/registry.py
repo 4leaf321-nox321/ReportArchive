@@ -771,6 +771,13 @@ def _html_embed_content(props: dict) -> dict:
             "caption": _CAPTION_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             "file_id": {"type": "string", "minLength": 1},
+            # Folder bundle mode (HTML임베드_번들_설계.md) — when set, the
+            # widget renders /api/embed/{bundle_id}/{entry_path} in a sandbox
+            # iframe instead of inlining a single file via srcdoc. file_id and
+            # bundle_id are mutually exclusive in practice (frontend enforces).
+            "bundle_id": {"type": "string", "minLength": 1, "maxLength": 32},
+            # Entry (main) HTML — posix relpath inside the bundle.
+            "entry_path": {"type": "string", "minLength": 1, "maxLength": 512},
             # Display only — the original uploaded filename so the editor
             # can show "report.html" next to the upload button.
             "filename": {"type": "string", "maxLength": 255},

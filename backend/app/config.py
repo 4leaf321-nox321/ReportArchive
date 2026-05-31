@@ -71,6 +71,16 @@ class Settings(BaseSettings):
     # needs to match (see 그래프정보.md / deployment docs).
     upload_max_bytes_video: int = Field(default=1024 * 1024 * 1024)
 
+    # --- HTML embed bundles (폴더 임베드) ---
+    # 메인 HTML + 서브 파일(json/js/이미지)을 폴더 구조 그대로 올려 sandbox
+    # iframe 으로 서빙한다(HTML임베드_번들_설계.md). file 업로드와 별도 저장소.
+    embed_bundles_dir: str = Field(default="embed_bundles")
+    # 번들 1개 합계 상한(기본 1GB — 영상 등 큰 자산 포함). reverse-proxy 의
+    # client_max_body_size 와 맞춰야 함.
+    embed_max_bytes: int = Field(default=1024 * 1024 * 1024)
+    # 번들 1개 파일 수 상한 — 폴더 통째 업로드 시 폭주 방지.
+    embed_max_files: int = Field(default=2000)
+
     @property
     def is_development(self) -> bool:
         return self.app_env.lower() == "development"
@@ -97,6 +107,16 @@ class Settings(BaseSettings):
     def upload_dir_path(self) -> Path:
         """Absolute path to the upload directory; created on first access."""
         candidate = Path(self.upload_dir)
+        if not candidate.is_absolute():
+            candidate = (BACKEND_ROOT / candidate).resolve()
+        candidate.mkdir(parents=True, exist_ok=True)
+        return candidate
+
+    @property
+    def embed_bundles_dir_path(self) -> Path:
+        """Absolute path to the HTML embed bundles directory; created on
+        first access. Each bundle lives at {dir}/{bundle_id}/<relpath...>."""
+        candidate = Path(self.embed_bundles_dir)
         if not candidate.is_absolute():
             candidate = (BACKEND_ROOT / candidate).resolve()
         candidate.mkdir(parents=True, exist_ok=True)

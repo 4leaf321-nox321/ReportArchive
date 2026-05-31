@@ -41,6 +41,7 @@ yarn-error.log*
 # Runtime / user data (DB files, uploads — should not be in git)
 # ==============================================================================
 backend/uploads/
+backend/embed_bundles/
 backend/data/
 *.sqlite
 *.sqlite3

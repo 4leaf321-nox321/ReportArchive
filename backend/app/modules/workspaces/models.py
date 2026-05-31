@@ -67,6 +67,13 @@ class Workspace(Base):
     )
     sort_order: Mapped[int] = mapped_column(default=0, nullable=False)
 
+    # 조직 간 공개(조직간공개_설계.md §4.1). 이 게시판에 게시된 보고서를
+    # 다른 조직이 조회 가능한가 — 폴더가 override 가능(Folder.external_view).
+    # org 게시판에만 의미; personal/virtual 은 무시(개인공간은 공개 대상 아님).
+    external_view_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )

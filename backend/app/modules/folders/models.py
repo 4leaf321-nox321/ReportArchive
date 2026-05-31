@@ -26,6 +26,7 @@ import enum
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
@@ -86,6 +87,13 @@ class Folder(Base):
 
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # 조직 간 공개 폴더별 override (조직간공개_설계.md §4.2). 3-state:
+    # NULL=게시판 기본값(workspace.external_view_default) 상속, TRUE=공개,
+    # FALSE=비공개. org 폴더에만 의미; personal 폴더는 항상 무시(공개 대상 아님).
+    external_view: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, server_default=None
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False

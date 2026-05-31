@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.modules.composites.models import CompositeReport, CompositeReportItem
 from app.modules.entities import services as entity_services
 from app.modules.entities.models import Entity, ReportEntity
+from app.modules.folders.models import Folder
 from app.modules.mounts.models import ReportMount
 from app.modules.reports.models import (
     Report,
@@ -181,14 +182,9 @@ def get_report(db: Session, report_id: int) -> Optional[Report]:
     return db.get(Report, report_id)
 
 
-def is_visible_to(db: Session, report: Report, workspace_slug: str) -> bool:
-    """Workspace visibility check — used by /api/reports/{id} and
-    similar single-report routes.
-
-    Match list_reports_in_workspace's branching: personal workspaces
-    only see directly-owned reports; org workspaces see anything mounted
-    within their descendant tree.
-    """
+def _is_member_visible(db: Session, report: Report, workspace_slug: str) -> bool:
+    """가시성 갈래 1·2 (멤버십 경로): 직접 소유 or descendant 트리 mount.
+    공개(갈래 3)는 제외 — is_visible_to / is_public_only_viewer 가 조합한다."""
     # personal-space view: direct ownership only.
     if report.workspace_slug == workspace_slug:
         return True
@@ -205,6 +201,73 @@ def is_visible_to(db: Session, report: Report, workspace_slug: str) -> bool:
         .limit(1)
     ).first()
     return mount_exists is not None
+
+
+def _public_mount_query(*extra_where):
+    """공개(external_view effective TRUE)인 mount 의 report_id 를 뽑는 공통
+    select 빌더 (조직간공개_설계.md §3.2). effective 규칙:
+
+        coalesce(folder.external_view, workspace.external_view_default)
+
+    mount 에 folder 가 없거나(folder_id NULL → outer join 으로 NULL) folder 의
+    external_view 가 NULL(상속)이면 게시판 기본값을 타고, 폴더가 TRUE/FALSE 면
+    폴더가 이긴다. org 게시판만 의미 — personal/virtual 은 제외."""
+    effective = func.coalesce(Folder.external_view, Workspace.external_view_default)
+    return (
+        select(ReportMount.report_id)
+        .join(Workspace, Workspace.slug == ReportMount.workspace_slug)
+        .outerjoin(Folder, Folder.id == ReportMount.folder_id)
+        .where(
+            Workspace.kind == WorkspaceKind.org,
+            effective.is_(True),
+            *extra_where,
+        )
+    )
+
+
+def public_report_ids(db: Session) -> set[int]:
+    """공개로 표시된 mount 를 하나라도 가진 report_id 집합(§4.4). 목록/그래프의
+    대량 가시성 판정에 쓴다 — `_scoped_report_ids` 와 합쳐 "내 스코프 ∪ 공개분"."""
+    return set(db.execute(_public_mount_query()).scalars())
+
+
+def report_has_public_mount(db: Session, report_id: int) -> bool:
+    """단일 보고서가 공개 mount 를 가졌는지 — 가벼운 EXISTS 쿼리."""
+    return (
+        db.execute(
+            _public_mount_query(ReportMount.report_id == report_id).limit(1)
+        ).first()
+        is not None
+    )
+
+
+def is_visible_to(db: Session, report: Report, workspace_slug: str) -> bool:
+    """Workspace visibility check — used by /api/reports/{id} and
+    similar single-report routes.
+
+    Match list_reports_in_workspace's branching: personal workspaces
+    only see directly-owned reports; org workspaces see anything mounted
+    within their descendant tree. 추가로 §3.1 갈래 3 — 공개(external_view)
+    mount 를 하나라도 가진 보고서는 조직 경계와 무관하게 모든 인증 사용자에게
+    가시(공개분은 항상 열람 가능).
+    """
+    return _is_member_visible(db, report, workspace_slug) or report_has_public_mount(
+        db, report.id
+    )
+
+
+def is_public_only_viewer(
+    db: Session, report: Report, workspace_slug: str
+) -> bool:
+    """이 사용자가 이 보고서를 *공개 경로로만* 보고 있는가(조직간공개_설계.md §6).
+
+    = 멤버십/mount(갈래 1·2)로는 안 보이는데 공개(갈래 3)로만 보이는 상태.
+    댓글·수정이력 등 곁다리 차단 가드와 `_read_with_perms` 의 읽기전용 권한
+    플래그에 쓴다. (멤버 열람자에겐 평소대로 곁다리가 열려야 하므로 갈래 1·2
+    가 참이면 무조건 False.)"""
+    if _is_member_visible(db, report, workspace_slug):
+        return False
+    return report_has_public_mount(db, report.id)
 
 
 def _validate_page(db: Session, page: ReportPage) -> None:

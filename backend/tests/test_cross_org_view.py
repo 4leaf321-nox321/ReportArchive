@@ -240,3 +240,88 @@ def test_public_viewer_cannot_add_link() -> None:
     finally:
         _set_dx_public(False)
         _delete_report(client, rid)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3 — 설정 토글 + 권한 위임                                              #
+# --------------------------------------------------------------------------- #
+
+
+def test_manager_can_toggle_workspace_public_outsider_cannot() -> None:
+    """dx 매니저(admin)는 게시판 공개 토글 200; dev 멤버(비매니저)는 403."""
+    client = TestClient(app)
+    outsider = _ensure_outsider()
+    try:
+        # 비매니저 거부
+        denied = client.patch(
+            f"/api/workspaces/{ADMIN_WORKSPACE}/external-view",
+            headers=_outsider_headers(outsider),
+            json={"external_view_default": True},
+        )
+        assert denied.status_code == 403, denied.text
+        # 매니저 허용 + 값 반영
+        ok = client.patch(
+            f"/api/workspaces/{ADMIN_WORKSPACE}/external-view",
+            headers=_admin_headers(),
+            json={"external_view_default": True},
+        )
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["data"]["external_view_default"] is True
+    finally:
+        _set_dx_public(False)
+
+
+def test_folder_override_makes_report_public_even_when_board_private() -> None:
+    """게시판 기본은 비공개여도, 그 안 폴더를 공개로 override 하면 외부 열람 가능."""
+    client = TestClient(app)
+    outsider = _ensure_outsider()
+    _set_dx_public(False)  # 게시판 기본 비공개
+    # org 폴더 생성
+    folder_res = client.post(
+        "/api/folders?workspace_slug=" + ADMIN_WORKSPACE,
+        headers=_admin_headers(),
+        json={"name": "공개폴더-테스트"},
+    )
+    assert folder_res.status_code == 201, folder_res.text
+    folder_id = folder_res.json()["data"]["id"]
+    # 그 폴더에 보고서 게시
+    template_id, version = _pick_template(client)
+    rep = client.post(
+        "/api/reports",
+        headers=_admin_headers(),
+        json={
+            "template_id": template_id,
+            "template_version": version,
+            "title": "폴더공개 테스트",
+            "tags": [],
+        },
+    )
+    rid = rep.json()["data"]["id"]
+    client.post(
+        "/api/mounts",
+        headers=_admin_headers(),
+        json={
+            "report_id": rid,
+            "workspace_slugs": [ADMIN_WORKSPACE],
+            "folder_id": folder_id,
+        },
+    )
+    try:
+        h = _outsider_headers(outsider)
+        # override 전 — 비공개라 외부 403
+        assert client.get(f"/api/reports/{rid}", headers=h).status_code == 403
+        # 폴더를 공개로 override (매니저)
+        patched = client.patch(
+            f"/api/folders/{folder_id}",
+            headers=_admin_headers(),
+            json={"external_view": True},
+        )
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["data"]["external_view"] is True
+        # override 후 — 외부 200 + 읽기전용
+        got = client.get(f"/api/reports/{rid}", headers=h)
+        assert got.status_code == 200, got.text
+        assert got.json()["data"]["is_public_view"] is True
+    finally:
+        _delete_report(client, rid)
+        client.delete(f"/api/folders/{folder_id}", headers=_admin_headers())

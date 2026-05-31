@@ -313,12 +313,21 @@ def update_folder(
     parent_id_set: bool = False,
     parent_id: Optional[int] = None,
     sort_order: Optional[int] = None,
+    external_view_set: bool = False,
+    external_view: Optional[bool] = None,
 ) -> Folder:
     folder = _get_folder_with_permission(
         db, folder_id, actor_user_id, actor_is_system_admin=actor_is_system_admin
     )
     if name is not None:
         folder.name = name.strip()
+    if external_view_set:
+        # 공개 override 는 org 폴더 전용(조직간공개_설계.md §4.2) — 개인 폴더는
+        # 공개 대상이 아니다. _get_folder_with_permission 이 이미 매니저/소유자
+        # 게이트를 통과시켰으므로 여기선 종류만 막는다. null=상속/True/False.
+        if folder.kind != FolderKind.org:
+            raise FolderError("개인 폴더는 공개 설정을 가질 수 없습니다.")
+        folder.external_view = external_view
     if parent_id_set:
         if parent_id is not None:
             if parent_id == folder_id:

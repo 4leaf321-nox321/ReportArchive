@@ -26,6 +26,9 @@ class WorkspaceRead(BaseModel):
     # render "내 공간" badge / scope personal-workspace-only actions.
     personal_owner_user_id: Optional[int] = None
     sort_order: int
+    # 조직 간 공개(조직간공개_설계.md §4.1) — 이 게시판 기본 공개정책. org 에만
+    # 의미. 프런트가 공개 토글/뱃지를 그릴 때 현재 상태로 읽는다.
+    external_view_default: bool = False
 
 
 class WorkspaceCreate(BaseModel):
@@ -54,6 +57,15 @@ class WorkspaceUpdate(BaseModel):
     # When the client omits the field, we leave parent untouched. Pydantic v2
     # exposes `model_fields_set` so the route layer can tell these apart.
     parent_slug: Optional[str] = None
+
+
+class WorkspaceExternalViewUpdate(BaseModel):
+    """게시판 기본 공개정책 전용 PATCH(조직간공개_설계.md §8 (a)). 시스템관리자
+    전용인 일반 WorkspaceUpdate 와 분리해 공개 토글만 게시판 매니저에게 위임한다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    external_view_default: bool
 
 
 class WorkspaceBulkCreateItem(BaseModel):

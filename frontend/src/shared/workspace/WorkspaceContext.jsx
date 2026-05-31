@@ -131,6 +131,14 @@ export function WorkspaceProvider({ children }) {
   // Tree helpers — kept here so the provider is the single source of truth.
   const helpers = React.useMemo(() => makeHelpers(all), [all])
 
+  // 로컬 패치 — 워크스페이스 한 건의 필드를 갱신(전체 재요청 없이). 게시판
+  // 공개 토글(external_view_default) 후 컨텍스트를 즉시 반영하는 데 쓴다.
+  const patchWorkspace = React.useCallback((slug, partial) => {
+    setAll((prev) =>
+      prev.map((w) => (w.slug === slug ? { ...w, ...partial } : w)),
+    )
+  }, [])
+
   const value = React.useMemo(
     () => ({
       // `workspace` / `slug` = effective workspace for the CURRENT page
@@ -148,6 +156,7 @@ export function WorkspaceProvider({ children }) {
       loading,
       error,
       switchWorkspace,
+      patchWorkspace,
       prefs,
       ...helpers,
     }),
@@ -160,6 +169,7 @@ export function WorkspaceProvider({ children }) {
       loading,
       error,
       switchWorkspace,
+      patchWorkspace,
       prefs,
       helpers,
     ]

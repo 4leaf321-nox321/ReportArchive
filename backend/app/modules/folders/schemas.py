@@ -19,6 +19,9 @@ class FolderRead(BaseModel):
     parent_id: Optional[int]
     name: str
     sort_order: int
+    # 조직 간 공개 3-state override(조직간공개_설계.md §4.2). NULL=게시판 기본
+    # 상속, TRUE=공개, FALSE=비공개. org 폴더에만 의미.
+    external_view: Optional[bool] = None
     created_at: datetime
     # Computed by the list service (single grouped query).
     report_count: int = 0
@@ -44,3 +47,6 @@ class FolderUpdate(BaseModel):
     # "leave unchanged" (omitted).
     parent_id: Optional[int] = None
     sort_order: Optional[int] = None
+    # 조직 간 공개 3-state. 'external_view' in payload 면 변경 — null=상속,
+    # true=공개, false=비공개. 키 자체가 없으면 그대로 둔다(parent_id 와 동일 패턴).
+    external_view: Optional[bool] = None

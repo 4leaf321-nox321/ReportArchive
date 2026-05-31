@@ -40,6 +40,9 @@ export async function updateFolder(id, patch) {
   if ('name' in patch) body.name = patch.name
   if ('parentId' in patch) body.parent_id = patch.parentId
   if ('sortOrder' in patch) body.sort_order = patch.sortOrder
+  // 조직 간 공개 3-state. 'externalView' in patch 면 전송 — null=상속,
+  // true=공개, false=비공개. 키를 안 보내면 백엔드가 그대로 둔다.
+  if ('externalView' in patch) body.external_view = patch.externalView
   const res = await apiClient.patch(`${BASE}/${id}`, body)
   return extractData(res)
 }

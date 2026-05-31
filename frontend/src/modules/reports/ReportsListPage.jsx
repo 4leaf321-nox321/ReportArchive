@@ -59,6 +59,7 @@ import { mountReport, unmountReport } from '@/shared/api/mounts'
 import { listTemplates } from '@/shared/api/templates'
 import { listEntityTypes } from '@/shared/api/entities'
 import { listFolders } from '@/shared/api/folders'
+import { setWorkspaceExternalView } from '@/shared/api/workspaces'
 import { EntityMultiPicker } from '@/modules/entities/EntityMultiPicker'
 import { PHASES, PHASE_LABEL, PHASE_VARIANT } from './constants'
 import {
@@ -70,7 +71,7 @@ import { MountDialog } from './MountDialog'
 import { cn } from '@/shared/lib/utils'
 
 export default function ReportsListPage() {
-  const { slug, workspace, all: workspaces, getAncestors, getDescendantsInclusive } = useWorkspace()
+  const { slug, workspace, all: workspaces, getAncestors, getDescendantsInclusive, patchWorkspace } = useWorkspace()
   const { me } = useAuth()
   const navigate = useNavigate()
   const [onlyMine, setOnlyMine] = useState(false)
@@ -139,6 +140,21 @@ export default function ReportsListPage() {
   const bumpFolderReload = useCallback(
     () => setFolderReloadKey((k) => k + 1),
     [],
+  )
+  // 게시판 기본 공개정책(external_view_default) 토글 — org 사이드바의
+  // BoardPublicBar 가 호출(매니저만 노출). 성공 시 컨텍스트를 로컬 패치해
+  // 뱃지/폴더 effective 가 즉시 갱신된다(조직간공개_설계.md §7.1).
+  const handleSetBoardPublic = useCallback(
+    async (next) => {
+      try {
+        await setWorkspaceExternalView(slug, next)
+        patchWorkspace(slug, { external_view_default: next })
+        toast.success(next ? '게시판을 다른 조직에 공개' : '게시판 공개 해제')
+      } catch (e) {
+        toast.error(e?.response?.data?.message || '공개 설정 변경 실패')
+      }
+    },
+    [slug, patchWorkspace],
   )
   // MountDialog opened from the 게시 cell click — `null` = closed.
   // We pass the full report row so the dialog has report.owner_user_id /
@@ -691,6 +707,9 @@ export default function ReportsListPage() {
           onChanged={reload}
           onReportsDrop={handleReportsDropOnFolder}
           reloadKey={folderReloadKey}
+          orgScope={isOrg}
+          boardExternalView={workspace?.external_view_default ?? false}
+          onSetBoardExternalView={handleSetBoardPublic}
         />
       )}
 

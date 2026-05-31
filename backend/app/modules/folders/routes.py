@@ -166,6 +166,8 @@ def update_folder(
             parent_id_set="parent_id" in raw,
             parent_id=raw.get("parent_id"),
             sort_order=raw.get("sort_order"),
+            external_view_set="external_view" in raw,
+            external_view=raw.get("external_view"),
         )
     except services.FolderError as e:
         return _to_http(e)

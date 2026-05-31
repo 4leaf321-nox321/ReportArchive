@@ -57,6 +57,17 @@ export async function bulkCreateWorkspaces(items) {
   return extractData(res)
 }
 
+/**
+ * 게시판 기본 공개정책(external_view_default) 토글 — 시스템관리자 전용인
+ * updateWorkspace 와 분리된 매니저 위임 엔드포인트(조직간공개_설계.md §8 (a)).
+ */
+export async function setWorkspaceExternalView(slug, externalViewDefault) {
+  const res = await apiClient.patch(`${BASE}/${slug}/external-view`, {
+    external_view_default: externalViewDefault,
+  })
+  return extractData(res)
+}
+
 export async function deleteWorkspace(slug) {
   const res = await apiClient.delete(`${BASE}/${slug}`)
   return extractData(res)

@@ -8,14 +8,17 @@ from app.database import get_db
 from app.modules.users.models import User
 from app.modules.workspaces import services
 from app.modules.workspaces.models import Workspace, WorkspaceKind
+from app.modules.users.models import Role
 from app.modules.workspaces.schemas import (
     WorkspaceBulkCreate,
     WorkspaceCreate,
+    WorkspaceExternalViewUpdate,
     WorkspaceRead,
     WorkspaceUpdate,
 )
 from app.shared.auth import (
     CurrentUser,
+    _resolve_role,
     get_current_user_no_workspace,
     require_system_admin,
 )
@@ -108,6 +111,38 @@ def update_workspace(
         ws = services.update_workspace(db, ws, payload)
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return success_response(data=WorkspaceRead.model_validate(ws))
+
+
+@router.patch("/{slug}/external-view")
+def set_workspace_external_view(
+    slug: str,
+    payload: WorkspaceExternalViewUpdate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(get_current_user_no_workspace),
+):
+    """게시판 기본 공개정책(external_view_default) 토글 — 그 게시판의 매니저
+    (조상 매니저 포함) 또는 시스템관리자만. 일반 PATCH /workspaces 는 시스템
+    관리자 전용이라, 공개 권한만 매니저에게 위임하려고 별도 엔드포인트로 둔다
+    (조직간공개_설계.md §8 (a)). org 게시판에만 의미 — personal/virtual 거부."""
+    ws = db.get(Workspace, slug)
+    if not ws:
+        return not_found_response(f"부서를 찾을 수 없습니다: {slug}")
+    if ws.kind != WorkspaceKind.org:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "조직 게시판만 공개 설정을 가질 수 있습니다.",
+        )
+    if not (
+        actor.is_system_admin or _resolve_role(db, actor.id, slug) == Role.manager
+    ):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "이 게시판의 매니저만 공개 설정을 변경할 수 있습니다.",
+        )
+    ws.external_view_default = payload.external_view_default
+    db.commit()
+    db.refresh(ws)
     return success_response(data=WorkspaceRead.model_validate(ws))
 
 

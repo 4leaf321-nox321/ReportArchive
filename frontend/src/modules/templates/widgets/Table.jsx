@@ -130,6 +130,14 @@ export function TableEditor({ props, content, onChange, readOnly }) {
       ? content.column_widths
       : {}
   const [resizePreview, setResizePreview] = useState(null) // {key, px} | null
+  // 표 전체 절대 폭(px) — 설정 시 표가 이 폭으로 좌측 정렬되어 편집·뷰가
+  // 일치(가로 cell 을 다 안 채움). null = 전체 폭(기존 동작).
+  const tableWidthPx = Number.isFinite(content?.table_width_px)
+    ? content.table_width_px
+    : null
+  const tableBoxStyle = tableWidthPx
+    ? { width: `${tableWidthPx}px`, maxWidth: '100%' }
+    : undefined
 
   function patch(next) {
     const merged = {
@@ -149,6 +157,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     ) {
       delete merged.column_widths
     }
+    if (!Number.isFinite(merged.table_width_px)) delete merged.table_width_px
     onChange(merged)
   }
 
@@ -240,7 +249,10 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                 )}
               </Button>
             </div>
-            <div className={`overflow-x-auto rounded-md border ${bodyTextClass}`} style={bodyTextStyle}>
+            <div
+              className={`overflow-x-auto rounded-md border ${bodyTextClass}`}
+              style={{ ...bodyTextStyle, ...tableBoxStyle }}
+            >
               {/* No trailing column here — edit mode reserves an action column
                   for row buttons, but in view mode that would just leave a
                   blank ~80px gap on the right. Data columns fill the full
@@ -645,6 +657,49 @@ export function TableEditor({ props, content, onChange, readOnly }) {
             </Button>
           </div>
         )}
+        {/* 표 전체 폭(px) — 비우면 전체 폭. 설정 시 좌측 정렬이라 "왼쪽
+            절반만" 같은 부분 폭도 가능하고, 편집·뷰 폭이 일치한다. 빈 칸에서
+            벗어날 때(blur)·Enter 에 commit 해 입력 중 clamp 점프를 막는다. */}
+        <label
+          className="flex items-center gap-1 rounded-md border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"
+          title="표 전체 폭(px). 비우면 전체 폭. 좌측 정렬이라 절반 폭 등으로 만들 수 있습니다."
+          data-cell-selection-allow
+        >
+          표 폭
+          <input
+            type="number"
+            min={120}
+            max={4000}
+            step={20}
+            key={tableWidthPx ?? 'auto'}
+            defaultValue={tableWidthPx ?? ''}
+            placeholder="전체"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.currentTarget.blur()
+            }}
+            onBlur={(e) => {
+              const v = e.target.value.trim()
+              if (v === '') {
+                patch({ table_width_px: undefined })
+                return
+              }
+              const n = Math.min(Math.max(120, Math.round(Number(v))), 4000)
+              patch({ table_width_px: Number.isFinite(n) ? n : undefined })
+            }}
+            className="w-14 bg-transparent border-0 outline-none text-right tabular-nums focus:ring-1 focus:ring-ring rounded"
+          />
+          px
+          {tableWidthPx != null && (
+            <button
+              type="button"
+              onClick={() => patch({ table_width_px: undefined })}
+              className="ml-0.5 hover:text-foreground"
+              title="전체 폭으로"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </label>
         <DataTableActions
           label="표 데이터"
           onCopy={() => {
@@ -665,7 +720,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
         className={`overflow-x-auto rounded-md border ${bodyTextClass} ${
           selection.crossCellDragging ? 'select-none cursor-cell' : ''
         }`}
-        style={bodyTextStyle}
+        style={{ ...bodyTextStyle, ...tableBoxStyle }}
         onMouseUp={selection.handleMouseUp}
       >
         {/* Edit mode: same column structure as the read-only render. Row

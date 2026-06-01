@@ -534,6 +534,13 @@ def _table_content(props: dict) -> dict:
                     "maximum": 1200,
                 },
             },
+            # 표 전체 절대 폭(px). 설정 시 표가 이 폭으로 좌측 정렬되어
+            # (가로 cell 을 다 안 채움) 편집·뷰가 일치한다. 미설정=전체 폭.
+            "table_width_px": {
+                "type": "integer",
+                "minimum": 120,
+                "maximum": 4000,
+            },
         },
         "additionalProperties": False,
     }
@@ -2795,6 +2802,13 @@ def _comparison_content(props: dict) -> dict:  # noqa: ARG001
                     "required": ["r", "c", "rs", "cs"],
                     "additionalProperties": False,
                 },
+            },
+            # 표 전체 절대 폭(px). 설정 시 비교표가 이 폭으로 좌측 정렬되어
+            # 편집·뷰가 일치(가로 cell 을 다 안 채움). 미설정=전체 폭.
+            "table_width_px": {
+                "type": "integer",
+                "minimum": 120,
+                "maximum": 4000,
             },
         },
         "additionalProperties": False,

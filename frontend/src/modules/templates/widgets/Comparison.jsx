@@ -442,6 +442,14 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
   const storedRowLabelWidth = Number.isFinite(content?.row_label_width)
     ? content.row_label_width
     : null
+  // 비교표 전체 절대 폭(px) — 설정 시 좌측 정렬되어 편집·뷰 폭 일치, 부분
+  // 폭(왼쪽 절반 등) 가능. null = 전체 폭.
+  const tableWidthPx = Number.isFinite(content?.table_width_px)
+    ? content.table_width_px
+    : null
+  const tableBoxStyle = tableWidthPx
+    ? { width: `${tableWidthPx}px`, maxWidth: '100%' }
+    : undefined
   // 셀간 화살표 네비게이션. 컬럼 좌표: 0 = 행 라벨, 1..M = case 셀.
   // 행 좌표: 0..N-1 = 데이터 행 (헤더는 Tab 으로만 이동).
   const grid = useGridNavigation()
@@ -467,6 +475,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     if (!Number.isFinite(merged.row_label_width)) {
       delete merged.row_label_width
     }
+    if (!Number.isFinite(merged.table_width_px)) delete merged.table_width_px
     // Layout overrides — strip when undefined or when matching the
     // template default, so per-report content stays small and a
     // template default change still reaches reports that never
@@ -565,6 +574,25 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     window.addEventListener('mouseup', onUp)
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
+  }
+
+  /** "CASE 폭 균등" — 2번째 열(= 첫 CASE)의 현재 렌더 폭에 맞춰 모든 CASE
+   *  컬럼을 같은 px 로 고정한다(사용자 요청). 첫 열(행 라벨)은 건드리지 않음.
+   *  헤더 th 직접 측정 — thead th[0]=행 라벨, th[1]=첫 CASE. */
+  function equalizeCasesToFirst() {
+    if (cases.length < 2) return
+    const root = selection.containerRef.current
+    if (!root) return
+    const ths = root.querySelectorAll('thead th')
+    const refTh = ths[1] // 0 = 행 라벨, 1 = 첫 CASE(= 2번째 열)
+    if (!refTh) return
+    const w = Math.min(
+      Math.max(CASE_WIDTH_MIN_PX, Math.round(refTh.offsetWidth)),
+      CASE_WIDTH_MAX_PX,
+    )
+    const next = {}
+    for (const c of cases) next[c.key] = w
+    patch({ column_widths: next })
   }
 
   // ─── Case (column) handlers ──────────────────────────────────────────
@@ -800,6 +828,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
               'rounded-md border',
               horizontalScroll ? 'overflow-x-auto' : 'overflow-x-hidden',
             )}
+            style={tableBoxStyle}
           >
             <table
               className={cn(
@@ -919,20 +948,30 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           onChange={(v) => patch({ image_max_height_px: v })}
           suffix="px"
         />
-        {/* CASE 폭 균등하게 — 사용자가 드래그로 조절해 둔 case 컬럼 폭을
-            모두 비워서, table-fixed 가 다시 모든 case 를 균등 분배하도록
-            한다. 첫 열(행 라벨)의 row_label_width 는 의도적으로 건드리지
-            않음 — 사용자 요청 "첫열은 제외". 지정된 폭이 하나도 없으면
-            disabled 로 두어 의미 없는 클릭을 차단. */}
+        {/* 표 전체 폭(px) — 비우면 전체 폭. 설정 시 좌측 정렬이라 "왼쪽 절반
+            만" 같은 부분 폭도 가능하고 편집·뷰 폭이 일치. */}
+        <EditorOptionNumber
+          label="표 폭"
+          value={tableWidthPx ?? undefined}
+          min={120}
+          max={4000}
+          step={20}
+          onChange={(v) => patch({ table_width_px: v })}
+          suffix="px (비우면 전체)"
+          width="w-16"
+          hint="표 전체 절대 폭. 비우면 전체 폭을 차지. 좌측 정렬이라 절반 폭 등으로 만들 수 있습니다."
+        />
+        {/* CASE 폭 균등 — 2번째 열(첫 CASE)의 현재 폭에 맞춰 모든 CASE 열을
+            같은 폭으로 고정. 첫 열(행 라벨)은 제외. CASE 2개 이상일 때만. */}
         <Button
           variant="outline"
           size="sm"
           className="h-7 text-[11px] px-2"
-          disabled={Object.keys(columnWidths).length === 0}
-          onClick={() => patch({ column_widths: undefined })}
-          title="사용자가 조절한 CASE 컬럼 폭을 모두 기본값(균등 분배)으로 되돌립니다. 첫 열(행 라벨) 폭은 유지됩니다."
+          disabled={cases.length < 2}
+          onClick={equalizeCasesToFirst}
+          title="두 번째 열(첫 CASE)의 현재 폭에 맞춰 모든 CASE 열을 같은 폭으로 맞춥니다. 첫 열(행 라벨) 폭은 그대로."
         >
-          CASE 폭 균등하게
+          CASE 폭 균등 (2번째 열 기준)
         </Button>
       </EditorOptionBar>
       {cases.length === 0 ? (
@@ -1009,6 +1048,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
             horizontalScroll ? 'overflow-x-auto' : 'overflow-x-hidden',
             selection.crossCellDragging && 'select-none cursor-cell',
           )}
+          style={tableBoxStyle}
           onMouseUp={selection.handleMouseUp}
         >
           <table

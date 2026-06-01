@@ -119,6 +119,10 @@ export default function ReportsListPage() {
   const canEditFolders = isPersonal
     ? true
     : isOrg && me?.role === 'manager'
+  // 조직 간 공개(Phase 5) — 이 게시판의 멤버가 아닌데 공개 컨텐츠가 있어
+  // 읽기전용으로 진입한 외부 열람자. 백엔드가 공개분만 내려주고 쓰기를 전부
+  // 막으므로, 프런트는 쓰기 affordance 를 숨기고 배너를 띄운다.
+  const isPublicView = isOrg && Boolean(me?.public_view)
 
   useEffect(() => {
     setEntityFilter([])
@@ -718,11 +722,14 @@ export default function ReportsListPage() {
           selected={folderFilter}
           onSelect={setFolderFilter}
           onChanged={reload}
-          onReportsDrop={handleReportsDropOnFolder}
+          // 공개 열람자는 보고서를 폴더로 옮길 수 없음(쓰기 차단).
+          onReportsDrop={isPublicView ? undefined : handleReportsDropOnFolder}
           reloadKey={folderReloadKey}
           orgScope={isOrg}
           boardExternalView={workspace?.external_view_default ?? false}
           onSetBoardExternalView={handleSetBoardPublic}
+          // 외부 공개 열람자에겐 게시판 공개정책 바를 숨긴다(남 조직 정책).
+          showBoardBar={!isPublicView}
         />
       )}
 
@@ -735,7 +742,8 @@ export default function ReportsListPage() {
               : ''
           }
           actions={
-            !workspace?.virtual && (
+            // 외부 공개 열람자(읽기전용)에겐 신규 작성 버튼을 숨긴다.
+            !workspace?.virtual && !isPublicView && (
               <Button onClick={() => navigate(`/w/${slug}/reports/new`)}>
                 <Plus className="mr-2 h-4 w-4" />
                 신규 작성
@@ -743,6 +751,18 @@ export default function ReportsListPage() {
             )
           }
         />
+
+        {/* 조직 간 공개(Phase 5) — 다른 조직의 공개 게시판을 읽기전용으로 열람
+            중. 백엔드가 공개분만 내려주고 쓰기를 전부 막는다. */}
+        {isPublicView && (
+          <div className="flex items-center gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900">
+            <Globe className="h-4 w-4 shrink-0" />
+            <span className="font-medium">다른 조직의 공개 게시판 · 읽기 전용</span>
+            <span className="text-sky-800/80">
+              공개로 표시된 폴더·보고서만 보입니다. 작성·편집·게시는 할 수 없습니다.
+            </span>
+          </div>
+        )}
 
         {error ? (
           <ErrorState description={error.message} onRetry={reload} />
@@ -782,11 +802,12 @@ export default function ReportsListPage() {
               searchableKeys={['title', 'template_id', 'owner_name', 'owner_email', 'last_edited_by_name', 'report_type_name', 'mount_names']}
               searchPlaceholder="제목, 템플릿, 게시, 작성자/수정자, 종류 검색"
               onRowClick={(r) => navigate(`/w/${slug}/reports/${r.id}`)}
-              selectable
+              // 읽기전용 외부 열람자는 일괄 선택/드래그 이동 불가.
+              selectable={!isPublicView}
               selectedIds={effectiveSelected}
               onSelectionChange={setSelectedIds}
               rowProps={
-                showFolderSidebar
+                showFolderSidebar && !isPublicView
                   ? (row) => {
                       // Drag a row → drag every selected row when the
                       // source is part of the selection; otherwise drag
@@ -831,7 +852,7 @@ export default function ReportsListPage() {
                   mountWorkspaceFilter={mountWorkspaceFilter}
                   onMountWorkspaceFilterChange={setMountWorkspaceFilter}
                   mountWorkspaceOptions={mountWorkspaceOptions}
-                  showPublicExplore={isOrg}
+                  showPublicExplore={isOrg && !isPublicView}
                   includePublic={includePublic}
                   onToggleIncludePublic={() => setIncludePublic((v) => !v)}
                 />

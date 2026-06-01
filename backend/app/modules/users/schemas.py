@@ -33,6 +33,10 @@ class MeRead(BaseModel):
     user: UserRead
     workspace_slug: Optional[str] = None
     role: Optional[Role] = None
+    # 조직 간 공개(조직간공개_설계.md Phase 5). 현재 워크스페이스의 멤버는
+    # 아니지만 공개 컨텐츠가 있어 *읽기전용*으로 진입한 외부 열람자면 True.
+    # 프런트가 읽기전용 배너·쓰기 affordance 숨김을 그리는 신호.
+    public_view: bool = False
     memberships: list[MembershipRead]
     # 시스템 관리자 flag — pulled straight from User.is_system_admin.
     # Distinct from workspace `role`: a 부서 관리자 (role=admin in a

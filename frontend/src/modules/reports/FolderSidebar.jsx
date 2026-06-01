@@ -106,6 +106,9 @@ export function FolderSidebar({
   orgScope = false,
   boardExternalView = false,
   onSetBoardExternalView,
+  // 게시판 공개정책 바 표시 여부. 외부 공개 열람자에겐 false(남 조직 정책이라
+  // 보여줄 이유 없음). 폴더 행 공개 뱃지(orgScope)와는 별개.
+  showBoardBar = true,
 }) {
   const [folders, setFolders] = React.useState([])
   const [uncategorizedCount, setUncategorizedCount] = React.useState(0)
@@ -616,9 +619,9 @@ export function FolderSidebar({
         )}
       </div>
 
-      {/* 게시판 기본 공개정책 (조직 간 공개) — org 스코프에서만. 매니저는
-          토글, 그 외엔 읽기전용 상태 표시. 폴더는 이 값을 override 한다. */}
-      {orgScope && (
+      {/* 게시판 기본 공개정책 (조직 간 공개) — org 스코프 + 표시 허용 시만.
+          매니저는 토글, 멤버는 읽기전용 상태 표시. 외부 공개 열람자에겐 숨김. */}
+      {orgScope && showBoardBar && (
         <BoardPublicBar
           value={boardExternalView}
           canEdit={canEdit}

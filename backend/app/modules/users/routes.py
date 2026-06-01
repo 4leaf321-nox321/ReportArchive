@@ -28,6 +28,7 @@ from app.modules.users.schemas import (
 from app.modules.workspaces.models import Workspace
 from app.shared.auth import (
     CurrentUser,
+    _workspace_has_public_content,
     get_current_user_no_workspace,
     require_admin,
     require_system_admin,
@@ -85,6 +86,7 @@ def get_me(
 
     active_slug = x_workspace_slug
     active_role: Optional[Role] = None
+    public_view = False
 
     if active_slug:
         ws = db.get(Workspace, active_slug)
@@ -101,6 +103,14 @@ def get_me(
                 if not node:
                     break
                 cur = node.parent_slug
+            # 멤버도 시스템관리자도 아닌데 공개 컨텐츠가 있어 읽기전용 진입 —
+            # get_current_user 의 public_viewer 진입 조건과 동일(§Phase 5).
+            if (
+                active_role is None
+                and not user.is_system_admin
+                and _workspace_has_public_content(db, active_slug)
+            ):
+                public_view = True
         elif ws and ws.virtual and memberships:
             active_role = Role.user
 
@@ -108,6 +118,7 @@ def get_me(
         user=UserRead.model_validate(user),
         workspace_slug=active_slug,
         role=active_role,
+        public_view=public_view,
         memberships=[
             MembershipRead(
                 workspace_slug=m.workspace_slug,

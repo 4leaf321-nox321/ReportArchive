@@ -6632,8 +6632,15 @@ function PageSection({
                     id = it?.i
                     w = it?.w
                   }
+                  // w 는 col_span 정수라 격자 경계를 넘을 때만 바뀐다. 값이
+                  // 그대로면 state 를 안 건드려 *매 프레임 리렌더*(랙 원인)를
+                  // 막는다 — 경계를 넘는 몇 번만 갱신.
                   if (id != null && Number.isFinite(w)) {
-                    setLiveResize({ i: id, w })
+                    setLiveResize((prev) =>
+                      prev && prev.i === id && prev.w === w
+                        ? prev
+                        : { i: id, w },
+                    )
                   }
                 }
               : undefined
@@ -6699,6 +6706,20 @@ function PageSection({
                     : undefined
                 }
               >
+                {liveResize?.i === block.id ? (
+                  // 리사이즈 중엔 무거운 위젯 대신 가벼운 붉은 플레이스홀더만
+                  // 그린다 — 격자 경계를 넘을 때마다 위젯 내용이 다시 그려지는
+                  // 비용을 없애 드래그가 부드러워진다. 놓으면 실제 위젯 복귀.
+                  <div className="h-full w-full rounded-md border-2 border-dashed border-red-400/70 bg-red-400/10 flex items-center justify-center gap-2 text-xs font-medium text-red-500 select-none">
+                    <span className="uppercase tracking-wider">
+                      {block.type}
+                    </span>
+                    <span className="tabular-nums">
+                      {blockColSpan}/12 ·{' '}
+                      {Math.round((blockColSpan / REPORT_GRID_COLS) * 100)}%
+                    </span>
+                  </div>
+                ) : (
                 <BlockEditorCard
                   block={block}
                   colSpan={blockColSpan}
@@ -6759,6 +6780,7 @@ function PageSection({
                   }
                   onMeasureEditHeight={(px) => handleMeasureEdit(block.id, px)}
                 />
+                )}
                 {showInsertArrows && (
                   <DirectionalAddArrows
                     blockId={block.id}

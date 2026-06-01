@@ -27,6 +27,7 @@ import {
   GripVertical,
   HardDrive,
   Inbox,
+  Info,
   Layers,
   LayoutGrid,
   Loader2,
@@ -80,6 +81,7 @@ import { useAuth } from '@/shared/auth/AuthContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { usePersistedState } from '@/shared/hooks/usePersistedState'
 import { useWidgetCatalog } from '@/shared/hooks/useWidgetCatalog'
+import { listEntityTypes } from '@/shared/api/entities'
 import {
   getReport,
   createReport,
@@ -2837,6 +2839,12 @@ export default function ReportDetailPage() {
                 updatedAt={existingReport.updated_at}
               />
             )}
+            {/* 관련 정보(모델명·부품명·시험 ...) 접이식 패널 — 보기·편집
+                모드 모두에서 칩 팝오버를 열지 않고도 한눈에 확인. 편집중인
+                draft 를 우선 읽어 태그 추가/삭제가 즉시 반영된다. */}
+            <ReportEntitiesPanel
+              entities={draft?.entities ?? existingReport?.entities ?? []}
+            />
           </div>
 
           <div className="flex flex-wrap items-center gap-2 ml-auto">
@@ -5090,6 +5098,125 @@ function SaveAsTemplateDialog({
 // --------------------------------------------------------------------------- //
 // View-mode toggle + page navigation                                          //
 // --------------------------------------------------------------------------- //
+
+/**
+ * Axis catalog cache — the entity-type list (모델명/부품명/시험 ...) is small
+ * and stable, so we fetch it once per session and share it across every
+ * report's 관련 정보 panel rather than re-hitting the API on each detail open.
+ * On failure we clear the promise so the next mount can retry; the panel
+ * falls back to showing raw type_slug labels until the catalog loads.
+ */
+let _entityTypesPromise = null
+function loadEntityTypesCached() {
+  if (!_entityTypesPromise) {
+    _entityTypesPromise = listEntityTypes()
+      .then((res) => res?.items ?? [])
+      .catch((e) => {
+        _entityTypesPromise = null
+        throw e
+      })
+  }
+  return _entityTypesPromise
+}
+
+/**
+ * 헤더의 "관련 정보" 접이식 패널 — 보고서에 태깅된 엔티티(모델명·부품명·
+ * 시험 ...)를 축별로 묶어 한눈에 보여준다. 보기·편집 모드 모두 노출되어,
+ * 종류 칩 팝오버를 열지 않고도 "이게 어떤 모델에 적용된 보고서인지" 바로
+ * 확인할 수 있다. 실제 태그 추가·삭제는 편집모드 칩(ReportMetaChips)에서
+ * 하고, 이 패널은 읽기 전용 요약이다. 태그가 없으면 렌더하지 않는다.
+ */
+function ReportEntitiesPanel({ entities }) {
+  const [open, setOpen] = useState(false)
+  const [types, setTypes] = useState(null) // 축 catalog (label·순서) — null=미로딩
+
+  useEffect(() => {
+    let cancelled = false
+    loadEntityTypesCached()
+      .then((items) => {
+        if (!cancelled) setTypes(items)
+      })
+      .catch(() => {
+        if (!cancelled) setTypes([]) // 실패 시 slug fallback — 패널은 계속 동작
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const list = Array.isArray(entities) ? entities : []
+  // 축별 그룹 — catalog 순서를 따르고, catalog 에 없는 slug 는 뒤에 붙인다.
+  const groups = useMemo(() => {
+    const bySlug = new Map()
+    for (const e of list) {
+      const slug = e?.type_slug ?? ''
+      if (!bySlug.has(slug)) bySlug.set(slug, [])
+      bySlug.get(slug).push(e)
+    }
+    const labelFor = new Map((types ?? []).map((t) => [t.slug, t.label]))
+    const orderOf = new Map((types ?? []).map((t, i) => [t.slug, i]))
+    return [...bySlug.entries()]
+      .map(([slug, items]) => ({
+        slug,
+        label: labelFor.get(slug) ?? slug ?? '기타',
+        items,
+        ord: orderOf.has(slug) ? orderOf.get(slug) : Number.MAX_SAFE_INTEGER,
+      }))
+      .sort((a, b) => a.ord - b.ord)
+  }, [list, types])
+
+  if (list.length === 0) return null
+
+  return (
+    <div className="mt-1.5" data-export-exclude>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center gap-1 rounded-md border bg-background/80 px-2 py-0.5 text-[11px] font-medium text-foreground/80 transition-colors hover:bg-muted"
+        title="이 보고서에 태깅된 모델·부품·시험 등 관련 정보"
+      >
+        <Info className="h-3 w-3" />
+        관련 정보 {list.length}건
+        {open ? (
+          <ChevronUp className="h-3 w-3 opacity-60" />
+        ) : (
+          <ChevronDown className="h-3 w-3 opacity-60" />
+        )}
+      </button>
+      {open && (
+        <dl className="mt-1.5 flex flex-col gap-1.5 rounded-md border bg-muted/30 p-3">
+          {groups.map((g) => (
+            <div key={g.slug || '기타'} className="flex items-start gap-3 text-xs">
+              <dt className="w-20 shrink-0 pt-0.5 text-muted-foreground">
+                {g.label}
+              </dt>
+              <dd className="flex min-w-0 flex-1 flex-wrap gap-1">
+                {g.items.map((e) => (
+                  <span
+                    key={e.id}
+                    className={cn(
+                      'inline-flex items-center rounded-full border px-2 py-0.5',
+                      e.status === 'inactive'
+                        ? 'border-dashed text-muted-foreground'
+                        : 'bg-background text-foreground/80',
+                    )}
+                    title={
+                      e.status === 'inactive'
+                        ? '비활성화된 값이지만 이 보고서에 태깅되어 있음'
+                        : undefined
+                    }
+                  >
+                    {e.value}
+                  </span>
+                ))}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </div>
+  )
+}
 
 /**
  * One-line metadata strip under the report title: who wrote it (and in which

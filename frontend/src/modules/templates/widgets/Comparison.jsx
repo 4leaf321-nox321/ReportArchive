@@ -106,6 +106,17 @@ function nextCaseKey(cases) {
   return uniqueKey(cases, `case_${cases.length + 1}`)
 }
 
+// 엑셀/스프레드시트 클립보드(TSV) → 2차원 배열. 표 위젯과 동일 규약.
+function parseTsv(text) {
+  const trimmed = text.replace(/\r?\n$/, '')
+  if (!trimmed) return []
+  return trimmed.split(/\r?\n/).map((line) => line.split('\t'))
+}
+// 단일 셀(탭·줄바꿈 없음)이면 기본 붙여넣기에 맡긴다.
+function isMultiCellPaste(text) {
+  return !!text && (text.indexOf('\t') !== -1 || text.indexOf('\n') !== -1)
+}
+
 // --------------------------------------------------------------------------- //
 // PropsPanel — template designer picks the default CASE columns.              //
 // Writers can add / rename / remove cases per-report via the inline editor.   //
@@ -808,6 +819,115 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     })
   }
 
+  // ─── 엑셀 클립보드(TSV) 붙여넣기 ─────────────────────────────────────
+  function maybeWarnMaxCases(count) {
+    if (!horizontalScroll && count > maxCases) {
+      toast.message(
+        `CASE가 ${count}개가 됐습니다 — 좁게 보이면 위젯 설정에서 가로 스크롤을 켜세요.`,
+      )
+    }
+  }
+  // 부족하면 CASE/행을 늘린 (nextCases, nextRows) 를 만든다. 새 행은 텍스트 행.
+  function ensureSize(neededCases, neededRows) {
+    const nextCases = [...cases]
+    while (nextCases.length < neededCases) {
+      nextCases.push({ key: nextCaseKey(nextCases), label: '' })
+    }
+    const nextRows = [...rows]
+    while (nextRows.length < neededRows) {
+      nextRows.push({ key: nextRowKey(nextRows), kind: 'text', label: '', values: {} })
+    }
+    return { nextCases, nextRows }
+  }
+  /** CASE 셀(c=startCaseIdx) 에 붙여넣기 — TSV 행→비교 행, TSV 열→CASE.
+   *  표 위젯 pasteGrid 와 동일한 느낌. 이미지 행은 값을 건드리지 않는다. */
+  function pasteGrid(startRowIdx, startCaseIdx, text) {
+    const tsv = parseTsv(text)
+    if (tsv.length === 0) return
+    const width = Math.max(...tsv.map((r) => r.length))
+    const { nextCases, nextRows } = ensureSize(
+      startCaseIdx + width,
+      startRowIdx + tsv.length,
+    )
+    for (let r = 0; r < tsv.length; r += 1) {
+      const row = nextRows[startRowIdx + r]
+      if (!row || row.kind === 'image') continue
+      const values = { ...(row.values ?? {}) }
+      for (let c = 0; c < tsv[r].length; c += 1) {
+        const cs = nextCases[startCaseIdx + c]
+        if (!cs) continue
+        const v = tsv[r][c]
+        if (v === '' || v == null) delete values[cs.key]
+        else values[cs.key] = v
+      }
+      nextRows[startRowIdx + r] = { ...row, values }
+    }
+    patch({ cases: nextCases, rows: nextRows })
+    maybeWarnMaxCases(nextCases.length)
+  }
+  /** 행 라벨 칸에 붙여넣기 — 엑셀에서 "라벨 + CASE 값" 표를 통째로 붙일 때.
+   *  TSV col0 → 행 라벨, col1.. → CASE0.. 값. 좌상단부터 표 전체 붙이기. */
+  function pasteFromRowLabel(startRowIdx, text) {
+    const tsv = parseTsv(text)
+    if (tsv.length === 0) return
+    const width = Math.max(...tsv.map((r) => r.length))
+    const { nextCases, nextRows } = ensureSize(
+      Math.max(cases.length, width - 1),
+      startRowIdx + tsv.length,
+    )
+    for (let r = 0; r < tsv.length; r += 1) {
+      const row = nextRows[startRowIdx + r]
+      if (!row) continue
+      const cells = tsv[r]
+      const next = { ...row, values: { ...(row.values ?? {}) } }
+      if (cells[0] != null) next.label = cells[0]
+      if (row.kind !== 'image') {
+        for (let c = 1; c < cells.length; c += 1) {
+          const cs = nextCases[c - 1]
+          if (!cs) continue
+          const v = cells[c]
+          if (v === '' || v == null) delete next.values[cs.key]
+          else next.values[cs.key] = v
+        }
+      }
+      nextRows[startRowIdx + r] = next
+    }
+    patch({ cases: nextCases, rows: nextRows })
+    maybeWarnMaxCases(nextCases.length)
+  }
+  /** CASE 라벨 칸에 붙여넣기(표 위젯 pasteOntoHeader 대응): TSV 첫 행 → CASE
+   *  라벨, 나머지 행 → 그 CASE 들의 값(행 0부터). 엑셀 헤더 포함 붙여넣기용. */
+  function pasteCaseLabels(startCaseIdx, text) {
+    const tsv = parseTsv(text)
+    if (tsv.length === 0) return
+    const width = Math.max(...tsv.map((r) => r.length))
+    const { nextCases, nextRows } = ensureSize(
+      startCaseIdx + width,
+      tsv.length - 1,
+    )
+    for (let c = 0; c < tsv[0].length; c += 1) {
+      const idx = startCaseIdx + c
+      if (nextCases[idx] && tsv[0][c] != null) {
+        nextCases[idx] = { ...nextCases[idx], label: tsv[0][c] }
+      }
+    }
+    for (let r = 1; r < tsv.length; r += 1) {
+      const row = nextRows[r - 1]
+      if (!row || row.kind === 'image') continue
+      const values = { ...(row.values ?? {}) }
+      for (let c = 0; c < tsv[r].length; c += 1) {
+        const cs = nextCases[startCaseIdx + c]
+        if (!cs) continue
+        const v = tsv[r][c]
+        if (v === '' || v == null) delete values[cs.key]
+        else values[cs.key] = v
+      }
+      nextRows[r - 1] = { ...row, values }
+    }
+    patch({ cases: nextCases, rows: nextRows })
+    maybeWarnMaxCases(nextCases.length)
+  }
+
   // ─── 셀 병합 / 분할 ──────────────────────────────────────────────
   // 비교표 좌표계: c=0 → 행 라벨 컬럼, c=1..M → cases[c-1]. 행 라벨
   // 컬럼과 case 구역을 가로지르는 cross-zone 병합은 시각적으로
@@ -1167,6 +1287,14 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                       <AutoGrowTextarea
                         value={c.label || ''}
                         onChange={(v) => updateCase(ci, { label: v })}
+                        onPaste={(e) => {
+                          // CASE 라벨 칸: 엑셀 헤더 포함 붙여넣기 — 첫 행은
+                          // CASE 이름, 나머지는 값.
+                          const text = e.clipboardData?.getData('text/plain')
+                          if (!isMultiCellPaste(text)) return
+                          e.preventDefault()
+                          pasteCaseLabels(ci, text)
+                        }}
                         placeholder={c.key}
                         style={{ fontSize: bodyFontPx }}
                         className="bg-transparent border-0 outline-none focus:ring-1 focus:ring-ring rounded px-1 py-0.5 text-center flex-1 min-w-0 font-semibold resize-none whitespace-pre-wrap break-words"
@@ -1265,6 +1393,14 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                             value={row.label ?? ''}
                             onChange={(v) => updateRow(ri, { label: v })}
                             onKeyDown={(e) => grid.handleKey(e, ri, 0)}
+                            onPaste={(e) => {
+                              // 행 라벨 칸 = 표 좌상단. 엑셀 표(라벨+CASE값)를
+                              // 통째로 붙일 수 있게: col0→행 라벨, col1..→CASE.
+                              const text = e.clipboardData?.getData('text/plain')
+                              if (!isMultiCellPaste(text)) return
+                              e.preventDefault()
+                              pasteFromRowLabel(ri, text)
+                            }}
                             data-grid-cell={`${ri}:0`}
                             placeholder="행 이름"
                             style={{ fontSize: bodyFontPx }}
@@ -1338,6 +1474,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                               value={row.values?.[c.key]}
                               onChange={(v) => setCellText(ri, c.key, v)}
                               onKeyDown={(e) => grid.handleKey(e, ri, ci + 1)}
+                              onMultiPaste={(text) => pasteGrid(ri, ci, text)}
                               gridCellKey={`${ri}:${ci + 1}`}
                               fontSizePx={bodyFontPx}
                             />
@@ -1435,6 +1572,7 @@ function TextCellEditor({
   onKeyDown,
   gridCellKey,
   fontSizePx = DEFAULT_BODY_FONT_PX,
+  onMultiPaste,
 }) {
   // `value` is a plain string for text rows. We render a multi-line textarea
   // so writers can compare longer descriptions side by side without
@@ -1446,6 +1584,14 @@ function TextCellEditor({
       value={typeof value === 'string' ? value : ''}
       onChange={(e) => onChange(e.target.value)}
       onKeyDown={onKeyDown}
+      onPaste={(e) => {
+        // 엑셀에서 복사한 여러 셀(TSV)이면 그리드로 채운다. 단일 셀은 기본
+        // 붙여넣기(textarea)에 맡긴다.
+        const text = e.clipboardData?.getData('text/plain')
+        if (!isMultiCellPaste(text)) return
+        e.preventDefault()
+        onMultiPaste?.(text)
+      }}
       data-grid-cell={gridCellKey}
       rows={2}
       placeholder="텍스트 / 숫자"

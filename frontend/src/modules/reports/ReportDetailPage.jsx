@@ -975,11 +975,12 @@ export default function ReportDetailPage() {
   function reorderPages(fromIdx, toIdx) {
     if (fromIdx === toIdx) return
     const arr = pages
+    // toIdx === arr.length 는 "맨 끝(마지막 다음)에 삽입" 을 뜻한다(끝 드롭존).
     if (
       fromIdx < 0 ||
       fromIdx >= arr.length ||
       toIdx < 0 ||
-      toIdx >= arr.length
+      toIdx > arr.length
     ) {
       return
     }
@@ -988,7 +989,9 @@ export default function ReportDetailPage() {
     // 삽입선은 "toIdx chip 의 *왼쪽*(앞)에 끼움" 의미. 그런데 위에서
     // fromIdx 를 먼저 빼면 그 뒤 인덱스가 1씩 당겨지므로, 왼→오른(from<to)
     // 드래그 시 toIdx 에 그대로 끼우면 한 칸 뒤로 밀린다(드롭 대상 *뒤*로).
-    // from<to 면 1 보정해 항상 대상 chip 앞에 정확히 오게 한다.
+    // from<to 면 1 보정해 항상 대상 chip 앞에 정확히 오게 한다. 끝 드롭존
+    // (toIdx === arr.length)도 이 식이 자연히 처리: from<len → len-1 →
+    // 제거 후 배열 끝에 append.
     const insertAt = fromIdx < toIdx ? toIdx - 1 : toIdx
     reordered.splice(insertAt, 0, moved)
     setDraft((d) => (d ? { ...d, pages: reordered } : d))
@@ -5801,6 +5804,33 @@ function PageStrip({
             </div>
           )
         })}
+        {/* 맨 끝 드롭존 — 마지막 chip 과 "페이지 추가" 사이. 여기에 놓으면
+            끌던 페이지를 맨 뒤로 보낸다("대상 chip 앞 삽입" 규칙으론 닿을 수
+            없는 위치). 드래그 중에만 나타나 평소엔 자리를 거의 안 먹는다. */}
+        {isEditing && dragIdx !== null && (
+          <div
+            onDragOver={(e) => {
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'move'
+              if (dragOverIdx !== pages.length) setDragOverIdx(pages.length)
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              onReorder?.(dragIdx, pages.length)
+              setDragIdx(null)
+              setDragOverIdx(null)
+            }}
+            className={cn(
+              'shrink-0 self-stretch relative rounded transition-all',
+              dragOverIdx === pages.length ? 'w-7 bg-primary/10' : 'w-3',
+            )}
+            title="맨 뒤로 보내기"
+          >
+            {dragOverIdx === pages.length && (
+              <div className="absolute left-0 top-0 bottom-0 w-0.5 rounded bg-primary" />
+            )}
+          </div>
+        )}
         {isEditing && (
           <button
             type="button"

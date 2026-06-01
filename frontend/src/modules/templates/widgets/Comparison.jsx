@@ -65,6 +65,10 @@ const ROW_LABEL_DEFAULT_PX = 112 // ≒ 7rem
 // 둘 다 막는다. backend 스키마와 같은 값.
 const CASE_WIDTH_MIN_PX = 60
 const CASE_WIDTH_MAX_PX = 1200
+// 표 전체 폭(px) 허용 범위 — 마지막 CASE 핸들 드래그·표 폭 입력 공통(백엔드
+// table_width_px 검증 120~4000 과 일치).
+const TABLE_WIDTH_MIN_PX = 120
+const TABLE_WIDTH_MAX_PX = 4000
 
 function clampMaxCases(raw) {
   if (!Number.isFinite(raw)) return DEFAULT_MAX_CASES
@@ -447,8 +451,11 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
   const tableWidthPx = Number.isFinite(content?.table_width_px)
     ? content.table_width_px
     : null
-  const tableBoxStyle = tableWidthPx
-    ? { width: `${tableWidthPx}px`, maxWidth: '100%' }
+  // 마지막 CASE 핸들 드래그 중 표 전체 폭 프리뷰 — mouseup 에 commit.
+  const [tableResizePreview, setTableResizePreview] = useState(null) // px | null
+  const effTableWidthPx = tableResizePreview ?? tableWidthPx
+  const tableBoxStyle = effTableWidthPx
+    ? { width: `${effTableWidthPx}px`, maxWidth: '100%' }
     : undefined
   // 셀간 화살표 네비게이션. 컬럼 좌표: 0 = 행 라벨, 1..M = case 셀.
   // 행 좌표: 0..N-1 = 데이터 행 (헤더는 Tab 으로만 이동).
@@ -593,6 +600,34 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     const next = {}
     for (const c of cases) next[c.key] = w
     patch({ column_widths: next })
+  }
+
+  /** 마지막 CASE 우측 핸들 = 표 오른쪽 경계. 끌면 표 전체 폭(table_width_px)을
+   *  조절한다(개별 CASE 폭이 아니라) — 마지막 열을 줄여 표 자체를 좁히기 위함.
+   *  래퍼(selection.containerRef) offsetWidth 기준. mouseup 에 commit. */
+  function startTableResize(startEvent) {
+    const wrapperEl = selection.containerRef.current
+    if (!wrapperEl) return
+    const startWidth = wrapperEl.offsetWidth
+    const startX = startEvent.clientX
+    const clampPx = (px) =>
+      Math.min(Math.max(TABLE_WIDTH_MIN_PX, Math.round(px)), TABLE_WIDTH_MAX_PX)
+    function onMove(ev) {
+      setTableResizePreview(clampPx(startWidth + (ev.clientX - startX)))
+    }
+    function onUp(ev) {
+      const next = clampPx(startWidth + (ev.clientX - startX))
+      setTableResizePreview(null)
+      patch({ table_width_px: next })
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
   }
 
   // ─── Case (column) handlers ──────────────────────────────────────────
@@ -1134,32 +1169,49 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                         <X className="h-3 w-3" />
                       </Button>
                     </div>
-                    {/* 우측 가장자리 드래그 핸들 — 끌어서 컬럼 폭 조절.
-                        외곽 8px 는 잡기 쉬운 hit area (cursor: col-resize),
-                        내부 2px 시각적 바는 항상 살짝 보여 발견성 확보.
-                        호버 시 primary 색으로 진해짐. 더블클릭 = 기본 폭.
-                        편집/뷰 두 모드 모두 같은 column_widths 를 보므로
-                        한 번 설정한 폭이 뷰 모드에서도 그대로 적용. */}
+                    {/* 우측 가장자리 드래그 핸들. 마지막 CASE 의 핸들은 표
+                        오른쪽 경계라 *표 전체 폭*을 조절(끌어서 표를 좁힘) —
+                        그 외 CASE 는 개별 컬럼 폭. 더블클릭 = 기본/전체로 리셋.
+                        마지막 CASE 핸들은 굵게+primary 로 구분. */}
                     <div
                       role="separator"
                       aria-orientation="vertical"
-                      title="끌어서 컬럼 폭 조절 · 더블클릭하면 기본값으로"
+                      title={
+                        ci === cases.length - 1
+                          ? '끌어서 표 전체 폭 조절 · 더블클릭하면 전체 폭'
+                          : '끌어서 컬럼 폭 조절 · 더블클릭하면 기본값으로'
+                      }
                       onMouseDown={(e) => {
                         e.preventDefault()
                         e.stopPropagation()
-                        const th = e.currentTarget.closest('th')
-                        startCaseResize(c.key, th, e)
+                        if (ci === cases.length - 1) {
+                          startTableResize(e)
+                        } else {
+                          startCaseResize(c.key, e.currentTarget.closest('th'), e)
+                        }
                       }}
                       onDoubleClick={(e) => {
                         e.preventDefault()
                         e.stopPropagation()
-                        if (!(c.key in columnWidths)) return
-                        const { [c.key]: _drop, ...keep } = columnWidths
-                        patch({ column_widths: keep })
+                        if (ci === cases.length - 1) {
+                          patch({ table_width_px: undefined })
+                        } else if (c.key in columnWidths) {
+                          const keep = { ...columnWidths }
+                          delete keep[c.key]
+                          patch({ column_widths: keep })
+                        }
                       }}
-                      className="absolute right-0 top-0 h-full w-2 cursor-col-resize flex items-center justify-end group/handle z-10"
+                      className={`absolute right-0 top-0 h-full cursor-col-resize flex items-center justify-end group/handle z-10 ${
+                        ci === cases.length - 1 ? 'w-2.5' : 'w-2'
+                      }`}
                     >
-                      <span className="block w-0.5 h-1/2 bg-border group-hover/handle:bg-primary transition-colors" />
+                      <span
+                        className={`block transition-colors group-hover/handle:bg-primary ${
+                          ci === cases.length - 1
+                            ? 'w-1 h-2/3 bg-primary/50'
+                            : 'w-0.5 h-1/2 bg-border'
+                        }`}
+                      />
                     </div>
                   </th>
                 ))}

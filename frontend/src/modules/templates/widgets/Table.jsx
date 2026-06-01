@@ -95,6 +95,10 @@ import { Button } from '@/shared/components/ui/button'
 // 열 폭(px) 허용 범위 — 헤더 드래그·균등 분배에 공통 적용.
 const COL_WIDTH_MIN_PX = 48
 const COL_WIDTH_MAX_PX = 1200
+// 표 전체 폭(px) 허용 범위 — 마지막 열 핸들 드래그·표 폭 입력 공통. 백엔드
+// table_width_px 검증(120~4000)과 일치.
+const TABLE_WIDTH_MIN_PX = 120
+const TABLE_WIDTH_MAX_PX = 4000
 
 export function TableEditor({ props, content, onChange, readOnly }) {
   // Effective columns: per-report override (content.columns) takes precedence
@@ -135,8 +139,11 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   const tableWidthPx = Number.isFinite(content?.table_width_px)
     ? content.table_width_px
     : null
-  const tableBoxStyle = tableWidthPx
-    ? { width: `${tableWidthPx}px`, maxWidth: '100%' }
+  // 마지막 열 핸들 드래그 중 표 전체 폭 프리뷰 — mouseup 에 commit.
+  const [tableResizePreview, setTableResizePreview] = useState(null) // px | null
+  const effTableWidthPx = tableResizePreview ?? tableWidthPx
+  const tableBoxStyle = effTableWidthPx
+    ? { width: `${effTableWidthPx}px`, maxWidth: '100%' }
     : undefined
 
   function patch(next) {
@@ -476,6 +483,34 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     selection.clear()
   }
 
+  /** 마지막 열 우측 핸들 = 표 오른쪽 경계. 끌면 표 전체 폭(table_width_px)을
+   *  조절한다(개별 열 폭이 아니라). 그래야 마지막 열을 줄여 표 자체를 좁힐
+   *  수 있다. 래퍼(selection.containerRef) offsetWidth 기준. mouseup 에 commit. */
+  function startTableResize(startEvent) {
+    const wrapperEl = selection.containerRef.current
+    if (!wrapperEl) return
+    const startWidth = wrapperEl.offsetWidth
+    const startX = startEvent.clientX
+    const clampPx = (px) =>
+      Math.min(Math.max(TABLE_WIDTH_MIN_PX, Math.round(px)), TABLE_WIDTH_MAX_PX)
+    function onMove(ev) {
+      setTableResizePreview(clampPx(startWidth + (ev.clientX - startX)))
+    }
+    function onUp(ev) {
+      const next = clampPx(startWidth + (ev.clientX - startX))
+      setTableResizePreview(null)
+      patch({ table_width_px: next })
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }
+
   /**
    * Paste landing on a column header. The first TSV row becomes column
    * labels (extending columns when needed); the remaining rows fill data
@@ -770,25 +805,41 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                   >
                     <X className="h-3 w-3" />
                   </Button>
-                  {/* 우측 가장자리 드래그 핸들 — 끌어서 열 폭 조절. 더블클릭 =
-                      자동(기본 폭). 항상 보이는 2px 바 + 6px hit area. */}
+                  {/* 우측 가장자리 드래그 핸들. 마지막 열의 핸들은 표 오른쪽
+                      경계라서 *표 전체 폭*을 조절(끌어서 표를 좁힘) — 그 외 열은
+                      개별 열 폭. 더블클릭 = 자동/전체로 리셋. 마지막 열 핸들은
+                      굵게+primary 색으로 구분. */}
                   <div
                     role="separator"
                     aria-orientation="vertical"
-                    title="끌어서 열 폭 조절 · 더블클릭하면 자동"
+                    title={
+                      i === cols.length - 1
+                        ? '끌어서 표 전체 폭 조절 · 더블클릭하면 전체 폭'
+                        : '끌어서 열 폭 조절 · 더블클릭하면 자동'
+                    }
                     onMouseDown={(e) => {
                       e.preventDefault()
                       e.stopPropagation()
-                      startColResize(c.key, e.currentTarget.closest('th'), e)
+                      if (i === cols.length - 1) startTableResize(e)
+                      else startColResize(c.key, e.currentTarget.closest('th'), e)
                     }}
                     onDoubleClick={(e) => {
                       e.preventDefault()
                       e.stopPropagation()
-                      resetColWidth(c.key)
+                      if (i === cols.length - 1) patch({ table_width_px: undefined })
+                      else resetColWidth(c.key)
                     }}
-                    className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize flex items-center justify-end group/handle z-20"
+                    className={`absolute right-0 top-0 h-full cursor-col-resize flex items-center justify-end group/handle z-20 ${
+                      i === cols.length - 1 ? 'w-2' : 'w-1.5'
+                    }`}
                   >
-                    <span className="block w-0.5 h-1/2 bg-border group-hover/handle:bg-primary transition-colors" />
+                    <span
+                      className={`block transition-colors group-hover/handle:bg-primary ${
+                        i === cols.length - 1
+                          ? 'w-1 h-2/3 bg-primary/50'
+                          : 'w-0.5 h-1/2 bg-border'
+                      }`}
+                    />
                   </div>
                 </th>
               ))}

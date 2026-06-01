@@ -400,6 +400,11 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
   const mergeMap = computeMergeMap(merges, rows.length, totalColCount)
   const textClass = textStyleToClassName(props.text_style)
   const textStyle = textStyleToInlineStyle(props.text_style)
+  // 셀(헤더·행라벨·값) 본문 글자 크기 — 긴 글(RichText)과 동일한 기본값
+  // DEFAULT_BODY_FONT_PX(18px) 로 맞추고, 속성의 "텍스트 크기"
+  // (text_style.font_size_px)를 그대로 반영한다. 예전엔 셀이 text-xs(12px)
+  // 로 하드코딩돼 너무 작고 속성 변경도 안 먹었던 부분을 이 값으로 교체.
+  const bodyFontPx = props.text_style?.font_size_px ?? DEFAULT_BODY_FONT_PX
   // Layout knobs — content (per-report) wins over props (template);
   // clamp here so a stray value can't break the layout.
   const horizontalScroll = effectiveBool(
@@ -817,7 +822,8 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                   {cases.map((c, i) => (
                     <th
                       key={i}
-                      className="px-2 py-1.5 text-center font-medium text-xs text-muted-foreground border-b whitespace-pre-wrap break-words"
+                      style={{ fontSize: bodyFontPx }}
+                      className="px-2 py-1.5 text-center font-medium text-muted-foreground border-b whitespace-pre-wrap break-words"
                     >
                       {c.label || c.key}
                     </th>
@@ -837,7 +843,8 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                         <td
                           {...(labelSpan?.rs > 1 ? { rowSpan: labelSpan.rs } : {})}
                           {...(labelSpan?.cs > 1 ? { colSpan: labelSpan.cs } : {})}
-                          className="px-2 py-1.5 text-xs font-medium border-r bg-muted/20 align-top whitespace-pre-wrap break-words"
+                          style={{ fontSize: bodyFontPx }}
+                          className="px-2 py-1.5 font-medium border-r bg-muted/20 align-top whitespace-pre-wrap break-words"
                         >
                           {row.label || (
                             <span className="text-muted-foreground italic">
@@ -861,6 +868,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                               row={row}
                               caseKey={c.key}
                               imageMaxHeightPx={imageMaxHeightPx}
+                              fontSizePx={bodyFontPx}
                             />
                           </td>
                         )
@@ -1062,7 +1070,8 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                         value={c.label || ''}
                         onChange={(v) => updateCase(ci, { label: v })}
                         placeholder={c.key}
-                        className="bg-transparent border-0 outline-none focus:ring-1 focus:ring-ring rounded px-1 py-0.5 text-xs text-center flex-1 min-w-0 font-semibold resize-none whitespace-pre-wrap break-words"
+                        style={{ fontSize: bodyFontPx }}
+                        className="bg-transparent border-0 outline-none focus:ring-1 focus:ring-ring rounded px-1 py-0.5 text-center flex-1 min-w-0 font-semibold resize-none whitespace-pre-wrap break-words"
                       />
                       <Button
                         variant="ghost"
@@ -1160,7 +1169,8 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                             onKeyDown={(e) => grid.handleKey(e, ri, 0)}
                             data-grid-cell={`${ri}:0`}
                             placeholder="행 이름"
-                            className="flex-1 min-w-0 resize-none rounded-md border border-input bg-background px-2 py-0.5 text-xs leading-snug focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring whitespace-pre-wrap break-words"
+                            style={{ fontSize: bodyFontPx }}
+                            className="flex-1 min-w-0 resize-none rounded-md border border-input bg-background px-2 py-0.5 leading-snug focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring whitespace-pre-wrap break-words"
                           />
                           <div className="flex flex-col">
                             <Button
@@ -1231,6 +1241,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                               onChange={(v) => setCellText(ri, c.key, v)}
                               onKeyDown={(e) => grid.handleKey(e, ri, ci + 1)}
                               gridCellKey={`${ri}:${ci + 1}`}
+                              fontSizePx={bodyFontPx}
                             />
                           )}
                         </td>
@@ -1299,7 +1310,13 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
 // Cell editors                                                                //
 // --------------------------------------------------------------------------- //
 
-function TextCellEditor({ value, onChange, onKeyDown, gridCellKey }) {
+function TextCellEditor({
+  value,
+  onChange,
+  onKeyDown,
+  gridCellKey,
+  fontSizePx = DEFAULT_BODY_FONT_PX,
+}) {
   // `value` is a plain string for text rows. We render a multi-line textarea
   // so writers can compare longer descriptions side by side without
   // truncating; rows naturally grow as content gets longer. Enter inserts a
@@ -1313,7 +1330,8 @@ function TextCellEditor({ value, onChange, onKeyDown, gridCellKey }) {
       data-grid-cell={gridCellKey}
       rows={2}
       placeholder="텍스트 / 숫자"
-      className="w-full min-h-[2.5rem] resize-y rounded-md border border-input bg-background px-2 py-1 text-xs leading-snug focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      style={{ fontSize: fontSizePx }}
+      className="w-full min-h-[2.5rem] resize-y rounded-md border border-input bg-background px-2 py-1 leading-snug focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
     />
   )
 }
@@ -1436,7 +1454,12 @@ function ImageCellEditor({ value, onChange, maxHeightPx = DEFAULT_IMAGE_MAX_HEIG
   )
 }
 
-function ReadOnlyCell({ row, caseKey, imageMaxHeightPx = DEFAULT_IMAGE_MAX_HEIGHT_PX }) {
+function ReadOnlyCell({
+  row,
+  caseKey,
+  imageMaxHeightPx = DEFAULT_IMAGE_MAX_HEIGHT_PX,
+  fontSizePx = DEFAULT_BODY_FONT_PX,
+}) {
   const value = row.values?.[caseKey]
   if (value == null || value === '') {
     return <span className="text-muted-foreground italic">—</span>
@@ -1464,7 +1487,10 @@ function ReadOnlyCell({ row, caseKey, imageMaxHeightPx = DEFAULT_IMAGE_MAX_HEIGH
   }
   // Text rows: preserve newlines but keep things readable.
   return (
-    <div className="text-xs whitespace-pre-wrap break-words">
+    <div
+      className="whitespace-pre-wrap break-words"
+      style={{ fontSize: fontSizePx }}
+    >
       {String(value)}
     </div>
   )

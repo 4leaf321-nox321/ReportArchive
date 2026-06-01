@@ -2839,12 +2839,6 @@ export default function ReportDetailPage() {
                 updatedAt={existingReport.updated_at}
               />
             )}
-            {/* 관련 정보(모델명·부품명·시험 ...) 접이식 패널 — 보기·편집
-                모드 모두에서 칩 팝오버를 열지 않고도 한눈에 확인. 편집중인
-                draft 를 우선 읽어 태그 추가/삭제가 즉시 반영된다. */}
-            <ReportEntitiesPanel
-              entities={draft?.entities ?? existingReport?.entities ?? []}
-            />
           </div>
 
           <div className="flex flex-wrap items-center gap-2 ml-auto">
@@ -3295,6 +3289,14 @@ export default function ReportDetailPage() {
           setDraft={setDraft}
           isEditing={effectiveIsEditing}
           linkedReports={linkedReports}
+        />
+
+        {/* 관련 정보 배너 — 헤더와 본문 사이 고정 한 줄. 모델명·부품명 등
+            태깅된 엔티티를 인라인 요약으로 항상 노출해 칩 팝오버를 열지
+            않고도 바로 확인. 편집중 draft 를 우선 읽어 추가/삭제 즉시 반영.
+            태그가 없으면 렌더 안 됨. */}
+        <ReportEntitiesPanel
+          entities={draft?.entities ?? existingReport?.entities ?? []}
         />
 
         {/* Page strip — chips that select the active page (paginated mode).
@@ -5167,26 +5169,48 @@ function ReportEntitiesPanel({ entities }) {
 
   if (list.length === 0) return null
 
+  // 본문 상단 고정 배너 — 헤더와 페이지 사이 한 줄. 닫혀 있을 땐 축별
+  // 값을 인라인 요약("모델명 SM6·QM6 | 부품명 브레이크패드")으로 항상
+  // 보여줘 클릭 없이도 어떤 모델·부품에 대한 보고서인지 바로 확인된다.
+  // 클릭하면 값이 많아 한 줄에 안 들어갈 때를 위해 축별 표로 펼친다.
+  // 화면 전용(인쇄·내보내기 제외) — 본문 콘텐츠가 아니라 탐색용 UI다.
   return (
-    <div className="mt-1.5" data-export-exclude>
+    <div
+      data-export-exclude
+      className="border-b bg-muted/20 px-6 py-1.5 text-xs print:hidden"
+    >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-1 rounded-md border bg-background/80 px-2 py-0.5 text-[11px] font-medium text-foreground/80 transition-colors hover:bg-muted"
-        title="이 보고서에 태깅된 모델·부품·시험 등 관련 정보"
+        className="flex w-full items-start gap-1.5 text-left"
+        title="이 보고서에 태깅된 모델·부품·시험 등 관련 정보 — 클릭하면 펼치기"
       >
-        <Info className="h-3 w-3" />
-        관련 정보 {list.length}건
         {open ? (
-          <ChevronUp className="h-3 w-3 opacity-60" />
+          <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-60" />
         ) : (
-          <ChevronDown className="h-3 w-3 opacity-60" />
+          <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-60" />
+        )}
+        <span className="inline-flex shrink-0 items-center gap-1 font-medium text-muted-foreground">
+          <Info className="h-3 w-3" />
+          관련 정보
+        </span>
+        {!open && (
+          <span className="flex min-w-0 flex-1 flex-wrap gap-x-3 gap-y-0.5">
+            {groups.map((g) => (
+              <span key={g.slug || '기타'} className="inline-flex gap-1">
+                <span className="text-muted-foreground">{g.label}</span>
+                <span className="text-foreground/80">
+                  {g.items.map((e) => e.value).join(' · ')}
+                </span>
+              </span>
+            ))}
+          </span>
         )}
       </button>
       {open && (
-        <dl className="mt-1.5 flex flex-col gap-1.5 rounded-md border bg-muted/30 p-3">
+        <dl className="ml-5 mt-1.5 flex flex-col gap-1.5">
           {groups.map((g) => (
-            <div key={g.slug || '기타'} className="flex items-start gap-3 text-xs">
+            <div key={g.slug || '기타'} className="flex items-start gap-3">
               <dt className="w-20 shrink-0 pt-0.5 text-muted-foreground">
                 {g.label}
               </dt>

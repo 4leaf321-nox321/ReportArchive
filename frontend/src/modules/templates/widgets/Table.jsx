@@ -92,6 +92,10 @@ export function TablePropsPanel({ props, onChange }) {
 import { ChevronDown, ChevronUp, Plus, X } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 
+// 열 폭(px) 허용 범위 — 헤더 드래그·균등 분배에 공통 적용.
+const COL_WIDTH_MIN_PX = 48
+const COL_WIDTH_MAX_PX = 1200
+
 export function TableEditor({ props, content, onChange, readOnly }) {
   // Effective columns: per-report override (content.columns) takes precedence
   // over template defaults (props.columns). Once the report writer touches
@@ -117,6 +121,15 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   // 셀간 화살표 네비게이션 — 텍스트 셀은 boundary 기준, 그 외 입력
   // (number/date/select) 은 left/right boundary 이동만 (up/down 은 native).
   const grid = useGridNavigation()
+  // ── 열 폭 조절 (content.column_widths) ───────────────────────────────
+  // 헤더 우측 핸들을 드래그해 px 로 저장. 빠진 열은 자동(나머지 폭 균등
+  // 분배). 편집/뷰 두 모드 공용 <colgroup> 으로 적용. resizePreview 는 드래그
+  // 중 임시 폭 — mouseup 에 한 번만 commit.
+  const columnWidths =
+    content?.column_widths && typeof content.column_widths === 'object'
+      ? content.column_widths
+      : {}
+  const [resizePreview, setResizePreview] = useState(null) // {key, px} | null
 
   function patch(next) {
     const merged = {
@@ -129,11 +142,67 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     if (!merged.caption) delete merged.caption
     if (!merged.columns) delete merged.columns
     if (!merged.caption_skip_autofill) delete merged.caption_skip_autofill
+    // 빈 폭 맵은 저장 안 함 — override 가 다시 0개가 되면 키 자체를 제거.
+    if (
+      !merged.column_widths ||
+      Object.keys(merged.column_widths).length === 0
+    ) {
+      delete merged.column_widths
+    }
     onChange(merged)
   }
 
   function setCols(nextCols) {
     patch({ columns: nextCols })
+  }
+
+  // ── 열 폭 핸들러 ──────────────────────────────────────────────────────
+  function commitColumnWidth(key, px) {
+    if (!Number.isFinite(px)) return
+    const clamped = Math.min(
+      Math.max(COL_WIDTH_MIN_PX, Math.round(px)),
+      COL_WIDTH_MAX_PX,
+    )
+    patch({ column_widths: { ...columnWidths, [key]: clamped } })
+  }
+  /** <col> 인라인 스타일 — 드래그 프리뷰 > 저장값 > 자동(undefined).
+   *  width 를 안 주면 table-fixed 가 "고정 폭을 뺀 나머지를 자동 열끼리
+   *  균등 분배" 하므로, 일부 열만 px 로 고정하고 나머지는 자동이 된다. */
+  function colStyle(key) {
+    if (resizePreview?.key === key) return { width: `${resizePreview.px}px` }
+    const stored = columnWidths[key]
+    return Number.isFinite(stored) ? { width: `${stored}px` } : undefined
+  }
+  function resetColWidth(key) {
+    if (!(key in columnWidths)) return
+    const keep = { ...columnWidths }
+    delete keep[key]
+    patch({ column_widths: keep })
+  }
+  /** 헤더 우측 핸들 드래그 — 진행 중엔 resizePreview 로 화면만, mouseup 에
+   *  commit. window 리스너로 셀 밖으로 끌어도 추적. */
+  function startColResize(key, thEl, startEvent) {
+    if (!thEl) return
+    const startWidth = thEl.offsetWidth
+    const startX = startEvent.clientX
+    const clampPx = (px) =>
+      Math.min(Math.max(COL_WIDTH_MIN_PX, Math.round(px)), COL_WIDTH_MAX_PX)
+    function onMove(ev) {
+      setResizePreview({ key, px: clampPx(startWidth + (ev.clientX - startX)) })
+    }
+    function onUp(ev) {
+      const next = clampPx(startWidth + (ev.clientX - startX))
+      setResizePreview(null)
+      commitColumnWidth(key, next)
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
   }
 
   if (readOnly) {
@@ -178,6 +247,11 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                   width instead; widths differ slightly between modes by the
                   action column's size. */}
               <table className="w-full text-sm table-fixed">
+                <colgroup>
+                  {cols.map((c, i) => (
+                    <col key={i} style={colStyle(c.key)} />
+                  ))}
+                </colgroup>
                 <thead className="bg-muted/40">
                   <tr>
                     {cols.map((c, i) => (
@@ -354,6 +428,41 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     if (!r) return false
     return r.r2 > r.r1 || r.c2 > r.c1
   })()
+  // 선택이 2개 이상 열에 걸쳤나 — "열 폭 균등" 버튼 노출 조건.
+  const selectionSpansCols = (() => {
+    const r = selection.rect
+    return !!r && r.c2 > r.c1
+  })()
+  /** 선택한 열들(c1..c2)의 폭을 같게 — 현재 렌더된 폭 합을 등분해 각 열에
+   *  px 로 고정한다. 헤더 th 의 offsetWidth(현재 폭)로 측정하므로 자동 열도
+   *  포함해 정확히 균등해진다. 2열 이상 선택일 때만. */
+  function equalizeSelectedCols() {
+    const r = selection.rect
+    if (!r || r.c2 <= r.c1) return
+    const root = selection.containerRef.current
+    if (!root) return
+    const ths = root.querySelectorAll('th[data-col-idx]')
+    let total = 0
+    let count = 0
+    for (let ci = r.c1; ci <= r.c2; ci++) {
+      const th = ths[ci]
+      if (th) {
+        total += th.offsetWidth
+        count += 1
+      }
+    }
+    if (count < 2 || total <= 0) return
+    const each = Math.min(
+      Math.max(COL_WIDTH_MIN_PX, Math.round(total / count)),
+      COL_WIDTH_MAX_PX,
+    )
+    const next = { ...columnWidths }
+    for (let ci = r.c1; ci <= r.c2; ci++) {
+      if (cols[ci]) next[cols[ci].key] = each
+    }
+    patch({ column_widths: next })
+    selection.clear()
+  }
 
   /**
    * Paste landing on a column header. The first TSV row becomes column
@@ -514,6 +623,17 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                 셀 합치기
               </Button>
             )}
+            {selectionSpansCols && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={equalizeSelectedCols}
+                className="h-6 px-2 text-[11px]"
+                title="선택한 열들의 폭을 같게 맞춤"
+              >
+                열 폭 균등
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
@@ -554,11 +674,17 @@ export function TableEditor({ props, content, onChange, readOnly }) {
             edit mode reserves space for them — both modes have identical
             data column widths. */}
         <table className="w-full text-sm table-fixed">
+          <colgroup>
+            {cols.map((c, i) => (
+              <col key={i} style={colStyle(c.key)} />
+            ))}
+          </colgroup>
           <thead className="bg-muted/40">
             <tr>
               {cols.map((c, i) => (
                 <th
                   key={i}
+                  data-col-idx={i}
                   className="px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b group relative"
                 >
                   <div className="flex items-center gap-1">
@@ -589,6 +715,26 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                   >
                     <X className="h-3 w-3" />
                   </Button>
+                  {/* 우측 가장자리 드래그 핸들 — 끌어서 열 폭 조절. 더블클릭 =
+                      자동(기본 폭). 항상 보이는 2px 바 + 6px hit area. */}
+                  <div
+                    role="separator"
+                    aria-orientation="vertical"
+                    title="끌어서 열 폭 조절 · 더블클릭하면 자동"
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      startColResize(c.key, e.currentTarget.closest('th'), e)
+                    }}
+                    onDoubleClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      resetColWidth(c.key)
+                    }}
+                    className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize flex items-center justify-end group/handle z-20"
+                  >
+                    <span className="block w-0.5 h-1/2 bg-border group-hover/handle:bg-primary transition-colors" />
+                  </div>
                 </th>
               ))}
             </tr>

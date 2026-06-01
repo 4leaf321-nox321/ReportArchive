@@ -524,6 +524,16 @@ def _table_content(props: dict) -> dict:
                     "additionalProperties": False,
                 },
             },
+            # 사용자가 헤더 드래그로 조절한 열 폭(px). 키 = 열 key, 값 = px.
+            # 빠진 열은 자동(나머지 폭 균등 분배). 편집·뷰 두 모드 공용.
+            "column_widths": {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "integer",
+                    "minimum": 40,
+                    "maximum": 1200,
+                },
+            },
         },
         "additionalProperties": False,
     }

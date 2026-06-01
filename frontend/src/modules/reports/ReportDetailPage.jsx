@@ -91,8 +91,10 @@ import {
   unpublishReport,
   setAuthorLock,
   moveReportToFolder,
+  listReports,
   LockConflictError,
 } from './api'
+import { FOLDER_FILTER_UNCATEGORIZED } from './FolderSidebar'
 import { useReportLock } from './useReportLock'
 import {
   DEFAULT_REPORT_WIDTH_PX,
@@ -2763,6 +2765,18 @@ export default function ReportDetailPage() {
   // (Recharts) re-renders with the right size for the page.
   const printContextValue = printing ? pdfPrintScale : 1
 
+  // 같은 폴더 형제 보고서 네비게이션용 folder id. 개인 공간은 보고서의
+  // folder_id, 조직 게시판은 이 워크스페이스 mount 의 folder_id 를 쓴다.
+  // 미분류(null)는 'uncategorized' 센티넬로 — listReports 가 동일하게
+  // 미분류 형제만 내려준다. 새 보고서/문맥 불명이면 undefined → 네비 숨김.
+  const siblingFolderId = isNew
+    ? undefined
+    : isPersonalContext
+      ? existingReport?.folder_id ?? FOLDER_FILTER_UNCATEGORIZED
+      : isOrgContext && currentMount
+        ? currentMount.folder_id ?? FOLDER_FILTER_UNCATEGORIZED
+        : undefined
+
   return (
     <PrintScaleContext.Provider value={printContextValue}>
     <ReportStyleContext.Provider value={reportStyleValue}>
@@ -2873,6 +2887,17 @@ export default function ReportDetailPage() {
             <ArrowLeft className="mr-1 h-3 w-3" />
             목록
           </Button>
+
+          {/* 같은 폴더 형제 보고서 — 이전/다음 이동 + 접이식 목록. "목록"
+              까지 안 가도 같은 폴더 안에서 바로 옮겨다닐 수 있게. 편집중엔
+              실수 이동을 막으려 숨김. */}
+          {!isEditing && siblingFolderId !== undefined && (
+            <FolderSiblingNav
+              slug={slug}
+              folderId={siblingFolderId}
+              currentReportId={existingReport?.id}
+            />
+          )}
 
           <Separator orientation="vertical" className="h-6 mx-1" />
 
@@ -5238,6 +5263,114 @@ function ReportEntitiesPanel({ entities }) {
           ))}
         </dl>
       )}
+    </div>
+  )
+}
+
+/**
+ * 같은 폴더 형제 보고서 네비게이션 — 헤더 "목록" 옆에 붙는다. 현재
+ * 워크스페이스/폴더의 보고서 목록을 listReports 로 한 번 받아:
+ *   - ◀ / ▶ : 목록 순서 기준 이전·다음 보고서로 바로 이동
+ *   - 가운데 토글 : 같은 폴더 목록 팝오버(현재 항목 강조, 클릭 이동)
+ * 자체 데이터 로딩(useAsync)을 품어 부모(거대한 ReportDetailPage)의 hook
+ * 순서에 영향을 주지 않는다. 형제가 자기 자신뿐이거나 현재 보고서를 목록
+ * 에서 못 찾으면(다른 mount 진입 등) 렌더하지 않는다.
+ */
+function FolderSiblingNav({ slug, folderId, currentReportId }) {
+  const navigate = useNavigate()
+  const [open, setOpen] = useState(false)
+  const { data: siblings } = useAsync(
+    () =>
+      slug && folderId !== undefined
+        ? listReports({ folderId })
+        : Promise.resolve([]),
+    [slug, folderId],
+  )
+  const list = Array.isArray(siblings) ? siblings : []
+  const idx = list.findIndex((r) => r.id === currentReportId)
+  const prev = idx > 0 ? list[idx - 1] : null
+  const next = idx >= 0 && idx < list.length - 1 ? list[idx + 1] : null
+
+  if (list.length <= 1 || idx < 0) return null
+
+  function go(r) {
+    if (!r) return
+    setOpen(false)
+    navigate(`/w/${slug}/reports/${r.id}`)
+  }
+
+  return (
+    <div className="flex items-center gap-0.5">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="px-1.5"
+        disabled={!prev}
+        onClick={() => go(prev)}
+        title={prev ? `이전: ${prev.title || '(제목 없음)'}` : '이전 보고서 없음'}
+      >
+        <ChevronLeft className="h-4 w-4" />
+      </Button>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1 px-1.5 text-xs"
+            title="같은 폴더의 보고서 목록"
+          >
+            <Folder className="h-3.5 w-3.5" />
+            <span className="tabular-nums text-muted-foreground">
+              {idx + 1}/{list.length}
+            </span>
+            <ChevronDown className="h-3 w-3 opacity-60" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-72 p-1">
+          <div className="px-2 py-1.5 text-[11px] font-medium text-muted-foreground">
+            같은 폴더 · {list.length}개
+          </div>
+          <ScrollArea className="max-h-72">
+            <ul className="flex flex-col">
+              {list.map((r, i) => (
+                <li key={r.id}>
+                  <button
+                    type="button"
+                    onClick={() => go(r)}
+                    className={cn(
+                      'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-muted',
+                      r.id === currentReportId &&
+                        'bg-muted font-semibold text-foreground',
+                    )}
+                  >
+                    <span className="w-5 shrink-0 tabular-nums text-muted-foreground">
+                      {i + 1}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">
+                      {r.title || '(제목 없음)'}
+                    </span>
+                    {r.report_date && (
+                      <span className="shrink-0 text-[10px] text-muted-foreground">
+                        {r.report_date}
+                      </span>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </ScrollArea>
+        </PopoverContent>
+      </Popover>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="px-1.5"
+        disabled={!next}
+        onClick={() => go(next)}
+        title={next ? `다음: ${next.title || '(제목 없음)'}` : '다음 보고서 없음'}
+      >
+        <ChevronRight className="h-4 w-4" />
+      </Button>
     </div>
   )
 }

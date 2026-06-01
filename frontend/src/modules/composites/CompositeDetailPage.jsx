@@ -343,6 +343,33 @@ export default function CompositeDetailPage() {
     setPendingGroups((prev) => [...prev, trimmed])
   }
 
+  // 그룹 해제 — 그룹 묶음만 없애고 안건 자체는 보존한다. 빈(pending)
+  // 그룹이면 로컬 목록에서 빼고, 안건이 들어 있던 그룹이면 그 안건들의
+  // group_name 을 null 로 되돌려 "그룹 없음" 으로 흘려보낸다. 안건은
+  // 그대로 리스트에 남으므로 비파괴적 — 별도 확인 다이얼로그 없이 처리.
+  function removeGroup(name) {
+    if (!name) return
+    const count = (draft?.items ?? []).filter(
+      (it) => it.group_name === name,
+    ).length
+    setPendingGroups((prev) => prev.filter((g) => g !== name))
+    setDraft((d) =>
+      d
+        ? {
+            ...d,
+            items: d.items.map((it) =>
+              it.group_name === name ? { ...it, group_name: null } : it,
+            ),
+          }
+        : d,
+    )
+    toast.success(
+      count > 0
+        ? `그룹 «${name}» 해제 — 안건 ${count}건은 그룹 없음으로 이동`
+        : `그룹 «${name}» 삭제`,
+    )
+  }
+
   // Phase 5A — publish state + handlers. theme composites stay live by
   // design so we don't surface publish UI for them (publish would only
   // stamp `published_at` without freezing anything — cosmetic only).
@@ -749,6 +776,7 @@ export default function CompositeDetailPage() {
               items={draft.items}
               editing={isEditing}
               pendingGroups={pendingGroups}
+              onRemoveGroup={removeGroup}
             >
               {draft.items.map((it, idx) => (
                 <ItemRow
@@ -1130,6 +1158,7 @@ function ItemsListContainer({
   children,
   editing,
   pendingGroups,
+  onRemoveGroup,
 }) {
   // 그룹 헤더 시각화 — children 배열 안에서 group_name 이 직전과 다른
   // 지점마다 `[그룹명]` 헤더 행을 삽입. items[i] 와 children[i] 가
@@ -1151,6 +1180,8 @@ function ItemsListContainer({
               key={`grp-${i}-${gn}`}
               name={gn}
               variant="single"
+              editing={editing}
+              onRemove={onRemoveGroup ? () => onRemoveGroup(gn) : undefined}
             />,
           )
         } else if (prev) {
@@ -1170,7 +1201,12 @@ function ItemsListContainer({
         if (seen.has(g)) continue
         out.push(
           <li key={`empty-grp-${g}`} className="py-2">
-            <GroupHeader name={g} variant="single" />
+            <GroupHeader
+              name={g}
+              variant="single"
+              editing={editing}
+              onRemove={onRemoveGroup ? () => onRemoveGroup(g) : undefined}
+            />
             <p className="text-[11px] text-muted-foreground italic pl-3">
               (비어 있음 — 위 안건들의 그룹 selector 에서 이 그룹을 선택하세요)
             </p>
@@ -1195,7 +1231,13 @@ function ItemsListContainer({
       const gn = it?.group_name || null
       if (gn !== prev && gn) {
         out.push(
-          <GroupHeader key={`grp-c${targetCol}-${i}-${gn}`} name={gn} variant="bucket" />,
+          <GroupHeader
+          key={`grp-c${targetCol}-${i}-${gn}`}
+          name={gn}
+          variant="bucket"
+          editing={editing}
+          onRemove={onRemoveGroup ? () => onRemoveGroup(gn) : undefined}
+        />,
         )
       }
       out.push(arr[i])
@@ -1237,13 +1279,23 @@ function ItemsListContainer({
 
 /** 그룹 헤더 — 단일 보기에선 `<li>`(divide-y 흐름 안), 2단 보기 컬럼
  *  안에선 `<div>` (carded items 사이의 인라인 헤더). */
-function GroupHeader({ name, variant }) {
+function GroupHeader({ name, variant, editing, onRemove }) {
   const content = (
     <div className="flex items-center gap-2 py-2">
       <span className="text-[11px] font-semibold text-primary">
         [{name}]
       </span>
       <span className="flex-1 border-t border-primary/30" />
+      {editing && onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          title="그룹 해제 — 안건은 그대로 두고 그룹 묶음만 제거합니다"
+          className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      )}
     </div>
   )
   if (variant === 'single') {

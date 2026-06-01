@@ -985,7 +985,12 @@ export default function ReportDetailPage() {
     }
     const reordered = arr.slice()
     const [moved] = reordered.splice(fromIdx, 1)
-    reordered.splice(toIdx, 0, moved)
+    // 삽입선은 "toIdx chip 의 *왼쪽*(앞)에 끼움" 의미. 그런데 위에서
+    // fromIdx 를 먼저 빼면 그 뒤 인덱스가 1씩 당겨지므로, 왼→오른(from<to)
+    // 드래그 시 toIdx 에 그대로 끼우면 한 칸 뒤로 밀린다(드롭 대상 *뒤*로).
+    // from<to 면 1 보정해 항상 대상 chip 앞에 정확히 오게 한다.
+    const insertAt = fromIdx < toIdx ? toIdx - 1 : toIdx
+    reordered.splice(insertAt, 0, moved)
     setDraft((d) => (d ? { ...d, pages: reordered } : d))
     setCurrentPage((p) => {
       const cur = arr[p]

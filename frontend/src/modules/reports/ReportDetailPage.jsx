@@ -969,6 +969,31 @@ export default function ReportDetailPage() {
     updatePage(idx, { name: trimmed === '' ? null : trimmed })
   }
 
+  // 페이지 순서 변경 (드래그&드롭) — fromIdx 페이지를 빼서 toIdx 위치에 끼운다.
+  // 보고 있던 페이지가 reorder 후에도 그대로 선택되도록 *참조 동일성*으로
+  // currentPage 를 다시 찾는다(인덱스만 바뀌고 보던 페이지는 유지).
+  function reorderPages(fromIdx, toIdx) {
+    if (fromIdx === toIdx) return
+    const arr = pages
+    if (
+      fromIdx < 0 ||
+      fromIdx >= arr.length ||
+      toIdx < 0 ||
+      toIdx >= arr.length
+    ) {
+      return
+    }
+    const reordered = arr.slice()
+    const [moved] = reordered.splice(fromIdx, 1)
+    reordered.splice(toIdx, 0, moved)
+    setDraft((d) => (d ? { ...d, pages: reordered } : d))
+    setCurrentPage((p) => {
+      const cur = arr[p]
+      const ni = reordered.indexOf(cur)
+      return ni >= 0 ? ni : clamp(p, 0, reordered.length - 1)
+    })
+  }
+
   /** Append a new ad-hoc widget to a page. `widgetType` is the registry key
    *  (e.g. 'rich_text', 'table'); `defaultProps` comes from the catalog so
    *  the new block has a usable starting state. The generated id is unique
@@ -3274,6 +3299,7 @@ export default function ReportDetailPage() {
           onAdd={() => setPickerOpen(true)}
           onInsertCopy={insertPageCopy}
           onRenamePage={renamePage}
+          onReorder={reorderPages}
           isEditing={isEditing}
           viewMode={viewMode}
         />
@@ -5429,9 +5455,14 @@ function PageStrip({
   onAdd,
   onInsertCopy,
   onRenamePage,
+  onReorder,
   isEditing,
   viewMode,
 }) {
+  // 페이지 순서 드래그&드롭 — dragIdx: 끌고 있는 chip, dragOverIdx: 드롭
+  // 대상 chip. 편집 모드에서만 동작. 드롭 시 onReorder(dragIdx, dragOverIdx).
+  const [dragIdx, setDragIdx] = useState(null)
+  const [dragOverIdx, setDragOverIdx] = useState(null)
   // Ref to the currently-active chip so we can scroll it into view when
   // the user navigates — critical when there are enough pages to overflow.
   const activeChipRef = useRef(null)
@@ -5658,15 +5689,60 @@ function PageStrip({
           return (
             <div
               key={idx}
-              className="shrink-0 group relative"
+              className={cn(
+                'shrink-0 group relative',
+                isEditing && !isRenaming && 'cursor-grab active:cursor-grabbing',
+                dragIdx === idx && 'opacity-40',
+              )}
               ref={isActive ? activeChipRef : undefined}
+              draggable={isEditing && !isRenaming}
+              onDragStart={
+                isEditing && !isRenaming
+                  ? (e) => {
+                      setDragIdx(idx)
+                      e.dataTransfer.effectAllowed = 'move'
+                      e.dataTransfer.setData('text/plain', String(idx))
+                    }
+                  : undefined
+              }
+              onDragOver={
+                isEditing && dragIdx !== null
+                  ? (e) => {
+                      e.preventDefault()
+                      e.dataTransfer.dropEffect = 'move'
+                      if (dragOverIdx !== idx) setDragOverIdx(idx)
+                    }
+                  : undefined
+              }
+              onDrop={
+                isEditing && dragIdx !== null
+                  ? (e) => {
+                      e.preventDefault()
+                      if (dragIdx !== idx) onReorder?.(dragIdx, idx)
+                      setDragIdx(null)
+                      setDragOverIdx(null)
+                    }
+                  : undefined
+              }
+              onDragEnd={() => {
+                setDragIdx(null)
+                setDragOverIdx(null)
+              }}
             >
+              {/* 드롭 위치 표시 — 끌고 있는 chip 이 다른 chip 위로 오면 그 chip
+                  왼쪽에 세로선(여기에 끼워짐). */}
+              {isEditing &&
+                dragIdx !== null &&
+                dragOverIdx === idx &&
+                dragIdx !== idx && (
+                  <div className="absolute -left-1.5 top-0 bottom-0 z-10 w-0.5 rounded bg-primary" />
+                )}
               <button
                 type="button"
                 onClick={(e) => handleChipClick(e, idx)}
                 onKeyDown={(e) => handleChipKeyDown(e, idx)}
                 data-page-chip-idx={idx}
-                title="클릭: 이동 · Ctrl/Shift+클릭: 다중 선택 · Ctrl+C/V: 복사·붙여넣기 · F2: 이름 변경"
+                title="드래그: 순서 변경 · 클릭: 이동 · Ctrl/Shift+클릭: 다중 선택 · Ctrl+C/V: 복사·붙여넣기 · F2: 이름 변경"
                 className={cn(
                   'flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors',
                   // Selection style takes precedence — explicit "this is

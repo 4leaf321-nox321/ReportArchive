@@ -28,6 +28,7 @@ import {
   EditorOptionToggle,
   LabelField,
   normalizeMerges,
+  NoteInput,
   PreviewLabel,
   shiftMergesForCol,
   shiftMergesForRow,
@@ -395,6 +396,7 @@ export function ComparisonPreview({ props }) {
 // --------------------------------------------------------------------------- //
 export function ComparisonEditor({ props, content, onChange, readOnly }) {
   const caption = content?.caption ?? ''
+  const note = content?.note ?? ''
   // Effective cases — content.cases wins once the writer has touched the
   // header. Presence check (not length) so an explicitly emptied list
   // doesn't silently revert to template defaults. Matches the
@@ -481,6 +483,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       ...next,
     }
     if (!merged.caption) delete merged.caption
+    if (!merged.note || !merged.note.trim()) delete merged.note
     if (!merged.rows || merged.rows.length === 0) delete merged.rows
     if (!merged.cases || merged.cases.length === 0) delete merged.cases
     if (!merged.caption_skip_autofill) delete merged.caption_skip_autofill
@@ -989,7 +992,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
 
   // ─── Read-only render ────────────────────────────────────────────────
   if (readOnly) {
-    if (!caption && rows.length === 0) return null
+    if (!caption && rows.length === 0 && !note.trim()) return null
     return (
       <div className={`space-y-2 ${textClass}`} style={textStyle}>
         <CaptionInput
@@ -1085,6 +1088,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
             </table>
           </div>
         )}
+        <NoteInput value={note} readOnly />
       </div>
     )
   }
@@ -1558,6 +1562,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           )}
         </Button>
       </div>
+      <NoteInput value={note} onChange={(v) => patch({ note: v })} />
     </div>
   )
 }

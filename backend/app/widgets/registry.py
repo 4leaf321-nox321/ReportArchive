@@ -2723,6 +2723,7 @@ def _comparison_content(props: dict) -> dict:  # noqa: ARG001
         "properties": {
             "caption": _CAPTION_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
+            "note": _NOTE_FIELD,
             # Per-report case override. When set, this is the canonical
             # column list (renamed/added/removed cases); when absent,
             # the renderer falls back to props.cases.

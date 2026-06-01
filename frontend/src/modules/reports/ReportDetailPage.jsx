@@ -227,6 +227,37 @@ export default function ReportDetailPage() {
       window.removeEventListener('keydown', onKey)
     }
   }, [reportFullscreen])
+  // 백스페이스 → "목록" 으로 빠르게 복귀(보기 모드 전용). 단, 입력 중
+  // (input/textarea/contentEditable)이거나 편집모드·새 보고서, 또는 모달
+  // /드롭다운이 열려 있으면 그쪽 기본 동작(텍스트 삭제·닫기)을 살려야
+  // 하므로 무시한다. 수정자 키와 함께 눌린 경우도 제외.
+  useEffect(() => {
+    if (isEditing || isNew || !slug) return
+    function onKeyDown(e) {
+      if (e.key !== 'Backspace' || e.ctrlKey || e.metaKey || e.altKey) return
+      const t = e.target
+      const tag = t?.tagName
+      if (
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        t?.isContentEditable
+      ) {
+        return
+      }
+      if (
+        document.querySelector(
+          '[role="dialog"][data-state="open"], [role="menu"][data-state="open"], [role="alertdialog"][data-state="open"]',
+        )
+      ) {
+        return
+      }
+      e.preventDefault()
+      navigate(`/w/${slug}/reports`)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [isEditing, isNew, slug, navigate])
   // "Printing" doesn't actually leave edit mode (no lock release, no
   // unsaved-change loss); it just renders all blocks read-only and stacks
   // every page vertically so the browser's print engine sees the same
@@ -5286,7 +5317,13 @@ function FolderSiblingNav({ slug, folderId, currentReportId }) {
         : Promise.resolve([]),
     [slug, folderId],
   )
-  const list = Array.isArray(siblings) ? siblings : []
+  // 목록 페이지 기본 정렬(DataTable defaultSort = 번호 내림차순)과 동일하게
+  // 정렬해 이전/다음·목록 순서가 목록 화면과 일치하도록 한다.
+  const list = useMemo(() => {
+    const arr = Array.isArray(siblings) ? [...siblings] : []
+    arr.sort((a, b) => (b.id ?? 0) - (a.id ?? 0))
+    return arr
+  }, [siblings])
   const idx = list.findIndex((r) => r.id === currentReportId)
   const prev = idx > 0 ? list[idx - 1] : null
   const next = idx >= 0 && idx < list.length - 1 ? list[idx + 1] : null

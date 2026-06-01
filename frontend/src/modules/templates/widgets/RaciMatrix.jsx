@@ -298,6 +298,7 @@ function RaciTable({
   rows,
   readOnly,
   compact,
+  fontSizePx = null,
   onCellChange,
   onLabelChange,
   onRowRemove,
@@ -311,7 +312,12 @@ function RaciTable({
   const groupRuns = computeGroupRuns(roles)
   const colCount = roles.length + (readOnly ? 1 : 2) // +1 task col, +1 actions in edit
   return (
-    <table className={`w-full border-collapse ${textSize}`}>
+    // fontSizePx 가 오면 그 값으로 고정(속성 반영), 없으면 textSize 클래스
+    // (.report-widget-body 가 text-sm 을 ≈18px 로 부스트)로 폴백.
+    <table
+      className={`w-full border-collapse ${fontSizePx == null ? textSize : ''}`}
+      style={fontSizePx != null ? { fontSize: fontSizePx } : undefined}
+    >
       <thead>
         {readOnly ? (
           groupRuns ? (
@@ -646,6 +652,10 @@ export function RaciMatrixEditor({ props, content, onChange, readOnly }) {
   }, [content?.roles, props.default_roles])
   const textClass = textStyleToClassName(props.text_style)
   const textStyle = textStyleToInlineStyle(props.text_style)
+  // 표 글자 크기 — 속성(text_style.font_size_px)을 반영. null(미설정)이면
+  // 현행 기본(text-sm ≈ 18px, 다른 표 위젯과 동일)을 유지. 예전엔 표가
+  // text-sm/xs 로 고정돼 wrapper 의 속성값을 덮어써 안 먹었다.
+  const bodyFontPx = props.text_style?.font_size_px ?? null
 
   function patch(next) {
     const merged = {
@@ -768,7 +778,7 @@ export function RaciMatrixEditor({ props, content, onChange, readOnly }) {
           skipAutofill={content?.caption_skip_autofill}
         />
         <div className="overflow-x-auto">
-          <RaciTable rows={rows} roles={roles} readOnly />
+          <RaciTable rows={rows} roles={roles} readOnly fontSizePx={bodyFontPx} />
         </div>
         <RaciLegend />
       </div>
@@ -819,6 +829,7 @@ export function RaciMatrixEditor({ props, content, onChange, readOnly }) {
           <RaciTable
             rows={rows}
             roles={roles}
+            fontSizePx={bodyFontPx}
             onCellChange={setCell}
             onLabelChange={setLabel}
             onRowRemove={removeRow}

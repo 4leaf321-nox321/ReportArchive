@@ -131,6 +131,10 @@ export function MilestoneEditor({ props, content, onChange, readOnly }) {
   const endDate = effectiveString(content, props, 'end_date', '')
   const textClass = textStyleToClassName(props.text_style)
   const textStyle = textStyleToInlineStyle(props.text_style)
+  // 마커 라벨 글자 크기 — 속성(text_style.font_size_px)을 반영. 예전엔
+  // text-xs(12px)로 고정돼 속성 변경이 안 먹었다. 기본값은 현행 12px 유지
+  // (타임라인 마커 간격이 안 깨지게 — 키우려면 속성에서 조절).
+  const labelFontPx = props.text_style?.font_size_px ?? 12
 
   function patch(next) {
     const merged = {
@@ -183,6 +187,7 @@ export function MilestoneEditor({ props, content, onChange, readOnly }) {
             items={items}
             startDate={startDate || undefined}
             endDate={endDate || undefined}
+            fontSizePx={labelFontPx}
           />
         ) : (
           <p className="text-xs text-muted-foreground italic">
@@ -223,6 +228,7 @@ export function MilestoneEditor({ props, content, onChange, readOnly }) {
             items={items}
             startDate={startDate || undefined}
             endDate={endDate || undefined}
+            fontSizePx={labelFontPx}
           />
         ) : (
           <div className="text-center text-xs text-muted-foreground italic py-6">
@@ -367,7 +373,7 @@ export function MilestoneEditor({ props, content, onChange, readOnly }) {
  *  (or the data's min/max when those are missing). Each marker shows the
  *  item's status color, its date, and its label. Labels alternate
  *  above/below the axis when packed densely so they don't overlap. */
-function MilestoneTimeline({ items, startDate, endDate }) {
+function MilestoneTimeline({ items, startDate, endDate, fontSizePx = 12 }) {
   const layout = useMemo(() => {
     const dated = (items ?? [])
       .map((it, i) => ({ ...it, _idx: i, _t: parseDate(it.date) }))
@@ -519,8 +525,8 @@ function MilestoneTimeline({ items, startDate, endDate }) {
                   style={{ width: 120 }}
                 >
                   <div
-                    className="text-xs font-medium"
-                    style={{ color: st.color, wordBreak: 'keep-all', overflowWrap: 'anywhere' }}
+                    className="font-medium"
+                    style={{ fontSize: fontSizePx, color: st.color, wordBreak: 'keep-all', overflowWrap: 'anywhere' }}
                     title={p.label}
                   >
                     {p.label || '(이름 없음)'}

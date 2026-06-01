@@ -126,6 +126,10 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
   const orientation = effectiveString(content, props, 'orientation', 'horizontal')
   const textClass = textStyleToClassName(props.text_style)
   const textStyle = textStyleToInlineStyle(props.text_style)
+  // 노드 글자 크기 — 속성(text_style.font_size_px)을 반영. null(미설정)이면
+  // 현행 기본(노드 text-base≈20.8px / 설명 text-xs)을 그대로 유지하고,
+  // 설정되면 그 값으로(설명은 0.8배). 예전엔 하드코딩돼 속성이 안 먹었다.
+  const nodeFontPx = props.text_style?.font_size_px ?? null
 
   function patch(next) {
     const merged = {
@@ -216,7 +220,7 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
           skipAutofill={content?.caption_skip_autofill}
         />
         {items.length > 0 ? (
-          <FlowchartCanvas items={items} orientation={orientation} />
+          <FlowchartCanvas items={items} orientation={orientation} fontSizePx={nodeFontPx} />
         ) : (
           <p className="text-xs text-muted-foreground italic">
             (순서도 항목 없음)
@@ -245,7 +249,7 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
 
       <div className="rounded-md border bg-card px-3 py-4">
         {items.length > 0 ? (
-          <FlowchartCanvas items={items} orientation={orientation} />
+          <FlowchartCanvas items={items} orientation={orientation} fontSizePx={nodeFontPx} />
         ) : (
           <div className="text-center text-xs text-muted-foreground italic py-6">
             단계를 추가하면 순서도가 그려집니다.
@@ -359,7 +363,7 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
 // --------------------------------------------------------------------------- //
 // Canvas — PPT-style step blocks centered and connected with arrows
 // --------------------------------------------------------------------------- //
-function FlowchartCanvas({ items, orientation }) {
+function FlowchartCanvas({ items, orientation, fontSizePx = null }) {
   const isHorizontal = orientation !== 'vertical'
   // Horizontal: equal-width steps stretch to fill the row so the
   // whole flow uses the available width (no big gutters on the
@@ -392,6 +396,7 @@ function FlowchartCanvas({ items, orientation }) {
             label={it.label}
             description={it.description}
             orientation={orientation}
+            fontSizePx={fontSizePx}
           />
           {idx < items.length - 1 && (
             <div
@@ -415,8 +420,10 @@ function FlowchartCanvas({ items, orientation }) {
  *  description below in a smaller readable color. Sized generously so
  *  the diagram reads at presentation scale; auto-fit will tall the cell
  *  height to match. */
-function FlowStep({ index, color, label, description, orientation }) {
+function FlowStep({ index, color, label, description, orientation, fontSizePx = null }) {
   const isHorizontal = orientation !== 'vertical'
+  // 설명은 노드 라벨의 0.8배(속성 설정 시). 미설정이면 각자 현행 클래스 유지.
+  const descPx = fontSizePx != null ? Math.round(fontSizePx * 0.8) : null
   return (
     <div
       className={`relative flex flex-col items-center justify-center text-center rounded-lg shadow-sm ${
@@ -443,16 +450,16 @@ function FlowStep({ index, color, label, description, orientation }) {
         {index + 1}
       </span>
       <div
-        className="text-base font-semibold leading-snug"
-        style={{ wordBreak: 'keep-all', overflowWrap: 'anywhere' }}
+        className={`font-semibold leading-snug ${fontSizePx == null ? 'text-base' : ''}`}
+        style={{ fontSize: fontSizePx ?? undefined, wordBreak: 'keep-all', overflowWrap: 'anywhere' }}
         title={label}
       >
         {label || '(이름 없음)'}
       </div>
       {description && (
         <div
-          className="mt-1.5 text-xs leading-snug opacity-95"
-          style={{ wordBreak: 'keep-all', overflowWrap: 'anywhere' }}
+          className={`mt-1.5 leading-snug opacity-95 ${descPx == null ? 'text-xs' : ''}`}
+          style={{ fontSize: descPx ?? undefined, wordBreak: 'keep-all', overflowWrap: 'anywhere' }}
         >
           {description}
         </div>

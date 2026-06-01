@@ -362,6 +362,9 @@ export function QuadrantEditor({
   const [yMin, yMax] = effectiveRange(props, 'y')
   const textClass = textStyleToClassName(props.text_style)
   const textStyle = textStyleToInlineStyle(props.text_style)
+  // 버킷 항목 글자 크기 — 속성(text_style.font_size_px)을 반영. null(미설정)
+  // 이면 현행 기본(text-sm ≈ 18px) 유지. 예전엔 text-sm 고정이라 속성이 안 먹음.
+  const bodyFontPx = props.text_style?.font_size_px ?? null
   const [selectedPlotId, setSelectedPlotId] = useState(null)
 
   function patchContent(next) {
@@ -506,6 +509,7 @@ export function QuadrantEditor({
               patch={patchContent}
               readOnly={readOnly}
               autoFit={autoFit}
+              fontSizePx={bodyFontPx}
             />
           ) : (
             <PlotCanvas
@@ -849,7 +853,7 @@ function ToggleField({ label, value, onChange }) {
 // --------------------------------------------------------------------------- //
 // BucketBoard — 4 cells, each an editable list. HTML5 DnD between cells.       //
 // --------------------------------------------------------------------------- //
-function BucketBoard({ content, labels, colors, patch, readOnly, autoFit }) {
+function BucketBoard({ content, labels, colors, patch, readOnly, autoFit, fontSizePx = null }) {
   const items = useMemo(
     () => (Array.isArray(content?.bucket_items) ? content.bucket_items : []),
     [content?.bucket_items],
@@ -933,6 +937,7 @@ function BucketBoard({ content, labels, colors, patch, readOnly, autoFit }) {
             color={colors[k]}
             items={byQuadrant[k]}
             readOnly={readOnly}
+            fontSizePx={fontSizePx}
             highlight={dragOverQuadrant === k}
             onAdd={() => addItem(k)}
             onUpdate={updateItem}
@@ -958,6 +963,7 @@ function BucketCell({
   color,
   items,
   readOnly,
+  fontSizePx = null,
   highlight,
   onAdd,
   onUpdate,
@@ -998,6 +1004,7 @@ function BucketCell({
             item={it}
             quadrant={quadrant}
             readOnly={readOnly}
+            fontSizePx={fontSizePx}
             onChangeText={(t) => onUpdate(it.id, { text: t })}
             onRemove={() => onRemove(it.id)}
             onMove={(q) => onMove(it.id, q)}
@@ -1028,6 +1035,7 @@ function BucketItem({
   item,
   quadrant,
   readOnly,
+  fontSizePx = null,
   onChangeText,
   onRemove,
   onMove,
@@ -1036,7 +1044,10 @@ function BucketItem({
 }) {
   if (readOnly) {
     return (
-      <div className="rounded-sm bg-background/70 border border-foreground/5 px-2 py-1 text-sm">
+      <div
+        className={`rounded-sm bg-background/70 border border-foreground/5 px-2 py-1 ${fontSizePx == null ? 'text-sm' : ''}`}
+        style={fontSizePx != null ? { fontSize: fontSizePx } : undefined}
+      >
         {item.text || <span className="text-foreground/40 italic">(빈 항목)</span>}
       </div>
     )
@@ -1058,8 +1069,8 @@ function BucketItem({
           onChange={(e) => onChangeText(e.target.value)}
           rows={1}
           placeholder="내용 입력"
-          className="flex-1 min-w-0 resize-none bg-transparent border-0 outline-none focus:ring-0 text-sm px-0.5 py-0.5"
-          style={{ height: 'auto' }}
+          className={`flex-1 min-w-0 resize-none bg-transparent border-0 outline-none focus:ring-0 px-0.5 py-0.5 ${fontSizePx == null ? 'text-sm' : ''}`}
+          style={{ height: 'auto', fontSize: fontSizePx ?? undefined }}
           onInput={(e) => {
             e.target.style.height = 'auto'
             e.target.style.height = `${e.target.scrollHeight}px`

@@ -180,7 +180,9 @@ function ProgressRow({ item, unit, textClass = '', textStyle }) {
     <div className={`text-sm ${textClass}`} style={textStyle}>
       <div className="flex items-baseline justify-between gap-2 mb-0.5">
         <span className="truncate font-medium">{item?.label ?? ''}</span>
-        <span className="text-xs text-muted-foreground tabular-nums shrink-0">
+        {/* 값은 라벨과 같은 본문 크기를 상속(예전 text-xs=12px 고정 제거) —
+            속성 텍스트 크기가 wrapper(textStyle)를 통해 반영된다. */}
+        <span className="text-muted-foreground tabular-nums shrink-0">
           {display}
         </span>
       </div>
@@ -194,7 +196,8 @@ function ProgressRow({ item, unit, textClass = '', textStyle }) {
         />
       </div>
       {item?.note && (
-        <div className="mt-1 text-[11px] text-muted-foreground">{item.note}</div>
+        // 노트는 본문의 0.85배(상대) — 속성 텍스트 크기에 비례해 함께 커진다.
+        <div className="mt-1 text-[0.85em] text-muted-foreground">{item.note}</div>
       )}
     </div>
   )

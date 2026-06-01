@@ -20,13 +20,13 @@ from typing import Optional
 import jwt
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.modules.auth.services import decode_access_token
 from app.modules.users.models import Role, User, WorkspaceMember
-from app.modules.workspaces.models import Workspace
+from app.modules.workspaces.models import Workspace, WorkspaceKind
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -38,6 +38,11 @@ class CurrentUser:
     user: User
     workspace: Workspace
     role: Role  # role on `workspace` (after tree traversal)
+    # 조직 간 공개(조직간공개_설계.md §7.3 / Phase 5). 이 게시판의 멤버가
+    # 아닌데 *공개 컨텐츠가 있어* 읽기전용으로 진입한 외부 열람자면 True.
+    # role 은 편의상 user 로 합성하지만, 이 플래그가 서면 모든 쓰기·곁다리는
+    # 거부되고 가시성은 "공개분만" 으로 좁혀진다(can_read_report 참조).
+    public_viewer: bool = False
 
     @property
     def is_manager(self) -> bool:
@@ -55,8 +60,9 @@ class CurrentUser:
     @property
     def can_write_reports(self) -> bool:
         # 모든 부서 멤버(매니저/사용자)는 보고서·종합보고를 작성·편집.
-        # 가상 부서(_global 등)는 require_writer 가 별도로 거절.
-        return self.role in (Role.manager, Role.user)
+        # 가상 부서(_global 등)는 require_writer 가 별도로 거절. 외부 공개
+        # 열람자(public_viewer)는 멤버가 아니므로 쓰기 불가.
+        return not self.public_viewer and self.role in (Role.manager, Role.user)
 
 
 # --------------------------------------------------------------------------- #
@@ -170,15 +176,46 @@ def get_current_user(
     if role is None:
         # 시스템 관리자 bypass — 부서 멤버 row 가 없어도 어떤 부서든 매니저
         # 권한으로 진입 가능. '시스템 관리자는 시스템 내 모든 데이터의 생성/
-        # 편집/삭제 권한' 정책의 구현 지점. 일반 사용자는 기존대로 403.
+        # 편집/삭제 권한' 정책의 구현 지점.
         if user.is_system_admin:
             role = Role.manager
+        elif _workspace_has_public_content(db, workspace.slug):
+            # 조직 간 공개(Phase 5) — 멤버는 아니지만 이 게시판에 공개 컨텐츠가
+            # 있으면 *읽기전용* 외부 열람자로 진입을 허용한다. role 은 합성
+            # user 지만 public_viewer 플래그가 모든 쓰기·곁다리를 막고 가시성을
+            # 공개분으로 좁힌다. 공개 컨텐츠가 없으면 기존대로 403.
+            return CurrentUser(
+                user=user, workspace=workspace, role=Role.user, public_viewer=True
+            )
         else:
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
                 f"{user.email}는 부서 {workspace.slug}에 접근 권한이 없습니다.",
             )
     return CurrentUser(user=user, workspace=workspace, role=role)
+
+
+def _workspace_has_public_content(db: Session, workspace_slug: str) -> bool:
+    """이 org 게시판에 effective-public 인 mount 가 하나라도 있나 — 비멤버
+    읽기전용 진입 허용 판정(조직간공개_설계.md §3.2). effective =
+    coalesce(folder.external_view, workspace.external_view_default). 게시판
+    자체에 게시된 것만(자손 트리는 그 게시판에서 따로 판정)."""
+    from app.modules.folders.models import Folder
+    from app.modules.mounts.models import ReportMount
+
+    effective = func.coalesce(Folder.external_view, Workspace.external_view_default)
+    row = db.execute(
+        select(ReportMount.report_id)
+        .join(Workspace, Workspace.slug == ReportMount.workspace_slug)
+        .outerjoin(Folder, Folder.id == ReportMount.folder_id)
+        .where(
+            ReportMount.workspace_slug == workspace_slug,
+            Workspace.kind == WorkspaceKind.org,
+            effective.is_(True),
+        )
+        .limit(1)
+    ).first()
+    return row is not None
 
 
 def get_current_user_no_workspace(
@@ -240,6 +277,11 @@ def require_writer(actor: CurrentUser = Depends(get_current_user)) -> CurrentUse
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "가상(통합) 부서에서는 쓰기 작업을 할 수 없습니다. 실제 부서를 선택하세요.",
+        )
+    if actor.public_viewer:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "다른 조직의 공개 게시판은 읽기 전용입니다.",
         )
     if actor.role not in (Role.manager, Role.user):
         raise HTTPException(

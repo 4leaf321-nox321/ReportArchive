@@ -410,3 +410,159 @@ def test_owner_sees_own_report_not_flagged_external() -> None:
     finally:
         _set_dx_public(False)
         _delete_report(client, rid)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 5 — 비멤버 게시판 읽기전용 진입                                        #
+# --------------------------------------------------------------------------- #
+# dev 멤버(OUTSIDER)는 dx 의 멤버가 아니다(멤버십은 위로만 상속). dx 에 공개
+# 폴더가 있으면 dx 컨텍스트로 *읽기전용* 진입할 수 있어야 하고, 공개분만 보이며
+# 모든 쓰기는 막혀야 한다.
+
+CLEAN_NONMEMBER_WS = "division-mx"  # OUTSIDER 비멤버 + 공개 컨텐츠 없음(진입 거부 테스트)
+
+
+def _make_org_folder(client: TestClient, name: str, *, public: bool) -> int:
+    res = client.post(
+        f"/api/folders?workspace_slug={ADMIN_WORKSPACE}",
+        headers=_admin_headers(),
+        json={"name": name},
+    )
+    assert res.status_code == 201, res.text
+    fid = res.json()["data"]["id"]
+    if public:
+        p = client.patch(
+            f"/api/folders/{fid}",
+            headers=_admin_headers(),
+            json={"external_view": True},
+        )
+        assert p.status_code == 200, p.text
+    return fid
+
+
+def _make_report_in_folder(client: TestClient, folder_id: int | None, title: str) -> int:
+    template_id, version = _pick_template(client)
+    rep = client.post(
+        "/api/reports",
+        headers=_admin_headers(),
+        json={
+            "template_id": template_id,
+            "template_version": version,
+            "title": title,
+            "tags": [],
+        },
+    )
+    assert rep.status_code == 201, rep.text
+    rid = rep.json()["data"]["id"]
+    client.post(
+        "/api/mounts",
+        headers=_admin_headers(),
+        json={
+            "report_id": rid,
+            "workspace_slugs": [ADMIN_WORKSPACE],
+            "folder_id": folder_id,
+        },
+    )
+    return rid
+
+
+def test_nonmember_reads_public_board_filtered() -> None:
+    """비멤버가 dx 진입 시 — 목록·폴더에 공개분만, 비공개는 안 보임."""
+    client = TestClient(app)
+    outsider = _ensure_outsider()
+    _set_dx_public(False)
+    pub_folder = _make_org_folder(client, "P5-공개폴더", public=True)
+    priv_folder = _make_org_folder(client, "P5-비공개폴더", public=False)
+    pub_rid = _make_report_in_folder(client, pub_folder, "P5 공개 보고서")
+    priv_rid = _make_report_in_folder(client, priv_folder, "P5 비공개 보고서")
+    h = {
+        "Authorization": f"Bearer {create_access_token(outsider)}",
+        "X-Workspace-Slug": ADMIN_WORKSPACE,  # 비멤버가 dx 컨텍스트로 진입
+    }
+    try:
+        # 보고서 목록 — 공개만
+        rows = client.get("/api/reports", headers=h)
+        assert rows.status_code == 200, rows.text
+        ids = [r["id"] for r in rows.json()["data"]]
+        assert pub_rid in ids, "공개 보고서는 보여야"
+        assert priv_rid not in ids, "비공개 보고서는 비멤버에게 안 보여야"
+        assert all(r["is_external_public"] for r in rows.json()["data"])
+        # 폴더 목록 — 공개 폴더만
+        fl = client.get(
+            f"/api/folders?workspace_slug={ADMIN_WORKSPACE}", headers=h
+        )
+        assert fl.status_code == 200, fl.text
+        fids = [f["id"] for f in fl.json()["data"]["items"]]
+        assert pub_folder in fids
+        assert priv_folder not in fids
+        # 단일 GET — 공개 200(읽기전용), 비공개 403
+        gp = client.get(f"/api/reports/{pub_rid}", headers=h)
+        assert gp.status_code == 200 and gp.json()["data"]["is_public_view"] is True
+        assert client.get(f"/api/reports/{priv_rid}", headers=h).status_code == 403
+    finally:
+        _delete_report(client, pub_rid)
+        _delete_report(client, priv_rid)
+        client.delete(f"/api/folders/{pub_folder}", headers=_admin_headers())
+        client.delete(f"/api/folders/{priv_folder}", headers=_admin_headers())
+
+
+def test_nonmember_all_writes_blocked() -> None:
+    """비멤버 읽기전용 진입자는 어떤 쓰기도 403."""
+    client = TestClient(app)
+    outsider = _ensure_outsider()
+    _set_dx_public(False)
+    pub_folder = _make_org_folder(client, "P5-쓰기차단-공개", public=True)
+    pub_rid = _make_report_in_folder(client, pub_folder, "P5 쓰기차단 보고서")
+    h = {
+        "Authorization": f"Bearer {create_access_token(outsider)}",
+        "X-Workspace-Slug": ADMIN_WORKSPACE,
+    }
+    tmpl = _pick_template(client)
+    try:
+        # 보고서 생성
+        assert client.post(
+            "/api/reports",
+            headers=h,
+            json={"template_id": tmpl[0], "template_version": tmpl[1],
+                  "title": "침입", "tags": []},
+        ).status_code == 403
+        # 폴더 생성
+        assert client.post(
+            f"/api/folders?workspace_slug={ADMIN_WORKSPACE}",
+            headers=h, json={"name": "침입폴더"},
+        ).status_code == 403
+        # mount
+        assert client.post(
+            "/api/mounts", headers=h,
+            json={"report_id": pub_rid, "workspace_slugs": [ADMIN_WORKSPACE]},
+        ).status_code == 403
+        # 게시판 공개 토글
+        assert client.patch(
+            f"/api/workspaces/{ADMIN_WORKSPACE}/external-view",
+            headers=h, json={"external_view_default": True},
+        ).status_code == 403
+        # 보고서 편집(PATCH)
+        assert client.patch(
+            f"/api/reports/{pub_rid}", headers=h, json={"title": "변조"},
+        ).status_code == 403
+        # 댓글 작성
+        assert client.post(
+            f"/api/reports/{pub_rid}/threads", headers=h,
+            json={"page_index": 0, "block_id": "b1",
+                  "body": {"type": "doc", "content": []}},
+        ).status_code == 403
+    finally:
+        _delete_report(client, pub_rid)
+        client.delete(f"/api/folders/{pub_folder}", headers=_admin_headers())
+
+
+def test_nonmember_denied_when_no_public_content() -> None:
+    """공개 컨텐츠가 없는 게시판엔 비멤버가 아예 진입 불가(403)."""
+    client = TestClient(app)
+    outsider = _ensure_outsider()
+    h = {
+        "Authorization": f"Bearer {create_access_token(outsider)}",
+        "X-Workspace-Slug": CLEAN_NONMEMBER_WS,
+    }
+    # division-mx 는 OUTSIDER 비멤버 + 공개 컨텐츠 없음 → 진입 자체가 403
+    assert client.get("/api/reports", headers=h).status_code == 403

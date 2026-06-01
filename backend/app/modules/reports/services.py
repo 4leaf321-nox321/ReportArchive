@@ -287,6 +287,55 @@ def is_visible_to(db: Session, report: Report, workspace_slug: str) -> bool:
     )
 
 
+def can_read_report(db: Session, actor, report: Report) -> bool:
+    """단일 보고서 읽기 가시성 — actor 컨텍스트까지 종합(조직간공개_설계 Phase 5).
+
+    - virtual(글로벌/관리자) 컨텍스트: 전부 가시.
+    - public_viewer(비멤버 외부 열람자): **공개분만** — is_visible_to 의 멤버십
+      갈래(보고서가 이 게시판에 mount 됐다는 이유)로는 열리면 안 된다. 그래서
+      엄격히 report_has_public_mount 로만 판정.
+    - 그 외(멤버): 기존 is_visible_to(멤버십 ∪ 공개).
+
+    actor 는 CurrentUser(덕타이핑: .workspace.virtual / .public_viewer /
+    .workspace.slug)."""
+    if getattr(actor.workspace, "virtual", False):
+        return True
+    if getattr(actor, "public_viewer", False):
+        return report_has_public_mount(db, report.id)
+    return is_visible_to(db, report, actor.workspace.slug)
+
+
+def list_public_reports_on_board(
+    db: Session,
+    workspace_slug: str,
+    *,
+    entity_ids: Optional[list[int]] = None,
+    folder_filter: Optional[int | str] = None,
+) -> list[Report]:
+    """이 게시판에 게시된 effective-public 보고서 목록 — 비멤버 외부 열람자
+    (public_viewer)의 보고서 목록/폴더 필터용. 멤버용 list_reports_in_workspace
+    와 달리 *공개 mount 만* 본다. folder_filter: int=그 폴더, 'uncategorized'=
+    미분류(게시판 기본 공개일 때만 공개로 잡힘)."""
+    pub_q = _public_mount_query(ReportMount.workspace_slug == workspace_slug)
+    if folder_filter == "uncategorized":
+        pub_q = pub_q.where(ReportMount.folder_id.is_(None))
+    elif isinstance(folder_filter, int):
+        pub_q = pub_q.where(ReportMount.folder_id == folder_filter)
+    pub_ids = set(db.execute(pub_q).scalars())
+    if not pub_ids:
+        return []
+    query = (
+        select(Report)
+        .where(Report.id.in_(pub_ids))
+        .order_by(desc(Report.updated_at))
+    )
+    if entity_ids:
+        query = _apply_entity_filter(db, query, entity_ids)
+        if query is None:
+            return []
+    return list(db.execute(query).scalars())
+
+
 def is_public_only_viewer(
     db: Session, report: Report, workspace_slug: str
 ) -> bool:

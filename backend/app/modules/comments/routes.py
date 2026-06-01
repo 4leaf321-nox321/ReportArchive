@@ -63,11 +63,13 @@ def _public_only(db: Session, actor: CurrentUser, report) -> bool:
     가드(조직간공개_설계.md §6). 읽기 게이트(is_visible_to)는 공개분을
     통과시키므로, "본문+첨부만 읽기전용" 을 지키려면 댓글 조회/작성은 여기서
     별도로 막는다. virtual(글로벌/관리자)·멤버 열람자는 False(평소대로 허용)."""
-    return (
-        not actor.workspace.virtual
-        and report is not None
-        and report_services.is_public_only_viewer(db, report, actor.workspace.slug)
-    )
+    if actor.workspace.virtual or report is None:
+        return False
+    # 비멤버 외부 열람자(public_viewer)는 무조건 공개 전용 — 게시판 컨텍스트로
+    # 진입했어도 멤버가 아니므로 곁다리(댓글)는 막는다.
+    if getattr(actor, "public_viewer", False):
+        return True
+    return report_services.is_public_only_viewer(db, report, actor.workspace.slug)
 
 
 def _thread_payload(db: Session, thread: CommentThread) -> dict:
@@ -163,9 +165,7 @@ def list_threads(
     report = report_services.get_report(db, report_id)
     if not report:
         return not_found_response(f"보고서를 찾을 수 없습니다: {report_id}")
-    if not actor.workspace.virtual and not report_services.is_visible_to(
-        db, report, actor.workspace.slug
-    ):
+    if not report_services.can_read_report(db, actor, report):
         return error_response("Out of workspace scope", status_code=403)
     # 외부 공개 열람자에겐 댓글을 숨긴다(빈 목록) — 본문+첨부만 노출(§6).
     if _public_only(db, actor, report):
@@ -192,9 +192,7 @@ def create_thread(
     report = report_services.get_report(db, report_id)
     if not report:
         return not_found_response(f"보고서를 찾을 수 없습니다: {report_id}")
-    if not actor.workspace.virtual and not report_services.is_visible_to(
-        db, report, actor.workspace.slug
-    ):
+    if not report_services.can_read_report(db, actor, report):
         return error_response("Out of workspace scope", status_code=403)
     if _public_only(db, actor, report):
         return error_response(
@@ -235,9 +233,7 @@ def reply_to_thread(
     if thread is None:
         return not_found_response(f"스레드를 찾을 수 없습니다: {thread_id}")
     report = report_services.get_report(db, thread.report_id)
-    if not actor.workspace.virtual and not report_services.is_visible_to(
-        db, report, actor.workspace.slug
-    ):
+    if not report_services.can_read_report(db, actor, report):
         return error_response("Out of workspace scope", status_code=403)
     if _public_only(db, actor, report):
         return error_response(

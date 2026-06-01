@@ -84,8 +84,23 @@ def list_folders(
         folders = services.list_personal_folders(db, personal_target)
         uncategorized = services.count_uncategorized_personal(db, personal_target)
     elif workspace_slug:
-        folders = services.list_org_folders(db, workspace_slug)
-        uncategorized = services.count_uncategorized_org(db, workspace_slug)
+        # 비멤버 외부 열람자(조직간공개_설계 Phase 5)는 공개 폴더만 본다 —
+        # 멤버/시스템관리자는 전체 트리. (default-create 부작용도 비멤버 경로는
+        # 타지 않는다 — 남의 게시판에 기본 폴더를 만들면 안 되므로.)
+        from app.shared.auth import _resolve_role
+
+        is_member = (
+            actor.is_system_admin
+            or _resolve_role(db, actor.id, workspace_slug) is not None
+        )
+        if is_member:
+            folders = services.list_org_folders(db, workspace_slug)
+            uncategorized = services.count_uncategorized_org(db, workspace_slug)
+        else:
+            folders = services.list_public_org_folders(db, workspace_slug)
+            uncategorized = services.count_public_uncategorized_org(
+                db, workspace_slug
+            )
     else:
         folders = services.list_personal_folders(db, actor.id)
         uncategorized = services.count_uncategorized_personal(db, actor.id)

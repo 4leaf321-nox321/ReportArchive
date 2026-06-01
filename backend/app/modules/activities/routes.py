@@ -48,13 +48,12 @@ def list_report_activities(
     report = report_services.get_report(db, report_id)
     if report is None:
         return not_found_response(f"보고서를 찾을 수 없습니다: {report_id}")
-    if not actor.workspace.virtual and not report_services.is_visible_to(
-        db, report, actor.workspace.slug
-    ):
+    if not report_services.can_read_report(db, actor, report):
         return error_response("Out of workspace scope", status_code=403)
-    # 외부 공개 열람자에겐 이력 숨김(빈 목록).
-    if not actor.workspace.virtual and report_services.is_public_only_viewer(
-        db, report, actor.workspace.slug
+    # 외부 공개 열람자(공개 경로 전용 또는 비멤버 public_viewer)에겐 이력 숨김.
+    if not actor.workspace.virtual and (
+        actor.public_viewer
+        or report_services.is_public_only_viewer(db, report, actor.workspace.slug)
     ):
         return success_response(
             data=ActivityListResponse(items=[]).model_dump(mode="json")

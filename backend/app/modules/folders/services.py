@@ -206,6 +206,44 @@ def count_uncategorized_org(db: Session, workspace_slug: str) -> int:
     return int(n or 0)
 
 
+def list_public_org_folders(db: Session, workspace_slug: str) -> list[Folder]:
+    """비멤버 외부 열람자(public_viewer)에게 보일 *공개 폴더만*
+    (조직간공개_설계.md Phase 5). effective external_view 가 TRUE 인 폴더만 —
+    폴더 own override 가 있으면 그 값, 없으면 게시판 기본값(external_view_default).
+    기본 생성(default-create) 부작용 없음: 남의 게시판에 폴더를 만들면 안 된다."""
+    ws = db.get(Workspace, workspace_slug)
+    if ws is None:
+        return []
+    default = bool(ws.external_view_default)
+    rows = db.execute(
+        select(Folder, func.count(ReportMount.report_id).label("report_count"))
+        .outerjoin(ReportMount, ReportMount.folder_id == Folder.id)
+        .where(
+            Folder.kind == FolderKind.org,
+            Folder.workspace_slug == workspace_slug,
+        )
+        .group_by(Folder.id)
+        .order_by(Folder.sort_order, Folder.id)
+    ).all()
+    out: list[Folder] = []
+    for folder, count in rows:
+        eff = folder.external_view if folder.external_view is not None else default
+        if not eff:
+            continue
+        folder.report_count = int(count or 0)
+        out.append(folder)
+    return out
+
+
+def count_public_uncategorized_org(db: Session, workspace_slug: str) -> int:
+    """미분류(folder 없음) mount 는 게시판 기본값이 공개일 때만 외부 열람자에게
+    잡힌다(폴더가 없으니 게시판 기본값을 그대로 탐). 그 외엔 0."""
+    ws = db.get(Workspace, workspace_slug)
+    if ws is None or not ws.external_view_default:
+        return 0
+    return count_uncategorized_org(db, workspace_slug)
+
+
 # ──────────────────────────────────────────────────────────────────
 # Mutation — permission-checked
 # ──────────────────────────────────────────────────────────────────

@@ -44,9 +44,9 @@ def _read_with_perms(db: Session, actor: CurrentUser, report) -> ReportRead:
     obj.edit_role = decision.role
     # 조직 간 공개(§6) — 외부 공개 열람자면 읽기전용 플래그를 세워 프런트가
     # 배너·곁다리 숨김을 그린다. virtual(글로벌/관리자)은 공개 열람자가 아님.
-    is_public_view = (
-        not actor.workspace.virtual
-        and services.is_public_only_viewer(db, report, actor.workspace.slug)
+    is_public_view = not actor.workspace.virtual and (
+        actor.public_viewer
+        or services.is_public_only_viewer(db, report, actor.workspace.slug)
     )
     obj.is_public_view = is_public_view
     obj.can_comment = not is_public_view
@@ -114,6 +114,22 @@ def list_reports(
             folder_filter = int(folder_id)
         except ValueError:
             folder_filter = None
+    # 외부 공개 열람자(비멤버, 읽기전용 진입) — 이 게시판의 공개분만 본다.
+    # 멤버용 스코프 목록을 타면 비공개까지 새므로 별도 경로(조직간공개 §7.3).
+    if actor.public_viewer:
+        reports = services.list_public_reports_on_board(
+            db,
+            actor.workspace.slug,
+            entity_ids=entity_ids,
+            folder_filter=folder_filter,
+        )
+        payload = []
+        for r in reports:
+            summary = ReportSummary.model_validate(r)
+            summary.is_external_public = True
+            payload.append(summary)
+        return success_response(data=payload)
+
     reports = services.list_reports_in_workspace(
         db,
         actor.workspace.slug,
@@ -245,9 +261,7 @@ def get_report(
     report = services.get_report(db, report_id)
     if not report:
         return not_found_response(f"Report not found: {report_id}")
-    if not actor.workspace.virtual and not services.is_visible_to(
-        db, report, actor.workspace.slug
-    ):
+    if not services.can_read_report(db, actor, report):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
     return success_response(data=_read_with_perms(db, actor, report))
 
@@ -565,9 +579,7 @@ def update_report(
     report = services.get_report(db, report_id)
     if not report:
         return not_found_response(f"Report not found: {report_id}")
-    if not actor.workspace.virtual and not services.is_visible_to(
-        db, report, actor.workspace.slug
-    ):
+    if not services.can_read_report(db, actor, report):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
     # Phase 3 — single can_edit() check. Subsumes the Phase 2 hard-lock
     # veto (decision_role='locked') and adds boss/coauthor/editor paths.
@@ -648,9 +660,7 @@ def _resolve_writable_report(
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"Report not found: {report_id}"
         )
-    if not actor.workspace.virtual and not services.is_visible_to(
-        db, report, actor.workspace.slug
-    ):
+    if not services.can_read_report(db, actor, report):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
     return report
 
@@ -731,9 +741,7 @@ def delete_report(
     report = services.get_report(db, report_id)
     if not report:
         return not_found_response(f"Report not found: {report_id}")
-    if not actor.workspace.virtual and not services.is_visible_to(
-        db, report, actor.workspace.slug
-    ):
+    if not services.can_read_report(db, actor, report):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
     services.delete_report(db, report)
     return success_response(data=None, message="Deleted")
@@ -780,9 +788,7 @@ def get_report_links(
     report = services.get_report(db, report_id)
     if not report:
         return not_found_response(f"Report not found: {report_id}")
-    if not actor.workspace.virtual and not services.is_visible_to(
-        db, report, actor.workspace.slug
-    ):
+    if not services.can_read_report(db, actor, report):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
     links = services.list_links_for_report(db, report_id)
     # 가시성 가드 제거 — picker 가 시스템 전체 linkable 풀에서 후보를
@@ -810,9 +816,7 @@ def get_report_link_graph(
     report = services.get_report(db, report_id)
     if not report:
         return not_found_response(f"Report not found: {report_id}")
-    if not actor.workspace.virtual and not services.is_visible_to(
-        db, report, actor.workspace.slug
-    ):
+    if not services.can_read_report(db, actor, report):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
     graph = services.build_link_graph(
         db,
@@ -843,9 +847,7 @@ def create_report_link(
     report = services.get_report(db, report_id)
     if not report:
         return not_found_response(f"Report not found: {report_id}")
-    if not actor.workspace.virtual and not services.is_visible_to(
-        db, report, actor.workspace.slug
-    ):
+    if not services.can_read_report(db, actor, report):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
     decision = can_edit(db, actor.user, report)
     if not decision.allowed:

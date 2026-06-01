@@ -676,9 +676,9 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                 size="sm"
                 onClick={equalizeSelectedCols}
                 className="h-6 px-2 text-[11px]"
-                title="선택한 열들의 폭을 같게 맞춤"
+                title="선택한 셀이 속한 열들의 폭을 같게 맞춤"
               >
-                열 폭 균등
+                폭을 균일하게
               </Button>
             )}
             <Button
@@ -745,6 +745,9 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           onClear={() => patch({ rows: [] })}
         />
       </div>
+      {/* 표 폭 핸들이 항상 보이도록, 폭(tableBoxStyle)은 relative 외곽 div 가
+          갖고, 핸들은 overflow 박스 *바깥*에 둔다(안에 두면 잘려 사라짐). */}
+      <div className="relative" style={tableBoxStyle}>
       <div
         ref={(el) => {
           // 두 훅 모두 같은 wrapper 를 root 로 씀 — grid 키보드 nav 는
@@ -755,7 +758,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
         className={`overflow-x-auto rounded-md border ${bodyTextClass} ${
           selection.crossCellDragging ? 'select-none cursor-cell' : ''
         }`}
-        style={{ ...bodyTextStyle, ...tableBoxStyle }}
+        style={bodyTextStyle}
         onMouseUp={selection.handleMouseUp}
       >
         {/* Edit mode: same column structure as the read-only render. Row
@@ -805,42 +808,29 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                   >
                     <X className="h-3 w-3" />
                   </Button>
-                  {/* 우측 가장자리 드래그 핸들. 마지막 열의 핸들은 표 오른쪽
-                      경계라서 *표 전체 폭*을 조절(끌어서 표를 좁힘) — 그 외 열은
-                      개별 열 폭. 더블클릭 = 자동/전체로 리셋. 마지막 열 핸들은
-                      굵게+primary 색으로 구분. */}
-                  <div
-                    role="separator"
-                    aria-orientation="vertical"
-                    title={
-                      i === cols.length - 1
-                        ? '끌어서 표 전체 폭 조절 · 더블클릭하면 전체 폭'
-                        : '끌어서 열 폭 조절 · 더블클릭하면 자동'
-                    }
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      if (i === cols.length - 1) startTableResize(e)
-                      else startColResize(c.key, e.currentTarget.closest('th'), e)
-                    }}
-                    onDoubleClick={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      if (i === cols.length - 1) patch({ table_width_px: undefined })
-                      else resetColWidth(c.key)
-                    }}
-                    className={`absolute right-0 top-0 h-full cursor-col-resize flex items-center justify-end group/handle z-20 ${
-                      i === cols.length - 1 ? 'w-2' : 'w-1.5'
-                    }`}
-                  >
-                    <span
-                      className={`block transition-colors group-hover/handle:bg-primary ${
-                        i === cols.length - 1
-                          ? 'w-1 h-2/3 bg-primary/50'
-                          : 'w-0.5 h-1/2 bg-border'
-                      }`}
-                    />
-                  </div>
+                  {/* 우측 가장자리 드래그 핸들 — 개별 열 폭 조절. 마지막 열은
+                      표 우측 경계 핸들(아래 외곽 div)이 그 자리를 맡으므로 헤더
+                      핸들을 그리지 않는다(중복 방지). */}
+                  {i < cols.length - 1 && (
+                    <div
+                      role="separator"
+                      aria-orientation="vertical"
+                      title="끌어서 열 폭 조절 · 더블클릭하면 자동"
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        startColResize(c.key, e.currentTarget.closest('th'), e)
+                      }}
+                      onDoubleClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        resetColWidth(c.key)
+                      }}
+                      className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize flex items-center justify-end group/handle z-20"
+                    >
+                      <span className="block w-0.5 h-1/2 bg-border group-hover/handle:bg-primary transition-colors" />
+                    </div>
+                  )}
                 </th>
               ))}
             </tr>
@@ -939,6 +929,27 @@ export function TableEditor({ props, content, onChange, readOnly }) {
             )}
           </tbody>
         </table>
+      </div>
+      {/* 표 전체 폭 드래그 핸들 — 표 박스 오른쪽 경계(외곽 div 기준)에 항상
+          보이게. 끌면 table_width_px 조절, 더블클릭 = 전체 폭. */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        title="끌어서 표 전체 폭 조절 · 더블클릭하면 전체 폭"
+        onMouseDown={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          startTableResize(e)
+        }}
+        onDoubleClick={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          patch({ table_width_px: undefined })
+        }}
+        className="absolute right-0 top-0 h-full w-2.5 cursor-col-resize flex items-center justify-center group/twh z-30"
+      >
+        <span className="block w-1 h-1/4 rounded bg-primary/40 group-hover/twh:bg-primary transition-colors" />
+      </div>
       </div>
       <div className="flex items-center gap-2 flex-wrap">
         <Button

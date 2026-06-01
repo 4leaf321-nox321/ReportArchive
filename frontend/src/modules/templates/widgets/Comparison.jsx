@@ -583,23 +583,41 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     document.body.style.userSelect = 'none'
   }
 
-  /** "CASE 폭 균등" — 2번째 열(= 첫 CASE)의 현재 렌더 폭에 맞춰 모든 CASE
-   *  컬럼을 같은 px 로 고정한다(사용자 요청). 첫 열(행 라벨)은 건드리지 않음.
-   *  헤더 th 직접 측정 — thead th[0]=행 라벨, th[1]=첫 CASE. */
-  function equalizeCasesToFirst() {
-    if (cases.length < 2) return
+  /** "폭을 균일하게" — 셀 선택(rect)이 걸친 열들(c1..c2)을 현재 렌더 폭 합을
+   *  등분해 같은 px 로 맞춘다. Comparison 좌표: c=0 행 라벨, c=1..M cases.
+   *  행 라벨이 포함되면 row_label_width, case 는 column_widths 에 기록.
+   *  헤더 th[c] 의 offsetWidth 로 측정(자동 열도 정확히 균등). 2열 이상일 때만. */
+  function equalizeSelectedCols() {
+    const r = selection.rect
+    if (!r || r.c2 <= r.c1) return
     const root = selection.containerRef.current
     if (!root) return
     const ths = root.querySelectorAll('thead th')
-    const refTh = ths[1] // 0 = 행 라벨, 1 = 첫 CASE(= 2번째 열)
-    if (!refTh) return
-    const w = Math.min(
-      Math.max(CASE_WIDTH_MIN_PX, Math.round(refTh.offsetWidth)),
+    let total = 0
+    let count = 0
+    for (let c = r.c1; c <= r.c2; c++) {
+      const th = ths[c]
+      if (th) {
+        total += th.offsetWidth
+        count += 1
+      }
+    }
+    if (count < 2 || total <= 0) return
+    const each = Math.min(
+      Math.max(CASE_WIDTH_MIN_PX, Math.round(total / count)),
       CASE_WIDTH_MAX_PX,
     )
-    const next = {}
-    for (const c of cases) next[c.key] = w
-    patch({ column_widths: next })
+    const nextCW = { ...columnWidths }
+    let nextRowLabel = null
+    for (let c = r.c1; c <= r.c2; c++) {
+      if (c === 0) nextRowLabel = each
+      else if (cases[c - 1]) nextCW[cases[c - 1].key] = each
+    }
+    patch({
+      column_widths: nextCW,
+      ...(nextRowLabel != null ? { row_label_width: nextRowLabel } : {}),
+    })
+    selection.clear()
   }
 
   /** 마지막 CASE 우측 핸들 = 표 오른쪽 경계. 끌면 표 전체 폭(table_width_px)을
@@ -845,6 +863,9 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     !!selectionRect_ &&
     (selectionRect_.r2 > selectionRect_.r1 ||
       selectionRect_.c2 > selectionRect_.c1)
+  // 선택이 2개 이상 열에 걸쳤나 — "폭을 균일하게" 버튼 노출 조건.
+  const selectionSpansCols =
+    !!selectionRect_ && selectionRect_.c2 > selectionRect_.c1
 
   // ─── Read-only render ────────────────────────────────────────────────
   if (readOnly) {
@@ -996,18 +1017,6 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           width="w-16"
           hint="표 전체 절대 폭. 비우면 전체 폭을 차지. 좌측 정렬이라 절반 폭 등으로 만들 수 있습니다."
         />
-        {/* CASE 폭 균등 — 2번째 열(첫 CASE)의 현재 폭에 맞춰 모든 CASE 열을
-            같은 폭으로 고정. 첫 열(행 라벨)은 제외. CASE 2개 이상일 때만. */}
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 text-[11px] px-2"
-          disabled={cases.length < 2}
-          onClick={equalizeCasesToFirst}
-          title="두 번째 열(첫 CASE)의 현재 폭에 맞춰 모든 CASE 열을 같은 폭으로 맞춥니다. 첫 열(행 라벨) 폭은 그대로."
-        >
-          CASE 폭 균등 (2번째 열 기준)
-        </Button>
       </EditorOptionBar>
       {cases.length === 0 ? (
         <div className="rounded-md border border-dashed bg-muted/20 px-3 py-4 text-center text-xs text-muted-foreground">
@@ -1061,6 +1070,17 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                   셀 합치기
                 </Button>
               )}
+              {selectionSpansCols && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={equalizeSelectedCols}
+                  className="h-6 px-2 text-[11px]"
+                  title="선택한 셀이 속한 열들의 폭을 같게 맞춤"
+                >
+                  폭을 균일하게
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="sm"
@@ -1073,6 +1093,10 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
             </div>
           )}
         </div>
+        {/* 표 폭 핸들이 항상 보이도록, 폭(tableBoxStyle)은 relative 외곽 div
+            가 갖고, 핸들은 overflow 박스 *바깥*(외곽 div)에 둔다 — 안에 두면
+            overflow-hidden 에 잘려 사라졌다. */}
+        <div className="relative" style={tableBoxStyle}>
         <div
           ref={(el) => {
             grid.gridRef.current = el
@@ -1083,7 +1107,6 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
             horizontalScroll ? 'overflow-x-auto' : 'overflow-x-hidden',
             selection.crossCellDragging && 'select-none cursor-cell',
           )}
-          style={tableBoxStyle}
           onMouseUp={selection.handleMouseUp}
         >
           <table
@@ -1169,50 +1192,33 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                         <X className="h-3 w-3" />
                       </Button>
                     </div>
-                    {/* 우측 가장자리 드래그 핸들. 마지막 CASE 의 핸들은 표
-                        오른쪽 경계라 *표 전체 폭*을 조절(끌어서 표를 좁힘) —
-                        그 외 CASE 는 개별 컬럼 폭. 더블클릭 = 기본/전체로 리셋.
-                        마지막 CASE 핸들은 굵게+primary 로 구분. */}
-                    <div
-                      role="separator"
-                      aria-orientation="vertical"
-                      title={
-                        ci === cases.length - 1
-                          ? '끌어서 표 전체 폭 조절 · 더블클릭하면 전체 폭'
-                          : '끌어서 컬럼 폭 조절 · 더블클릭하면 기본값으로'
-                      }
-                      onMouseDown={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        if (ci === cases.length - 1) {
-                          startTableResize(e)
-                        } else {
+                    {/* 우측 가장자리 드래그 핸들 — 개별 CASE 컬럼 폭 조절.
+                        마지막 CASE 는 표 우측 경계 핸들(아래 외곽 div)이 그
+                        자리를 맡으므로 헤더 핸들을 그리지 않는다(중복 방지). */}
+                    {ci < cases.length - 1 && (
+                      <div
+                        role="separator"
+                        aria-orientation="vertical"
+                        title="끌어서 컬럼 폭 조절 · 더블클릭하면 기본값으로"
+                        onMouseDown={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
                           startCaseResize(c.key, e.currentTarget.closest('th'), e)
-                        }
-                      }}
-                      onDoubleClick={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        if (ci === cases.length - 1) {
-                          patch({ table_width_px: undefined })
-                        } else if (c.key in columnWidths) {
-                          const keep = { ...columnWidths }
-                          delete keep[c.key]
-                          patch({ column_widths: keep })
-                        }
-                      }}
-                      className={`absolute right-0 top-0 h-full cursor-col-resize flex items-center justify-end group/handle z-10 ${
-                        ci === cases.length - 1 ? 'w-2.5' : 'w-2'
-                      }`}
-                    >
-                      <span
-                        className={`block transition-colors group-hover/handle:bg-primary ${
-                          ci === cases.length - 1
-                            ? 'w-1 h-2/3 bg-primary/50'
-                            : 'w-0.5 h-1/2 bg-border'
-                        }`}
-                      />
-                    </div>
+                        }}
+                        onDoubleClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          if (c.key in columnWidths) {
+                            const keep = { ...columnWidths }
+                            delete keep[c.key]
+                            patch({ column_widths: keep })
+                          }
+                        }}
+                        className="absolute right-0 top-0 h-full w-2 cursor-col-resize flex items-center justify-end group/handle z-10"
+                      >
+                        <span className="block w-0.5 h-1/2 bg-border group-hover/handle:bg-primary transition-colors" />
+                      </div>
+                    )}
                   </th>
                 ))}
               </tr>
@@ -1355,6 +1361,27 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
               )}
             </tbody>
           </table>
+        </div>
+        {/* 표 전체 폭 드래그 핸들 — 표 박스 오른쪽 경계(외곽 div 기준)에 항상
+            보이게. 끌면 table_width_px 조절, 더블클릭 = 전체 폭. */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          title="끌어서 표 전체 폭 조절 · 더블클릭하면 전체 폭"
+          onMouseDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            startTableResize(e)
+          }}
+          onDoubleClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            patch({ table_width_px: undefined })
+          }}
+          className="absolute right-0 top-0 h-full w-2.5 cursor-col-resize flex items-center justify-center group/twh z-30"
+        >
+          <span className="block w-1 h-1/4 rounded bg-primary/40 group-hover/twh:bg-primary transition-colors" />
+        </div>
         </div>
         </>
       )}

@@ -1648,14 +1648,14 @@ export default function ReportDetailPage() {
       if (explicitAutoFit !== null && explicitAutoFit !== defaultEnabled) {
         newLayout.auto_fit = explicitAutoFit
       }
-      // Explicit x offset (col_offset) — only persist when non-zero.
-      // x=0 means "first in row" which is what the sibling-order fallback
-      // produces anyway, so omitting keeps overrides minimal. For zigzag
-      // 2-col layouts where a single block sits alone in its row at x=6,
-      // we MUST store col_offset=6, otherwise restore would land it at
-      // x=0 (left column) and the layout collapses on next render.
-      const offset = clamp(it.x ?? 0, 0, REPORT_GRID_COLS - 1)
-      if (offset > 0) newLayout.col_offset = offset
+      // Explicit x offset (col_offset) — ALWAYS persist, even x=0.
+      // (Fix A) 예전엔 x>0 일 때만 저장하고 x=0 은 "복원 시 형제 col_span
+      // 누적"으로 추정했는데, 한 행 안에서 시각적 좌우 순서가 블록 배열(문서)
+      // 순서와 다르면(나중에 추가한 블록을 왼쪽으로 드래그 등) 그 추정이 어긋나
+      // 충돌→엉뚱한 자리로 밀리는 왕복 손실이 있었다. x 를 항상 명시 저장하면
+      // 복원이 추정 없이 그대로 복구한다. (x=0 은 기본값이라 matchesTemplate
+      // 가지치기에는 영향 없음 — col_offset ?? 0 비교로 흡수.)
+      newLayout.col_offset = clamp(it.x ?? 0, 0, REPORT_GRID_COLS - 1)
       const blkTpl = block.layout
       const matchesTemplate =
         blkTpl &&
@@ -1722,6 +1722,49 @@ export default function ReportDetailPage() {
     })
   }
 
+  // (Fix B) 저장 직전, 자동맞춤(auto_fit) 블록의 persisted row_span 을 *뷰 모드*
+  // 콘텐츠 측정 높이(contentHeightsByPage)로 다시 맞춘다. handleLayoutChange 는
+  // 드래그/리사이즈 시점에만 row_span 을 갱신하므로, 마지막 드래그 이후 콘텐츠
+  // 높이가 바뀌면(텍스트 편집 등) draft 의 row_span 이 낡은 채로 저장돼 reload·
+  // export 초기 렌더에서 높이→아래 블록 위치가 어긋났다. effectiveLayouts 의
+  // 뷰 모드 공식과 동일하게 계산해, "저장된 크기 = 뷰가 그릴 크기" 를 보장한다.
+  // 측정값이 없는 블록(아직 마운트 안 된 다른 페이지 등)은 건드리지 않는다.
+  function reconcileAutoFitRowSpans(page, pageIdx) {
+    const overrides = page.layout_overrides
+    if (!overrides) return overrides
+    const tpl = getCachedTemplate(pageTemplateMap, page)
+    if (!tpl) return overrides
+    const blocks = combinedBlocks(tpl, page)
+    const heights = contentHeightsByPage[pageIdx] ?? {}
+    const gap = Number.isFinite(draft?.page_gap_px)
+      ? draft.page_gap_px
+      : REPORT_ROW_GAP
+    let changed = false
+    const next = {}
+    for (const [blockId, layout] of Object.entries(overrides)) {
+      const block = blocks.find((b) => b.id === blockId)
+      const contentPx = heights[blockId]
+      if (
+        block &&
+        autoFitForBlock(block, layout) &&
+        contentPx != null &&
+        contentPx > 0
+      ) {
+        const rows = Math.max(
+          1,
+          Math.ceil((contentPx + gap) / (REPORT_ROW_HEIGHT + gap)),
+        )
+        if (rows !== layout?.row_span) {
+          next[blockId] = { ...layout, row_span: rows }
+          changed = true
+          continue
+        }
+      }
+      next[blockId] = layout
+    }
+    return changed ? next : overrides
+  }
+
   async function onSave() {
     try {
       // The first page's template doubles as the report's primary
@@ -1732,9 +1775,12 @@ export default function ReportDetailPage() {
       // template was edited to add a new block but RGL hadn't yet been
       // notified). The backend strictly rejects that, so we normalize
       // here right before the request goes out.
-      const normalizedPages = draft.pages.map((p) => ({
+      const normalizedPages = draft.pages.map((p, pageIdx) => ({
         ...p,
-        layout_overrides: normalizeLayoutOverrides(p.layout_overrides),
+        // (Fix B) 자동맞춤 row_span 을 뷰 측정 높이로 확정한 뒤 정규화.
+        layout_overrides: normalizeLayoutOverrides(
+          reconcileAutoFitRowSpans(p, pageIdx),
+        ),
       }))
       const payload = {
         title: draft.title,

@@ -6457,6 +6457,9 @@ function PageSection({
   // block id as the target. Inline-editable widgets (rich_text,
   // heading) don't go through this dialog at all.
   const [contentEditingId, setContentEditingId] = useState(null)
+  // 편집 모달을 열 때 위젯의 *실제 렌더 폭*(px) — 카드 클릭 시점에 측정.
+  // 모달 안에서 표/비교표를 이 폭으로 제한해 편집 ↔ 화면 폭을 맞춘다(WYSIWYG).
+  const [contentEditWidthPx, setContentEditWidthPx] = useState(null)
   // Context menu coords + target. Right-click on an extra block pops a
   // small menu here; click outside / Esc dismisses.
   const [contextMenu, setContextMenu] = useState(null)
@@ -6743,7 +6746,12 @@ function PageSection({
                   }
                   onOpenContentEdit={
                     isEditing && !INLINE_EDITABLE_WIDGETS.has(block.type)
-                      ? () => setContentEditingId(block.id)
+                      ? (widthPx) => {
+                          setContentEditingId(block.id)
+                          setContentEditWidthPx(
+                            Number.isFinite(widthPx) ? widthPx : null,
+                          )
+                        }
                       : undefined
                   }
                   onMeasureContentHeight={(px) =>
@@ -6900,6 +6908,7 @@ function PageSection({
           <WidgetContentEditDialog
             block={block}
             effectiveProps={effective}
+            renderWidthPx={contentEditWidthPx}
             initialContent={page?.content?.[block.id]}
             initialPropsOverride={override}
             onApply={({ content: nextContent, propsOverride: nextOverride }) => {
@@ -7589,6 +7598,7 @@ function BlockPropsDialog({ block, initialProps, isExtra, onChange, onClose }) {
 function WidgetContentEditDialog({
   block,
   effectiveProps,
+  renderWidthPx,
   initialContent,
   initialPropsOverride,
   onApply,
@@ -7596,6 +7606,13 @@ function WidgetContentEditDialog({
 }) {
   const renderer = getRenderer(block.type)
   const Editor = renderer?.Editor
+  // 표/비교표는 폭이 레이아웃의 핵심이라, 모달이 80vw 로 넓으면 편집 폭 ≠ 실제
+  // 화면 폭이 되어 열 비율을 맞추기 어렵다. 측정한 실제 렌더 폭(renderWidthPx)
+  // 으로 편집 surface 를 제한해 WYSIWYG. 좁아서 불편하면 토글로 전체 폭 사용.
+  const isWidthSensitive = block.type === 'table' || block.type === 'comparison'
+  const [fitWidth, setFitWidth] = useState(true)
+  const fitWidthActive =
+    isWidthSensitive && fitWidth && Number.isFinite(renderWidthPx)
   const [draftContent, setDraftContent] = useState(initialContent)
   // Some widgets (currently just Chart) can ask to mutate their own
   // props from inside the editor. We buffer those too so cancel really
@@ -7621,6 +7638,17 @@ function WidgetContentEditDialog({
     // only fires for widgets that have a renderer.
     return null
   }
+  const editorNode = (
+    <Editor
+      props={editorProps ?? effectiveProps}
+      content={draftContent}
+      onChange={setDraftContent}
+      onChangePropsOverride={(patch) => setDraftPropsOverride(patch)}
+      // autoFit is meaningful only for the in-grid cell sizing pipeline.
+      autoFit={false}
+      readOnly={false}
+    />
+  )
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       {/* 80% of the viewport in both dimensions — chart in particular
@@ -7636,6 +7664,20 @@ function WidgetContentEditDialog({
           <DialogTitle className="flex items-center gap-2">
             <Pencil className="h-4 w-4" />
             위젯 편집 — {renderer.label ?? block.type}
+            {isWidthSensitive && Number.isFinite(renderWidthPx) && (
+              <label
+                className="ml-auto flex items-center gap-1.5 text-[11px] font-normal text-muted-foreground cursor-pointer select-none"
+                title="화면에서 이 위젯이 차지하는 실제 폭으로 편집 영역을 맞춰, 열 비율을 화면 그대로 조절할 수 있게 합니다."
+              >
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5"
+                  checked={fitWidth}
+                  onChange={(e) => setFitWidth(e.target.checked)}
+                />
+                실제 폭에 맞추기 ({Math.round(renderWidthPx)}px)
+              </label>
+            )}
           </DialogTitle>
         </DialogHeader>
         {/* No outer scroll wrapper — widgets that need horizontal /
@@ -7645,25 +7687,20 @@ function WidgetContentEditDialog({
             blanket overflow-y-auto here collapsed `flex: 1` heights
             for chart-like widgets that need to fit-to-container. */}
         <div className="flex-1 min-h-0 flex flex-col report-widget-body">
-          <Editor
-            props={editorProps ?? effectiveProps}
-            content={draftContent}
-            onChange={setDraftContent}
-            onChangePropsOverride={(patch) => {
-              // Mirror the live report's "replace with full props" wire
-              // contract — the editor hands us a complete props object
-              // (or a patch on top of the previous override; we treat
-              // it as the next full override).
-              setDraftPropsOverride(patch)
-            }}
-            // autoFit is meaningful only for the in-grid cell sizing
-            // pipeline. The dialog has a definite (80vh) height + flex
-            // chain — widgets that respect autoFit=false honor that
-            // chain (chart fills its left panel; other widgets just
-            // ignore the flag).
-            autoFit={false}
-            readOnly={false}
-          />
+          {fitWidthActive ? (
+            // 표/비교표: 실제 렌더 폭으로 제한해 편집 ↔ 화면 폭 일치(WYSIWYG).
+            // 세로로 길면 스크롤. 좁아도 화면에 보일 모습 그대로라 비율 맞추기 쉬움.
+            <div className="flex-1 min-h-0 overflow-auto">
+              <div
+                className="mx-auto"
+                style={{ maxWidth: `${Math.round(renderWidthPx)}px` }}
+              >
+                {editorNode}
+              </div>
+            </div>
+          ) : (
+            editorNode
+          )}
         </div>
         <DialogFooter className="gap-2 sm:gap-2 pt-2">
           <Button variant="ghost" size="sm" onClick={onClose}>
@@ -8526,7 +8563,12 @@ function BlockEditorCard({
     // The drag handle / autoFit / settings / remove buttons live
     // inside the card and stop propagation themselves, so this
     // only fires when the user clicks the actual content area.
-    if (opensModalEditor) onOpenContentEdit()
+    // 위젯의 실제 렌더 폭을 함께 넘겨 모달이 그 폭으로 편집 surface 를 맞춤.
+    if (opensModalEditor) {
+      onOpenContentEdit(
+        e.currentTarget?.getBoundingClientRect?.().width ?? null,
+      )
+    }
   }
   return (
     <TableViewContext.Provider value={tableViewValue}>

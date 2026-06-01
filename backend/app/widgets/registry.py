@@ -122,6 +122,9 @@ _KV_FIELD_TYPES = ("text", "number", "integer", "date", "select")
 # report renders the block without a section title; when set, it acts like
 # the heading widget's text. See ImageEditor for the original pattern.
 _CAPTION_FIELD = {"type": "string", "maxLength": 200}
+# 위젯 하단 참고 내용 — 렌더 시 "※ " 프리픽스가 붙는다(저장값엔 프리픽스 없음).
+# caption(상단 제목)보다 길 수 있어 한도를 넉넉히.
+_NOTE_FIELD = {"type": "string", "maxLength": 1000}
 
 
 # Reusable text-style sub-schema. Mixed into every text-bearing widget's
@@ -500,6 +503,8 @@ def _table_content(props: dict) -> dict:
         "properties": {
             "caption": _CAPTION_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
+            # 하단 참고 내용("※ " 프리픽스로 렌더). 저장값엔 프리픽스 없음.
+            "note": _NOTE_FIELD,
             # Per-report column overrides. When absent, the renderer falls
             # back to props.columns (the template-defined defaults).
             "columns": {
@@ -595,6 +600,8 @@ def _image_content(props: dict) -> dict:
         "properties": {
             "caption": _CAPTION_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
+            # 하단 참고 내용("※ " 프리픽스로 렌더). 저장값엔 프리픽스 없음.
+            "note": _NOTE_FIELD,
             # Per-report layout overrides — tunable from the 위젯 편집
             # toolbar. `max_count` is a soft UI cap (hard cap stays in
             # the files maxItems below). `aspect_ratio` overrides the

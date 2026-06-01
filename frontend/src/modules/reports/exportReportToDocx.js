@@ -432,6 +432,10 @@ async function convertBlock(block, props, content, opts = {}) {
         out.push(...(await convertVisualBlock(block.id, 'image', maxImageWidthPx, scopeEl)))
       } else {
         out.push(...(await convertImage(content, maxImageWidthPx)))
+        // The raw-file path embeds the image at native resolution and
+        // never captures the on-screen ※ note, so emit it as text here.
+        // (The annotated path bakes the note into its html2canvas PNG.)
+        out.push(...convertNote(content))
       }
       // Always echo annotation labels as plain text after the image
       // — DOCX search treats the image as opaque pixels otherwise.
@@ -831,6 +835,26 @@ function convertAnnotationLabels(annotations) {
     )
   }
   return out
+}
+
+/** Emit the ※ bottom note as a small muted paragraph. Used by the
+ *  plain-image gallery path, which embeds raw files and so doesn't
+ *  bake the on-screen note into a PNG the way html2canvas widgets do.
+ *  Returns [] when there's no note. */
+function convertNote(content) {
+  const text = (content?.note ?? '').trim()
+  if (!text) return []
+  return [
+    new Paragraph({
+      children: [
+        new TextRun({
+          text: `※ ${text}`,
+          size: BODY_SIZE,
+          color: '888888',
+        }),
+      ],
+    }),
+  ]
 }
 
 function convertAttachment(content) {

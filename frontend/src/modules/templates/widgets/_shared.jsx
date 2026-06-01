@@ -1090,6 +1090,35 @@ export function CaptionInput({
   )
 }
 
+/** 위젯 하단 참고 내용 — "※ " 프리픽스로 렌더(저장값엔 프리픽스 없음).
+ *  caption(상단 제목)과 별개. 비어 있으면 뷰에선 아무것도 안 그린다. */
+export function NoteInput({ value, onChange, readOnly }) {
+  const text = (value ?? '').trim()
+  if (readOnly) {
+    if (!text) return null
+    return (
+      <div className="flex items-start gap-1 px-2 py-1 text-xs text-muted-foreground whitespace-pre-wrap break-words">
+        <span className="select-none shrink-0">※</span>
+        <span className="flex-1 min-w-0">{text}</span>
+      </div>
+    )
+  }
+  return (
+    <div className="flex items-start gap-1 px-2">
+      <span className="mt-1.5 select-none shrink-0 text-xs text-muted-foreground">
+        ※
+      </span>
+      <textarea
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value)}
+        rows={1}
+        placeholder="참고 내용 (선택) — 하단에 ※로 표시됩니다"
+        className="flex-1 min-w-0 resize-y rounded-md border border-input bg-background px-2 py-1 text-xs leading-snug text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring whitespace-pre-wrap break-words"
+      />
+    </div>
+  )
+}
+
 // --------------------------------------------------------------------------- //
 // Editor option bar — compact "위젯 편집" toolbar primitives                  //
 //                                                                              //

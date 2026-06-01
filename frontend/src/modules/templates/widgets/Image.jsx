@@ -13,6 +13,7 @@ import {
   EditorOptionNumber,
   EditorOptionSelect,
   LabelField,
+  NoteInput,
   PreviewLabel,
   captionSkipProps,
   effectiveNumber,
@@ -97,6 +98,7 @@ export function ImagePropsPanel({ props, onChange }) {
 
 export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
   const caption = content?.caption ?? ''
+  const note = content?.note ?? ''
   const files = content?.files ?? []
   // Per-report soft UI cap on the image count; hard cap stays in
   // props.max_count via the content schema's maxItems. content wins,
@@ -129,6 +131,7 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
     const next = { ...(content ?? {}), caption, files, ...patch }
     if (!next.caption) delete next.caption
     if (!next.caption_skip_autofill) delete next.caption_skip_autofill
+    if (!next.note || !next.note.trim()) delete next.note
     // Mirror the chart's behavior: empty annotation arrays stay out
     // of the wire payload so the JSON stays tight.
     if (Array.isArray(next.annotations) && next.annotations.length === 0) {
@@ -226,7 +229,7 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
   const editCellHeightCap = !readOnly && !fillCell ? { maxHeight: '50vh' } : undefined
 
   if (readOnly) {
-    if (!caption && files.length === 0) return null
+    if (!caption && files.length === 0 && !note.trim()) return null
     return (
       <div
         className={cn(
@@ -281,6 +284,7 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
             ))}
           </div>
         )}
+        <NoteInput value={note} readOnly />
       </div>
     )
   }
@@ -481,6 +485,8 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
           />
         </div>
       )}
+      {/* 하단 참고 내용 — ※ 프리픽스로 표시. */}
+      <NoteInput value={note} onChange={(v) => patchContent({ note: v })} />
     </div>
   )
 }

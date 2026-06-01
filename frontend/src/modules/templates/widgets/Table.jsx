@@ -2,7 +2,7 @@ import { createContext, useContext, useState } from 'react'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, PreviewLabel, TextStyleField, captionSkipProps, computeMergeMap, normalizeMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation } from './_shared'
+import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, NoteInput, PreviewLabel, TextStyleField, captionSkipProps, computeMergeMap, normalizeMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation } from './_shared'
 
 /**
  * "표 전체 펼치기" 토글의 공유 state. BlockEditorCard 가 위젯마다
@@ -108,6 +108,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   const overrideCols = content?.columns
   const cols = Array.isArray(overrideCols) ? overrideCols : templateCols
   const caption = content?.caption ?? ''
+  const note = content?.note ?? ''
   const rows = content?.rows ?? []
   // 셀 병합 side-table. `merges = [{r,c,rs,cs}]` 형태. 빈 배열/없음이면
   // 기존 렌더와 100% 동일하게 동작. anchor 가 아닌 covered 셀은 출력 단계
@@ -165,6 +166,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
       delete merged.column_widths
     }
     if (!Number.isFinite(merged.table_width_px)) delete merged.table_width_px
+    if (!merged.note || !merged.note.trim()) delete merged.note
     onChange(merged)
   }
 
@@ -222,7 +224,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   }
 
   if (readOnly) {
-    if (!caption && rows.length === 0) return null
+    if (!caption && rows.length === 0 && !note.trim()) return null
     return (
       <div className="space-y-2">
         <CaptionInput
@@ -308,6 +310,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
             </div>
           </>
         )}
+        <NoteInput value={note} readOnly />
       </div>
     )
   }
@@ -966,6 +969,8 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           열 추가
         </Button>
       </div>
+      {/* 하단 참고 내용 — ※ 프리픽스로 표시. */}
+      <NoteInput value={note} onChange={(v) => patch({ note: v })} />
     </div>
   )
 }

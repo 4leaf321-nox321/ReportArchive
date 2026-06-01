@@ -325,3 +325,88 @@ def test_folder_override_makes_report_public_even_when_board_private() -> None:
     finally:
         _delete_report(client, rid)
         client.delete(f"/api/folders/{folder_id}", headers=_admin_headers())
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4 — 관계도 통합                                                        #
+# --------------------------------------------------------------------------- #
+
+
+def test_public_report_is_external_node_in_global_graph() -> None:
+    """공개 보고서는 외부 조직 사용자의 전역 관계도에 노드로 보이고,
+    is_external_public=True 로 구분된다. 비공개면 노드 자체가 안 보인다."""
+    client = TestClient(app)
+    outsider = _ensure_outsider()
+    report = _create_mounted_report(client)
+    rid = report["id"]
+    h = _outsider_headers(outsider)
+    url = "/api/reports/link-graph?include_isolated=true&limit=2000"
+    try:
+        # 비공개 — 외부 그래프에 노드 없음
+        _set_dx_public(False)
+        before = client.get(url, headers=h)
+        assert before.status_code == 200, before.text
+        assert not any(
+            n.get("report_id") == rid for n in before.json()["data"]["nodes"]
+        )
+        # 공개 — 노드 등장 + 외부 공개 플래그
+        _set_dx_public(True)
+        after = client.get(url, headers=h)
+        assert after.status_code == 200, after.text
+        node = next(
+            (n for n in after.json()["data"]["nodes"] if n.get("report_id") == rid),
+            None,
+        )
+        assert node is not None, "공개 보고서가 외부 그래프에 노드로 보여야 한다"
+        assert node["is_external_public"] is True
+    finally:
+        _set_dx_public(False)
+        _delete_report(client, rid)
+
+
+def test_include_public_explore_unions_public_reports() -> None:
+    """기본 목록엔 다른 조직 공개분이 안 섞이고(§5), include_public=true 탐색
+    에서만 합쳐지며 is_external_public 으로 표시된다."""
+    client = TestClient(app)
+    outsider = _ensure_outsider()
+    report = _create_mounted_report(client)
+    rid = report["id"]
+    h = _outsider_headers(outsider)
+    _set_dx_public(True)
+    try:
+        # 기본 목록(off) — 공개분 안 섞임
+        base = client.get("/api/reports", headers=h)
+        assert base.status_code == 200, base.text
+        assert not any(r["id"] == rid for r in base.json()["data"])
+        # 탐색(on) — 등장 + 외부 공개 표시
+        explore = client.get("/api/reports?include_public=true", headers=h)
+        assert explore.status_code == 200, explore.text
+        row = next((r for r in explore.json()["data"] if r["id"] == rid), None)
+        assert row is not None, "공개 탐색에 공개 보고서가 보여야 한다"
+        assert row["is_external_public"] is True
+    finally:
+        _set_dx_public(False)
+        _delete_report(client, rid)
+
+
+def test_owner_sees_own_report_not_flagged_external() -> None:
+    """게시판 멤버(admin)에겐 자기 보고서가 외부 공개 노드로 표시되지 않는다."""
+    client = TestClient(app)
+    report = _create_mounted_report(client)
+    rid = report["id"]
+    _set_dx_public(True)
+    try:
+        res = client.get(
+            "/api/reports/link-graph?include_isolated=true&limit=2000",
+            headers=_admin_headers(),
+        )
+        assert res.status_code == 200, res.text
+        node = next(
+            (n for n in res.json()["data"]["nodes"] if n.get("report_id") == rid),
+            None,
+        )
+        assert node is not None
+        assert node["is_external_public"] is False
+    finally:
+        _set_dx_public(False)
+        _delete_report(client, rid)

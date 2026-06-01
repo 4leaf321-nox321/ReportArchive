@@ -33,6 +33,7 @@ const ForceGraph2D = lazy(() => import('react-force-graph-2d'))
 const NODE_FILL = '#94a3b8' // slate-400
 const NODE_CENTER_FILL = '#475569' // slate-600
 const NODE_CENTER_RING = '#6366f1' // indigo-500
+const EXTERNAL_PUBLIC_RING = '#0ea5e9' // sky-500 — 다른 조직 공개 노드 외곽선
 const LABEL_COLOR = '#1e293b' // slate-800
 const ENTITY_LABEL_COLOR = '#475569' // slate-600 — entity 라벨은 살짝 옅게
 const HAS_TAG_COLOR = '#cbd5e1' // slate-300 — report→entity 엣지(회색 실선)
@@ -650,6 +651,14 @@ export function LinkGraphCanvas({
       ctx.lineWidth = 2 / globalScale
       ctx.strokeStyle = NODE_CENTER_RING
       ctx.stroke()
+    } else if (node.is_external_public) {
+      // 다른 조직의 공개 보고서 — 점선 sky 외곽선으로 구분(조직간공개_설계
+      // §7.2). 클러스터 색(채움)과 충돌하지 않게 외곽선만 덧그린다.
+      ctx.lineWidth = 1.5 / globalScale
+      ctx.strokeStyle = EXTERNAL_PUBLIC_RING
+      ctx.setLineDash([3 / globalScale, 2 / globalScale])
+      ctx.stroke()
+      ctx.setLineDash([])
     }
     // 라벨 — 확대됐을 때만(작게 줌아웃하면 글자 잡음). 노드 아래 가운데.
     if (globalScale > 0.9) {

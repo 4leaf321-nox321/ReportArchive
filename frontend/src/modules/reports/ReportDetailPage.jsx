@@ -3109,6 +3109,25 @@ export default function ReportDetailPage() {
             data-export-exclude: 모든 banner 가 transient editor state
             ("리뷰 진행 중", "발행됨", "수정 잠금", "메타데이터 등록")
             라 export 에선 제외. */}
+        {/* 조직 간 공개 — 다른 조직의 공개 보고서를 열람 중일 때. 읽기 전용:
+            백엔드가 can_edit/can_comment=false 로 편집·댓글을 막고 댓글·이력은
+            빈 목록으로 내려준다(조직간공개_설계.md §6·§7.3). data-export-exclude
+            로 export 본문엔 안 들어간다. */}
+        {existingReport?.is_public_view && (
+          <div
+            data-export-exclude
+            className="border-b bg-sky-50 px-6 py-2 text-xs text-sky-900 flex items-center gap-2"
+          >
+            <span className="text-base">🌐</span>
+            <span className="font-medium shrink-0">다른 조직의 공개 보고서 · 읽기 전용</span>
+            <span className="flex-1 min-w-0 truncate text-sky-800/80">
+              {existingReport?.owner_name
+                ? `${existingReport.owner_name} 작성 — `
+                : ''}
+              본문과 첨부만 열람할 수 있습니다. 편집·댓글·수정 이력은 비활성화됩니다.
+            </span>
+          </div>
+        )}
         {existingReport?.phase === 'reviewing' && (
           <div
             data-export-exclude
@@ -3459,7 +3478,9 @@ export default function ReportDetailPage() {
           flex row. Toggle/state lives in CommentsContext so the pin on
           each widget can open it. Hidden until reportId is known (new
           reports + template-edit don't have one). */}
-      {existingReport?.id && <CommentPanel />}
+      {/* 공개 열람자(is_public_view)에겐 댓글 패널을 숨긴다 — 백엔드가 댓글을
+          빈 목록으로 내려주고 작성도 403 이라, 패널을 띄워봐야 빈 화면이다. */}
+      {existingReport?.id && !existingReport?.is_public_view && <CommentPanel />}
 
       <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
         <DialogContent className="max-w-5xl max-h-[80vh] overflow-hidden flex flex-col">

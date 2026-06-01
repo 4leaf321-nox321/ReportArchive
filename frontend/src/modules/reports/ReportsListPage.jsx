@@ -7,6 +7,7 @@ import {
   Filter,
   Folder as FolderIcon,
   FolderInput,
+  Globe,
   Inbox,
   Link2,
   Loader2,
@@ -101,6 +102,9 @@ export default function ReportsListPage() {
   // 해당 워크스페이스에 mount 되어 있는지로 필터. 사용자의 mount 가
   // 실제 있는 워크스페이스만 옵션으로 노출 (빈 옵션 안 생김).
   const [mountWorkspaceFilter, setMountWorkspaceFilter] = useState('')
+  // 조직 간 공개 탐색 토글 — org 에서만. 켜면 다른 조직 공개분까지 합쳐
+  // 보여준다(조직간공개_설계.md §5). 기본 off 라 자기 게시판 목록은 깨끗.
+  const [includePublic, setIncludePublic] = useState(false)
   const isPersonal = workspace?.kind === 'personal'
   const isOrg = workspace?.kind === 'org'
   const showFolderSidebar = isPersonal || isOrg
@@ -122,6 +126,7 @@ export default function ReportsListPage() {
     setPhaseFilter('')
     setPeriodFilter('')
     setMountWorkspaceFilter('')
+    setIncludePublic(false)
   }, [slug])
   // Bulk-select state — a Set of report ids the user has ticked. We
   // clear on any context shift (workspace / folder / tag filter) so a
@@ -181,9 +186,10 @@ export default function ReportsListPage() {
         ? listReports({
             entityIds: entityFilterIds,
             folderId: folderQueryValue,
+            includePublic: isOrg && includePublic,
           })
         : Promise.resolve([]),
-    [slug, entityFilterKey, folderQueryValue]
+    [slug, entityFilterKey, folderQueryValue, isOrg, includePublic]
   )
   const { data: templates } = useAsync(
     () => (slug ? listTemplates() : Promise.resolve([])),
@@ -331,8 +337,15 @@ export default function ReportsListPage() {
       headerClassName: 'min-w-[260px]',
       cellClassName: 'font-medium truncate min-w-[260px]',
       render: (r) => (
-        <span className="block truncate" title={r.title}>
-          {r.title}
+        <span className="flex items-center gap-1.5 truncate" title={r.title}>
+          {/* 조직 간 공개 탐색에서 끼어든 다른 조직의 공개 보고서 행 표시(§7.2). */}
+          {r.is_external_public && (
+            <Globe
+              className="h-3.5 w-3.5 shrink-0 text-sky-500"
+              aria-label="다른 조직의 공개 보고서"
+            />
+          )}
+          <span className="truncate">{r.title}</span>
         </span>
       ),
     },
@@ -818,6 +831,9 @@ export default function ReportsListPage() {
                   mountWorkspaceFilter={mountWorkspaceFilter}
                   onMountWorkspaceFilterChange={setMountWorkspaceFilter}
                   mountWorkspaceOptions={mountWorkspaceOptions}
+                  showPublicExplore={isOrg}
+                  includePublic={includePublic}
+                  onToggleIncludePublic={() => setIncludePublic((v) => !v)}
                 />
               }
             />
@@ -878,6 +894,9 @@ function FilterBar({
   mountWorkspaceFilter,
   onMountWorkspaceFilterChange,
   mountWorkspaceOptions,
+  showPublicExplore,
+  includePublic,
+  onToggleIncludePublic,
 }) {
   const hasMembership = scopeChoices.length > 0
   const canFilterByOwner = myUserId != null
@@ -898,6 +917,26 @@ function FilterBar({
             className="h-3.5 w-3.5"
           />
           <span>내 보고서만</span>
+        </label>
+      )}
+      {/* 조직 간 공개 탐색 — 다른 조직 공개분까지 합쳐 보여준다(§5). org 전용,
+          기본 off 라 자기 게시판 목록은 깨끗. 켜면 외부 공개 행에 🌐 뱃지. */}
+      {showPublicExplore && (
+        <label
+          className={cn(
+            'inline-flex items-center gap-1.5 cursor-pointer select-none',
+            includePublic && 'text-sky-600',
+          )}
+          title="다른 조직이 공개한 보고서까지 함께 탐색합니다"
+        >
+          <input
+            type="checkbox"
+            checked={includePublic}
+            onChange={onToggleIncludePublic}
+            className="h-3.5 w-3.5"
+          />
+          <Globe className="h-3.5 w-3.5" />
+          <span>공개분 탐색</span>
         </label>
       )}
       <div className="inline-flex items-center gap-1.5">

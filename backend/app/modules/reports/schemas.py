@@ -369,6 +369,10 @@ class ReportSummary(BaseModel):
     mount_workspaces: list[MountWorkspaceMini] = []
     created_at: UtcDatetime
     updated_at: UtcDatetime
+    # 조직 간 공개 탐색(조직간공개_설계.md §5·§7.2). include_public 탐색에서
+    # "내 스코프 밖 + 공개라서 끼어든" 보고서 행을 라우트가 표시한다 — 목록이
+    # 자기 게시판 분과 섞이지 않게 프런트가 뱃지/구분을 그린다. 기본 목록은 0.
+    is_external_public: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -565,6 +569,9 @@ class LinkGraphNode(BaseModel):
     report_type_id: Optional[int] = None  # 색 매핑(종류) — id 만 무비용 동봉
     report_date: Optional[date] = None
     is_center: bool = False  # 중심 보고서 강조(로컬 모달)
+    # 조직 간 공개(조직간공개_설계.md §7.2). 내 스코프 밖이지만 공개로 보이는
+    # "다른 조직의 공개 보고서" 노드 — 프런트가 외곽선/색으로 구분한다.
+    is_external_public: bool = False
 
     # ── entity 노드 전용 (관련정보 레이어) ──────────────────────────────
     entity_id: Optional[int] = None

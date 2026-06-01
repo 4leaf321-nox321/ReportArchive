@@ -75,6 +75,33 @@ class RevisionMismatchError(LockError):
     code = "revision_mismatch"
 
 
+def _apply_entity_filter(db: Session, query, entity_ids: list[int]):
+    """entity_ids 의 axis 별 AND / axis 내 OR 필터를 query 에 적용.
+    유효한 id 가 하나도 없으면 None 을 반환(= 결과 0건). list_reports_in_workspace
+    의 기본 경로와 공개 탐색 extra 경로가 공유한다."""
+    rows = db.execute(
+        select(Entity.id, Entity.type_id).where(Entity.id.in_(set(entity_ids)))
+    ).all()
+    by_type: dict[int, list[int]] = {}
+    for entity_id, type_id in rows:
+        by_type.setdefault(type_id, []).append(entity_id)
+    # User explicitly asked to filter, but none of the supplied ids
+    # exist — zero results rather than silently un-filtering.
+    if not by_type:
+        return None
+    for ids_in_axis in by_type.values():
+        subq = (
+            select(ReportEntity.report_id)
+            .where(
+                ReportEntity.report_id == Report.id,
+                ReportEntity.entity_id.in_(ids_in_axis),
+            )
+            .exists()
+        )
+        query = query.where(subq)
+    return query
+
+
 def list_reports_in_workspace(
     db: Session,
     workspace_slug: str,
@@ -82,6 +109,7 @@ def list_reports_in_workspace(
     is_global_view: bool = False,
     entity_ids: Optional[list[int]] = None,
     folder_filter: Optional[int | str] = None,
+    include_public: bool = False,
 ) -> list[Report]:
     """Returns reports visible in the given workspace.
 
@@ -148,34 +176,37 @@ def list_reports_in_workspace(
                     ReportMount.folder_id == folder_filter,
                 )
     if entity_ids:
-        # Resolve each id → type_id so we can group. One DB roundtrip
-        # regardless of how many ids were picked.
-        rows = db.execute(
-            select(Entity.id, Entity.type_id).where(Entity.id.in_(set(entity_ids)))
-        ).all()
-        by_type: dict[int, list[int]] = {}
-        for entity_id, type_id in rows:
-            by_type.setdefault(type_id, []).append(entity_id)
-        # User explicitly asked to filter, but none of the supplied ids
-        # exist — return zero results rather than silently un-filtering.
-        # ("show reports tagged with X" + X doesn't exist → empty.)
-        if not by_type:
+        applied = _apply_entity_filter(db, query, entity_ids)
+        if applied is None:
             return []
-        for ids_in_axis in by_type.values():
-            # `EXISTS (SELECT 1 FROM report_entities WHERE report_id =
-            # reports.id AND entity_id IN (…))` per axis. Postgres
-            # collapses the EXISTS into a hash semi-join, so cost stays
-            # linear in the number of axes touched.
-            subq = (
-                select(ReportEntity.report_id)
-                .where(
-                    ReportEntity.report_id == Report.id,
-                    ReportEntity.entity_id.in_(ids_in_axis),
-                )
-                .exists()
+        query = applied
+    results = list(db.execute(query).scalars())
+
+    # 조직 간 공개 탐색(opt-in, 조직간공개_설계.md §5). org 컨텍스트에서만
+    # "내 스코프 ∪ 공개분" 으로 넓힌다 — 기본(off)이면 자기 게시판 분만 보여
+    # 목록 오염을 막는다(§5 "목록 vs 탐색 분리"). 폴더 필터가 걸린 게시판
+    # 내부 탐색에는 적용 안 함(공개분은 다른 조직 폴더라 의미 없음).
+    if (
+        include_public
+        and not is_global_view
+        and ws is not None
+        and ws.kind != WorkspaceKind.personal
+        and folder_filter is None
+    ):
+        have = {r.id for r in results}
+        extra_ids = public_report_ids(db) - have
+        if extra_ids:
+            extra_q = (
+                select(Report)
+                .where(Report.id.in_(extra_ids))
+                .order_by(desc(Report.updated_at))
             )
-            query = query.where(subq)
-    return list(db.execute(query).scalars())
+            if entity_ids:
+                extra_q = _apply_entity_filter(db, extra_q, entity_ids)
+            if extra_q is not None:
+                results.extend(db.execute(extra_q).scalars())
+                results.sort(key=lambda r: r.updated_at, reverse=True)
+    return results
 
 
 def get_report(db: Session, report_id: int) -> Optional[Report]:
@@ -845,8 +876,15 @@ LINK_GRAPH_MAX_NODES = 300
 LINK_GRAPH_GLOBAL_LIMIT = 500
 
 
-def _report_node(r: Report, *, degree: int, is_center: bool = False) -> dict:
-    """Report ORM → 관계도 노드 dict. owner 는 lazy='joined' 라 따라온다."""
+def _report_node(
+    r: Report,
+    *,
+    degree: int,
+    is_center: bool = False,
+    is_external_public: bool = False,
+) -> dict:
+    """Report ORM → 관계도 노드 dict. owner 는 lazy='joined' 라 따라온다.
+    is_external_public = 내 스코프 밖이지만 공개로 보이는 다른 조직 보고서(§7.2)."""
     return {
         "id": f"report:{r.id}",
         "type": "report",
@@ -858,6 +896,7 @@ def _report_node(r: Report, *, degree: int, is_center: bool = False) -> dict:
         "report_date": r.report_date,
         "degree": degree,
         "is_center": is_center,
+        "is_external_public": is_external_public,
     }
 
 
@@ -1169,7 +1208,13 @@ def build_global_link_graph(
     (양 끝이 모두 스코프 안인 link 만). limit 초과 시 degree 높은 노드부터
     남기고 truncated=True.
     """
-    scope_ids = _scoped_report_ids(db, workspace_slug, is_global_view)
+    # 스코프 = "내 스코프 ∪ 공개분"(조직간공개_설계.md §5). my_scope 는
+    # 멤버십 가시 집합(virtual 글로벌 뷰면 None=제한 없음), public_ids 는
+    # 공개로 표시된 보고서. 둘을 합쳐 그래프 적격 범위로 쓰고, 노드 표시는
+    # "내 스코프 밖 + 공개" 면 다른 조직 공개 노드로 구분한다.
+    my_scope = _scoped_report_ids(db, workspace_slug, is_global_view)
+    public_ids = public_report_ids(db) if not is_global_view else set()
+    scope_ids = None if my_scope is None else (my_scope | public_ids)
     type_set = set(type_ids) if type_ids else None
 
     # 시스템 전체 link (kind 필터만 SQL 로) — report_links 는 수동 생성이라
@@ -1281,7 +1326,17 @@ def build_global_link_graph(
         truncated = True
 
     nodes = [
-        _report_node(eligible[rid], degree=degree.get(rid, 0)) for rid in node_ids
+        _report_node(
+            eligible[rid],
+            degree=degree.get(rid, 0),
+            # 내 스코프 밖인데 공개라서 보이는 노드 → 다른 조직 공개로 표시.
+            is_external_public=(
+                my_scope is not None
+                and rid not in my_scope
+                and rid in public_ids
+            ),
+        )
+        for rid in node_ids
     ]
     edges = [_link_edge(lk) for lk in kept_links]
 

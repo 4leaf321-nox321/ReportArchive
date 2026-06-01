@@ -82,6 +82,14 @@ def list_reports(
             "folder_id IS NULL. Ignored on org workspaces."
         ),
     ),
+    include_public: bool = Query(
+        default=False,
+        description=(
+            "조직 간 공개 탐색(opt-in). True 면 org 컨텍스트에서 다른 조직의 "
+            "공개 보고서까지 '내 스코프 ∪ 공개분' 으로 합쳐 보여준다. 기본 "
+            "목록은 False — 자기 게시판 분만(조직간공개_설계.md §5)."
+        ),
+    ),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
@@ -112,8 +120,21 @@ def list_reports(
         is_global_view=actor.workspace.virtual,
         entity_ids=entity_ids,
         folder_filter=folder_filter,
+        include_public=include_public,
     )
-    payload = [ReportSummary.model_validate(r) for r in reports]
+    # 공개 탐색 시 "내 스코프 밖 + 공개" 인 행을 표시 — 프런트가 뱃지로 구분.
+    external_ids: set[int] = set()
+    if include_public and not actor.workspace.virtual:
+        scoped = (
+            services._scoped_report_ids(db, actor.workspace.slug, False) or set()
+        )
+        external_ids = services.public_report_ids(db) - scoped
+    payload = []
+    for r in reports:
+        summary = ReportSummary.model_validate(r)
+        if r.id in external_ids:
+            summary.is_external_public = True
+        payload.append(summary)
     return success_response(data=payload)
 
 

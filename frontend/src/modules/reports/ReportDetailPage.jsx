@@ -6330,6 +6330,10 @@ function PageSection({
   // setting (draft.page_gap_px) overrides the constant; falling back to
   // REPORT_ROW_GAP keeps pre-existing reports laid out unchanged.
   const effectiveRowGap = Number.isFinite(rowGapPx) ? rowGapPx : REPORT_ROW_GAP
+  // 리사이즈 중인 블록의 *실시간* 가로 폭(col_span) — RGL onResize 가 매
+  // 프레임 전달. 드래그 핸들 바의 폭 뱃지(예: "50%")가 끌면서 실시간으로
+  // 바뀌어, 50%·25% 같은 등분 폭을 눈으로 맞추기 쉽게 한다. {i, w} 또는 null.
+  const [liveResize, setLiveResize] = useState(null)
   // Per-page state for "edit widget props" — null when no panel is open,
   // otherwise the extra block's id. Lives here (not on each card) so a
   // right-click on one block closes any other open panel cleanly.
@@ -6497,6 +6501,30 @@ function PageSection({
           items={rglItems}
           onLayoutChange={isEditing ? onLayoutChange : undefined}
           onResizeStart={isEditing ? handleResizeStart : undefined}
+          // 실시간 폭 뱃지용 — 리사이즈 중 블록 id + 폭(col_span) 추적.
+          // RGL 콜백 시그니처가 v2 GridItemCallback (itemId, w, h, data) 와
+          // 호환 EventCallback (layout, oldItem, newItem, …) 두 형태가 가능해
+          // 둘 다 흡수한다.
+          onResize={
+            isEditing
+              ? (arg0, arg1, arg2) => {
+                  let id
+                  let w
+                  if (typeof arg0 === 'string') {
+                    id = arg0
+                    w = arg1
+                  } else {
+                    const it = arg2 || arg1
+                    id = it?.i
+                    w = it?.w
+                  }
+                  if (id != null && Number.isFinite(w)) {
+                    setLiveResize({ i: id, w })
+                  }
+                }
+              : undefined
+          }
+          onResizeStop={isEditing ? () => setLiveResize(null) : undefined}
           isStatic={!isEditing}
           rowGapPx={effectiveRowGap}
         >
@@ -6520,7 +6548,11 @@ function PageSection({
             const showContextMenu =
               isEditing && (canEditProps || !!onRemoveBlock || !!onChangeSection)
             const showInsertArrows = isEditing && !!onAddExtraBlockAt
-            const blockColSpan = effectiveLayouts[block.id]?.col_span ?? REPORT_GRID_COLS
+            // 리사이즈 중이면 실시간 폭(liveResize.w)을, 아니면 저장된 col_span.
+            const blockColSpan =
+              liveResize?.i === block.id
+                ? liveResize.w
+                : effectiveLayouts[block.id]?.col_span ?? REPORT_GRID_COLS
             // Horizontal insert is allowed when the row still has free
             // columns OR when the anchor is wide enough to be split in
             // half. Mirrors the logic inside addExtraBlockAt so the UI
@@ -6555,6 +6587,7 @@ function PageSection({
               >
                 <BlockEditorCard
                   block={block}
+                  colSpan={blockColSpan}
                   reportId={reportId}
                   pageIndex={pageIdx}
                   reportPhase={reportPhase}
@@ -7892,6 +7925,7 @@ const INLINE_EDITABLE_WIDGETS = new Set(['rich_text', 'heading'])
 
 function BlockEditorCard({
   block,
+  colSpan,
   content,
   propsOverride,
   active,
@@ -8176,11 +8210,30 @@ function BlockEditorCard({
         )
       : null
 
+  // 가로 폭 비율(전체 12칸 대비). 리사이즈 중엔 부모가 실시간 col_span 을
+  // 넘겨주므로 끌면서 % 가 바뀐다. 100/75/50/33/25% = 12/9/6/4/3 칸 등 "딱
+  // 떨어지는" 등분일 때 강조해, 50%·25% 같은 폭을 눈으로 맞추기 쉽게 한다.
+  const widthCols = colSpan ?? REPORT_GRID_COLS
+  const widthPct = Math.round((widthCols / REPORT_GRID_COLS) * 100)
+  const isNiceWidth = [12, 9, 6, 4, 3].includes(widthCols)
+
   const dragHandle = showDragHandle ? (
     <div className="block-drag-handle absolute inset-x-0 top-0 z-10 cursor-move px-2 py-0.5 bg-muted/60 backdrop-blur-sm border-b flex items-center gap-2 rounded-t-md">
       <GripVertical className="h-3 w-3 text-muted-foreground" />
       <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
         {block.type}
+      </span>
+      {/* 가로 폭 % 뱃지 — 리사이즈 중 실시간 갱신. */}
+      <span
+        className={cn(
+          'flex items-center rounded px-1 py-0.5 text-[10px] font-semibold tabular-nums',
+          isNiceWidth
+            ? 'bg-primary/15 text-primary'
+            : 'bg-background/70 text-muted-foreground',
+        )}
+        title={`가로 폭 ${widthCols}/12 칸 = ${widthPct}%`}
+      >
+        {widthPct}%
       </span>
       {isExtra && (
         <Badge variant="secondary" className="text-[9px] h-3.5 px-1">
@@ -8802,6 +8855,8 @@ function ResizableGrid({
   items,
   onLayoutChange,
   onResizeStart,
+  onResize,
+  onResizeStop,
   children,
   isStatic = false,
   rowGapPx,
@@ -8831,6 +8886,8 @@ function ResizableGrid({
           }}
           onLayoutChange={onLayoutChange}
           onResizeStart={onResizeStart}
+          onResize={onResize}
+          onResizeStop={onResizeStop}
         >
           {children}
         </GridLayout>

@@ -149,6 +149,26 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
     setQuery('')
   }, [open, me, getAncestors])
 
+  // 이미 게시된 보드가 있으면 그 보드 + 조상 라인까지 펼쳐, 다이얼로그가
+  // 열릴 때 "선택된 조직"이 트리에서 바로 보이도록 한다. mounts 는 open 후
+  // 비동기로 로드되므로 위 시드 effect 와 분리해, 도착 시점에 additive 로
+  // 합친다(prev 기반 union 이라 시드 펼침을 덮어쓰지 않음). 이 effect 가
+  // 시드 effect *뒤*에 정의돼 있어, open 시 시드(replace) → 마운트(union)
+  // 순서가 보장된다.
+  React.useEffect(() => {
+    if (!open || mounts.length === 0) return
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      for (const m of mounts) {
+        const slug = m.workspace_slug
+        if (!slug) continue
+        next.add(slug)
+        for (const a of getAncestors(slug)) next.add(a.slug)
+      }
+      return next
+    })
+  }, [open, mounts, getAncestors])
+
   const mountedSlugs = React.useMemo(
     () => new Set(mounts.map((m) => m.workspace_slug)),
     [mounts],
@@ -204,7 +224,12 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
   }
 
   React.useEffect(() => {
-    if (!open || !report?.id) return
+    if (!open || !report?.id) {
+      // 닫히는 중(report → null) 이전 보드의 mount 행이 남아 있으면
+      // BoardRow 가 report.id 를 읽다 터지므로 비워 둔다.
+      setMounts([])
+      return
+    }
     let cancelled = false
     setLoading(true)
     setError(null)
@@ -290,7 +315,7 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-auto max-w-[min(48rem,92vw)]">
+      <DialogContent className="flex flex-col w-[80vw] max-w-[80vw] h-[80vh]">
         <DialogHeader>
           <DialogTitle>조직 게시판에 게시</DialogTitle>
           <DialogDescription>
@@ -299,6 +324,7 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
           </DialogDescription>
         </DialogHeader>
 
+        <div className="flex-1 min-h-0 flex flex-col">
         {loading ? (
           <div className="flex items-center justify-center py-8 text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin mr-2" /> 게시 현황 조회 중...
@@ -314,7 +340,7 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
             등록되어 있어야 게시 가능합니다.
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-3 flex-1 min-h-0 flex flex-col">
             {/* 검색 입력 — 워크스페이스명 / slug / 경로 어느 쪽이든 매칭.
                 비어 있을 때는 트리 모드, 채워지면 평면 결과(경로 포함). */}
             <div className="relative">
@@ -326,7 +352,7 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
                 className="pl-7 h-8 text-sm"
               />
             </div>
-            <div className="max-h-80 overflow-y-auto -mx-2 px-2 space-y-1">
+            <div className="flex-1 min-h-0 overflow-y-auto -mx-2 px-2 space-y-1">
               {searching ? (
                 searchResults.length === 0 ? (
                   <div className="text-xs text-muted-foreground py-4 text-center">
@@ -391,6 +417,7 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
             </div>
           </div>
         )}
+        </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
@@ -530,8 +557,9 @@ function BoardRow({
           <span className="text-xs text-muted-foreground shrink-0">게시</span>
         )}
       </button>
-      {/* Folder picker — mounted 보드만 노출. */}
-      {isMounted && (
+      {/* Folder picker — mounted 보드만 노출. report 가 null 인 순간
+          (다이얼로그 닫힘 애니메이션 중 stale 렌더)에도 터지지 않도록 가드. */}
+      {isMounted && report && (
         <FolderPickerButton
           mode="org"
           workspaceSlug={ws.slug}

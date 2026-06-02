@@ -24,6 +24,7 @@ from app.modules.folders.routes import router as folders_router
 from app.modules.members.routes import router as members_router
 from app.modules.mounts.routes import router as mounts_router
 from app.modules.notifications.routes import router as notifications_router
+from app.modules.presets.routes import router as presets_router
 from app.modules.prompts.routes import router as prompts_router
 from app.modules.report_types.routes import router as report_types_router
 from app.modules.reports.routes import router as reports_router
@@ -72,6 +73,7 @@ def register_routers(app: FastAPI) -> None:
     )
     app.include_router(prompts_router, prefix="/api/prompts", tags=["prompts"])
     app.include_router(composites_router, prefix="/api/composites", tags=["composites"])
+    app.include_router(presets_router, prefix="/api/presets", tags=["presets"])
     app.include_router(files_router, prefix="/api/files", tags=["files"])
     app.include_router(embed_router, prefix="/api/embed", tags=["embed"])
     app.include_router(

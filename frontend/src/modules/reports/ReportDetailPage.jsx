@@ -129,6 +129,7 @@ import { FolderPickerButton } from './FolderPickerButton'
 import { listMounts, mountReport } from '@/shared/api/mounts'
 import { listFolders } from '@/shared/api/folders'
 import { listCompositesContainingReport } from '@/shared/api/composites'
+import { createPreset } from '@/shared/api/presets'
 import { CommentsProvider, useComments } from '@/modules/comments/CommentsContext'
 import { CommentPanel } from '@/modules/comments/CommentPanel'
 import { CommentPin } from '@/modules/comments/CommentPin'
@@ -181,6 +182,7 @@ export default function ReportDetailPage() {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [copyOpen, setCopyOpen] = useState(false)
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
+  const [savePresetOpen, setSavePresetOpen] = useState(false)
   // 보고서 관계도 모달 (지식그래프 Phase 1a). 저장된 보고서일 때만 의미.
   const [graphOpen, setGraphOpen] = useState(false)
   const [mountOpen, setMountOpen] = useState(false)
@@ -2136,6 +2138,24 @@ export default function ReportDetailPage() {
     }
   }
 
+  async function onSavePreset(name, description, ownerWorkspaceSlugs) {
+    // 저장된 보고서를 스냅샷해 "프리셋"으로 만든다(서버가 id 로 스냅샷).
+    if (!existingReport?.id) return
+    try {
+      await createPreset({
+        source_report_id: existingReport.id,
+        name,
+        description: description ?? '',
+        owner_workspace_slugs: ownerWorkspaceSlugs, // null = 전사 공개
+      })
+      toast.success('프리셋으로 저장되었습니다.')
+      setSavePresetOpen(false)
+    } catch (err) {
+      toast.error(err.message || '프리셋 저장 실패')
+      throw err
+    }
+  }
+
   /** Snapshot the currently-viewed page's widget layout into a brand-new
    *  template. Only blocks (id/type/props/layout) are copied — content
    *  values stay behind because templates have no notion of filled-in
@@ -3096,15 +3116,39 @@ export default function ReportDetailPage() {
                 <Copy className="mr-1 h-3 w-3" />
                 복사
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setSaveTemplateOpen(true)}
-                title="현재 페이지의 위젯 배치를 새 템플릿으로 저장"
-              >
-                <FileBox className="mr-1 h-3 w-3" />
-                템플릿으로 저장
-              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    title="이 보고서를 재사용 가능한 템플릿 또는 프리셋으로 저장"
+                  >
+                    <FileBox className="mr-1 h-3 w-3" />
+                    재사용 저장
+                    <ChevronDown className="ml-1 h-3 w-3 opacity-60" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => setSaveTemplateOpen(true)}>
+                    <FileBox className="mr-2 h-3.5 w-3.5" />
+                    <span className="flex flex-col">
+                      <span>템플릿으로 저장</span>
+                      <span className="text-[11px] text-muted-foreground">
+                        위젯 배치(구조)만
+                      </span>
+                    </span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setSavePresetOpen(true)}>
+                    <Sparkles className="mr-2 h-3.5 w-3.5" />
+                    <span className="flex flex-col">
+                      <span>프리셋으로 저장</span>
+                      <span className="text-[11px] text-muted-foreground">
+                        내용까지 채운 프리셋
+                      </span>
+                    </span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button
                 variant="destructive"
                 size="sm"
@@ -3615,6 +3659,22 @@ export default function ReportDetailPage() {
         onOpenChange={setCopyOpen}
         sourceTitle={draft?.title ?? ''}
         onConfirm={onCopy}
+      />
+
+      <ReportSavePresetDialog
+        open={savePresetOpen}
+        onOpenChange={setSavePresetOpen}
+        sourceTitle={draft?.title ?? ''}
+        templateId={draft?.pages?.[0]?.template_id ?? null}
+        templateVersion={draft?.pages?.[0]?.template_version ?? null}
+        orgOptions={(me?.memberships ?? [])
+          .map((m) => m.workspace_slug)
+          .filter((s) => s && !s.startsWith('personal-'))
+          .map((slug) => ({
+            slug,
+            name: (workspaces ?? []).find((w) => w.slug === slug)?.name ?? slug,
+          }))}
+        onConfirm={onSavePreset}
       />
 
       {existingReport?.id != null && (
@@ -4244,6 +4304,153 @@ function ReportCopyDialog({ open, onOpenChange, sourceTitle, onConfirm }) {
             </Button>
             <Button type="submit" disabled={submitting || !title.trim()}>
               {submitting ? '복사 중...' : '복사'}
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** "프리셋으로 저장" — 현재 보고서를 채워진 프리셋(프리셋)으로 스냅샷.
+ *  이름 + 설명 + 공개 범위(전사 / 내 조직 1곳)만 받는다. 본문·태그·종류·
+ *  엔티티·표시설정은 서버가 source_report_id 로 스냅샷한다. */
+function ReportSavePresetDialog({
+  open,
+  onOpenChange,
+  sourceTitle,
+  templateId,
+  templateVersion,
+  orgOptions,
+  onConfirm,
+}) {
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [scope, setScope] = useState('') // '' = 전사, 그 외 = workspace slug
+  const [submitting, setSubmitting] = useState(false)
+  const [templateName, setTemplateName] = useState('')
+
+  useEffect(() => {
+    if (open) {
+      const base = (sourceTitle ?? '').trim()
+      setName(base ? `${base} 프리셋` : '')
+      setDescription('')
+      setScope('')
+      setSubmitting(false)
+    }
+  }, [open, sourceTitle])
+
+  // 이 프리셋이 묶일 템플릿명을 가져와 바인딩을 사용자에게 보여준다. 프리셋은
+  // 원본 보고서의 (page0) 템플릿 버전에 묶이고, 새 보고서 작성 시 그 템플릿
+  // 아래에서 보인다.
+  useEffect(() => {
+    if (!open || !templateId || !templateVersion) {
+      setTemplateName('')
+      return undefined
+    }
+    let cancelled = false
+    getTemplateVersion(templateId, templateVersion)
+      .then((t) => {
+        if (!cancelled) setTemplateName(t?.name ?? '')
+      })
+      .catch(() => {
+        if (!cancelled) setTemplateName('')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, templateId, templateVersion])
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    const trimmed = name.trim()
+    if (!trimmed) return
+    setSubmitting(true)
+    try {
+      // 전사 = null, 특정 조직 = [slug]
+      await onConfirm(trimmed, description.trim(), scope ? [scope] : null)
+    } catch {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>프리셋으로 저장</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <label htmlFor="preset-name" className="text-sm font-medium">
+              프리셋 이름
+            </label>
+            <Input
+              id="preset-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="예: 영업팀 주간보고 프리셋"
+              autoFocus
+              required
+            />
+            <p className="text-[11px] text-muted-foreground">
+              현재 보고서의 본문·태그·종류·엔티티·표시 설정이 그대로 프리셋에
+              담깁니다. 새 보고서를 이 프리셋으로 시작할 수 있습니다.
+            </p>
+          </div>
+          <div className="rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+            이 프리셋은{' '}
+            <span className="font-medium text-foreground">
+              {templateName || templateId || '현재'}
+            </span>
+            {templateVersion ? ` (v${templateVersion})` : ''} 템플릿에 묶입니다 —
+            같은 템플릿으로 새 보고서를 만들 때 이 프리셋이 보입니다.
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="preset-desc" className="text-sm font-medium">
+              설명 (선택)
+            </label>
+            <Textarea
+              id="preset-desc"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="이 프리셋을 언제 쓰는지 간단히"
+              rows={2}
+              className="resize-none text-sm"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="preset-scope" className="text-sm font-medium">
+              공개 범위
+            </label>
+            <select
+              id="preset-scope"
+              value={scope}
+              onChange={(e) => setScope(e.target.value)}
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+            >
+              <option value="">전사 공개 (모든 조직)</option>
+              {(orgOptions ?? []).map((o) => (
+                <option key={o.slug} value={o.slug}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              특정 조직을 고르면 그 조직 트리에서만 이 프리셋이 보입니다.
+            </p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={submitting}
+            >
+              취소
+            </Button>
+            <Button type="submit" disabled={submitting || !name.trim()}>
+              {submitting ? '저장 중...' : '프리셋으로 저장'}
             </Button>
           </div>
         </form>

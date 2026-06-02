@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Sparkles } from 'lucide-react'
+import { toast } from 'sonner'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
@@ -10,6 +12,8 @@ import {
   DialogTitle,
 } from '@/shared/components/ui/dialog'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
+import { useAsync } from '@/shared/hooks/useAsync'
+import { listPresets, newReportFromPreset } from '@/shared/api/presets'
 import { TemplatePicker } from './TemplatePicker'
 
 /** Edit-policy options for the "같이 게시" dropdown. Mirrors
@@ -31,6 +35,24 @@ export default function ReportNewPage() {
   // UI; this just front-loads the decision so it isn't easy to miss.
   const [pendingTemplate, setPendingTemplate] = useState(null)
 
+  // 프리셋은 템플릿에 종속(preset → template). 한 번 불러와
+  // template_id 로 그룹핑해서, 평면 나열 대신 템플릿 "아래에" 중첩한다 —
+  // 카드엔 "프리셋 N개" 뱃지, 템플릿을 고르면 그 템플릿의 프리셋만 선택지로.
+  const { data: presets } = useAsync(() => listPresets(), [slug])
+  const presetsByTemplate = useMemo(() => {
+    const map = new Map()
+    for (const p of presets ?? []) {
+      if (!map.has(p.template_id)) map.set(p.template_id, [])
+      map.get(p.template_id).push(p)
+    }
+    return map
+  }, [presets])
+  const presetCounts = useMemo(() => {
+    const out = {}
+    for (const [tid, list] of presetsByTemplate) out[tid] = list.length
+    return out
+  }, [presetsByTemplate])
+
   // "이 부서에 같이 게시" 옵션은 부서 컨텍스트에서 진입했을 때만 의미가
   // 있음. 개인 공간 / virtual(횡단) 워크스페이스에서 진입했을 때는 섹션
   // 자체를 숨겨서 다이얼로그가 단순해진다.
@@ -51,6 +73,18 @@ export default function ReportNewPage() {
     )
   }
 
+  async function handleStartFromPreset(presetId, title) {
+    try {
+      const created = await newReportFromPreset(presetId, { title })
+      navigate(`/w/${created.workspace_slug}/reports/${created.id}`, {
+        state: { startEditing: true },
+      })
+    } catch (err) {
+      toast.error(err?.message || '프리셋으로 시작 실패')
+      throw err
+    }
+  }
+
   return (
     <div className="p-6 space-y-6">
       <PageHeader
@@ -63,26 +97,87 @@ export default function ReportNewPage() {
         ]}
       />
 
-      <TemplatePicker onPick={handlePick} reloadKey={slug} />
+      <TemplatePicker
+        onPick={handlePick}
+        reloadKey={slug}
+        presetCounts={presetCounts}
+      />
 
       <NameReportDialog
         template={pendingTemplate}
+        presets={
+          pendingTemplate
+            ? presetsByTemplate.get(pendingTemplate.template_id) ?? []
+            : []
+        }
         defaultMount={defaultMount}
         onCancel={() => setPendingTemplate(null)}
         onConfirm={handleConfirm}
+        onStartFromPreset={handleStartFromPreset}
       />
     </div>
   )
 }
 
-function NameReportDialog({ template, defaultMount, onCancel, onConfirm }) {
+/** 프리셋 선택 — 내용이 채워진 프리셋으로 바로 새 보고서를
+ *  만든다. 프리셋이 하나도 없으면 섹션 자체를 숨긴다(빈 템플릿 흐름 방해
+ *  안 하도록). 클릭 시 서버가 personal 공간에 seed 된 보고서를 만들고 그
+ *  편집창으로 이동(복사 흐름과 동일 패턴). */
+/** 시작 방식 선택 카드 — "빈 보고서" 또는 특정 프리셋 한 줄. */
+function StartOption({ active, onClick, title, desc, sparkle }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        'flex items-start gap-2 rounded-md border px-3 py-2 text-left transition-colors ' +
+        (active ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50')
+      }
+    >
+      <span
+        className={
+          'mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full border ' +
+          (active ? 'border-primary bg-primary' : 'border-muted-foreground/40')
+        }
+        aria-hidden
+      />
+      <span className="min-w-0">
+        <span className="flex items-center gap-1 text-sm font-medium">
+          {sparkle && <Sparkles className="h-3 w-3 shrink-0 text-primary" />}
+          <span className="truncate">{title}</span>
+        </span>
+        {desc && (
+          <span className="block text-[11px] text-muted-foreground line-clamp-2">
+            {desc}
+          </span>
+        )}
+      </span>
+    </button>
+  )
+}
+
+function NameReportDialog({
+  template,
+  presets,
+  defaultMount,
+  onCancel,
+  onConfirm,
+  onStartFromPreset,
+}) {
   const open = Boolean(template)
   const [title, setTitle] = useState('')
+  // null = 빈 보고서(프리셋 없음), 그 외 = 선택한 프리셋 id.
+  const [selectedPresetId, setSelectedPresetId] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
   // Mount section state — only rendered when defaultMount is set (org
   // entry). Defaults to ON so the user's intuitive expectation ("내가
   // 부서에서 만들었으니 그 부서에 보임") is met without extra clicks.
   const [autoMount, setAutoMount] = useState(true)
   const [editPolicy, setEditPolicy] = useState('default')
+
+  const list = presets ?? []
+  const hasPresets = list.length > 0
+  const isBlank = selectedPresetId == null
 
   // Pre-fill with the template name each time the dialog opens. We
   // deliberately don't carry the last-typed value across template changes —
@@ -90,15 +185,34 @@ function NameReportDialog({ template, defaultMount, onCancel, onConfirm }) {
   useEffect(() => {
     if (open) {
       setTitle(template?.name ?? '')
+      setSelectedPresetId(null)
       setAutoMount(true)
       setEditPolicy('default')
+      setSubmitting(false)
     }
   }, [open, template?.name])
 
-  function handleSubmit(e) {
+  function selectOption(presetId) {
+    setSelectedPresetId(presetId)
+    // 제목 기본값을 선택지에 맞춰 재시드(사용자가 이어서 수정 가능).
+    if (presetId == null) setTitle(template?.name ?? '')
+    else setTitle(list.find((p) => p.id === presetId)?.name ?? template?.name ?? '')
+  }
+
+  async function handleSubmit(e) {
     e.preventDefault()
     const trimmed = title.trim()
     if (!trimmed) return
+    if (!isBlank) {
+      // 프리셋 → 서버가 seed 된 보고서를 만들고 편집창으로 이동.
+      setSubmitting(true)
+      try {
+        await onStartFromPreset(selectedPresetId, trimmed)
+      } catch {
+        setSubmitting(false)
+      }
+      return
+    }
     const mountConfig =
       defaultMount && autoMount
         ? { slugs: [defaultMount.slug], editPolicy }
@@ -115,9 +229,32 @@ function NameReportDialog({ template, defaultMount, onCancel, onConfirm }) {
     >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>보고서 이름 지정</DialogTitle>
+          <DialogTitle>새 보고서 시작</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
+          {hasPresets && (
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">시작 방식</label>
+              <div className="grid max-h-52 gap-1.5 overflow-y-auto">
+                <StartOption
+                  active={isBlank}
+                  onClick={() => selectOption(null)}
+                  title="빈 보고서로 시작"
+                  desc="프리셋 없이 템플릿 구조만 — 내용은 비어 있음"
+                />
+                {list.map((p) => (
+                  <StartOption
+                    key={p.id}
+                    active={selectedPresetId === p.id}
+                    onClick={() => selectOption(p.id)}
+                    title={p.name}
+                    desc={p.description || '내용이 채워진 프리셋'}
+                    sparkle
+                  />
+                ))}
+              </div>
+            </div>
+          )}
           <div className="space-y-1.5">
             <label htmlFor="new-report-title" className="text-sm font-medium">
               보고서 제목
@@ -139,10 +276,9 @@ function NameReportDialog({ template, defaultMount, onCancel, onConfirm }) {
             </p>
           </div>
 
-          {/* 게시 섹션 — 부서 진입 시에만. 개인 공간에서 진입했으면
-              어디 게시할지가 모호하므로 (다이얼로그를 거치지 않고)
-              사후 MountDialog에서 결정하게 둔다. */}
-          {defaultMount && (
+          {/* 게시 섹션 — 부서 진입 + 빈 보고서 시작일 때만. 프리셋은
+              개인 공간에 seed 되어 생성되므로 게시는 사후 결정한다. */}
+          {isBlank && defaultMount && (
             <div className="rounded-md border bg-muted/30 p-3 space-y-2">
               <label className="flex items-start gap-2 cursor-pointer">
                 <input
@@ -184,11 +320,16 @@ function NameReportDialog({ template, defaultMount, onCancel, onConfirm }) {
           )}
 
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" onClick={onCancel}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onCancel}
+              disabled={submitting}
+            >
               취소
             </Button>
-            <Button type="submit" disabled={!title.trim()}>
-              작성 시작
+            <Button type="submit" disabled={!title.trim() || submitting}>
+              {submitting ? '시작하는 중…' : '작성 시작'}
             </Button>
           </div>
         </form>

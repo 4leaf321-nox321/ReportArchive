@@ -22,7 +22,7 @@ const ALL = '_all'
  * Caller controls layout via `compact` (modal vs page) and gets a callback
  * when a template is chosen.
  */
-export function TemplatePicker({ onPick, compact = false, reloadKey }) {
+export function TemplatePicker({ onPick, compact = false, reloadKey, presetCounts }) {
   const [query, setQuery] = useState('')
   const [activeCategory, setActiveCategory] = useState(ALL)
   const { data: templates, loading, error, reload } = useAsync(
@@ -119,7 +119,12 @@ export function TemplatePicker({ onPick, compact = false, reloadKey }) {
             <Skeleton className="h-48" />
           </div>
         ) : searching ? (
-          <SearchResults hits={searchHits} onPick={onPick} gridCols={gridCols} />
+          <SearchResults
+            hits={searchHits}
+            onPick={onPick}
+            gridCols={gridCols}
+            presetCounts={presetCounts}
+          />
         ) : (
           <div className="space-y-8">
             {visibleGroups.length === 0 ? (
@@ -134,6 +139,7 @@ export function TemplatePicker({ onPick, compact = false, reloadKey }) {
                   group={g}
                   onPick={onPick}
                   gridCols={gridCols}
+                  presetCounts={presetCounts}
                 />
               ))
             )}
@@ -161,7 +167,7 @@ function CategoryButton({ active, onClick, children }) {
   )
 }
 
-function CategorySection({ group, onPick, gridCols }) {
+function CategorySection({ group, onPick, gridCols, presetCounts }) {
   return (
     <section>
       <div className="flex items-center gap-2 mb-3">
@@ -172,14 +178,19 @@ function CategorySection({ group, onPick, gridCols }) {
       </div>
       <div className={cn('grid gap-4', gridCols)}>
         {group.templates.map((t) => (
-          <TemplateCard key={`${t.template_id}-${t.version}`} template={t} onPick={onPick} />
+          <TemplateCard
+            key={`${t.template_id}-${t.version}`}
+            template={t}
+            onPick={onPick}
+            presetCount={presetCounts?.[t.template_id] ?? 0}
+          />
         ))}
       </div>
     </section>
   )
 }
 
-function SearchResults({ hits, onPick, gridCols }) {
+function SearchResults({ hits, onPick, gridCols, presetCounts }) {
   if (!hits || hits.length === 0) {
     return (
       <EmptyState
@@ -194,14 +205,19 @@ function SearchResults({ hits, onPick, gridCols }) {
       <div className="text-xs text-muted-foreground mb-3">검색 결과 {hits.length}건</div>
       <div className={cn('grid gap-4', gridCols)}>
         {hits.map((t) => (
-          <TemplateCard key={`${t.template_id}-${t.version}`} template={t} onPick={onPick} />
+          <TemplateCard
+            key={`${t.template_id}-${t.version}`}
+            template={t}
+            onPick={onPick}
+            presetCount={presetCounts?.[t.template_id] ?? 0}
+          />
         ))}
       </div>
     </div>
   )
 }
 
-function TemplateCard({ template, onPick }) {
+function TemplateCard({ template, onPick, presetCount = 0 }) {
   const sectionTitles = Object.values(template.schema?.properties ?? {})
     .map((p) => p?.title)
     .filter(Boolean)
@@ -226,6 +242,12 @@ function TemplateCard({ template, onPick }) {
           {template.owner_workspace_slug == null && (
             <Badge variant="secondary" className="ml-2 text-[9px]">
               전사
+            </Badge>
+          )}
+          {presetCount > 0 && (
+            <Badge className="ml-2 text-[9px]">
+              <Sparkles className="mr-0.5 h-2.5 w-2.5" />
+              프리셋 {presetCount}개
             </Badge>
           )}
         </div>

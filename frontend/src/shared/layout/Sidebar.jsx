@@ -137,22 +137,39 @@ function SidebarBody({ onNavigate }) {
   // 부서 메뉴 links always target the sticky org workspace (`orgSlug`),
   // never the effective slug — visiting /personal/reports shouldn't
   // pivot the sidebar onto the user's personal space.
-  const { orgSlug, isPersonalPage } = useWorkspace()
+  const { orgSlug, getAncestors } = useWorkspace()
   const slug = orgSlug
   const { me } = useAuth()
-  // Two orthogonal admin concepts. `isWorkspaceManager` reflects the
-  // current workspace's role (resolved server-side per /api/me request);
-  // `isSystemAdmin` is a global User flag.
+  // 부서 메뉴/관리자 가시성은 "현재 페이지"가 아니라 사용자가 *조직*에서
+  // 매니저인지로 판정해야 한다.
   //
-  // Carve-out for personal context: ensure_personal_workspace grants
-  // every user `manager` role on their OWN personal-{id} workspace, so
-  // when the URL is /personal/* the effective workspace is personal
-  // and `me.role === 'manager'` even for users with no department-level
-  // rights. That made manager-gated entries like "부서 멤버" appear on
-  // /personal/reports and /personal/inbox; clicking them would lead to
-  // a 403 on /w/{orgSlug}/members. Treat the self-manager-on-personal
-  // role as not-a-manager for menu visibility.
-  const isWorkspaceAdmin = !isPersonalPage && me?.role === 'manager'
+  // `me.role` 은 현재 요청 워크스페이스 기준이라 신뢰할 수 없다:
+  // ensure_personal_workspace 가 모든 사용자에게 자기 personal-{id} 워크스페이스
+  // 의 manager 역할을 부여하므로, URL 이 /personal/*(내 활동) 이면 effective
+  // 워크스페이스가 personal 이 되어 부서 권한이 없는 사람도 me.role==='manager'
+  // 가 된다. 과거엔 이를 `!isPersonalPage` 로 막았는데, 그러면 *진짜 부서
+  // 매니저*도 내 활동 화면에선 부서 메뉴가 통째로 사라지는 버그가 있었다.
+  //
+  // 대신 memberships 에서 개인 워크스페이스를 뺀 매니저 역할만 보고, orgSlug
+  // 자신 또는 그 조상에 매니저면 부서 관리자로 본다(매니저 권한은 트리 위→아래
+  // 상속). 현재 페이지가 개인이든 조직이든 일관되게 동작한다.
+  const managerSlugs = React.useMemo(
+    () =>
+      new Set(
+        (me?.memberships ?? [])
+          .filter(
+            (m) =>
+              m.role === 'manager' &&
+              !String(m.workspace_slug).startsWith('personal-'),
+          )
+          .map((m) => m.workspace_slug),
+      ),
+    [me],
+  )
+  const isWorkspaceAdmin =
+    !!orgSlug &&
+    (managerSlugs.has(orgSlug) ||
+      getAncestors(orgSlug).some((a) => managerSlugs.has(a.slug)))
   const isSystemAdmin = me?.is_system_admin === true
   const userId = me?.user?.id
   // Sidebar holds its own unread poller (parallel to the bell). Same

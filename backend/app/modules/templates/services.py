@@ -108,6 +108,34 @@ def _normalize_owner_slugs(payload_slugs: Optional[list[str]]) -> Optional[list[
     return out or None
 
 
+def set_template_scope(
+    db: Session, template_id: str, owner_workspace_slugs: Optional[list[str]]
+) -> Optional[Template]:
+    """Replace the 공유 부서(scope) for ALL versions of `template_id` —
+    metadata only, no new version (visibility, not schema). NULL/empty =
+    전사(global). Target slugs may lie outside the caller's own tree (that's
+    the point of *sharing* to another dept), so we only check that each is a
+    real workspace. Permission is enforced in the route. Returns the latest
+    version, or None if the template doesn't exist."""
+    latest = get_latest_version(db, template_id)
+    if latest is None:
+        return None
+    normalized = _normalize_owner_slugs(owner_workspace_slugs)
+    if normalized:
+        from app.modules.workspaces.models import Workspace
+
+        for s in normalized:
+            if db.get(Workspace, s) is None:
+                raise ValueError(f"존재하지 않는 워크스페이스: {s}")
+    db.execute(
+        update(Template)
+        .where(Template.template_id == template_id)
+        .values(owner_workspace_slugs=normalized)
+    )
+    db.commit()
+    return get_latest_version(db, template_id)
+
+
 # --------------------------------------------------------------------------- #
 # Schema validation (widget-v1)
 # --------------------------------------------------------------------------- #

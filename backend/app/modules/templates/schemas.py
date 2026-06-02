@@ -79,6 +79,13 @@ class TemplateNewVersion(BaseModel):
     schema_: dict = Field(..., alias="schema")
 
 
+class TemplateScopeUpdate(BaseModel):
+    """Replace a template's 공유 부서(visibility scope). Metadata only — does
+    not bump the version. NULL/empty = 전사(global)."""
+
+    owner_workspace_slugs: Optional[List[str]] = None
+
+
 class TemplateVersionSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

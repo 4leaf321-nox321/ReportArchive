@@ -10,6 +10,7 @@ from app.modules.templates.schemas import (
     TemplateCreate,
     TemplateNewVersion,
     TemplateRead,
+    TemplateScopeUpdate,
     TemplateVersionSummary,
 )
 from app.shared.auth import CurrentUser, get_current_user, require_manager
@@ -119,6 +120,46 @@ def delete_template(
         data=result,
         message=f"'{template_id}' 템플릿의 {result['deleted_versions']}개 버전이 삭제되었습니다.",
     )
+
+
+@router.patch("/{template_id}/scope")
+def set_template_scope(
+    template_id: str,
+    payload: TemplateScopeUpdate,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_manager),
+):
+    """다른 부서에 공유 — owner_workspace_slugs(공유 부서)를 통째로 교체한다.
+    버전은 올리지 않는다(가시성 메타). 템플릿을 소유한 부서의 매니저만 가능.
+    공유 대상 부서는 본인 트리 밖일 수 있다(그게 공유의 목적)."""
+    latest = services.get_latest_version(db, template_id)
+    if not latest or not services.is_visible(db, latest, actor.workspace.slug):
+        return not_found_response(f"Template not found: {template_id}")
+    # 권한: 현재 이 템플릿을 *소유한* 부서(들) 중 하나가 본인 관리 트리 안에
+    # 있어야 한다. 전사(소유 없음) 템플릿은 여기서 못 바꾼다(관리자 영역).
+    current_owners = latest.owner_workspace_slugs or []
+    if not current_owners:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "전사 공개 템플릿의 공유 범위는 여기서 바꿀 수 없습니다 (관리자에게 문의).",
+        )
+    from app.modules.workspaces import services as ws_services
+
+    accessible = set(ws_services.get_descendants_inclusive(db, actor.workspace.slug))
+    if not any(s in accessible for s in current_owners):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "이 템플릿을 소유한 부서의 매니저만 공유 범위를 바꿀 수 있습니다.",
+        )
+    try:
+        template = services.set_template_scope(
+            db, template_id, payload.owner_workspace_slugs
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    if template is None:
+        return not_found_response(f"Template not found: {template_id}")
+    return success_response(data=TemplateRead.from_orm_(template))
 
 
 @router.post("/{template_id}/versions")

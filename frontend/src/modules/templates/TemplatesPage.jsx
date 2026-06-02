@@ -1,6 +1,24 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, FileCode2, Pencil, Trash2, Sparkles, Search } from 'lucide-react'
+import {
+  Plus,
+  FileCode2,
+  Pencil,
+  Trash2,
+  Sparkles,
+  Search,
+  Share2,
+  Building2,
+  ChevronRight,
+  ChevronDown,
+} from 'lucide-react'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/shared/components/ui/dialog'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Badge } from '@/shared/components/ui/badge'
@@ -12,7 +30,7 @@ import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
-import { deleteTemplate, listTemplates } from '@/shared/api/templates'
+import { deleteTemplate, listTemplates, setTemplateScope } from '@/shared/api/templates'
 import { listPresets, deletePreset } from '@/shared/api/presets'
 import { listTemplateCategories } from '@/shared/api/templateCategories'
 import { makeCategoryNameLookup } from '@/modules/reports/constants'
@@ -21,7 +39,13 @@ import { toast } from 'sonner'
 
 export default function TemplatesPage() {
   const { me } = useAuth()
-  const { slug } = useWorkspace()
+  const { slug, all: workspaces } = useWorkspace()
+  const orgWorkspaces = useMemo(
+    () => (workspaces ?? []).filter((w) => w.kind === 'org' && !w.virtual),
+    [workspaces],
+  )
+  const workspaceName = (s) =>
+    (workspaces ?? []).find((w) => w.slug === s)?.name ?? s
   // Template lifecycle (create / publish / delete) is the manager role's
   // responsibility. Regular users can view templates but can't author them.
   const canManageTemplates = me?.role === 'manager'
@@ -52,6 +76,7 @@ export default function TemplatesPage() {
 
   const [pendingDelete, setPendingDelete] = useState(null) // template or null
   const [pendingPresetDelete, setPendingPresetDelete] = useState(null)
+  const [scopeEditFor, setScopeEditFor] = useState(null) // 공유 부서 편집 대상
   const [selectedId, setSelectedId] = useState(null) // template_id
   const [query, setQuery] = useState('')
 
@@ -179,9 +204,11 @@ export default function TemplatesPage() {
               <TemplateDetail
                 template={selected}
                 categoryName={categoryName}
+                workspaceName={workspaceName}
                 canManage={canManageTemplates}
                 canDelete={canDeleteTemplates}
                 onDelete={() => setPendingDelete(selected)}
+                onEditScope={() => setScopeEditFor(selected)}
                 presets={selectedPresets}
                 currentUserId={me?.user?.id}
                 isAdmin={me?.is_system_admin === true}
@@ -223,6 +250,13 @@ export default function TemplatesPage() {
         variant="destructive"
         onConfirm={onConfirmPresetDelete}
       />
+
+      <TemplateScopeDialog
+        template={scopeEditFor}
+        orgWorkspaces={orgWorkspaces}
+        onClose={() => setScopeEditFor(null)}
+        onSaved={() => reload()}
+      />
     </div>
   )
 }
@@ -257,9 +291,11 @@ function TemplateListItem({ template, active, presetCount, onClick }) {
 function TemplateDetail({
   template,
   categoryName,
+  workspaceName,
   canManage,
   canDelete,
   onDelete,
+  onEditScope,
   presets,
   currentUserId,
   isAdmin,
@@ -293,15 +329,6 @@ function TemplateDetail({
               <FileCode2 className="h-5 w-5 shrink-0 text-muted-foreground" />
               <h2 className="text-lg font-semibold">{template.name}</h2>
               <Badge variant="outline">v{template.version}</Badge>
-              {scoped ? (
-                template.owner_workspace_slugs.map((s) => (
-                  <Badge key={s} variant="secondary" className="text-[10px]">
-                    {s}
-                  </Badge>
-                ))
-              ) : (
-                <Badge variant="secondary" className="text-[10px]">전사</Badge>
-              )}
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">
               {categoryName(template.category)} · {template.template_id}
@@ -336,6 +363,42 @@ function TemplateDetail({
             </div>
           )}
         </div>
+      </div>
+
+      {/* ── 공유 부서 ── */}
+      <div>
+        <div className="mb-1.5 flex items-center justify-between gap-2">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            공유 부서
+          </div>
+          {canManage && scoped && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={onEditScope}
+            >
+              <Share2 className="mr-1 h-3 w-3" />
+              편집
+            </Button>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {scoped ? (
+            template.owner_workspace_slugs.map((s) => (
+              <Badge key={s} variant="secondary">
+                {workspaceName ? workspaceName(s) : s}
+              </Badge>
+            ))
+          ) : (
+            <Badge variant="secondary">전사 공개 (모든 부서)</Badge>
+          )}
+        </div>
+        {!scoped && (
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            전사 공개 템플릿의 공유 범위는 시스템 관리자만 바꿀 수 있습니다.
+          </p>
+        )}
       </div>
 
       {/* ── 구성 블록 ── */}
@@ -441,4 +504,258 @@ function labelForBlock(b) {
   if (!b) return null
   // Most widgets carry a `label` prop; heading uses `text`. Fall back to id.
   return b.props?.label || b.props?.text || b.id
+}
+
+/** 공유 부서 선택 — "조직 게시판에 게시" 다이얼로그(MountDialog)와 같은
+ *  트리+검색 패턴. 조직 워크스페이스를 부모-자식 트리로 펼쳐 체크. 부서가
+ *  많아도 펼침/검색으로 다룬다. 하나도 안 고르면 전사 공개. 현재 소유 중인데
+ *  트리에 없는(내가 못 보는) 부서는 selected 에 보존돼 저장 시 유지된다. */
+function TemplateScopeDialog({ template, orgWorkspaces, onClose, onSaved }) {
+  const open = Boolean(template)
+  const [selected, setSelected] = useState(() => new Set())
+  const [expanded, setExpanded] = useState(() => new Set())
+  const [query, setQuery] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  // 조직 워크스페이스를 부모-자식 트리로. 부모가 org 집합 안에 없으면 root.
+  const { roots, childrenOf, bySlug } = useMemo(() => {
+    const orgs = orgWorkspaces ?? []
+    const orgSet = new Set(orgs.map((w) => w.slug))
+    const bySlug = new Map(orgs.map((w) => [w.slug, w]))
+    const childrenOf = new Map()
+    const roots = []
+    const byName = (a, b) => a.name.localeCompare(b.name)
+    for (const w of [...orgs].sort(byName)) {
+      if (w.parent_slug && orgSet.has(w.parent_slug)) {
+        if (!childrenOf.has(w.parent_slug)) childrenOf.set(w.parent_slug, [])
+        childrenOf.get(w.parent_slug).push(w)
+      } else {
+        roots.push(w)
+      }
+    }
+    return { roots, childrenOf, bySlug }
+  }, [orgWorkspaces])
+
+  function ancestorsOf(slug) {
+    const out = []
+    let cur = bySlug.get(slug)
+    while (cur?.parent_slug && bySlug.has(cur.parent_slug)) {
+      out.push(cur.parent_slug)
+      cur = bySlug.get(cur.parent_slug)
+    }
+    return out
+  }
+  function pathLabel(slug) {
+    return ancestorsOf(slug)
+      .reverse()
+      .map((s) => bySlug.get(s)?.name ?? s)
+      .join(' / ')
+  }
+
+  useEffect(() => {
+    if (!open) return
+    const init = new Set(template.owner_workspace_slugs ?? [])
+    setSelected(init)
+    setQuery('')
+    setSubmitting(false)
+    // 이미 공유 중인 부서의 조상들을 펼쳐 바로 보이게.
+    const exp = new Set()
+    for (const s of init) for (const a of ancestorsOf(s)) exp.add(a)
+    setExpanded(exp)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, template])
+
+  function toggleSelect(slug) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(slug)) next.delete(slug)
+      else next.add(slug)
+      return next
+    })
+  }
+  function toggleExpand(slug) {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(slug)) next.delete(slug)
+      else next.add(slug)
+      return next
+    })
+  }
+
+  const trimmed = query.trim().toLowerCase()
+  const searching = trimmed.length > 0
+  const searchResults = (orgWorkspaces ?? [])
+    .filter(
+      (w) =>
+        w.name.toLowerCase().includes(trimmed) ||
+        w.slug.toLowerCase().includes(trimmed),
+    )
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+  function renderNode(w, depth) {
+    const kids = childrenOf.get(w.slug) ?? []
+    return (
+      <Fragment key={w.slug}>
+        <ShareRow
+          ws={w}
+          depth={depth}
+          hasChildren={kids.length > 0}
+          isExpanded={expanded.has(w.slug)}
+          checked={selected.has(w.slug)}
+          onToggleSelect={() => toggleSelect(w.slug)}
+          onToggleExpand={kids.length > 0 ? () => toggleExpand(w.slug) : null}
+        />
+        {kids.length > 0 &&
+          expanded.has(w.slug) &&
+          kids.map((k) => renderNode(k, depth + 1))}
+      </Fragment>
+    )
+  }
+
+  async function handleSave() {
+    setSubmitting(true)
+    try {
+      const slugs = [...selected]
+      await setTemplateScope(template.template_id, slugs.length ? slugs : null)
+      toast.success('공유 부서가 변경되었습니다.')
+      onSaved?.()
+      onClose()
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err?.message || '공유 부서 변경 실패',
+      )
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="flex max-h-[80vh] w-[90vw] max-w-lg flex-col">
+        <DialogHeader>
+          <DialogTitle>공유 부서 추가 — {template?.name}</DialogTitle>
+          <DialogDescription>
+            체크한 부서(그 트리)에서 이 템플릿이 보입니다. 같은 원본을 공유하므로
+            편집은 모든 소유 부서에 반영됩니다.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="조직명 / slug 검색 (비우면 트리 보기)"
+            className="h-8 pl-8 text-sm"
+          />
+        </div>
+
+        <div className="-mx-2 min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2">
+          {searching ? (
+            searchResults.length === 0 ? (
+              <p className="py-4 text-center text-sm text-muted-foreground">
+                매칭되는 조직이 없습니다.
+              </p>
+            ) : (
+              searchResults.map((w) => (
+                <ShareRow
+                  key={w.slug}
+                  ws={w}
+                  depth={0}
+                  hasChildren={false}
+                  isExpanded={false}
+                  onToggleExpand={null}
+                  pathLabel={pathLabel(w.slug)}
+                  checked={selected.has(w.slug)}
+                  onToggleSelect={() => toggleSelect(w.slug)}
+                />
+              ))
+            )
+          ) : roots.length === 0 ? (
+            <p className="py-4 text-center text-sm text-muted-foreground">
+              부서가 없습니다.
+            </p>
+          ) : (
+            roots.map((w) => renderNode(w, 0))
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-2 border-t pt-3">
+          <span className="text-[11px] text-muted-foreground">
+            {selected.size === 0
+              ? '⚠ 아무 부서도 안 고르면 전사 공개로 전환됩니다'
+              : `${selected.size}개 부서 공유`}
+          </span>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onClose}
+              disabled={submitting}
+            >
+              취소
+            </Button>
+            <Button size="sm" onClick={handleSave} disabled={submitting}>
+              {submitting ? '저장 중…' : '저장'}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** 공유 부서 트리/검색 한 줄 — chevron(자식 펼침) + 체크박스 + 조직명. */
+function ShareRow({
+  ws,
+  depth,
+  isExpanded,
+  checked,
+  onToggleSelect,
+  onToggleExpand,
+  pathLabel,
+}) {
+  return (
+    <div
+      className="flex items-center gap-1.5 rounded-md px-1 py-1 hover:bg-muted/40"
+      style={{ marginLeft: depth * 16 }}
+    >
+      {onToggleExpand ? (
+        <button
+          type="button"
+          onClick={onToggleExpand}
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded hover:bg-muted"
+          aria-label={isExpanded ? '접기' : '펼치기'}
+        >
+          {isExpanded ? (
+            <ChevronDown className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5" />
+          )}
+        </button>
+      ) : (
+        <span className="h-5 w-5 shrink-0" aria-hidden />
+      )}
+      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={onToggleSelect}
+          className="h-4 w-4 shrink-0"
+        />
+        <span
+          className="h-2.5 w-2.5 shrink-0 rounded-full"
+          style={{ backgroundColor: ws.color || '#64748b' }}
+        />
+        <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">{ws.name}</span>
+          {pathLabel && (
+            <span className="block truncate text-[10px] text-muted-foreground">
+              {pathLabel}
+            </span>
+          )}
+        </span>
+      </label>
+    </div>
+  )
 }

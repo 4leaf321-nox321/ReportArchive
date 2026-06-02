@@ -45,13 +45,17 @@ export function CommentsProvider({
   // dispatch via `openThread(threadId)`; the panel listens.
   const [openThreadId, setOpenThreadId] = React.useState(null)
   // Side panel visibility — controlled here so the pin button can
-  // toggle it from inside the tree without prop-drilling. Default-open
-  // when the report is in reviewing/finalized phase (the comments are
-  // the point of the page at that stage); collapsed by default in
-  // drafting (writer is composing, not reviewing).
-  const [panelOpen, setPanelOpen] = React.useState(
-    reportPhase === 'reviewing' || reportPhase === 'finalized',
-  )
+  // toggle it from inside the tree without prop-drilling. Starts closed;
+  // after the first thread load we auto-open ONCE (see refresh) only when
+  // the report is in reviewing/finalized phase AND has at least one
+  // *unresolved* comment — a reviewing report with nothing open opens
+  // closed, and drafting always opens closed. We can't decide this in the
+  // initial state because threads load async, so we wait for the first
+  // fetch rather than flash the panel open then closed.
+  const [panelOpen, setPanelOpen] = React.useState(false)
+  // Per-report guard so the auto-open decision runs only on the first
+  // load — focus/visibility re-polls must respect the user's manual toggle.
+  const autoOpenDecidedRef = React.useRef(null)
   // Pending new-thread draft. When the user clicks a "+" pin on a
   // block with no existing threads, we don't persist anything yet —
   // we just stash the (page_index, block_id) anchor here. The panel
@@ -67,12 +71,22 @@ export function CommentsProvider({
     try {
       const rows = await listThreadsForReport(reportId)
       setThreads(rows)
+      // 첫 로딩 1회만 패널 자동 열림 판정 — reviewing/finalized 이면서
+      // 미해결(open) 코멘트가 하나라도 있을 때만 연다. 이후 재폴링
+      // (focus/visibility)에선 사용자의 토글을 존중해 건드리지 않는다.
+      if (autoOpenDecidedRef.current !== reportId) {
+        autoOpenDecidedRef.current = reportId
+        const hasOpen = rows.some((t) => t.status === 'open')
+        const reviewing =
+          reportPhase === 'reviewing' || reportPhase === 'finalized'
+        setPanelOpen(reviewing && hasOpen)
+      }
     } catch (e) {
       setError(e?.message || String(e))
     } finally {
       setLoading(false)
     }
-  }, [reportId])
+  }, [reportId, reportPhase])
 
   React.useEffect(() => {
     refresh()

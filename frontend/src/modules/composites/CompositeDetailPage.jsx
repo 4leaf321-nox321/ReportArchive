@@ -301,7 +301,10 @@ export default function CompositeDetailPage() {
   // before X; dragging down through the splice math is the only edge
   // case worth noting. (State for this lives up with the other useState
   // calls — see comment there about hook order vs early returns.)
-  function reorderItems(fromIdx, toIdx) {
+  // 안건 위에 드롭 → 그 위치로 이동 + 그 안건의 그룹을 따라간다(targetGroup).
+  // 그룹 안건 위에 떨어뜨리면 그 그룹에 합류하고, 그룹 없는 안건 위면 그룹
+  // 해제 — "떨어뜨린 곳의 그룹을 가진다"는 일관된 모델.
+  function reorderItems(fromIdx, toIdx, targetGroup) {
     if (fromIdx === toIdx) return
     setDraft((d) => {
       if (!d) return d
@@ -312,7 +315,7 @@ export default function CompositeDetailPage() {
       // A → C in [A, B, C, D] lands as [B, C, A, D] instead of [B, A,
       // C, D] which is what "drop on C" means visually.
       const adjustedToIdx = fromIdx < toIdx ? toIdx - 1 : toIdx
-      next.splice(adjustedToIdx, 0, moved)
+      next.splice(adjustedToIdx, 0, { ...moved, group_name: targetGroup ?? null })
       return { ...d, items: next }
     })
   }
@@ -326,18 +329,44 @@ export default function CompositeDetailPage() {
     )
     setDraft({ ...draft, items: next })
   }
-  // 2단 미리보기 전용 드롭 — 다른 안건 위에 떨어뜨리면 그 안건의 열을
-  // 따라가도록 display_column 도 함께 바꾼다(같은 열이면 단순 reorder).
-  function reorderItemsToColumn(fromIdx, toIdx, targetCol) {
+  // 2단 미리보기 전용 드롭 — 다른 안건 위에 떨어뜨리면 그 안건의 열·그룹을
+  // 함께 따라간다(display_column + group_name).
+  function reorderItemsToColumn(fromIdx, toIdx, targetCol, targetGroup) {
     if (fromIdx == null) return
     setDraft((d) => {
       if (!d) return d
       const next = [...d.items]
       const [moved] = next.splice(fromIdx, 1)
       const adjustedToIdx = fromIdx < toIdx ? toIdx - 1 : toIdx
-      next.splice(adjustedToIdx, 0, { ...moved, display_column: targetCol })
+      next.splice(adjustedToIdx, 0, {
+        ...moved,
+        display_column: targetCol,
+        group_name: targetGroup ?? null,
+      })
       return { ...d, items: next }
     })
+  }
+  // 빈 그룹 박스(또는 그룹 영역)에 드롭 → 그 그룹으로 합류. 그 그룹의 마지막
+  // 안건 뒤(연속 그룹 유지)에, 비어 있으면 맨 끝에 삽입.
+  function assignDraggedToGroup(groupName) {
+    if (draggingIdx == null) return
+    const from = draggingIdx
+    setDraft((d) => {
+      if (!d) return d
+      const items = [...d.items]
+      const [moved] = items.splice(from, 1)
+      let insertAt = items.length
+      for (let i = items.length - 1; i >= 0; i--) {
+        if (items[i].group_name === groupName) {
+          insertAt = i + 1
+          break
+        }
+      }
+      items.splice(insertAt, 0, { ...moved, group_name: groupName })
+      return { ...d, items }
+    })
+    setDraggingIdx(null)
+    setDropOverIdx(null)
   }
   // 2단 미리보기 전용 — 빈 열(또는 열의 빈 영역)에 떨어뜨리면 그 열로
   // 옮기고 flat 배열 맨 뒤로 보내 그 열의 마지막에 표시되게 한다.
@@ -398,6 +427,28 @@ export default function CompositeDetailPage() {
       count > 0
         ? `그룹 «${name}» 해제 — 안건 ${count}건은 그룹 없음으로 이동`
         : `그룹 «${name}» 삭제`,
+    )
+  }
+
+  // 그룹 이름 변경 — 같은 group_name 안건들 + pending 그룹을 새 이름으로 일괄
+  // 갱신. 빈 이름·동일 이름·기존 그룹과 충돌이면 무시.
+  function renameGroup(oldName, newName) {
+    const trimmed = (newName || '').trim()
+    if (!oldName || !trimmed || trimmed === oldName) return
+    if (knownGroups.includes(trimmed)) {
+      toast.info(`이미 있는 그룹: ${trimmed}`)
+      return
+    }
+    setPendingGroups((prev) => prev.map((g) => (g === oldName ? trimmed : g)))
+    setDraft((d) =>
+      d
+        ? {
+            ...d,
+            items: d.items.map((it) =>
+              it.group_name === oldName ? { ...it, group_name: trimmed } : it,
+            ),
+          }
+        : d,
     )
   }
 
@@ -821,6 +872,8 @@ export default function CompositeDetailPage() {
               editing={isEditing}
               pendingGroups={pendingGroups}
               onRemoveGroup={removeGroup}
+              onRenameGroup={renameGroup}
+              onAssignToGroup={assignDraggedToGroup}
               draggingIdx={draggingIdx}
               onDropToColumn={handleDropToColumn}
             >
@@ -866,15 +919,17 @@ export default function CompositeDetailPage() {
                   }}
                   onDrop={() => {
                     if (draggingIdx !== null) {
+                      // 대상 안건의 그룹(+2단이면 열)을 따라가도록 함께 이동.
+                      const targetGroup = it.group_name ?? null
                       if (twoColPreview) {
-                        // 2단 보기: 대상 안건의 열을 따라가도록 함께 이동.
                         reorderItemsToColumn(
                           draggingIdx,
                           idx,
                           it.display_column === 2 ? 2 : 1,
+                          targetGroup,
                         )
                       } else {
-                        reorderItems(draggingIdx, idx)
+                        reorderItems(draggingIdx, idx, targetGroup)
                       }
                     }
                     setDraggingIdx(null)
@@ -1216,6 +1271,8 @@ function ItemsListContainer({
   editing,
   pendingGroups,
   onRemoveGroup,
+  onRenameGroup,
+  onAssignToGroup,
   draggingIdx,
   onDropToColumn,
 }) {
@@ -1231,152 +1288,170 @@ function ItemsListContainer({
           },
         }
       : {}
-  // 그룹 헤더 시각화 — children 배열 안에서 group_name 이 직전과 다른
-  // 지점마다 `[그룹명]` 헤더 행을 삽입. items[i] 와 children[i] 가
-  // 1:1 매칭. children 한 묶음을 (header? + item-row) 시퀀스로 풀어 낸 뒤
-  // 단일/2단 컨테이너에 흘려보낸다.
   const arr = Array.isArray(children) ? children : [children]
-  // 1) 그룹 헤더 + 행으로 풀기 (단일 보기에서만 사용; 2단 보기는 자체
-  //    그룹 헤더를 따로 그리므로 raw 행만 필요).
-  function buildWithHeaders() {
-    const out = []
-    let prev = null
-    for (let i = 0; i < arr.length; i++) {
-      const it = items[i]
-      const gn = it?.group_name || null
-      if (gn !== prev) {
-        if (gn) {
-          out.push(
-            <GroupHeader
-              key={`grp-${i}-${gn}`}
-              name={gn}
-              variant="single"
-              editing={editing}
-              onRemove={onRemoveGroup ? () => onRemoveGroup(gn) : undefined}
-            />,
-          )
-        } else if (prev) {
-          // 그룹 → 그룹 없음 전환 — 헤더는 안 그리지만 시각적 구분이
-          // 필요하면 여기서 spacer 를 넣을 수 있다. 지금은 divide-y 가
-          // 라인을 그어주므로 생략.
-        }
-      }
-      out.push(arr[i])
-      prev = gn
+
+  // 안건을 "연속된 같은 group_name" 단위 섹션으로 묶는다(group_name=null 은
+  // 그룹 없는 구간). 각 그룹 섹션은 하나의 박스로 그려서 (a) 어떤 안건이 그
+  // 그룹에 속하는지 한눈에 보이게 하고, (b) 2단 보기에서도 그룹이 둘로
+  // 쪼개지지 않게 한다 — 헤더는 박스에 한 번, 안건만 박스 안에서 좌/우 2열로
+  // 나뉜다.
+  const sections = []
+  let curSection = null
+  for (let i = 0; i < arr.length; i++) {
+    const gn = items[i]?.group_name || null
+    if (!curSection || curSection.gn !== gn) {
+      curSection = { gn, idxs: [] }
+      sections.push(curSection)
     }
-    // pendingGroups (아직 비어 있는 그룹) 가 있으면 단일 보기 맨 끝에
-    // empty 헤더 + "비어 있음" 안내. 사용자가 그룹을 만들었다는 신호.
-    if (editing && (pendingGroups ?? []).length > 0) {
-      const seen = new Set(items.map((it) => it.group_name).filter(Boolean))
-      for (const g of pendingGroups) {
-        if (seen.has(g)) continue
-        out.push(
-          <li key={`empty-grp-${g}`} className="py-2">
-            <GroupHeader
-              name={g}
-              variant="single"
-              editing={editing}
-              onRemove={onRemoveGroup ? () => onRemoveGroup(g) : undefined}
-            />
-            <p className="text-[11px] text-muted-foreground italic pl-3">
-              (비어 있음 — 위 안건들의 그룹 selector 에서 이 그룹을 선택하세요)
-            </p>
-          </li>,
-        )
-      }
+    curSection.idxs.push(i)
+  }
+
+  // 한 섹션의 안건들을 단일(1열) 또는 2열(display_column 기준)로 렌더.
+  function renderSectionItems(idxs) {
+    if (!twoColPreview) {
+      return <ul className="divide-y">{idxs.map((i) => arr[i])}</ul>
     }
-    return out
+    const left = idxs.filter((i) => (items[i]?.display_column ?? 1) !== 2)
+    const right = idxs.filter((i) => items[i]?.display_column === 2)
+    const emptyHint = (col) => (
+      <p className="py-3 text-center text-[11px] italic text-muted-foreground">
+        {editing && draggingIdx != null ? `여기에 놓으면 ${col}열로` : '(비어 있음)'}
+      </p>
+    )
+    return (
+      <div className="grid grid-cols-2 gap-x-3">
+        <div className="space-y-1 border-r pr-3" {...colDropProps(1)}>
+          {left.length > 0 ? left.map((i) => arr[i]) : emptyHint(1)}
+        </div>
+        <div className="space-y-1" {...colDropProps(2)}>
+          {right.length > 0 ? right.map((i) => arr[i]) : emptyHint(2)}
+        </div>
+      </div>
+    )
   }
-  if (!twoColPreview) {
-    return <ul className="divide-y">{buildWithHeaders()}</ul>
-  }
-  // 2단 미리보기 — display_column 기준 분배. 각 컬럼 안에서 그룹 헤더는
-  // 그 컬럼에 들어온 안건들 사이에서만 발생.
-  function buildBucket(targetCol) {
-    const out = []
-    let prev = null
-    for (let i = 0; i < arr.length; i++) {
-      const it = items[i]
-      const col = it?.display_column === 2 ? 2 : 1
-      if (col !== targetCol) continue
-      const gn = it?.group_name || null
-      if (gn !== prev && gn) {
-        out.push(
-          <GroupHeader
-          key={`grp-c${targetCol}-${i}-${gn}`}
-          name={gn}
-          variant="bucket"
-          editing={editing}
-          onRemove={onRemoveGroup ? () => onRemoveGroup(gn) : undefined}
-        />,
-        )
-      }
-      out.push(arr[i])
-      prev = gn
-    }
-    return out
-  }
-  const col1 = buildBucket(1)
-  const col2 = buildBucket(2)
+
+  const usedGroups = new Set(items.map((it) => it.group_name).filter(Boolean))
+  const emptyGroups = editing
+    ? (pendingGroups ?? []).filter((g) => !usedGroups.has(g))
+    : []
+
   return (
-    <div className="grid grid-cols-2 gap-x-3">
-      <div className="space-y-1 border-r pr-3" {...colDropProps(1)}>
-        <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium pb-1 border-b">
-          1열
-        </div>
-        {col1.length > 0 ? (
-          col1
+    <div className="space-y-2">
+      {sections.map((s, si) =>
+        s.gn ? (
+          <div
+            key={`sec-${si}-${s.gn}`}
+            className="overflow-hidden rounded-md border border-primary/25 bg-primary/[0.03]"
+          >
+            <GroupSectionHeader
+              name={s.gn}
+              count={s.idxs.length}
+              editing={editing}
+              onRename={onRenameGroup}
+              onRemove={onRemoveGroup ? () => onRemoveGroup(s.gn) : undefined}
+            />
+            <div className="px-3 py-1">{renderSectionItems(s.idxs)}</div>
+          </div>
         ) : (
-          <p className="text-[11px] text-muted-foreground italic py-3 text-center">
+          <div key={`sec-${si}-none`}>{renderSectionItems(s.idxs)}</div>
+        ),
+      )}
+      {/* 아직 비어 있는 그룹 — 사용자가 그룹을 만들었다는 신호. */}
+      {emptyGroups.map((g) => (
+        <div
+          key={`empty-grp-${g}`}
+          className={cn(
+            'rounded-md border border-dashed border-primary/30 bg-primary/[0.02]',
+            editing && draggingIdx != null && 'ring-2 ring-primary/40',
+          )}
+          {...(editing && draggingIdx != null
+            ? {
+                onDragOver: (e) => e.preventDefault(),
+                onDrop: (e) => {
+                  e.preventDefault()
+                  onAssignToGroup?.(g)
+                },
+              }
+            : {})}
+        >
+          <GroupSectionHeader
+            name={g}
+            editing={editing}
+            onRename={onRenameGroup}
+            onRemove={onRemoveGroup ? () => onRemoveGroup(g) : undefined}
+          />
+          <p className="px-3 pb-2 text-[11px] italic text-muted-foreground">
             {editing && draggingIdx != null
-              ? '여기에 놓으면 1열로'
-              : '(비어 있음)'}
+              ? '여기에 안건을 놓으면 이 그룹에 추가됩니다'
+              : '(비어 있음 — 위 안건들의 그룹 selector 에서 이 그룹을 선택하세요)'}
           </p>
-        )}
-      </div>
-      <div className="space-y-1" {...colDropProps(2)}>
-        <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium pb-1 border-b">
-          2열
         </div>
-        {col2.length > 0 ? (
-          col2
-        ) : (
-          <p className="text-[11px] text-muted-foreground italic py-3 text-center">
-            {editing && draggingIdx != null
-              ? '여기에 놓으면 2열로'
-              : '(비어 있음)'}
-          </p>
-        )}
-      </div>
+      ))}
     </div>
   )
 }
 
-/** 그룹 헤더 — 단일 보기에선 `<li>`(divide-y 흐름 안), 2단 보기 컬럼
- *  안에선 `<div>` (carded items 사이의 인라인 헤더). */
-function GroupHeader({ name, variant, editing, onRemove }) {
-  const content = (
-    <div className="flex items-center gap-2 py-2">
-      <span className="text-[11px] font-semibold text-primary">
-        [{name}]
-      </span>
-      <span className="flex-1 border-t border-primary/30" />
-      {editing && onRemove && (
-        <button
-          type="button"
-          onClick={onRemove}
-          title="그룹 해제 — 안건은 그대로 두고 그룹 묶음만 제거합니다"
-          className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
+/** 그룹 섹션 헤더 — [그룹명] + 건수 + 이름 수정(인라인 input) + 그룹 해제. */
+function GroupSectionHeader({ name, count, editing, onRename, onRemove }) {
+  const [renaming, setRenaming] = useState(false)
+  const [value, setValue] = useState(name)
+
+  function start() {
+    setValue(name)
+    setRenaming(true)
+  }
+  function commit() {
+    const t = value.trim()
+    if (t && t !== name) onRename?.(name, t)
+    setRenaming(false)
+  }
+
+  return (
+    <div className="flex items-center gap-2 border-b border-primary/20 bg-primary/5 px-3 py-1.5">
+      {renaming ? (
+        <input
+          autoFocus
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit()
+            else if (e.key === 'Escape') setRenaming(false)
+          }}
+          onBlur={commit}
+          placeholder="그룹 이름"
+          className="h-6 flex-1 rounded border bg-background px-1.5 text-[11px] font-semibold text-primary"
+        />
+      ) : (
+        <>
+          <span className="text-[11px] font-semibold text-primary">[{name}]</span>
+          {count != null && (
+            <span className="text-[10px] text-muted-foreground">{count}건</span>
+          )}
+          <span className="flex-1" />
+          {editing && onRename && (
+            <button
+              type="button"
+              onClick={start}
+              title="그룹 이름 수정"
+              className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <Pencil className="h-3 w-3" />
+            </button>
+          )}
+          {editing && onRemove && (
+            <button
+              type="button"
+              onClick={onRemove}
+              title="그룹 해제 — 안건은 그대로 두고 그룹 묶음만 제거합니다"
+              className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </>
       )}
     </div>
   )
-  if (variant === 'single') {
-    return <li className="list-none">{content}</li>
-  }
-  return content
 }
 
 function ItemRow({

@@ -136,6 +136,8 @@ export default function CompositeDetailPage() {
   // Snapshot existing → draft when the row loads or after a successful save.
   useEffect(() => {
     if (composite) {
+      // 보기 모드(2단 미리보기)는 저장된 값으로 복원 — 새로고침해도 유지.
+      setTwoColPreview(composite.two_col_view ?? false)
       setDraft({
         title: composite.title,
         kind: composite.kind,
@@ -183,6 +185,7 @@ export default function CompositeDetailPage() {
         kind: draft.kind,
         period_date: draft.kind === 'recurring' ? draft.period_date || null : null,
         description: draft.description ?? '',
+        two_col_view: twoColPreview,
         items: draft.items.map((it) => ({
           note: it.note,
           ref_report_id: it.ref_report_id,
@@ -322,6 +325,34 @@ export default function CompositeDetailPage() {
       i === idx ? { ...it, display_column: col } : it,
     )
     setDraft({ ...draft, items: next })
+  }
+  // 2단 미리보기 전용 드롭 — 다른 안건 위에 떨어뜨리면 그 안건의 열을
+  // 따라가도록 display_column 도 함께 바꾼다(같은 열이면 단순 reorder).
+  function reorderItemsToColumn(fromIdx, toIdx, targetCol) {
+    if (fromIdx == null) return
+    setDraft((d) => {
+      if (!d) return d
+      const next = [...d.items]
+      const [moved] = next.splice(fromIdx, 1)
+      const adjustedToIdx = fromIdx < toIdx ? toIdx - 1 : toIdx
+      next.splice(adjustedToIdx, 0, { ...moved, display_column: targetCol })
+      return { ...d, items: next }
+    })
+  }
+  // 2단 미리보기 전용 — 빈 열(또는 열의 빈 영역)에 떨어뜨리면 그 열로
+  // 옮기고 flat 배열 맨 뒤로 보내 그 열의 마지막에 표시되게 한다.
+  function handleDropToColumn(col) {
+    if (draggingIdx == null) return
+    const from = draggingIdx
+    setDraft((d) => {
+      if (!d) return d
+      const next = [...d.items]
+      const [moved] = next.splice(from, 1)
+      next.push({ ...moved, display_column: col })
+      return { ...d, items: next }
+    })
+    setDraggingIdx(null)
+    setDropOverIdx(null)
   }
   function setItemGroup(idx, groupName) {
     // 빈 문자열은 null 로 정규화 — backend 가 동일 의미 (그룹 없음) 로 처리.
@@ -713,10 +744,23 @@ export default function CompositeDetailPage() {
                   <Button
                     size="sm"
                     variant={twoColPreview ? 'secondary' : 'ghost'}
-                    onClick={() => {
+                    onClick={async () => {
                       const nextOn = !twoColPreview
                       setTwoColPreview(nextOn)
                       if (nextOn) setExpanded(new Set())
+                      // 보기 설정을 즉시 저장 — 편집/보기 어느 모드든 새로고침
+                      // 후 유지된다. two_col_view 만 보내므로 안건·제목 등
+                      // 다른 (미저장) 편집분은 건드리지 않는다. 저장이 실패해도
+                      // (예: 열람 전용 권한) 화면 미리보기는 그대로 둔다 —
+                      // 토글은 본래 "이렇게 보인다" 미리보기라 비편집자에게도
+                      // 유효하다(영속화만 편집 권한자에게 적용).
+                      try {
+                        await updateComposite(composite.id, {
+                          two_col_view: nextOn,
+                        })
+                      } catch {
+                        /* 미리보기 상태는 유지 */
+                      }
                     }}
                     title="1열 / 2열 배치를 좌·우 그리드로 미리 보기"
                   >
@@ -777,6 +821,8 @@ export default function CompositeDetailPage() {
               editing={isEditing}
               pendingGroups={pendingGroups}
               onRemoveGroup={removeGroup}
+              draggingIdx={draggingIdx}
+              onDropToColumn={handleDropToColumn}
             >
               {draft.items.map((it, idx) => (
                 <ItemRow
@@ -819,7 +865,18 @@ export default function CompositeDetailPage() {
                     }
                   }}
                   onDrop={() => {
-                    if (draggingIdx !== null) reorderItems(draggingIdx, idx)
+                    if (draggingIdx !== null) {
+                      if (twoColPreview) {
+                        // 2단 보기: 대상 안건의 열을 따라가도록 함께 이동.
+                        reorderItemsToColumn(
+                          draggingIdx,
+                          idx,
+                          it.display_column === 2 ? 2 : 1,
+                        )
+                      } else {
+                        reorderItems(draggingIdx, idx)
+                      }
+                    }
                     setDraggingIdx(null)
                     setDropOverIdx(null)
                   }}
@@ -1159,7 +1216,21 @@ function ItemsListContainer({
   editing,
   pendingGroups,
   onRemoveGroup,
+  draggingIdx,
+  onDropToColumn,
 }) {
+  // 2단 보기에서 열의 빈 영역에 드롭하면 그 열로 옮기는 핸들러. 안건 위에
+  // 직접 드롭한 경우는 ItemRow 가 stopPropagation 하므로 여기로 안 온다.
+  const colDropProps = (col) =>
+    editing && draggingIdx != null
+      ? {
+          onDragOver: (e) => e.preventDefault(),
+          onDrop: (e) => {
+            e.preventDefault()
+            onDropToColumn?.(col)
+          },
+        }
+      : {}
   // 그룹 헤더 시각화 — children 배열 안에서 group_name 이 직전과 다른
   // 지점마다 `[그룹명]` 헤더 행을 삽입. items[i] 와 children[i] 가
   // 1:1 매칭. children 한 묶음을 (header? + item-row) 시퀀스로 풀어 낸 뒤
@@ -1249,7 +1320,7 @@ function ItemsListContainer({
   const col2 = buildBucket(2)
   return (
     <div className="grid grid-cols-2 gap-x-3">
-      <div className="space-y-1 border-r pr-3">
+      <div className="space-y-1 border-r pr-3" {...colDropProps(1)}>
         <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium pb-1 border-b">
           1열
         </div>
@@ -1257,11 +1328,13 @@ function ItemsListContainer({
           col1
         ) : (
           <p className="text-[11px] text-muted-foreground italic py-3 text-center">
-            (비어 있음)
+            {editing && draggingIdx != null
+              ? '여기에 놓으면 1열로'
+              : '(비어 있음)'}
           </p>
         )}
       </div>
-      <div className="space-y-1">
+      <div className="space-y-1" {...colDropProps(2)}>
         <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium pb-1 border-b">
           2열
         </div>
@@ -1269,7 +1342,9 @@ function ItemsListContainer({
           col2
         ) : (
           <p className="text-[11px] text-muted-foreground italic py-3 text-center">
-            (비어 있음)
+            {editing && draggingIdx != null
+              ? '여기에 놓으면 2열로'
+              : '(비어 있음)'}
           </p>
         )}
       </div>
@@ -1364,6 +1439,9 @@ function ItemRow({
         editing
           ? (e) => {
               e.preventDefault()
+              // 안건 위에 직접 드롭한 경우 — 부모 컬럼의 drop zone 까지
+              // 버블되어 두 번 처리되지 않도록 차단.
+              e.stopPropagation()
               onDrop?.()
             }
           : undefined

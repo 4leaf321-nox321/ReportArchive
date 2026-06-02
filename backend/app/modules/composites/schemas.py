@@ -36,8 +36,8 @@ def _flatten_user_refs(obj: Any) -> Any:
         key: getattr(obj, key)
         for key in (
             "id", "workspace_slug", "title", "kind", "period_date",
-            "description", "owner_user_id", "updated_by_user_id",
-            "published_at", "published_by_user_id",
+            "description", "two_col_view", "owner_user_id",
+            "updated_by_user_id", "published_at", "published_by_user_id",
             "items", "created_at", "updated_at",
         )
         if hasattr(obj, key)
@@ -174,6 +174,8 @@ class CompositeReportRead(BaseModel):
     kind: CompositeKind
     period_date: Optional[date] = None
     description: str
+    # 화면 보기 모드 — True 면 "2단 미리보기"로 펼쳐 보여준다(저장됨).
+    two_col_view: bool = False
     owner_user_id: Optional[int] = None
     owner_name: Optional[str] = None
     owner_email: Optional[str] = None
@@ -300,6 +302,7 @@ class CompositeReportCreate(BaseModel):
     kind: CompositeKind
     period_date: Optional[date] = None
     description: str = ""
+    two_col_view: bool = False
     # Optional initial items — equivalent to creating then PATCHing.
     items: list[CompositeItemPayload] = []
 
@@ -309,6 +312,7 @@ class CompositeReportUpdate(BaseModel):
     kind: Optional[CompositeKind] = None
     period_date: Optional[date] = None
     description: Optional[str] = None
+    two_col_view: Optional[bool] = None
     # When set, replaces the entire items list (matching position order).
     # Omit to leave items untouched.
     items: Optional[list[CompositeItemPayload]] = None

@@ -20,6 +20,7 @@ import enum
 from datetime import date, datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -66,6 +67,13 @@ class CompositeReport(Base):
     # Anchored period for recurring composites; NULL for theme.
     period_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+    # 화면 보기 모드: 본문 전체를 좌·우 2열 그리드("2단 미리보기")로 펼칠지
+    # 여부. 항목별 `display_column`(DOCX 2단 출력용)과는 별개 — 이건 순수
+    # 화면 보기 상태라 새로고침해도 유지되도록 저장한다.
+    two_col_view: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
 
     # Optional series identifier — groups successive recurring composites
     # of the same (workspace, owner, kind) into a chain so the frontend

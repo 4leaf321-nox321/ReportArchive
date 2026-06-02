@@ -1584,7 +1584,21 @@ function ItemRow({
             </button>
           </div>
           <div className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
-            {ref?.workspace_slug && <span>{workspaceName(ref.workspace_slug)}</span>}
+            {/* 소속 — 보고서는 게시된 조직 게시판(부서)을 표기(하위 부서에서
+                끌어온 것 구분용). report.workspace_slug 는 작성자 personal
+                공간이라 의미가 없어 쓰지 않는다. 종합(sub-composite)은 자체
+                org 워크스페이스가 의미 있으므로 그대로 표시. */}
+            {isReport ? (
+              (ref?.mounted_org_names?.length ?? 0) > 0 ? (
+                <Badge variant="secondary" className="text-[10px] font-normal">
+                  {ref.mounted_org_names.join(' · ')}
+                </Badge>
+              ) : (
+                <span className="italic">미게시</span>
+              )
+            ) : (
+              ref?.workspace_slug && <span>{workspaceName(ref.workspace_slug)}</span>
+            )}
             {isReport && ref?.report_date && <span>· 기준 {ref.report_date}</span>}
             {!isReport && ref?.period_date && <span>· 기준 {ref.period_date}</span>}
             {ref?.owner_name && <span>· {ref.owner_name}</span>}

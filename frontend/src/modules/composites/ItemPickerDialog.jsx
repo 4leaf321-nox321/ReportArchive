@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Search } from 'lucide-react'
+import { Search, ChevronDown } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -13,6 +13,12 @@ import { Input } from '@/shared/components/ui/input'
 import { Badge } from '@/shared/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs'
 import { Skeleton } from '@/shared/components/ui/skeleton'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/shared/components/ui/popover'
+import { WorkspaceTreeSelect } from '@/shared/components/WorkspaceTreeSelect'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { listReports } from '@/modules/reports/api'
@@ -92,6 +98,31 @@ export function ItemPickerDialog({
         next.delete(key)
       } else if (item) {
         next.set(key, item)
+      }
+      return next
+    })
+  }
+
+  // 필터된 항목 일괄 선택/해제 — per-item toggle 은 selectedMeta 계산에
+  // 현재 selected 클로저를 쓰므로 루프에서 어긋난다. 한 번의 setState 로
+  // 원자적으로 처리한다. entries = [{ key, item }], select = true/false.
+  function bulkSelect(entries, select) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      for (const { key } of entries) {
+        if (select) next.add(key)
+        else next.delete(key)
+      }
+      return next
+    })
+    setSelectedMeta((prev) => {
+      const next = new Map(prev)
+      for (const { key, item } of entries) {
+        if (select) {
+          if (item) next.set(key, item)
+        } else {
+          next.delete(key)
+        }
       }
       return next
     })
@@ -179,6 +210,7 @@ export function ItemPickerDialog({
               selected={selected}
               existingKeys={existingKeys}
               onToggle={toggle}
+              onBulkSelect={bulkSelect}
             />
           </TabsContent>
           <TabsContent
@@ -192,6 +224,7 @@ export function ItemPickerDialog({
               selected={selected}
               existingKeys={existingKeys}
               onToggle={toggle}
+              onBulkSelect={bulkSelect}
               kindFilter="recurring"
             />
           </TabsContent>
@@ -208,6 +241,7 @@ export function ItemPickerDialog({
               selected={selected}
               existingKeys={existingKeys}
               onToggle={toggle}
+              onBulkSelect={bulkSelect}
               kindFilter="theme"
             />
           </TabsContent>
@@ -226,7 +260,12 @@ export function ItemPickerDialog({
   )
 }
 
-function ReportPickerList({ open, selected, existingKeys, onToggle }) {
+function ReportPickerList({ open, selected, existingKeys, onToggle, onBulkSelect }) {
+  const { all: workspaces } = useWorkspace()
+  const orgWorkspaces = useMemo(
+    () => (workspaces ?? []).filter((w) => w.kind === 'org' && !w.virtual),
+    [workspaces],
+  )
   const { data, loading, error } = useAsync(
     () => (open ? listReports() : Promise.resolve([])),
     [open],
@@ -234,9 +273,25 @@ function ReportPickerList({ open, selected, existingKeys, onToggle }) {
   const [query, setQuery] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
+  // 소속(게시 부서) 다중 필터 — 빈 Set = 전체. 트리에서 부서를 복수 선택하면
+  // 그 중 하나라도 게시된(OR) 보고서만 남긴다.
+  const [selectedDepts, setSelectedDepts] = useState(() => new Set())
+  function toggleDept(slug) {
+    setSelectedDepts((prev) => {
+      const next = new Set(prev)
+      if (next.has(slug)) next.delete(slug)
+      else next.add(slug)
+      return next
+    })
+  }
 
   const filtered = (data ?? [])
     .filter((r) => inDateRange(r.report_date, dateFrom, dateTo))
+    .filter((r) =>
+      selectedDepts.size === 0
+        ? true
+        : (r.mount_workspaces ?? []).some((m) => selectedDepts.has(m.slug)),
+    )
     .filter((r) => {
       if (!query.trim()) return true
       const q = query.toLowerCase()
@@ -268,7 +323,56 @@ function ReportPickerList({ open, selected, existingKeys, onToggle }) {
       isExisting={(r) => existingKeys.has(`r:${r.id}`)}
       isSelected={(r) => selected.has(`r:${r.id}`)}
       onToggle={onToggle}
+      onBulkSelect={onBulkSelect}
       placeholder="제목·작성자·게시판 검색"
+      extraFilter={
+        <div className="flex items-center gap-2 text-xs">
+          <span className="shrink-0 text-muted-foreground">소속:</span>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 min-w-0 flex-1 justify-between gap-1"
+              >
+                <span className="truncate">
+                  {selectedDepts.size === 0
+                    ? '전체 부서'
+                    : `${selectedDepts.size}개 부서 선택`}
+                </span>
+                <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-80 p-2">
+              <WorkspaceTreeSelect
+                orgWorkspaces={orgWorkspaces}
+                selected={selectedDepts}
+                onToggle={toggleDept}
+                autoExpandSlugs={[...selectedDepts]}
+                maxHeightClass="max-h-72"
+              />
+              {selectedDepts.size > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedDepts(new Set())}
+                  className="mt-1.5 w-full rounded py-1 text-center text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+                >
+                  전체 해제
+                </button>
+              )}
+            </PopoverContent>
+          </Popover>
+          {selectedDepts.size > 0 && (
+            <button
+              type="button"
+              onClick={() => setSelectedDepts(new Set())}
+              className="shrink-0 text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            >
+              지우기
+            </button>
+          )}
+        </div>
+      }
       renderMeta={(r) => {
         // Show the boards (mount workspaces) the report is published to.
         // Post-Phase-1 `r.workspace_slug` is the author's personal space
@@ -307,6 +411,7 @@ function CompositePickerList({
   selected,
   existingKeys,
   onToggle,
+  onBulkSelect,
   kindFilter, // 'recurring' | 'theme' | undefined (= 모두)
 }) {
   const { all: workspaces } = useWorkspace()
@@ -357,6 +462,7 @@ function CompositePickerList({
       isExisting={(c) => existingKeys.has(`c:${c.id}`)}
       isSelected={(c) => selected.has(`c:${c.id}`)}
       onToggle={onToggle}
+      onBulkSelect={onBulkSelect}
       placeholder="제목·작성자·부서 검색"
       renderMeta={(c) => (
         <div className="text-[11px] text-muted-foreground truncate flex items-center gap-1.5">
@@ -408,10 +514,19 @@ function PickerBody({
   isExisting,
   isSelected,
   onToggle,
+  onBulkSelect,
   placeholder,
   renderMeta,
+  extraFilter,
 }) {
   const dateFilterActive = Boolean(dateFrom || dateTo)
+  // 일괄 선택 대상 = 필터된 것 중 아직 종합에 없는 것. 전부 선택돼 있으면
+  // 버튼이 "전체 해제"로 바뀐다.
+  const selectable = items.filter((it) => !isExisting(it))
+  const allSelected =
+    selectable.length > 0 && selectable.every((it) => isSelected(it))
+  const bulkEntries = () =>
+    selectable.map((it) => ({ key: keyOf(it), item: it }))
   return (
     // h-full + flex column 으로 부모(TabsContent) 의 남은 height 를 모두
     // 채우고, 마지막 리스트 컨테이너가 flex-1 로 늘어나면서 그 안에서만
@@ -426,6 +541,7 @@ function PickerBody({
           className="pl-8"
         />
       </div>
+      {extraFilter}
       {showDateFilter && (
         <div className="space-y-1.5">
           <div className="flex items-center gap-2 flex-wrap text-xs">
@@ -486,6 +602,20 @@ function PickerBody({
           </div>
         </div>
       )}
+      <div className="flex items-center justify-between gap-2 px-0.5 text-[11px] text-muted-foreground">
+        <span>필터 결과 {items.length}건</span>
+        {onBulkSelect && selectable.length > 0 && (
+          <button
+            type="button"
+            onClick={() => onBulkSelect(bulkEntries(), !allSelected)}
+            className="rounded border px-2 py-0.5 font-medium text-foreground transition-colors hover:bg-muted"
+          >
+            {allSelected
+              ? `전체 해제 (${selectable.length})`
+              : `필터된 ${selectable.length}건 전체 선택`}
+          </button>
+        )}
+      </div>
       <div className="border rounded-md flex-1 min-h-0 overflow-y-auto divide-y">
         {items.length === 0 ? (
           <div className="p-6 text-center text-sm text-muted-foreground">

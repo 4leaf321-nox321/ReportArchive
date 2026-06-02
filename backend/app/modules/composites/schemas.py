@@ -62,6 +62,11 @@ class ItemRefReport(BaseModel):
     owner_user_id: Optional[int] = None
     owner_name: Optional[str] = None
     updated_at: Optional[datetime] = None
+    # 보고서가 게시된 조직 게시판(부서) 이름들 — 종합보고에 하위 부서 보고서를
+    # 끌어다 붙일 수 있어 "소속" 구분에 쓴다. report.workspace_slug 는 작성자
+    # personal 공간이라 의미가 없고, 실제 소속은 ReportMount 의 org 워크스페이스.
+    # 여러 게시판에 게시됐으면 모두. 미게시면 빈 리스트.
+    mounted_org_names: list[str] = []
 
     @model_validator(mode="before")
     @classmethod
@@ -80,6 +85,14 @@ class ItemRefReport(BaseModel):
         owner = getattr(obj, "owner", None)
         if owner is not None:
             out["owner_name"] = owner.name
+        # 게시된 조직 게시판 이름 (mounts 는 Report 모델에서 selectin eager,
+        # ReportMount.workspace 는 joined — 추가 쿼리 없음).
+        out["mounted_org_names"] = [
+            m.workspace.name
+            for m in (getattr(obj, "mounts", None) or [])
+            if getattr(m, "workspace", None) is not None
+            and not str(getattr(m, "workspace_slug", "")).startswith("personal-")
+        ]
         return out
 
 

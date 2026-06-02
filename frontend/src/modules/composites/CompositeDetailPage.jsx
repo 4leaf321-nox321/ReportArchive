@@ -1491,6 +1491,10 @@ function ItemRow({
 }) {
   const isReport = Boolean(item.ref_report_id)
   const ref = isReport ? item._display?.ref_report : item._display?.ref_composite
+  // 게시 부서 이름 — 서버 projection 은 mounted_org_names(문자열 배열), picker
+  // 로 막 추가한 _display 는 mount_workspaces(객체 배열)라 둘 다 받아준다.
+  const mountNames =
+    ref?.mounted_org_names ?? (ref?.mount_workspaces ?? []).map((m) => m.name)
   return (
     <li
       // Whole row is draggable while editing. Buttons/inputs inside
@@ -1659,18 +1663,39 @@ function ItemRow({
             </button>
           </div>
           <div className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
-            {/* 소속 — 보고서는 게시된 조직 게시판(부서)을 표기(하위 부서에서
-                끌어온 것 구분용). report.workspace_slug 는 작성자 personal
-                공간이라 의미가 없어 쓰지 않는다. 종합(sub-composite)은 자체
-                org 워크스페이스가 의미 있으므로 그대로 표시. */}
+            {/* 소속 — 보고서는 (1순위) 작성자 소속 부서를 뱃지로, (보조)
+                게시 부서는 첫 1개 + "외 N" 으로 축약해 표기한다. 여러 곳에
+                게시해도 작성자 부서는 하나라 뱃지가 우르르 나오지 않는다.
+                report.workspace_slug(작성자 personal)는 쓰지 않는다. 종합
+                (sub-composite)은 자체 org 워크스페이스가 의미 있어 그대로. */}
             {isReport ? (
-              (ref?.mounted_org_names?.length ?? 0) > 0 ? (
-                <Badge variant="secondary" className="text-[10px] font-normal">
-                  {ref.mounted_org_names.join(' · ')}
-                </Badge>
-              ) : (
-                <span className="italic">미게시</span>
-              )
+              <>
+                {ref?.owner_dept_slug && (
+                  <Badge variant="secondary" className="text-[10px] font-normal">
+                    {workspaceName(ref.owner_dept_slug)}
+                  </Badge>
+                )}
+                {mountNames.length > 0 ? (
+                  <span
+                    className={
+                      'text-muted-foreground/70' +
+                      (mountNames.length > 1
+                        ? ' cursor-help underline decoration-dotted underline-offset-2'
+                        : '')
+                    }
+                    title={
+                      mountNames.length > 1
+                        ? `게시 부서 (${mountNames.length}):\n${mountNames.join('\n')}`
+                        : `게시: ${mountNames[0]}`
+                    }
+                  >
+                    게시 {mountNames[0]}
+                    {mountNames.length > 1 ? ` 외 ${mountNames.length - 1}` : ''}
+                  </span>
+                ) : (
+                  !ref?.owner_dept_slug && <span className="italic">미게시</span>
+                )}
+              </>
             ) : (
               ref?.workspace_slug && <span>{workspaceName(ref.workspace_slug)}</span>
             )}

@@ -430,6 +430,23 @@ class ReportCreate(BaseModel):
     entity_ids: Optional[list[int]] = None
 
 
+class ReportCopy(BaseModel):
+    """Duplicate an existing report into the caller's personal space.
+
+    `mode` decides how much travels with the copy:
+      * ``content`` — 본문(pages/내용/레이아웃) + 표시 설정(폭·간격·슬라이드
+        가이드·머리기호)만. 부가 정보는 떼고 깔끔한 사본.
+      * ``full`` — 위 + 메타데이터: 태그, 보고서 종류, 엔티티 태그,
+        lifecycle, 그리고 원본이 *나가는* 방향으로 건 연결(report_links).
+    어느 모드든 게시·댓글·이력 등 인스턴스 고유 데이터는 따라오지 않는다
+    (사본은 새 개인 초안). 작성일은 항상 오늘.
+    """
+
+    title: str = Field(..., min_length=1, max_length=255)
+    folder_id: Optional[int] = None
+    mode: Literal["content", "full"] = "full"
+
+
 class ReportUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=255)
     # Direct phase set is allowed but expected to be rare — most phase

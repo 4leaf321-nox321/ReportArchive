@@ -85,12 +85,12 @@ import { listEntityTypes } from '@/shared/api/entities'
 import {
   getReport,
   createReport,
+  copyReport,
   updateReport,
   deleteReport,
   publishReport,
   unpublishReport,
   setAuthorLock,
-  moveReportToFolder,
   listReports,
   LockConflictError,
 } from './api'
@@ -2105,67 +2105,28 @@ export default function ReportDetailPage() {
    *  Status drops back to 'draft' since a copy represents fresh work.
    *  After creation we navigate to the new report's URL with `startEditing`
    *  in router state so it lands directly in the edit screen. */
-  async function onCopy(newTitle, folderId) {
-    if (!draft) return
-    const first = draft.pages[0]
+  async function onCopy(newTitle, folderId, mode) {
+    // Copy works off the *saved* report (server duplicates by id, including
+    // its relations like 연결된 보고서 — which only exist server-side). The
+    // backend decides exactly what travels per `mode`.
+    if (!existingReport?.id) return
     try {
-      const created = await createReport({
-        template_id: first.template_id,
-        template_version: first.template_version,
+      const created = await copyReport(existingReport.id, {
         title: newTitle,
-        report_date: todayIsoDate(),
-        status: 'draft',
-        tags: draft.tags ?? [],
-        pages: draft.pages,
-        // Carry the source report's width preference into the copy so the
-        // user sees the same layout immediately.
-        page_width_px: Number.isFinite(draft.page_width_px) ? draft.page_width_px : null,
-        page_gap_px: Number.isFinite(draft.page_gap_px) ? draft.page_gap_px : null,
-        page_blend_blocks: draft.page_blend_blocks === true,
-        // 슬라이드 가이드 설정도 복사. 원본의 보기 옵션을 그대로 들고
-        // 가는 게 사용자의 통상 기대치.
-        page_slide_guide: draft.page_slide_guide === true,
-        page_slide_ratio: draft.page_slide_ratio ?? null,
-        page_slide_ratio_custom_w:
-          draft.page_slide_ratio === 'custom'
-            ? draft.page_slide_ratio_custom_w ?? null
-            : null,
-        page_slide_ratio_custom_h:
-          draft.page_slide_ratio === 'custom'
-            ? draft.page_slide_ratio_custom_h ?? null
-            : null,
-        page_rich_text_prefix_d0: normalizeRichTextPrefix(draft.page_rich_text_prefix_d0),
-        page_rich_text_prefix_d1: normalizeRichTextPrefix(draft.page_rich_text_prefix_d1),
-        page_rich_text_prefix_d2: normalizeRichTextPrefix(draft.page_rich_text_prefix_d2),
-        // The 종류 tag follows the copy too — same reasoning as width.
-        report_type_id: draft.report_type_id ?? null,
-        // Entity tags follow the copy as well — the new report inherits
-        // the same model/part/BOM/단계/etc. tagging the user already
-        // confirmed on the source. Cleared/edited in 보고서 설정.
-        entity_ids: (draft.entities ?? []).map((e) => e.id),
+        folder_id: folderId ?? null,
+        mode,
       })
-      // 사용자가 폴더를 골랐다면 새 보고서를 그 폴더로 이동. createReport
-      // 페이로드 자체가 folder_id 를 안 받으므로 (current ReportCreate
-      // 스키마) 후속 PUT 으로 분리. 실패해도 복사 자체는 성공한 상태라
-      // 토스트만 띄우고 이동 — 사용자가 수동으로 옮길 수 있음.
-      if (folderId != null) {
-        try {
-          await moveReportToFolder(created.id, folderId)
-        } catch (moveErr) {
-          toast.warning('복사는 됐지만 폴더 이동 실패 — 미분류에 남음', {
-            description: moveErr?.message,
-          })
-        }
-      }
-      toast.success('보고서가 복사되었습니다.')
+      toast.success(
+        mode === 'full'
+          ? '보고서가 복사되었습니다 (메타데이터·연결 포함).'
+          : '보고서가 복사되었습니다 (본문만).',
+      )
       setCopyOpen(false)
-      // Bypass the dirty guard — copy was an explicit "leave for the
-      // new clone" action. The source draft (which may be dirty) is
-      // intentionally abandoned here; the destination is the copy.
+      // Bypass the dirty guard — copy is an explicit "leave for the new
+      // clone" action. The source draft is intentionally left as-is.
       isEditingRef.current = false
-      // Same reason as the create-from-template path above — copy lands
-      // in the creator's personal workspace, so navigate using the
-      // server-returned slug rather than the page's current `slug`.
+      // Copy lands in the creator's personal workspace, so navigate using
+      // the server-returned slug rather than the page's current `slug`.
       navigate(`/w/${created.workspace_slug}/reports/${created.id}`, {
         state: { startEditing: true },
       })
@@ -4093,6 +4054,7 @@ function ReportCopyDialog({ open, onOpenChange, sourceTitle, onConfirm }) {
   const [submitting, setSubmitting] = useState(false)
   const [folderId, setFolderId] = useState(null) // null = 미분류
   const [folders, setFolders] = useState(null) // null = 로딩 중
+  const [mode, setMode] = useState('full') // 'full' | 'content'
 
   useEffect(() => {
     if (open) {
@@ -4101,6 +4063,7 @@ function ReportCopyDialog({ open, onOpenChange, sourceTitle, onConfirm }) {
       setSubmitting(false)
       setFolderId(null)
       setFolders(null)
+      setMode('full')
       let cancelled = false
       listFolders()
         .then(({ items }) => {
@@ -4142,7 +4105,7 @@ function ReportCopyDialog({ open, onOpenChange, sourceTitle, onConfirm }) {
     if (!trimmed) return
     setSubmitting(true)
     try {
-      await onConfirm(trimmed, folderId)
+      await onConfirm(trimmed, folderId, mode)
     } catch {
       // onConfirm surfaces its own toast on failure; keep the dialog
       // open so the user can retry with the same title.
@@ -4170,9 +4133,54 @@ function ReportCopyDialog({ open, onOpenChange, sourceTitle, onConfirm }) {
               required
             />
             <p className="text-[11px] text-muted-foreground">
-              본문·레이아웃은 그대로 복사되며, 작성인은 현재 사용자, 작성일과
-              보고 기준일은 오늘로 설정됩니다.
+              작성인은 현재 사용자, 작성일·보고 기준일은 오늘로 설정됩니다.
+              게시·댓글·이력은 복사되지 않습니다.
             </p>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">복사 범위</label>
+            <div className="grid gap-1.5">
+              {[
+                {
+                  value: 'full',
+                  title: '메타데이터 포함 전체 복사',
+                  desc: '본문 + 태그·종류·엔티티·연결된 보고서까지 함께',
+                },
+                {
+                  value: 'content',
+                  title: '메인 내용만 복사',
+                  desc: '본문·레이아웃·표시 설정만 (부가 정보 제외)',
+                },
+              ].map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setMode(opt.value)}
+                  className={
+                    'flex items-start gap-2 rounded-md border px-3 py-2 text-left transition-colors ' +
+                    (mode === opt.value
+                      ? 'border-primary bg-primary/5'
+                      : 'border-border hover:bg-muted/50')
+                  }
+                >
+                  <span
+                    className={
+                      'mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full border ' +
+                      (mode === opt.value
+                        ? 'border-primary bg-primary'
+                        : 'border-muted-foreground/40')
+                    }
+                    aria-hidden
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium">{opt.title}</span>
+                    <span className="block text-[11px] text-muted-foreground">
+                      {opt.desc}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
           </div>
           <div className="space-y-1.5">
             <label className="text-sm font-medium">

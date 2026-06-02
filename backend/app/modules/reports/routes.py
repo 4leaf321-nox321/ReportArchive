@@ -9,6 +9,7 @@ from app.modules.reports import services
 from app.modules.reports.schemas import (
     LinkGraphResponse,
     LockInfo,
+    ReportCopy,
     ReportCreate,
     ReportLinkCreate,
     ReportLinkKindRead,
@@ -290,6 +291,40 @@ def create_report(
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return created_response(data=_read_with_perms(db, actor, report))
+
+
+@router.post("/{report_id}/copy")
+def copy_report(
+    report_id: int,
+    payload: ReportCopy,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_writer),
+):
+    """Duplicate a report the caller can read into their personal space.
+
+    The copy is born in `personal-{user}` like any new report (게시는 이후
+    별도 액션). `mode` controls how much metadata/relations travel — see
+    ReportCopy / services.copy_report.
+    """
+    source = services.get_report(db, report_id)
+    if not source:
+        return not_found_response(f"Report not found: {report_id}")
+    if not services.can_read_report(db, actor, source):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+    target_workspace = f"personal-{actor.user.id}"
+    try:
+        new_report = services.copy_report(
+            db,
+            report_id,
+            target_workspace=target_workspace,
+            title=payload.title,
+            folder_id=payload.folder_id,
+            mode=payload.mode,
+            owner_user_id=actor.user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return created_response(data=_read_with_perms(db, actor, new_report))
 
 
 @router.put("/{report_id}/author-lock")

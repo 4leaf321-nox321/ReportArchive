@@ -120,8 +120,9 @@ def list_reports_in_workspace(
         reports the user authored / hasn't yet promoted). The personal
         space has no tree, so there's nothing to descend into.
       * **org** (`kind='org'`) — visibility via mount. Returns reports
-        that have a `ReportMount` row pointing at this workspace OR
-        any descendant org workspace (the team-under-본부 case).
+        mounted to *this* workspace's own board only. Descendant
+        (sub-team) mounts are NOT rolled up — each org board shows only
+        the posts that belong to it.
       * **virtual** (`is_global_view=True`) — bypasses scoping entirely
         for cross-workspace admin views (the `_global` aggregate).
 
@@ -143,13 +144,12 @@ def list_reports_in_workspace(
         if ws is not None and ws.kind == WorkspaceKind.personal:
             query = query.where(Report.workspace_slug == workspace_slug)
         else:
-            # Org workspace: pull mounted reports across the descendant
-            # tree. The JOIN lets a report mounted to a child team show
-            # up on the parent 본부's listing.
-            scope = ws_services.get_descendants_inclusive(db, workspace_slug)
+            # Org workspace: show only reports mounted to THIS workspace's
+            # own board. We intentionally do NOT roll up descendant
+            # (sub-team) mounts — each org board shows only its own posts.
             query = (
                 query.join(ReportMount, ReportMount.report_id == Report.id)
-                .where(ReportMount.workspace_slug.in_(scope))
+                .where(ReportMount.workspace_slug == workspace_slug)
                 .distinct()
             )
     # Folder filter — branches by scope. Personal: filter on
@@ -576,6 +576,108 @@ def create_report(
         db.commit()
         db.refresh(report)
     return report
+
+
+def copy_report(
+    db: Session,
+    source_report_id: int,
+    *,
+    target_workspace: str,
+    title: str,
+    folder_id: Optional[int],
+    mode: str,
+    owner_user_id: int,
+) -> Report:
+    """Duplicate `source_report_id` into `target_workspace` (the caller's
+    personal space). Centralizes *what* gets copied so new columns/relations
+    don't get silently dropped by a hand-assembled client payload.
+
+    mode == "content": pages + display settings only.
+    mode == "full":    + tags, report_type, entity tags, lifecycle, and the
+                       source's *outgoing* report_links (R→X ⇒ R'→X).
+
+    Never copies instance-bound data (mounts, comments, activities, owner
+    locks, phase). report_date defaults to today (left unset). Files in the
+    content are referenced by the same id — not deep-copied.
+    """
+    source = db.get(Report, source_report_id)
+    if source is None:
+        raise ValueError(f"원본 보고서를 찾을 수 없습니다: {source_report_id}")
+    full = mode == "full"
+
+    # Validate the destination folder up front (belongs to the new owner) so
+    # we don't create the copy and then fail to place it.
+    if folder_id is not None:
+        folder = db.get(Folder, folder_id)
+        if folder is None or folder.user_id != owner_user_id:
+            raise ValueError(f"폴더를 찾을 수 없거나 권한이 없습니다: {folder_id}")
+
+    # Build a ReportCreate from the source. Display settings ride along in
+    # both modes (a copy should *look* the same); metadata only in `full`.
+    payload = ReportCreate(
+        template_id=source.template_id,
+        template_version=source.template_version,
+        title=title,
+        # report_date omitted → today's CURRENT_DATE default.
+        pages=list(source.pages) if source.pages else None,
+        content=source.content or {},
+        layout_overrides=source.layout_overrides,
+        props_overrides=source.props_overrides,
+        page_width_px=source.page_width_px,
+        page_gap_px=source.page_gap_px,
+        page_blend_blocks=source.page_blend_blocks,
+        page_slide_guide=source.page_slide_guide,
+        page_slide_ratio=source.page_slide_ratio,
+        page_slide_ratio_custom_w=source.page_slide_ratio_custom_w,
+        page_slide_ratio_custom_h=source.page_slide_ratio_custom_h,
+        page_rich_text_prefix_d0=source.page_rich_text_prefix_d0,
+        page_rich_text_prefix_d1=source.page_rich_text_prefix_d1,
+        page_rich_text_prefix_d2=source.page_rich_text_prefix_d2,
+        tags=list(source.tags or []) if full else [],
+        report_type_id=source.report_type_id if full else None,
+        lifecycle=source.lifecycle if full else None,
+        entity_ids=[e.id for e in source.entities] if full else None,
+    )
+    new_report = create_report(
+        db, target_workspace, payload, owner_user_id=owner_user_id
+    )
+
+    changed = False
+    if folder_id is not None:
+        new_report.folder_id = folder_id
+        changed = True
+
+    if full:
+        # Copy only OUTGOING links (the relationships the source itself
+        # declared). Incoming links belong to other reports and aren't
+        # touched. Targets are guaranteed to exist (link rows cascade-delete
+        # with their target), so a direct insert is safe — and the (from,
+        # to, kind) unique constraint can't collide on a brand-new report.
+        outgoing = (
+            db.execute(
+                select(ReportLink).where(
+                    ReportLink.from_report_id == source.id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for link in outgoing:
+            db.add(
+                ReportLink(
+                    from_report_id=new_report.id,
+                    to_report_id=link.to_report_id,
+                    kind=link.kind,
+                    note=link.note,
+                    created_by_user_id=owner_user_id,
+                )
+            )
+            changed = True
+
+    if changed:
+        db.commit()
+        db.refresh(new_report)
+    return new_report
 
 
 # --------------------------------------------------------------------------- #
@@ -1200,7 +1302,8 @@ def _scoped_report_ids(
 ) -> Optional[set[int]]:
     """워크스페이스에서 보이는 보고서 id 집합. None = 스코핑 없음(virtual
     글로벌 뷰). list_reports_in_workspace 의 가시성 분기와 동일한 규칙을
-    id 만 가볍게 뽑아 재현한다 (personal: 직접 소유, org: descendant mount)."""
+    id 만 가볍게 뽑아 재현한다 (personal: 직접 소유, org: 자기 게시판 mount —
+    하위 워크스페이스 롤업 없음)."""
     if is_global_view:
         return None
     ws = db.get(Workspace, workspace_slug)
@@ -1210,11 +1313,10 @@ def _scoped_report_ids(
                 select(Report.id).where(Report.workspace_slug == workspace_slug)
             ).scalars()
         )
-    scope = ws_services.get_descendants_inclusive(db, workspace_slug)
     return set(
         db.execute(
             select(ReportMount.report_id).where(
-                ReportMount.workspace_slug.in_(scope)
+                ReportMount.workspace_slug == workspace_slug
             )
         ).scalars()
     )

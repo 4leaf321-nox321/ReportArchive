@@ -63,6 +63,18 @@ export async function createReport(payload) {
   return extractData(res)
 }
 
+/** Duplicate an existing report into the caller's personal space.
+ *  `mode`: 'content' (본문+표시설정만) | 'full' (메타·연결까지). The server
+ *  decides exactly what travels — see backend ReportCopy / copy_report. */
+export async function copyReport(sourceId, { title, folder_id = null, mode = 'full' }) {
+  const res = await apiClient.post(`${BASE}/${sourceId}/copy`, {
+    title,
+    folder_id,
+    mode,
+  })
+  return extractData(res)
+}
+
 export async function updateReport(id, payload) {
   try {
     const res = await apiClient.patch(`${BASE}/${id}`, payload)

@@ -163,6 +163,11 @@ export function ContourEditor({ props, content, onChange, readOnly, autoFit }) {
     }
     return rowsToMatrix(xyzRows)
   }, [mode, xLabels, yLabels, matrix, xyzRows])
+  // Mirror ContourCanvas's per-axis coordinate decision so the editor hint
+  // can show whether each axis is currently drawn to scale (all-numeric,
+  // strictly-monotonic labels) or evenly spaced.
+  const xIsProportional = !!numericAxisCoords(rendered.xLabels)
+  const yIsProportional = !!numericAxisCoords(rendered.yLabels)
   const colorscale = content?.colorscale ?? 'Viridis'
   const reverseScale = content?.reverse_scale ?? false
   const xAxisTitle = content?.x_axis_title ?? props?.x_axis_title ?? ''
@@ -177,6 +182,10 @@ export function ContourEditor({ props, content, onChange, readOnly, autoFit }) {
   // ragged null-checkerboard rarely matches that intent. Authors can
   // turn it off when the gaps are meaningful.
   const connectGaps = content?.connect_gaps ?? true
+  // True when the preview canvas had to swap coloring:'fill' → 'heatmap'
+  // because Plotly's fill-path joiner crashed on this field. Surfaced as a
+  // note in the controls below (edit mode only) — never drawn over the graph.
+  const [coloringFallback, setColoringFallback] = useState(false)
   const zMin = content?.z_min
   const zMax = content?.z_max
 
@@ -533,6 +542,14 @@ export function ContourEditor({ props, content, onChange, readOnly, autoFit }) {
             ))}
           </select>
         </div>
+        {coloringFallback && (
+          <span
+            className="text-[11px] text-amber-600"
+            title="이 데이터는 ‘채우기 + 등고선’으로 그릴 때 Plotly가 불안정해, 미리보기를 연속 색상(히트맵)으로 대신 표시했습니다. 저장된 설정은 그대로입니다."
+          >
+            ⚠ ‘채우기’가 불안정해 미리보기를 연속 색상으로 표시했어요
+          </span>
+        )}
         <label className="flex items-center gap-1 cursor-pointer">
           <input
             type="checkbox"
@@ -586,6 +603,7 @@ export function ContourEditor({ props, content, onChange, readOnly, autoFit }) {
             showLines={showLines}
             showLabels={showLabels}
             autoFit={false}
+            onColoringFallback={setColoringFallback}
           />
         </div>
 
@@ -637,6 +655,17 @@ export function ContourEditor({ props, content, onChange, readOnly, autoFit }) {
               />
             )}
           </div>
+          {mode === 'matrix' && (
+            <p className="text-[10px] text-muted-foreground mb-1 leading-snug">
+              💡 X·Y 라벨을 모두 숫자로(증가 또는 감소 순서) 입력하면 그 축이 실제
+              값에 비례해 그려집니다. 문자가 섞이거나 순서가 뒤죽박죽이면 균등 간격으로
+              표시돼요.{' '}
+              <span className="text-foreground/70">
+                현재: X {xIsProportional ? '비례 축' : '균등 간격'} · Y{' '}
+                {yIsProportional ? '비례 축' : '균등 간격'}
+              </span>
+            </p>
+          )}
           {mode === 'rows' ? (
             <XyzRowsTable
               rows={xyzRows}
@@ -879,6 +908,7 @@ function ContourCanvas({
   showLabels = false,
   connectGaps = true,
   autoFit = true,
+  onColoringFallback,
 }) {
   const containerRef = useRef(null)
   const [size, setSize] = useState(null)
@@ -910,17 +940,26 @@ function ContourCanvas({
     }
   }, [autoFit])
 
-  // Plotly's contour algorithm crashes on a flat surface — either
-  // every cell identical (no gradient → makeCrossings blows up on
-  // undefined neighbor) or no finite cells at all. We detect that
-  // here and feed an empty data array to Plotly instead so the user
-  // sees the axes but no curves until they put real data in.
-  const flatOrEmpty = useMemo(() => {
+  // Plotly's contour fill (makeFills → joinAllPaths) crashes on inputs it
+  // can't iso-line, and the exception bubbles all the way to the page
+  // ErrorBoundary. Three degenerate shapes trigger it, so we detect them
+  // here and feed Plotly an empty data array instead (axes shown, no
+  // curves) until the user supplies a real field:
+  //   1. a flat surface — every finite cell identical (no gradient), or
+  //      no finite cells at all, or
+  //   2. a grid smaller than 2×2 — a single row/column has no neighbor to
+  //      interpolate across (e.g. rows-mode data whose samples all share
+  //      one x or one y, so rowsToMatrix pivots to a 1×N matrix).
+  const degenerate = useMemo(() => {
+    const rows = Array.isArray(matrix) ? matrix : []
+    if (rows.length < 2) return true
+    let width = 0
     let first = null
     let allSame = true
     let anyFinite = false
-    for (const row of matrix) {
+    for (const row of rows) {
       if (!Array.isArray(row)) continue
+      if (row.length > width) width = row.length
       for (const v of row) {
         if (Number.isFinite(v)) {
           anyFinite = true
@@ -929,17 +968,43 @@ function ContourCanvas({
         }
       }
     }
+    if (width < 2) return true
     return !anyFinite || allSame
   }, [matrix])
+
+  // Defense in depth: even past the `degenerate` guard, some grids still
+  // trip Plotly's discrete fill-path joiner (makeFills → joinAllPaths) —
+  // e.g. a plateau (repeated value) that lands exactly on an auto-chosen
+  // contour level. That joiner only runs for coloring:'fill', so we first
+  // retry with continuous 'heatmap' coloring (drawn without it; the
+  // iso-lines are still painted by makeLinesAndLabels). We report that
+  // silent swap up via `onColoringFallback` so the *editor* can surface a
+  // note (never drawn over the graph itself); `renderFailed` means even
+  // the fallback threw, so we show the placeholder hint instead of letting
+  // the exception blank the whole report.
+  const [renderFailed, setRenderFailed] = useState(false)
 
   useEffect(() => {
     const el = containerRef.current
     if (!el || !size) return undefined
     if (resizing) return undefined
-    const trace = {
+    // Resolve each axis's coordinates from its labels. An all-numeric,
+    // strictly-monotonic axis is drawn to scale (proportional spacing);
+    // anything else (text, or text mixed with numbers) falls back to evenly-
+    // spaced integer indices with the labels shown as tick text. We never
+    // hand Plotly a raw mixed label array: it types such an axis 'category'
+    // but then places the numeric entries at their numeric value while text
+    // entries sit at sequential indices, so the two coordinate systems
+    // disagree (0,1,2,4,5 vs 0,1,2,3,4) and that warps the marching-squares
+    // grid enough to crash the contour fill joiner (joinAllPaths).
+    const xNumeric = numericAxisCoords(xLabels)
+    const yNumeric = numericAxisCoords(yLabels)
+    const xCoords = xNumeric ?? xLabels.map((_, i) => i)
+    const yCoords = yNumeric ?? yLabels.map((_, i) => i)
+    const traceFor = (coloringValue) => ({
       type: 'contour',
-      x: xLabels,
-      y: yLabels,
+      x: xCoords,
+      y: yCoords,
       z: matrix,
       colorscale,
       reversescale: !!reverseScale,
@@ -947,7 +1012,7 @@ function ContourCanvas({
       zmax: Number.isFinite(zMax) ? zMax : undefined,
       ncontours,
       contours: {
-        coloring,
+        coloring: coloringValue,
         showlines: !!showLines,
         showlabels: !!showLabels,
         ...(showLabels ? { labelfont: { size: 10 } } : {}),
@@ -961,7 +1026,7 @@ function ContourCanvas({
       // would force the author to know about this knob; on-by-default
       // matches the "show the response surface" intent.
       connectgaps: !!connectGaps,
-    }
+    })
     const layout = {
       autosize: true,
       margin: { l: 60, r: 24, t: 8, b: 40 },
@@ -971,6 +1036,12 @@ function ContourCanvas({
         title: xAxisTitle ? { text: xAxisTitle, font: { size: 12 } } : undefined,
         side: 'bottom',
         tickfont: { size: 11 },
+        // Numeric axis → let Plotly draw a natural number line (the coords
+        // already carry the values). Index fallback → pin the human labels
+        // to each gridline via tick text (see coord note above).
+        ...(xNumeric
+          ? {}
+          : { tickmode: 'array', tickvals: xCoords, ticktext: xLabels }),
       },
       yaxis: {
         title: yAxisTitle ? { text: yAxisTitle, font: { size: 12 } } : undefined,
@@ -979,6 +1050,9 @@ function ContourCanvas({
         // naturally with table-orientation; contour reads more naturally
         // as a math plot.
         tickfont: { size: 11 },
+        ...(yNumeric
+          ? {}
+          : { tickmode: 'array', tickvals: yCoords, ticktext: yLabels }),
       },
     }
     const config = {
@@ -986,7 +1060,49 @@ function ContourCanvas({
       displaylogo: false,
       modeBarButtonsToRemove: ['sendDataToCloud'],
     }
-    Plotly.react(el, flatOrEmpty ? [] : [trace], layout, config)
+    if (degenerate) {
+      Plotly.react(el, [], layout, config)
+      setRenderFailed(false)
+      onColoringFallback?.(false)
+      return undefined
+    }
+    try {
+      Plotly.react(el, [traceFor(coloring)], layout, config)
+      setRenderFailed(false)
+      onColoringFallback?.(false)
+    } catch (err) {
+      // The discrete fill-path joiner threw (see `onColoringFallback` note).
+      // It only runs for coloring:'fill', so retry once with continuous
+      // 'heatmap' coloring — same field + iso-lines, minus the crashing
+      // code path. Purge first so the half-built plot doesn't leak.
+      try {
+        Plotly.purge(el)
+      } catch {
+        /* noop */
+      }
+      if (coloring === 'fill') {
+        try {
+          Plotly.react(el, [traceFor('heatmap')], layout, config)
+          setRenderFailed(false)
+          onColoringFallback?.(true)
+          return undefined
+        } catch {
+          try {
+            Plotly.purge(el)
+          } catch {
+            /* noop */
+          }
+        }
+      }
+      // Either the author already picked a non-fill coloring, or even the
+      // heatmap fallback threw — give up and show the hint rather than let
+      // the exception reach the page-level ErrorBoundary (which blanks the
+      // whole report).
+      // eslint-disable-next-line no-console
+      console.error('[Contour] Plotly.react failed; rendering empty', err)
+      setRenderFailed(true)
+      onColoringFallback?.(false)
+    }
     return undefined
   }, [
     xLabels,
@@ -1005,7 +1121,8 @@ function ContourCanvas({
     connectGaps,
     size,
     resizing,
-    flatOrEmpty,
+    degenerate,
+    onColoringFallback,
   ])
 
   useEffect(() => {
@@ -1036,13 +1153,14 @@ function ContourCanvas({
       ) : (
         <>
           <div ref={containerRef} className="absolute inset-0" />
-          {flatOrEmpty && (
+          {(degenerate || renderFailed) && (
             <div className="absolute inset-0 z-10 flex items-center justify-center text-center text-[11px] text-muted-foreground bg-background/50 pointer-events-none">
               <div>
-                등고선을 그리려면 셀에 변화 있는 값을 입력하세요
+                등고선을 그리려면 2×2 이상 그리드에 변화 있는 값을 입력하세요
                 <br />
                 <span className="text-[10px]">
-                  (모든 셀 값이 같거나 비어 있으면 표시할 등고선이 없음)
+                  (행/열이 하나뿐이거나, 모든 셀 값이 같거나 비어 있으면 표시할
+                  등고선이 없음)
                 </span>
               </div>
             </div>
@@ -1072,6 +1190,37 @@ function coerceNumOrNull(raw) {
   if (s === '') return null
   const n = Number(s)
   return Number.isFinite(n) ? n : null
+}
+
+/** Decide how an axis's labels map to Plotly coordinates.
+ *
+ * When EVERY label parses as a finite number AND the values are strictly
+ * monotonic (increasing or decreasing — which also guarantees they're
+ * unique and ordered the way contour's marching grid requires), we return
+ * those numbers so the axis is drawn *to scale*: a [10, 20, 50, 100] axis
+ * spaces its gridlines proportionally, like a real measurement axis.
+ *
+ * Otherwise we return null and the caller falls back to evenly-spaced
+ * integer index coordinates (0,1,2,…) with the labels shown as tick text.
+ * Mixed text+number axes deliberately fall back — that combination is the
+ * one that warps Plotly's category coordinates and crashes the contour
+ * fill joiner, so it must never reach the trace as-is. Non-monotonic
+ * numbers also fall back (Plotly contour can't grid an unsorted axis).
+ */
+function numericAxisCoords(labels) {
+  if (!Array.isArray(labels) || labels.length < 2) return null
+  const nums = labels.map((l) => {
+    const s = String(l ?? '').trim()
+    return s === '' ? NaN : Number(s)
+  })
+  if (nums.some((n) => !Number.isFinite(n))) return null
+  let inc = true
+  let dec = true
+  for (let i = 1; i < nums.length; i += 1) {
+    if (nums[i] <= nums[i - 1]) inc = false
+    if (nums[i] >= nums[i - 1]) dec = false
+  }
+  return inc || dec ? nums : null
 }
 
 /** Pivot a long-form list of `{x, y, z}` samples into the same

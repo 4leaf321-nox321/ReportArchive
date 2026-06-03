@@ -49,3 +49,50 @@ export async function listCompositesContainingReport(reportId) {
   const res = await apiClient.get(`${BASE}/by-report/${reportId}`)
   return extractData(res) ?? []
 }
+
+// ── 안건 제출(신청) 큐 ─────────────────────────────────────────────────
+/** 이 보고서를 안건으로 제출할 수 있는 종합보고 목록(+already_item/pending). */
+export async function listSubmittableComposites(reportId) {
+  const res = await apiClient.get(`${BASE}/submittable-for/${reportId}`)
+  return extractData(res) ?? []
+}
+
+/** 보고서를 종합보고에 안건으로 제출. */
+export async function submitItemRequest(compositeId, { ref_report_id, note }) {
+  const res = await apiClient.post(`${BASE}/${compositeId}/requests`, {
+    ref_report_id,
+    note: note ?? '',
+  })
+  return extractData(res)
+}
+
+/** 종합보고의 제출 요청 목록(기본 pending). */
+export async function listItemRequests(compositeId, status) {
+  const qs = status ? `?status_filter=${encodeURIComponent(status)}` : ''
+  const res = await apiClient.get(`${BASE}/${compositeId}/requests${qs}`)
+  return extractData(res) ?? []
+}
+
+/** owner: 제출 승인 → 안건으로 추가. */
+export async function acceptItemRequest(compositeId, reqId) {
+  const res = await apiClient.post(
+    `${BASE}/${compositeId}/requests/${reqId}/accept`,
+  )
+  return extractData(res)
+}
+
+/** owner: 제출 반려. */
+export async function rejectItemRequest(compositeId, reqId) {
+  const res = await apiClient.post(
+    `${BASE}/${compositeId}/requests/${reqId}/reject`,
+  )
+  return extractData(res)
+}
+
+/** 제출자 본인(또는 owner): 제출 철회. */
+export async function withdrawItemRequest(compositeId, reqId) {
+  const res = await apiClient.post(
+    `${BASE}/${compositeId}/requests/${reqId}/withdraw`,
+  )
+  return extractData(res)
+}

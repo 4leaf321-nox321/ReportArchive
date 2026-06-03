@@ -55,6 +55,7 @@ import { KIND_LABEL, KIND_VARIANT, KINDS } from './constants'
 import { ItemPickerDialog } from './ItemPickerDialog'
 import { InlineCompositeView, InlineReportView } from './InlineReportView'
 import { CompositeSummary } from './CompositeSummary'
+import { PendingRequestsPanel } from './PendingRequestsPanel'
 
 export default function CompositeDetailPage() {
   const { compositeId } = useParams()
@@ -210,12 +211,24 @@ export default function CompositeDetailPage() {
           display_column: it.display_column ?? 1,
           group_name: it.group_name || null,
         })),
+        // 낙관적 동시성 — 내가 불러온 revision. 그 사이 다른 사람이 안건을
+        // 추가/정리했으면 서버가 409 로 거절(덮어쓰기 방지).
+        expected_revision: composite.revision,
       })
       toast.success('저장되었습니다.')
       setIsEditing(false)
       reload()
     } catch (err) {
-      toast.error(err.message || '저장 실패')
+      // 409 = 다른 사람이 먼저 저장 — 최신본을 다시 불러오게 안내.
+      if (err?.response?.status === 409) {
+        toast.error(
+          '다른 사용자가 먼저 저장했습니다. 최신 내용을 다시 불러옵니다 — 변경분을 확인 후 다시 저장하세요.',
+        )
+        setIsEditing(false)
+        reload()
+        return
+      }
+      toast.error(err?.response?.data?.message || err.message || '저장 실패')
     }
   }
 
@@ -870,6 +883,14 @@ export default function CompositeDetailPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* 제출 대기 — 보고서 쪽에서 올라온 안건 신청을 작성자가 승인/반려.
+          pending 이 없으면 패널 자체가 렌더 안 됨. */}
+      <PendingRequestsPanel
+        compositeId={composite.id}
+        isOwner={isOwner}
+        onAfterAccept={reload}
+      />
 
       <Card>
         <CardContent className="pt-5 space-y-3">

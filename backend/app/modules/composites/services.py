@@ -8,6 +8,8 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.modules.composites.models import (
+    CompositeItemRequest,
+    CompositeItemRequestStatus,
     CompositeKind,
     CompositeReport,
     CompositeReportItem,
@@ -31,6 +33,14 @@ class CompositeError(Exception):
 class CompositeForbiddenError(CompositeError):
     code = "composite_forbidden"
     status_code = 403
+
+
+class CompositeConflictError(CompositeError):
+    """낙관적 동시성 충돌 — 클라이언트의 expected_revision 이 서버와 다름
+    (다른 사람이 먼저 저장). 프런트는 409 를 받으면 최신본을 다시 불러온다."""
+
+    code = "composite_revision_mismatch"
+    status_code = 409
 
 
 def list_in_workspace_tree(
@@ -253,6 +263,16 @@ def update(
     data = payload.model_dump(exclude_unset=True)
     added_refs: list[tuple[Optional[int], Optional[int]]] = []
     if "items" in data and payload.items is not None:
+        # 낙관적 동시성 — 구조 전량 교체는 충돌 위험이 크므로, 클라이언트가
+        # expected_revision 을 보냈고 서버 값과 다르면 거절(409). 다른 사람이
+        # 그 사이에 안건을 추가/정리했다는 뜻 → 프런트가 최신본을 다시 로드.
+        if (
+            payload.expected_revision is not None
+            and (composite.revision or 1) != payload.expected_revision
+        ):
+            raise CompositeConflictError(
+                "다른 사용자가 먼저 저장했습니다. 최신 내용을 다시 불러오세요."
+            )
         _validate_refs(db, payload.items, self_id=composite.id)
         # Capture which refs existed BEFORE the swap so we only notify
         # on truly new ones. `_replace_items` rebuilds the rows from
@@ -266,6 +286,8 @@ def update(
             (it.ref_report_id, it.ref_composite_id) for it in payload.items
         }
         added_refs = list(new_refs - old_refs)
+        # 구조가 바뀌었으니 동시성 토큰 증가(보기 설정만 바꾸는 PATCH 는 안 올림).
+        composite.revision = (composite.revision or 1) + 1
     for key in (
         "title",
         "kind",
@@ -294,6 +316,178 @@ def update(
 def delete(db: Session, composite: CompositeReport) -> None:
     db.delete(composite)
     db.commit()
+
+
+# --------------------------------------------------------------------------- #
+# 안건 제출(신청) 큐 — Phase: 종합보고 동시편집 대응                            #
+# --------------------------------------------------------------------------- #
+
+
+def _append_report_item(
+    db: Session,
+    composite: CompositeReport,
+    ref_report_id: int,
+    *,
+    note: str = "",
+    actor_user_id: Optional[int] = None,
+) -> bool:
+    """보고서 한 건을 안건 맨 끝에 *건별 append*. 전량 교체가 아니라 한 행만
+    추가하므로 다른 사람의 편집을 절대 덮어쓰지 않는다(수집 단계 충돌 회피).
+    이미 안건이면 멱등하게 무시(False 반환). 추가했으면 revision 증가 후 True."""
+    report = db.get(Report, ref_report_id)
+    if report is None:
+        raise CompositeError("제출된 보고서를 찾을 수 없습니다.")
+    if any(it.ref_report_id == ref_report_id for it in composite.items):
+        return False
+    max_pos = max((it.position for it in composite.items), default=-1)
+    composite.items.append(
+        CompositeReportItem(
+            position=max_pos + 1,
+            note=note or "",
+            ref_report_id=ref_report_id,
+            display_column=1,
+            group_name=None,
+        )
+    )
+    composite.revision = (composite.revision or 1) + 1
+    if actor_user_id is not None:
+        composite.updated_by_user_id = actor_user_id
+    db.flush()
+    return True
+
+
+def submit_item_request(
+    db: Session,
+    composite: CompositeReport,
+    ref_report_id: int,
+    *,
+    note: str = "",
+    requested_by_user_id: int,
+) -> CompositeItemRequest:
+    """보고서를 종합보고에 안건으로 제출(pending). 종합보고 자체는 건드리지
+    않는다 — owner 승인 시에만 append 된다."""
+    report = db.get(Report, ref_report_id)
+    if report is None:
+        raise CompositeError("보고서를 찾을 수 없습니다.")
+    if any(it.ref_report_id == ref_report_id for it in composite.items):
+        raise CompositeError("이미 이 종합보고의 안건입니다.")
+    dup = db.execute(
+        select(CompositeItemRequest).where(
+            CompositeItemRequest.composite_id == composite.id,
+            CompositeItemRequest.ref_report_id == ref_report_id,
+            CompositeItemRequest.status == CompositeItemRequestStatus.pending,
+        )
+    ).scalar_one_or_none()
+    if dup is not None:
+        raise CompositeError("이미 제출되어 승인 대기 중입니다.")
+    req = CompositeItemRequest(
+        composite_id=composite.id,
+        ref_report_id=ref_report_id,
+        requested_by_user_id=requested_by_user_id,
+        note=note or "",
+        status=CompositeItemRequestStatus.pending,
+    )
+    db.add(req)
+    db.commit()
+    db.refresh(req)
+    return req
+
+
+def list_item_requests(
+    db: Session,
+    composite: CompositeReport,
+    *,
+    status: Optional[CompositeItemRequestStatus] = None,
+) -> list[CompositeItemRequest]:
+    q = select(CompositeItemRequest).where(
+        CompositeItemRequest.composite_id == composite.id
+    )
+    if status is not None:
+        q = q.where(CompositeItemRequest.status == status)
+    q = q.order_by(desc(CompositeItemRequest.created_at))
+    return list(db.execute(q).scalars())
+
+
+def accept_item_request(
+    db: Session,
+    request: CompositeItemRequest,
+    *,
+    decided_by_user_id: int,
+) -> CompositeItemRequest:
+    if request.status != CompositeItemRequestStatus.pending:
+        raise CompositeError("이미 처리된 제출입니다.")
+    composite = db.get(CompositeReport, request.composite_id)
+    if composite is None:
+        raise CompositeError("종합보고를 찾을 수 없습니다.")
+    if composite.published_at is not None:
+        raise CompositeError(
+            "발행된 종합보고입니다. 발행을 취소한 뒤 승인하세요."
+        )
+    _append_report_item(
+        db,
+        composite,
+        request.ref_report_id,
+        note=request.note,
+        actor_user_id=decided_by_user_id,
+    )
+    request.status = CompositeItemRequestStatus.accepted
+    request.decided_by_user_id = decided_by_user_id
+    request.decided_at = datetime.utcnow()
+    db.commit()
+    db.refresh(request)
+    return request
+
+
+def reject_item_request(
+    db: Session,
+    request: CompositeItemRequest,
+    *,
+    decided_by_user_id: int,
+) -> CompositeItemRequest:
+    if request.status != CompositeItemRequestStatus.pending:
+        raise CompositeError("이미 처리된 제출입니다.")
+    request.status = CompositeItemRequestStatus.rejected
+    request.decided_by_user_id = decided_by_user_id
+    request.decided_at = datetime.utcnow()
+    db.commit()
+    db.refresh(request)
+    return request
+
+
+def withdraw_item_request(
+    db: Session, request: CompositeItemRequest
+) -> CompositeItemRequest:
+    if request.status != CompositeItemRequestStatus.pending:
+        raise CompositeError("이미 처리된 제출입니다.")
+    request.status = CompositeItemRequestStatus.withdrawn
+    request.decided_at = datetime.utcnow()
+    db.commit()
+    db.refresh(request)
+    return request
+
+
+def list_submittable_composites(
+    db: Session, report: Report
+) -> list[CompositeReport]:
+    """이 보고서를 안건으로 제출할 수 있는 종합보고 목록. 보고서가 게시된
+    게시판 + 그 조상(상위 조직)의 종합보고 — 상위 조직 종합보고가 하위팀
+    보고서를 descendant 스코프로 포함하는 것과 대칭(역방향)."""
+    scope: set[str] = set()
+    for m in report.mounts or []:
+        slug = m.workspace_slug
+        if not slug or slug.startswith("personal-"):
+            continue
+        scope.add(slug)
+        for anc in ws_services.get_ancestors(db, slug):
+            scope.add(anc.slug)
+    if not scope:
+        return []
+    q = (
+        select(CompositeReport)
+        .where(CompositeReport.workspace_slug.in_(scope))
+        .order_by(desc(CompositeReport.updated_at))
+    )
+    return list(db.execute(q).scalars())
 
 
 # --------------------------------------------------------------------------- #

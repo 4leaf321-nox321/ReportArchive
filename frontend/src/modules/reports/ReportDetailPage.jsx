@@ -130,6 +130,7 @@ import { FolderPickerButton } from './FolderPickerButton'
 import { listMounts, mountReport } from '@/shared/api/mounts'
 import { listFolders } from '@/shared/api/folders'
 import { listCompositesContainingReport } from '@/shared/api/composites'
+import { SubmitToCompositeButton } from '@/modules/composites/SubmitToCompositeDialog'
 import { createPreset } from '@/shared/api/presets'
 import { CommentsProvider, useComments } from '@/modules/comments/CommentsContext'
 import { CommentPanel } from '@/modules/comments/CommentPanel'
@@ -3043,6 +3044,11 @@ export default function ReportDetailPage() {
                     </>
                   )}
                 </Button>
+              )}
+              {/* 종합보고에 제출 — 발행 버튼 오른쪽. 동시편집 회피를 위해
+                  종합보고를 직접 안 건드리고 신청만 한다(작성자 승인 후 추가). */}
+              {!isNew && existingReport?.id && (
+                <SubmitToCompositeButton reportId={existingReport.id} />
               )}
               {/* 추가 편집자 — owner는 추가/제거, 그 외는 목록만. */}
               {!isNew && existingReport?.id && (

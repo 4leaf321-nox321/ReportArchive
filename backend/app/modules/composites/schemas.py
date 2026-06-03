@@ -37,7 +37,7 @@ def _flatten_user_refs(obj: Any) -> Any:
         for key in (
             "id", "workspace_slug", "title", "kind", "period_date",
             "description", "two_col_view", "view_mode", "summary_widgets",
-            "owner_user_id",
+            "revision", "owner_user_id",
             "updated_by_user_id", "published_at", "published_by_user_id",
             "items", "created_at", "updated_at",
         )
@@ -196,6 +196,8 @@ class CompositeReportRead(BaseModel):
     two_col_view: bool = False
     # 화면 보기 모드 — 'single' | 'two_col' | 'list'.
     view_mode: str = "single"
+    # 낙관적 동시성 토큰 — 구조 편집 시 expected_revision 으로 echo.
+    revision: int = 1
     # 요약 페이지 위젯 — [{ id, type, props, content, layout }, ...].
     summary_widgets: list[dict] = []
     owner_user_id: Optional[int] = None
@@ -342,3 +344,56 @@ class CompositeReportUpdate(BaseModel):
     # When set, replaces the entire items list (matching position order).
     # Omit to leave items untouched.
     items: Optional[list[CompositeItemPayload]] = None
+    # 낙관적 동시성 — 클라이언트가 알고 있던 revision. items 를 함께 보낼 때
+    # (구조 전량 교체) 서버 값과 다르면 409 로 거절(다른 사람이 먼저 저장).
+    # None 이면 검사 생략(보기 설정만 바꾸는 가벼운 PATCH 등).
+    expected_revision: Optional[int] = Field(default=None, ge=1)
+
+
+# ── 안건 제출(신청) 큐 ────────────────────────────────────────────────────
+class CompositeItemRequestCreate(BaseModel):
+    """보고서를 종합보고에 안건으로 제출. ref_report_id 만 받는다(재귀 방지)."""
+
+    ref_report_id: int
+    note: str = Field(default="", max_length=1000)
+
+
+class CompositeItemRequestRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    composite_id: int
+    ref_report_id: int
+    status: str
+    note: str = ""
+    requested_by_user_id: Optional[int] = None
+    requested_by_name: Optional[str] = None
+    decided_by_user_id: Optional[int] = None
+    decided_at: Optional[datetime] = None
+    created_at: datetime
+    # 제출된 보고서의 슬림 정보 — 제목·작성자·소속·기준일을 대기 패널에서
+    # 바로 보여주기 위함(ItemRefReport 와 동일 프로젝션).
+    report: Optional[ItemRefReport] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flatten(cls, obj: Any) -> Any:
+        if obj is None or isinstance(obj, dict):
+            return obj
+        out: dict[str, Any] = {
+            k: getattr(obj, k)
+            for k in (
+                "id", "composite_id", "ref_report_id", "status", "note",
+                "requested_by_user_id", "decided_by_user_id", "decided_at",
+                "created_at",
+            )
+            if hasattr(obj, k)
+        }
+        # Enum → 문자열 값.
+        st = out.get("status")
+        out["status"] = getattr(st, "value", st)
+        requester = getattr(obj, "requested_by", None)
+        if requester is not None:
+            out["requested_by_name"] = requester.name
+        out["report"] = getattr(obj, "ref_report", None)
+        return out

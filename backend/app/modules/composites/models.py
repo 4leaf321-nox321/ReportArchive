@@ -31,6 +31,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -79,6 +80,14 @@ class CompositeReport(Base):
     # 출력용)과는 별개인 순수 화면 상태라 새로고침해도 유지되게 저장한다.
     view_mode: Mapped[str] = mapped_column(
         String(16), default="single", server_default="single", nullable=False
+    )
+
+    # 낙관적 동시성 토큰 — 구조 편집(안건 순서·그룹·삭제 등 전량 교체)마다
+    # 1 증가. 클라이언트가 expected_revision 으로 echo 하면 서버가 비교해
+    # 어긋나면 거절(다른 사람이 먼저 저장). 안건 "추가"는 제출 큐 승인 →
+    # 건별 append 라 이 토큰과 무관(덮어쓰기 자체가 없음).
+    revision: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1", nullable=False
     )
 
     # 요약 페이지 — "설명"과 "포함된 안건" 사이에 위젯으로 작성하는 자유 콘텐츠.
@@ -220,5 +229,70 @@ class CompositeReportItem(Base):
     ref_composite = relationship(
         "CompositeReport",
         foreign_keys=[ref_composite_id],
+        lazy="joined",
+    )
+
+
+class CompositeItemRequestStatus(str, enum.Enum):
+    pending = "pending"      # 제출됨, owner 결정 대기
+    accepted = "accepted"    # 승인 → 안건으로 추가됨
+    rejected = "rejected"    # 반려
+    withdrawn = "withdrawn"  # 제출자가 철회
+
+
+class CompositeItemRequest(Base):
+    """보고서 → 종합보고 "안건 제출(신청)". 기여자는 종합보고를 직접 편집하지
+    않고 제출만 하고, owner 가 승인하면 그때 건별 append 로 안건이 된다. 이렇게
+    수집 단계의 동시 편집(전량 교체 충돌)을 원천 차단한다. 보고서만 대상(재귀
+    중첩 방지 정책과 일치) — ref_composite 는 두지 않는다."""
+
+    __tablename__ = "composite_item_requests"
+    __table_args__ = (
+        Index("ix_composite_item_requests_composite", "composite_id"),
+        Index("ix_composite_item_requests_report", "ref_report_id"),
+        Index("ix_composite_item_requests_status", "status"),
+        # (composite, report) 당 pending 은 하나만 — 같은 보고서를 같은
+        # 종합보고에 중복 제출 못 하게. 결정난(accepted/rejected/withdrawn)
+        # 건은 제외되는 부분 유니크라 재제출은 가능.
+        Index(
+            "uq_composite_item_requests_pending",
+            "composite_id",
+            "ref_report_id",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    composite_id: Mapped[int] = mapped_column(
+        ForeignKey("composite_reports.id", ondelete="CASCADE"), nullable=False
+    )
+    ref_report_id: Mapped[int] = mapped_column(
+        ForeignKey("reports.id", ondelete="CASCADE"), nullable=False
+    )
+    requested_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    note: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    status: Mapped[CompositeItemRequestStatus] = mapped_column(
+        Enum(CompositeItemRequestStatus, name="composite_item_request_status_enum"),
+        default=CompositeItemRequestStatus.pending,
+        server_default="pending",
+        nullable=False,
+    )
+    decided_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+    requested_by = relationship(
+        "User", foreign_keys=[requested_by_user_id], lazy="joined"
+    )
+    ref_report = relationship(
+        "app.modules.reports.models.Report",
+        foreign_keys=[ref_report_id],
         lazy="joined",
     )

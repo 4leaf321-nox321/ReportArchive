@@ -36,7 +36,14 @@ import { WidgetPicker } from '@/modules/templates/WidgetPicker'
 import { useWidgetCatalog } from '@/shared/hooks/useWidgetCatalog'
 
 const COLS = 12
-const ROW_HEIGHT = 24
+// 한 행(grid unit) 높이(px). 그리드 전체 높이는 라이브러리가
+// bottom(layout)×ROW_HEIGHT 로 자동 계산하므로 이 값이 곧 "요약 영역이
+// 위젯 수에 따라 얼마나 커지는지"를 좌우한다. 너무 작으면 카드가 답답하다.
+const ROW_HEIGHT = 40
+// 새 위젯 기본 높이(행 수). ROW_HEIGHT×DEFAULT_H 가 새 위젯의 초기 세로
+// 픽셀(차트 등 내용이 들어갈 여유). 작으면 추가하자마자 잘려 보인다.
+const DEFAULT_H = 6
+const MIN_H = 3
 
 // 카드에서 곧바로 인라인 편집하는 위젯 — 문서 흐름과 밀착돼 인라인이 자연스러운
 // "긴 글(rich_text)"·"제목(heading)"만. 그 외 위젯은 보고서와 동일하게 편집
@@ -77,9 +84,9 @@ export function CompositeSummary({ widgets, editing, onChange }) {
         x: w.layout?.x ?? 0,
         y: w.layout?.y ?? 0,
         w: w.layout?.w ?? COLS,
-        h: w.layout?.h ?? 6,
+        h: w.layout?.h ?? DEFAULT_H,
         minW: 2,
-        minH: 2,
+        minH: MIN_H,
       })),
     [list],
   )
@@ -93,7 +100,7 @@ export function CompositeSummary({ widgets, editing, onChange }) {
   function addWidget(type) {
     const meta = catalog?.byType?.[type]
     const maxY = list.reduce(
-      (m, w) => Math.max(m, (w.layout?.y ?? 0) + (w.layout?.h ?? 6)),
+      (m, w) => Math.max(m, (w.layout?.y ?? 0) + (w.layout?.h ?? DEFAULT_H)),
       0,
     )
     onChange([
@@ -103,7 +110,7 @@ export function CompositeSummary({ widgets, editing, onChange }) {
         type,
         props: { ...(meta?.default_props ?? {}) },
         content: {},
-        layout: { x: 0, y: maxY, w: COLS, h: 6 },
+        layout: { x: 0, y: maxY, w: COLS, h: DEFAULT_H },
       },
     ])
   }
@@ -114,7 +121,7 @@ export function CompositeSummary({ widgets, editing, onChange }) {
   function insertWidget(type, defaults, direction, targetId) {
     const target = list.find((w) => w.id === targetId)
     if (!target) return addWidget(type)
-    const t = target.layout ?? { x: 0, y: 0, w: COLS, h: 6 }
+    const t = target.layout ?? { x: 0, y: 0, w: COLS, h: DEFAULT_H }
     const fresh = {
       id: newId(),
       type,
@@ -122,7 +129,7 @@ export function CompositeSummary({ widgets, editing, onChange }) {
       content: {},
     }
     if (direction === 'up' || direction === 'down') {
-      const newH = 6
+      const newH = DEFAULT_H
       const baseY = direction === 'up' ? t.y : t.y + t.h
       const shifted = list.map((w) =>
         (w.layout?.y ?? 0) >= baseY
@@ -191,17 +198,15 @@ export function CompositeSummary({ widgets, editing, onChange }) {
       ) : (
         <GridLayout
           className="composite-summary-grid"
-          cols={COLS}
-          rowHeight={ROW_HEIGHT}
           width={width || 800}
           layout={rglLayout}
-          isDraggable={editing}
-          isResizable={editing}
+          // react-grid-layout v2 API — v1 의 isDraggable/isResizable 는
+          // 무시되므로(그래서 뷰 모드에서도 끌리던 버그) drag/resize 를
+          // dragConfig/resizeConfig.enabled 로 editing 에 게이트한다.
+          gridConfig={{ cols: COLS, rowHeight: ROW_HEIGHT, margin: [8, 8] }}
+          dragConfig={{ enabled: editing, handle: '.summary-widget-drag' }}
+          resizeConfig={{ enabled: editing }}
           onLayoutChange={editing ? onLayoutChange : undefined}
-          draggableHandle=".summary-widget-drag"
-          compactType="vertical"
-          margin={[8, 8]}
-          isBounded
         >
           {list.map((w) => (
             <div

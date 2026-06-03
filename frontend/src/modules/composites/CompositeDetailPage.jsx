@@ -54,6 +54,7 @@ import {
 import { KIND_LABEL, KIND_VARIANT, KINDS } from './constants'
 import { ItemPickerDialog } from './ItemPickerDialog'
 import { InlineCompositeView, InlineReportView } from './InlineReportView'
+import { CompositeSummary } from './CompositeSummary'
 
 export default function CompositeDetailPage() {
   const { compositeId } = useParams()
@@ -143,6 +144,7 @@ export default function CompositeDetailPage() {
         kind: composite.kind,
         period_date: composite.period_date ?? '',
         description: composite.description ?? '',
+        summary_widgets: composite.summary_widgets ?? [],
         items: composite.items.map((it) => ({
           // Server-side `id` is preserved on round-trip; new items omit it.
           note: it.note ?? '',
@@ -186,6 +188,7 @@ export default function CompositeDetailPage() {
         period_date: draft.kind === 'recurring' ? draft.period_date || null : null,
         description: draft.description ?? '',
         two_col_view: twoColPreview,
+        summary_widgets: draft.summary_widgets ?? [],
         items: draft.items.map((it) => ({
           note: it.note,
           ref_report_id: it.ref_report_id,
@@ -232,6 +235,7 @@ export default function CompositeDetailPage() {
             ? new Date().toISOString().slice(0, 10)
             : null,
         description: composite.description ?? '',
+        summary_widgets: composite.summary_widgets ?? [],
         items: composite.items.map((it) => ({
           note: it.note ?? '',
           ref_report_id:
@@ -775,6 +779,25 @@ export default function CompositeDetailPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* 요약 페이지 — 설명과 포함된 안건 사이. 보기 모드에서 위젯이 없으면
+          (CompositeSummary 내부에서) 카드째 숨겨 빈 영역이 생기지 않게 한다. */}
+      {(isEditing || (draft.summary_widgets ?? []).length > 0) && (
+        <Card>
+          <CardContent className="pt-5 space-y-2">
+            <div className="text-xs font-semibold text-muted-foreground">
+              요약
+            </div>
+            <CompositeSummary
+              widgets={draft.summary_widgets ?? []}
+              editing={isEditing}
+              onChange={(next) =>
+                setDraft((d) => ({ ...d, summary_widgets: next }))
+              }
+            />
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardContent className="pt-5 space-y-3">

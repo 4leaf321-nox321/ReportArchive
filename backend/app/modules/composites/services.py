@@ -218,6 +218,7 @@ def create(
         period_date=payload.period_date,
         description=payload.description or "",
         two_col_view=payload.two_col_view,
+        summary_widgets=payload.summary_widgets or [],
         owner_user_id=owner_user_id,
         updated_by_user_id=owner_user_id,
     )
@@ -264,7 +265,14 @@ def update(
             (it.ref_report_id, it.ref_composite_id) for it in payload.items
         }
         added_refs = list(new_refs - old_refs)
-    for key in ("title", "kind", "period_date", "description", "two_col_view"):
+    for key in (
+        "title",
+        "kind",
+        "period_date",
+        "description",
+        "two_col_view",
+        "summary_widgets",
+    ):
         if key in data:
             setattr(composite, key, data[key])
     if updated_by_user_id is not None:

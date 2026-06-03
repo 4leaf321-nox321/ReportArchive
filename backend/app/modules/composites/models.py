@@ -75,6 +75,14 @@ class CompositeReport(Base):
         Boolean, default=False, server_default="false", nullable=False
     )
 
+    # 요약 페이지 — "설명"과 "포함된 안건" 사이에 위젯으로 작성하는 자유 콘텐츠.
+    # 템플릿 바인딩 없이 위젯이 자기완결(free-form). 각 항목 모양:
+    #   { id, type, props, content, layout: {x, y, w, h} }
+    # 보고서와 동일한 12열 그리드 좌표계(react-grid-layout). 비어 있으면 [].
+    summary_widgets: Mapped[list[dict]] = mapped_column(
+        JSONB, default=list, server_default="[]", nullable=False
+    )
+
     # Optional series identifier — groups successive recurring composites
     # of the same (workspace, owner, kind) into a chain so the frontend
     # can offer "이전 회차 복제" + auto-carry-over of ongoing items

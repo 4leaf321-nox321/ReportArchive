@@ -91,6 +91,14 @@ def list_reports(
             "목록은 False — 자기 게시판 분만(조직간공개_설계.md §5)."
         ),
     ),
+    include_descendants: bool = Query(
+        default=False,
+        description=(
+            "org 컨텍스트에서 하위 부서(자손) 게시판에 게시된 보고서까지 "
+            "포함. 기본 게시판 목록은 자기 것만(False) 이지만, 종합보고 "
+            "안건 picker 처럼 상위 조직이 하위팀 보고서를 묶어야 할 때 True."
+        ),
+    ),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
@@ -138,6 +146,7 @@ def list_reports(
         entity_ids=entity_ids,
         folder_filter=folder_filter,
         include_public=include_public,
+        include_descendants=include_descendants,
     )
     # 공개 탐색 시 "내 스코프 밖 + 공개" 인 행을 표시 — 프런트가 뱃지로 구분.
     external_ids: set[int] = set()

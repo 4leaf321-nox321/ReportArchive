@@ -110,6 +110,7 @@ def list_reports_in_workspace(
     entity_ids: Optional[list[int]] = None,
     folder_filter: Optional[int | str] = None,
     include_public: bool = False,
+    include_descendants: bool = False,
 ) -> list[Report]:
     """Returns reports visible in the given workspace.
 
@@ -143,6 +144,16 @@ def list_reports_in_workspace(
         # the user's tree), so we skip the descendants walk for them.
         if ws is not None and ws.kind == WorkspaceKind.personal:
             query = query.where(Report.workspace_slug == workspace_slug)
+        elif include_descendants:
+            # Org workspace + descendant rollup — 상위 조직이 하위팀 게시글까지
+            # 묶을 수 있게(예: 종합보고 안건 picker). 기본 게시판 목록은 이
+            # 경로를 안 타고 아래 own-board 경로만 탄다.
+            scope = ws_services.get_descendants_inclusive(db, workspace_slug)
+            query = (
+                query.join(ReportMount, ReportMount.report_id == Report.id)
+                .where(ReportMount.workspace_slug.in_(scope))
+                .distinct()
+            )
         else:
             # Org workspace: show only reports mounted to THIS workspace's
             # own board. We intentionally do NOT roll up descendant

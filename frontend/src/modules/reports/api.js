@@ -2,7 +2,12 @@ import { apiClient, extractData } from '@/shared/api/client'
 
 const BASE = '/api/reports'
 
-export async function listReports({ entityIds, folderId, includePublic } = {}) {
+export async function listReports({
+  entityIds,
+  folderId,
+  includePublic,
+  includeDescendants,
+} = {}) {
   // Build via URLSearchParams instead of axios's default params object:
   // axios 1.x serializes arrays as `entity_ids[]=1&entity_ids[]=2`, but
   // FastAPI's `Query(default=None)` over `list[int]` expects repeated
@@ -19,6 +24,8 @@ export async function listReports({ entityIds, folderId, includePublic } = {}) {
   }
   // 조직 간 공개 탐색(opt-in) — org 컨텍스트에서만 의미. 기본 목록은 안 보냄.
   if (includePublic) params.append('include_public', 'true')
+  // 하위 부서(자손) 게시판까지 포함 — 종합보고 안건 picker 등에서만 사용.
+  if (includeDescendants) params.append('include_descendants', 'true')
   const qs = params.toString()
   const res = await apiClient.get(qs ? `${BASE}?${qs}` : BASE)
   return extractData(res)

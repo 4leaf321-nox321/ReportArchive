@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -104,12 +104,14 @@ export default function CompositeDetailPage() {
   // Per-item expansion state, keyed by row index. Reset when the draft is
   // rebuilt so newly-added items start collapsed.
   const [expanded, setExpanded] = useState(new Set())
-  // "2단 미리보기" 토글 — ON 이면 안건 리스트를 display_column 기준
-  // 두 칼럼 그리드로 시각화한다. Word 의 2단 가로 출력과 동일한 분배:
-  // 1열 안건은 왼쪽에 위에서 아래로, 2열 안건은 오른쪽에 같은 방식.
-  // 행 폭이 절반으로 줄어드니 인라인 본문(InlineReportView) 은 좁아져
-  // 보기 어려우므로 ON 일 땐 펼침을 강제로 모두 접는다.
-  const [twoColPreview, setTwoColPreview] = useState(false)
+  // 화면 보기 모드 — 'single'(단일) | 'two_col'(2단) | 'list'(리스트와 함께
+  // 보기: 좌측 안건 목록 + 우측 상세). 저장되어 새로고침해도 유지된다.
+  const [viewMode, setViewMode] = useState('single')
+  const twoColPreview = viewMode === 'two_col'
+  const listView = viewMode === 'list'
+  // 리스트와 함께 보기에서 우측에 띄울 안건의 index. 선택이 사라지지 않게
+  // 안건 수가 바뀌면 0 으로 클램프(아래 effect).
+  const [selectedListIdx, setSelectedListIdx] = useState(0)
   // 알려진 그룹 목록 = 현재 items 안의 distinct non-empty group_name +
   // 사용자가 "그룹 추가" 로 만들어둔 빈 그룹(아직 안건이 안 들어간). 빈
   // 그룹은 로컬 state 라 저장 후엔 사라짐 — 사용자가 빈 그룹을 만든 뒤
@@ -137,8 +139,12 @@ export default function CompositeDetailPage() {
   // Snapshot existing → draft when the row loads or after a successful save.
   useEffect(() => {
     if (composite) {
-      // 보기 모드(2단 미리보기)는 저장된 값으로 복원 — 새로고침해도 유지.
-      setTwoColPreview(composite.two_col_view ?? false)
+      // 보기 모드는 저장값으로 복원 — view_mode 우선, 없으면 레거시
+      // two_col_view 로 폴백(true → 2단). 새로고침해도 유지.
+      setViewMode(
+        composite.view_mode ??
+          (composite.two_col_view ? 'two_col' : 'single'),
+      )
       setDraft({
         title: composite.title,
         kind: composite.kind,
@@ -164,6 +170,12 @@ export default function CompositeDetailPage() {
     return (s) => map.get(s) ?? s
   }, [workspaces])
 
+  // 리스트 보기 선택 index 를 안건 수 범위로 클램프(삭제 등으로 깨지지 않게).
+  const itemCount = draft?.items?.length ?? 0
+  useEffect(() => {
+    setSelectedListIdx((i) => (itemCount === 0 ? 0 : Math.min(i, itemCount - 1)))
+  }, [itemCount])
+
   if (loading || !draft || !composite) {
     return (
       <div className="p-6 space-y-4">
@@ -187,7 +199,9 @@ export default function CompositeDetailPage() {
         kind: draft.kind,
         period_date: draft.kind === 'recurring' ? draft.period_date || null : null,
         description: draft.description ?? '',
-        two_col_view: twoColPreview,
+        view_mode: viewMode,
+        // 레거시 boolean 도 함께 동기화(혹시 모를 구버전 리더 대비).
+        two_col_view: viewMode === 'two_col',
         summary_widgets: draft.summary_widgets ?? [],
         items: draft.items.map((it) => ({
           note: it.note,
@@ -394,6 +408,64 @@ export default function CompositeDetailPage() {
       i === idx ? { ...it, group_name: normalized } : it,
     )
     setDraft({ ...draft, items: next })
+  }
+
+  // 안건 열기 — 보고서/하위 종합보고 상세로 네비게이션. 항상 종합보고의
+  // 워크스페이스(slug)로 보낸다(보고서 home 은 personal 이라 비소유자는 못
+  // 봄; 종합보고는 공유 워크스페이스라 안전). 보고서엔 fromComposite 컨텍스트
+  // 를 실어 "종합보고로 돌아가기" 버튼이 뜨게 한다.
+  function openItem(it) {
+    if (it.ref_report_id) {
+      navigate(`/w/${slug}/reports/${it.ref_report_id}`, {
+        state: {
+          fromComposite: { id: composite.id, slug, title: composite.title },
+        },
+      })
+    } else if (it.ref_composite_id) {
+      const ws = it._display?.ref_composite?.workspace_slug ?? slug
+      navigate(`/w/${ws}/composites/${it.ref_composite_id}`)
+    }
+  }
+
+  // 보기 모드 전환 — 즉시 저장(새로고침 후 유지). 단일이 아니면 인라인 펼침은
+  // 의미가 옅으니 모두 접는다(리스트/2단은 자체적으로 본문을 보여줌).
+  async function changeViewMode(mode) {
+    if (mode === viewMode) return
+    setViewMode(mode)
+    if (mode !== 'single') setExpanded(new Set())
+    try {
+      await updateComposite(composite.id, {
+        view_mode: mode,
+        two_col_view: mode === 'two_col',
+      })
+    } catch {
+      /* 화면 상태는 유지 */
+    }
+  }
+
+  // 그룹 순서 변경 — 같은 group_name 연속 블록(섹션) 단위로 인접 섹션과
+  // 통째로 swap 한다. dir=-1(위)/+1(아래). 그룹 사이에 "그룹 없음" 구간이
+  // 있으면 그 구간과 먼저 swap 되는데, 한 번 더 누르면 다음 그룹을 넘는다.
+  function moveGroup(groupName, dir) {
+    setDraft((d) => {
+      if (!d) return d
+      const sections = []
+      let cur = null
+      for (const it of d.items) {
+        const gn = it.group_name || null
+        if (!cur || cur.gn !== gn) {
+          cur = { gn, items: [] }
+          sections.push(cur)
+        }
+        cur.items.push(it)
+      }
+      const si = sections.findIndex((s) => s.gn === groupName)
+      if (si < 0) return d
+      const sj = si + dir
+      if (sj < 0 || sj >= sections.length) return d
+      ;[sections[si], sections[sj]] = [sections[sj], sections[si]]
+      return { ...d, items: sections.flatMap((s) => s.items) }
+    })
   }
 
   // (pendingGroups / knownGroups hooks 는 위쪽 — early-return 앞 — 에 정의)
@@ -805,41 +877,46 @@ export default function CompositeDetailPage() {
             <div>
               <div className="text-sm font-semibold">포함된 안건</div>
               <div className="text-[11px] text-muted-foreground">
-                보고서 또는 다른 종합보고를 선택해 추가
+                보고서를 선택해 추가
               </div>
             </div>
             <div data-export-exclude className="flex items-center gap-2">
               {draft.items.length > 0 && (
                 <>
-                  {/* 2단 미리보기 — Word 가로 2단 출력 시 안건이 좌/우
-                      어디에 박힐지 미리 화면에서 시각화. ON 일 땐
-                      InlineReportView 가 좁아져서 의미가 옅으니 펼침을
-                      강제로 모두 접는다. */}
-                  <Button
-                    size="sm"
-                    variant={twoColPreview ? 'secondary' : 'ghost'}
-                    onClick={async () => {
-                      const nextOn = !twoColPreview
-                      setTwoColPreview(nextOn)
-                      if (nextOn) setExpanded(new Set())
-                      // 보기 설정을 즉시 저장 — 편집/보기 어느 모드든 새로고침
-                      // 후 유지된다. two_col_view 만 보내므로 안건·제목 등
-                      // 다른 (미저장) 편집분은 건드리지 않는다. 저장이 실패해도
-                      // (예: 열람 전용 권한) 화면 미리보기는 그대로 둔다 —
-                      // 토글은 본래 "이렇게 보인다" 미리보기라 비편집자에게도
-                      // 유효하다(영속화만 편집 권한자에게 적용).
-                      try {
-                        await updateComposite(composite.id, {
-                          two_col_view: nextOn,
-                        })
-                      } catch {
-                        /* 미리보기 상태는 유지 */
-                      }
-                    }}
-                    title="1열 / 2열 배치를 좌·우 그리드로 미리 보기"
-                  >
-                    {twoColPreview ? '단일 보기' : '2단 미리보기'}
-                  </Button>
+                  {/* 보기 모드 전환(단일/2단/리스트)은 편집모드에서만 — 보기
+                      모드에서 바꿀 수 있으면 "설정"인지 "임시"인지 헷갈린다.
+                      저장된 view_mode 로 보기 모드에선 그대로 렌더만 한다. */}
+                  {isEditing && (
+                    <div className="inline-flex rounded-md border p-0.5">
+                      {[
+                        { v: 'single', label: '단일' },
+                        { v: 'two_col', label: '2단' },
+                        { v: 'list', label: '리스트' },
+                      ].map((opt) => (
+                        <button
+                          key={opt.v}
+                          type="button"
+                          onClick={() => changeViewMode(opt.v)}
+                          className={cn(
+                            'rounded px-2.5 py-1 text-xs font-medium transition-colors',
+                            viewMode === opt.v
+                              ? 'bg-primary text-primary-foreground'
+                              : 'text-muted-foreground hover:bg-muted',
+                          )}
+                          title={
+                            opt.v === 'single'
+                              ? '단일 보기 — 안건을 한 열로'
+                              : opt.v === 'two_col'
+                                ? '2단 보기 — 1열/2열 배치를 좌·우 그리드로'
+                                : '리스트와 함께 보기 — 좌측 목록 + 우측 상세'
+                          }
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {!listView && (
                   <Button
                     size="sm"
                     variant="ghost"
@@ -863,6 +940,7 @@ export default function CompositeDetailPage() {
                       </>
                     )}
                   </Button>
+                  )}
                 </>
               )}
               {isEditing && (
@@ -888,6 +966,18 @@ export default function CompositeDetailPage() {
             <p className="text-sm text-muted-foreground py-6 text-center">
               아직 추가된 안건이 없습니다.
             </p>
+          ) : listView ? (
+            <CompositeListView
+              items={draft.items}
+              editing={isEditing}
+              workspaceName={workspaceName}
+              selectedIdx={selectedListIdx}
+              onSelect={setSelectedListIdx}
+              onOpenItem={openItem}
+              onMoveGroup={moveGroup}
+              onRenameGroup={renameGroup}
+              onRemoveGroup={removeGroup}
+            />
           ) : (
             <ItemsListContainer
               twoColPreview={twoColPreview}
@@ -896,6 +986,7 @@ export default function CompositeDetailPage() {
               pendingGroups={pendingGroups}
               onRemoveGroup={removeGroup}
               onRenameGroup={renameGroup}
+              onMoveGroup={moveGroup}
               onAssignToGroup={assignDraggedToGroup}
               draggingIdx={draggingIdx}
               onDropToColumn={handleDropToColumn}
@@ -962,42 +1053,7 @@ export default function CompositeDetailPage() {
                     setDraggingIdx(null)
                     setDropOverIdx(null)
                   }}
-                  onOpen={() => {
-                    // Always navigate via the composite's workspace
-                    // (= `slug`). The composite is in an org workspace
-                    // and the report is mounted there (that's how it
-                    // got picked as an item), so this slug always sees
-                    // the report.
-                    //
-                    // The previous "prefer report's own workspace_slug"
-                    // logic broke post-Phase-1: every report's home is
-                    // `personal-{ownerId}`, which non-owner viewers
-                    // can't enter (is_visible_to → 403). Composites
-                    // are by definition shared, so the composite's
-                    // workspace is the always-visible landing pad.
-                    if (it.ref_report_id) {
-                      // location.state.fromComposite 로 진입 컨텍스트를 넘긴다.
-                      // ReportDetailPage 는 이 값이 있을 때만 toolbar 에
-                      // "종합보고로 돌아가기" 버튼을 노출한다. 페이지 새로고침
-                      // 시엔 state 가 사라져 버튼도 사라짐 (그땐 사이드바로
-                      // 돌아가면 됨 — 일반적인 web 백 동선과 일치).
-                      navigate(`/w/${slug}/reports/${it.ref_report_id}`, {
-                        state: {
-                          fromComposite: {
-                            id: composite.id,
-                            slug,
-                            title: composite.title,
-                          },
-                        },
-                      })
-                    } else if (it.ref_composite_id) {
-                      // Sub-composites land in their own workspace —
-                      // those are real org workspaces, not personal.
-                      const ws =
-                        it._display?.ref_composite?.workspace_slug ?? slug
-                      navigate(`/w/${ws}/composites/${it.ref_composite_id}`)
-                    }
-                  }}
+                  onOpen={() => openItem(it)}
                   total={draft.items.length}
                 />
               ))}
@@ -1009,7 +1065,6 @@ export default function CompositeDetailPage() {
       <ItemPickerDialog
         open={pickerOpen}
         onOpenChange={setPickerOpen}
-        excludeCompositeId={composite.id}
         existingItems={draft.items}
         onPick={(items) => {
           addItems(items)
@@ -1295,6 +1350,7 @@ function ItemsListContainer({
   pendingGroups,
   onRemoveGroup,
   onRenameGroup,
+  onMoveGroup,
   onAssignToGroup,
   draggingIdx,
   onDropToColumn,
@@ -1372,6 +1428,16 @@ function ItemsListContainer({
               editing={editing}
               onRename={onRenameGroup}
               onRemove={onRemoveGroup ? () => onRemoveGroup(s.gn) : undefined}
+              onMoveUp={
+                onMoveGroup && si > 0
+                  ? () => onMoveGroup(s.gn, -1)
+                  : undefined
+              }
+              onMoveDown={
+                onMoveGroup && si < sections.length - 1
+                  ? () => onMoveGroup(s.gn, +1)
+                  : undefined
+              }
             />
             <div className="px-3 py-1">{renderSectionItems(s.idxs)}</div>
           </div>
@@ -1414,8 +1480,16 @@ function ItemsListContainer({
   )
 }
 
-/** 그룹 섹션 헤더 — [그룹명] + 건수 + 이름 수정(인라인 input) + 그룹 해제. */
-function GroupSectionHeader({ name, count, editing, onRename, onRemove }) {
+/** 그룹 섹션 헤더 — [그룹명] + 건수 + 순서이동(↑↓) + 이름 수정 + 그룹 해제. */
+function GroupSectionHeader({
+  name,
+  count,
+  editing,
+  onRename,
+  onRemove,
+  onMoveUp,
+  onMoveDown,
+}) {
   const [renaming, setRenaming] = useState(false)
   const [value, setValue] = useState(name)
 
@@ -1451,6 +1525,28 @@ function GroupSectionHeader({ name, count, editing, onRename, onRemove }) {
             <span className="text-[10px] text-muted-foreground">{count}건</span>
           )}
           <span className="flex-1" />
+          {editing && (onMoveUp || onMoveDown) && (
+            <>
+              <button
+                type="button"
+                onClick={onMoveUp}
+                disabled={!onMoveUp}
+                title="그룹 위로"
+                className="shrink-0 rounded px-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                onClick={onMoveDown}
+                disabled={!onMoveDown}
+                title="그룹 아래로"
+                className="shrink-0 rounded px-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+              >
+                ↓
+              </button>
+            </>
+          )}
           {editing && onRename && (
             <button
               type="button"
@@ -1474,6 +1570,207 @@ function GroupSectionHeader({ name, count, editing, onRename, onRemove }) {
         </>
       )}
     </div>
+  )
+}
+
+/** 안건의 표시용 ref(보고서/하위종합)와 소속·작성자·제목을 뽑아 준다. */
+function itemMeta(it, workspaceName) {
+  const isReport = Boolean(it.ref_report_id)
+  const ref = isReport ? it._display?.ref_report : it._display?.ref_composite
+  const deptSlug = isReport ? ref?.owner_dept_slug : ref?.workspace_slug
+  return {
+    isReport,
+    ref,
+    title: ref?.title,
+    dept: deptSlug ? workspaceName(deptSlug) : null,
+    author: ref?.owner_name ?? null,
+    date: isReport ? ref?.report_date : ref?.period_date,
+  }
+}
+
+/** 리스트와 함께 보기 — 좌측 그룹별 안건 목록 + 우측에 선택한 안건의 상세.
+ *  목록은 group_name 연속 블록을 섹션으로 묶고, 편집모드에선 섹션 헤더의
+ *  ↑↓ 로 그룹 순서를 바꾼다. 선택은 화면 상태(저장 안 함)라 보기 모드에서도
+ *  자유롭게 클릭해 우측 상세를 갈아끼울 수 있다. */
+function CompositeListView({
+  items,
+  editing,
+  workspaceName,
+  selectedIdx,
+  onSelect,
+  onOpenItem,
+  onMoveGroup,
+  onRenameGroup,
+  onRemoveGroup,
+}) {
+  const sections = []
+  let cur = null
+  items.forEach((it, i) => {
+    const gn = it.group_name || null
+    if (!cur || cur.gn !== gn) {
+      cur = { gn, idxs: [] }
+      sections.push(cur)
+    }
+    cur.idxs.push(i)
+  })
+
+  const selected = items[selectedIdx] ?? items[0]
+  const selMeta = selected ? itemMeta(selected, workspaceName) : null
+
+  function ListRow({ i }) {
+    const m = itemMeta(items[i], workspaceName)
+    const active = i === selectedIdx
+    return (
+      <button
+        type="button"
+        onClick={() => onSelect(i)}
+        className={cn(
+          'flex w-full items-start gap-2 rounded px-2 py-1.5 text-left transition-colors',
+          active
+            ? 'bg-primary/10 ring-1 ring-primary/30'
+            : 'hover:bg-muted',
+        )}
+      >
+        <span className="mt-0.5 w-5 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">
+          {i + 1}.
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium">
+            {m.title ?? `#${items[i].ref_report_id ?? items[i].ref_composite_id}`}
+          </span>
+          {(m.dept || m.author) && (
+            <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+              {m.dept}
+              {m.dept && m.author && (
+                <span className="text-muted-foreground/40"> · </span>
+              )}
+              {m.author}
+            </span>
+          )}
+        </span>
+      </button>
+    )
+  }
+
+  return (
+    // 데스크톱에선 컨테이너 높이를 거의 화면 가득(뷰포트-여백)으로 고정해
+    // 좌·우 패널이 각자 내부에서 스크롤되게 한다(min-h-0 가 grid item 의 기본
+    // min-height:auto 를 풀어 자식 overflow 가 동작하게 하는 핵심). 모바일
+    // (단일 컬럼)에선 높이 고정을 풀어 페이지 흐름대로 쌓이게 둔다.
+    <div className="grid grid-cols-1 gap-3 md:h-[calc(100vh-12rem)] md:min-h-[26rem] md:grid-cols-[minmax(13rem,18rem)_1fr]">
+      {/* 좌: 그룹별 안건 목록 — 길어지면 이 패널 안에서만 스크롤 */}
+      <div className="min-h-0 space-y-2 overflow-y-auto md:pr-1">
+        {sections.map((s, si) =>
+          s.gn ? (
+            <div
+              key={`sec-${si}-${s.gn}`}
+              className="overflow-hidden rounded-md border border-primary/25 bg-primary/[0.03]"
+            >
+              <GroupSectionHeader
+                name={s.gn}
+                count={s.idxs.length}
+                editing={editing}
+                onRename={onRenameGroup}
+                onRemove={onRemoveGroup ? () => onRemoveGroup(s.gn) : undefined}
+                onMoveUp={
+                  onMoveGroup && si > 0 ? () => onMoveGroup(s.gn, -1) : undefined
+                }
+                onMoveDown={
+                  onMoveGroup && si < sections.length - 1
+                    ? () => onMoveGroup(s.gn, +1)
+                    : undefined
+                }
+              />
+              <div className="space-y-0.5 p-1">
+                {s.idxs.map((i) => (
+                  <ListRow key={i} i={i} />
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div key={`sec-${si}-none`} className="space-y-0.5">
+              {s.idxs.map((i) => (
+                <ListRow key={i} i={i} />
+              ))}
+            </div>
+          ),
+        )}
+      </div>
+
+      {/* 우: 선택 안건 상세 — 헤더는 고정, 본문(메인 컨텐츠)만 내부 스크롤 */}
+      <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border bg-card">
+        {selected && selMeta ? (
+          <>
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b p-3">
+              <div className="min-w-0">
+                <button
+                  type="button"
+                  onClick={() => onOpenItem(selected)}
+                  className="block max-w-full truncate text-left text-base font-semibold hover:underline"
+                >
+                  {selMeta.title ??
+                    `#${selected.ref_report_id ?? selected.ref_composite_id}`}
+                </button>
+                <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
+                  {(() => {
+                    const fields = []
+                    if (selMeta.dept)
+                      fields.push(<MetaField key="d" label="소속" value={selMeta.dept} />)
+                    if (selMeta.author)
+                      fields.push(<MetaField key="a" label="작성" value={selMeta.author} />)
+                    if (selMeta.date)
+                      fields.push(<MetaField key="t" label="기준" value={selMeta.date} />)
+                    return fields.map((node, i) => (
+                      <Fragment key={node.key}>
+                        {i > 0 && <span className="text-muted-foreground/30">·</span>}
+                        {node}
+                      </Fragment>
+                    ))
+                  })()}
+                </div>
+                {selected.note && (
+                  <div className="mt-1 text-xs italic text-muted-foreground">
+                    메모: {selected.note}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => onOpenItem(selected)}
+                className="shrink-0 whitespace-nowrap text-xs text-primary hover:underline"
+              >
+                열기 ↗
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              {selected.ref_report_id ? (
+                <InlineReportView
+                  reportId={selected.ref_report_id}
+                  snapshot={selected.snapshot_content ?? undefined}
+                />
+              ) : selected.ref_composite_id ? (
+                <InlineCompositeView compositeId={selected.ref_composite_id} />
+              ) : null}
+            </div>
+          </>
+        ) : (
+          <p className="p-6 text-center text-sm text-muted-foreground">
+            왼쪽 목록에서 안건을 선택하세요.
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** 안건 메타 한 항목 — "라벨 값" 형태. 라벨은 muted, 값은 진하게 두어
+ *  소속·작성·기준 등 서로 다른 정보가 한 줄에서도 깔끔히 구분된다. */
+function MetaField({ label, value }) {
+  return (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap">
+      <span className="text-muted-foreground/55">{label}</span>
+      <span className="text-foreground/75">{value}</span>
+    </span>
   )
 }
 
@@ -1673,58 +1970,81 @@ function ItemRow({
           </div>
         )}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant="outline" className="text-[10px]">
-              {isReport ? '보고서' : '종합'}
-            </Badge>
+          {/* 제목 + 모든 정보를 한 줄에. "보고서" 뱃지는 제거(이제 안건은
+              보고서뿐이라 중복). 각 정보는 라벨(소속·작성·기준·게시)을 muted
+              로 앞에 붙이고 값은 진하게, 사이는 가는 · 로 구분해 깔끔하게.
+              편집 모드에선 제목을 위에 두고 메타를 아래 줄로 내린다(메모
+              입력칸과의 간섭을 줄이려). */}
+          <div
+            className={cn(
+              'flex min-w-0 gap-x-2 gap-y-0.5 flex-wrap',
+              editing ? 'flex-col' : 'items-baseline',
+            )}
+          >
             <button
               type="button"
               onClick={onOpen}
-              className="font-medium text-sm hover:underline text-left truncate"
+              className="font-medium text-sm hover:underline text-left truncate max-w-full shrink-0"
             >
               {ref?.title ?? (isReport ? `report #${item.ref_report_id}` : `composite #${item.ref_composite_id}`)}
             </button>
-          </div>
-          <div className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
-            {/* 소속 — 보고서는 (1순위) 작성자 소속 부서를 뱃지로, (보조)
-                게시 부서는 첫 1개 + "외 N" 으로 축약해 표기한다. 여러 곳에
-                게시해도 작성자 부서는 하나라 뱃지가 우르르 나오지 않는다.
-                report.workspace_slug(작성자 personal)는 쓰지 않는다. 종합
-                (sub-composite)은 자체 org 워크스페이스가 의미 있어 그대로. */}
-            {isReport ? (
-              <>
-                {ref?.owner_dept_slug && (
-                  <Badge variant="secondary" className="text-[10px] font-normal">
-                    {workspaceName(ref.owner_dept_slug)}
-                  </Badge>
-                )}
-                {mountNames.length > 0 ? (
-                  <span
-                    className={
-                      'text-muted-foreground/70' +
-                      (mountNames.length > 1
-                        ? ' cursor-help underline decoration-dotted underline-offset-2'
-                        : '')
-                    }
-                    title={
-                      mountNames.length > 1
-                        ? `게시 부서 (${mountNames.length}):\n${mountNames.join('\n')}`
-                        : `게시: ${mountNames[0]}`
-                    }
-                  >
-                    게시 {mountNames[0]}
-                    {mountNames.length > 1 ? ` 외 ${mountNames.length - 1}` : ''}
-                  </span>
-                ) : (
-                  !ref?.owner_dept_slug && <span className="italic">미게시</span>
-                )}
-              </>
-            ) : (
-              ref?.workspace_slug && <span>{workspaceName(ref.workspace_slug)}</span>
-            )}
-            {isReport && ref?.report_date && <span>· 기준 {ref.report_date}</span>}
-            {!isReport && ref?.period_date && <span>· 기준 {ref.period_date}</span>}
-            {ref?.owner_name && <span>· {ref.owner_name}</span>}
+            <div className="text-[11px] text-muted-foreground flex items-center gap-x-1.5 gap-y-0.5 flex-wrap min-w-0">
+              {(() => {
+                // 표기 순서: 소속 → 작성자 → 기준일 → 게시. 보고서는 작성자
+                // 소속(home) 부서를, 종합(legacy)은 자체 org 워크스페이스를 쓴다.
+                const fields = []
+                if (isReport) {
+                  if (ref?.owner_dept_slug)
+                    fields.push(
+                      <MetaField key="dept" label="소속" value={workspaceName(ref.owner_dept_slug)} />,
+                    )
+                  if (ref?.owner_name)
+                    fields.push(<MetaField key="author" label="작성" value={ref.owner_name} />)
+                  if (ref?.report_date)
+                    fields.push(<MetaField key="date" label="기준" value={ref.report_date} />)
+                  if (mountNames.length > 0)
+                    fields.push(
+                      <span key="mount" className="inline-flex items-center gap-1 whitespace-nowrap">
+                        <span className="text-muted-foreground/55">게시</span>
+                        <span
+                          className={cn(
+                            'text-foreground/75',
+                            mountNames.length > 1 &&
+                              'cursor-help underline decoration-dotted underline-offset-2',
+                          )}
+                          title={
+                            mountNames.length > 1
+                              ? `게시 부서 (${mountNames.length}):\n${mountNames.join('\n')}`
+                              : `게시: ${mountNames[0]}`
+                          }
+                        >
+                          {mountNames[0]}
+                          {mountNames.length > 1 ? ` 외 ${mountNames.length - 1}` : ''}
+                        </span>
+                      </span>,
+                    )
+                  else if (!ref?.owner_dept_slug)
+                    fields.push(
+                      <span key="unpub" className="italic text-muted-foreground/60">미게시</span>,
+                    )
+                } else {
+                  if (ref?.workspace_slug)
+                    fields.push(
+                      <MetaField key="dept" label="소속" value={workspaceName(ref.workspace_slug)} />,
+                    )
+                  if (ref?.owner_name)
+                    fields.push(<MetaField key="author" label="작성" value={ref.owner_name} />)
+                  if (ref?.period_date)
+                    fields.push(<MetaField key="date" label="기준" value={ref.period_date} />)
+                }
+                return fields.map((node, i) => (
+                  <Fragment key={node.key}>
+                    {i > 0 && <span className="text-muted-foreground/30">·</span>}
+                    {node}
+                  </Fragment>
+                ))
+              })()}
+            </div>
           </div>
           {(editing || item.note) && (
             <div className="mt-2">

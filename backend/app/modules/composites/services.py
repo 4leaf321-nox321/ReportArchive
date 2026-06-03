@@ -218,6 +218,7 @@ def create(
         period_date=payload.period_date,
         description=payload.description or "",
         two_col_view=payload.two_col_view,
+        view_mode=payload.view_mode or "single",
         summary_widgets=payload.summary_widgets or [],
         owner_user_id=owner_user_id,
         updated_by_user_id=owner_user_id,
@@ -271,6 +272,7 @@ def update(
         "period_date",
         "description",
         "two_col_view",
+        "view_mode",
         "summary_widgets",
     ):
         if key in data:

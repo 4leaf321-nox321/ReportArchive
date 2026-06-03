@@ -36,7 +36,8 @@ def _flatten_user_refs(obj: Any) -> Any:
         key: getattr(obj, key)
         for key in (
             "id", "workspace_slug", "title", "kind", "period_date",
-            "description", "two_col_view", "summary_widgets", "owner_user_id",
+            "description", "two_col_view", "view_mode", "summary_widgets",
+            "owner_user_id",
             "updated_by_user_id", "published_at", "published_by_user_id",
             "items", "created_at", "updated_at",
         )
@@ -191,8 +192,10 @@ class CompositeReportRead(BaseModel):
     kind: CompositeKind
     period_date: Optional[date] = None
     description: str
-    # 화면 보기 모드 — True 면 "2단 미리보기"로 펼쳐 보여준다(저장됨).
+    # 화면 보기 모드(레거시 boolean — view_mode 가 진실의 원천).
     two_col_view: bool = False
+    # 화면 보기 모드 — 'single' | 'two_col' | 'list'.
+    view_mode: str = "single"
     # 요약 페이지 위젯 — [{ id, type, props, content, layout }, ...].
     summary_widgets: list[dict] = []
     owner_user_id: Optional[int] = None
@@ -322,6 +325,7 @@ class CompositeReportCreate(BaseModel):
     period_date: Optional[date] = None
     description: str = ""
     two_col_view: bool = False
+    view_mode: str = "single"
     summary_widgets: list[dict] = []
     # Optional initial items — equivalent to creating then PATCHing.
     items: list[CompositeItemPayload] = []
@@ -333,6 +337,7 @@ class CompositeReportUpdate(BaseModel):
     period_date: Optional[date] = None
     description: Optional[str] = None
     two_col_view: Optional[bool] = None
+    view_mode: Optional[str] = None
     summary_widgets: Optional[list[dict]] = None
     # When set, replaces the entire items list (matching position order).
     # Omit to leave items untouched.

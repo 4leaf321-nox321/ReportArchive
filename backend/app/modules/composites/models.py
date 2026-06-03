@@ -68,11 +68,17 @@ class CompositeReport(Base):
     period_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
-    # 화면 보기 모드: 본문 전체를 좌·우 2열 그리드("2단 미리보기")로 펼칠지
-    # 여부. 항목별 `display_column`(DOCX 2단 출력용)과는 별개 — 이건 순수
-    # 화면 보기 상태라 새로고침해도 유지되도록 저장한다.
+    # 화면 보기 모드(레거시 boolean). view_mode 도입 후로는 view_mode 가
+    # 진실의 원천이고 이 컬럼은 하위호환용으로만 남겨 둔다(읽지 않음).
     two_col_view: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
+    )
+
+    # 화면 보기 모드: 'single'(단일) | 'two_col'(2단) | 'list'(리스트와 함께
+    # 보기 — 좌측 안건 목록 + 우측 상세). 항목별 `display_column`(DOCX 2단
+    # 출력용)과는 별개인 순수 화면 상태라 새로고침해도 유지되게 저장한다.
+    view_mode: Mapped[str] = mapped_column(
+        String(16), default="single", server_default="single", nullable=False
     )
 
     # 요약 페이지 — "설명"과 "포함된 안건" 사이에 위젯으로 작성하는 자유 콘텐츠.

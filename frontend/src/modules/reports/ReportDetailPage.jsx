@@ -231,6 +231,11 @@ export default function ReportDetailPage() {
       window.removeEventListener('keydown', onKey)
     }
   }, [reportFullscreen])
+  // "목록" 복귀 시 함께 넘길 location.state(보던 폴더/페이지로 돌아가게).
+  // siblingFolderId 가 한참 아래에서 계산되므로 ref 로 들고, 렌더마다 갱신해
+  // 백스페이스 핸들러(아래 effect)와 목록 버튼이 같은 최신값을 읽게 한다.
+  const listBackStateRef = useRef(undefined)
+
   // 백스페이스 → "목록" 으로 빠르게 복귀(보기 모드 전용). 단, 입력 중
   // (input/textarea/contentEditable)이거나 편집모드·새 보고서, 또는 모달
   // /드롭다운이 열려 있으면 그쪽 기본 동작(텍스트 삭제·닫기)을 살려야
@@ -257,7 +262,7 @@ export default function ReportDetailPage() {
         return
       }
       e.preventDefault()
-      navigate(`/w/${slug}/reports`)
+      navigate(`/w/${slug}/reports`, { state: listBackStateRef.current })
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -2796,6 +2801,13 @@ export default function ReportDetailPage() {
         ? currentMount.folder_id ?? FOLDER_FILTER_UNCATEGORIZED
         : undefined
 
+  // "목록"으로 돌아갈 때 보던 폴더로 복원시킬 state. 폴더 문맥이 불명(undefined)
+  // 이면 state 없이 기본 목록으로. 렌더마다 ref 갱신(백스페이스 핸들러 공유).
+  listBackStateRef.current =
+    siblingFolderId === undefined
+      ? undefined
+      : { listFolderId: siblingFolderId }
+
   return (
     <PrintScaleContext.Provider value={printContextValue}>
     <ReportStyleContext.Provider value={reportStyleValue}>
@@ -2901,7 +2913,12 @@ export default function ReportDetailPage() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => navigate(`/w/${slug}/reports`)}
+            onClick={() =>
+              // 보던 폴더로 목록 복원(전체로 튀지 않게).
+              navigate(`/w/${slug}/reports`, {
+                state: listBackStateRef.current,
+              })
+            }
           >
             <ArrowLeft className="mr-1 h-3 w-3" />
             목록

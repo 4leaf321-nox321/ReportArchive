@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { Plus, Calendar, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
@@ -30,9 +30,14 @@ import { NewCompositeDialog } from './NewCompositeDialog'
 export default function CompositesListPage() {
   const { slug, workspace, all: workspaces } = useWorkspace()
   const navigate = useNavigate()
+  const location = useLocation()
   const [newOpen, setNewOpen] = useState(false)
-  const [tab, setTab] = useState('recurring')
-  const period = usePeriodFilter('week')
+  // 상세에서 "목록"으로 돌아올 때 보던 주차/탭을 복원(location.state). 없으면
+  // 기본(현재 주차·정기 탭). 하드 새로고침 시엔 state 가 사라져 기본값.
+  const [tab, setTab] = useState(() =>
+    location.state?.listKind === 'theme' ? 'theme' : 'recurring',
+  )
+  const period = usePeriodFilter('week', location.state?.listAnchorDate)
   // 주제 탭은 period_date 가 없어 정기와 같은 주/월 축은 안 맞지만,
   // 연도 정도 단위는 인덱스로 의미가 있다. created_at 기준으로 한 해에
   // 만들어진 것만 보여준다. 기본값은 현재 연도.

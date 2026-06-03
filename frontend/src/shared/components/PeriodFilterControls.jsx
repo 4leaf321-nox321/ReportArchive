@@ -19,9 +19,18 @@ import {
  *   <PeriodFilterControls period={period} />
  *   reports.filter((r) => dateInPeriodRange(r.report_date, period.range))
  */
-export function usePeriodFilter(initialKind = 'month') {
+export function usePeriodFilter(initialKind = 'month', initialAnchor = null) {
   const [kind, setKind] = useState(initialKind)
-  const [anchor, setAnchor] = useState(() => new Date())
+  // initialAnchor(예: 목록으로 돌아갈 때 보던 주차의 날짜)가 있으면 그 날짜로
+  // 시작 — 없으면 현재. YYYY-MM-DD 문자열/Date 모두 받는다.
+  const [anchor, setAnchor] = useState(() => {
+    if (initialAnchor instanceof Date) return initialAnchor
+    if (typeof initialAnchor === 'string' && initialAnchor) {
+      const d = new Date(initialAnchor)
+      if (!Number.isNaN(d.getTime())) return d
+    }
+    return new Date()
+  })
 
   const meta = periodOptionFor(kind)
   const range = periodRange(kind, anchor)

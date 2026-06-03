@@ -735,7 +735,20 @@ export default function CompositeDetailPage() {
             chrome (목록 이동·편집·발행·Word/HTML 저장·복사·삭제) 은
             저장된 아카이브에서 의미가 없음. */}
         <div data-export-exclude className="flex items-center gap-2 flex-wrap">
-        <Button variant="ghost" size="sm" onClick={() => navigate(`/w/${slug}/composites`)}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() =>
+            // 보던 종합보고의 주차/종류로 목록을 복원 — 정기면 그 period_date
+            // 주차로, 주제면 주제 탭으로 돌아간다(현재 주차로 튀지 않게).
+            navigate(`/w/${slug}/composites`, {
+              state: {
+                listAnchorDate: composite.period_date ?? null,
+                listKind: composite.kind,
+              },
+            })
+          }
+        >
           <ArrowLeft className="mr-1 h-3 w-3" />
           목록
         </Button>

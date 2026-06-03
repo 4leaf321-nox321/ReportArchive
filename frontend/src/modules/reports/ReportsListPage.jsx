@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Building2,
   ChevronDown,
@@ -75,6 +75,7 @@ export default function ReportsListPage() {
   const { slug, workspace, all: workspaces, getAncestors, getDescendantsInclusive, patchWorkspace } = useWorkspace()
   const { me } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
   const [onlyMine, setOnlyMine] = useState(false)
   // Slug to scope by — empty means "no filter". The picked workspace's
   // descendants_inclusive becomes the visible set, so admins at any tier
@@ -88,7 +89,12 @@ export default function ReportsListPage() {
   // Folder filter — `null` = 전체, 'uncategorized' = no folder, number
   // = specific folder id. Resets on workspace switch. Applies in both
   // personal AND org workspaces (Phase 1.6 brought folders to org).
-  const [folderFilter, setFolderFilter] = useState(FOLDER_FILTER_ALL)
+  // 상세에서 "목록"으로 돌아올 때 보던 폴더를 복원(location.state.listFolderId).
+  const [folderFilter, setFolderFilter] = useState(() =>
+    location.state?.listFolderId !== undefined
+      ? location.state.listFolderId
+      : FOLDER_FILTER_ALL,
+  )
   // Phase filter — '' = 전체, otherwise a ReportPhase value. Cheap
   // client-side filter (every row already carries `phase`); the picker
   // is a small native select inside FilterBar to keep the toolbar tidy.
@@ -124,7 +130,14 @@ export default function ReportsListPage() {
   // 막으므로, 프런트는 쓰기 affordance 를 숨기고 배너를 띄운다.
   const isPublicView = isOrg && Boolean(me?.public_view)
 
+  // 워크스페이스가 *실제로 바뀔 때만* 필터 초기화. 최초 마운트(및 dev
+  // StrictMode 의 effect 2회 호출)에서는 slug 가 동일하므로 건너뛴다 —
+  // 목록으로 돌아올 때 location.state 로 복원한 폴더 필터가 곧바로 지워지지
+  // 않게 한다. (slug 는 URL 에서 동기적으로 잡힌다.)
+  const lastSlugRef = useRef(slug)
   useEffect(() => {
+    if (lastSlugRef.current === slug) return
+    lastSlugRef.current = slug
     setEntityFilter([])
     setFolderFilter(FOLDER_FILTER_ALL)
     setPhaseFilter('')

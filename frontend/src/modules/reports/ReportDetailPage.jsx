@@ -6981,6 +6981,11 @@ function PageSection({
   // 프레임 전달. 드래그 핸들 바의 폭 뱃지(예: "50%")가 끌면서 실시간으로
   // 바뀌어, 50%·25% 같은 등분 폭을 눈으로 맞추기 쉽게 한다. {i, w} 또는 null.
   const [liveResize, setLiveResize] = useState(null)
+  // 리사이즈 중 "실시간 폭 %" 뱃지를 *React 리렌더 없이* 갱신하기 위한 ref.
+  // onResize 가 매 이동마다 이 span 의 textContent 만 직접 쓴다 — state 를
+  // 건드리면 PageSection 이 리렌더되며 다른 위젯까지 다시 그려져 랙이 된다
+  // (가로 리사이즈가 느렸던 원인). 플레이스홀더 안의 span 에 연결된다.
+  const resizeBadgeRef = useRef(null)
   // Per-page state for "edit widget props" — null when no panel is open,
   // otherwise the extra block's id. Lives here (not on each card) so a
   // right-click on one block closes any other open panel cleanly.
@@ -7085,8 +7090,19 @@ function PageSection({
   // 꺼졌으면 토스트의 "되돌리기" 버튼으로 한 번에 복구 가능.
   const handleResizeStart = useCallback(
     (_layout, oldItem) => {
-      if (!isEditing || !onToggleAutoFit) return
       const blockId = oldItem?.i
+      // 리사이즈 시작 즉시 가벼운 플레이스홀더로 교체한다. 예전엔 첫 격자
+      // 경계를 넘어 col_span 이 바뀔 때(onResize)에야 플레이스홀더가 떠서,
+      // 그 전까지 무거운 위젯(차트/Plotly)이 매 픽셀 reflow 하며 마우스를
+      // 못 따라오는 랙이 있었다. 시작점에서 바로 빼면 제스처 내내 가볍다.
+      if (blockId && Number.isFinite(oldItem?.w)) {
+        setLiveResize((prev) =>
+          prev && prev.i === blockId && prev.w === oldItem.w
+            ? prev
+            : { i: blockId, w: oldItem.w },
+        )
+      }
+      if (!isEditing || !onToggleAutoFit) return
       if (!blockId) return
       const block = blocks.find((b) => b.id === blockId)
       if (!block) return
@@ -7151,32 +7167,31 @@ function PageSection({
           items={rglItems}
           onLayoutChange={isEditing ? onLayoutChange : undefined}
           onResizeStart={isEditing ? handleResizeStart : undefined}
-          // 실시간 폭 뱃지용 — 리사이즈 중 블록 id + 폭(col_span) 추적.
-          // RGL 콜백 시그니처가 v2 GridItemCallback (itemId, w, h, data) 와
-          // 호환 EventCallback (layout, oldItem, newItem, …) 두 형태가 가능해
-          // 둘 다 흡수한다.
+          // onResize(매 이동)에서는 절대 React state 를 건드리지 않는다. 예전엔
+          // col_span 변화마다 setLiveResize 를 호출했는데, 그게 PageSection 을
+          // 리렌더 → 모든 블록 엘리먼트를 새로 만들어 *다른 무거운 위젯(차트
+          // 등)까지 매번 다시 그리게* 했다(가로 리사이즈가 느렸던 원인). 대신
+          // 실시간 폭 %는 플레이스홀더 안 span 의 textContent 를 직접 써서
+          // 보여준다 — 리렌더가 없어 랙이 없다. 플레이스홀더 교체 자체는
+          // onResizeStart 에서 한 번만 켜고(제스처 내내 유지), 실제 셀 크기는
+          // 라이브러리가 픽셀 단위로 부드럽게 그린다. 최종 크기는
+          // onResizeStop→onLayoutChange 로 저장. (콜백 시그니처는 v2
+          // GridItemCallback (id, w, h, data) 와 EventCallback 두 형태 흡수.)
           onResize={
             isEditing
               ? (arg0, arg1, arg2) => {
-                  let id
+                  if (!resizeBadgeRef.current) return
                   let w
                   if (typeof arg0 === 'string') {
-                    id = arg0
                     w = arg1
                   } else {
                     const it = arg2 || arg1
-                    id = it?.i
                     w = it?.w
                   }
-                  // w 는 col_span 정수라 격자 경계를 넘을 때만 바뀐다. 값이
-                  // 그대로면 state 를 안 건드려 *매 프레임 리렌더*(랙 원인)를
-                  // 막는다 — 경계를 넘는 몇 번만 갱신.
-                  if (id != null && Number.isFinite(w)) {
-                    setLiveResize((prev) =>
-                      prev && prev.i === id && prev.w === w
-                        ? prev
-                        : { i: id, w },
-                    )
+                  if (Number.isFinite(w)) {
+                    const cols = Math.max(1, Math.round(w))
+                    const pct = Math.round((cols / REPORT_GRID_COLS) * 100)
+                    resizeBadgeRef.current.textContent = `${cols}/12 · ${pct}%`
                   }
                 }
               : undefined
@@ -7244,13 +7259,15 @@ function PageSection({
               >
                 {liveResize?.i === block.id ? (
                   // 리사이즈 중엔 무거운 위젯 대신 가벼운 붉은 플레이스홀더만
-                  // 그린다 — 격자 경계를 넘을 때마다 위젯 내용이 다시 그려지는
-                  // 비용을 없애 드래그가 부드러워진다. 놓으면 실제 위젯 복귀.
+                  // 그린다 — 위젯 콘텐츠 reflow 비용을 없애 드래그가 마우스를
+                  // 그대로 따라온다. 박스 크기는 라이브러리가 픽셀 단위로 부드럽게
+                  // 그린다. 폭 % span 은 onResize 가 textContent 만 직접 갱신해
+                  // (리렌더 없이) 실시간으로 보여준다. 초기값은 시작 col_span.
                   <div className="h-full w-full rounded-md border-2 border-dashed border-red-400/70 bg-red-400/10 flex items-center justify-center gap-2 text-xs font-medium text-red-500 select-none">
                     <span className="uppercase tracking-wider">
                       {block.type}
                     </span>
-                    <span className="tabular-nums">
+                    <span ref={resizeBadgeRef} className="tabular-nums">
                       {blockColSpan}/12 ·{' '}
                       {Math.round((blockColSpan / REPORT_GRID_COLS) * 100)}%
                     </span>
@@ -9116,17 +9133,23 @@ function BlockEditorCard({
       const dy = e.clientY - start.y
       if (Math.abs(dx) + Math.abs(dy) > 5) return // drag, not click
     }
+    // 단일 클릭은 "선택"만 한다 — 예전엔 여기서 모달을 바로 열었는데,
+    // 드래그 이동/크기 조정 중 실수로 편집창이 열리는 문제가 있어서
+    // 모달 진입은 호버 "편집" 버튼 또는 더블클릭으로만(아래) 분리했다.
     onActivate?.(e)
-    // Non-inline-editable widgets open the modal editor on click.
-    // The drag handle / autoFit / settings / remove buttons live
-    // inside the card and stop propagation themselves, so this
-    // only fires when the user clicks the actual content area.
-    // 위젯의 실제 렌더 폭을 함께 넘겨 모달이 그 폭으로 편집 surface 를 맞춤.
-    if (opensModalEditor) {
-      onOpenContentEdit(
-        e.currentTarget?.getBoundingClientRect?.().width ?? null,
-      )
-    }
+  }
+  // 모달 편집 진입 — 위젯의 실제 렌더 폭을 함께 넘겨 모달이 그 폭으로 편집
+  // surface 를 맞춘다(표/비교표 WYSIWYG). el 은 폭 측정의 기준 카드 요소.
+  function openContentEditorFrom(el) {
+    if (!opensModalEditor) return
+    const card =
+      el?.closest?.('[data-report-widget-card="true"]') ?? el ?? null
+    onOpenContentEdit(card?.getBoundingClientRect?.().width ?? null)
+  }
+  function handleCardDoubleClick(e) {
+    if (!opensModalEditor) return
+    e.stopPropagation()
+    openContentEditorFrom(e.currentTarget)
   }
   return (
     <TableViewContext.Provider value={tableViewValue}>
@@ -9141,6 +9164,7 @@ function BlockEditorCard({
       data-report-widget-card="true"
       onMouseDown={handleCardMouseDown}
       onClick={handleCardClick}
+      onDoubleClick={handleCardDoubleClick}
       className={cn(
         'group relative h-full flex flex-col',
         autoFit ? 'overflow-visible' : 'overflow-hidden',
@@ -9150,12 +9174,34 @@ function BlockEditorCard({
         // primary-tinted active ring so a focused comment is always
         // visually distinguishable from a merely-selected block.
         isCommentFocused && 'ring-2 ring-amber-400',
-        // Hover hint that this card opens a modal — only when in
-        // edit mode and the click would actually do something.
-        opensModalEditor && 'cursor-pointer hover:ring-2 hover:ring-primary/20'
+        // Hover hint that this card is editable — modal entry is via the
+        // hover "편집" button / double-click (not a bare single click),
+        // so no cursor-pointer on the whole card anymore.
+        opensModalEditor && 'hover:ring-2 hover:ring-primary/20'
       )}
     >
       {dragHandle}
+      {/* 호버 시 떠오르는 "편집" 버튼 — 비인라인 위젯의 모달 진입점. 단일
+          클릭(선택)·드래그·리사이즈와 분리돼 실수로 편집창이 열리지 않는다.
+          오버레이는 pointer-events-none 이라 평소 내용 조작을 막지 않고,
+          버튼만 pointer-events-auto 로 살린다. */}
+      {opensModalEditor && (
+        <div className="pointer-events-none absolute inset-0 z-[6] flex items-center justify-center bg-background/10 opacity-0 transition-opacity group-hover:opacity-100">
+          <button
+            type="button"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              openContentEditorFrom(e.currentTarget)
+            }}
+            className="pointer-events-auto inline-flex items-center gap-2 rounded-lg border-2 border-primary bg-background px-5 py-2.5 text-sm font-semibold text-primary shadow-lg hover:bg-primary hover:text-primary-foreground"
+            title="이 위젯 편집 (더블클릭으로도 열림)"
+          >
+            <Pencil className="h-4 w-4" />
+            편집
+          </button>
+        </div>
+      )}
       {viewModeSectionHeader}
       {/* Pin + fullscreen group — anchored top-right, horizontally
           stacked so they never overlap. Each child positions inline.

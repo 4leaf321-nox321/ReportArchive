@@ -501,6 +501,32 @@ def _resolve_pages_for_create(payload: ReportCreate) -> list[ReportPage]:
     ]
 
 
+def _validate_collab_workspace_slugs(db: Session, slugs: list[str]) -> list[str]:
+    """협업 부서 슬러그 정규화 — 중복 제거 + 실제 조직(비개인) 워크스페이스만
+    남긴다. 입력 순서를 보존(프런트 표시 순서와 일치). 존재하지 않거나 개인
+    워크스페이스인 슬러그는 조용히 버린다 — 부서 트리에서 고른 값이라 잘못될
+    일이 드물고, 엔티티처럼 400 으로 막기보다 관대한 편이 안전하다."""
+    if not slugs:
+        return []
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for s in slugs:
+        if s and s not in seen:
+            seen.add(s)
+            ordered.append(s)
+    if not ordered:
+        return []
+    valid = set(
+        db.execute(
+            select(Workspace.slug).where(
+                Workspace.slug.in_(ordered),
+                Workspace.kind == WorkspaceKind.org,
+            )
+        ).scalars()
+    )
+    return [s for s in ordered if s in valid]
+
+
 def create_report(
     db: Session,
     workspace_slug: str,
@@ -548,6 +574,10 @@ def create_report(
         init_kwargs["page_rich_text_prefix_d2"] = payload.page_rich_text_prefix_d2
     if payload.report_type_id is not None:
         init_kwargs["report_type_id"] = payload.report_type_id
+    if payload.collab_workspace_slugs is not None:
+        init_kwargs["collab_workspace_slugs"] = _validate_collab_workspace_slugs(
+            db, payload.collab_workspace_slugs
+        )
     report = Report(
         **init_kwargs,
         content=page0.content or {},
@@ -637,6 +667,9 @@ def copy_report(
         report_type_id=source.report_type_id if full else None,
         lifecycle=source.lifecycle if full else None,
         entity_ids=[e.id for e in source.entities] if full else None,
+        collab_workspace_slugs=(
+            list(source.collab_workspace_slugs or []) if full else None
+        ),
     )
     new_report = create_report(
         db, target_workspace, payload, owner_user_id=owner_user_id
@@ -881,6 +914,13 @@ def update_report(
     ):
         if key in data:
             setattr(report, key, data[key])
+
+    # 협업 부서 — 전체 교체 집합. None/absent = 유지, [] = 해제. 슬러그는
+    # 실제 조직 워크스페이스로 검증·정규화(중복 제거, 순서 보존).
+    if "collab_workspace_slugs" in data:
+        report.collab_workspace_slugs = _validate_collab_workspace_slugs(
+            db, data["collab_workspace_slugs"] or []
+        )
 
     # Stamp the last-editor. Done on every successful update path; routes
     # always pass the actor id so this never silently goes None.

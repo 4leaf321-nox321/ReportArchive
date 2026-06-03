@@ -135,6 +135,17 @@ class Report(Base):
     # entity extraction lands (개발계획.md §1-4 Phase 1).
     tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=list, nullable=False)
 
+    # "협업 부서" — 이 보고서 업무에 함께 참여한 조직(부서) 워크스페이스 슬러그
+    # 목록. 기준정보(엔티티)와 달리 별도 등록 없이 *시스템에 이미 등록된 부서
+    # 트리(workspaces)* 를 그대로 참조한다 — 진실의 원천은 워크스페이스. 작성
+    # 부서(workspace_slug)·게시 부서(mounts)와는 다른 의미(함께 일한 조직)라
+    # 별도 필드. 이름/색은 프런트가 /api/workspaces 로 해석한다. 비어 있으면 [].
+    # 역방향 조회("이 부서가 협업한 보고서")가 필요해지면 GIN 인덱스/조인
+    # 테이블로 승격(지금은 배열로 단순하게).
+    collab_workspace_slugs: Mapped[list[str]] = mapped_column(
+        ARRAY(String), default=list, server_default="{}", nullable=False
+    )
+
     # The actual report content as JSON, conforming to the bound template's
     # schema. Validated on write in the service layer.
     content: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)

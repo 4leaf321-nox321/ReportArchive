@@ -283,6 +283,10 @@ class ReportRead(BaseModel):
     # second `/api/entities` lookup. Writes go through the `entity_ids`
     # field on PATCH (below) — this is read-only on the response side.
     entities: list[EntityRefMini] = []
+    # "협업 부서" — 함께 일한 조직 워크스페이스 슬러그. 기준정보(엔티티)와 달리
+    # 워크스페이스 트리를 직접 참조한다. 이름/색은 프런트가 /api/workspaces 로
+    # 해석. 쓰기는 ReportUpdate.collab_workspace_slugs 로. 빈 리스트 = 미지정.
+    collab_workspace_slugs: list[str] = []
     created_at: UtcDatetime
     updated_at: UtcDatetime
     # Optimistic-concurrency token. Clients echo this back in PATCH bodies
@@ -428,6 +432,8 @@ class ReportCreate(BaseModel):
     # omitted the report starts with no tags; when supplied each id is
     # validated by the entities service (must exist; deprecated is OK).
     entity_ids: Optional[list[int]] = None
+    # "협업 부서" 워크스페이스 슬러그 — 생략 시 빈 목록으로 시작.
+    collab_workspace_slugs: Optional[list[str]] = None
 
 
 class ReportCopy(BaseModel):
@@ -497,6 +503,9 @@ class ReportUpdate(BaseModel):
     # current set (not a delta), which keeps server-side reconciliation
     # trivial and avoids "lost update" races between concurrent edits.
     entity_ids: Optional[list[int]] = None
+    # 협업 부서 워크스페이스 슬러그의 전체 교체 집합. None/absent = 기존 유지,
+    # [] = 전부 해제. 엔티티 태그와 동일하게 항상 현재 전체 집합을 보낸다.
+    collab_workspace_slugs: Optional[list[str]] = None
     # Optimistic-concurrency token: the revision the client thinks is
     # current. The service compares against the server's value and rejects
     # the PATCH with revision_mismatch if they differ. Optional so the

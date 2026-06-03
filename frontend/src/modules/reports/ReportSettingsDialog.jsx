@@ -16,6 +16,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui
 import { listEntityTypes } from '@/shared/api/entities'
 import { EntityMultiPicker } from '@/modules/entities/EntityMultiPicker'
 import { cn } from '@/shared/lib/utils'
+import { Badge } from '@/shared/components/ui/badge'
+import { X } from 'lucide-react'
+import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
+import { WorkspaceTreeSelect } from '@/shared/components/WorkspaceTreeSelect'
 import { ReportTypePicker } from './ReportTypePicker'
 
 /**
@@ -109,6 +113,9 @@ export function ReportSettingsDialog({
   // dirty 가 되어 적용 시 onApplyEntities 로 위로 전달된다. null/빈
   // 배열이면 아무것도 태깅되지 않은 보고서.
   currentEntities = null,
+  // "협업 부서" — 함께 일한 조직 워크스페이스 슬러그 배열. picker(트리)에서
+  // 변경하면 onApplyCollab 로 위로 전달된다. null/빈 배열 = 미지정.
+  currentCollab = null,
   // 보고서 메타데이터 (read-only로 표시). owner_name, owner_email,
   // workspace_slug, report_date, status, created_at, updated_at,
   // updated_by_name 등을 키로 가지는 평면 객체. 일부 키가 비어 있으면
@@ -123,6 +130,7 @@ export function ReportSettingsDialog({
   onApplyRichTextPrefixes,
   onApplyType,
   onApplyEntities,
+  onApplyCollab,
 }) {
   if (!open) return null
   return (
@@ -146,6 +154,7 @@ export function ReportSettingsDialog({
           currentTypeId={currentTypeId}
           currentType={currentType}
           currentEntities={currentEntities}
+          currentCollab={currentCollab}
           metadata={metadata}
           onClose={onClose}
           onApplyWidth={onApplyWidth}
@@ -155,6 +164,7 @@ export function ReportSettingsDialog({
           onApplyRichTextPrefixes={onApplyRichTextPrefixes}
           onApplyType={onApplyType}
           onApplyEntities={onApplyEntities}
+          onApplyCollab={onApplyCollab}
         />
       </DialogContent>
     </Dialog>
@@ -178,6 +188,7 @@ function DialogBody({
   currentTypeId,
   currentType,
   currentEntities,
+  currentCollab,
   metadata,
   onClose,
   onApplyWidth,
@@ -187,6 +198,7 @@ function DialogBody({
   onApplyRichTextPrefixes,
   onApplyType,
   onApplyEntities,
+  onApplyCollab,
 }) {
   const initialWidth = Number.isFinite(currentWidthPx) ? currentWidthPx : null
   const initialGap = Number.isFinite(currentGapPx) ? currentGapPx : null
@@ -212,6 +224,9 @@ function DialogBody({
   // Flat list of slim EntityRefMini — same shape as the server emits on
   // ReportRead.entities. Picker groups by type_slug at render-time.
   const [entitiesDraft, setEntitiesDraft] = useState(initialEntities)
+  // "협업 부서" 슬러그 배열 draft. 순서 보존(표시 순서).
+  const initialCollab = Array.isArray(currentCollab) ? currentCollab : []
+  const [collabDraft, setCollabDraft] = useState(initialCollab)
 
   const widthChanged = (widthDraft ?? null) !== (currentWidthPx ?? null)
   const gapChanged = (gapDraft ?? null) !== (currentGapPx ?? null)
@@ -230,13 +245,18 @@ function DialogBody({
     () => !sameIdSet(entitiesDraft, initialEntities),
     [entitiesDraft, initialEntities],
   )
+  // 협업 부서는 집합 비교(순서 무관) — 토글 순서가 dirty 를 만들지 않게.
+  const collabChanged = useMemo(
+    () => !sameStrSet(collabDraft, initialCollab),
+    [collabDraft, initialCollab],
+  )
   const dirty =
     widthChanged ||
     gapChanged ||
     blendChanged ||
     slideChanged ||
     prefixesChanged ||
-    (showPropertiesTab && (typeChanged || entitiesChanged))
+    (showPropertiesTab && (typeChanged || entitiesChanged || collabChanged))
 
   function handleApply() {
     if (!widthValid || !gapValid || !slideValid) return
@@ -254,6 +274,7 @@ function DialogBody({
     }
     if (showPropertiesTab && typeChanged) onApplyType?.(typeDraft)
     if (showPropertiesTab && entitiesChanged) onApplyEntities?.(entitiesDraft)
+    if (showPropertiesTab && collabChanged) onApplyCollab?.(collabDraft)
     onClose()
   }
 
@@ -307,6 +328,8 @@ function DialogBody({
               onChange={setTypeDraft}
               entitiesDraft={entitiesDraft}
               onEntitiesChange={setEntitiesDraft}
+              collabDraft={collabDraft}
+              onCollabChange={setCollabDraft}
               metadata={metadata}
             />
           </TabsContent>
@@ -879,6 +902,8 @@ function ReportSettingsPropertiesTab({
   onChange,
   entitiesDraft,
   onEntitiesChange,
+  collabDraft,
+  onCollabChange,
   metadata,
 }) {
   function handlePick(typeOrNull) {
@@ -913,6 +938,17 @@ function ReportSettingsPropertiesTab({
           entities={entitiesDraft}
           onChange={onEntitiesChange}
         />
+        <div className="mt-1 flex items-start gap-3">
+          <Label className="w-24 shrink-0 pt-1.5 text-xs text-muted-foreground">
+            협업 부서
+          </Label>
+          <div className="min-w-0 flex-1">
+            <CollabDeptSection
+              value={collabDraft ?? []}
+              onChange={onCollabChange}
+            />
+          </div>
+        </div>
       </div>
       {metadata && (
         <>
@@ -1018,6 +1054,83 @@ export function EntityTagsSection({ entities, onChange }) {
   )
 }
 
+/** "협업 부서" picker — 기준정보(엔티티)와 달리 시스템에 등록된 부서 트리
+ *  (workspaces)를 직접 참조한다. 선택된 부서는 슬러그 배열로 보관하고, 칩 +
+ *  트리 다중 선택(WorkspaceTreeSelect)으로 추가/해제. 이름/색은 워크스페이스
+ *  목록으로 해석한다. value=slug[], onChange(nextSlugs)로 전체 교체. */
+export function CollabDeptSection({ value, onChange }) {
+  const { all } = useWorkspace()
+  const orgWorkspaces = useMemo(
+    () => (all ?? []).filter((w) => w.kind === 'org' && !w.virtual),
+    [all],
+  )
+  const bySlug = useMemo(() => {
+    const m = new Map()
+    for (const w of orgWorkspaces) m.set(w.slug, w)
+    return m
+  }, [orgWorkspaces])
+
+  const selected = useMemo(() => new Set(value ?? []), [value])
+  const slugs = value ?? []
+
+  function toggle(slug) {
+    if (selected.has(slug)) {
+      onChange?.(slugs.filter((s) => s !== slug))
+    } else {
+      onChange?.([...slugs, slug])
+    }
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {slugs.length > 0 ? (
+        <div className="flex flex-wrap gap-1">
+          {slugs.map((s) => {
+            const w = bySlug.get(s)
+            return (
+              <Badge
+                key={s}
+                variant="secondary"
+                className="gap-1 pr-1 text-[11px]"
+                style={
+                  w?.color
+                    ? { backgroundColor: `${w.color}22`, color: w.color }
+                    : undefined
+                }
+              >
+                {w?.name ?? s}
+                <button
+                  type="button"
+                  onClick={() => toggle(s)}
+                  className="rounded-full p-0.5 hover:bg-black/10"
+                  title="협업 부서에서 제거"
+                  aria-label="제거"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </Badge>
+            )
+          })}
+        </div>
+      ) : (
+        <p className="text-[11px] text-muted-foreground">
+          함께 일한 부서를 아래에서 선택하세요.
+        </p>
+      )}
+      <div className="rounded-md border">
+        <WorkspaceTreeSelect
+          orgWorkspaces={orgWorkspaces}
+          selected={selected}
+          onToggle={toggle}
+          autoExpandSlugs={slugs}
+          searchPlaceholder="부서 검색…"
+          maxHeightClass="max-h-48"
+        />
+      </div>
+    </div>
+  )
+}
+
 function SectionLabel({ children }) {
   return (
     <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -1108,6 +1221,17 @@ function sameIdSet(a, b) {
   if (aIds.length !== bIds.length) return false
   for (let i = 0; i < aIds.length; i += 1) {
     if (aIds[i] !== bIds[i]) return false
+  }
+  return true
+}
+
+/** 두 문자열 배열이 같은 집합인지(순서 무관). 협업 부서 slug dirty 비교용. */
+function sameStrSet(a, b) {
+  const aa = [...(Array.isArray(a) ? a : [])].sort()
+  const bb = [...(Array.isArray(b) ? b : [])].sort()
+  if (aa.length !== bb.length) return false
+  for (let i = 0; i < aa.length; i += 1) {
+    if (aa[i] !== bb[i]) return false
   }
   return true
 }

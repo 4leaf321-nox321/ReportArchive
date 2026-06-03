@@ -100,6 +100,7 @@ import {
   DEFAULT_REPORT_WIDTH_PX,
   DEFAULT_REPORT_GAP_PX,
   EntityTagsSection,
+  CollabDeptSection,
   ReportSettingsDialog,
 } from './ReportSettingsDialog'
 import { ReportTypePicker } from './ReportTypePicker'
@@ -480,6 +481,8 @@ export default function ReportDetailPage() {
         // backend; the settings dialog re-renders chips from it without
         // a second fetch. Mutated via onApplyEntities below.
         entities: existingReport.entities ?? [],
+        // 협업 부서 — 워크스페이스 슬러그 배열. onApplyCollab 로 갱신.
+        collab_workspace_slugs: existingReport.collab_workspace_slugs ?? [],
         pages,
       })
       setCurrentPage((p) => clamp(p, 0, pages.length - 1))
@@ -1890,6 +1893,8 @@ export default function ReportDetailPage() {
         // array clears all tags; sending the field unconditionally keeps
         // the create/update paths symmetric.
         entity_ids: (draft.entities ?? []).map((e) => e.id),
+        // 협업 부서 — 슬러그 전체 교체 집합. 빈 배열이면 전부 해제.
+        collab_workspace_slugs: draft.collab_workspace_slugs ?? [],
       }
       if (isNew) {
         const created = await createReport({
@@ -2045,6 +2050,7 @@ export default function ReportDetailPage() {
         report_type_id: existingReport.report_type_id ?? null,
         report_type: existingReport.report_type ?? null,
         entities: existingReport.entities ?? [],
+        collab_workspace_slugs: existingReport.collab_workspace_slugs ?? [],
         page_width_px: existingReport.page_width_px ?? null,
         page_gap_px: existingReport.page_gap_px ?? null,
         page_blend_blocks: existingReport.page_blend_blocks === true,
@@ -3358,6 +3364,11 @@ export default function ReportDetailPage() {
             태그가 없으면 렌더 안 됨. */}
         <ReportEntitiesPanel
           entities={draft?.entities ?? existingReport?.entities ?? []}
+          collabSlugs={
+            draft?.collab_workspace_slugs ??
+            existingReport?.collab_workspace_slugs ??
+            []
+          }
         />
 
         {/* Page strip — chips that select the active page (paginated mode).
@@ -3790,6 +3801,7 @@ export default function ReportDetailPage() {
         currentTypeId={draft?.report_type_id ?? null}
         currentType={draft?.report_type ?? null}
         currentEntities={draft?.entities ?? []}
+        currentCollab={draft?.collab_workspace_slugs ?? []}
         metadata={
           // draft holds the user-editable subset (title/status/report_date);
           // owner/workspace/timestamps are server-authoritative and only
@@ -3958,6 +3970,11 @@ export default function ReportDetailPage() {
           // so the dialog re-opens with the user's draft chips intact
           // even before they save.
           setDraft((d) => (d ? { ...d, entities } : d))
+        }}
+        onApplyCollab={(slugs) => {
+          // 협업 부서 슬러그 배열. PATCH 의 collab_workspace_slugs 로 저장되며,
+          // 저장 전에도 draft 에 반영해 배너/다이얼로그가 즉시 갱신되게.
+          setDraft((d) => (d ? { ...d, collab_workspace_slugs: slugs } : d))
         }}
       />
 
@@ -5399,9 +5416,10 @@ function loadEntityTypesCached() {
  * 확인할 수 있다. 실제 태그 추가·삭제는 편집모드 칩(ReportMetaChips)에서
  * 하고, 이 패널은 읽기 전용 요약이다. 태그가 없으면 렌더하지 않는다.
  */
-function ReportEntitiesPanel({ entities }) {
+function ReportEntitiesPanel({ entities, collabSlugs }) {
   const [open, setOpen] = useState(false)
   const [types, setTypes] = useState(null) // 축 catalog (label·순서) — null=미로딩
+  const { all: workspaces } = useWorkspace()
 
   useEffect(() => {
     let cancelled = false
@@ -5438,7 +5456,19 @@ function ReportEntitiesPanel({ entities }) {
       .sort((a, b) => a.ord - b.ord)
   }, [list, types])
 
-  if (list.length === 0) return null
+  // 협업 부서 — 슬러그를 워크스페이스 이름/색으로 해석. 기준정보(엔티티)와
+  // 달리 부서 트리(workspaces)에서 직접 온다. 미해석 슬러그는 슬러그 그대로.
+  const collabDepts = useMemo(() => {
+    const slugs = Array.isArray(collabSlugs) ? collabSlugs : []
+    if (slugs.length === 0) return []
+    const bySlug = new Map((workspaces ?? []).map((w) => [w.slug, w]))
+    return slugs.map((s) => {
+      const w = bySlug.get(s)
+      return { slug: s, name: w?.name ?? s, color: w?.color ?? null }
+    })
+  }, [collabSlugs, workspaces])
+
+  if (list.length === 0 && collabDepts.length === 0) return null
 
   // 본문 상단 고정 배너 — 헤더와 페이지 사이 한 줄. 닫혀 있을 땐 축별
   // 값을 인라인 요약("모델명 SM6·QM6 | 부품명 브레이크패드")으로 항상
@@ -5475,6 +5505,14 @@ function ReportEntitiesPanel({ entities }) {
                 </span>
               </span>
             ))}
+            {collabDepts.length > 0 && (
+              <span className="inline-flex gap-1">
+                <span className="text-muted-foreground">협업 부서</span>
+                <span className="text-foreground/80">
+                  {collabDepts.map((d) => d.name).join(' · ')}
+                </span>
+              </span>
+            )}
           </span>
         )}
       </button>
@@ -5507,6 +5545,32 @@ function ReportEntitiesPanel({ entities }) {
               </dd>
             </div>
           ))}
+          {collabDepts.length > 0 && (
+            <div className="flex items-start gap-3">
+              <dt className="w-20 shrink-0 pt-0.5 text-muted-foreground">
+                협업 부서
+              </dt>
+              <dd className="flex min-w-0 flex-1 flex-wrap gap-1">
+                {collabDepts.map((d) => (
+                  <span
+                    key={d.slug}
+                    className="inline-flex items-center rounded-full border px-2 py-0.5"
+                    style={
+                      d.color
+                        ? {
+                            backgroundColor: `${d.color}22`,
+                            color: d.color,
+                            borderColor: `${d.color}55`,
+                          }
+                        : undefined
+                    }
+                  >
+                    {d.name}
+                  </span>
+                ))}
+              </dd>
+            </div>
+          )}
         </dl>
       )}
     </div>
@@ -6720,6 +6784,13 @@ function ReportMetaChips({
   const hasType = !!draft.report_type_id
   const hasEntities =
     Array.isArray(draft.entities) && draft.entities.length > 0
+  const hasCollab =
+    Array.isArray(draft.collab_workspace_slugs) &&
+    draft.collab_workspace_slugs.length > 0
+  // "관련 정보" 칩은 엔티티 + 협업 부서를 합쳐 표시(둘 다 이 모달에서 등록).
+  const hasRelated = hasEntities || hasCollab
+  const relatedCount =
+    (draft.entities?.length ?? 0) + (draft.collab_workspace_slugs?.length ?? 0)
   const ctaTones = {
     amber: 'border-amber-400 bg-amber-100/70 text-amber-900 hover:bg-amber-200/70',
     blue:  'border-blue-400  bg-blue-100/70  text-blue-900  hover:bg-blue-200/70',
@@ -6775,31 +6846,46 @@ function ReportMetaChips({
             type="button"
             className={cn(
               'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors',
-              hasEntities ? mutedCls : ctaCls,
+              hasRelated ? mutedCls : ctaCls,
             )}
             title={
-              hasEntities
-                ? '관련 정보 추가/편집'
-                : '모델·부품·시험 등 관련 정보 태그'
+              hasRelated
+                ? '관련 정보 추가/편집 (협업 부서 포함)'
+                : '모델·부품·시험·협업 부서 등 관련 정보'
             }
           >
-            {hasEntities ? (
+            {hasRelated ? (
               <Tag className="h-3 w-3" />
             ) : (
               <Plus className="h-3 w-3" />
             )}
-            {hasEntities
-              ? `관련 정보 ${draft.entities.length}건`
-              : '관련 정보'}
+            {hasRelated ? `관련 정보 ${relatedCount}건` : '관련 정보'}
           </button>
         </PopoverTrigger>
         <PopoverContent className="w-[480px] p-3" align="end">
-          <EntityTagsSection
-            entities={draft.entities ?? []}
-            onChange={(entities) =>
-              setDraft((d) => (d ? { ...d, entities } : d))
-            }
-          />
+          <div className="space-y-3">
+            <EntityTagsSection
+              entities={draft.entities ?? []}
+              onChange={(entities) =>
+                setDraft((d) => (d ? { ...d, entities } : d))
+              }
+            />
+            {/* 협업 부서 — 기준정보(엔티티)와 달리 부서 트리에서 직접 선택.
+                "관련 정보" 안에 같이 둬서 한곳에서 등록되게 한다. */}
+            <div className="border-t pt-2">
+              <div className="mb-1.5 text-[11px] font-semibold text-muted-foreground">
+                협업 부서
+              </div>
+              <CollabDeptSection
+                value={draft.collab_workspace_slugs ?? []}
+                onChange={(slugs) =>
+                  setDraft((d) =>
+                    d ? { ...d, collab_workspace_slugs: slugs } : d,
+                  )
+                }
+              />
+            </div>
+          </div>
         </PopoverContent>
       </Popover>
       {/* 연결된 보고서 — 저장된 보고서 (reportId 있음) 일 때만 의미가 있다.

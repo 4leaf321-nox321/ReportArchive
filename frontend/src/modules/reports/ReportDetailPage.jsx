@@ -8412,15 +8412,15 @@ function DirectionalAddArrows({ canInsertHorizontally, onAdd }) {
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
             className={cn(
-              'absolute z-20 flex h-6 w-6 items-center justify-center rounded-full',
-              'border bg-background text-muted-foreground shadow-sm',
+              'absolute z-20 flex h-9 w-9 items-center justify-center rounded-full',
+              'border bg-background text-muted-foreground shadow-md',
               'opacity-0 transition-opacity pointer-events-none',
               'hover:bg-primary hover:text-primary-foreground hover:border-primary',
               'group-hover/insert:opacity-100 group-hover/insert:pointer-events-auto',
               positionClass,
             )}
           >
-            <Icon className="h-3 w-3" />
+            <Icon className="h-5 w-5" />
           </button>
         </PopoverTrigger>
         <PopoverContent
@@ -8444,14 +8444,14 @@ function DirectionalAddArrows({ canInsertHorizontally, onAdd }) {
       <Arrow
         direction="up"
         icon={ChevronUp}
-        positionClass="-top-3 left-1/2 -translate-x-1/2"
+        positionClass="-top-[18px] left-1/2 -translate-x-1/2"
         side="top"
         align="center"
       />
       <Arrow
         direction="down"
         icon={ChevronDown}
-        positionClass="-bottom-3 left-1/2 -translate-x-1/2"
+        positionClass="-bottom-[18px] left-1/2 -translate-x-1/2"
         side="bottom"
         align="center"
       />
@@ -8459,7 +8459,7 @@ function DirectionalAddArrows({ canInsertHorizontally, onAdd }) {
         <Arrow
           direction="left"
           icon={ChevronLeft}
-          positionClass="top-1/2 -left-3 -translate-y-1/2"
+          positionClass="top-1/2 -left-[18px] -translate-y-1/2"
           side="left"
           align="center"
         />
@@ -8468,7 +8468,7 @@ function DirectionalAddArrows({ canInsertHorizontally, onAdd }) {
         <Arrow
           direction="right"
           icon={ChevronRight}
-          positionClass="top-1/2 -right-3 -translate-y-1/2"
+          positionClass="top-1/2 -right-[18px] -translate-y-1/2"
           side="right"
           align="center"
         />

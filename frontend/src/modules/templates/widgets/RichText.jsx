@@ -38,10 +38,16 @@ const SANITIZE_OPTIONS = {
   ALLOWED_TAGS: ['p', 'span', 'strong', 'em', 'u', 's', 'del', 'br', 'a'],
   ALLOWED_ATTR: [
     'style',
+    'class',
+    // 제네릭 멘션 스키마(종류가 늘어도 고정).
+    'data-mention-type',
+    'data-mention-id',
+    'data-mention-ws',
+    'data-mention-axis',
+    // 구형 멘션(이미 저장된 보고서 호환).
     'data-report-id',
     'data-workspace-slug',
     'data-dept-slug',
-    'class',
   ],
 }
 
@@ -534,16 +540,31 @@ function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
   const mention = useReportMention()
   const handleMentionClick = useCallback(
     (e) => {
-      const a = e.target?.closest?.('a[data-report-id], a[data-dept-slug]')
+      const a = e.target?.closest?.(
+        'a[data-mention-type], a[data-report-id], a[data-dept-slug]',
+      )
       if (!a) return
-      const reportId = a.getAttribute('data-report-id')
-      const ws = a.getAttribute('data-workspace-slug')
-      const deptSlug = a.getAttribute('data-dept-slug')
-      let to = null
-      if (reportId && ws) to = `/w/${ws}/reports/${reportId}` // 보고서 멘션
-      else if (deptSlug) to = `/w/${deptSlug}/reports` // 협업 부서 멘션 → 그 부서 게시판
-      if (!to) return
+      // 멘션 anchor 면 항상 기본 동작(href="#" 점프) 차단. 이동 대상이 있을
+      // 때만 SPA navigate. (엔티티는 v1 비이동 — 차단만 하고 끝.)
       e.preventDefault()
+      const type = a.getAttribute('data-mention-type')
+      let to = null
+      if (type) {
+        // 제네릭 스키마.
+        const id = a.getAttribute('data-mention-id')
+        const ws = a.getAttribute('data-mention-ws')
+        if (type === 'report' && id && ws) to = `/w/${ws}/reports/${id}`
+        else if (type === 'dept' && id) to = `/w/${id}/reports`
+        // type === 'entity' → 이동 없음(표시 전용 칩)
+      } else {
+        // 구형 스키마(이미 저장된 보고서).
+        const reportId = a.getAttribute('data-report-id')
+        const ws = a.getAttribute('data-workspace-slug')
+        const deptSlug = a.getAttribute('data-dept-slug')
+        if (reportId && ws) to = `/w/${ws}/reports/${reportId}`
+        else if (deptSlug) to = `/w/${deptSlug}/reports`
+      }
+      if (!to) return
       if (mention?.navigate) mention.navigate(to)
       else window.location.assign(to)
     },

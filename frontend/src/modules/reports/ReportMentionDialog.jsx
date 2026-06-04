@@ -20,11 +20,15 @@ import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useReportMention } from '@/shared/reports/ReportMentionContext'
 import { useLinkKinds } from './ReportLinks'
 import { ReportPicker } from './ReportPicker'
+import { EntityMentionPicker } from './EntityMentionPicker'
 
 // 멘션 유형. 향후(사용자/외부링크 등) 더 추가 가능하도록 배열 구조 유지.
+// 엔티티 축은 여기 늘리지 않는다 — "관련 정보" 한 유형 안에서 축을 동적으로
+// 고른다(EntityMentionPicker). 그래서 축이 늘어도 토글은 그대로다.
 const MENTION_TYPES = [
   { value: 'report', label: '보고서' },
   { value: 'dept', label: '협업 부서' },
+  { value: 'entity', label: '관련 정보' },
 ]
 
 const PANEL_WIDTH = 440
@@ -63,6 +67,7 @@ export function ReportMentionDialog() {
   const [type, setType] = useState('report')
   const [selected, setSelected] = useState(null) // 보고서 선택(ReportSummary)
   const [selectedDept, setSelectedDept] = useState(null) // 협업 부서 slug
+  const [selectedEntity, setSelectedEntity] = useState(null) // 관련 정보 엔티티
   const [registerLink, setRegisterLink] = useState(true)
   const [kindDir, setKindDir] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -77,6 +82,7 @@ export function ReportMentionDialog() {
     setType('report')
     setSelected(null)
     setSelectedDept(null)
+    setSelectedEntity(null)
     setRegisterLink(true)
     setSubmitting(false)
     setPos(computeInitialPos(popup?.anchorRect))
@@ -109,6 +115,12 @@ export function ReportMentionDialog() {
       }
       return next
     })
+  }
+
+  // 관련 정보(엔티티) — 단일 선택. 고르면 표시 문구를 값으로 자동 채움.
+  function handleSelectEntity(ent) {
+    setSelectedEntity(ent)
+    if (ent && !displayTouched) setDisplayText(ent.value ?? '')
   }
 
   // Esc 로 닫기.
@@ -168,22 +180,38 @@ export function ReportMentionDialog() {
     return dir === 'incoming' ? meta.reverse_label : meta.forward_label
   })()
 
-  const hasTarget = type === 'dept' ? !!selectedDept : !!selected
+  const hasTarget =
+    type === 'dept'
+      ? !!selectedDept
+      : type === 'entity'
+        ? !!selectedEntity
+        : !!selected
   const canSubmit = hasTarget && !!displayText.trim() && !submitting
 
   async function handleInsert() {
     if (!hasTarget || !displayText.trim()) return
     setSubmitting(true)
     try {
-      // 유형별 마크 속성. 보고서: reportId+workspaceSlug → /w/{ws}/reports/{id}.
-      // 협업 부서: deptSlug → /w/{deptSlug}/reports (그 부서 게시판).
-      const attrs =
-        type === 'dept'
-          ? { deptSlug: selectedDept }
-          : {
-              reportId: String(selected.id),
-              workspaceSlug: selected.workspace_slug ?? null,
-            }
+      // 유형별 제네릭 마크 속성(ReportLinkMark.addAttributes 키와 일치).
+      //   보고서 : type+id+ws → /w/{ws}/reports/{id}
+      //   협업부서 : type+id(=slug) → /w/{id}/reports
+      //   관련정보 : type+id(=엔티티id)+axis(=축slug) → (v1) 이동 없음
+      let attrs
+      if (type === 'dept') {
+        attrs = { mentionType: 'dept', mentionId: selectedDept }
+      } else if (type === 'entity') {
+        attrs = {
+          mentionType: 'entity',
+          mentionId: String(selectedEntity.id),
+          mentionAxis: selectedEntity.type_slug ?? null,
+        }
+      } else {
+        attrs = {
+          mentionType: 'report',
+          mentionId: String(selected.id),
+          mentionWs: selected.workspace_slug ?? null,
+        }
+      }
       // 1) 인라인 링크 삽입 — popup.insert 는 @를 친 바로 그 에디터/행에
       //    바인딩돼 있어, 항상 올바른 위젯에 삽입된다. 내부에서 atCaret 으로
       //    '@query' 범위를 지우고 표시 문구에 reportLink 마크를 입힌다.
@@ -283,6 +311,11 @@ export function ReportMentionDialog() {
               autoExpandSlugs={selectedDept ? [selectedDept] : undefined}
               searchPlaceholder="부서 검색 (비우면 트리 보기)"
               maxHeightClass="max-h-[200px]"
+            />
+          ) : type === 'entity' ? (
+            <EntityMentionPicker
+              selected={selectedEntity}
+              onSelect={handleSelectEntity}
             />
           ) : (
             <ReportPicker

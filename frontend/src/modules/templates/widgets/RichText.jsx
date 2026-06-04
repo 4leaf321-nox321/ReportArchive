@@ -6,6 +6,7 @@ import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { useWidgetRelations } from '@/shared/hooks/useWidgetRelations'
 import { useReportStyle } from '@/shared/reports/ReportStyleContext'
+import { useReportMention } from '@/shared/reports/ReportMentionContext'
 import {
   CaptionInput,
   DEFAULT_BODY_FONT_PX,
@@ -30,8 +31,18 @@ import {
 // DOMPurify runs its own CSS sanitizer on the value, blocking url(),
 // expression(), and other vectors.
 const SANITIZE_OPTIONS = {
-  ALLOWED_TAGS: ['p', 'span', 'strong', 'em', 'u', 's', 'del', 'br'],
-  ALLOWED_ATTR: ['style'],
+  // `a` is the @멘션 보고서 링크 (ReportLinkMark). We deliberately allow only
+  // the data-* targeting attrs + class — NOT `href` — so navigation goes
+  // through the delegated SPA click handler (OutlineView) and no javascript:
+  // / external href vector can ride in via API-bypassed content.
+  ALLOWED_TAGS: ['p', 'span', 'strong', 'em', 'u', 's', 'del', 'br', 'a'],
+  ALLOWED_ATTR: [
+    'style',
+    'data-report-id',
+    'data-workspace-slug',
+    'data-dept-slug',
+    'class',
+  ],
 }
 
 function sanitizeRowHtml(html, fallbackText) {
@@ -516,6 +527,28 @@ function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
   // 보고서 단위 depth-별 글리프 override. depth 2 글리프는 depth 2+ 모두
   // 에 그대로 적용 (= 깊은 들여쓰기는 depth 2 값을 이어 쓴다).
   const { depthGlyphs } = useReportStyle()
+  // 본문 안 @멘션 보고서 링크 클릭 → SPA 이동. 링크는 dangerouslySetInnerHTML
+  // 로 그려진 <a data-report-id> 라 React onClick 핸들러를 직접 못 붙이므로,
+  // wrapper 에서 위임 처리한다. mention 컨텍스트가 없으면(내보내기/미리보기 등)
+  // hard nav 로 폴백. navigate 는 enabled 와 무관하게 항상 제공된다.
+  const mention = useReportMention()
+  const handleMentionClick = useCallback(
+    (e) => {
+      const a = e.target?.closest?.('a[data-report-id], a[data-dept-slug]')
+      if (!a) return
+      const reportId = a.getAttribute('data-report-id')
+      const ws = a.getAttribute('data-workspace-slug')
+      const deptSlug = a.getAttribute('data-dept-slug')
+      let to = null
+      if (reportId && ws) to = `/w/${ws}/reports/${reportId}` // 보고서 멘션
+      else if (deptSlug) to = `/w/${deptSlug}/reports` // 협업 부서 멘션 → 그 부서 게시판
+      if (!to) return
+      e.preventDefault()
+      if (mention?.navigate) mention.navigate(to)
+      else window.location.assign(to)
+    },
+    [mention],
+  )
   // The wrapper keeps a sensible default (text-sm) — bodyClassFor returns
   // *only* the designer-selected overrides for the row's depth, so an
   // empty style leaves the original rendering untouched. `bodyStyleFor`
@@ -524,7 +557,7 @@ function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
   const classFor = bodyClassFor ?? (() => '')
   const styleFor = bodyStyleFor ?? (() => undefined)
   return (
-    <div className="space-y-0.5 text-sm">
+    <div className="space-y-0.5 text-sm" onClick={handleMentionClick}>
       {items.map((it, i) => {
         const hasContent = (it.text ?? '').trim().length > 0
         if (!hasContent) return null
@@ -595,6 +628,32 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
   // The row that currently has focus. Drives the inline relation picker
   // strip below the input — only the focused, indented row shows it.
   const [focusedIndex, setFocusedIndex] = useState(null)
+
+  // 본문 @멘션 — 이 에디터(위젯)에 바인딩된 삽입 함수. @를 친 행에서 open 할
+  // 때 이 함수를 페이로드에 실어 보내므로(아래 onMentionOpen), 한 페이지에
+  // RichText 가 여러 개여도 항상 올바른 위젯·행에 삽입된다. 최신
+  // items/commitChange 는 ref 로 읽어 stale 클로저를 피한다.
+  const mention = useReportMention()
+  const insertCtxRef = useRef({ items, commitChange })
+  insertCtxRef.current = { items, commitChange }
+  const insertMentionAtRow = useCallback((rowIndex, payload) => {
+    const ed = inputRefs.current.get(rowIndex)
+    if (!ed?.insertReportLink) return
+    const { items: curItems, commitChange: commit } = insertCtxRef.current
+    const curCaret = ed.getCaret?.() ?? 0
+    // atCaret = '@' 바로 뒤(0-based). '@'(index atCaret-1)부터 현재 캐럿까지
+    // = 타이핑된 "@query" 를 지운다. 최소 1자('@')는 지운다.
+    const queryLength = Math.max(1, curCaret - ((payload.atCaret ?? 1) - 1))
+    const r = ed.insertReportLink({
+      text: payload.text,
+      queryLength,
+      attrs: payload.attrs ?? {},
+    })
+    const next = curItems.map((it, i) =>
+      i === rowIndex ? { ...it, html: r.html, text: r.text } : it,
+    )
+    commit(next)
+  }, [])
 
   // Cross-row text selection support. Each row is its own TipTap editor, so
   // browser-native drag selection visually spans multiple rows but no single
@@ -1213,6 +1272,16 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
           placeholder={i === 0 && !it.text ? placeholder : ''}
           isFocused={focusedIndex === i}
           setInputRef={setInputRef}
+          // @멘션 트리거 — 이 행/에디터에 바인딩된 insert 를 페이로드에 실어
+          // 보내 올바른 위젯에만 삽입되게 한다.
+          onMentionOpen={({ anchorRect, atCaret }) =>
+            mention?.open({
+              rowIndex: i,
+              anchorRect,
+              atCaret,
+              insert: (payload) => insertMentionAtRow(i, payload),
+            })
+          }
           onFocus={() => setFocusedIndex(i)}
           onBlur={() => {
             // Defer so a click landing on the picker strip below the row
@@ -1322,6 +1391,7 @@ function OutlineRow({
   setInputRef,
   onFocus,
   onBlur,
+  onMentionOpen,
   onContentChange,
   onDepthChange,
   onRelationChange,
@@ -1354,6 +1424,8 @@ function OutlineRow({
   // typing session; the dismissal resets the moment the leading trigger is
   // cleared.
   const { relations } = useWidgetRelations()
+  // @멘션(보고서 링크) — Provider 가 있고 편집 가능할 때만 활성. 없으면 null.
+  const mention = useReportMention()
   const [hoverIdx, setHoverIdx] = useState(0)
   const [comboDismissed, setComboDismissed] = useState(false)
   const startsWithTrigger = rowText.startsWith(COMBO_TRIGGER)
@@ -1462,6 +1534,46 @@ function OutlineRow({
   // RichTextRowEditor and exposes caret/text/atStart/atEnd derived from
   // the editor's selection.
   function handleKeyDown(e, ctx) {
+    // @멘션 트리거 — 빈 선택(collapsed)에서 '@' 입력 시 작성 팝업을 연다.
+    // '@' 자체는 그대로 타이핑되게 두고(absorb 안 함), 확인 시 OutlineEditor 의
+    // inserter 가 '@query' 범위를 지우고 링크를 끼운다. 캐럿 rect 는 live DOM
+    // selection 에서 캡처해 팝업 위치 앵커로 쓴다.
+    if (
+      e.key === '@' &&
+      !e.isComposing &&
+      ctx?.isCollapsed &&
+      mention?.enabled &&
+      onMentionOpen
+    ) {
+      let anchorRect = null
+      try {
+        const sel = window.getSelection?.()
+        if (sel && sel.rangeCount > 0) {
+          let r = sel.getRangeAt(0).getBoundingClientRect()
+          // collapsed range 는 줄 맨 앞 등에서 빈 rect(0,0,0,0)를 돌려줄 때가
+          // 있다 — 그러면 팝업이 좌상단에 뜬다. 행 엘리먼트 rect 로 폴백해
+          // 커서 주변(해당 행)에 열리게 한다.
+          if (!r || (r.width === 0 && r.height === 0 && r.left === 0 && r.top === 0)) {
+            const el =
+              e.target?.closest?.('[data-row-index]') ||
+              e.target?.closest?.('[contenteditable]') ||
+              e.target
+            const fb = el?.getBoundingClientRect?.()
+            if (fb) r = fb
+          }
+          if (r) {
+            anchorRect = { left: r.left, right: r.right, top: r.top, bottom: r.bottom }
+          }
+        }
+      } catch {
+        /* selection 접근 실패 — 앵커 없이(중앙) 연다 */
+      }
+      // atCaret = '@' 가 삽입된 뒤의 캐럿 위치(0-based). ctx.caret 은 삽입 전.
+      // 이 행/에디터에 바인딩된 open 핸들러(OutlineEditor 제공)로 보내 올바른
+      // 위젯에만 삽입되게 한다.
+      onMentionOpen({ anchorRect, atCaret: (ctx?.caret ?? 0) + 1 })
+      return false
+    }
     // Combo navigation takes priority over everything else when active.
     if (comboActive && relations.length > 0) {
       if (

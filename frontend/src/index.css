@@ -302,3 +302,49 @@ body.report-fullscreen .report-detail-content {
 body.report-fullscreen [data-slide-guide-overlay] {
   display: none !important;
 }
+
+/* 본문 @멘션 링크 (ReportLinkMark) — 편집/보기 공통. 실제 이동은 OutlineView
+   의 위임 클릭 핸들러가 SPA navigate 로 처리한다(href 는 '#'). 앞에 아이콘
+   (::before, SVG mask)을 붙여 "클릭하면 이동하는 링크"임을 한눈에 보이게 한다.
+   보고서=링크 아이콘, 협업 부서=건물 아이콘. 아이콘은 currentColor 를 따라가
+   글자색과 같은 톤으로 칠해진다. */
+.report-mention,
+.dept-mention {
+  color: var(--primary, #2563eb);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+  cursor: pointer;
+  /* 옅은 파란색 배경(칩) — 본문 중에서 눈에 잘 띄도록. 줄바꿈 시에도 배경이
+     양쪽 조각 모두에 칠해지게 box-decoration-break 를 clone 으로 둔다. */
+  background-color: color-mix(in srgb, #2563eb 12%, transparent);
+  border-radius: 4px;
+  padding: 0.05em 0.25em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+/* 보고서 — 링크 아이콘 */
+.report-mention {
+  --mention-icon: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23000'%20stroke-width='2.5'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M10%2013a5%205%200%200%200%207.54.54l3-3a5%205%200%200%200-7.07-7.07l-1.72%201.71'/%3E%3Cpath%20d='M14%2011a5%205%200%200%200-7.54-.54l-3%203a5%205%200%200%200%207.07%207.07l1.71-1.71'/%3E%3C/svg%3E");
+}
+/* 협업 부서 — 건물 아이콘 */
+.dept-mention {
+  --mention-icon: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23000'%20stroke-width='2.5'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M3%2021h18'/%3E%3Cpath%20d='M5%2021V7l8-4v18'/%3E%3Cpath%20d='M19%2021V11l-6-4'/%3E%3C/svg%3E");
+}
+.report-mention::before,
+.dept-mention::before {
+  content: "";
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  margin-right: 0.15em;
+  vertical-align: -0.12em;
+  background-color: currentColor;
+  -webkit-mask: var(--mention-icon) center / contain no-repeat;
+  mask: var(--mention-icon) center / contain no-repeat;
+}
+.report-mention:hover,
+.dept-mention:hover {
+  text-decoration-thickness: 2px;
+  background-color: color-mix(in srgb, #2563eb 22%, transparent);
+}

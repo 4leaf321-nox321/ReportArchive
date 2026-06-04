@@ -109,6 +109,8 @@ import {
   ReportLinksSection,
   useReportLinks,
 } from './ReportLinks'
+import { ReportMentionProvider } from '@/shared/reports/ReportMentionContext'
+import { ReportMentionDialog } from './ReportMentionDialog'
 import { ReportGraphModal } from './ReportGraphModal'
 import { SlideGuideOverlay } from './SlideGuideOverlay'
 import {
@@ -2811,6 +2813,14 @@ export default function ReportDetailPage() {
   return (
     <PrintScaleContext.Provider value={printContextValue}>
     <ReportStyleContext.Provider value={reportStyleValue}>
+    <ReportMentionProvider
+      hostReportId={existingReport?.id ?? null}
+      // @ 트리거는 편집 모드 + 편집권한일 때만. navigate 는 enabled 무관 항상 제공
+      // (뷰 모드/비편집자도 본문 링크 이동 가능).
+      enabled={effectiveIsEditing && !!existingReport?.can_edit && existingReport?.id != null}
+      navigate={navigate}
+      addLink={linkedReports.addLink}
+    >
     <CommentsProvider
       reportId={existingReport?.id ?? null}
       reportPhase={existingReport?.phase}
@@ -4078,6 +4088,8 @@ export default function ReportDetailPage() {
       )}
     </div>
     </CommentsProvider>
+    <ReportMentionDialog />
+    </ReportMentionProvider>
     </ReportStyleContext.Provider>
     </PrintScaleContext.Provider>
   )

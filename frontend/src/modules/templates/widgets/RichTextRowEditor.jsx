@@ -10,7 +10,9 @@ import {
   Italic as ItalicIcon,
   Strikethrough as StrikeIcon,
   Underline as UnderlineIcon,
+  Link2Off as UnlinkIcon,
 } from 'lucide-react'
+import { ReportLinkMark } from './extensions/ReportLinkMark'
 
 // Toolbar choices. Both arrays use inline CSS values (not Tailwind class
 // strings) — TipTap writes them as `style="font-size:..."` / `style="color:..."`
@@ -166,10 +168,14 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
         // changes (Enter splits, Tab depth, relation chips) that don't
         // pass through any one editor's transaction log.
         history: false,
+        // StarterKit v3 enables a Link mark by default; we don't expose it
+        // and it would collide with ReportLinkMark's `<a>` parseHTML. Off.
+        link: false,
       }),
       TextStyle,
       Color,
       FontSize,
+      ReportLinkMark,
       Placeholder.configure({
         // The placeholder text comes from props.placeholder. Latest value
         // lives on a ref so updating it after construction is cheap (the
@@ -339,6 +345,44 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
         externalHtmlRef.current = nextHtml
         return { html: nextHtml, text: nextText }
       },
+      // Insert a mention link at the caret. `queryLength` chars are deleted
+      // backward from the caret first (the typed "@query"), then the display
+      // `text` is inserted carrying the reportLink mark with the given `attrs`
+      // (report: {reportId, workspaceSlug}; dept: {deptSlug}). Returns the new
+      // html/text (like applyAndCapture) so the parent folds it into one
+      // batched onChange / undo step. No-ops the per-editor onUpdate while
+      // running so the parent owns the single state write.
+      insertReportLink({ text, queryLength = 0, attrs = {} }) {
+        if (!editor || !text) return { html: editor?.getHTML() ?? '', text: editor?.getText() ?? '' }
+        suppressUpdateRef.current = true
+        const wasEditable = editor.isEditable
+        if (!wasEditable) editor.setEditable(true)
+        try {
+          const { from } = editor.state.selection
+          const start = Math.max(1, from - Math.max(0, queryLength | 0))
+          editor
+            .chain()
+            .focus()
+            .deleteRange({ from: start, to: from })
+            .insertContent({
+              type: 'text',
+              text,
+              marks: [{ type: 'reportLink', attrs }],
+            })
+            // Drop the mark from the stored selection so the next typed
+            // char after the link is plain text (inclusive:false already
+            // covers most cases; this is belt-and-suspenders).
+            .unsetMark('reportLink')
+            .run()
+        } finally {
+          if (!wasEditable) editor.setEditable(false)
+          suppressUpdateRef.current = false
+        }
+        const nextHtml = editor.getHTML()
+        const nextText = editor.getText()
+        externalHtmlRef.current = nextHtml
+        return { html: nextHtml, text: nextText }
+      },
     }),
     [editor],
   )
@@ -367,12 +411,15 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
               strike: editor.isActive('strike'),
               fontSize: editor.getAttributes('textStyle')?.fontSize ?? '',
               color: editor.getAttributes('textStyle')?.color ?? null,
+              reportLink: editor.isActive('reportLink'),
             }}
             actions={{
               toggleBold: () => editor.chain().focus().toggleBold().run(),
               toggleItalic: () => editor.chain().focus().toggleItalic().run(),
               toggleUnderline: () => editor.chain().focus().toggleUnderline().run(),
               toggleStrike: () => editor.chain().focus().toggleStrike().run(),
+              unsetReportLink: () =>
+                editor.chain().focus().unsetReportLink().run(),
               setFontSize: (v) =>
                 v
                   ? editor.chain().focus().setFontSize(v).run()
@@ -435,6 +482,19 @@ export function RichTextFormatToolbarBody({ state, actions }) {
       <FontSizeSelect value={state.fontSize} onChange={actions.setFontSize} />
       <ToolbarSeparator />
       <ColorSwatches value={state.color} onChange={actions.setColor} />
+      {/* 보고서 멘션 링크가 선택에 걸려 있을 때만 — 링크 해제(텍스트는 유지). */}
+      {state.reportLink && actions.unsetReportLink && (
+        <>
+          <ToolbarSeparator />
+          <ToolbarButton
+            active={false}
+            onClick={actions.unsetReportLink}
+            title="보고서 링크 해제"
+          >
+            <UnlinkIcon className="h-3.5 w-3.5" />
+          </ToolbarButton>
+        </>
+      )}
     </>
   )
 }

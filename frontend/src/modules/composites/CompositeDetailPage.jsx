@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
   ChevronDown,
@@ -60,6 +60,7 @@ import { PendingRequestsPanel } from './PendingRequestsPanel'
 export default function CompositeDetailPage() {
   const { compositeId } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
   const { slug, all: workspaces } = useWorkspace()
   const { me } = useAuth()
 
@@ -76,7 +77,12 @@ export default function CompositeDetailPage() {
     [compositeId, slug],
   )
 
-  const [isEditing, setIsEditing] = useState(false)
+  // 생성 직후엔 바로 편집 모드로 — CompositesListPage 가 navigate 시
+  // state.startEditing 을 실어 보낸다(ReportDetailPage 와 동일 패턴). composite
+  // 로드 전엔 위 early-return 이 스켈레톤을 그리므로 true 로 시작해도 안전.
+  const [isEditing, setIsEditing] = useState(
+    Boolean(location.state?.startEditing),
+  )
   const [draft, setDraft] = useState(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [addGroupOpen, setAddGroupOpen] = useState(false)

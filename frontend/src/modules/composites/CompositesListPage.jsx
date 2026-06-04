@@ -158,7 +158,10 @@ export default function CompositesListPage() {
         onCreated={(id) => {
           setNewOpen(false)
           toast.success('종합보고가 생성되었습니다.')
-          navigate(`/w/${slug}/composites/${id}`)
+          // 생성 직후 바로 편집 모드로 진입 — 사용자가 어차피 곧장 편집한다.
+          navigate(`/w/${slug}/composites/${id}`, {
+            state: { startEditing: true },
+          })
         }}
       />
     </div>

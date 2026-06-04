@@ -16,7 +16,10 @@ import {
   AlertCircle,
   ChevronRight,
   ChevronDown,
+  ChevronsUpDown,
+  ChevronsDownUp,
   Search,
+  X,
 } from 'lucide-react'
 import {
   Dialog,
@@ -174,6 +177,25 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
     [mounts],
   )
 
+  // 게시 현황 — 지금 이 보고서가 올라가 있는 게시판만 평면 리스트로. mount
+  // 행에는 이름/색상이 없으므로 getPath 로 해석한다. 더 이상 멤버가 아닌
+  // 게시판(getPath 가 빈 배열)이라도 slug 로 표시하고 해제는 가능하게 둔다.
+  const mountedBoards = React.useMemo(() => {
+    return mounts
+      .map((m) => {
+        const path = getPath(m.workspace_slug)
+        const ws = path.length ? path[path.length - 1] : null
+        const pathLabel = path
+          .slice(0, -1)
+          .map((p) => p.name)
+          .join(' / ')
+        return { mount: m, ws, slug: m.workspace_slug, pathLabel }
+      })
+      .sort((a, b) =>
+        (a.ws?.name || a.slug).localeCompare(b.ws?.name || b.slug),
+      )
+  }, [mounts, getPath])
+
   const trimmedQuery = query.trim().toLowerCase()
   const searching = trimmedQuery.length > 0
   const searchResults = React.useMemo(() => {
@@ -221,6 +243,19 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
       else next.add(slug)
       return next
     })
+  }
+
+  // '모두 펼치기/접기' 토글 — 자식이 있는 노드(=childrenOf 키)만 펼침 대상.
+  // 전부 펼쳐져 있으면 접기, 아니면 모두 펼치기로 동작.
+  const expandableSlugs = React.useMemo(
+    () => [...treeData.childrenOf.keys()],
+    [treeData],
+  )
+  const allExpanded =
+    expandableSlugs.length > 0 &&
+    expandableSlugs.every((s) => expanded.has(s))
+  function toggleExpandAll() {
+    setExpanded(allExpanded ? new Set() : new Set(expandableSlugs))
   }
 
   React.useEffect(() => {
@@ -334,45 +369,141 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
             <AlertCircle className="h-4 w-4" />
             {error}
           </div>
-        ) : eligible.length === 0 ? (
-          <div className="text-sm text-muted-foreground py-4">
-            게시할 수 있는 조직 게시판이 없습니다. 워크스페이스에 멤버로
-            등록되어 있어야 게시 가능합니다.
-          </div>
         ) : (
-          <div className="space-y-3 flex-1 min-h-0 flex flex-col">
-            {/* 검색 입력 — 워크스페이스명 / slug / 경로 어느 쪽이든 매칭.
-                비어 있을 때는 트리 모드, 채워지면 평면 결과(경로 포함). */}
-            <div className="relative">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="조직명 / 경로 검색 (비우면 트리 보기)"
-                className="pl-7 h-8 text-sm"
-              />
-            </div>
-            <div className="flex-1 min-h-0 overflow-y-auto -mx-2 px-2 space-y-1">
-              {searching ? (
-                searchResults.length === 0 ? (
-                  <div className="text-xs text-muted-foreground py-4 text-center">
-                    매칭되는 조직이 없습니다.
+          <div className="flex-1 min-h-0 flex gap-4">
+            {/* ─── 좌: 게시판 선택 (트리/검색) ─── 권한 내 조직 트리/검색.
+                이미 게시된 게시판은 여기서도 '게시됨'으로 강조된다. */}
+            <div className="flex-1 min-w-0 flex flex-col gap-2">
+              {eligible.length === 0 ? (
+                <div className="text-sm text-muted-foreground py-2">
+                  추가로 게시할 수 있는 조직 게시판이 없습니다. 워크스페이스에
+                  멤버로 등록되어 있어야 게시 가능합니다.
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs font-medium text-foreground">
+                      게시판 선택
+                    </div>
+                    {/* 모두 펼치기/접기 — 검색 모드(평면 결과)에선 의미가 없어
+                        트리 모드일 때만 노출. */}
+                    {!searching && expandableSlugs.length > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs text-muted-foreground"
+                        onClick={toggleExpandAll}
+                      >
+                        {allExpanded ? (
+                          <ChevronsDownUp className="h-3.5 w-3.5 mr-1" />
+                        ) : (
+                          <ChevronsUpDown className="h-3.5 w-3.5 mr-1" />
+                        )}
+                        {allExpanded ? '모두 접기' : '모두 펼치기'}
+                      </Button>
+                    )}
                   </div>
-                ) : (
-                  searchResults.map((ws) => (
-                    <BoardRow
-                      key={ws.slug}
+                  {/* 검색 입력 — 워크스페이스명 / slug / 경로 어느 쪽이든 매칭.
+                      비어 있을 때는 트리 모드, 채워지면 평면 결과(경로 포함). */}
+                  <div className="relative">
+                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+                    <Input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="조직명 / 경로 검색 (비우면 트리 보기)"
+                      className="pl-7 h-8 text-sm"
+                    />
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-y-auto -mx-2 px-2 space-y-1">
+                    {searching ? (
+                      searchResults.length === 0 ? (
+                        <div className="text-xs text-muted-foreground py-4 text-center">
+                          매칭되는 조직이 없습니다.
+                        </div>
+                      ) : (
+                        searchResults.map((ws) => (
+                          <BoardRow
+                            key={ws.slug}
+                            ws={ws}
+                            depth={0}
+                            hasChildren={false}
+                            isExpanded={false}
+                            onToggleExpand={null}
+                            pathLabel={getPath(ws.slug)
+                              .map((p) => p.name)
+                              .slice(0, -1)
+                              .join(' / ')}
+                            mounts={mounts}
+                            mountedSlugs={mountedSlugs}
+                            pending={pending}
+                            isOwner={isOwner}
+                            report={report}
+                            setMounts={setMounts}
+                            onChanged={onChanged}
+                            onToggle={handleToggle}
+                            onPolicyChange={handlePolicyChange}
+                          />
+                        ))
+                      )
+                    ) : (
+                      <TreeNodes
+                        nodes={treeData.roots}
+                        depth={0}
+                        childrenOf={treeData.childrenOf}
+                        expanded={expanded}
+                        onToggleExpand={toggleExpand}
+                        mounts={mounts}
+                        mountedSlugs={mountedSlugs}
+                        pending={pending}
+                        isOwner={isOwner}
+                        report={report}
+                        setMounts={setMounts}
+                        onChanged={onChanged}
+                        onToggle={handleToggle}
+                        onPolicyChange={handlePolicyChange}
+                      />
+                    )}
+                  </div>
+
+                  <div className="border-t pt-3">
+                    <label className="text-xs text-muted-foreground block mb-1">
+                      게시 메모 (선택, 새 게시에만 적용)
+                    </label>
+                    <Textarea
+                      value={note}
+                      onChange={(e) => setNote(e.target.value)}
+                      placeholder="예: 본부 보고 자료로 활용 부탁드립니다."
+                      rows={2}
+                      className="resize-none text-sm"
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* ─── 우: 게시 현황 ─── 지금 이 보고서가 올라가 있는 게시판만
+                평면 리스트로. 여기서 바로 게시 해제 / 폴더 / 편집정책 변경.
+                eligible 이 비어도(멤버십 상실) 현황은 항상 보여, 작성자가 남은
+                게시를 확인·해제할 수 있게 한다. */}
+            <div className="w-[42%] shrink-0 flex flex-col gap-2 border-l pl-4">
+              <div className="text-xs font-medium text-foreground">
+                현재 게시됨
+                {mountedBoards.length > 0 ? ` (${mountedBoards.length})` : ''}
+              </div>
+              {mountedBoards.length === 0 ? (
+                <div className="text-xs text-muted-foreground rounded-md border border-dashed px-3 py-6 text-center">
+                  아직 게시된 게시판이 없습니다. 왼쪽에서 게시판을 선택해
+                  게시하세요.
+                </div>
+              ) : (
+                <div className="flex-1 min-h-0 overflow-y-auto -mx-2 px-2 space-y-1">
+                  {mountedBoards.map(({ mount, ws, slug, pathLabel }) => (
+                    <MountedBoardRow
+                      key={slug}
                       ws={ws}
-                      depth={0}
-                      hasChildren={false}
-                      isExpanded={false}
-                      onToggleExpand={null}
-                      pathLabel={getPath(ws.slug)
-                        .map((p) => p.name)
-                        .slice(0, -1)
-                        .join(' / ')}
-                      mounts={mounts}
-                      mountedSlugs={mountedSlugs}
+                      slug={slug}
+                      pathLabel={pathLabel}
+                      mount={mount}
                       pending={pending}
                       isOwner={isOwner}
                       report={report}
@@ -381,39 +512,9 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
                       onToggle={handleToggle}
                       onPolicyChange={handlePolicyChange}
                     />
-                  ))
-                )
-              ) : (
-                <TreeNodes
-                  nodes={treeData.roots}
-                  depth={0}
-                  childrenOf={treeData.childrenOf}
-                  expanded={expanded}
-                  onToggleExpand={toggleExpand}
-                  mounts={mounts}
-                  mountedSlugs={mountedSlugs}
-                  pending={pending}
-                  isOwner={isOwner}
-                  report={report}
-                  setMounts={setMounts}
-                  onChanged={onChanged}
-                  onToggle={handleToggle}
-                  onPolicyChange={handlePolicyChange}
-                />
+                  ))}
+                </div>
               )}
-            </div>
-
-            <div className="border-t pt-3">
-              <label className="text-xs text-muted-foreground block mb-1">
-                게시 메모 (선택, 새 게시에만 적용)
-              </label>
-              <Textarea
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-                placeholder="예: 본부 보고 자료로 활용 부탁드립니다."
-                rows={2}
-                className="resize-none text-sm"
-              />
             </div>
           </div>
         )}
@@ -478,23 +579,15 @@ function TreeNodes({
 function BoardRow({
   ws,
   depth,
-  hasChildren,
   isExpanded,
   onToggleExpand,
   pathLabel,
-  mounts,
   mountedSlugs,
   pending,
-  isOwner,
-  report,
-  setMounts,
-  onChanged,
   onToggle,
-  onPolicyChange,
 }) {
   const isMounted = mountedSlugs.has(ws.slug)
   const isPending = Boolean(pending[ws.slug])
-  const mount = mounts.find((m) => m.workspace_slug === ws.slug)
   // depth 0 도 8px 정도 안쪽에서 시작 — 너무 벽에 붙으면 chevron 영역과
   // 콘텐츠가 시각적으로 구분이 안 된다.
   const indentPx = depth * 16
@@ -557,18 +650,63 @@ function BoardRow({
           <span className="text-xs text-muted-foreground shrink-0">게시</span>
         )}
       </button>
-      {/* Folder picker — mounted 보드만 노출. report 가 null 인 순간
-          (다이얼로그 닫힘 애니메이션 중 stale 렌더)에도 터지지 않도록 가드. */}
-      {isMounted && report && (
+      {/* 폴더·편집정책 컨트롤은 좌측 트리에는 두지 않는다. 게시 여부 토글만
+          담당하고, 폴더/정책 조정은 우측 '현재 게시됨' 패널(MountedBoardRow)
+          에서만 한다 — 선택과 관리 화면을 분리해 트리를 단순하게 유지. */}
+    </div>
+  )
+}
+
+/** 게시 현황 행 — '현재 게시됨' 섹션 전용. BoardRow 와 달리 트리/펼침이 없고,
+ *  본문 클릭이 아니라 명시적인 "해제" 버튼으로 게시를 취소한다(현황 화면에서
+ *  실수로 본문을 눌러 해제되는 일을 막기 위함). 폴더·편집정책 변경은 BoardRow
+ *  와 동일. ws 가 null 이면(더 이상 멤버가 아닌 게시판) slug 로 표시하되 해제는
+ *  가능하게 둔다. 게시/해제·정책·폴더 핸들러는 BoardRow 와 같은 것을 재사용. */
+function MountedBoardRow({
+  ws,
+  slug,
+  pathLabel,
+  mount,
+  pending,
+  isOwner,
+  report,
+  setMounts,
+  onChanged,
+  onToggle,
+  onPolicyChange,
+}) {
+  const isPending = Boolean(pending[slug])
+  return (
+    <div
+      className={cn(
+        'flex items-center gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-sm transition-colors',
+        isPending && 'opacity-60',
+      )}
+    >
+      <span
+        className="h-2.5 w-2.5 rounded-full shrink-0"
+        style={{ backgroundColor: ws?.color || '#cbd5e1' }}
+      />
+      <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <span className="flex-1 min-w-0">
+        <span className="block truncate">{ws?.name || slug}</span>
+        {pathLabel && (
+          <span className="block text-[10px] text-muted-foreground truncate">
+            {pathLabel}
+          </span>
+        )}
+      </span>
+      {/* 폴더 — report 가 null 인 stale 렌더 가드 (BoardRow 와 동일). */}
+      {report && (
         <FolderPickerButton
           mode="org"
-          workspaceSlug={ws.slug}
+          workspaceSlug={slug}
           reportId={report.id}
           folderId={mount?.folder_id ?? null}
           onChanged={(newFolderId) => {
             setMounts((prev) =>
               prev.map((m) =>
-                m.workspace_slug === ws.slug
+                m.workspace_slug === slug
                   ? { ...m, folder_id: newFolderId }
                   : m,
               ),
@@ -578,10 +716,10 @@ function BoardRow({
         />
       )}
       {/* Per-mount edit-policy — owner 만 노출. */}
-      {isMounted && isOwner && (
+      {isOwner && (
         <select
           value={mount?.edit_policy ?? 'default'}
-          onChange={(e) => onPolicyChange(ws.slug, e.target.value)}
+          onChange={(e) => onPolicyChange(slug, e.target.value)}
           className="text-[11px] rounded border bg-background px-1.5 py-1 hover:border-primary/60 cursor-pointer"
           title={POLICY_BY_VALUE[mount?.edit_policy ?? 'default']?.description}
         >
@@ -592,6 +730,24 @@ function BoardRow({
           ))}
         </select>
       )}
+      {/* 게시 해제 — 같은 handleToggle 재사용(이미 mounted 이므로 unmount). */}
+      <Button
+        variant="ghost"
+        size="sm"
+        disabled={isPending}
+        onClick={() => onToggle(slug)}
+        className="h-7 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10 shrink-0"
+        title="이 게시판에서 게시 해제"
+      >
+        {isPending ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <>
+            <X className="h-3.5 w-3.5 mr-0.5" />
+            해제
+          </>
+        )}
+      </Button>
     </div>
   )
 }

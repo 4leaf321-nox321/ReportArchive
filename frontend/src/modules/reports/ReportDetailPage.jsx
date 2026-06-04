@@ -217,22 +217,51 @@ export default function ReportDetailPage() {
     1,
   )
   const [isEditing, setIsEditing] = useState(isNew || startEditingFromState)
-  // 보고서 전체화면 모드 — AppShell의 헤더/사이드바를 가리고, 본문의
-  // maxWidth 제한도 풀어서 보고서가 브라우저 전체 폭을 차지하게 한다.
-  // 본문 옆 패딩(p-6)과 toolbar/page-strip은 유지해 종료 동선을 남긴다.
+  // 보고서 전체화면(발표) 모드 — PPT 발표처럼 브라우저 UI까지 가리는 진짜
+  // 전체화면(Fullscreen API)을 쓰되, 대상은 *문서 전체*(documentElement)로
+  // 잡는다. 그래야 body 로 portal 되는 것들(멘션 팝업·toast·popover)이 그대로
+  // 보이고, 자식 위젯(3D 모델)의 자체 전체화면도 깔끔히 교체·복귀된다.
+  // 동시에 기존 `report-fullscreen` CSS 클래스도 적용해 AppShell 헤더/사이드바
+  // 를 가리고 본문 maxWidth 를 푼다 → 내부 동작은 기존 전체화면과 동일.
   const [reportFullscreen, setReportFullscreen] = useState(false)
+  // 상태가 켜지면 CSS 클래스 적용(요청 실패 시에도 창-채우기로 우아하게 폴백).
   useEffect(() => {
     if (!reportFullscreen) return
     document.body.classList.add('report-fullscreen')
-    const onKey = (e) => {
-      if (e.key === 'Escape') setReportFullscreen(false)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => {
-      document.body.classList.remove('report-fullscreen')
-      window.removeEventListener('keydown', onKey)
-    }
+    return () => document.body.classList.remove('report-fullscreen')
   }, [reportFullscreen])
+  const enterReportFullscreen = useCallback(() => {
+    const el = document.documentElement
+    const req = el.requestFullscreen || el.webkitRequestFullscreen
+    if (req) Promise.resolve(req.call(el)).catch(() => {})
+    setReportFullscreen(true)
+  }, [])
+  const exitReportFullscreen = useCallback(() => {
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement
+    const exit = document.exitFullscreen || document.webkitExitFullscreen
+    if (fsEl && exit) Promise.resolve(exit.call(document)).catch(() => {})
+    setReportFullscreen(false)
+  }, [])
+  const toggleReportFullscreen = useCallback(() => {
+    if (reportFullscreen) exitReportFullscreen()
+    else enterReportFullscreen()
+  }, [reportFullscreen, enterReportFullscreen, exitReportFullscreen])
+  // 문서 fullscreen 생명주기와 상태 동기화. "완전히 빠져나온"(fullscreen 요소가
+  // 아예 없는) 경우에만 발표 모드 종료로 본다. 자식 위젯(3D)이 전체화면을
+  // 가져가면 fullscreenElement 는 그 요소(non-null)라 발표 모드는 유지된다 —
+  // 3D 가 화면을 차지했다가 빠지면 다시 보고서로 복귀.
+  useEffect(() => {
+    const onChange = () => {
+      const fsEl = document.fullscreenElement || document.webkitFullscreenElement
+      if (!fsEl) setReportFullscreen(false)
+    }
+    document.addEventListener('fullscreenchange', onChange)
+    document.addEventListener('webkitfullscreenchange', onChange)
+    return () => {
+      document.removeEventListener('fullscreenchange', onChange)
+      document.removeEventListener('webkitfullscreenchange', onChange)
+    }
+  }, [])
   // "목록" 복귀 시 함께 넘길 location.state(보던 폴더/페이지로 돌아가게).
   // siblingFolderId 가 한참 아래에서 계산되므로 ref 로 들고, 렌더마다 갱신해
   // 백스페이스 핸들러(아래 effect)와 목록 버튼이 같은 최신값을 읽게 한다.
@@ -2952,8 +2981,8 @@ export default function ReportDetailPage() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setReportFullscreen((v) => !v)}
-            title={reportFullscreen ? '전체화면 종료 (Esc)' : '전체화면으로 보기'}
+            onClick={toggleReportFullscreen}
+            title={reportFullscreen ? '전체화면 종료 (Esc)' : '전체화면으로 보기 (발표)'}
             aria-pressed={reportFullscreen}
           >
             {reportFullscreen ? (
@@ -3658,7 +3687,7 @@ export default function ReportDetailPage() {
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => setReportFullscreen(false)}
+              onClick={exitReportFullscreen}
               title="전체화면 종료 (Esc)"
               className="shadow-md"
             >

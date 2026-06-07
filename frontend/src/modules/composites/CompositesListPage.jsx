@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Plus, Calendar, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react'
+import { SharePopover } from '@/shared/components/SharePopover'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
 import { Card, CardContent } from '@/shared/components/ui/card'
@@ -223,15 +224,32 @@ function RecurringList({ items, rangeLabel, onOpen }) {
 
 function RecurringRow({ item, onClick }) {
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
-      className="w-full grid grid-cols-12 gap-3 px-3 py-2 text-left hover:bg-muted/40 transition-colors"
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onClick?.()
+        }
+      }}
+      className="w-full grid grid-cols-12 gap-3 px-3 py-2 text-left hover:bg-muted/40 transition-colors cursor-pointer"
     >
       <div className="col-span-1 font-mono text-xs text-muted-foreground tabular-nums whitespace-nowrap">
         {item.period_date ?? '—'}
       </div>
-      <div className="col-span-5 font-medium text-sm truncate">{item.title}</div>
+      <div className="col-span-5 font-medium text-sm flex items-center gap-1.5 min-w-0">
+        <span className="truncate">{item.title}</span>
+        <SharePopover
+          contentType="composites"
+          contentId={item.id}
+          ownerUserId={item.owner_user_id}
+          compact
+          initialGrants={item.shares}
+          triggerClassName="text-muted-foreground hover:text-foreground shrink-0"
+        />
+      </div>
       <div className="col-span-2 text-xs text-muted-foreground truncate" title={item.workspace_slug}>
         {item.workspace_name}
       </div>
@@ -244,7 +262,7 @@ function RecurringRow({ item, onClick }) {
       <div className="col-span-1 text-xs text-muted-foreground tabular-nums whitespace-nowrap">
         {item.updated_at?.slice(0, 10) ?? '—'}
       </div>
-    </button>
+    </div>
   )
 }
 
@@ -259,7 +277,25 @@ function formatMonthHeader(key) {
  *  안에서 sortable 테이블로 제목·작성자·부서·수정일 인덱싱. */
 function ThemeList({ items, year, workspaceName, onOpen }) {
   const columns = [
-    { key: 'title', header: '제목', sortable: true, cellClassName: 'font-medium' },
+    {
+      key: 'title',
+      header: '제목',
+      sortable: true,
+      cellClassName: 'font-medium',
+      render: (r) => (
+        <span className="flex items-center gap-1.5 min-w-0">
+          <span className="truncate">{r.title}</span>
+          <SharePopover
+            contentType="composites"
+            contentId={r.id}
+            ownerUserId={r.owner_user_id}
+            compact
+            initialGrants={r.shares}
+            triggerClassName="text-muted-foreground hover:text-foreground shrink-0"
+          />
+        </span>
+      ),
+    },
     {
       key: 'workspace_slug',
       header: '부서',

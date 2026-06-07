@@ -109,10 +109,20 @@ def list_folders(
     # see no folders and re-create defaults with new ids that PATCH
     # calls from this request's response can't reference.
     db.commit()
-    payload = FolderListResponse(
-        items=[FolderRead.model_validate(f) for f in folders],
-        uncategorized_count=uncategorized,
-    )
+    # org 폴더면 공유 대상 요약을 배치로 붙인다(목록 뱃지/호버). 개인 폴더는 없음.
+    share_map: dict = {}
+    if workspace_slug and personal_target is None and folders:
+        from app.modules.grants import services as grant_services
+
+        share_map = grant_services.folder_share_summaries(
+            db, [f.id for f in folders]
+        )
+    items = []
+    for f in folders:
+        fr = FolderRead.model_validate(f)
+        fr.shares = share_map.get(f.id, [])
+        items.append(fr)
+    payload = FolderListResponse(items=items, uncategorized_count=uncategorized)
     return success_response(data=payload.model_dump(mode="json"))
 
 

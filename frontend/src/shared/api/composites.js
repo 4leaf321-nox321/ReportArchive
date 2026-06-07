@@ -27,6 +27,16 @@ export async function deleteComposite(id) {
   return extractData(res)
 }
 
+/** 조직 간 공개 토글 — 종합보고를 다른 조직이 읽기전용으로 조회 가능하게.
+ *  소유자·부서 매니저·시스템관리자 전용 별도 엔드포인트(일반 PATCH 와 분리해
+ *  공개 권한만 좁힘 — 워크스페이스 /external-view 와 동형). */
+export async function setCompositeExternalView(id, externalView) {
+  const res = await apiClient.patch(`${BASE}/${id}/external-view`, {
+    external_view: externalView,
+  })
+  return extractData(res)
+}
+
 /** Owner-only: 발행. For kind=recurring this freezes each item's source
  *  report content into snapshot_content; for theme it just stamps
  *  published_at (no snapshot since theme is always live). Idempotent. */

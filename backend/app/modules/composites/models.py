@@ -107,6 +107,15 @@ class CompositeReport(Base):
     # because the inference rule breaks down for off-cadence reports.
     series_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
+    # 조직 간 공개(보고서의 external_view 와 동형 — 공개범위_정리.md). 이 종합
+    # 보고를 다른 조직이 읽기전용으로 조회 가능한가. 보고서는 mount·폴더에
+    # 공개가 매달리지만 종합보고는 mount/폴더가 없어 종합보고 자체에 boolean
+    # 으로 단다(상속 없는 단일 토글). org 워크스페이스 소속일 때만 의미 —
+    # personal/virtual 은 공개 대상 아님. 기본 false = 현행 격리 유지.
+    external_view: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
     owner_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

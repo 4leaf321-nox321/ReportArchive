@@ -59,9 +59,7 @@ def _resolve_report(db: Session, report_id: int, actor: CurrentUser):
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"Report not found: {report_id}"
         )
-    if not actor.workspace.virtual and not report_services.is_visible_to(
-        db, report, actor.workspace.slug
-    ):
+    if not report_services.can_read_report(db, actor, report):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "Out of workspace scope"
         )

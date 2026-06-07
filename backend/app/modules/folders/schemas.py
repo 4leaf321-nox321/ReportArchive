@@ -25,6 +25,9 @@ class FolderRead(BaseModel):
     created_at: datetime
     # Computed by the list service (single grouped query).
     report_count: int = 0
+    # 공유 대상 요약(목록 뱃지/호버용) — 라우트가 채움. org 폴더만.
+    # [{principal_type, principal_label, level}]
+    shares: list[dict] = []
 
 
 class FolderListResponse(BaseModel):

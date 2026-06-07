@@ -48,7 +48,6 @@ import {
   Trash2,
   Undo2,
   Upload,
-  Users,
   X,
 } from 'lucide-react'
 import GridLayout, { useContainerWidth } from 'react-grid-layout'
@@ -127,7 +126,7 @@ import { TemplatePicker } from './TemplatePicker'
 import { SectionPickerDialog } from './SectionPickerDialog'
 import { PromptPickerDialog } from './PromptPickerDialog'
 import { MountDialog } from './MountDialog'
-import { EditorsDialog } from './EditorsDialog'
+import { SharePopover } from '@/shared/components/SharePopover'
 import { FolderPickerButton } from './FolderPickerButton'
 import { listMounts, mountReport } from '@/shared/api/mounts'
 import { listFolders } from '@/shared/api/folders'
@@ -190,7 +189,6 @@ export default function ReportDetailPage() {
   // 보고서 관계도 모달 (지식그래프 Phase 1a). 저장된 보고서일 때만 의미.
   const [graphOpen, setGraphOpen] = useState(false)
   const [mountOpen, setMountOpen] = useState(false)
-  const [editorsOpen, setEditorsOpen] = useState(false)
   // Mounts state declared here, the fetching useEffect lives further
   // down past `existingReport`'s declaration — TDZ would fire otherwise.
   const [mountByWorkspace, setMountByWorkspace] = useState({})
@@ -3106,17 +3104,16 @@ export default function ReportDetailPage() {
               {!isNew && existingReport?.id && (
                 <SubmitToCompositeButton reportId={existingReport.id} />
               )}
-              {/* 추가 편집자 — owner는 추가/제거, 그 외는 목록만. */}
-              {!isNew && existingReport?.id && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setEditorsOpen(true)}
-                  title="추가 편집자"
-                >
-                  <Users className="mr-1 h-3 w-3" />
-                  편집자
-                </Button>
+              {/* 공유 — 부서(하위 상속)·사용자·전체공개 + 열람/편집. 클릭하면
+                  팝오버로 그 자리에서 편집, 뱃지로 현재 공유 대상 표시. */}
+              {!isNew && existingReport?.id && !existingReport?.is_public_view && (
+                <SharePopover
+                  contentType="reports"
+                  contentId={existingReport.id}
+                  ownerUserId={existingReport.owner_user_id}
+                  label="공유"
+                  triggerClassName="h-8 rounded-md border border-input bg-background px-2.5 hover:bg-accent hover:text-accent-foreground"
+                />
               )}
               {/* 활동 이력 popover — 누구나 조회. 내부에 Activity 아이콘 + "활동" */}
               {!isNew && existingReport?.id && (
@@ -3827,15 +3824,6 @@ export default function ReportDetailPage() {
         }}
       />
 
-      <EditorsDialog
-        open={editorsOpen}
-        onOpenChange={setEditorsOpen}
-        report={existingReport}
-        onChanged={() => {
-          /* server stamps activity + notifies the new editor; no
-              local report fields to refresh */
-        }}
-      />
 
       <ReportSettingsDialog
         open={settingsDialogOpen}

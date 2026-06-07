@@ -273,6 +273,30 @@ def list_all_accounts(
     )
 
 
+@router.get("/users/system-admins")
+def list_system_admins(
+    db: Session = Depends(get_db),
+    _actor: User = Depends(require_system_admin),
+):
+    """Returns every user with `is_system_admin=true`. System-admin only —
+    publishing the list to non-admins leaks the "who can take over the
+    system" surface area.
+
+    NOTE: must be declared *before* the `/users/{user_id}` route — otherwise
+    FastAPI matches "system-admins" as `user_id` and fails int parsing (422).
+    """
+    rows = list(
+        db.execute(
+            select(User)
+            .where(User.is_active.is_(True), User.is_system_admin.is_(True))
+            .order_by(User.id)
+        ).scalars()
+    )
+    return success_response(
+        data=[SystemAdminUserRead.model_validate(u) for u in rows]
+    )
+
+
 @router.get("/users/{user_id}")
 def get_account_detail(
     user_id: int,
@@ -446,26 +470,6 @@ def set_user_active(
     target.is_active = new_active
     db.commit()
     return success_response(data=_account_read(db, target, membership_count=0))
-
-
-@router.get("/users/system-admins")
-def list_system_admins(
-    db: Session = Depends(get_db),
-    _actor: User = Depends(require_system_admin),
-):
-    """Returns every user with `is_system_admin=true`. System-admin only —
-    publishing the list to non-admins leaks the "who can take over the
-    system" surface area."""
-    rows = list(
-        db.execute(
-            select(User)
-            .where(User.is_active.is_(True), User.is_system_admin.is_(True))
-            .order_by(User.id)
-        ).scalars()
-    )
-    return success_response(
-        data=[SystemAdminUserRead.model_validate(u) for u in rows]
-    )
 
 
 @router.put("/users/{user_id}/system-admin")

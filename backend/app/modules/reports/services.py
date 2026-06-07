@@ -11,6 +11,8 @@ from app.modules.composites.models import CompositeReport, CompositeReportItem
 from app.modules.entities import services as entity_services
 from app.modules.entities.models import Entity, ReportEntity
 from app.modules.folders.models import Folder
+from app.modules.grants import services as grant_services
+from app.modules.grants.models import GrantContentType
 from app.modules.mounts.models import ReportMount
 from app.modules.reports.models import (
     Report,
@@ -224,96 +226,23 @@ def get_report(db: Session, report_id: int) -> Optional[Report]:
     return db.get(Report, report_id)
 
 
-def _is_member_visible(db: Session, report: Report, workspace_slug: str) -> bool:
-    """가시성 갈래 1·2 (멤버십 경로): 직접 소유 or descendant 트리 mount.
-    공개(갈래 3)는 제외 — is_visible_to / is_public_only_viewer 가 조합한다."""
-    # personal-space view: direct ownership only.
-    if report.workspace_slug == workspace_slug:
-        return True
-    # org/virtual view: visible if mounted to any workspace inside the
-    # actor's descendant scope. One small query — much cheaper than
-    # walking every mount the report has.
-    scope = ws_services.get_descendants_inclusive(db, workspace_slug)
-    mount_exists = db.execute(
-        select(ReportMount.report_id)
-        .where(
-            ReportMount.report_id == report.id,
-            ReportMount.workspace_slug.in_(scope),
-        )
-        .limit(1)
-    ).first()
-    return mount_exists is not None
-
-
-def _public_mount_query(*extra_where):
-    """공개(external_view effective TRUE)인 mount 의 report_id 를 뽑는 공통
-    select 빌더 (조직간공개_설계.md §3.2). effective 규칙:
-
-        coalesce(folder.external_view, workspace.external_view_default)
-
-    mount 에 folder 가 없거나(folder_id NULL → outer join 으로 NULL) folder 의
-    external_view 가 NULL(상속)이면 게시판 기본값을 타고, 폴더가 TRUE/FALSE 면
-    폴더가 이긴다. org 게시판만 의미 — personal/virtual 은 제외."""
-    effective = func.coalesce(Folder.external_view, Workspace.external_view_default)
-    return (
-        select(ReportMount.report_id)
-        .join(Workspace, Workspace.slug == ReportMount.workspace_slug)
-        .outerjoin(Folder, Folder.id == ReportMount.folder_id)
-        .where(
-            Workspace.kind == WorkspaceKind.org,
-            effective.is_(True),
-            *extra_where,
-        )
-    )
-
-
 def public_report_ids(db: Session) -> set[int]:
-    """공개로 표시된 mount 를 하나라도 가진 report_id 집합(§4.4). 목록/그래프의
-    대량 가시성 판정에 쓴다 — `_scoped_report_ids` 와 합쳐 "내 스코프 ∪ 공개분"."""
-    return set(db.execute(_public_mount_query()).scalars())
+    """전체 공개(all_org)된 report_id 집합 — 콘텐츠 all_org ∪ 전체공개 게시판의
+    보고서. 목록/그래프 대량 가시성·is_external_public 표시에 쓴다."""
+    return grant_services.public_ids(db, GrantContentType.report)
 
 
 def report_has_public_mount(db: Session, report_id: int) -> bool:
-    """단일 보고서가 공개 mount 를 가졌는지 — 가벼운 EXISTS 쿼리."""
-    return (
-        db.execute(
-            _public_mount_query(ReportMount.report_id == report_id).limit(1)
-        ).first()
-        is not None
-    )
-
-
-def is_visible_to(db: Session, report: Report, workspace_slug: str) -> bool:
-    """Workspace visibility check — used by /api/reports/{id} and
-    similar single-report routes.
-
-    Match list_reports_in_workspace's branching: personal workspaces
-    only see directly-owned reports; org workspaces see anything mounted
-    within their descendant tree. 추가로 §3.1 갈래 3 — 공개(external_view)
-    mount 를 하나라도 가진 보고서는 조직 경계와 무관하게 모든 인증 사용자에게
-    가시(공개분은 항상 열람 가능).
-    """
-    return _is_member_visible(db, report, workspace_slug) or report_has_public_mount(
-        db, report.id
-    )
+    """단일 보고서가 공개(all_org)인지 — 가벼운 EXISTS. (이름은 하위호환 유지)"""
+    return grant_services.has_all_org_grant(db, GrantContentType.report, report_id)
 
 
 def can_read_report(db: Session, actor, report: Report) -> bool:
-    """단일 보고서 읽기 가시성 — actor 컨텍스트까지 종합(조직간공개_설계 Phase 5).
-
-    - virtual(글로벌/관리자) 컨텍스트: 전부 가시.
-    - public_viewer(비멤버 외부 열람자): **공개분만** — is_visible_to 의 멤버십
-      갈래(보고서가 이 게시판에 mount 됐다는 이유)로는 열리면 안 된다. 그래서
-      엄격히 report_has_public_mount 로만 판정.
-    - 그 외(멤버): 기존 is_visible_to(멤버십 ∪ 공개).
-
-    actor 는 CurrentUser(덕타이핑: .workspace.virtual / .public_viewer /
-    .workspace.slug)."""
-    if getattr(actor.workspace, "virtual", False):
-        return True
-    if getattr(actor, "public_viewer", False):
-        return report_has_public_mount(db, report.id)
-    return is_visible_to(db, report, actor.workspace.slug)
+    """단일 보고서 읽기 가시성 — grant 기반 통합 판정(소유·sys_admin·virtual·
+    all_org·user grant·부서 grant 하위상속). public_viewer 는 공개분만."""
+    return grant_services.can_view(
+        db, actor, GrantContentType.report, report.id, report.owner_user_id
+    )
 
 
 def list_public_reports_on_board(
@@ -323,16 +252,21 @@ def list_public_reports_on_board(
     entity_ids: Optional[list[int]] = None,
     folder_filter: Optional[int | str] = None,
 ) -> list[Report]:
-    """이 게시판에 게시된 effective-public 보고서 목록 — 비멤버 외부 열람자
-    (public_viewer)의 보고서 목록/폴더 필터용. 멤버용 list_reports_in_workspace
-    와 달리 *공개 mount 만* 본다. folder_filter: int=그 폴더, 'uncategorized'=
-    미분류(게시판 기본 공개일 때만 공개로 잡힘)."""
-    pub_q = _public_mount_query(ReportMount.workspace_slug == workspace_slug)
+    """이 게시판에 *배치(mount)*된 공개(all_org) 보고서 — 비멤버 외부 열람자
+    (public_viewer)용. 전사 공개분 중 이 게시판에 올라온 것만(전사 공개 1건이
+    모든 게시판을 채우지 않게). folder_filter 로 폴더 좁힘."""
+    all_org = grant_services.all_org_ids(db, GrantContentType.report)
+    if not all_org:
+        return []
+    mount_q = select(ReportMount.report_id).where(
+        ReportMount.workspace_slug == workspace_slug,
+        ReportMount.report_id.in_(all_org),
+    )
     if folder_filter == "uncategorized":
-        pub_q = pub_q.where(ReportMount.folder_id.is_(None))
+        mount_q = mount_q.where(ReportMount.folder_id.is_(None))
     elif isinstance(folder_filter, int):
-        pub_q = pub_q.where(ReportMount.folder_id == folder_filter)
-    pub_ids = set(db.execute(pub_q).scalars())
+        mount_q = mount_q.where(ReportMount.folder_id == folder_filter)
+    pub_ids = set(db.execute(mount_q).scalars())
     if not pub_ids:
         return []
     query = (
@@ -347,18 +281,29 @@ def list_public_reports_on_board(
     return list(db.execute(query).scalars())
 
 
-def is_public_only_viewer(
-    db: Session, report: Report, workspace_slug: str
-) -> bool:
-    """이 사용자가 이 보고서를 *공개 경로로만* 보고 있는가(조직간공개_설계.md §6).
+def is_public_only_viewer(db: Session, actor, report: Report) -> bool:
+    """이 사용자가 이 보고서를 *공개(all_org) 경로로만* 보고 있는가 — 읽기전용
+    배너·곁다리(댓글·이력) 차단용. 멤버 경로(소유·user·부서 grant)로 보이면 False."""
+    return grant_services.is_public_only_viewer(
+        db, actor, GrantContentType.report, report.id, report.owner_user_id
+    )
 
-    = 멤버십/mount(갈래 1·2)로는 안 보이는데 공개(갈래 3)로만 보이는 상태.
-    댓글·수정이력 등 곁다리 차단 가드와 `_read_with_perms` 의 읽기전용 권한
-    플래그에 쓴다. (멤버 열람자에겐 평소대로 곁다리가 열려야 하므로 갈래 1·2
-    가 참이면 무조건 False.)"""
-    if _is_member_visible(db, report, workspace_slug):
-        return False
-    return report_has_public_mount(db, report.id)
+
+def _owned_report_ids(db: Session, user_id: int) -> set[int]:
+    return set(
+        db.execute(
+            select(Report.id).where(Report.owner_user_id == user_id)
+        ).scalars()
+    )
+
+
+def visible_report_ids(db: Session, actor) -> Optional[set[int]]:
+    """actor 가 볼 수 있는 report_id 집합(grant ∪ 본인 소유). None=virtual 무스코프.
+    목록 공개탐색·관계도 스코핑에 쓴다."""
+    base = grant_services.visible_ids(db, actor, GrantContentType.report)
+    if base is None:
+        return None
+    return base | _owned_report_ids(db, actor.user.id)
 
 
 def _validate_page(db: Session, page: ReportPage) -> None:
@@ -1348,34 +1293,16 @@ def build_link_graph(
     }
 
 
-def _scoped_report_ids(
-    db: Session, workspace_slug: str, is_global_view: bool
-) -> Optional[set[int]]:
-    """워크스페이스에서 보이는 보고서 id 집합. None = 스코핑 없음(virtual
-    글로벌 뷰). list_reports_in_workspace 의 가시성 분기와 동일한 규칙을
-    id 만 가볍게 뽑아 재현한다 (personal: 직접 소유, org: 자기 게시판 mount —
-    하위 워크스페이스 롤업 없음)."""
-    if is_global_view:
-        return None
-    ws = db.get(Workspace, workspace_slug)
-    if ws is not None and ws.kind == WorkspaceKind.personal:
-        return set(
-            db.execute(
-                select(Report.id).where(Report.workspace_slug == workspace_slug)
-            ).scalars()
-        )
-    return set(
-        db.execute(
-            select(ReportMount.report_id).where(
-                ReportMount.workspace_slug == workspace_slug
-            )
-        ).scalars()
-    )
+def _scoped_report_ids(db: Session, actor) -> Optional[set[int]]:
+    """actor 가 볼 수 있는 보고서 id 집합(grant ∪ 소유). None = 무스코프(virtual).
+    관계도 스코핑용 — `visible_report_ids` 와 동일."""
+    return visible_report_ids(db, actor)
 
 
 def build_global_link_graph(
     db: Session,
     *,
+    actor,
     workspace_slug: str,
     is_global_view: bool = False,
     date_from: Optional[date] = None,
@@ -1414,7 +1341,7 @@ def build_global_link_graph(
     # 멤버십 가시 집합(virtual 글로벌 뷰면 None=제한 없음), public_ids 는
     # 공개로 표시된 보고서. 둘을 합쳐 그래프 적격 범위로 쓰고, 노드 표시는
     # "내 스코프 밖 + 공개" 면 다른 조직 공개 노드로 구분한다.
-    my_scope = _scoped_report_ids(db, workspace_slug, is_global_view)
+    my_scope = _scoped_report_ids(db, actor)
     public_ids = public_report_ids(db) if not is_global_view else set()
     scope_ids = None if my_scope is None else (my_scope | public_ids)
     type_set = set(type_ids) if type_ids else None

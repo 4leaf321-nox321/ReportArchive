@@ -144,7 +144,10 @@ def get_ancestors(db: Session, slug: str) -> list[Workspace]:
         if not parent:
             break
         path.insert(0, parent)
-        cur = parent.parent_slug
+        # 다음 반복에서 parent 의 부모를 보도록 cur 를 parent 로 옮긴다. 과거엔
+        # parent.parent_slug 로 점프해 한 단계씩 건너뛰는 버그가 있었다(3단계
+        # 이상 트리에서 조부모가 누락 → 하위 상속 가시성 깨짐).
+        cur = parent.slug
     return path
 
 

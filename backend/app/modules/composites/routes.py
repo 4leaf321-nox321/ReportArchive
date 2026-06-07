@@ -8,6 +8,7 @@ from app.database import get_db
 from app.modules.composites import services
 from app.modules.composites.models import CompositeItemRequestStatus
 from app.modules.composites.schemas import (
+    CompositeExternalViewUpdate,
     CompositeItemRequestCreate,
     CompositeItemRequestRead,
     CompositeRef,
@@ -16,9 +17,18 @@ from app.modules.composites.schemas import (
     CompositeReportSummary,
     CompositeReportUpdate,
 )
+from app.modules.grants import services as grant_services
+from app.modules.grants.models import GrantContentType
 from app.modules.reports import services as report_services
+from app.modules.users.models import Role
 from app.modules.workspaces import services as ws_services
-from app.shared.auth import CurrentUser, get_current_user, require_writer
+from app.modules.workspaces.models import Workspace, WorkspaceKind
+from app.shared.auth import (
+    CurrentUser,
+    _resolve_role,
+    get_current_user,
+    require_writer,
+)
 from app.shared.responses import (
     created_response,
     not_found_response,
@@ -26,6 +36,30 @@ from app.shared.responses import (
 )
 
 router = APIRouter()
+
+
+def _read_with_perms(
+    db: Session, actor: CurrentUser, composite
+) -> CompositeReportRead:
+    """CompositeReportRead 를 만들고 actor 기준 읽기전용 플래그를 찍는다
+    (보고서 _read_with_perms 와 동형). 외부 공개 열람자(public_viewer 또는
+    공개 경로로만 보이는 멤버)면 is_public_view=True, can_edit=False — 프런트가
+    읽기전용 배너·편집 숨김을 그린다. virtual(글로벌)도 쓰기 불가라 can_edit=False."""
+    obj = CompositeReportRead.model_validate(composite)
+    obj.is_public = composite.id in grant_services.public_ids(
+        db, GrantContentType.composite
+    )
+    is_public_view = not actor.workspace.virtual and (
+        actor.public_viewer
+        or services.is_public_only_viewer(db, actor, composite)
+    )
+    obj.is_public_view = is_public_view
+    obj.can_edit = (
+        not is_public_view
+        and not actor.workspace.virtual
+        and services.can_edit_composite(db, actor.user, composite)
+    )
+    return obj
 
 
 @router.get("/by-report/{report_id}")
@@ -45,12 +79,12 @@ def list_composites_containing_report(
     report = report_services.get_report(db, report_id)
     if report is None:
         return success_response(data=[])
-    if not actor.workspace.virtual and not report_services.is_visible_to(
-        db, report, actor.workspace.slug
-    ):
+    if not report_services.can_read_report(db, actor, report):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
     items = services.list_containing_report(db, report_id)
-    payload = [CompositeRef.model_validate(c) for c in items]
+    # 외부 공개 열람자에겐 자기가 읽을 수 있는(공개) 종합보고 칩만 노출.
+    visible = [c for c in items if services.can_read_composite(db, actor, c)]
+    payload = [CompositeRef.model_validate(c) for c in visible]
     return success_response(data=payload)
 
 
@@ -59,10 +93,24 @@ def list_composites(
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
-    items = services.list_in_workspace_tree(
-        db, actor.workspace.slug, is_global_view=actor.workspace.virtual
+    # 외부 공개 열람자(비멤버, 읽기전용 진입) — 이 게시판의 공개분만 본다.
+    # 멤버용 트리 스코프를 타면 비공개까지 새므로 별도 경로(보고서와 동형).
+    if actor.public_viewer:
+        items = services.list_public_composites_on_board(db, actor.workspace.slug)
+    else:
+        items = services.list_in_workspace_tree(
+            db, actor.workspace.slug, is_global_view=actor.workspace.virtual
+        )
+    pub = grant_services.public_ids(db, GrantContentType.composite)
+    share_map = grant_services.content_share_summaries(
+        db, GrantContentType.composite, [c.id for c in items]
     )
-    payload = [CompositeReportSummary.model_validate(c) for c in items]
+    payload = []
+    for c in items:
+        summary = CompositeReportSummary.model_validate(c)
+        summary.is_public = c.id in pub
+        summary.shares = share_map.get(c.id, [])
+        payload.append(summary)
     return success_response(data=payload)
 
 
@@ -75,11 +123,10 @@ def get_composite(
     composite = services.get(db, composite_id)
     if composite is None:
         return not_found_response(f"Composite not found: {composite_id}")
-    if not actor.workspace.virtual and not services.is_visible_to(
-        db, composite, actor.workspace.slug
-    ):
+    # 멤버십(트리) ∪ 공개 — 공개 종합보고는 조직 경계 무관 읽기 가능.
+    if not services.can_read_composite(db, actor, composite):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
-    return success_response(data=CompositeReportRead.model_validate(composite))
+    return success_response(data=_read_with_perms(db, actor, composite))
 
 
 @router.post("")
@@ -117,10 +164,12 @@ def update_composite(
     composite = services.get(db, composite_id)
     if composite is None:
         return not_found_response(f"Composite not found: {composite_id}")
-    if not actor.workspace.virtual and not services.is_visible_to(
-        db, composite, actor.workspace.slug
+    if not actor.workspace.virtual and not services.can_edit_composite(
+        db, actor.user, composite
     ):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "이 종합보고를 편집할 권한이 없습니다."
+        )
     try:
         composite = services.update(
             db, composite, payload, updated_by_user_id=actor.user.id
@@ -142,12 +191,18 @@ def delete_composite(
     composite = services.get(db, composite_id)
     if composite is None:
         return not_found_response(f"Composite not found: {composite_id}")
-    if not actor.workspace.virtual and not services.is_visible_to(
-        db, composite, actor.workspace.slug
+    if not actor.workspace.virtual and not services.can_edit_composite(
+        db, actor.user, composite
     ):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "이 종합보고를 삭제할 권한이 없습니다."
+        )
     services.delete(db, composite)
     return success_response(data=None, message="Deleted")
+
+
+# 조직 간 공개 토글은 통합 공유 엔드포인트(/api/composites/{id}/shares)로 흡수됨
+# (공유/권한 개편). 기존 set_composite_external_view 는 제거.
 
 
 # --------------------------------------------------------------------------- #
@@ -166,9 +221,7 @@ def _resolve_publishable(
             status.HTTP_404_NOT_FOUND,
             f"Composite not found: {composite_id}",
         )
-    if not actor.workspace.virtual and not services.is_visible_to(
-        db, composite, actor.workspace.slug
-    ):
+    if not services.can_read_composite(db, actor, composite):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
     is_owner = composite.owner_user_id == actor.user.id
     is_sys_admin = bool(getattr(actor.user, "is_system_admin", False))
@@ -219,9 +272,7 @@ def _resolve_visible(db, composite_id: int, actor: CurrentUser):
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"Composite not found: {composite_id}"
         )
-    if not actor.workspace.virtual and not services.is_visible_to(
-        db, composite, actor.workspace.slug
-    ):
+    if not services.can_read_composite(db, actor, composite):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
     return composite
 
@@ -250,9 +301,7 @@ def list_submittable_composites(
     report = report_services.get_report(db, report_id)
     if report is None:
         return success_response(data=[])
-    if not actor.workspace.virtual and not report_services.is_visible_to(
-        db, report, actor.workspace.slug
-    ):
+    if not report_services.can_read_report(db, actor, report):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
     comps = services.list_submittable_composites(db, report)
     out = []

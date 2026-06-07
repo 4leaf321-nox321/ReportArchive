@@ -27,6 +27,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.modules.folders.models import Folder, FolderKind
+from app.modules.grants import services as grant_services
+from app.modules.grants.models import GrantContentType, GrantLevel
 from app.modules.mounts.models import MountEditPolicy, ReportMount
 from app.modules.notifications.models import NotificationType
 from app.modules.notifications.services import create_notification
@@ -217,6 +219,18 @@ def mount_report(
         created.append(row)
     db.flush()
 
+    # 자동 부서 view grant — 게시(배치)된 게시판에서 보이도록(공유/권한 개편:
+    # 가시성은 grant 단일 출처). edit 권한은 명시 공유로만 부여한다.
+    for row in created:
+        grant_services.ensure_workspace_grant(
+            db,
+            GrantContentType.report,
+            report_id,
+            row.workspace_slug,
+            GrantLevel.view,
+            created_by_user_id=actor_user_id,
+        )
+
     # Notify the report owner that their report just got mounted (only
     # if someone else mounted it; self-mount is implicit).
     for row in created:
@@ -379,5 +393,10 @@ def unmount_report(
     if row is None:
         return False
     db.delete(row)
+    # 배치 해제 시 그 게시판 부서 grant 도 제거(공유/권한 개편). 명시 공유로
+    # 따로 준 같은 부서 edit grant 가 있었다면 함께 사라짐 — 단순화 수용.
+    grant_services.remove_workspace_grant(
+        db, GrantContentType.report, report_id, workspace_slug
+    )
     db.flush()
     return True

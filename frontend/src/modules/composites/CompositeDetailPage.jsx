@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Copy,
   FileType2,
+  Globe,
   GripVertical,
   Layers,
   Loader2,
@@ -30,6 +31,7 @@ import { Input } from '@/shared/components/ui/input'
 import { Textarea } from '@/shared/components/ui/textarea'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
+import { SharePopover } from '@/shared/components/SharePopover'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAuth } from '@/shared/auth/AuthContext'
@@ -663,6 +665,9 @@ export default function CompositeDetailPage() {
   const isSysAdmin = me?.is_system_admin === true
   const canPublish =
     composite?.kind === 'recurring' && (isOwner || isSysAdmin)
+  // 외부 공개/공유 열람자(공유 경로로만 보이는 중)면 백엔드가
+  // is_public_view=true / can_edit=false 로 내려준다.
+  const isPublicView = composite?.is_public_view === true
 
   async function handlePublish() {
     try {
@@ -729,6 +734,14 @@ export default function CompositeDetailPage() {
             )}
             <span>· {workspaceName(composite.workspace_slug)}</span>
             <span>· 안건 {draft.items.length}건</span>
+            {composite.is_public && (
+              <span
+                className="inline-flex items-center gap-1 text-sky-600"
+                title="전체 공개됨 (사내 모든 사용자 읽기 가능)"
+              >
+                · <Globe className="h-3 w-3" /> 전체 공개
+              </span>
+            )}
           </div>
           <div className="mt-1 text-[11px] text-muted-foreground">
             작성 {composite.owner_name ?? '—'} · {composite.created_at?.slice(0, 10)}
@@ -773,21 +786,24 @@ export default function CompositeDetailPage() {
           <>
             {/* 편집 — recurring 발행 후엔 차단 (보고서 finalized 와 동일
                 패턴). 발행 취소 후 편집해야 한다는 흐름을 강제. theme
-                은 publish 개념이 없어 항상 편집 가능. */}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setIsEditing(true)}
-              disabled={isPublished && composite?.kind === 'recurring'}
-              title={
-                isPublished && composite?.kind === 'recurring'
-                  ? '발행된 종합보고는 편집할 수 없습니다. 발행 취소 후 수정하세요.'
-                  : undefined
-              }
-            >
-              <Pencil className="mr-1 h-3 w-3" />
-              편집
-            </Button>
+                은 publish 개념이 없어 항상 편집 가능. 외부 공개 열람자
+                (읽기전용)에겐 숨김. */}
+            {!isPublicView && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsEditing(true)}
+                disabled={isPublished && composite?.kind === 'recurring'}
+                title={
+                  isPublished && composite?.kind === 'recurring'
+                    ? '발행된 종합보고는 편집할 수 없습니다. 발행 취소 후 수정하세요.'
+                    : undefined
+                }
+              >
+                <Pencil className="mr-1 h-3 w-3" />
+                편집
+              </Button>
+            )}
             {/* 발행 / 발행 취소 — recurring + 작성자(또는 sys admin) 만.
                 publish 는 그 시점 모든 item 의 ref_report content 를 박제
                 → 6개월 뒤 봐도 발행 시점 그대로 보임. */}
@@ -799,6 +815,18 @@ export default function CompositeDetailPage() {
               >
                 {isPublished ? '발행 취소' : '발행'}
               </Button>
+            )}
+            {/* 공유 — 부서(하위 상속)·사용자·전체공개 + 열람/편집. 클릭하면
+                팝오버로 그 자리에서 편집, 뱃지로 현재 공유 대상 표시. */}
+            {!isPublicView && (
+              <SharePopover
+                contentType="composites"
+                contentId={composite.id}
+                ownerUserId={composite.owner_user_id}
+                label="공유"
+                onChanged={reload}
+                triggerClassName="h-8 rounded-md border border-input bg-background px-2.5 hover:bg-accent hover:text-accent-foreground"
+              />
             )}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -830,24 +858,49 @@ export default function CompositeDetailPage() {
               HTML로 저장
             </Button>
             {/* 복사 — 일반 보고서의 복사 패턴과 동일. 발행 여부와 무관하게
-                항상 가능 (발행은 원본의 상태이고, 사본은 새 draft 로 시작). */}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setCopyOpen(true)}
-            >
-              <Copy className="mr-1 h-3 w-3" />
-              복사
-            </Button>
-            <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setConfirmDelete(true)}>
-              <Trash2 className="mr-1 h-3 w-3" />
-              삭제
-            </Button>
+                항상 가능 (발행은 원본의 상태이고, 사본은 새 draft 로 시작).
+                외부 공개 열람자는 자기 부서에 쓰기 권한이 없어 숨김. */}
+            {!isPublicView && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setCopyOpen(true)}
+              >
+                <Copy className="mr-1 h-3 w-3" />
+                복사
+              </Button>
+            )}
+            {!isPublicView && (
+              <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setConfirmDelete(true)}>
+                <Trash2 className="mr-1 h-3 w-3" />
+                삭제
+              </Button>
+            )}
           </>
         )}
         </div>
       </div>
 
+      {/* 조직 간 공개 — 다른 조직의 공개 종합보고를 열람 중일 때. 읽기 전용:
+          백엔드가 can_edit=false 로 편집·삭제·복사를 막는다(보고서 공개 배너와
+          동형). data-export-exclude 로 export 본문엔 안 들어간다. */}
+      {isPublicView && (
+        <div
+          data-export-exclude
+          className="rounded-md border border-sky-200 bg-sky-50 dark:bg-sky-950/30 dark:border-sky-900 px-4 py-2.5 text-sm flex items-center gap-2"
+        >
+          <span className="text-base">🌐</span>
+          <span className="font-medium shrink-0 text-sky-900 dark:text-sky-100">
+            다른 조직의 공개 종합보고 · 읽기 전용
+          </span>
+          <span className="flex-1 min-w-0 truncate text-sky-800/80 dark:text-sky-200/70 text-xs">
+            {composite?.owner_name ? `${composite.owner_name} 작성 — ` : ''}
+            내용만 열람할 수 있습니다. 편집·복사·삭제는 비활성화됩니다.
+          </span>
+        </div>
+      )}
+
+      {/* 공개 상태 배너 — 멤버가 자기 종합보고의 공개 여부를 한눈에. */}
       {/* 발행 배너 — recurring 발행 후만. 보고서의 phase=finalized 배너와
           비슷한 패턴. 발행 시각 + 누가 발행했는지 + 박제 의미 안내. */}
       {isPublished && composite?.kind === 'recurring' && (

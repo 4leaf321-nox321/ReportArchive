@@ -16,8 +16,6 @@ import {
   ChevronRight,
   Folder as FolderIcon,
   FolderOpen,
-  Globe,
-  GlobeLock,
   Inbox,
   Layers3,
   Loader2,
@@ -27,7 +25,7 @@ import {
   X,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { Button } from '@/shared/components/ui/button'
+import { SharePopover } from '@/shared/components/SharePopover'
 import { Input } from '@/shared/components/ui/input'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import {
@@ -99,15 +97,10 @@ export function FolderSidebar({
   // already refreshes via its own `refresh()` calls, so the parent only
   // needs to bump this when reports (not folders) are mutated.
   reloadKey = 0,
-  // 조직 간 공개(조직간공개_설계.md §7). orgScope=true 일 때만 공개 컨트롤을
-  // 그린다(개인 공간은 공개 대상 아님). boardExternalView = 게시판 기본
-  // 공개정책(workspace.external_view_default) — 폴더 effective 판정의 fallback.
-  // onSetBoardExternalView(next) = 게시판 토글 콜백(매니저만 호출됨).
+  // 조직 공유 컨트롤(게시판/폴더 공유 버튼)을 그릴지 — org 게시판에서만 true
+  // (개인 공간은 공유 대상 아님).
   orgScope = false,
-  boardExternalView = false,
-  onSetBoardExternalView,
-  // 게시판 공개정책 바 표시 여부. 외부 공개 열람자에겐 false(남 조직 정책이라
-  // 보여줄 이유 없음). 폴더 행 공개 뱃지(orgScope)와는 별개.
+  // 게시판 공유 바 표시 여부. 외부 공개 열람자에겐 false.
   showBoardBar = true,
 }) {
   const [folders, setFolders] = React.useState([])
@@ -296,27 +289,6 @@ export function FolderSidebar({
     }
   }
 
-  // 폴더 공개 3-state 순환: 상속(null) → 공개(true) → 비공개(false) → 상속.
-  // org 폴더 전용 — 매니저(canEdit)만 호출.
-  async function handleCyclePublic(folder) {
-    const cur = folder.external_view
-    const next = cur == null ? true : cur === true ? false : null
-    try {
-      await updateFolder(folder.id, { externalView: next })
-      await refresh()
-      onChanged?.()
-      toast.success(
-        next === true
-          ? `'${folder.name}' 폴더 공개`
-          : next === false
-            ? `'${folder.name}' 폴더 비공개`
-            : `'${folder.name}' 폴더 — 게시판 기본값 상속`,
-      )
-    } catch (e) {
-      toast.error(e?.response?.data?.message || '공개 설정 변경 실패')
-    }
-  }
-
   async function handleDelete(folder) {
     try {
       await deleteFolder(folder.id)
@@ -344,12 +316,6 @@ export function FolderSidebar({
     // canDropOn, which only knows about folder drags and would return
     // false during a report-row drag.
     const isDropHere = dropTarget === folder.id
-    // 조직 간 공개 effective: 폴더가 3-state override 를 가지면 그 값,
-    // 아니면 게시판 기본값(boardExternalView). 백엔드 §3.2 와 동일.
-    const effPublic =
-      folder.external_view != null ? folder.external_view : boardExternalView
-    // 게시판은 공개인데 폴더가 명시적으로 비공개로 막은 경우 — 잠금 뱃지.
-    const overriddenPrivate = folder.external_view === false && boardExternalView
     return (
       <div key={folder.id}>
         <div
@@ -474,24 +440,14 @@ export function FolderSidebar({
               >
                 {folder.name}
               </span>
-              {/* 공개 뱃지 — org 스코프에서만. 공개면 지구본, 게시판 공개를
-                  폴더가 막았으면 잠긴 지구본. 상속+비공개면 표시 없음. */}
-              {orgScope && effPublic && (
-                <Globe
-                  className="h-3 w-3 shrink-0 text-sky-500"
-                  aria-label="다른 조직에 공개"
-                  title={
-                    folder.external_view === true
-                      ? '다른 조직에 공개 (폴더 지정)'
-                      : '다른 조직에 공개 (게시판 기본값 상속)'
-                  }
-                />
-              )}
-              {orgScope && overriddenPrivate && (
-                <GlobeLock
-                  className="h-3 w-3 shrink-0 text-muted-foreground"
-                  aria-label="비공개 (폴더에서 차단)"
-                  title="비공개 — 게시판은 공개지만 이 폴더에서 차단함"
+              {orgScope && (
+                <SharePopover
+                  folderId={folder.id}
+                  canManage={canEdit}
+                  compact
+                  initialGrants={folder.shares}
+                  onChanged={refresh}
+                  triggerClassName="text-muted-foreground hover:text-foreground shrink-0"
                 />
               )}
               <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
@@ -499,34 +455,6 @@ export function FolderSidebar({
               </span>
               {canEdit && (
                 <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5">
-                  {orgScope && (
-                    <button
-                      type="button"
-                      className="p-0.5 hover:bg-background rounded"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        handleCyclePublic(folder)
-                      }}
-                      title={
-                        folder.external_view == null
-                          ? '공개 설정: 게시판 기본값 상속 (클릭 → 공개)'
-                          : folder.external_view === true
-                            ? '공개 설정: 공개 (클릭 → 비공개)'
-                            : '공개 설정: 비공개 (클릭 → 상속)'
-                      }
-                    >
-                      {folder.external_view === false ? (
-                        <GlobeLock className="h-3 w-3" />
-                      ) : (
-                        <Globe
-                          className={cn(
-                            'h-3 w-3',
-                            folder.external_view === true && 'text-sky-500',
-                          )}
-                        />
-                      )}
-                    </button>
-                  )}
                   <button
                     type="button"
                     className="p-0.5 hover:bg-background rounded"
@@ -619,13 +547,14 @@ export function FolderSidebar({
         )}
       </div>
 
-      {/* 게시판 기본 공개정책 (조직 간 공개) — org 스코프 + 표시 허용 시만.
-          매니저는 토글, 멤버는 읽기전용 상태 표시. 외부 공개 열람자에겐 숨김. */}
+      {/* 게시판 통째 공유 — 부서/사용자/전체 × 열람/편집. 클릭하면 팝오버로
+          그 자리에서 편집, 뱃지로 현재 공유 대상 표시(호버 상세). */}
       {orgScope && showBoardBar && (
-        <BoardPublicBar
-          value={boardExternalView}
-          canEdit={canEdit}
-          onChange={onSetBoardExternalView}
+        <SharePopover
+          boardSlug={workspaceSlug}
+          canManage={canEdit}
+          label="게시판 공유"
+          triggerClassName="w-full px-3 py-1.5 text-[11px] border-b text-muted-foreground hover:bg-muted transition-colors"
         />
       )}
 
@@ -769,62 +698,6 @@ export function FolderSidebar({
 
 /** 게시판 기본 공개정책 바 — org 사이드바 헤더 밑. 매니저(canEdit)는 클릭으로
  *  토글, 그 외엔 현재 상태만 본다. onChange(next) 는 비동기 — 진행 중 스피너. */
-function BoardPublicBar({ value, canEdit, onChange }) {
-  const [busy, setBusy] = React.useState(false)
-  const isPublic = Boolean(value)
-
-  async function toggle() {
-    if (!canEdit || busy || !onChange) return
-    setBusy(true)
-    try {
-      await onChange(!isPublic)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={toggle}
-      disabled={!canEdit || busy}
-      className={cn(
-        'flex items-center gap-1.5 w-full px-3 py-1.5 text-[11px] border-b transition-colors text-left',
-        isPublic
-          ? 'text-sky-600 bg-sky-50/60'
-          : 'text-muted-foreground',
-        canEdit && !busy && 'hover:bg-muted cursor-pointer',
-        !canEdit && 'cursor-default',
-      )}
-      title={
-        canEdit
-          ? isPublic
-            ? '다른 조직에 공개 중 — 클릭하면 비공개로'
-            : '현재 비공개 — 클릭하면 다른 조직에 공개'
-          : isPublic
-            ? '이 게시판은 다른 조직에 공개되어 있습니다'
-            : '이 게시판은 다른 조직에 비공개입니다'
-      }
-    >
-      {busy ? (
-        <Loader2 className="h-3 w-3 animate-spin shrink-0" />
-      ) : isPublic ? (
-        <Globe className="h-3 w-3 shrink-0" />
-      ) : (
-        <GlobeLock className="h-3 w-3 shrink-0" />
-      )}
-      <span className="flex-1 truncate">
-        {isPublic ? '다른 조직에 공개' : '다른 조직에 비공개'}
-      </span>
-      {canEdit && (
-        <span className="text-[10px] opacity-60 shrink-0">
-          {isPublic ? '끄기' : '켜기'}
-        </span>
-      )}
-    </button>
-  )
-}
-
 function InlineCreateRow({ depth, value, onChange, onSubmit, onCancel }) {
   return (
     <div

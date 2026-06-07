@@ -69,7 +69,7 @@ def _public_only(db: Session, actor: CurrentUser, report) -> bool:
     # 진입했어도 멤버가 아니므로 곁다리(댓글)는 막는다.
     if getattr(actor, "public_viewer", False):
         return True
-    return report_services.is_public_only_viewer(db, report, actor.workspace.slug)
+    return report_services.is_public_only_viewer(db, actor, report)
 
 
 def _thread_payload(db: Session, thread: CommentThread) -> dict:

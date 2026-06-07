@@ -37,7 +37,7 @@ def _flatten_user_refs(obj: Any) -> Any:
         for key in (
             "id", "workspace_slug", "title", "kind", "period_date",
             "description", "two_col_view", "view_mode", "summary_widgets",
-            "revision", "owner_user_id",
+            "revision", "owner_user_id", "external_view",
             "updated_by_user_id", "published_at", "published_by_user_id",
             "items", "created_at", "updated_at",
         )
@@ -210,6 +210,14 @@ class CompositeReportRead(BaseModel):
     published_by_user_id: Optional[int] = None
     published_by_name: Optional[str] = None
     published_by_email: Optional[str] = None
+    # (레거시 컬럼 — 가시성 판정엔 안 쓰임; is_public 을 보라.)
+    external_view: bool = False
+    # 전체 공개(all_org grant 또는 게시판 all_org)인가 — 지구본 표시용. 라우트가 채움.
+    is_public: bool = False
+    # 외부 공개 열람자로 진입했는지(읽기전용 배너·곁다리 차단용). 라우트가
+    # actor 컨텍스트로 채운다(모델 컬럼 아님). can_edit 은 편집 가능 여부.
+    is_public_view: bool = False
+    can_edit: bool = True
     items: list[CompositeItemRead] = []
     created_at: datetime
     updated_at: datetime
@@ -276,6 +284,11 @@ class CompositeReportSummary(BaseModel):
     # 일 때만 의미; theme 은 항상 NULL). List view 에서 "발행됨" 칩
     # 노출용.
     published_at: Optional[datetime] = None
+    # (레거시 컬럼.) is_public 이 실제 전체공개 여부 — 라우트가 채움(지구본 표시).
+    external_view: bool = False
+    is_public: bool = False
+    # 공유 대상 요약(목록 뱃지/호버용) — 라우트가 채움. [{principal_type, label, level}]
+    shares: list[dict] = []
     item_count: int = 0
     created_at: datetime
     updated_at: datetime
@@ -348,6 +361,13 @@ class CompositeReportUpdate(BaseModel):
     # (구조 전량 교체) 서버 값과 다르면 409 로 거절(다른 사람이 먼저 저장).
     # None 이면 검사 생략(보기 설정만 바꾸는 가벼운 PATCH 등).
     expected_revision: Optional[int] = Field(default=None, ge=1)
+
+
+class CompositeExternalViewUpdate(BaseModel):
+    """조직 간 공개 토글 — 소유자/매니저/시스템관리자 전용 별도 엔드포인트
+    (워크스페이스의 /external-view 와 동형). 일반 PATCH 와 분리해 권한을 좁힌다."""
+
+    external_view: bool
 
 
 # ── 안건 제출(신청) 큐 ────────────────────────────────────────────────────

@@ -47,7 +47,7 @@ def _read_with_perms(db: Session, actor: CurrentUser, report) -> ReportRead:
     # 배너·곁다리 숨김을 그린다. virtual(글로벌/관리자)은 공개 열람자가 아님.
     is_public_view = not actor.workspace.virtual and (
         actor.public_viewer
-        or services.is_public_only_viewer(db, report, actor.workspace.slug)
+        or services.is_public_only_viewer(db, actor, report)
     )
     obj.is_public_view = is_public_view
     obj.can_comment = not is_public_view
@@ -151,9 +151,7 @@ def list_reports(
     # 공개 탐색 시 "내 스코프 밖 + 공개" 인 행을 표시 — 프런트가 뱃지로 구분.
     external_ids: set[int] = set()
     if include_public and not actor.workspace.virtual:
-        scoped = (
-            services._scoped_report_ids(db, actor.workspace.slug, False) or set()
-        )
+        scoped = services.visible_report_ids(db, actor) or set()
         external_ids = services.public_report_ids(db) - scoped
     payload = []
     for r in reports:
@@ -245,6 +243,7 @@ def get_global_link_graph(
 
     graph = services.build_global_link_graph(
         db,
+        actor=actor,
         workspace_slug=actor.workspace.slug,
         is_global_view=actor.workspace.virtual,
         date_from=_parse(date_from),

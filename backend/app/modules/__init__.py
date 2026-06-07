@@ -21,6 +21,7 @@ from app.modules.entities.routes import (
 )
 from app.modules.files.routes import router as files_router
 from app.modules.folders.routes import router as folders_router
+from app.modules.grants.routes import router as grants_router
 from app.modules.members.routes import router as members_router
 from app.modules.mounts.routes import router as mounts_router
 from app.modules.notifications.routes import router as notifications_router
@@ -100,3 +101,5 @@ def register_routers(app: FastAPI) -> None:
     # Activities routes use full paths starting with /reports — mount at
     # /api so the URL becomes /api/reports/{id}/activities.
     app.include_router(activities_router, prefix="/api", tags=["activities"])
+    # 통합 공유(grant) — /api/{reports|composites}/{id}/shares.
+    app.include_router(grants_router, prefix="/api", tags=["grants"])

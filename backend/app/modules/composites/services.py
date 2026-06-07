@@ -21,8 +21,11 @@ from app.modules.composites.schemas import (
 )
 from app.modules.notifications.models import NotificationType
 from app.modules.notifications.services import create_notification
+from app.modules.grants import services as grant_services
+from app.modules.grants.models import GrantContentType
 from app.modules.reports.models import Report
 from app.modules.workspaces import services as ws_services
+from app.modules.workspaces.models import Workspace, WorkspaceKind
 
 
 class CompositeError(Exception):
@@ -46,13 +49,13 @@ class CompositeConflictError(CompositeError):
 def list_in_workspace_tree(
     db: Session, workspace_slug: str, *, is_global_view: bool = False
 ) -> list[CompositeReport]:
-    """Composites for the current workspace + all descendants. Mirrors how
-    the reports list endpoint scopes its result so a parent-tier user
-    sees their sub-teams' composites too."""
+    """이 게시판(home board)에 속한 종합보고 목록. 공유/권한 개편: 하위 롤업
+    제거 — 부모 게시판이 자식 팀 종합보고를 목록에 자동으로 띄우지 않는다
+    (가시성은 grant 로 별도 판정; 자식에 공유하면 부모 목록엔 안 뜸).
+    virtual(글로벌)은 전체."""
     q = select(CompositeReport).order_by(desc(CompositeReport.updated_at))
     if not is_global_view:
-        scope = ws_services.get_descendants_inclusive(db, workspace_slug)
-        q = q.where(CompositeReport.workspace_slug.in_(scope))
+        q = q.where(CompositeReport.workspace_slug == workspace_slug)
     return list(db.execute(q).scalars())
 
 
@@ -88,8 +91,60 @@ def get(db: Session, composite_id: int) -> Optional[CompositeReport]:
 
 
 def is_visible_to(db: Session, composite: CompositeReport, workspace_slug: str) -> bool:
-    scope = ws_services.get_descendants_inclusive(db, workspace_slug)
-    return composite.workspace_slug in scope
+    """부서 grant 가 이 게시판 W 에 도달하나(하위 상속, all_org 제외) — 코어
+    스코프 게이트. 단일-콘텐츠 actor 판정은 can_read_composite 를 쓴다."""
+    return grant_services.reachable_workspace_view(
+        db, GrantContentType.composite, composite.id, workspace_slug
+    )
+
+
+def composite_is_public(db: Session, composite: CompositeReport) -> bool:
+    """이 종합보고가 조직 간 공개(all_org grant)인가 — 공유/권한 개편."""
+    return grant_services.has_all_org_grant(
+        db, GrantContentType.composite, composite.id
+    )
+
+
+def can_read_composite(db: Session, actor, composite: CompositeReport) -> bool:
+    """단일 종합보고 읽기 가시성 — grant 기반 통합(소유·sys_admin·virtual·
+    all_org·user grant·부서 grant 하위상속). public_viewer 는 공개분만."""
+    return grant_services.can_view(
+        db, actor, GrantContentType.composite, composite.id, composite.owner_user_id
+    )
+
+
+def can_edit_composite(db: Session, user, composite: CompositeReport) -> bool:
+    """종합보고 편집 가능 여부 — grant 기반(sys_admin·owner·user edit·부서 edit
+    하위도달). 보고서 can_edit 와 동형(종합보고엔 author_lock 없음)."""
+    return grant_services.can_edit_grant(
+        db, user, GrantContentType.composite, composite.id, composite.owner_user_id
+    )
+
+
+def is_public_only_viewer(db: Session, actor, composite: CompositeReport) -> bool:
+    """이 사용자가 이 종합보고를 *공개(all_org) 경로로만* 보고 있는가 — 읽기전용
+    배너·곁다리 차단용. 멤버 경로(소유·user·부서 grant)로 보이면 False."""
+    return grant_services.is_public_only_viewer(
+        db, actor, GrantContentType.composite, composite.id, composite.owner_user_id
+    )
+
+
+def list_public_composites_on_board(
+    db: Session, workspace_slug: str
+) -> list[CompositeReport]:
+    """이 게시판에 속한 공개(all_org) 종합보고만 — 비멤버 외부 열람자용."""
+    all_org = grant_services.all_org_ids(db, GrantContentType.composite)
+    if not all_org:
+        return []
+    q = (
+        select(CompositeReport)
+        .where(
+            CompositeReport.workspace_slug == workspace_slug,
+            CompositeReport.id.in_(all_org),
+        )
+        .order_by(desc(CompositeReport.updated_at))
+    )
+    return list(db.execute(q).scalars())
 
 
 def _validate_refs(
@@ -235,6 +290,15 @@ def create(
     )
     db.add(composite)
     db.flush()  # need an id for self-reference checks + child rows
+    # 자동 부서 view grant — 이 종합보고가 생성된 게시판(home)에서 보이도록
+    # (공유/권한 개편: 가시성은 grant 가 단일 출처).
+    grant_services.ensure_workspace_grant(
+        db,
+        GrantContentType.composite,
+        composite.id,
+        composite.workspace_slug,
+        created_by_user_id=owner_user_id,
+    )
     _replace_items(db, composite, payload.items)
     # Phase 5E — every initial item is "new", fire composite.included
     # (and composite.cited_upward for sub-composites). Self-notify is

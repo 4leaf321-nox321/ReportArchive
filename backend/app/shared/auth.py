@@ -196,26 +196,86 @@ def get_current_user(
 
 
 def _workspace_has_public_content(db: Session, workspace_slug: str) -> bool:
-    """이 org 게시판에 effective-public 인 mount 가 하나라도 있나 — 비멤버
-    읽기전용 진입 허용 판정(조직간공개_설계.md §3.2). effective =
-    coalesce(folder.external_view, workspace.external_view_default). 게시판
-    자체에 게시된 것만(자손 트리는 그 게시판에서 따로 판정)."""
+    """이 org 게시판에 공개(all_org grant)된 컨텐츠가 *이 게시판에 배치된 채로*
+    하나라도 있나 — 비멤버 읽기전용 진입 허용 판정(공유/권한 개편).
+
+    1. 공개 보고서: all_org grant 보유 + 이 게시판에 mount(배치).
+    2. 공개 종합보고: all_org grant 보유 + home board == 이 게시판.
+
+    배치(W)를 함께 보는 이유: 전사 공개 1건이 모든 게시판을 비멤버에게 열어버리는
+    사고를 막는다(콘텐츠가 실제로 이 게시판에 올라와 있을 때만 입장 허용)."""
+    from sqlalchemy import and_
+
+    from app.modules.composites.models import CompositeReport
     from app.modules.folders.models import Folder
+    from app.modules.grants.models import (
+        BoardGrant,
+        ContentGrant,
+        FolderGrant,
+        GrantContentType,
+        GrantPrincipalType,
+    )
     from app.modules.mounts.models import ReportMount
 
-    effective = func.coalesce(Folder.external_view, Workspace.external_view_default)
-    row = db.execute(
-        select(ReportMount.report_id)
-        .join(Workspace, Workspace.slug == ReportMount.workspace_slug)
-        .outerjoin(Folder, Folder.id == ReportMount.folder_id)
+    ws = db.get(Workspace, workspace_slug)
+    if ws is None or ws.kind != WorkspaceKind.org:
+        return False
+
+    # 게시판 통째 전체공개 — 그 게시판의 모든 콘텐츠가 공개라 비멤버 입장 허용.
+    board_public = db.execute(
+        select(BoardGrant.id)
         .where(
-            ReportMount.workspace_slug == workspace_slug,
-            Workspace.kind == WorkspaceKind.org,
-            effective.is_(True),
+            BoardGrant.board_slug == workspace_slug,
+            BoardGrant.principal_type == GrantPrincipalType.all_org,
         )
         .limit(1)
     ).first()
-    return row is not None
+    if board_public is not None:
+        return True
+
+    # 이 게시판의 폴더가 전체공개면 그 폴더 보고서가 공개라 비멤버 입장 허용.
+    folder_public = db.execute(
+        select(FolderGrant.id)
+        .join(Folder, Folder.id == FolderGrant.folder_id)
+        .where(
+            Folder.workspace_slug == workspace_slug,
+            FolderGrant.principal_type == GrantPrincipalType.all_org,
+        )
+        .limit(1)
+    ).first()
+    if folder_public is not None:
+        return True
+
+    has_public_report = db.execute(
+        select(ReportMount.report_id)
+        .join(
+            ContentGrant,
+            and_(
+                ContentGrant.content_type == GrantContentType.report,
+                ContentGrant.content_id == ReportMount.report_id,
+                ContentGrant.principal_type == GrantPrincipalType.all_org,
+            ),
+        )
+        .where(ReportMount.workspace_slug == workspace_slug)
+        .limit(1)
+    ).first()
+    if has_public_report is not None:
+        return True
+
+    has_public_composite = db.execute(
+        select(CompositeReport.id)
+        .join(
+            ContentGrant,
+            and_(
+                ContentGrant.content_type == GrantContentType.composite,
+                ContentGrant.content_id == CompositeReport.id,
+                ContentGrant.principal_type == GrantPrincipalType.all_org,
+            ),
+        )
+        .where(CompositeReport.workspace_slug == workspace_slug)
+        .limit(1)
+    ).first()
+    return has_public_composite is not None
 
 
 def get_current_user_no_workspace(

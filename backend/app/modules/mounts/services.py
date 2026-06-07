@@ -28,7 +28,11 @@ from sqlalchemy.orm import Session
 
 from app.modules.folders.models import Folder, FolderKind
 from app.modules.grants import services as grant_services
-from app.modules.grants.models import GrantContentType, GrantLevel
+from app.modules.grants.models import (
+    GrantContentType,
+    GrantLevel,
+    GrantPrincipalType,
+)
 from app.modules.mounts.models import MountEditPolicy, ReportMount
 from app.modules.notifications.models import NotificationType
 from app.modules.notifications.services import create_notification
@@ -116,6 +120,36 @@ def _ensure_target_is_org_workspace(
     raise MountForbiddenError(
         f"접근 권한이 없는 워크스페이스에는 게시할 수 없습니다: {workspace_slug}"
     )
+
+
+def _sync_mount_grants(
+    db: Session,
+    report_id: int,
+    slug: str,
+    policy: MountEditPolicy,
+    actor_user_id: int,
+) -> None:
+    """게시 편집 정책 → grant 상태 동기화(편집은 grant 단일 출처).
+
+      default/owner_only → 부서 view (작성자만 편집)
+      coauthor           → 부서 edit (게시판 멤버 누구나 편집)
+      manager            → 부서 view + workspace_manager edit (작성자+매니저)
+    """
+    upsert = grant_services.upsert_grant
+    remove = grant_services.remove_principal_grant
+    R = GrantContentType.report
+    WS = GrantPrincipalType.workspace
+    WM = GrantPrincipalType.workspace_manager
+
+    if policy == MountEditPolicy.coauthor:
+        upsert(db, R, report_id, WS, slug, GrantLevel.edit, created_by_user_id=actor_user_id)
+        remove(db, R, report_id, WM, slug)
+    elif policy == MountEditPolicy.manager:
+        upsert(db, R, report_id, WS, slug, GrantLevel.view, created_by_user_id=actor_user_id)
+        upsert(db, R, report_id, WM, slug, GrantLevel.edit, created_by_user_id=actor_user_id)
+    else:  # default / owner_only
+        upsert(db, R, report_id, WS, slug, GrantLevel.view, created_by_user_id=actor_user_id)
+        remove(db, R, report_id, WM, slug)
 
 
 def _board_lead_user_id(db: Session, workspace_slug: str) -> Optional[int]:
@@ -219,16 +253,11 @@ def mount_report(
         created.append(row)
     db.flush()
 
-    # 자동 부서 view grant — 게시(배치)된 게시판에서 보이도록(공유/권한 개편:
-    # 가시성은 grant 단일 출처). edit 권한은 명시 공유로만 부여한다.
+    # 게시(배치)된 게시판의 grant 자동 생성 — 정책에 따라 동기화(공유/권한
+    # 개편: 가시성·편집은 grant 단일 출처).
     for row in created:
-        grant_services.ensure_workspace_grant(
-            db,
-            GrantContentType.report,
-            report_id,
-            row.workspace_slug,
-            GrantLevel.view,
-            created_by_user_id=actor_user_id,
+        _sync_mount_grants(
+            db, report_id, row.workspace_slug, edit_policy, actor_user_id
         )
 
     # Notify the report owner that their report just got mounted (only
@@ -353,6 +382,8 @@ def set_mount_edit_policy(
             "편집 정책 변경은 작성자만 가능합니다."
         )
     row.edit_policy = edit_policy
+    # 편집 권한은 grant 가 단일 출처 — 정책에 맞춰 동기화.
+    _sync_mount_grants(db, report_id, workspace_slug, edit_policy, actor_user_id)
     db.flush()
     return row
 
@@ -393,10 +424,16 @@ def unmount_report(
     if row is None:
         return False
     db.delete(row)
-    # 배치 해제 시 그 게시판 부서 grant 도 제거(공유/권한 개편). 명시 공유로
-    # 따로 준 같은 부서 edit grant 가 있었다면 함께 사라짐 — 단순화 수용.
+    # 배치 해제 시 그 게시판 grant(부서 + 매니저) 제거(공유/권한 개편).
     grant_services.remove_workspace_grant(
         db, GrantContentType.report, report_id, workspace_slug
+    )
+    grant_services.remove_principal_grant(
+        db,
+        GrantContentType.report,
+        report_id,
+        GrantPrincipalType.workspace_manager,
+        workspace_slug,
     )
     db.flush()
     return True

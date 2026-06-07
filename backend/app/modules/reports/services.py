@@ -914,6 +914,8 @@ def update_report(
 
 
 def delete_report(db: Session, report: Report) -> None:
+    # 고아 grant 방지 — content_grant 는 FK CASCADE 가 없어 수동 정리.
+    grant_services.delete_all_for_content(db, GrantContentType.report, report.id)
     db.delete(report)
     db.commit()
 

@@ -47,6 +47,9 @@ class MountEditPolicy(str, enum.Enum):
     default = "default"
     owner_only = "owner_only"
     coauthor = "coauthor"
+    # 작성자 + 그 게시판 매니저만 편집(공유/권한 개편 후 재도입). grant 로는
+    # 그 게시판에 view + workspace_manager(edit) 으로 표현.
+    manager = "manager"
 
 
 class ReportMount(Base):

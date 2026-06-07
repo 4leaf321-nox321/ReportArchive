@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, delete as sa_delete, or_, select
 from sqlalchemy.orm import Session
 
 from app.modules.grants.models import (
@@ -534,7 +534,38 @@ def can_edit_grant(
     if reachable_workspace_edit(db, content_type, content_id, user.id):
         return True
     # 게시판/폴더 통째 공유의 편집 권한.
-    return _container_edit_reaches(db, content_type, content_id, user.id)
+    if _container_edit_reaches(db, content_type, content_id, user.id):
+        return True
+    # 게시판 매니저 편집(작성자+게시판 매니저 정책).
+    return _manager_edit_reaches(db, content_type, content_id, user.id)
+
+
+def _manager_edit_reaches(
+    db: Session, content_type: GrantContentType, content_id: int, user_id: int
+) -> bool:
+    """workspace_manager(edit) grant 가 user 에게 도달하나 — user 가 그 부서의
+    매니저(역할 해석상 매니저, 조상 매니저 포함)인지로 판정."""
+    slugs = {
+        s
+        for s in db.execute(
+            select(ContentGrant.principal_ref).where(
+                ContentGrant.content_type == content_type,
+                ContentGrant.content_id == content_id,
+                ContentGrant.principal_type == GrantPrincipalType.workspace_manager,
+                ContentGrant.level == GrantLevel.edit,
+            )
+        ).scalars()
+        if s
+    }
+    if not slugs:
+        return False
+    from app.modules.users.models import Role
+    from app.shared.auth import _resolve_role
+
+    for slug in slugs:
+        if _resolve_role(db, user_id, slug) == Role.manager:
+            return True
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -654,8 +685,36 @@ def remove_workspace_grant(
         db.flush()
 
 
+def remove_principal_grant(
+    db: Session,
+    content_type: GrantContentType,
+    content_id: int,
+    principal_type: GrantPrincipalType,
+    principal_ref: Optional[str],
+) -> None:
+    """특정 대상(principal) grant 제거 — 예: workspace_manager(매니저 편집) 해제."""
+    grant = _find_grant(db, content_type, content_id, principal_type, principal_ref)
+    if grant is not None:
+        db.delete(grant)
+        db.flush()
+
+
 def delete_grant(db: Session, grant: ContentGrant) -> None:
     db.delete(grant)
+    db.flush()
+
+
+def delete_all_for_content(
+    db: Session, content_type: GrantContentType, content_id: int
+) -> None:
+    """이 콘텐츠의 모든 content_grant 제거 — 보고서/종합보고 삭제 시 고아 행
+    방지(content_grant 는 polymorphic 이라 FK CASCADE 가 없다)."""
+    db.execute(
+        sa_delete(ContentGrant).where(
+            ContentGrant.content_type == content_type,
+            ContentGrant.content_id == content_id,
+        )
+    )
     db.flush()
 
 
@@ -797,6 +856,11 @@ def _principal_label(
 
         ws = db.get(Workspace, principal_ref)
         return ws.name if ws else (principal_ref or "")
+    if principal_type == GrantPrincipalType.workspace_manager:
+        from app.modules.workspaces.models import Workspace
+
+        ws = db.get(Workspace, principal_ref)
+        return f"{ws.name if ws else principal_ref} 매니저"
     from app.modules.users.models import User
 
     try:

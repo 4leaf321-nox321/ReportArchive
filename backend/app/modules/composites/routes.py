@@ -164,6 +164,8 @@ def update_composite(
     composite = services.get(db, composite_id)
     if composite is None:
         return not_found_response(f"Composite not found: {composite_id}")
+    if not services.can_read_composite(db, actor, composite):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
     if not actor.workspace.virtual and not services.can_edit_composite(
         db, actor.user, composite
     ):
@@ -191,6 +193,8 @@ def delete_composite(
     composite = services.get(db, composite_id)
     if composite is None:
         return not_found_response(f"Composite not found: {composite_id}")
+    if not services.can_read_composite(db, actor, composite):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
     if not actor.workspace.virtual and not services.can_edit_composite(
         db, actor.user, composite
     ):

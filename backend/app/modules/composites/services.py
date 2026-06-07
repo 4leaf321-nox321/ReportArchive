@@ -378,6 +378,8 @@ def update(
 
 
 def delete(db: Session, composite: CompositeReport) -> None:
+    # 고아 grant 방지 — content_grant 는 FK CASCADE 가 없어 수동 정리.
+    grant_services.delete_all_for_content(db, GrantContentType.composite, composite.id)
     db.delete(composite)
     db.commit()
 

@@ -43,6 +43,9 @@ class GrantPrincipalType(str, enum.Enum):
     workspace = "workspace"  # 부서 slug — 하위 상속
     all_org = "all_org"      # 사내 전체(view 전용)
     user = "user"            # 개인
+    # 부서의 *매니저만* — principal_ref=부서 slug. 게시 "작성자+게시판 매니저"
+    # 정책에서 매니저 편집권에 쓴다(편집 전용 의미).
+    workspace_manager = "workspace_manager"
 
 
 class GrantLevel(str, enum.Enum):

@@ -48,26 +48,33 @@ import { cn } from '@/shared/lib/utils'
 /** Edit policy options for the per-mount dropdown. The short labels go
  *  on the chip; the descriptions appear in the dropdown row + tooltip
  *  so users learn the semantics without a separate help page. */
+// 게시 시 편집 권한(공유 grant 에 연결). 열람 전용 = 작성자만 편집,
+// 공동 편집 = 그 게시판 멤버 누구나 편집(부서 편집 grant). 옛 owner_only 는
+// 열람 전용과 동일 취급(작성자만), default 도 보직장 자동편집 폐기로 열람 전용.
 const POLICY_OPTIONS = [
   {
     value: 'default',
-    label: '기본',
-    description: '작성자 + 보직장 편집 가능',
+    label: '열람 전용',
+    description: '작성자만 편집',
   },
   {
-    value: 'owner_only',
-    label: '작성자 전용',
-    description: '보직장도 차단, 작성자만 편집',
+    value: 'manager',
+    label: '작성자+매니저',
+    description: '작성자와 게시판 매니저만 편집',
   },
   {
     value: 'coauthor',
-    label: '공동 작성',
+    label: '공동 편집',
     description: '게시판 멤버 누구나 편집',
   },
 ]
 const POLICY_BY_VALUE = Object.fromEntries(
   POLICY_OPTIONS.map((o) => [o.value, o]),
 )
+// 표시용 정규화 — coauthor=공동, manager=작성자+매니저, 나머지(default/
+// owner_only)=열람 전용.
+const normPolicy = (p) =>
+  p === 'coauthor' ? 'coauthor' : p === 'manager' ? 'manager' : 'default'
 
 export function MountDialog({ open, onOpenChange, report, onChanged }) {
   const { all, getDescendantsInclusive, getAncestors, getPath } = useWorkspace()
@@ -301,6 +308,7 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
       })
       toast.success(
         `편집 정책: ${POLICY_BY_VALUE[nextPolicy]?.label ?? nextPolicy}`,
+        { description: POLICY_BY_VALUE[nextPolicy]?.description },
       )
       onChanged?.()
     } catch (e) {
@@ -333,7 +341,10 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
           note: note.trim() || undefined,
         })
         setMounts((prev) => [...prev, ...created])
-        toast.success(`${wsLabel} 게시판에 게시`)
+        // 새 게시는 기본 '열람 전용' 정책 — 선택한 방식 설명을 함께 안내.
+        toast.success(`${wsLabel} 게시판에 게시`, {
+          description: `${POLICY_BY_VALUE.default.label} — ${POLICY_BY_VALUE.default.description}`,
+        })
       }
       onChanged?.()
     } catch (e) {
@@ -718,10 +729,10 @@ function MountedBoardRow({
       {/* Per-mount edit-policy — owner 만 노출. */}
       {isOwner && (
         <select
-          value={mount?.edit_policy ?? 'default'}
+          value={normPolicy(mount?.edit_policy)}
           onChange={(e) => onPolicyChange(slug, e.target.value)}
           className="text-[11px] rounded border bg-background px-1.5 py-1 hover:border-primary/60 cursor-pointer"
-          title={POLICY_BY_VALUE[mount?.edit_policy ?? 'default']?.description}
+          title={POLICY_BY_VALUE[normPolicy(mount?.edit_policy)]?.description}
         >
           {POLICY_OPTIONS.map((o) => (
             <option key={o.value} value={o.value}>

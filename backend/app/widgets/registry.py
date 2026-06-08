@@ -126,6 +126,27 @@ _CAPTION_FIELD = {"type": "string", "maxLength": 200}
 # caption(상단 제목)보다 길 수 있어 한도를 넉넉히.
 _NOTE_FIELD = {"type": "string", "maxLength": 1000}
 
+# Semantic text-color tokens (frontend src/shared/text-color). Rendered as a
+# `rt-c-{token}` class whose value resolves per theme. The "기본" (no color)
+# choice is represented by omitting the key, so null is never persisted. Shared
+# by the block text style (_TEXT_STYLE_SCHEMA) and the caption / note colors.
+_COLOR_TOKENS = [
+    "ink", "gray", "slate",
+    "red", "orange", "amber", "yellow", "lime",
+    "green", "teal", "cyan",
+    "sky", "blue", "indigo",
+    "violet", "purple", "pink", "rose",
+]
+_COLOR_TOKEN_FIELD = {"type": "string", "enum": _COLOR_TOKENS}
+
+# Rich (inline-HTML) variants of caption / note. The plain `caption`/`note`
+# fields stay authoritative for the title role (chart titles, export H3, TOC,
+# title fallbacks) and are kept in sync with the rich editor's plain text; the
+# *_html fields hold the marked-up version (per-character bold/color/size) and
+# are sanitized on render. Larger limits absorb the inline tags + token spans.
+_CAPTION_HTML_FIELD = {"type": "string", "maxLength": 2000}
+_NOTE_HTML_FIELD = {"type": "string", "maxLength": 4000}
+
 
 # Reusable text-style sub-schema. Mixed into every text-bearing widget's
 # props_schema so designers can override the visual treatment per block.
@@ -163,6 +184,9 @@ _TEXT_STYLE_SCHEMA = {
             "type": "string",
             "enum": ["normal", "medium", "semibold", "bold"],
         },
+        # Semantic text-color token — see _COLOR_TOKEN_FIELD. Colored block
+        # text adapts to light/dark; "기본" omits the key.
+        "color": _COLOR_TOKEN_FIELD,
     },
     "additionalProperties": False,
 }
@@ -321,6 +345,8 @@ def _rich_text_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # Legacy single-blob field — still accepted for backward
             # compatibility. The frontend parses it into `items` on load
@@ -389,6 +415,8 @@ def _key_value_content(props: dict) -> dict:  # noqa: ARG001
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # 보고서별 필드 정의 — 비어 있으면 props.items로 폴백.
             "items": {
@@ -401,7 +429,7 @@ def _key_value_content(props: dict) -> dict:  # noqa: ARG001
         # reserved names via negative lookahead so the items/caption
         # entries don't get clobbered by the value-shape constraint.
         "patternProperties": {
-            r"^(?!(caption|caption_skip_autofill|items)$)[a-z][a-z0-9_]{0,63}$": primitive_or_array,
+            r"^(?!(caption|caption_color|caption_html|caption_skip_autofill|items)$)[a-z][a-z0-9_]{0,63}$": primitive_or_array,
         },
         "additionalProperties": False,
     }
@@ -448,6 +476,8 @@ def _bulleted_list_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             "items": arr_schema,
         },
@@ -502,9 +532,13 @@ def _table_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # 하단 참고 내용("※ " 프리픽스로 렌더). 저장값엔 프리픽스 없음.
             "note": _NOTE_FIELD,
+            "note_color": _COLOR_TOKEN_FIELD,
+            "note_html": _NOTE_HTML_FIELD,
             # Per-report column overrides. When absent, the renderer falls
             # back to props.columns (the template-defined defaults).
             "columns": {
@@ -599,9 +633,13 @@ def _image_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # 하단 참고 내용("※ " 프리픽스로 렌더). 저장값엔 프리픽스 없음.
             "note": _NOTE_FIELD,
+            "note_color": _COLOR_TOKEN_FIELD,
+            "note_html": _NOTE_HTML_FIELD,
             # Per-report layout overrides — tunable from the 위젯 편집
             # toolbar. `max_count` is a soft UI cap (hard cap stays in
             # the files maxItems below). `aspect_ratio` overrides the
@@ -664,6 +702,8 @@ def _attachment_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # Per-report soft cap on file count. The hard cap stays in
             # props.max_count (used for the JSON Schema `maxItems`);
@@ -726,6 +766,8 @@ def _video_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # Per-report playback overrides — same fields as the
             # matching props_schema entries. `max_count` is a soft UI
@@ -793,6 +835,8 @@ def _html_embed_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             "file_id": {"type": "string", "minLength": 1},
             # Folder bundle mode (HTML임베드_번들_설계.md) — when set, the
@@ -876,6 +920,8 @@ def _chart_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # Per-report overrides — type stored alongside data so the
             # report can flip bar↔line without going back to the template.
@@ -917,6 +963,8 @@ def _flowchart_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # Per-report orientation override — renderer reads
             # `content.orientation ?? props.orientation ?? 'horizontal'`.
@@ -976,6 +1024,8 @@ def _milestone_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # Per-report timeline range overrides — same fields as
             # `props.start_date / end_date` but tunable from the
@@ -1102,6 +1152,8 @@ def _scatter_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             "mode": {"type": "string", "enum": list(_SCATTER_MODES)},
             # Legacy "shared x" key — when `series` is absent, the
@@ -1236,6 +1288,8 @@ def _scatter3d_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             "mode": {"type": "string", "enum": list(_SCATTER3D_MODES)},
             # Color ramp applied to every series that uses an
@@ -1352,6 +1406,8 @@ def _progress_bar_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # Per-report defaults — overrideable in the 위젯 편집 toolbar.
             # Same shape as the matching props_schema fields.
@@ -1413,6 +1469,8 @@ def _raci_matrix_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             "roles": {
                 "type": "array",
@@ -1515,6 +1573,8 @@ def _heatmap_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # Positional labels — length must match the matrix shape.
             # Frontend keeps them in sync on edit; backend only checks
@@ -1592,6 +1652,8 @@ def _contour_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # Which input model the user is editing in.  Defaults to
             # 'matrix' for backward compatibility (existing reports
@@ -1729,6 +1791,8 @@ def _treemap_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # Unit string appended to numeric values in the cell labels
             # + hover (e.g. "억원", "%", "건"). Free-form so the author
@@ -1801,6 +1865,8 @@ def _pie_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             "unit": {"type": "string", "maxLength": 32},
             "rows": {
@@ -1864,6 +1930,8 @@ def _box_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             "unit": {"type": "string", "maxLength": 32},
             "x_axis_title": {"type": "string", "maxLength": 100},
@@ -1951,6 +2019,8 @@ def _density_content(props: dict) -> dict:  # noqa: ARG001
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             "unit": {"type": "string", "maxLength": 32},
             "x_axis_title": {"type": "string", "maxLength": 100},
@@ -2040,6 +2110,8 @@ def _waffle_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             "unit": {"type": "string", "maxLength": 32},
             "rows": {
@@ -2132,6 +2204,8 @@ def _packing_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             "unit": {"type": "string", "maxLength": 32},
             "rows": {
@@ -2195,6 +2269,8 @@ def _tree_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             "rows": {
                 "type": "array",
@@ -2294,6 +2370,8 @@ def _network_content(props: dict) -> dict:  # noqa: ARG001
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             "nodes": {
                 "type": "array",
@@ -2413,6 +2491,8 @@ def _mind_map_content(props: dict) -> dict:  # noqa: ARG001
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             "rows": {
                 "type": "array",
@@ -2523,6 +2603,8 @@ def _radar_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             "axis_labels": {
                 "type": "array",
@@ -2598,6 +2680,8 @@ def _equation_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # Raw LaTeX source. Limit is generous (5K chars) because
             # multi-line `\begin{align}…\end{align}` blocks can be
@@ -2722,8 +2806,12 @@ def _comparison_content(props: dict) -> dict:  # noqa: ARG001
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             "note": _NOTE_FIELD,
+            "note_color": _COLOR_TOKEN_FIELD,
+            "note_html": _NOTE_HTML_FIELD,
             # Per-report case override. When set, this is the canonical
             # column list (renamed/added/removed cases); when absent,
             # the renderer falls back to props.cases.
@@ -2913,6 +3001,8 @@ def _cad_3d_content(props: dict) -> dict:  # noqa: ARG001
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # Reference to a single uploaded model file (GLB/GLTF/STL/...).
             # Same file_id contract as image/attachment widgets.
@@ -3095,6 +3185,8 @@ def _quadrant_content(props: dict) -> dict:  # noqa: ARG001
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # Per-report mode override.  Falls back to props.default_mode.
             "mode": {"type": "string", "enum": list(_QUADRANT_MODES)},
@@ -3254,6 +3346,8 @@ def _sankey_content(props: dict) -> dict:
         "type": "object",
         "properties": {
             "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
             "caption_skip_autofill": {"type": "boolean"},
             # Optional per-node overrides. Match is by `label` (string).
             # Nodes not listed here are auto-created from link endpoints.

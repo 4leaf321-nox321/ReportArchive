@@ -776,6 +776,8 @@ export function RaciMatrixEditor({ props, content, onChange, readOnly }) {
           readOnly
           placeholder={props.label}
           skipAutofill={content?.caption_skip_autofill}
+          color={content?.caption_color}
+          html={content?.caption_html}
         />
         <div className="overflow-x-auto">
           <RaciTable rows={rows} roles={roles} readOnly fontSizePx={bodyFontPx} />

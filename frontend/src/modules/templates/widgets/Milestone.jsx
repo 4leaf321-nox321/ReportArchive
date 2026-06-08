@@ -181,6 +181,8 @@ export function MilestoneEditor({ props, content, onChange, readOnly }) {
           readOnly
           placeholder={props.label}
           skipAutofill={content?.caption_skip_autofill}
+          color={content?.caption_color}
+          html={content?.caption_html}
         />
         {items.length > 0 ? (
           <MilestoneTimeline

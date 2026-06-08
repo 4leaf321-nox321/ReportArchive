@@ -348,6 +348,8 @@ export function Scatter3DEditor({ props, content, onChange, readOnly, autoFit })
           readOnly
           placeholder={props.label}
           skipAutofill={content?.caption_skip_autofill}
+          color={content?.caption_color}
+          html={content?.caption_html}
         />
         {hasData && (
           <div className={autoFit ? '' : 'flex-1 min-h-0'}>

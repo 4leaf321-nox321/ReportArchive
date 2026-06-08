@@ -231,6 +231,8 @@ export function VideoEditor({ props, content, onChange, readOnly }) {
           readOnly
           placeholder={props.label}
           skipAutofill={content?.caption_skip_autofill}
+          color={content?.caption_color}
+          html={content?.caption_html}
         />
         {files.length > 0 && (
           <div className="flex-1 min-h-0 grid gap-3 grid-cols-1">

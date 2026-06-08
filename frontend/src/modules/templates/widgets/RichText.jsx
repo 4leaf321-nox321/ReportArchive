@@ -7,6 +7,7 @@ import { Label } from '@/shared/components/ui/label'
 import { useWidgetRelations } from '@/shared/hooks/useWidgetRelations'
 import { useReportStyle } from '@/shared/reports/ReportStyleContext'
 import { useReportMention } from '@/shared/reports/ReportMentionContext'
+import { hexToToken, colorTokenClass, tokenFromClassName } from '@/shared/text-color'
 import {
   CaptionInput,
   DEFAULT_BODY_FONT_PX,
@@ -51,9 +52,42 @@ const SANITIZE_OPTIONS = {
   ],
 }
 
+// View-side migration: content saved before the token system carries inline
+// `color: #hex` (or `<font color>`). Map each to a `rt-c-{token}` class so it
+// adapts to the theme (and pasted/legacy black absorbs to inherited
+// foreground). The stored html is untouched — only the rendered string is
+// rewritten. New content already uses classes, so the cheap regex guard skips
+// the DOM round-trip entirely. Editing such a row re-saves it as tokens.
+function normalizeLegacyColorsForView(safe) {
+  if (!/color/i.test(safe) || typeof DOMParser === 'undefined') return safe
+  let doc
+  try {
+    doc = new DOMParser().parseFromString(safe, 'text/html')
+  } catch {
+    return safe
+  }
+  doc.querySelectorAll('font[color]').forEach((el) => {
+    const cls = colorTokenClass(hexToToken(el.getAttribute('color')))
+    el.removeAttribute('color')
+    if (cls) el.classList.add(cls)
+  })
+  doc.querySelectorAll('[style]').forEach((el) => {
+    const { style } = el
+    if (style.color) {
+      const cls = colorTokenClass(hexToToken(style.color))
+      style.removeProperty('color')
+      if (cls) el.classList.add(cls)
+    }
+    style.removeProperty('background-color')
+    style.removeProperty('background')
+    if (!el.getAttribute('style')) el.removeAttribute('style')
+  })
+  return doc.body.innerHTML
+}
+
 function sanitizeRowHtml(html, fallbackText) {
   if (typeof html === 'string' && html.length > 0) {
-    return DOMPurify.sanitize(html, SANITIZE_OPTIONS)
+    return normalizeLegacyColorsForView(DOMPurify.sanitize(html, SANITIZE_OPTIONS))
   }
   if (typeof fallbackText === 'string' && fallbackText.length > 0) {
     return `<p>${escapeHtml(fallbackText)}</p>`
@@ -293,7 +327,12 @@ function rowFirstRunHasTag(html, tag) {
 //
 // Walks down the first descendant chain until it hits a text node,
 // collecting Tailwind class names (purge-safe — all literals here) for
-// recognized marks and capturing color / font-size from inline style.
+// recognized marks, the color *token* (from the `rt-c-*` class or a legacy
+// inline color), and font-size from inline style.
+//
+// Returns { className, style, colorToken }: `style` carries only font-size now;
+// color rides as a token class inside `className` so the prefix glyph adapts to
+// the theme exactly like the body text it mirrors.
 const _FIRST_RUN_TAG_TO_CLASS = {
   strong: 'font-bold',
   b: 'font-bold',
@@ -305,7 +344,7 @@ const _FIRST_RUN_TAG_TO_CLASS = {
   strike: 'line-through',
 }
 function firstRunFormatting(html) {
-  const out = { className: '', style: undefined }
+  const out = { className: '', style: undefined, colorToken: null }
   if (typeof html !== 'string' || html.length === 0 || typeof DOMParser === 'undefined') {
     return out
   }
@@ -314,6 +353,7 @@ function firstRunFormatting(html) {
   if (!p) return out
   const classes = []
   const style = {}
+  let colorToken = null
   let cur = p.firstChild
   while (cur) {
     if (cur.nodeType === 3 /* TEXT_NODE */) {
@@ -328,18 +368,26 @@ function firstRunFormatting(html) {
     const tag = cur.tagName.toLowerCase()
     const cls = _FIRST_RUN_TAG_TO_CLASS[tag]
     if (cls) classes.push(cls)
+    // Color token: prefer the canonical class, fall back to legacy inline
+    // color (firstRunFormatting reads the raw stored html, which may predate
+    // the token migration).
+    const fromClass = tokenFromClassName(cur.getAttribute('class') || '')
+    if (fromClass) colorToken = fromClass
     if (tag === 'span') {
       const inline = cur.getAttribute('style') || ''
       const cm = inline.match(/(^|;)\s*color\s*:\s*([^;]+)/i)
       const fm = inline.match(/(^|;)\s*font-size\s*:\s*([^;]+)/i)
-      if (cm) style.color = cm[2].trim()
+      if (cm && !colorToken) colorToken = hexToToken(cm[2].trim())
       if (fm) style.fontSize = fm[2].trim()
     }
     // Descend into the first child; if none, advance to next sibling.
     if (cur.firstChild) cur = cur.firstChild
     else cur = cur.nextSibling
   }
+  const colorClass = colorTokenClass(colorToken)
+  if (colorClass) classes.push(colorClass)
   out.className = classes.join(' ')
+  out.colorToken = colorToken
   if (Object.keys(style).length > 0) out.style = style
   return out
 }
@@ -489,6 +537,8 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
           readOnly
           placeholder={props.label}
           skipAutofill={content?.caption_skip_autofill}
+          color={content?.caption_color}
+          html={content?.caption_html}
         />
         {hasBody && (
           <OutlineView
@@ -508,6 +558,8 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
         onChange={patchCaption}
         placeholder={props.label}
         skipAutofill={content?.caption_skip_autofill}
+        color={content?.caption_color}
+        html={content?.caption_html}
         onChangeSkipAutofill={patchSkipAutofill}
       />
       <OutlineEditor
@@ -605,7 +657,7 @@ function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
           >
             <span
               className={`select-none shrink-0 text-center ${
-                prefixFmt.style?.color ? '' : 'text-muted-foreground'
+                prefixFmt.colorToken ? '' : 'text-muted-foreground'
               } ${prefixFmt.className}`}
               style={prefixStyle}
             >
@@ -1085,7 +1137,7 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
         rowFirstRunHasTag(firstHtml, 'strike') ||
         fmt.className.includes('line-through'),
       fontSize: fmt.style?.fontSize ?? '',
-      color: fmt.style?.color ?? null,
+      color: fmt.colorToken ?? null,
     }
   }, [crossRowSelection, items])
 
@@ -1694,7 +1746,7 @@ function OutlineRow({
       <div className="flex items-baseline gap-1 group">
         <span
           className={`select-none shrink-0 text-center ${
-            prefixFmt.style?.color ? '' : 'text-muted-foreground'
+            prefixFmt.colorToken ? '' : 'text-muted-foreground'
           } ${prefixFmt.className}`}
           style={prefixStyle}
         >

@@ -153,6 +153,8 @@ export function AttachmentEditor({ props, content, onChange, readOnly }) {
           readOnly
           placeholder={props.label}
           skipAutofill={content?.caption_skip_autofill}
+          color={content?.caption_color}
+          html={content?.caption_html}
         />
         {files.length > 0 && (
           <ul className="space-y-1.5">

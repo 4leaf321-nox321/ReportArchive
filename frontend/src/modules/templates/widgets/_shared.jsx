@@ -4,7 +4,10 @@ import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
+import DOMPurify from 'dompurify'
 import { cn } from '@/shared/lib/utils'
+import { ColorSwatchPicker, colorTokenClass } from '@/shared/text-color'
+import { RichTextRowEditor } from './RichTextRowEditor'
 
 /**
  * Two-button cluster ("복사" + "비우기") that every data-grid widget
@@ -569,11 +572,20 @@ export function textStyleToInlineStyle(style) {
  */
 export function textStyleToClassName(style) {
   if (!style || typeof style !== 'object') return ''
-  // If the writer picked a numeric size, drop the legacy class so it can't
-  // race with the inline style we also emit. (Old data with no font_size_px
-  // still falls through to the class so its boost-era rendering survives.)
-  if (Number.isFinite(style.font_size_px)) return ''
-  return _LEGACY_SIZE_CLASS[style.size] ?? ''
+  const classes = []
+  // If the writer picked a numeric size, drop the legacy size class so it
+  // can't race with the inline style we also emit. (Old data with no
+  // font_size_px still falls through to the class so its boost-era rendering
+  // survives.)
+  if (!Number.isFinite(style.font_size_px)) {
+    const sizeCls = _LEGACY_SIZE_CLASS[style.size]
+    if (sizeCls) classes.push(sizeCls)
+  }
+  // Text color rides as a theme-adaptive token class (see @/shared/text-color),
+  // so block text in every widget adapts to light/dark like the rich-text body.
+  const colorCls = colorTokenClass(style.color)
+  if (colorCls) classes.push(colorCls)
+  return classes.join(' ')
 }
 
 // Curated font sizes matching the RichText inline floating toolbar so
@@ -720,6 +732,15 @@ export function TextStyleField({ value, onChange, defaultSizePx }) {
             options={_WEIGHT_OPTIONS}
             onChange={(v) => patch({ weight: v })}
           />
+        </div>
+        <div>
+          <Label className="text-xs">글자 색</Label>
+          <div className="mt-1">
+            <ColorSwatchPicker
+              value={style.color ?? null}
+              onChange={(token) => patch({ color: token })}
+            />
+          </div>
         </div>
         <div className="rounded border bg-background p-2">
           <div className="text-[10px] uppercase text-muted-foreground mb-1">
@@ -976,19 +997,66 @@ export function AxisRangeInput({ label, value, onChange }) {
   )
 }
 
+// Inline-rich HTML sanitizer for caption / note display. The markup is
+// produced by RichTextRowEditor (bold/italic/underline/strike + font-size +
+// rt-c-* color spans), so the allow-list is intentionally tiny. DOMPurify
+// also runs its own CSS sanitizer on `style`, blocking url()/expression().
+const _CAPTION_SANITIZE = {
+  ALLOWED_TAGS: ['p', 'span', 'strong', 'b', 'em', 'i', 'u', 's', 'del', 'br'],
+  ALLOWED_ATTR: ['style', 'class'],
+}
+export function sanitizeCaptionHtml(html) {
+  if (typeof html !== 'string' || html.length === 0) return ''
+  return DOMPurify.sanitize(html, _CAPTION_SANITIZE)
+}
+
+function _escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+// True when rich html has no actual text (e.g. "<p></p>"). Used to fall back
+// to the plain value / autofill hint.
+function _richIsEmpty(html) {
+  return (
+    typeof html !== 'string' ||
+    html.replace(/<[^>]*>/g, '').replace(/ |&nbsp;/g, '').trim().length === 0
+  )
+}
+
+// Seed html for the rich editor: prefer the stored rich html; otherwise lift
+// an existing plain caption/note into a paragraph so legacy content shows up
+// (and graduates to *_html on the first edit).
+function _richSeed(html, plain) {
+  if (!_richIsEmpty(html)) return html
+  const p = (plain ?? '').trim()
+  return p ? `<p>${_escapeHtml(p)}</p>` : '<p></p>'
+}
+
 export function captionSkipProps({ content, patch }) {
   return {
     skipAutofill: content?.caption_skip_autofill === true,
     onChangeSkipAutofill: (skip) => {
-      // Atomic patch: clear caption + set flag (or unset the flag) in
-      // one call so the two field updates can't race on a stale
+      // Atomic patch: clear caption (both plain + rich) + set flag, or unset
+      // the flag, in one call so the field updates can't race on a stale
       // content snapshot inside a click handler.
       if (skip) {
-        patch({ caption: '', caption_skip_autofill: true })
+        patch({ caption: '', caption_html: undefined, caption_skip_autofill: true })
       } else {
         patch({ caption_skip_autofill: undefined })
       }
     },
+    // Rich caption: the editor owns color/format via its selection bubble menu
+    // (no always-on swatch). onChangeRich keeps the plain `caption` in sync —
+    // it stays authoritative for the title role (chart titles, export, TOC).
+    html: content?.caption_html ?? '',
+    onChangeRich: (html, text) =>
+      patch({
+        caption_html: _richIsEmpty(html) ? undefined : html,
+        caption: text?.trim() ? text : undefined,
+      }),
   }
 }
 
@@ -999,11 +1067,18 @@ export function CaptionInput({
   readOnly,
   skipAutofill,
   onChangeSkipAutofill,
+  color,
+  html,
+  onChangeRich,
 }) {
   const skip = !!skipAutofill
   const hint = typeof placeholder === 'string' ? placeholder.trim() : ''
   const hasHint = hint.length > 0
   const hasValue = (value ?? '').trim().length > 0
+  // Theme-adaptive caption color (token → class) — legacy block color, applied
+  // only to the plain-text fallback. Rich html carries its own inline colors.
+  const colorClass = colorTokenClass(color)
+  const hasRich = !_richIsEmpty(html)
   // Effective visible text when the user hasn't typed anything:
   //   - skip ON  → blank (title row hidden entirely)
   //   - auto-fit → template hint (so the default is visible without
@@ -1012,16 +1087,24 @@ export function CaptionInput({
   const effectiveText = hasValue ? value : fallback
 
   if (readOnly) {
+    // data-export-skip → html2canvas (DOCX export) drops this title from the
+    // captured PNG; the exporter emits it as a real Heading 3 above the figure.
+    // Priority: rich html (per-char marks) > plain text/autofill hint.
+    if (hasRich) {
+      return (
+        <div
+          data-export-skip="caption"
+          className="text-base font-semibold px-2 py-1"
+          dangerouslySetInnerHTML={{ __html: sanitizeCaptionHtml(html) }}
+        />
+      )
+    }
     // View mode: only render the row when there's something to show.
     if (!effectiveText) return null
     return (
-      // data-export-skip → html2canvas (DOCX export) drops this title
-      // from the captured PNG. The exporter emits the title as a real
-      // Heading 3 paragraph above the image, so leaving it baked into
-      // the pixels would double-print and pollute the figure body.
       <div
         data-export-skip="caption"
-        className="text-base font-semibold px-2 py-1"
+        className={cn('text-base font-semibold px-2 py-1', colorClass)}
       >
         {effectiveText}
       </div>
@@ -1060,6 +1143,37 @@ export function CaptionInput({
   // caption` stays empty in that case so a later template-label
   // change still propagates.
   const showSkipToggle = Boolean(onChangeSkipAutofill) && hasHint
+  const skipToggle = showSkipToggle ? (
+    <button
+      type="button"
+      onClick={() => onChangeSkipAutofill(true)}
+      onMouseDown={(e) => e.stopPropagation()}
+      title="템플릿 라벨 자동 채움을 끄고 제목을 비워둡니다"
+      className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+    >
+      제목 생략
+    </button>
+  ) : null
+
+  // Rich caption editor: color/format live in the selection bubble menu (no
+  // always-on swatch). onChangeRich syncs both caption_html + plain caption.
+  if (onChangeRich) {
+    return (
+      <div className="flex items-center gap-1">
+        <div className="flex-1 min-w-0 outline-rich-row">
+          <RichTextRowEditor
+            html={_richSeed(html, value)}
+            placeholder={hasHint ? hint : '제목 (선택)'}
+            onChange={onChangeRich}
+            className="text-base font-semibold px-2 py-1"
+          />
+        </div>
+        {skipToggle}
+      </div>
+    )
+  }
+
+  // Plain fallback (widgets that don't opt into rich captions).
   return (
     <div className="flex items-center gap-1">
       <input
@@ -1073,36 +1187,61 @@ export function CaptionInput({
           // High-contrast placeholder so the hint reads like the
           // saved default rather than a faded suggestion.
           'placeholder:text-foreground/55',
+          colorClass,
         )}
       />
-      {showSkipToggle && (
-        <button
-          type="button"
-          onClick={() => onChangeSkipAutofill(true)}
-          onMouseDown={(e) => e.stopPropagation()}
-          title="템플릿 라벨 자동 채움을 끄고 제목을 비워둡니다"
-          className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-        >
-          제목 생략
-        </button>
-      )}
+      {skipToggle}
     </div>
   )
 }
 
 /** 위젯 하단 참고 내용 — "※ " 프리픽스로 렌더(저장값엔 프리픽스 없음).
  *  caption(상단 제목)과 별개. 비어 있으면 뷰에선 아무것도 안 그린다. */
-export function NoteInput({ value, onChange, readOnly }) {
+export function NoteInput({ value, onChange, readOnly, color, html, onChangeRich }) {
   const text = (value ?? '').trim()
+  // Theme-adaptive note color (token → class) — legacy block color on the plain
+  // fallback only; rich html carries its own inline colors. ※ marker stays muted.
+  const colorClass = colorTokenClass(color)
+  const hasRich = !_richIsEmpty(html)
   if (readOnly) {
+    if (hasRich) {
+      return (
+        <div className="flex items-start gap-1 px-2 py-1 text-xs text-muted-foreground whitespace-pre-wrap break-words">
+          <span className="select-none shrink-0">※</span>
+          <span
+            className="flex-1 min-w-0"
+            dangerouslySetInnerHTML={{ __html: sanitizeCaptionHtml(html) }}
+          />
+        </div>
+      )
+    }
     if (!text) return null
     return (
       <div className="flex items-start gap-1 px-2 py-1 text-xs text-muted-foreground whitespace-pre-wrap break-words">
         <span className="select-none shrink-0">※</span>
-        <span className="flex-1 min-w-0">{text}</span>
+        <span className={cn('flex-1 min-w-0', colorClass)}>{text}</span>
       </div>
     )
   }
+  // Rich note editor: color/format via the selection bubble menu. onChangeRich
+  // syncs both note_html + plain note.
+  if (onChangeRich) {
+    return (
+      <div className="flex items-start gap-1 px-2">
+        <span className="mt-1.5 select-none shrink-0 text-xs text-muted-foreground">
+          ※
+        </span>
+        <div className="flex-1 min-w-0 outline-rich-row rounded-md border border-input bg-background px-2 py-1 text-xs leading-snug text-muted-foreground">
+          <RichTextRowEditor
+            html={_richSeed(html, value)}
+            placeholder="참고 내용 (선택) — 하단에 ※로 표시됩니다"
+            onChange={onChangeRich}
+          />
+        </div>
+      </div>
+    )
+  }
+  // Plain fallback.
   return (
     <div className="flex items-start gap-1 px-2">
       <span className="mt-1.5 select-none shrink-0 text-xs text-muted-foreground">
@@ -1113,7 +1252,10 @@ export function NoteInput({ value, onChange, readOnly }) {
         onChange={(e) => onChange(e.target.value)}
         rows={1}
         placeholder="참고 내용 (선택) — 하단에 ※로 표시됩니다"
-        className="flex-1 min-w-0 resize-y rounded-md border border-input bg-background px-2 py-1 text-xs leading-snug text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring whitespace-pre-wrap break-words"
+        className={cn(
+          'flex-1 min-w-0 resize-y rounded-md border border-input bg-background px-2 py-1 text-xs leading-snug text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring whitespace-pre-wrap break-words',
+          colorClass,
+        )}
       />
     </div>
   )

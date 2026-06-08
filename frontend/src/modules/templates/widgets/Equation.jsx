@@ -311,6 +311,8 @@ export function EquationEditor({ props, content, onChange, readOnly }) {
           readOnly
           placeholder={props.label}
           skipAutofill={content?.caption_skip_autofill}
+          color={content?.caption_color}
+          html={content?.caption_html}
         />
         {latex && (
           <div className="flex items-center gap-3 px-2 py-2">

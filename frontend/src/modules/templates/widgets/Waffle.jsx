@@ -215,6 +215,8 @@ export function WaffleEditor({ props, content, onChange, readOnly, autoFit }) {
           readOnly
           placeholder={props.label}
           skipAutofill={content?.caption_skip_autofill}
+          color={content?.caption_color}
+          html={content?.caption_html}
         />
         <div className={autoFit ? '' : 'flex-1 min-h-0'}>
           <WaffleCanvas

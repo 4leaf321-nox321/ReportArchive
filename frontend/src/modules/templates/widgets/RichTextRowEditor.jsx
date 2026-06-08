@@ -3,8 +3,9 @@ import { useEditor, EditorContent } from '@tiptap/react'
 import { BubbleMenu } from '@tiptap/react/menus'
 import StarterKit from '@tiptap/starter-kit'
 import { Placeholder } from '@tiptap/extensions'
-import { TextStyle, Color, FontSize } from '@tiptap/extension-text-style'
+import { TextStyle, FontSize } from '@tiptap/extension-text-style'
 import { DOMSerializer } from '@tiptap/pm/model'
+import { TextColor, ColorSwatchPicker, hexToToken, colorTokenClass } from '@/shared/text-color'
 import {
   Bold as BoldIcon,
   Italic as ItalicIcon,
@@ -14,9 +15,10 @@ import {
 } from 'lucide-react'
 import { ReportLinkMark } from './extensions/ReportLinkMark'
 
-// Toolbar choices. Both arrays use inline CSS values (not Tailwind class
-// strings) — TipTap writes them as `style="font-size:..."` / `style="color:..."`
-// so Tailwind purging is irrelevant here.
+// Font-size choices. Values are inline CSS (`style="font-size:..."`) so
+// Tailwind purging is irrelevant here. Text *color* is no longer a hex array —
+// it lives in the shared token system (@/shared/text-color), rendered as a
+// `rt-c-{token}` class so it adapts to light/dark.
 //
 // Pixel-based sizes match the convention every common WYSIWYG (Word,
 // Google Docs, Notion) uses. The empty-value "기본" row clears the mark
@@ -35,18 +37,6 @@ export const FONT_SIZE_OPTIONS = [
   { label: '32', value: '32px' },
   { label: '36', value: '36px' },
   { label: '48', value: '48px' },
-]
-
-const COLOR_OPTIONS = [
-  { label: '기본', value: null },
-  { label: '검정', value: '#111827' },
-  { label: '회색', value: '#6b7280' },
-  { label: '빨강', value: '#dc2626' },
-  { label: '주황', value: '#f97316' },
-  { label: '노랑', value: '#ca8a04' },
-  { label: '녹색', value: '#16a34a' },
-  { label: '파랑', value: '#2563eb' },
-  { label: '보라', value: '#9333ea' },
 ]
 
 // Slice the row's single-paragraph doc into a `before` and `after` half at
@@ -173,7 +163,7 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
         link: false,
       }),
       TextStyle,
-      Color,
+      TextColor,
       FontSize,
       ReportLinkMark,
       Placeholder.configure({
@@ -190,6 +180,40 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
       attributes: {
         class: className || '',
         spellcheck: 'false',
+      },
+      // Normalize pasted color before ProseMirror parses it: external sources
+      // (Excel/Word/web) bring inline `color`/`<font color>`, most often a
+      // default black that turns invisible in dark mode. Map each to a palette
+      // token class (near-black/white absorb to "no color" → inherits theme),
+      // and drop background fills. The TextColor mark would map inline color on
+      // its own, but pre-cleaning keeps the doc free of raw hex + bg noise.
+      transformPastedHTML(html) {
+        if (typeof html !== 'string' || !html || typeof DOMParser === 'undefined') {
+          return html
+        }
+        let doc
+        try {
+          doc = new DOMParser().parseFromString(html, 'text/html')
+        } catch {
+          return html
+        }
+        doc.querySelectorAll('font[color]').forEach((el) => {
+          const cls = colorTokenClass(hexToToken(el.getAttribute('color')))
+          el.removeAttribute('color')
+          if (cls) el.classList.add(cls)
+        })
+        doc.querySelectorAll('[style]').forEach((el) => {
+          const { style } = el
+          if (style.color) {
+            const cls = colorTokenClass(hexToToken(style.color))
+            style.removeProperty('color')
+            if (cls) el.classList.add(cls)
+          }
+          style.removeProperty('background-color')
+          style.removeProperty('background')
+          if (!el.getAttribute('style')) el.removeAttribute('style')
+        })
+        return doc.body.innerHTML
       },
       handleKeyDown(view, event) {
         const cb = onKeyDownRef.current
@@ -410,7 +434,7 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
               underline: editor.isActive('underline'),
               strike: editor.isActive('strike'),
               fontSize: editor.getAttributes('textStyle')?.fontSize ?? '',
-              color: editor.getAttributes('textStyle')?.color ?? null,
+              color: editor.getAttributes('textColor')?.token ?? null,
               reportLink: editor.isActive('reportLink'),
             }}
             actions={{
@@ -481,7 +505,7 @@ export function RichTextFormatToolbarBody({ state, actions }) {
       <ToolbarSeparator />
       <FontSizeSelect value={state.fontSize} onChange={actions.setFontSize} />
       <ToolbarSeparator />
-      <ColorSwatches value={state.color} onChange={actions.setColor} />
+      <ColorSwatchPicker value={state.color} onChange={actions.setColor} />
       {/* 보고서 멘션 링크가 선택에 걸려 있을 때만 — 링크 해제(텍스트는 유지). */}
       {state.reportLink && actions.unsetReportLink && (
         <>
@@ -543,31 +567,3 @@ function FontSizeSelect({ value, onChange }) {
   )
 }
 
-function ColorSwatches({ value, onChange }) {
-  return (
-    <div className="flex items-center gap-0.5">
-      {COLOR_OPTIONS.map((c) => {
-        const active = (c.value ?? null) === (value ?? null)
-        return (
-          <button
-            key={c.label}
-            type="button"
-            title={c.label}
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => onChange(c.value)}
-            className={`h-5 w-5 rounded border ${
-              active ? 'ring-2 ring-offset-1 ring-primary' : 'border-border'
-            }`}
-            style={{
-              backgroundColor: c.value ?? 'transparent',
-              backgroundImage:
-                c.value === null
-                  ? 'linear-gradient(135deg, transparent 45%, #ef4444 45%, #ef4444 55%, transparent 55%)'
-                  : undefined,
-            }}
-          />
-        )
-      })}
-    </div>
-  )
-}

@@ -242,6 +242,8 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
           readOnly
           placeholder={props.label}
           skipAutofill={content?.caption_skip_autofill}
+          color={content?.caption_color}
+          html={content?.caption_html}
         />
         {files.length > 0 && (
           <div
@@ -284,7 +286,7 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
             ))}
           </div>
         )}
-        <NoteInput value={note} readOnly />
+        <NoteInput value={note} readOnly color={content?.note_color} html={content?.note_html} />
       </div>
     )
   }
@@ -486,7 +488,17 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
         </div>
       )}
       {/* 하단 참고 내용 — ※ 프리픽스로 표시. */}
-      <NoteInput value={note} onChange={(v) => patchContent({ note: v })} />
+      <NoteInput
+        value={note}
+        onChange={(v) => patchContent({ note: v })}
+        html={content?.note_html}
+        onChangeRich={(h, t) =>
+          patchContent({
+            note_html: t?.trim() ? h : undefined,
+            note: t?.trim() ? t : undefined,
+          })
+        }
+      />
     </div>
   )
 }

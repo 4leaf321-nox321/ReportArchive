@@ -8,6 +8,7 @@ import { useWidgetRelations } from '@/shared/hooks/useWidgetRelations'
 import { useReportStyle } from '@/shared/reports/ReportStyleContext'
 import { useReportMention } from '@/shared/reports/ReportMentionContext'
 import { hexToToken, colorTokenClass, tokenFromClassName } from '@/shared/text-color'
+import { blockRefKey } from '@/shared/reports/blockNumbering'
 import {
   CaptionInput,
   DEFAULT_BODY_FONT_PX,
@@ -45,6 +46,7 @@ const SANITIZE_OPTIONS = {
     'data-mention-id',
     'data-mention-ws',
     'data-mention-axis',
+    'data-mention-page',
     // 구형 멘션(이미 저장된 보고서 호환).
     'data-report-id',
     'data-workspace-slug',
@@ -81,6 +83,36 @@ function normalizeLegacyColorsForView(safe) {
     style.removeProperty('background-color')
     style.removeProperty('background')
     if (!el.getAttribute('style')) el.removeAttribute('style')
+  })
+  return doc.body.innerHTML
+}
+
+// Rewrite the visible text of block references (`#위젯 참조`) to the *current*
+// number from the live index, so "그림 3" follows reorders without rewriting
+// stored content. The stored html only needs the block id; the label is
+// derived. Deleted targets show "(삭제된 항목)". No-op when there's no index
+// (export/preview) or no block mentions in the row.
+function relabelBlockMentions(html, blockIndex) {
+  if (
+    !blockIndex ||
+    typeof html !== 'string' ||
+    !html.includes('data-mention-type="block"') ||
+    typeof DOMParser === 'undefined'
+  ) {
+    return html
+  }
+  let doc
+  try {
+    doc = new DOMParser().parseFromString(html, 'text/html')
+  } catch {
+    return html
+  }
+  doc.querySelectorAll('a[data-mention-type="block"]').forEach((a) => {
+    const id = a.getAttribute('data-mention-id')
+    const page = a.getAttribute('data-mention-page')
+    const entry =
+      id != null && page != null ? blockIndex.get(blockRefKey(page, id)) : null
+    a.textContent = entry ? entry.label : '(삭제된 항목)'
   })
   return doc.body.innerHTML
 }
@@ -377,8 +409,10 @@ function firstRunFormatting(html) {
       const inline = cur.getAttribute('style') || ''
       const cm = inline.match(/(^|;)\s*color\s*:\s*([^;]+)/i)
       const fm = inline.match(/(^|;)\s*font-size\s*:\s*([^;]+)/i)
+      const ff = inline.match(/(^|;)\s*font-family\s*:\s*([^;]+)/i)
       if (cm && !colorToken) colorToken = hexToToken(cm[2].trim())
       if (fm) style.fontSize = fm[2].trim()
+      if (ff) style.fontFamily = ff[2].trim()
     }
     // Descend into the first child; if none, advance to next sibling.
     if (cur.firstChild) cur = cur.firstChild
@@ -605,6 +639,15 @@ function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
         // 제네릭 스키마.
         const id = a.getAttribute('data-mention-id')
         const ws = a.getAttribute('data-mention-ws')
+        if (type === 'block') {
+          // 같은 보고서 내 위젯 참조(그림/표 …) → 해당 블록으로 스크롤.
+          // 블록 id 는 페이지-로컬이라 (page, id) 둘 다로 특정한다.
+          const page = a.getAttribute('data-mention-page')
+          if (id && page != null && mention?.scrollToBlock) {
+            mention.scrollToBlock(Number(page), id)
+          }
+          return
+        }
         if (type === 'report' && id && ws) to = `/w/${ws}/reports/${id}`
         else if (type === 'dept' && id) to = `/w/${id}/reports`
         // type === 'entity' → 이동 없음(표시 전용 칩)
@@ -638,7 +681,10 @@ function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
         // Inline rich text persists as `html`; legacy items have only
         // `text`. sanitizeRowHtml accepts both — for plain rows it falls
         // back to escaping the text inside a `<p>`.
-        const safeHtml = sanitizeRowHtml(it.html, it.text)
+        const safeHtml = relabelBlockMentions(
+          sanitizeRowHtml(it.html, it.text),
+          mention?.blockIndex,
+        )
         const prefixFmt = firstRunFormatting(it.html)
         // Width and padding scale in `em` so the column always matches the
         // prefix's own font-size — a 48px ■ reserves ~48px, a 12px · reserves
@@ -1137,6 +1183,7 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
         rowFirstRunHasTag(firstHtml, 'strike') ||
         fmt.className.includes('line-through'),
       fontSize: fmt.style?.fontSize ?? '',
+      fontFamily: fmt.style?.fontFamily ?? '',
       color: fmt.colorToken ?? null,
     }
   }, [crossRowSelection, items])
@@ -1347,11 +1394,12 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
           setInputRef={setInputRef}
           // @멘션 트리거 — 이 행/에디터에 바인딩된 insert 를 페이로드에 실어
           // 보내 올바른 위젯에만 삽입되게 한다.
-          onMentionOpen={({ anchorRect, atCaret }) =>
+          onMentionOpen={({ anchorRect, atCaret, mode }) =>
             mention?.open({
               rowIndex: i,
               anchorRect,
               atCaret,
+              mode: mode ?? 'mention',
               insert: (payload) => insertMentionAtRow(i, payload),
             })
           }
@@ -1439,6 +1487,13 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
               const chain = editor.chain().setTextSelection({ from, to })
               if (v) chain.setFontSize(v).run()
               else chain.unsetFontSize().run()
+            })
+          }}
+          onSetFontFamily={(v) => {
+            applyCommandToCrossRowRange((editor, from, to) => {
+              const chain = editor.chain().setTextSelection({ from, to })
+              if (v) chain.setFontFamily(v).run()
+              else chain.unsetFontFamily().run()
             })
           }}
           onSetColor={(c) => {
@@ -1611,13 +1666,16 @@ function OutlineRow({
     // '@' 자체는 그대로 타이핑되게 두고(absorb 안 함), 확인 시 OutlineEditor 의
     // inserter 가 '@query' 범위를 지우고 링크를 끼운다. 캐럿 rect 는 live DOM
     // selection 에서 캡처해 팝업 위치 앵커로 쓴다.
+    // '#' 은 같은 보고서의 그림/표 등 위젯을 참조하는 트리거(외부 링크 '@'와
+    // 별개). 같은 팝업을 mode='block' 으로 열어 블록 피커를 띄운다.
     if (
-      e.key === '@' &&
+      (e.key === '@' || e.key === '#') &&
       !e.isComposing &&
       ctx?.isCollapsed &&
       mention?.enabled &&
       onMentionOpen
     ) {
+      const triggerMode = e.key === '#' ? 'block' : 'mention'
       let anchorRect = null
       try {
         const sel = window.getSelection?.()
@@ -1644,7 +1702,7 @@ function OutlineRow({
       // atCaret = '@' 가 삽입된 뒤의 캐럿 위치(0-based). ctx.caret 은 삽입 전.
       // 이 행/에디터에 바인딩된 open 핸들러(OutlineEditor 제공)로 보내 올바른
       // 위젯에만 삽입되게 한다.
-      onMentionOpen({ anchorRect, atCaret: (ctx?.caret ?? 0) + 1 })
+      onMentionOpen({ anchorRect, atCaret: (ctx?.caret ?? 0) + 1, mode: triggerMode })
       return false
     }
     // Combo navigation takes priority over everything else when active.
@@ -1801,6 +1859,7 @@ const CrossRowToolbarShell = forwardRef(function CrossRowToolbarShell(
     onToggleUnderline,
     onToggleStrike,
     onSetFontSize,
+    onSetFontFamily,
     onSetColor,
   },
   ref,
@@ -1829,6 +1888,7 @@ const CrossRowToolbarShell = forwardRef(function CrossRowToolbarShell(
           toggleUnderline: onToggleUnderline,
           toggleStrike: onToggleStrike,
           setFontSize: onSetFontSize,
+          setFontFamily: onSetFontFamily,
           setColor: onSetColor,
         }}
       />

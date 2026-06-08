@@ -11,7 +11,11 @@ from fastapi import APIRouter, Depends
 from app.modules.users.models import User
 from app.shared.auth import get_current_user_no_workspace
 from app.shared.responses import success_response
-from app.widgets import TEMPLATE_SCHEMA_VERSION, list_widget_descriptors
+from app.widgets import (
+    TEMPLATE_SCHEMA_VERSION,
+    list_ref_categories,
+    list_widget_descriptors,
+)
 
 router = APIRouter()
 
@@ -22,5 +26,6 @@ def list_widgets(_: User = Depends(get_current_user_no_workspace)):
         data={
             "schema_version": TEMPLATE_SCHEMA_VERSION,
             "widgets": list_widget_descriptors(),
+            "ref_categories": list_ref_categories(),
         }
     )

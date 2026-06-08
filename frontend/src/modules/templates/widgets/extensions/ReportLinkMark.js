@@ -78,6 +78,16 @@ export const ReportLinkMark = Mark.create({
         renderHTML: (attrs) =>
           attrs.mentionAxis ? { 'data-mention-axis': attrs.mentionAxis } : {},
       },
+      // 블록(위젯) 참조의 페이지 인덱스. 블록 id 가 페이지마다 재사용되므로
+      // (page, id) 복합키로만 대상을 특정할 수 있다. 댓글 앵커와 같은 방식.
+      mentionPage: {
+        default: null,
+        parseHTML: (el) => el.getAttribute('data-mention-page'),
+        renderHTML: (attrs) =>
+          attrs.mentionPage != null && attrs.mentionPage !== ''
+            ? { 'data-mention-page': String(attrs.mentionPage) }
+            : {},
+      },
     }
   },
 

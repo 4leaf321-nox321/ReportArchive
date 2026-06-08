@@ -108,7 +108,9 @@ import {
   ReportLinksSection,
   useReportLinks,
 } from './ReportLinks'
-import { ReportMentionProvider } from '@/shared/reports/ReportMentionContext'
+import { ReportMentionProvider, useReportMention } from '@/shared/reports/ReportMentionContext'
+import { blockRefKey, buildBlockIndex, referenceableBlockList } from '@/shared/reports/blockNumbering'
+import { CurrentBlockRefContext } from '@/shared/reports/CurrentBlockRefContext'
 import { ReportMentionDialog } from './ReportMentionDialog'
 import { ReportGraphModal } from './ReportGraphModal'
 import { SlideGuideOverlay } from './SlideGuideOverlay'
@@ -851,6 +853,63 @@ export default function ReportDetailPage() {
       }, 80)
     },
     [draft?.pages?.length, currentPage],
+  )
+
+  // Whole-report cross-reference index ("그림 3", "표 2"). Walks every page in
+  // document order so numbers are continuous across pages; recomputed when the
+  // draft / templates / catalog change, so reordering a block re-numbers every
+  // body reference automatically. (Hook above the early returns — see below.)
+  const blockRefIndex = useMemo(() => {
+    const ordered = []
+    const pages = draft?.pages ?? []
+    pages.forEach((page, pageIndex) => {
+      const tpl = getCachedTemplate(pageTemplateMap, page)
+      const overrides = page?.layout_overrides ?? {}
+      // Number in *visual reading order* (top→bottom, left→right), not
+      // blocks_order array order — otherwise a block dropped at the top of the
+      // page but appended to blocks_order would get a high number. Position
+      // comes from the effective layout (row, col_offset), with the array
+      // index as a stable tiebreaker for same-cell / missing col_offset.
+      const positioned = combinedBlocks(tpl, page).map((b, idx) => {
+        const lay = overrides[b.id] ?? b.layout ?? {}
+        return {
+          b,
+          idx,
+          row: Number.isFinite(lay.row) ? lay.row : 1,
+          col: Number.isFinite(lay.col_offset) ? lay.col_offset : 0,
+        }
+      })
+      positioned.sort((a, c) => a.row - c.row || a.col - c.col || a.idx - c.idx)
+      for (const { b } of positioned) {
+        // Caption for the # picker: plain caption → rich caption text → the
+        // widget's template label, so "그림 3" always has a meaningful subtitle.
+        const c = page.content?.[b.id] ?? {}
+        const caption =
+          (c.caption && c.caption.trim()) ||
+          (typeof c.caption_html === 'string'
+            ? c.caption_html.replace(/<[^>]*>/g, '').trim()
+            : '') ||
+          (b.props?.label ?? '')
+        ordered.push({ id: b.id, type: b.type, caption, pageIndex })
+      }
+    })
+    return buildBlockIndex(ordered, widgetCatalog)
+  }, [draft, pageTemplateMap, widgetCatalog])
+
+  const referenceableBlocks = useMemo(
+    () => referenceableBlockList(blockRefIndex),
+    [blockRefIndex],
+  )
+
+  // Jump to a referenced block — reuses the comment "jump to widget" path
+  // (switches page first if it lives elsewhere, then scrollIntoView). The
+  // reference carries (pageIndex, blockId) since ids are page-local.
+  const scrollToBlock = useCallback(
+    (pageIndex, blockId) => {
+      if (pageIndex == null || !blockId) return
+      navigateToCommentBlock(pageIndex, blockId)
+    },
+    [navigateToCommentBlock],
   )
 
   // ⚠ Hook — MUST sit above ALL early returns below (loading / error /
@@ -2847,6 +2906,9 @@ export default function ReportDetailPage() {
       enabled={effectiveIsEditing && !!existingReport?.can_edit && existingReport?.id != null}
       navigate={navigate}
       addLink={linkedReports.addLink}
+      blockIndex={blockRefIndex}
+      referenceableBlocks={referenceableBlocks}
+      scrollToBlock={scrollToBlock}
     >
     <CommentsProvider
       reportId={existingReport?.id ?? null}
@@ -8827,6 +8889,13 @@ function BlockEditorCard({
     focusedAnchor.pageIndex === (pageIndex ?? 0) &&
     focusedAnchor.blockId === block.id
 
+  // Cross-reference label ("그림 3") for this block, from the whole-report
+  // numbering index. Provided down to CaptionInput so the figure/table caption
+  // shows its number — matching how the body's `#` references read.
+  const mentionCtx = useReportMention()
+  const blockRefLabel =
+    mentionCtx?.blockIndex?.get(blockRefKey(pageIndex ?? 0, block.id))?.label ?? null
+
   // Non-inline-editable widgets render as if in view mode while sitting
   // inside the edit grid — their "edit" happens in a separate modal that
   // the parent opens via `onOpenContentEdit`. The chrome (drag handle,
@@ -9290,6 +9359,7 @@ function BlockEditorCard({
     openContentEditorFrom(e.currentTarget)
   }
   return (
+    <CurrentBlockRefContext.Provider value={blockRefLabel}>
     <TableViewContext.Provider value={tableViewValue}>
     <Card
       id={`block-${block.id}`}
@@ -9471,6 +9541,7 @@ function BlockEditorCard({
       )}
     </Card>
     </TableViewContext.Provider>
+    </CurrentBlockRefContext.Provider>
   )
 }
 

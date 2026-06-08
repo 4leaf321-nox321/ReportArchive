@@ -3469,6 +3469,104 @@ def get_widget(type_: str) -> WidgetDescriptor:
     return WIDGET_REGISTRY[type_]
 
 
+# --------------------------------------------------------------------------- #
+# Cross-reference categories                                                   #
+# --------------------------------------------------------------------------- #
+# The "긴 글"(rich_text) body lets writers reference other blocks with `#`
+# ("그림 3", "표 2"). Each content widget belongs to one reference category; the
+# body editor numbers blocks per category in document order (numbers are derived
+# at render time, never stored, so reordering re-numbers automatically). The
+# label here is just the human prefix shown before the running number.
+#
+# `key` is the stable id used in stored references; `label` is the UI prefix.
+# Order is the grouping order shown in the `#` picker.
+REF_CATEGORIES: list[dict] = [
+    {"key": "figure", "label": "그림"},
+    {"key": "table", "label": "표"},
+    {"key": "comparison", "label": "비교표"},
+    {"key": "keyvalue", "label": "키-값"},
+    {"key": "raci", "label": "RACI"},
+    {"key": "equation", "label": "수식"},
+    {"key": "list", "label": "목록"},
+    {"key": "attachment", "label": "첨부"},
+    {"key": "video", "label": "영상"},
+    {"key": "embed", "label": "임베드"},
+]
+_REF_CATEGORY_KEYS = {c["key"] for c in REF_CATEGORIES}
+
+# type → reference category key, or None for structural widgets that aren't
+# referenceable (the prose body itself + section titles).
+#
+# ⚠️ EVERY widget type MUST appear here. The assertion below fails the import
+# when a newly added widget is missing, so a new widget can't silently land in
+# the wrong bucket — its author is forced to classify it (or mark it None).
+REF_CATEGORY_BY_TYPE: dict[str, Optional[str]] = {
+    # structural — not referenceable
+    "heading": None,
+    "rich_text": None,
+    # 표 — 실제 표(table)만. 표 형태의 다른 위젯은 각자 별도 카테고리로 둬서
+    # "표 N" 카운트가 실제 표 개수만 반영하도록 한다.
+    "table": "table",
+    "comparison": "comparison",
+    "key_value": "keyvalue",
+    "raci_matrix": "raci",
+    # 그림 (images, charts, diagrams — anything primarily visual)
+    "image": "figure",
+    "chart": "figure",
+    "scatter": "figure",
+    "scatter3d": "figure",
+    "heatmap": "figure",
+    "contour": "figure",
+    "treemap": "figure",
+    "packing": "figure",
+    "tree": "figure",
+    "network": "figure",
+    "mind_map": "figure",
+    "pie": "figure",
+    "waffle": "figure",
+    "box": "figure",
+    "density": "figure",
+    "radar": "figure",
+    "milestone": "figure",
+    "flowchart": "figure",
+    "progress_bar": "figure",
+    "cad_3d": "figure",
+    "quadrant": "figure",
+    "sankey": "figure",
+    # 수식 / 목록 / 첨부 / 영상 / 임베드
+    "equation": "equation",
+    "bulleted_list": "list",
+    "attachment": "attachment",
+    "video": "video",
+    "html_embed": "embed",
+}
+
+# Fail loudly at import if a widget was added without a reference category, or
+# mapped to an unknown category key. This is the "build it right from the start"
+# guarantee: new widgets can't skip classification.
+_uncategorized = set(WIDGET_REGISTRY) - set(REF_CATEGORY_BY_TYPE)
+assert not _uncategorized, (
+    "Widgets missing a reference category — add them to REF_CATEGORY_BY_TYPE "
+    f"in registry.py: {sorted(_uncategorized)}"
+)
+_bad_categories = {
+    t: v
+    for t, v in REF_CATEGORY_BY_TYPE.items()
+    if v is not None and v not in _REF_CATEGORY_KEYS
+}
+assert not _bad_categories, f"Unknown ref category keys: {_bad_categories}"
+
+
+def ref_category_for(type_: str) -> Optional[str]:
+    """Reference category key for a widget type, or None if not referenceable."""
+    return REF_CATEGORY_BY_TYPE.get(type_)
+
+
+def list_ref_categories() -> list[dict]:
+    """Ordered category metadata ({key, label}) for the frontend numbering UI."""
+    return [dict(c) for c in REF_CATEGORIES]
+
+
 def list_widget_descriptors() -> list[dict]:
     """Public catalog for the frontend (omits Python callables)."""
     out = []
@@ -3481,6 +3579,8 @@ def list_widget_descriptors() -> list[dict]:
                 "has_content": w["has_content"],
                 "props_schema": w["props_schema"],
                 "default_props": w.get("default_props", {}),
+                # Cross-reference category (null = not referenceable).
+                "ref_category": REF_CATEGORY_BY_TYPE.get(w["type"]),
             }
         )
     return out

@@ -37,6 +37,14 @@ export function ReportMentionProvider({
   enabled,
   navigate,
   addLink,
+  // Cross-reference (`#` 위젯 참조) data, all derived from the live draft:
+  //   - blockIndex          : Map<blockId, {label, n, category, caption, pageIndex}>
+  //                           computed from whole-report document order.
+  //   - referenceableBlocks : ordered array for the `#` picker.
+  //   - scrollToBlock(id)   : jump to a block (switches page if needed).
+  blockIndex,
+  referenceableBlocks,
+  scrollToBlock,
   children,
 }) {
   const [popup, setPopup] = useState(null) // { rowIndex, anchorRect, atCaret, insert } | null
@@ -50,11 +58,25 @@ export function ReportMentionProvider({
       enabled: !!enabled,
       navigate: navigate ?? null,
       addLink: addLink ?? null,
+      blockIndex: blockIndex ?? null,
+      referenceableBlocks: referenceableBlocks ?? [],
+      scrollToBlock: scrollToBlock ?? null,
       popup,
       open,
       close,
     }),
-    [hostReportId, enabled, navigate, addLink, popup, open, close],
+    [
+      hostReportId,
+      enabled,
+      navigate,
+      addLink,
+      blockIndex,
+      referenceableBlocks,
+      scrollToBlock,
+      popup,
+      open,
+      close,
+    ],
   )
 
   return (

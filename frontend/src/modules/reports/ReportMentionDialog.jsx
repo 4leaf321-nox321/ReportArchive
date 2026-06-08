@@ -52,6 +52,150 @@ function computeInitialPos(rect) {
   return { left, top }
 }
 
+// 위젯 참조(#) 피커 — 같은 보고서의 그림/표/수식 등 번호가 매겨진 블록 목록을
+// 보여주고, 고르면 본문에 "그림 3" 같은 참조를 즉시 삽입한다. 번호/라벨은
+// blockIndex 에서 온 live 값(문서 순서 기반)이라 재정렬 시 자동 갱신된다.
+function BlockRefPicker({ popup, blocks, onClose }) {
+  const [query, setQuery] = useState('')
+  // 박스(위치+크기). 모서리 드래그로 사용자가 키울 수 있다(resize: both).
+  const [box, setBox] = useState(() => computeBlockPickerBox(popup.anchorRect))
+
+  useEffect(() => {
+    setBox(computeBlockPickerBox(popup.anchorRect))
+  }, [popup.anchorRect])
+
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  // Strip a leading '#' so the trigger char never filters the list (the '#'
+  // is shown as a fixed prefix in the box instead — see below).
+  const q = query.replace(/^#+/, '').trim().toLowerCase()
+  const filtered = q
+    ? blocks.filter(
+        (b) =>
+          b.label.toLowerCase().includes(q) ||
+          (b.caption ?? '').toLowerCase().includes(q),
+      )
+    : blocks
+
+  function pick(b) {
+    popup.insert?.({
+      text: b.label,
+      atCaret: popup.atCaret,
+      // ids are page-local → store the page too so the reference resolves
+      // unambiguously across the whole report.
+      attrs: { mentionType: 'block', mentionId: b.id, mentionPage: b.pageIndex },
+    })
+    onClose()
+  }
+
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1024
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 768
+
+  return createPortal(
+    <>
+      <div className="fixed inset-0 z-[60]" onMouseDown={onClose} />
+      <div
+        className="fixed z-[61] flex flex-col rounded-lg border bg-popover shadow-xl"
+        style={{
+          left: box.left,
+          top: box.top,
+          width: box.width,
+          height: box.height,
+          // 사용자가 모서리(우하단)를 끌어 크기 조절. overflow:hidden 이라야
+          // 네이티브 리사이즈 그립이 뜨고, 내부 리스트는 자체 스크롤한다.
+          resize: 'both',
+          overflow: 'hidden',
+          minWidth: 260,
+          minHeight: 180,
+          maxWidth: vw - 2 * MARGIN,
+          maxHeight: vh - 2 * MARGIN,
+        }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b shrink-0">
+          <div className="text-xs font-semibold text-foreground">위젯 참조</div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-0.5 text-muted-foreground hover:bg-muted"
+            title="닫기"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        <div className="p-2 shrink-0 border-b">
+          {/* '#' 는 고정 프리픽스로 표시하고, 입력값에 끼어든 선행 '#' 은 떼어내
+              항상 리스트가 바로 보이게 한다. */}
+          <div className="flex h-8 items-center gap-1 rounded-md border bg-background px-2 focus-within:ring-1 focus-within:ring-ring">
+            <span className="select-none text-xs font-semibold text-amber-600">#</span>
+            <input
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value.replace(/^#+/, ''))}
+              placeholder="그림/표 검색 (라벨·캡션)"
+              className="h-full flex-1 bg-transparent text-xs outline-none"
+            />
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-1">
+          {filtered.length === 0 ? (
+            <div className="px-2 py-6 text-center text-xs text-muted-foreground">
+              참조할 그림/표가 없습니다.
+            </div>
+          ) : (
+            filtered.map((b) => (
+              <button
+                key={b.key}
+                type="button"
+                onClick={() => pick(b)}
+                className="flex w-full items-baseline gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-muted"
+              >
+                <span className="shrink-0 font-medium text-foreground">{b.label}</span>
+                {b.caption && (
+                  <span className="truncate text-muted-foreground">{b.caption}</span>
+                )}
+                <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                  p.{(b.pageIndex ?? 0) + 1}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    </>,
+    document.body,
+  )
+}
+
+// 위젯 참조 피커의 초기 박스(위치+크기). 작은 화면에서도 쓸 만하게 위/아래
+// 중 공간이 큰 쪽으로 펼치고, 뷰포트를 넘지 않게 클램프한다. 사용자는 이후
+// 모서리를 끌어 키울 수 있다(panel 의 resize: both).
+function computeBlockPickerBox(rect) {
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1024
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 768
+  const width = Math.min(PANEL_WIDTH, vw - 2 * MARGIN)
+  const below = rect ? vh - rect.bottom - MARGIN : vh - 2 * MARGIN
+  const above = rect ? rect.top - MARGIN : vh - 2 * MARGIN
+  const useAbove = below < 260 && above > below
+  const avail = Math.max(useAbove ? above : below, 200)
+  const height = clamp(Math.min(380, avail), 180, vh - 2 * MARGIN)
+  const left = clamp(
+    rect ? rect.left : (vw - width) / 2,
+    MARGIN,
+    Math.max(MARGIN, vw - width - MARGIN),
+  )
+  const top = useAbove
+    ? clamp((rect?.top ?? vh) - 6 - height, MARGIN, vh - height - MARGIN)
+    : clamp((rect?.bottom ?? 0) + 6, MARGIN, vh - height - MARGIN)
+  return { left, top, width, height }
+}
+
 export function ReportMentionDialog() {
   const mention = useReportMention()
   const popup = mention?.popup ?? null
@@ -165,6 +309,18 @@ export function ReportMentionDialog() {
   useEffect(() => () => onDragEnd(), [onDragEnd])
 
   if (!popup) return null
+
+  // '#' 트리거 — 같은 보고서의 그림/표 등 위젯 참조. 별도의 간단 피커를 띄운다
+  // (멘션 폼과 분리). 선택 즉시 삽입.
+  if (popup.mode === 'block') {
+    return (
+      <BlockRefPicker
+        popup={popup}
+        blocks={mention?.referenceableBlocks ?? []}
+        onClose={() => mention.close()}
+      />
+    )
+  }
 
   const effectivePos = pos ?? computeInitialPos(popup.anchorRect)
   const maxHeight =

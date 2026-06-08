@@ -3,7 +3,7 @@ import { useEditor, EditorContent } from '@tiptap/react'
 import { BubbleMenu } from '@tiptap/react/menus'
 import StarterKit from '@tiptap/starter-kit'
 import { Placeholder } from '@tiptap/extensions'
-import { TextStyle, FontSize } from '@tiptap/extension-text-style'
+import { TextStyle, FontSize, FontFamily } from '@tiptap/extension-text-style'
 import { DOMSerializer } from '@tiptap/pm/model'
 import { TextColor, ColorSwatchPicker, hexToToken, colorTokenClass } from '@/shared/text-color'
 import {
@@ -23,6 +23,39 @@ import { ReportLinkMark } from './extensions/ReportLinkMark'
 // Pixel-based sizes match the convention every common WYSIWYG (Word,
 // Google Docs, Notion) uses. The empty-value "기본" row clears the mark
 // so the row inherits the block / depth default again.
+// Inline font-family choices. Values are full CSS font stacks (the FontFamily
+// mark writes them as `style="font-family:..."` — free-form, so unlike the
+// block-level keyed enum we can list as many as we like). Each ends in a
+// generic fallback so text stays readable when the named font isn't installed.
+export const FONT_FAMILY_OPTIONS = [
+  // 한국어 시스템 글꼴
+  { label: '맑은 고딕', value: "'Malgun Gothic', '맑은 고딕', sans-serif" },
+  { label: '바탕', value: "Batang, '바탕', serif" },
+  { label: '굴림', value: "Gulim, '굴림', sans-serif" },
+  { label: '돋움', value: "Dotum, '돋움', sans-serif" },
+  { label: '궁서', value: "Gungsuh, '궁서', serif" },
+  { label: '나눔고딕', value: "'Nanum Gothic', sans-serif" },
+  { label: '나눔명조', value: "'Nanum Myeongjo', serif" },
+  // 범용(시스템 기본 스택)
+  {
+    label: '산세리프',
+    value: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+  },
+  {
+    label: '세리프',
+    value: 'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif',
+  },
+  {
+    label: '고정폭',
+    value: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+  },
+  // 라틴 글꼴
+  { label: 'Arial', value: 'Arial, Helvetica, sans-serif' },
+  { label: 'Times New Roman', value: "'Times New Roman', Times, serif" },
+  { label: 'Georgia', value: 'Georgia, serif' },
+  { label: 'Courier New', value: "'Courier New', Courier, monospace" },
+]
+
 export const FONT_SIZE_OPTIONS = [
   { label: '10', value: '10px' },
   { label: '11', value: '11px' },
@@ -165,6 +198,7 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
       TextStyle,
       TextColor,
       FontSize,
+      FontFamily,
       ReportLinkMark,
       Placeholder.configure({
         // The placeholder text comes from props.placeholder. Latest value
@@ -434,6 +468,7 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
               underline: editor.isActive('underline'),
               strike: editor.isActive('strike'),
               fontSize: editor.getAttributes('textStyle')?.fontSize ?? '',
+              fontFamily: editor.getAttributes('textStyle')?.fontFamily ?? '',
               color: editor.getAttributes('textColor')?.token ?? null,
               reportLink: editor.isActive('reportLink'),
             }}
@@ -448,6 +483,10 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
                 v
                   ? editor.chain().focus().setFontSize(v).run()
                   : editor.chain().focus().unsetFontSize().run(),
+              setFontFamily: (v) =>
+                v
+                  ? editor.chain().focus().setFontFamily(v).run()
+                  : editor.chain().focus().unsetFontFamily().run(),
               setColor: (c) =>
                 c
                   ? editor.chain().focus().setColor(c).run()
@@ -503,6 +542,7 @@ export function RichTextFormatToolbarBody({ state, actions }) {
         <StrikeIcon className="h-3.5 w-3.5" />
       </ToolbarButton>
       <ToolbarSeparator />
+      <FontFamilySelect value={state.fontFamily} onChange={actions.setFontFamily} />
       <FontSizeSelect value={state.fontSize} onChange={actions.setFontSize} />
       <ToolbarSeparator />
       <ColorSwatchPicker value={state.color} onChange={actions.setColor} />
@@ -543,6 +583,25 @@ function ToolbarButton({ active, onClick, title, children }) {
 
 function ToolbarSeparator() {
   return <span className="mx-0.5 inline-block h-4 w-px bg-border" />
+}
+
+function FontFamilySelect({ value, onChange }) {
+  return (
+    <select
+      value={value ?? ''}
+      onMouseDown={(e) => e.stopPropagation()}
+      onChange={(e) => onChange(e.target.value || null)}
+      className="h-7 max-w-[7.5rem] rounded border border-input bg-background px-1 text-[11px]"
+      title="글자체"
+    >
+      <option value="">글꼴</option>
+      {FONT_FAMILY_OPTIONS.map((o) => (
+        <option key={o.label} value={o.value} style={{ fontFamily: o.value }}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  )
 }
 
 function FontSizeSelect({ value, onChange }) {

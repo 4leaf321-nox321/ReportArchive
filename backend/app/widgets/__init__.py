@@ -12,7 +12,13 @@ Each widget defines:
     widgets like `heading`.
   - has_content: False for widgets that contribute no data to the report
 """
-from app.widgets.registry import WIDGET_REGISTRY, get_widget, list_widget_descriptors
+from app.widgets.registry import (
+    WIDGET_REGISTRY,
+    get_widget,
+    list_ref_categories,
+    list_widget_descriptors,
+    ref_category_for,
+)
 from app.widgets.validation import (
     TEMPLATE_SCHEMA_VERSION,
     is_widget_v1,
@@ -26,7 +32,9 @@ __all__ = [
     "WIDGET_REGISTRY",
     "get_widget",
     "is_widget_v1",
+    "list_ref_categories",
     "list_widget_descriptors",
+    "ref_category_for",
     "validate_layout_overrides",
     "validate_report_content",
     "validate_template_schema",

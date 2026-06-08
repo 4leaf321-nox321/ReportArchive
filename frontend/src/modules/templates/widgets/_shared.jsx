@@ -7,6 +7,7 @@ import { Label } from '@/shared/components/ui/label'
 import DOMPurify from 'dompurify'
 import { cn } from '@/shared/lib/utils'
 import { ColorSwatchPicker, colorTokenClass } from '@/shared/text-color'
+import { useCurrentBlockRef } from '@/shared/reports/CurrentBlockRefContext'
 import { RichTextRowEditor } from './RichTextRowEditor'
 
 /**
@@ -1010,6 +1011,43 @@ export function sanitizeCaptionHtml(html) {
   return DOMPurify.sanitize(html, _CAPTION_SANITIZE)
 }
 
+// Pull the first text run's inline font-size / font-family out of caption or
+// note html, so the leading marker ("그림 1." / "※") matches the size & face of
+// the caption's first character instead of staying at the base size.
+function _firstRunTypography(html) {
+  if (typeof html !== 'string' || !html || typeof DOMParser === 'undefined') {
+    return undefined
+  }
+  let doc
+  try {
+    doc = new DOMParser().parseFromString(html, 'text/html')
+  } catch {
+    return undefined
+  }
+  const p = doc.body.firstElementChild
+  if (!p) return undefined
+  const out = {}
+  let cur = p.firstChild
+  while (cur) {
+    if (cur.nodeType === 3 /* TEXT_NODE */) {
+      if (cur.nodeValue && cur.nodeValue.length > 0) break
+      cur = cur.nextSibling
+      continue
+    }
+    if (cur.nodeType === 1 /* ELEMENT_NODE */) {
+      const s = cur.getAttribute('style') || ''
+      const fm = s.match(/(^|;)\s*font-size\s*:\s*([^;]+)/i)
+      const ff = s.match(/(^|;)\s*font-family\s*:\s*([^;]+)/i)
+      if (fm && !out.fontSize) out.fontSize = fm[2].trim()
+      if (ff && !out.fontFamily) out.fontFamily = ff[2].trim()
+      cur = cur.firstChild || cur.nextSibling
+    } else {
+      cur = cur.nextSibling
+    }
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
 function _escapeHtml(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -1079,6 +1117,9 @@ export function CaptionInput({
   // only to the plain-text fallback. Rich html carries its own inline colors.
   const colorClass = colorTokenClass(color)
   const hasRich = !_richIsEmpty(html)
+  // Cross-reference number ("그림 3") for this block, injected by the report
+  // renderer. null in template editor / non-referenceable widgets.
+  const refLabel = useCurrentBlockRef()
   // Effective visible text when the user hasn't typed anything:
   //   - skip ON  → blank (title row hidden entirely)
   //   - auto-fit → template hint (so the default is visible without
@@ -1090,23 +1131,27 @@ export function CaptionInput({
     // data-export-skip → html2canvas (DOCX export) drops this title from the
     // captured PNG; the exporter emits it as a real Heading 3 above the figure.
     // Priority: rich html (per-char marks) > plain text/autofill hint.
-    if (hasRich) {
-      return (
-        <div
-          data-export-skip="caption"
-          className="text-base font-semibold px-2 py-1"
-          dangerouslySetInnerHTML={{ __html: sanitizeCaptionHtml(html) }}
-        />
-      )
-    }
-    // View mode: only render the row when there's something to show.
-    if (!effectiveText) return null
+    if (!hasRich && !effectiveText) return null
+    // Match the marker ("그림 N.") to the caption's first character size/face.
+    const markerStyle = hasRich ? _firstRunTypography(html) : undefined
     return (
       <div
         data-export-skip="caption"
-        className={cn('text-base font-semibold px-2 py-1', colorClass)}
+        className="text-base font-semibold px-2 py-1"
       >
-        {effectiveText}
+        {refLabel && (
+          <span className="mr-1 text-foreground" style={markerStyle}>
+            {refLabel}.
+          </span>
+        )}
+        {hasRich ? (
+          <span
+            className="[&_p]:m-0 [&_p]:inline"
+            dangerouslySetInnerHTML={{ __html: sanitizeCaptionHtml(html) }}
+          />
+        ) : (
+          <span className={colorClass}>{effectiveText}</span>
+        )}
       </div>
     )
   }
@@ -1203,11 +1248,13 @@ export function NoteInput({ value, onChange, readOnly, color, html, onChangeRich
   // fallback only; rich html carries its own inline colors. ※ marker stays muted.
   const colorClass = colorTokenClass(color)
   const hasRich = !_richIsEmpty(html)
+  // Match the ※ marker to the note's first character size/face.
+  const markerStyle = hasRich ? _firstRunTypography(html) : undefined
   if (readOnly) {
     if (hasRich) {
       return (
         <div className="flex items-start gap-1 px-2 py-1 text-xs text-muted-foreground whitespace-pre-wrap break-words">
-          <span className="select-none shrink-0">※</span>
+          <span className="select-none shrink-0" style={markerStyle}>※</span>
           <span
             className="flex-1 min-w-0"
             dangerouslySetInnerHTML={{ __html: sanitizeCaptionHtml(html) }}

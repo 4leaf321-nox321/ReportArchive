@@ -456,3 +456,37 @@ body.report-fullscreen [data-slide-guide-overlay] {
   text-decoration-thickness: 2px;
   background-color: color-mix(in srgb, #2563eb 22%, transparent);
 }
+
+/* 위젯 참조(#) — 같은 보고서의 그림/표로 점프. 옅은 노란색 칩 + 링크처럼
+   클릭(밑줄·포인터), @멘션과 같은 클릭 경험. */
+.block-mention {
+  color: #b45309; /* amber-700 */
+  background-color: color-mix(in srgb, #f59e0b 18%, transparent);
+  border-radius: 4px;
+  padding: 0.05em 0.25em;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+  cursor: pointer;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.dark .block-mention {
+  color: #fbbf24; /* amber-400 — 다크에서 가독 */
+}
+.block-mention::before {
+  content: "";
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  margin-right: 0.15em;
+  vertical-align: -0.12em;
+  background-color: currentColor;
+  -webkit-mask: var(--block-mention-icon) center / contain no-repeat;
+  mask: var(--block-mention-icon) center / contain no-repeat;
+  --block-mention-icon: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23000'%20stroke-width='2.5'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cline%20x1='4'%20y1='9'%20x2='20'%20y2='9'/%3E%3Cline%20x1='4'%20y1='15'%20x2='20'%20y2='15'/%3E%3Cline%20x1='10'%20y1='3'%20x2='8'%20y2='21'/%3E%3Cline%20x1='16'%20y1='3'%20x2='14'%20y2='21'/%3E%3C/svg%3E");
+}
+.block-mention:hover {
+  text-decoration-thickness: 2px;
+  background-color: color-mix(in srgb, #f59e0b 30%, transparent);
+}

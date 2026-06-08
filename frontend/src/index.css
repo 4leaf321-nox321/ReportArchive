@@ -119,6 +119,29 @@
 .rt-c-pink { color: var(--rt-c-pink); }
 .rt-c-rose { color: var(--rt-c-rose); }
 
+/* Cell-background tints — a soft wash of each token color so the cell text
+   (default or its own rt-c-* color) stays readable on top. Translucent so it
+   adapts to light/dark surfaces. Emitted by bgTokenClass(token). Same
+   not-in-@layer rule as above (dynamic class names → would be purged). */
+.rt-bg-ink { background-color: color-mix(in srgb, var(--rt-c-ink) 16%, transparent); }
+.rt-bg-gray { background-color: color-mix(in srgb, var(--rt-c-gray) 16%, transparent); }
+.rt-bg-slate { background-color: color-mix(in srgb, var(--rt-c-slate) 16%, transparent); }
+.rt-bg-red { background-color: color-mix(in srgb, var(--rt-c-red) 16%, transparent); }
+.rt-bg-orange { background-color: color-mix(in srgb, var(--rt-c-orange) 16%, transparent); }
+.rt-bg-amber { background-color: color-mix(in srgb, var(--rt-c-amber) 16%, transparent); }
+.rt-bg-yellow { background-color: color-mix(in srgb, var(--rt-c-yellow) 16%, transparent); }
+.rt-bg-lime { background-color: color-mix(in srgb, var(--rt-c-lime) 16%, transparent); }
+.rt-bg-green { background-color: color-mix(in srgb, var(--rt-c-green) 16%, transparent); }
+.rt-bg-teal { background-color: color-mix(in srgb, var(--rt-c-teal) 16%, transparent); }
+.rt-bg-cyan { background-color: color-mix(in srgb, var(--rt-c-cyan) 16%, transparent); }
+.rt-bg-sky { background-color: color-mix(in srgb, var(--rt-c-sky) 16%, transparent); }
+.rt-bg-blue { background-color: color-mix(in srgb, var(--rt-c-blue) 16%, transparent); }
+.rt-bg-indigo { background-color: color-mix(in srgb, var(--rt-c-indigo) 16%, transparent); }
+.rt-bg-violet { background-color: color-mix(in srgb, var(--rt-c-violet) 16%, transparent); }
+.rt-bg-purple { background-color: color-mix(in srgb, var(--rt-c-purple) 16%, transparent); }
+.rt-bg-pink { background-color: color-mix(in srgb, var(--rt-c-pink) 16%, transparent); }
+.rt-bg-rose { background-color: color-mix(in srgb, var(--rt-c-rose) 16%, transparent); }
+
 @layer base {
   * {
     @apply border-border;

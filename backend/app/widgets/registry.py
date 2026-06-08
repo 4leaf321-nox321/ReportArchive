@@ -147,6 +147,20 @@ _COLOR_TOKEN_FIELD = {"type": "string", "enum": _COLOR_TOKENS}
 _CAPTION_HTML_FIELD = {"type": "string", "maxLength": 2000}
 _NOTE_HTML_FIELD = {"type": "string", "maxLength": 4000}
 
+# 표/비교표 셀별 색상 사이드테이블. 키 = "행::열key"(표) / "행key::케이스key"
+# (비교표), 값 = {bg?, fg?} 토큰. 값 모델과 분리돼 셀 데이터는 안 건드린다.
+_CELL_STYLES_SCHEMA = {
+    "type": "object",
+    "additionalProperties": {
+        "type": "object",
+        "properties": {
+            "bg": _COLOR_TOKEN_FIELD,
+            "fg": _COLOR_TOKEN_FIELD,
+        },
+        "additionalProperties": False,
+    },
+}
+
 
 # Reusable text-style sub-schema. Mixed into every text-bearing widget's
 # props_schema so designers can override the visual treatment per block.
@@ -580,6 +594,7 @@ def _table_content(props: dict) -> dict:
                 "minimum": 120,
                 "maximum": 4000,
             },
+            "cell_styles": _CELL_STYLES_SCHEMA,
         },
         "additionalProperties": False,
     }
@@ -2906,6 +2921,7 @@ def _comparison_content(props: dict) -> dict:  # noqa: ARG001
                 "minimum": 120,
                 "maximum": 4000,
             },
+            "cell_styles": _CELL_STYLES_SCHEMA,
         },
         "additionalProperties": False,
     }

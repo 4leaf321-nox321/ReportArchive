@@ -6,6 +6,7 @@ import {
   ChevronUp,
   ImageIcon,
   Loader2,
+  Palette,
   Plus,
   Type as TypeIcon,
   Upload,
@@ -14,6 +15,12 @@ import {
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/shared/components/ui/popover'
+import { ColorSwatchPicker, bgTokenClass, colorTokenClass } from '@/shared/text-color'
 import { AuthedImage } from '@/shared/components/AuthedImage'
 import { uploadFile } from '@/shared/api/files'
 import { toast } from 'sonner'
@@ -415,6 +422,16 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
   const merges = Array.isArray(content?.merges) ? content.merges : []
   const totalColCount = cases.length + 1 // row label + each case
   const mergeMap = computeMergeMap(merges, rows.length, totalColCount)
+  // 셀별 배경/글자 색(토큰). 행·케이스 모두 안정적 key 라 키도 안정적.
+  const cellStyles =
+    content?.cell_styles && typeof content.cell_styles === 'object'
+      ? content.cell_styles
+      : {}
+  function cellStyleClass(rowKey, colKey) {
+    const s = cellStyles[`${rowKey}::${colKey}`]
+    if (!s) return ''
+    return `${bgTokenClass(s.bg)} ${colorTokenClass(s.fg)}`.trim()
+  }
   const textClass = textStyleToClassName(props.text_style)
   const textStyle = textStyleToInlineStyle(props.text_style)
   // 셀(헤더·행라벨·값) 본문 글자 크기 — 긴 글(RichText)과 동일한 기본값
@@ -487,6 +504,12 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     if (!merged.rows || merged.rows.length === 0) delete merged.rows
     if (!merged.cases || merged.cases.length === 0) delete merged.cases
     if (!merged.caption_skip_autofill) delete merged.caption_skip_autofill
+    if (
+      !merged.cell_styles ||
+      Object.keys(merged.cell_styles).length === 0
+    ) {
+      delete merged.cell_styles
+    }
     if (
       !merged.column_widths ||
       Object.keys(merged.column_widths).length === 0
@@ -968,6 +991,28 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     })
     selection.clear()
   }
+  // 선택 영역의 모든 셀에 배경(bg)/글자(fg) 토큰 적용. 좌표 c=0 → 행 라벨,
+  // c≥1 → cases[c-1]. 행·케이스 안정적 key 라 키도 안정적(시프트 불필요).
+  function applyCellColor(field, token) {
+    const r = selection.rect
+    if (!r) return
+    const next = { ...cellStyles }
+    for (let ri = r.r1; ri <= r.r2; ri++) {
+      const rowKey = rows[ri]?.key
+      if (!rowKey) continue
+      for (let ci = r.c1; ci <= r.c2; ci++) {
+        const colKey = ci === 0 ? ROW_LABEL_KEY : cases[ci - 1]?.key
+        if (!colKey) continue
+        const k = `${rowKey}::${colKey}`
+        const cur = { ...(next[k] ?? {}) }
+        if (token) cur[field] = token
+        else delete cur[field]
+        if (cur.bg || cur.fg) next[k] = cur
+        else delete next[k]
+      }
+    }
+    patch({ cell_styles: next })
+  }
   const selectionRect_ = selection.rect
   const selectionCrossesZone =
     selectionRect_ != null &&
@@ -1054,7 +1099,10 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                           {...(labelSpan?.rs > 1 ? { rowSpan: labelSpan.rs } : {})}
                           {...(labelSpan?.cs > 1 ? { colSpan: labelSpan.cs } : {})}
                           style={{ fontSize: bodyFontPx }}
-                          className="px-2 py-1.5 font-medium border-r bg-muted/20 align-top whitespace-pre-wrap break-words"
+                          className={cn(
+                            'px-2 py-1.5 font-medium border-r bg-muted/20 align-top whitespace-pre-wrap break-words',
+                            cellStyleClass(row.key, ROW_LABEL_KEY),
+                          )}
                         >
                           {row.label || (
                             <span className="text-muted-foreground italic">
@@ -1072,7 +1120,10 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                             key={ci}
                             {...(span?.rs > 1 ? { rowSpan: span.rs } : {})}
                             {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
-                            className="px-2 py-1.5 align-top"
+                            className={cn(
+                              'px-2 py-1.5 align-top',
+                              cellStyleClass(row.key, c.key),
+                            )}
                           >
                             <ReadOnlyCell
                               row={row}
@@ -1164,6 +1215,47 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           // 못하게 면역 영역으로 표시.
           data-cell-selection-allow
         >
+          {/* 셀 색 — 선택이 있으면(1셀 포함) 배경/글자색 지정. */}
+          {selection.rect && (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-[11px] rounded-md border bg-muted/40"
+                  title="선택한 셀의 배경/글자 색"
+                >
+                  <Palette className="mr-1 h-3 w-3" />셀 색
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="end"
+                className="w-auto p-3 space-y-2"
+                data-cell-selection-allow
+              >
+                <div className="space-y-1">
+                  <div className="text-[10px] font-medium uppercase text-muted-foreground">
+                    배경
+                  </div>
+                  <ColorSwatchPicker
+                    value={null}
+                    onChange={(t) => applyCellColor('bg', t)}
+                    size={18}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="text-[10px] font-medium uppercase text-muted-foreground">
+                    글자
+                  </div>
+                  <ColorSwatchPicker
+                    value={null}
+                    onChange={(t) => applyCellColor('fg', t)}
+                    size={18}
+                  />
+                </div>
+              </PopoverContent>
+            </Popover>
+          )}
           {/* 셀 병합 / 분할 액션 바 — 선택이 1셀 이상이고 의미있는
               범위일 때만 표시. cross-zone (행 라벨 ↔ case) 선택은
               비활성. */}
@@ -1380,6 +1472,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                         {...(labelSpan?.cs > 1 ? { colSpan: labelSpan.cs } : {})}
                         className={cn(
                           'px-1 py-1 align-top border-r bg-muted/10',
+                          cellStyleClass(row.key, ROW_LABEL_KEY),
                           selection.isCellSelected(ri, 0) &&
                             'bg-primary/10 ring-1 ring-primary/40',
                         )}
@@ -1466,6 +1559,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                           {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
                           className={cn(
                             'px-1 py-1 align-top',
+                            cellStyleClass(row.key, c.key),
                             selected && 'bg-primary/10 ring-1 ring-primary/40',
                           )}
                         >

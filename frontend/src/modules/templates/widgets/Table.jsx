@@ -1,8 +1,40 @@
 import { createContext, useContext, useState } from 'react'
-import { Maximize2, Minimize2 } from 'lucide-react'
+import { Maximize2, Minimize2, Palette } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/shared/components/ui/popover'
 import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, NoteInput, PreviewLabel, TextStyleField, captionSkipProps, computeMergeMap, normalizeMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation } from './_shared'
+import { ColorSwatchPicker, bgTokenClass, colorTokenClass } from '@/shared/text-color'
+
+// 셀 색상 사이드테이블 키 — `${rowIndex}::${colKey}`. (열 key 는 안정적이라
+// 열 reorder 영향 없음; 행 인덱스는 삭제/이동 시 아래 헬퍼로 시프트.)
+const _cellKey = (r, colKey) => `${r}::${colKey}`
+
+function _shiftCellStylesRowRemove(styles, removedIdx) {
+  const out = {}
+  for (const [k, v] of Object.entries(styles)) {
+    const [rStr, colKey] = k.split('::')
+    const r = Number(rStr)
+    if (r === removedIdx) continue
+    out[`${r > removedIdx ? r - 1 : r}::${colKey}`] = v
+  }
+  return out
+}
+
+function _shiftCellStylesRowSwap(styles, a, b) {
+  const out = {}
+  for (const [k, v] of Object.entries(styles)) {
+    const [rStr, colKey] = k.split('::')
+    const r = Number(rStr)
+    const nr = r === a ? b : r === b ? a : r
+    out[`${nr}::${colKey}`] = v
+  }
+  return out
+}
 
 /**
  * "표 전체 펼치기" 토글의 공유 state. BlockEditorCard 가 위젯마다
@@ -115,6 +147,16 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   // 에서 건너뛰고, anchor 에만 rowSpan/colSpan attr 가 붙는다.
   const merges = Array.isArray(content?.merges) ? content.merges : []
   const mergeMap = computeMergeMap(merges, rows.length, cols.length)
+  // 셀별 배경/글자 색(토큰). 값 모델과 분리된 사이드테이블.
+  const cellStyles =
+    content?.cell_styles && typeof content.cell_styles === 'object'
+      ? content.cell_styles
+      : {}
+  function cellStyleClass(r, colKey) {
+    const s = cellStyles[_cellKey(r, colKey)]
+    if (!s) return ''
+    return `${bgTokenClass(s.bg)} ${colorTokenClass(s.fg)}`.trim()
+  }
   const bodyTextClass = textStyleToClassName(props.text_style)
   const bodyTextStyle = textStyleToInlineStyle(props.text_style)
   // 읽기 모드 전용 — "전체 펼치기" 토글. 기본은 compact (셀이 잘림 +
@@ -158,6 +200,12 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     if (!merged.caption) delete merged.caption
     if (!merged.columns) delete merged.columns
     if (!merged.caption_skip_autofill) delete merged.caption_skip_autofill
+    if (
+      !merged.cell_styles ||
+      Object.keys(merged.cell_styles).length === 0
+    ) {
+      delete merged.cell_styles
+    }
     // 빈 폭 맵은 저장 안 함 — override 가 다시 0개가 되면 키 자체를 제거.
     if (
       !merged.column_widths ||
@@ -302,6 +350,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                             expanded={expanded}
                             rowSpan={span?.rs}
                             colSpan={span?.cs}
+                            cellClass={cellStyleClass(ri, c.key)}
                           />
                         )
                       })}
@@ -337,6 +386,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     patch({
       rows: rows.filter((_, i) => i !== rowIdx),
       ...(merges.length || nextMerges.length ? { merges: nextMerges } : {}),
+      cell_styles: _shiftCellStylesRowRemove(cellStyles, rowIdx),
     })
   }
   function moveRow(rowIdx, dir) {
@@ -359,6 +409,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
       ...(merges.length || swapped.length
         ? { merges: normalizeMerges(swapped, rows.length, cols.length) }
         : {}),
+      cell_styles: _shiftCellStylesRowSwap(cellStyles, rowIdx, newIdx),
     })
   }
 
@@ -392,6 +443,11 @@ export function TableEditor({ props, content, onChange, readOnly }) {
       columns: nextCols,
       rows: nextRows,
       ...(merges.length || nextMerges.length ? { merges: nextMerges } : {}),
+      cell_styles: Object.fromEntries(
+        Object.entries(cellStyles).filter(
+          ([k]) => k.split('::')[1] !== removed.key,
+        ),
+      ),
     })
   }
 
@@ -408,6 +464,26 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     rowCount: rows.length,
     colCount: cols.length,
   })
+  // 선택 영역의 모든 셀에 배경(bg)/글자(fg) 토큰 적용. token=null 이면 해제.
+  function applyCellColor(field, token) {
+    const r = selection.rect
+    if (!r) return
+    const next = { ...cellStyles }
+    for (let ri = r.r1; ri <= r.r2; ri++) {
+      for (let ci = r.c1; ci <= r.c2; ci++) {
+        const col = cols[ci]
+        if (!col) continue
+        const k = _cellKey(ri, col.key)
+        const cur = { ...(next[k] ?? {}) }
+        if (token) cur[field] = token
+        else delete cur[field]
+        if (cur.bg || cur.fg) next[k] = cur
+        else delete next[k]
+      }
+    }
+    patch({ cell_styles: next })
+  }
+
   function mergeSelection() {
     const r = selection.rect
     if (!r) return
@@ -649,6 +725,47 @@ export function TableEditor({ props, content, onChange, readOnly }) {
         // 못하게 면역 영역으로 표시.
         data-cell-selection-allow
       >
+        {/* 셀 색 — 선택이 있으면(1셀 포함) 배경/글자색 지정. */}
+        {selection.rect && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-[11px] rounded-md border bg-muted/40"
+                title="선택한 셀의 배경/글자 색"
+              >
+                <Palette className="mr-1 h-3 w-3" />셀 색
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              className="w-auto p-3 space-y-2"
+              data-cell-selection-allow
+            >
+              <div className="space-y-1">
+                <div className="text-[10px] font-medium uppercase text-muted-foreground">
+                  배경
+                </div>
+                <ColorSwatchPicker
+                  value={null}
+                  onChange={(t) => applyCellColor('bg', t)}
+                  size={18}
+                />
+              </div>
+              <div className="space-y-1">
+                <div className="text-[10px] font-medium uppercase text-muted-foreground">
+                  글자
+                </div>
+                <ColorSwatchPicker
+                  value={null}
+                  onChange={(t) => applyCellColor('fg', t)}
+                  size={18}
+                />
+              </div>
+            </PopoverContent>
+          </Popover>
+        )}
         {/* 선택 영역 액션 — 사각형이 2셀 이상이거나 선택 영역에 기존
             merge 가 걸쳐 있으면 합치기 / 분할 버튼이 나옴. */}
         {(selectionSpansMultiple || selectionHasMerge) && (
@@ -869,9 +986,9 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                       }
                       {...(span?.rs > 1 ? { rowSpan: span.rs } : {})}
                       {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
-                      className={`px-1 py-1 ${isLast ? 'relative' : ''} ${
-                        selected ? 'bg-primary/10 ring-1 ring-primary/40' : ''
-                      }`}
+                      className={`px-1 py-1 ${cellStyleClass(rowIdx, c.key)} ${
+                        isLast ? 'relative' : ''
+                      } ${selected ? 'bg-primary/10 ring-1 ring-primary/40' : ''}`}
                     >
                       <CellInput
                         column={c}
@@ -1109,7 +1226,7 @@ function coerceCellValue(column, raw) {
  *
  *  Expanded 모드: 전체 펼치기 토글이 켜진 상태 — 셀이 줄바꿈 되어 자연
  *  스럽게 늘어남. 이미 다 보이므로 hover popover 는 띄우지 않는다. */
-function ReadOnlyCell({ value, expanded, rowSpan, colSpan }) {
+function ReadOnlyCell({ value, expanded, rowSpan, colSpan, cellClass = '' }) {
   const isEmpty = value === undefined || value === null || value === ''
   const text = isEmpty ? '' : String(value)
   // rowSpan / colSpan 은 1 일 땐 HTML attr 자체를 비워둠 — DOM 상 깔끔.
@@ -1121,7 +1238,7 @@ function ReadOnlyCell({ value, expanded, rowSpan, colSpan }) {
     return (
       <td
         {...spanAttrs}
-        className="px-2 py-1.5 text-center text-muted-foreground"
+        className={`px-2 py-1.5 text-center text-muted-foreground ${cellClass}`}
       >
         —
       </td>
@@ -1131,7 +1248,7 @@ function ReadOnlyCell({ value, expanded, rowSpan, colSpan }) {
     return (
       <td
         {...spanAttrs}
-        className="px-2 py-1.5 text-center whitespace-pre-wrap break-words align-top"
+        className={`px-2 py-1.5 text-center whitespace-pre-wrap break-words align-top ${cellClass}`}
       >
         {text}
       </td>
@@ -1140,7 +1257,7 @@ function ReadOnlyCell({ value, expanded, rowSpan, colSpan }) {
   return (
     <td
       {...spanAttrs}
-      className="px-2 py-1.5 text-center truncate relative group"
+      className={`px-2 py-1.5 text-center truncate relative group ${cellClass}`}
     >
       <span title={text} className="block truncate">
         {text}

@@ -1,5 +1,6 @@
 export {
   COLOR_TOKENS,
+  bgTokenClass,
   colorTokenClass,
   hexToToken,
   normalizeToken,

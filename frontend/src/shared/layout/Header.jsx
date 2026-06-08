@@ -41,8 +41,12 @@ export function Header({ onOpenMobileSidebar }) {
         <Menu className="h-4 w-4" />
       </Button>
 
-      <Link to="/" className="text-base font-bold tracking-tight">
-        Report Archive
+      <Link to="/" className="flex items-baseline gap-1.5 tracking-tight">
+        <span className="text-base font-bold">Report Archive</span>
+        {/* eslint-disable-next-line no-undef */}
+        <span className="text-[11px] font-medium text-muted-foreground">
+          v{__APP_VERSION__}
+        </span>
       </Link>
 
       {/* 검색 트리거 — 클릭 시 명령 팔레트 */}

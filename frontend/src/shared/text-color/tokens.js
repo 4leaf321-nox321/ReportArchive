@@ -62,6 +62,15 @@ export function colorTokenClass(token) {
   return t ? `rt-c-${t}` : ''
 }
 
+/**
+ * token → cell-background class. Backgrounds use a soft tint of the token color
+ * (see index.css `.rt-bg-*`) so cell text stays readable. `null` → '' (no fill).
+ */
+export function bgTokenClass(token) {
+  const t = normalizeToken(token)
+  return t ? `rt-bg-${t}` : ''
+}
+
 /** Pull the token out of a class string, e.g. "foo rt-c-red bar" → "red". */
 export function tokenFromClassName(className) {
   if (typeof className !== 'string') return null

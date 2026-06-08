@@ -25,5 +25,11 @@ export function ProtectedRoute({ children }) {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />
   }
 
+  // 관리자가 임시 비번을 발급한 계정 — 새 비번을 설정하기 전엔 앱 진입 차단.
+  // 강제 변경 화면(/force-password-change)은 AuthedShell 밖이라 루프 없음.
+  if (me.user?.must_change_password) {
+    return <Navigate to="/force-password-change" replace />
+  }
+
   return children
 }

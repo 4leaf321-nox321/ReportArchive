@@ -9,7 +9,13 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.modules.auth.services import hash_password, verify_password
-from app.modules.users.models import Role, User, WorkspaceMember
+from app.modules.users.models import (
+    PasswordResetRequest,
+    PasswordResetStatus,
+    Role,
+    User,
+    WorkspaceMember,
+)
 from app.modules.users.schemas import (
     AccountAdminDetailRead,
     AccountAdminRead,
@@ -18,6 +24,8 @@ from app.modules.users.schemas import (
     ChangePasswordRequest,
     MembershipRead,
     MeRead,
+    PasswordResetRequestRead,
+    ResolvePasswordResetRequest,
     SetHomeWorkspaceRequest,
     SetSystemAdminRequest,
     SetUserActiveRequest,
@@ -25,6 +33,7 @@ from app.modules.users.schemas import (
     UpdateProfileRequest,
     UserRead,
 )
+from datetime import datetime
 from app.modules.workspaces.models import Workspace
 from app.shared.auth import (
     CurrentUser,
@@ -190,6 +199,8 @@ def change_my_password(
             status.HTTP_400_BAD_REQUEST, "새 비밀번호가 현재 비밀번호와 같습니다."
         )
     user.password_hash = hash_password(payload.new_password)
+    # 임시 비번으로 강제 변경된 상태였다면 여기서 해제 — 정상 로그인 재개.
+    user.must_change_password = False
     db.commit()
     return success_response(data=None, message="비밀번호가 변경되었습니다.")
 
@@ -518,6 +529,39 @@ def set_system_admin(
     return success_response(data=SystemAdminUserRead.model_validate(target))
 
 
+def _assert_can_reset_password(db: Session, actor: User, target: User) -> None:
+    """비번 재설정 권한 검사.
+
+    시스템 관리자는 누구나 가능. 그 외엔 대상이 actor 의 관리 트리(매니저로
+    있는 부서 + 그 하위) 안의 부서에 속해 있어야 한다. 한 부서 관리자가
+    무관한 부서 유저의 비번을 건드리지 못하게 막는다.
+    """
+    if actor.is_system_admin:
+        return
+
+    from app.modules.workspaces import services as ws_services
+
+    actor_admin_slugs: set[str] = set()
+    for m in db.execute(
+        select(WorkspaceMember).where(WorkspaceMember.user_id == actor.id)
+    ).scalars():
+        if m.role == Role.manager:
+            actor_admin_slugs.update(
+                ws_services.get_descendants_inclusive(db, m.workspace_slug)
+            )
+    target_slugs = {
+        m.workspace_slug
+        for m in db.execute(
+            select(WorkspaceMember).where(WorkspaceMember.user_id == target.id)
+        ).scalars()
+    }
+    if not (actor_admin_slugs & target_slugs):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "이 사용자는 본인의 관리 부서에 속해있지 않아 비밀번호를 재설정할 수 없습니다.",
+        )
+
+
 @router.post("/users/{user_id}/password")
 def admin_set_user_password(
     user_id: int,
@@ -528,40 +572,117 @@ def admin_set_user_password(
     """Admin force-resets another user's password.
 
     Permission rule: the target must share at least one workspace inside the
-    actor's admin tree. This stops a `dev` admin from resetting a `biz`-only
-    user's password just because they're admin somewhere.
+    actor's admin tree (system admins bypass). This stops a `dev` admin from
+    resetting a `biz`-only user's password just because they're admin somewhere.
     """
     target = db.get(User, user_id)
     if not target or not target.is_active:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "사용자를 찾을 수 없습니다.")
 
-    from app.modules.workspaces import services as ws_services
-
-    actor_admin_slugs: set[str] = set()
-    actor_memberships = db.execute(
-        select(WorkspaceMember).where(WorkspaceMember.user_id == actor.user.id)
-    ).scalars()
-    for m in actor_memberships:
-        if m.role == Role.manager:
-            actor_admin_slugs.update(
-                ws_services.get_descendants_inclusive(db, m.workspace_slug)
-            )
-
-    target_slugs = {
-        m.workspace_slug
-        for m in db.execute(
-            select(WorkspaceMember).where(WorkspaceMember.user_id == target.id)
-        ).scalars()
-    }
-
-    if not (actor_admin_slugs & target_slugs):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "이 사용자는 본인의 관리 부서에 속해있지 않아 비밀번호를 재설정할 수 없습니다.",
-        )
+    _assert_can_reset_password(db, actor.user, target)
 
     target.password_hash = hash_password(payload.new_password)
+    # 발급한 비번은 임시 — 최초 로그인 시 변경 강제.
+    target.must_change_password = True
     db.commit()
     return success_response(
         data=None, message=f"{target.email}의 비밀번호가 재설정되었습니다."
+    )
+
+
+@router.get("/password-reset-requests")
+def list_password_reset_requests(
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_admin),
+):
+    """관리자에게 보이는 '비밀번호 찾기' 대기 목록.
+
+    시스템 관리자는 전부, 부서 관리자는 본인 관리 트리 내 계정의 요청만 본다.
+    미가입 이메일(매칭 계정 없음) 요청은 시스템 관리자에게만 노출한다.
+    """
+    rows = list(
+        db.execute(
+            select(PasswordResetRequest)
+            .where(PasswordResetRequest.status == PasswordResetStatus.pending)
+            .order_by(PasswordResetRequest.created_at.asc())
+        ).scalars()
+    )
+
+    is_sysadmin = actor.user.is_system_admin
+    visible_user_ids: set[int] = set()
+    if not is_sysadmin:
+        from app.modules.workspaces import services as ws_services
+
+        admin_slugs: set[str] = set()
+        for m in db.execute(
+            select(WorkspaceMember).where(WorkspaceMember.user_id == actor.user.id)
+        ).scalars():
+            if m.role == Role.manager:
+                admin_slugs.update(
+                    ws_services.get_descendants_inclusive(db, m.workspace_slug)
+                )
+        if admin_slugs:
+            member_user_ids = db.execute(
+                select(WorkspaceMember.user_id).where(
+                    WorkspaceMember.workspace_slug.in_(admin_slugs)
+                )
+            ).scalars()
+            visible_user_ids = set(member_user_ids)
+
+    out = []
+    for r in rows:
+        if r.user_id is None:
+            if not is_sysadmin:
+                continue  # 미가입 이메일은 시스템 관리자만.
+        elif not is_sysadmin and r.user_id not in visible_user_ids:
+            continue
+        out.append(
+            PasswordResetRequestRead(
+                id=r.id,
+                email=r.email,
+                user_id=r.user_id,
+                user_name=r.user.name if r.user else None,
+                created_at=r.created_at,
+            )
+        )
+    return success_response(data=out)
+
+
+@router.post("/password-reset-requests/{request_id}/resolve")
+def resolve_password_reset_request(
+    request_id: int,
+    payload: ResolvePasswordResetRequest,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_admin),
+):
+    """관리자가 본인 확인 후 임시 비번을 발급하며 요청을 해소한다.
+
+    설정한 비번은 임시 — 대상은 최초 로그인 시 변경을 강제받는다.
+    """
+    req = db.get(PasswordResetRequest, request_id)
+    if not req or req.status != PasswordResetStatus.pending:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "처리할 요청을 찾을 수 없습니다."
+        )
+    if req.user_id is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "가입된 계정이 없는 이메일입니다. 먼저 계정을 생성하세요.",
+        )
+    target = db.get(User, req.user_id)
+    if not target or not target.is_active:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "사용자를 찾을 수 없습니다.")
+
+    _assert_can_reset_password(db, actor.user, target)
+
+    target.password_hash = hash_password(payload.new_password)
+    target.must_change_password = True
+    req.status = PasswordResetStatus.resolved
+    req.resolved_by_user_id = actor.user.id
+    req.resolved_at = datetime.utcnow()
+    db.commit()
+    return success_response(
+        data=None,
+        message=f"{target.email}의 임시 비밀번호가 발급되었습니다. "
+        "사용자에게 전달하면 최초 로그인 시 새 비밀번호로 변경됩니다.",
     )

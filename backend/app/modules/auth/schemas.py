@@ -19,6 +19,15 @@ class LoginResponse(BaseModel):
     user_id: int
     email: str
     name: str
+    # true → 관리자가 임시 비번을 발급한 계정. 프론트는 로그인 직후 강제
+    # 비번 변경 화면으로 보낸다.
+    must_change_password: bool = False
+
+
+class PasswordResetRequestCreate(BaseModel):
+    """공개 '비밀번호 찾기' 요청. 이메일 존재 여부는 응답에 노출하지 않는다."""
+
+    email: EmailStr
 
 
 class RegisterRequest(BaseModel):

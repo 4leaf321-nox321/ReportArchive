@@ -15,12 +15,19 @@ from app.modules.auth import services as auth_services
 from app.modules.auth.schemas import (
     LoginRequest,
     LoginResponse,
+    PasswordResetRequestCreate,
     PublicWorkspace,
     RegisteredUser,
     RegisterRequest,
     SignupRequest,
 )
-from app.modules.users.models import Role, User, WorkspaceMember
+from app.modules.users.models import (
+    PasswordResetRequest,
+    PasswordResetStatus,
+    Role,
+    User,
+    WorkspaceMember,
+)
 from app.modules.workspaces.models import Workspace
 from app.modules.workspaces.services import ensure_personal_workspace
 from app.shared.auth import CurrentUser, require_admin
@@ -45,7 +52,46 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
             user_id=user.id,
             email=user.email,
             name=user.name,
+            must_change_password=user.must_change_password,
         )
+    )
+
+
+@router.post("/password-reset-requests", status_code=status.HTTP_202_ACCEPTED)
+def request_password_reset(
+    payload: PasswordResetRequestCreate, db: Session = Depends(get_db)
+):
+    """공개 '비밀번호 찾기' 접수. 부서/시스템 관리자가 본인 확인 후 임시 비번을
+    발급하는 큐에 쌓는다(이메일 발송 인프라가 없어 관리자 중개 방식).
+
+    보안: 이메일 가입 여부를 응답으로 노출하지 않는다(항상 202). 같은 이메일의
+    pending 요청이 이미 있으면 중복 생성하지 않는다(레이트리밋 겸 큐 정리).
+    """
+    email = payload.email.strip().lower()
+
+    existing = db.execute(
+        select(PasswordResetRequest).where(
+            PasswordResetRequest.email == email,
+            PasswordResetRequest.status == PasswordResetStatus.pending,
+        )
+    ).first()
+    if existing is None:
+        user = db.execute(
+            select(User).where(User.email == email)
+        ).scalar_one_or_none()
+        db.add(
+            PasswordResetRequest(
+                email=email,
+                user_id=user.id if user else None,
+                status=PasswordResetStatus.pending,
+            )
+        )
+        db.commit()
+
+    # 항상 동일한 안내 — 존재/미존재 구분 불가.
+    return success_response(
+        data=None,
+        message="요청이 접수되었습니다. 부서 관리자가 확인 후 처리합니다.",
     )
 
 

@@ -13,7 +13,10 @@ export default function SignupPage() {
   const { signup, isAuthenticated, loading: authLoading } = useAuth()
   const navigate = useNavigate()
 
-  const [email, setEmail] = useState('')
+  // 이메일은 로컬부분 + 호스트로 분리 입력. 사내 계정이 대부분 @samsung.com 이라
+  // 호스트 기본값을 미리 채워 잘못된 도메인 가입을 줄인다(필요하면 수정 가능).
+  const [emailLocal, setEmailLocal] = useState('')
+  const [emailHost, setEmailHost] = useState('samsung.com')
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
   const [passwordConfirm, setPasswordConfirm] = useState('')
@@ -52,6 +55,13 @@ export default function SignupPage() {
     e.preventDefault()
     setErrorMsg(null)
 
+    const local = emailLocal.trim()
+    const host = emailHost.trim()
+    if (!local || !host) {
+      setErrorMsg('이메일 주소와 호스트를 모두 입력하세요.')
+      return
+    }
+    const email = `${local}@${host}`
     if (password !== passwordConfirm) {
       setErrorMsg('비밀번호가 일치하지 않습니다.')
       return
@@ -93,16 +103,45 @@ export default function SignupPage() {
           <form onSubmit={onSubmit} className="space-y-4">
             <div className="space-y-1.5">
               <Label htmlFor="email">이메일</Label>
-              <Input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                autoComplete="email"
-                required
-                autoFocus
-              />
+              <div className="flex items-center gap-1.5">
+                <Input
+                  id="email"
+                  type="text"
+                  value={emailLocal}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    // 전체 이메일을 붙여넣으면 @ 기준으로 호스트까지 자동 분리.
+                    if (v.includes('@')) {
+                      const [local, ...rest] = v.split('@')
+                      setEmailLocal(local)
+                      const host = rest.join('@').trim()
+                      if (host) setEmailHost(host)
+                    } else {
+                      setEmailLocal(v)
+                    }
+                  }}
+                  placeholder="아이디"
+                  autoComplete="username"
+                  required
+                  autoFocus
+                  className="flex-1 min-w-0"
+                />
+                <span className="select-none text-sm text-muted-foreground">@</span>
+                <Input
+                  id="email-host"
+                  type="text"
+                  value={emailHost}
+                  onChange={(e) => setEmailHost(e.target.value)}
+                  placeholder="samsung.com"
+                  autoComplete="off"
+                  required
+                  aria-label="이메일 호스트"
+                  className="w-40 shrink-0"
+                />
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                기본 호스트는 <strong>samsung.com</strong> 입니다. 다른 도메인이면 직접 수정하세요.
+              </p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="name">이름</Label>

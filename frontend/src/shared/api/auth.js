@@ -20,6 +20,12 @@ export async function listPublicWorkspaces() {
   return extractData(res)
 }
 
+/** 공개 '비밀번호 찾기' 접수. 응답은 항상 동일(이메일 존재 여부 노출 안 함). */
+export async function requestPasswordReset({ email }) {
+  const res = await apiClient.post('/api/auth/password-reset-requests', { email })
+  return extractData(res)
+}
+
 export async function register({ email, name, password, workspaceSlug } = {}) {
   const body = { email, name, password }
   if (workspaceSlug) body.workspace_slug = workspaceSlug

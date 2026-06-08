@@ -25,6 +25,21 @@ export async function adminSetUserPassword(userId, { newPassword }) {
   return extractData(res)
 }
 
+/** 관리자 — 비밀번호 찾기 요청 대기 목록. */
+export async function listPasswordResetRequests() {
+  const res = await apiClient.get('/api/password-reset-requests')
+  return extractData(res)
+}
+
+/** 관리자 — 임시 비번 발급으로 요청 해소. */
+export async function resolvePasswordResetRequest(requestId, { newPassword }) {
+  const res = await apiClient.post(
+    `/api/password-reset-requests/${requestId}/resolve`,
+    { new_password: newPassword },
+  )
+  return extractData(res)
+}
+
 /** 시스템 관리자 — 모든 계정 wide view. '계정 관리' 페이지가 사용. */
 export async function listAllAccounts({ includeInactive = true } = {}) {
   const res = await apiClient.get('/api/users/all', {

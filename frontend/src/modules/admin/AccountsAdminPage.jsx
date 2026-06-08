@@ -68,6 +68,8 @@ import {
   setUserActive,
   setUserHomeWorkspace,
   adminSetUserPassword,
+  listPasswordResetRequests,
+  resolvePasswordResetRequest,
 } from '@/shared/api/me'
 import { register as registerUser } from '@/shared/api/auth'
 import { setSystemAdmin } from '@/shared/api/systemAdmins'
@@ -519,6 +521,8 @@ export default function AccountsAdminPage() {
           </Button>
         }
       />
+
+      <PasswordResetRequestsPanel />
 
       <div className="flex items-center gap-3 flex-wrap">
         <label className="inline-flex items-center gap-1.5 cursor-pointer select-none text-xs">
@@ -1187,4 +1191,169 @@ function formatDate(iso) {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return ''
   return d.toISOString().slice(0, 10)
+}
+
+// 비밀번호 찾기 대기 큐 — 사용자가 '비밀번호 찾기'로 접수한 요청을 보여주고,
+// 본인 확인 후 임시 비번을 발급해 해소한다. 요청 없음/권한 없음이면 숨김.
+function PasswordResetRequestsPanel() {
+  const [requests, setRequests] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [resolving, setResolving] = useState(null)
+
+  async function load() {
+    try {
+      const data = await listPasswordResetRequests()
+      setRequests(data ?? [])
+    } catch {
+      setRequests([])
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => {
+    load()
+  }, [])
+
+  if (loading || requests.length === 0) return null
+
+  return (
+    <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-900/50 dark:bg-amber-950/20">
+      <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-amber-900 dark:text-amber-200">
+        <KeyRound className="h-4 w-4" />
+        비밀번호 재설정 요청 ({requests.length})
+      </div>
+      <p className="mb-3 text-xs text-muted-foreground">
+        사용자가 '비밀번호 찾기'로 접수한 요청입니다. 본인 확인 후 임시
+        비밀번호를 발급하면, 사용자는 최초 로그인 시 새 비밀번호를 설정합니다.
+      </p>
+      <ul className="divide-y divide-amber-200/60 dark:divide-amber-900/40">
+        {requests.map((r) => (
+          <li key={r.id} className="flex items-center justify-between gap-3 py-2">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-medium">
+                {r.user_name || '(미가입 이메일)'}{' '}
+                <span className="font-normal text-muted-foreground">· {r.email}</span>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                요청 {new Date(r.created_at).toLocaleString()}
+              </div>
+            </div>
+            <Button
+              size="sm"
+              disabled={!r.user_id}
+              onClick={() => setResolving(r)}
+              title={r.user_id ? '' : '가입된 계정이 없어 발급할 수 없습니다'}
+            >
+              <KeyRound className="mr-1.5 h-3.5 w-3.5" />
+              임시 비번 발급
+            </Button>
+          </li>
+        ))}
+      </ul>
+      <ResolveResetDialog
+        request={resolving}
+        onOpenChange={(open) => !open && setResolving(null)}
+        onResolved={() => {
+          setResolving(null)
+          load()
+        }}
+      />
+    </div>
+  )
+}
+
+function ResolveResetDialog({ request, onOpenChange, onResolved }) {
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [errorMsg, setErrorMsg] = useState(null)
+
+  useEffect(() => {
+    if (request) {
+      setPassword('')
+      setConfirm('')
+      setErrorMsg(null)
+      setSubmitting(false)
+    }
+  }, [request])
+
+  async function onSubmit(e) {
+    e.preventDefault()
+    setErrorMsg(null)
+    if (password !== confirm) {
+      setErrorMsg('비밀번호가 일치하지 않습니다.')
+      return
+    }
+    if (password.length < 8) {
+      setErrorMsg('비밀번호는 8자 이상이어야 합니다.')
+      return
+    }
+    setSubmitting(true)
+    try {
+      await resolvePasswordResetRequest(request.id, { newPassword: password })
+      toast.success(
+        `임시 비밀번호를 발급했습니다. ${request.email}에게 전달하세요 (최초 로그인 시 변경됨).`,
+      )
+      onResolved?.()
+    } catch (err) {
+      setErrorMsg(err?.response?.data?.message || err.message || '발급에 실패했습니다.')
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={Boolean(request)} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>임시 비밀번호 발급</DialogTitle>
+          <DialogDescription>
+            {request?.email} 의 임시 비밀번호를 설정합니다. 본인임을 확인한 뒤
+            발급하고 사용자에게 안전하게 전달하세요. 사용자는 최초 로그인 시 새
+            비밀번호를 설정하게 됩니다.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={onSubmit} className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="resolve-pwd">임시 비밀번호</Label>
+            <Input
+              id="resolve-pwd"
+              type="text"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="8자 이상"
+              autoComplete="off"
+              required
+              minLength={8}
+              autoFocus
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="resolve-pwd-confirm">임시 비밀번호 확인</Label>
+            <Input
+              id="resolve-pwd-confirm"
+              type="text"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              autoComplete="off"
+              required
+              minLength={8}
+            />
+          </div>
+          {errorMsg && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {errorMsg}
+            </div>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              취소
+            </Button>
+            <Button type="submit" disabled={submitting}>
+              {submitting ? '발급 중...' : '발급'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
 }

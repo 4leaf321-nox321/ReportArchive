@@ -15,6 +15,8 @@ class UserRead(BaseModel):
     id: int
     email: str
     name: str
+    # true → 관리자가 임시 비번을 발급. 프론트가 강제 변경 화면으로 보낸다.
+    must_change_password: bool = False
 
 
 class MembershipRead(BaseModel):
@@ -62,6 +64,24 @@ class ChangePasswordRequest(BaseModel):
 class AdminSetPasswordRequest(BaseModel):
     """Admin force-sets another user's password (e.g. account recovery).
     No current_password — admin authority replaces it."""
+
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+class PasswordResetRequestRead(BaseModel):
+    """관리자 큐에 보이는 비밀번호 찾기 요청 한 건."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: str
+    user_id: Optional[int] = None
+    user_name: Optional[str] = None  # 매칭 계정 이름(없으면 미가입 이메일)
+    created_at: datetime
+
+
+class ResolvePasswordResetRequest(BaseModel):
+    """관리자가 임시 비번을 발급하며 요청을 해소."""
 
     new_password: str = Field(..., min_length=8, max_length=128)
 

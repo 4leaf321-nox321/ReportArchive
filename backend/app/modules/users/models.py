@@ -58,6 +58,15 @@ class User(Base):
     # don't crash; password-less users can't log in until an admin sets one.
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    # 관리자가 임시 비번을 발급(비밀번호 분실 복구)하면 true → 최초 로그인 시
+    # 새 비번 설정을 강제(프론트가 강제 화면으로 라우팅). /me/password 변경
+    # 성공 시 false 로 해제.
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+    )
     # 시스템 관리자 flag — global; orthogonal to workspace memberships.
     # See module docstring. Defaults to false; only granted via seed or
     # by another system admin (no self-promotion UI).
@@ -107,3 +116,42 @@ class WorkspaceMember(Base):
     )
 
     user: Mapped[User] = relationship("User", back_populates="memberships")
+
+
+class PasswordResetStatus(str, enum.Enum):
+    pending = "pending"
+    resolved = "resolved"
+    canceled = "canceled"
+
+
+class PasswordResetRequest(Base):
+    """비밀번호 분실 복구 요청 큐.
+
+    사용자가 이메일로 요청하면 pending 으로 쌓이고, 관리 트리 내 관리자가
+    본인 확인 후 임시 비번을 발급하며 resolved 처리한다. 이메일 열거 방지를
+    위해 가입 여부와 무관하게 항상 접수하되, 매칭 계정이 있으면 user_id 로
+    연결한다(없으면 NULL — 관리자에게는 '미가입 이메일'로 보임).
+    """
+
+    __tablename__ = "password_reset_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    status: Mapped[PasswordResetStatus] = mapped_column(
+        Enum(PasswordResetStatus, name="password_reset_request_status_enum"),
+        default=PasswordResetStatus.pending,
+        server_default="pending",
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    resolved_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    user: Mapped[User | None] = relationship("User", foreign_keys=[user_id])

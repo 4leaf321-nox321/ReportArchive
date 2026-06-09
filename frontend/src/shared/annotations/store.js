@@ -44,9 +44,18 @@ export function useAnnotationStore({ annotations, onChange }) {
     const now = Date.now()
     w.__asRL = (w.__asRL || []).filter((t) => now - t < 1000)
     w.__asRL.push(now)
+    // annotations prop 이 매 렌더 새 ref 인지 카운트(최근 50렌더 중).
+    w.__annChanges = (w.__annChanges || 0) + (w.__asPrevAnn !== annotations ? 1 : 0)
+    w.__asRenders = (w.__asRenders || 0) + 1
+    w.__asPrevAnn = annotations
     if (w.__asRL.length === 300) {
       // eslint-disable-next-line no-console
-      console.error('[annot] 렌더 폭주 감지(useAnnotationStore 1초 300회+)')
+      console.error('[annot] 렌더 폭주 감지', {
+        annPropChangedRatio: `${w.__annChanges}/${w.__asRenders}`,
+        len: annotations?.length,
+      })
+      w.__annChanges = 0
+      w.__asRenders = 0
     }
   }
   // Echo prop into local state so the user's draft survives a parent

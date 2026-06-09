@@ -149,20 +149,23 @@ export function WorkspaceSelector() {
   )
 }
 
-/** 부서 이동 십자 버튼. 상=상위, 하=하위, 좌/우=형제. 대상이 없으면 비활성. */
+/** 부서 이동 십자 버튼. 상=상위, 하=하위, 좌/우=형제. 대상이 없으면 흐리게.
+ *  ⚠ HTML `disabled` 대신 `aria-disabled` 를 쓴다 — disabled 버튼은 포커스를
+ *  잃어, 끝 부서로 이동해 그 방향이 막히면 이후 화살표 키가 안 먹는다. */
 function WorkspaceDpad({ nav, onGo }) {
   function arrow(target, Icon, label) {
+    const has = !!target
     return (
       <Button
         type="button"
         variant="ghost"
         size="icon"
-        className="h-7 w-7"
-        disabled={!target}
-        title={target ? `${label}: ${target.name}` : `${label} 없음`}
-        aria-label={target ? `${label}: ${target.name}` : `${label} 없음`}
+        className={cn('h-7 w-7', !has && 'opacity-40')}
+        aria-disabled={!has}
+        title={has ? `${label}: ${target.name}` : `${label} 없음`}
+        aria-label={has ? `${label}: ${target.name}` : `${label} 없음`}
         // 화살표 키는 컨테이너 onKeyDown 이 처리 — 버튼 자체 Enter/Space 는 클릭.
-        onClick={() => target && onGo(target)}
+        onClick={() => has && onGo(target)}
       >
         <Icon className="h-4 w-4" />
       </Button>

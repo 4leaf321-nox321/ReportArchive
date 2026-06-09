@@ -245,6 +245,37 @@ def can_read_report(db: Session, actor, report: Report) -> bool:
     )
 
 
+def is_report_board_manager(db: Session, user_id: int, report: Report) -> bool:
+    """이 보고서가 게시(mount)된 부서 게시판 중 하나라도 그 사용자가 매니저
+    (역할 해석상 매니저 — 조상 부서 매니저 포함)인지. 게시 안 됐으면 게시판
+    매니저는 없으니 False. 삭제 권한 판정용."""
+    # 지역 import — _resolve_role 은 auth 레이어 leaf util 이라 모듈 상단에서
+    # 끌어오면 순환 import 위험(grants/services 도 같은 패턴으로 지역 import).
+    from app.modules.users.models import Role
+    from app.shared.auth import _resolve_role
+
+    slugs = db.execute(
+        select(ReportMount.workspace_slug).where(ReportMount.report_id == report.id)
+    ).scalars()
+    for slug in slugs:
+        if _resolve_role(db, user_id, slug) == Role.manager:
+            return True
+    return False
+
+
+def can_delete_report(db: Session, actor, report: Report) -> bool:
+    """삭제 권한 — 편집(can_edit)보다 좁다. 삭제는 보고서 원본을 지워 게시된
+    모든 부서 게시판에서 cascade 로 사라지는 파괴적 작업이라, **소유자 /
+    시스템 관리자 / 게시판 매니저**로 한정한다. coauthor(부서 edit grant)·
+    추가편집자(user edit grant) 같은 편집권자는 삭제 불가."""
+    user = actor.user
+    if getattr(user, "is_system_admin", False):
+        return True
+    if report.owner_user_id == user.id:
+        return True
+    return is_report_board_manager(db, user.id, report)
+
+
 def list_public_reports_on_board(
     db: Session,
     workspace_slug: str,

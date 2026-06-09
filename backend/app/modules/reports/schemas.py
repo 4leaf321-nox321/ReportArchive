@@ -305,6 +305,9 @@ class ReportRead(BaseModel):
     # save).
     can_edit: Optional[bool] = None
     edit_role: Optional[str] = None
+    # 삭제 권한(소유자/시스템관리자/게시판 매니저) — 편집보다 좁다. 프런트가
+    # 삭제 버튼 노출을 이 값으로 게이팅한다. None = 비결정(목록).
+    can_delete: Optional[bool] = None
     # 조직 간 공개(조직간공개_설계.md §6) — 외부 공개 열람자 여부와 곁다리
     # 가능 여부. is_public_view=True 면 프런트가 "다른 조직의 공개 보고서 ·
     # 읽기 전용" 배너를 띄우고 댓글/편집/이력 UI 를 숨긴다. can_comment 는

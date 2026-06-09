@@ -43,6 +43,9 @@ def _read_with_perms(db: Session, actor: CurrentUser, report) -> ReportRead:
     decision = can_edit(db, actor.user, report)
     obj.can_edit = decision.allowed
     obj.edit_role = decision.role
+    # 삭제는 편집보다 좁은 권한(소유자/시스템관리자/게시판 매니저) — 프런트가
+    # 삭제 버튼을 이 플래그로 게이팅하도록 함께 내려준다.
+    obj.can_delete = services.can_delete_report(db, actor, report)
     # 조직 간 공개(§6) — 외부 공개 열람자면 읽기전용 플래그를 세워 프런트가
     # 배너·곁다리 숨김을 그린다. virtual(글로벌/관리자)은 공개 열람자가 아님.
     is_public_view = not actor.workspace.virtual and (
@@ -784,8 +787,14 @@ def delete_report(
     report = services.get_report(db, report_id)
     if not report:
         return not_found_response(f"Report not found: {report_id}")
-    if not services.can_read_report(db, actor, report):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+    # 삭제는 조회(can_read)가 아니라 더 좁은 권한 — 소유자/시스템관리자/게시판
+    # 매니저만. 보고서를 지우면 게시된 모든 부서 게시판에서 cascade 로 사라지기
+    # 때문(coauthor·추가편집자는 편집은 되지만 삭제는 불가).
+    if not services.can_delete_report(db, actor, report):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "이 보고서를 삭제할 권한이 없습니다 (소유자 또는 게시판 매니저만 가능).",
+        )
     services.delete_report(db, report)
     return success_response(data=None, message="Deleted")
 

@@ -3409,14 +3409,19 @@ export default function ReportDetailPage() {
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => setConfirmDelete(true)}
-              >
-                <Trash2 className="mr-1 h-3 w-3" />
-                삭제
-              </Button>
+              {/* 삭제는 소유자/시스템관리자/게시판 매니저만(백엔드 can_delete).
+                  coauthor·추가편집자는 편집은 되지만 삭제 버튼은 숨긴다 — 삭제는
+                  게시된 모든 부서에서 cascade 로 사라지는 파괴적 작업이라. */}
+              {existingReport?.can_delete && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setConfirmDelete(true)}
+                >
+                  <Trash2 className="mr-1 h-3 w-3" />
+                  삭제
+                </Button>
+              )}
             </>
           )}
 

@@ -7,6 +7,9 @@ export async function listReports({
   folderId,
   includePublic,
   includeDescendants,
+  // 이 호출에 한해 워크스페이스 컨텍스트를 덮어쓴다(부서 멘션 미리보기가
+  // 현재 부서가 아닌 *멘션된* 부서의 보고서를 조회할 때). 비우면 전역 컨텍스트.
+  workspaceSlug,
 } = {}) {
   // Build via URLSearchParams instead of axios's default params object:
   // axios 1.x serializes arrays as `entity_ids[]=1&entity_ids[]=2`, but
@@ -27,7 +30,10 @@ export async function listReports({
   // 하위 부서(자손) 게시판까지 포함 — 종합보고 안건 picker 등에서만 사용.
   if (includeDescendants) params.append('include_descendants', 'true')
   const qs = params.toString()
-  const res = await apiClient.get(qs ? `${BASE}?${qs}` : BASE)
+  const cfg = workspaceSlug
+    ? { headers: { 'X-Workspace-Slug': workspaceSlug } }
+    : undefined
+  const res = await apiClient.get(qs ? `${BASE}?${qs}` : BASE, cfg)
   return extractData(res)
 }
 

@@ -653,7 +653,15 @@ function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
           return
         }
         if (type === 'report' && id && ws) to = `/w/${ws}/reports/${id}`
-        else if (type === 'dept' && id) to = `/w/${id}/reports`
+        else if (type === 'dept' && id) {
+          // 부서 칩: 호스트가 미리보기 팝오버를 주면 그쪽(이동 없이 부서
+          // 정보+최근 보고서)으로, 없으면 기존처럼 목록으로 이동.
+          if (mention?.onDeptMentionClick) {
+            mention.onDeptMentionClick(id, a)
+            return
+          }
+          to = `/w/${id}/reports`
+        }
         // type === 'entity' → 이동 없음(표시 전용 칩)
       } else {
         // 구형 스키마(이미 저장된 보고서).
@@ -661,7 +669,13 @@ function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
         const ws = a.getAttribute('data-workspace-slug')
         const deptSlug = a.getAttribute('data-dept-slug')
         if (reportId && ws) to = `/w/${ws}/reports/${reportId}`
-        else if (deptSlug) to = `/w/${deptSlug}/reports`
+        else if (deptSlug) {
+          if (mention?.onDeptMentionClick) {
+            mention.onDeptMentionClick(deptSlug, a)
+            return
+          }
+          to = `/w/${deptSlug}/reports`
+        }
       }
       if (!to) return
       // 도착 화면(AppShell)에서 "돌아가기" 알약이 뜨도록 출발 정보를 state 로

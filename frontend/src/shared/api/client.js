@@ -63,7 +63,9 @@ apiClient.interceptors.request.use((config) => {
   if (accessToken) {
     config.headers.Authorization = `Bearer ${accessToken}`
   }
-  if (currentWorkspaceSlug) {
+  // 호출 측이 X-Workspace-Slug 를 명시했으면 존중한다(예: 부서 멘션
+  // 미리보기가 *다른* 부서 보고서를 일시 조회). 전역 컨텍스트는 폴백.
+  if (currentWorkspaceSlug && !config.headers['X-Workspace-Slug']) {
     config.headers['X-Workspace-Slug'] = currentWorkspaceSlug
   }
   return config

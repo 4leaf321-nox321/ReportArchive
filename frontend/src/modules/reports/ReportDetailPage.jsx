@@ -112,6 +112,7 @@ import { ReportMentionProvider, useReportMention } from '@/shared/reports/Report
 import { blockRefKey, buildBlockIndex, referenceableBlockList } from '@/shared/reports/blockNumbering'
 import { CurrentBlockRefContext } from '@/shared/reports/CurrentBlockRefContext'
 import BlockRefPreview from './BlockRefPreview'
+import DeptMentionPreview from './DeptMentionPreview'
 import { ReportMentionDialog } from './ReportMentionDialog'
 import { ReportGraphModal } from './ReportGraphModal'
 import { SlideGuideOverlay } from './SlideGuideOverlay'
@@ -864,6 +865,8 @@ export default function ReportDetailPage() {
   // returnAnchor: "위젯으로 이동" 후 읽던 자리로 돌아오기 위한 앵커 | null
   const [refPreview, setRefPreview] = useState(null)
   const [returnAnchor, setReturnAnchor] = useState(null)
+  // 부서 @멘션 미리보기 팝오버 상태 { slug, anchorRect } | null
+  const [deptPreview, setDeptPreview] = useState(null)
 
   // 도착 위젯을 ~1.6s 강조. 애니메이션을 다시 트리거하려 클래스를 뗐다
   // 리플로우 후 다시 붙인다. (id 는 페이지-로컬이라, 현재 페이지에 마운트된
@@ -934,6 +937,27 @@ export default function ReportDetailPage() {
       refClickImplRef.current?.(pageIndex, blockId, anchorEl),
     [],
   )
+
+  // 부서 @멘션 클릭 → 이동 대신 미리보기 팝오버. (setState 만 쓰므로 안정적)
+  const onDeptMentionClick = useCallback((slug, anchorEl) => {
+    setDeptPreview({
+      slug,
+      anchorRect: anchorEl?.getBoundingClientRect?.() ?? null,
+    })
+  }, [])
+  // 팝오버에서 실제 이동을 고르면 — 출발 정보를 실어 "돌아가기" 알약이 뜨게.
+  function openDeptList(slug) {
+    setDeptPreview(null)
+    navigate(`/w/${slug}/reports`, {
+      state: { fromMention: { fromTitle: existingReport?.title ?? null } },
+    })
+  }
+  function openDeptReport(slug, reportId) {
+    setDeptPreview(null)
+    navigate(`/w/${slug}/reports/${reportId}`, {
+      state: { fromMention: { fromTitle: existingReport?.title ?? null } },
+    })
+  }
 
   // 팝오버 "위젯으로 이동" → 읽던 자리를 복귀앵커로 저장하고 실제 점프.
   function jumpFromPreview() {
@@ -3017,6 +3041,7 @@ export default function ReportDetailPage() {
       referenceableBlocks={referenceableBlocks}
       scrollToBlock={scrollToBlock}
       onBlockRefClick={onBlockRefClick}
+      onDeptMentionClick={onDeptMentionClick}
     >
     <CommentsProvider
       reportId={existingReport?.id ?? null}
@@ -4286,6 +4311,17 @@ export default function ReportDetailPage() {
         anchorRect={refPreview.anchorRect}
         onJump={jumpFromPreview}
         onClose={() => setRefPreview(null)}
+      />
+    )}
+    {/* 부서 @멘션 — 이동 대신 부서 정보+최근 보고서 미리보기 */}
+    {deptPreview && (
+      <DeptMentionPreview
+        slug={deptPreview.slug}
+        dept={workspaces?.find((w) => w.slug === deptPreview.slug) ?? null}
+        anchorRect={deptPreview.anchorRect}
+        onOpenDept={() => openDeptList(deptPreview.slug)}
+        onOpenReport={(rid) => openDeptReport(deptPreview.slug, rid)}
+        onClose={() => setDeptPreview(null)}
       />
     )}
     {/* 위젯으로 이동한 뒤 읽던 자리로 돌아오는 알약 */}

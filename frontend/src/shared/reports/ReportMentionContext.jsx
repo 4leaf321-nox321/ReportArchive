@@ -52,6 +52,10 @@ export function ReportMentionProvider({
   //   팝오버, "이동" 시 점프+복귀까지 호스트(보고서 상세)가 담당한다.
   //   Provider 가 안 주면 RichText 는 scrollToBlock 으로 폴백한다.
   onBlockRefClick,
+  // onDeptMentionClick(slug, anchorEl) — 본문 @멘션의 "부서" 칩 클릭 시
+  //   라우트 이동 대신 미리보기 팝오버를 띄운다(호스트가 담당). 없으면
+  //   RichText 는 기존처럼 부서 보고서 목록으로 navigate 한다.
+  onDeptMentionClick,
   children,
 }) {
   const [popup, setPopup] = useState(null) // { rowIndex, anchorRect, atCaret, insert } | null
@@ -70,6 +74,7 @@ export function ReportMentionProvider({
       referenceableBlocks: referenceableBlocks ?? [],
       scrollToBlock: scrollToBlock ?? null,
       onBlockRefClick: onBlockRefClick ?? null,
+      onDeptMentionClick: onDeptMentionClick ?? null,
       popup,
       open,
       close,
@@ -84,6 +89,7 @@ export function ReportMentionProvider({
       referenceableBlocks,
       scrollToBlock,
       onBlockRefClick,
+      onDeptMentionClick,
       popup,
       open,
       close,

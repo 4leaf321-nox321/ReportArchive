@@ -116,8 +116,6 @@ export function useAnnotationInteractions({ store, adapter, readOnly }) {
     if (!id) return
     if (lastProcessedAddedIdRef.current === id) return
     lastProcessedAddedIdRef.current = id
-    // [임시 디버그] 이게 연속으로 찍히면 auto-enter ↔ create 루프.
-    if (typeof console !== 'undefined') console.log('[annot] autoEnter', id)
     // If another label is being edited, commit it first so the user
     // doesn't lose their typed text when they rapidly create another
     // annotation. Silent commit avoids extra setState in this effect.

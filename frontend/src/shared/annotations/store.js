@@ -37,29 +37,6 @@ import {
  * the host can persist however it likes.
  */
 export function useAnnotationStore({ annotations, onChange }) {
-  // [임시 디버그] 렌더 폭주(무한 루프) 감지 — 1초에 300회 넘게 렌더되면
-  // 한 번 로깅. point 라벨 freeze 원인 추적용. 확인 후 제거.
-  if (typeof window !== 'undefined') {
-    const w = window
-    const now = Date.now()
-    w.__asRL = (w.__asRL || []).filter((t) => now - t < 1000)
-    w.__asRL.push(now)
-    // annotations prop 이 매 렌더 새 ref 인지 카운트(최근 50렌더 중).
-    w.__annChanges = (w.__annChanges || 0) + (w.__asPrevAnn !== annotations ? 1 : 0)
-    w.__asRenders = (w.__asRenders || 0) + 1
-    w.__asPrevAnn = annotations
-    if (w.__asRL.length === 300) {
-      // eslint-disable-next-line no-console
-      console.error('[annot] 렌더 폭주 감지', {
-        annPropChangedRatio: `${w.__annChanges}/${w.__asRenders}`,
-        len: annotations?.length,
-        applyCallers: w.__applyCallers,
-      })
-      w.__annChanges = 0
-      w.__asRenders = 0
-      w.__applyCallers = {}
-    }
-  }
   // Echo prop into local state so the user's draft survives a parent
   // re-render that comes back with the same array reference.
   const [local, setLocal] = useState(annotations ?? [])
@@ -101,13 +78,6 @@ export function useAnnotationStore({ annotations, onChange }) {
    *  ends up as a single undo step instead of one per pointer event. */
   const apply = useCallback(
     (next, options) => {
-      // [임시 디버그] apply 호출자별 카운트(폭주 시 누가 도배하는지).
-      if (typeof window !== 'undefined') {
-        const st = new Error().stack?.split('\n') || []
-        const key = (st[3] || st[2] || '?').trim().slice(0, 90)
-        window.__applyCallers = window.__applyCallers || {}
-        window.__applyCallers[key] = (window.__applyCallers[key] || 0) + 1
-      }
       setLocal((prev) => {
         const resolved = typeof next === 'function' ? next(prev) : next
         if (resolved === prev) return prev

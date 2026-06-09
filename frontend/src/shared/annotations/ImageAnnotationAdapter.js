@@ -76,22 +76,15 @@ export function useImageAnnotationAdapter(
           height: Math.round(t.height),
         }
       }
-      setBounds((prev) => {
-        const same =
-          prev &&
-          prev.x === next.x &&
-          prev.y === next.y &&
-          prev.width === next.width &&
-          prev.height === next.height
-        if (!same && typeof window !== 'undefined') {
-          window.__bN = (window.__bN || 0) + 1
-          if (window.__bN <= 12) {
-            // eslint-disable-next-line no-console
-            console.log(`[annot] setBounds #${window.__bN}`, next)
-          }
-        }
-        return same ? prev : next
-      })
+      setBounds((prev) =>
+        prev &&
+        prev.x === next.x &&
+        prev.y === next.y &&
+        prev.width === next.width &&
+        prev.height === next.height
+          ? prev
+          : next,
+      )
     }
     const ro = new ResizeObserver(measure)
     ro.observe(container)

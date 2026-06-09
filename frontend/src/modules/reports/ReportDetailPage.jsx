@@ -4293,7 +4293,7 @@ export default function ReportDetailPage() {
       <button
         type="button"
         onClick={goBackFromRef}
-        className="fixed bottom-6 left-1/2 z-[55] -translate-x-1/2 inline-flex items-center gap-1.5 rounded-full border bg-popover px-4 py-2 text-xs font-medium shadow-lg hover:bg-muted print:hidden"
+        className="fixed bottom-6 left-1/2 z-[55] -translate-x-1/2 inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground shadow-lg ring-1 ring-primary/30 hover:bg-primary/90 print:hidden"
         title="참조를 클릭하기 전 위치로 돌아가기"
       >
         <ArrowLeft className="h-3.5 w-3.5" />

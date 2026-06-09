@@ -513,3 +513,22 @@ body.report-fullscreen [data-slide-guide-overlay] {
   text-decoration-thickness: 2px;
   background-color: color-mix(in srgb, #f59e0b 30%, transparent);
 }
+
+/* `#` 참조 링크로 도착한 위젯을 잠깐 강조. JS 가 런타임에 `.ref-flash` 를
+   붙였다 ~1.6s 후 떼므로, Tailwind 가 스캔 못 해 purge 될 수 있어 @layer
+   바깥의 손수 작성 규칙으로 둔다(코멘트 포커스 amber 색 어휘와 통일). */
+@keyframes ref-flash {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, #f59e0b 70%, transparent);
+  }
+  15% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, #f59e0b 65%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, #f59e0b 0%, transparent);
+  }
+}
+.ref-flash {
+  animation: ref-flash 1.6s ease-out;
+  border-radius: 0.5rem;
+}

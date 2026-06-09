@@ -111,6 +111,7 @@ import {
 import { ReportMentionProvider, useReportMention } from '@/shared/reports/ReportMentionContext'
 import { blockRefKey, buildBlockIndex, referenceableBlockList } from '@/shared/reports/blockNumbering'
 import { CurrentBlockRefContext } from '@/shared/reports/CurrentBlockRefContext'
+import BlockRefPreview from './BlockRefPreview'
 import { ReportMentionDialog } from './ReportMentionDialog'
 import { ReportGraphModal } from './ReportGraphModal'
 import { SlideGuideOverlay } from './SlideGuideOverlay'
@@ -842,7 +843,7 @@ export default function ReportDetailPage() {
   // React a tick to mount the new page's blocks before we query the DOM
   // — without it, scroll silently no-ops on the first cross-page click.
   const navigateToCommentBlock = useCallback(
-    (pageIndex, blockId) => {
+    (pageIndex, blockId, { flash = false } = {}) => {
       const pageCountSafe = draft?.pages?.length ?? 0
       if (pageCountSafe === 0) return
       const targetPage = clamp(pageIndex, 0, pageCountSafe - 1)
@@ -850,10 +851,115 @@ export default function ReportDetailPage() {
       setTimeout(() => {
         const el = document.getElementById(`block-${blockId}`)
         el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        // `#` 참조 점프는 도착 위젯을 잠깐 강조한다. 코멘트 점프는 우측 패널
+        // 포커스(amber ring)가 이미 표식이라 flash 를 끈다.
+        if (flash) flashBlock(blockId)
       }, 80)
     },
     [draft?.pages?.length, currentPage],
   )
+
+  // ── 본문 `#` 위젯 참조 클릭 UX ──────────────────────────────────────────
+  // refPreview  : 화면 밖/다른 페이지 참조를 흘끗 보는 팝오버 상태 | null
+  // returnAnchor: "위젯으로 이동" 후 읽던 자리로 돌아오기 위한 앵커 | null
+  const [refPreview, setRefPreview] = useState(null)
+  const [returnAnchor, setReturnAnchor] = useState(null)
+
+  // 도착 위젯을 ~1.6s 강조. 애니메이션을 다시 트리거하려 클래스를 뗐다
+  // 리플로우 후 다시 붙인다. (id 는 페이지-로컬이라, 현재 페이지에 마운트된
+  // 엘리먼트만 잡힌다 — navigateToCommentBlock 과 동일 전제.)
+  function flashBlock(blockId) {
+    const el = document.getElementById(`block-${blockId}`)
+    if (!el) return
+    el.classList.remove('ref-flash')
+    void el.offsetWidth
+    el.classList.add('ref-flash')
+    window.setTimeout(() => el.classList.remove('ref-flash'), 1700)
+  }
+
+  // 앵커에서 위로 올라가며 실제 스크롤되는 조상을 찾는다(복귀 시 그 위치를
+  // 되돌리려고). 못 찾으면 null → window 스크롤로 폴백.
+  function findScrollParent(el) {
+    let node = el?.parentElement
+    while (node) {
+      const oy = window.getComputedStyle(node).overflowY
+      if (/(auto|scroll|overlay)/.test(oy) && node.scrollHeight > node.clientHeight)
+        return node
+      node = node.parentElement
+    }
+    return null
+  }
+
+  // 참조 링크 클릭의 "스마트" 처리. 최신 draft/currentPage 를 항상 보도록
+  // ref 에 구현을 담고, 컨텍스트엔 안정적 래퍼만 흘려보낸다(consumer 불필요
+  // 리렌더 방지).
+  const refClickImplRef = useRef(null)
+  refClickImplRef.current = (pageIndex, blockId, anchorEl) => {
+    const key = blockRefKey(pageIndex, blockId)
+    const meta = blockRefIndex.get(key)
+    if (!meta) {
+      toast.error('참조한 위젯을 찾을 수 없습니다 (삭제되었을 수 있습니다).')
+      return
+    }
+    // 참조 대상이 *현재 페이지*에 마운트돼 있고 화면에 (일부라도) 보이면
+    // 이동 없이 하이라이트만 — "바로 옆" 케이스가 가장 가볍고 자연스럽다.
+    // (id 는 페이지-로컬이라 같은 페이지일 때만 getElementById 가 정확하다.)
+    if (pageIndex === currentPage) {
+      const el = document.getElementById(`block-${blockId}`)
+      if (el) {
+        const r = el.getBoundingClientRect()
+        const visible =
+          r.height > 0 && r.bottom > 40 && r.top < window.innerHeight - 40
+        if (visible) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+          flashBlock(blockId)
+          return
+        }
+      }
+    }
+    // 화면 밖 / 다른 페이지 → 미리보기 팝오버. snapshotBlock 은 draft 데이터를
+    // 직접 읽어 (pageIndex, blockId) 로 정확히 해석하므로 페이지 마운트와 무관.
+    setRefPreview({
+      pageIndex,
+      blockId,
+      anchorEl,
+      anchorRect: anchorEl?.getBoundingClientRect?.() ?? null,
+      snapshot: snapshotBlock(pageIndex, blockId),
+      label: meta.label ?? '',
+      caption: meta.caption ?? '',
+    })
+  }
+  const onBlockRefClick = useCallback(
+    (pageIndex, blockId, anchorEl) =>
+      refClickImplRef.current?.(pageIndex, blockId, anchorEl),
+    [],
+  )
+
+  // 팝오버 "위젯으로 이동" → 읽던 자리를 복귀앵커로 저장하고 실제 점프.
+  function jumpFromPreview() {
+    const rp = refPreview
+    if (!rp) return
+    const scrollEl = findScrollParent(rp.anchorEl)
+    setReturnAnchor({
+      scrollEl,
+      scrollTop: scrollEl ? scrollEl.scrollTop : window.scrollY,
+      page: currentPage,
+    })
+    setRefPreview(null)
+    navigateToCommentBlock(rp.pageIndex, rp.blockId, { flash: true })
+  }
+
+  // 떠 있는 "돌아가기" 알약 → 저장한 페이지/스크롤 위치로 복귀.
+  function goBackFromRef() {
+    const ra = returnAnchor
+    if (!ra) return
+    if (ra.page !== currentPage) setCurrentPage(ra.page)
+    setTimeout(() => {
+      if (ra.scrollEl) ra.scrollEl.scrollTop = ra.scrollTop
+      else window.scrollTo({ top: ra.scrollTop })
+    }, 80)
+    setReturnAnchor(null)
+  }
 
   // Whole-report cross-reference index ("그림 3", "표 2"). Walks every page in
   // document order so numbers are continuous across pages; recomputed when the
@@ -2909,6 +3015,7 @@ export default function ReportDetailPage() {
       blockIndex={blockRefIndex}
       referenceableBlocks={referenceableBlocks}
       scrollToBlock={scrollToBlock}
+      onBlockRefClick={onBlockRefClick}
     >
     <CommentsProvider
       reportId={existingReport?.id ?? null}
@@ -4168,6 +4275,30 @@ export default function ReportDetailPage() {
     </div>
     </CommentsProvider>
     <ReportMentionDialog />
+    {/* `#` 위젯 참조 — 화면 밖/다른 페이지 참조의 흘끗 보기 팝오버 */}
+    {refPreview && (
+      <BlockRefPreview
+        snapshot={refPreview.snapshot}
+        label={refPreview.label}
+        caption={refPreview.caption}
+        pageIndex={refPreview.pageIndex}
+        anchorRect={refPreview.anchorRect}
+        onJump={jumpFromPreview}
+        onClose={() => setRefPreview(null)}
+      />
+    )}
+    {/* 위젯으로 이동한 뒤 읽던 자리로 돌아오는 알약 */}
+    {returnAnchor && (
+      <button
+        type="button"
+        onClick={goBackFromRef}
+        className="fixed bottom-6 left-1/2 z-[55] -translate-x-1/2 inline-flex items-center gap-1.5 rounded-full border bg-popover px-4 py-2 text-xs font-medium shadow-lg hover:bg-muted print:hidden"
+        title="참조를 클릭하기 전 위치로 돌아가기"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" />
+        읽던 곳으로 돌아가기
+      </button>
+    )}
     </ReportMentionProvider>
     </ReportStyleContext.Provider>
     </PrintScaleContext.Provider>

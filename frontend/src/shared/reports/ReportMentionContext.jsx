@@ -45,6 +45,11 @@ export function ReportMentionProvider({
   blockIndex,
   referenceableBlocks,
   scrollToBlock,
+  // onBlockRefClick(pageIndex, blockId, anchorEl) — 본문 `#` 참조 링크 클릭의
+  //   "스마트" 처리. 대상이 화면에 보이면 하이라이트만, 안 보이면 미리보기
+  //   팝오버, "이동" 시 점프+복귀까지 호스트(보고서 상세)가 담당한다.
+  //   Provider 가 안 주면 RichText 는 scrollToBlock 으로 폴백한다.
+  onBlockRefClick,
   children,
 }) {
   const [popup, setPopup] = useState(null) // { rowIndex, anchorRect, atCaret, insert } | null
@@ -61,6 +66,7 @@ export function ReportMentionProvider({
       blockIndex: blockIndex ?? null,
       referenceableBlocks: referenceableBlocks ?? [],
       scrollToBlock: scrollToBlock ?? null,
+      onBlockRefClick: onBlockRefClick ?? null,
       popup,
       open,
       close,
@@ -73,6 +79,7 @@ export function ReportMentionProvider({
       blockIndex,
       referenceableBlocks,
       scrollToBlock,
+      onBlockRefClick,
       popup,
       open,
       close,

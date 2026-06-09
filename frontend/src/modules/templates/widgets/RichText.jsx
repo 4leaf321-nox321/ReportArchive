@@ -640,11 +640,15 @@ function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
         const id = a.getAttribute('data-mention-id')
         const ws = a.getAttribute('data-mention-ws')
         if (type === 'block') {
-          // 같은 보고서 내 위젯 참조(그림/표 …) → 해당 블록으로 스크롤.
-          // 블록 id 는 페이지-로컬이라 (page, id) 둘 다로 특정한다.
+          // 같은 보고서 내 위젯 참조(그림/표 …). 블록 id 는 페이지-로컬이라
+          // (page, id) 둘 다로 특정한다. 호스트가 "스마트" 핸들러를 주면 그쪽
+          // (보이면 하이라이트 / 안 보이면 미리보기 팝오버 / 이동+복귀)으로,
+          // 없으면 단순 스크롤로 폴백한다. 앵커 엘리먼트를 넘겨 팝오버 위치·
+          // 복귀 스크롤 컨테이너 산출에 쓰게 한다.
           const page = a.getAttribute('data-mention-page')
-          if (id && page != null && mention?.scrollToBlock) {
-            mention.scrollToBlock(Number(page), id)
+          if (id && page != null) {
+            if (mention?.onBlockRefClick) mention.onBlockRefClick(Number(page), id, a)
+            else mention?.scrollToBlock?.(Number(page), id)
           }
           return
         }

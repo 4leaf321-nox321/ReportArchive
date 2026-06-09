@@ -37,6 +37,18 @@ import {
  * the host can persist however it likes.
  */
 export function useAnnotationStore({ annotations, onChange }) {
+  // [임시 디버그] 렌더 폭주(무한 루프) 감지 — 1초에 300회 넘게 렌더되면
+  // 한 번 로깅. point 라벨 freeze 원인 추적용. 확인 후 제거.
+  if (typeof window !== 'undefined') {
+    const w = window
+    const now = Date.now()
+    w.__asRL = (w.__asRL || []).filter((t) => now - t < 1000)
+    w.__asRL.push(now)
+    if (w.__asRL.length === 300) {
+      // eslint-disable-next-line no-console
+      console.error('[annot] 렌더 폭주 감지(useAnnotationStore 1초 300회+)')
+    }
+  }
   // Echo prop into local state so the user's draft survives a parent
   // re-render that comes back with the same array reference.
   const [local, setLocal] = useState(annotations ?? [])
@@ -53,6 +65,9 @@ export function useAnnotationStore({ annotations, onChange }) {
     if (annotations !== lastSeenProp.current) {
       lastSeenProp.current = annotations
       setLocal(annotations ?? [])
+      // [임시 디버그] 이게 연속으로 찍히면 prop 식별자가 매 렌더 바뀌어
+      // 발생하는 무한 루프다.
+      if (typeof console !== 'undefined') console.log('[annot] propSync setLocal', annotations?.length)
     }
   }, [annotations])
 

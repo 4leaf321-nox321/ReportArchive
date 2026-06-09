@@ -1027,6 +1027,23 @@ def update_report(
 def delete_report(db: Session, report: Report) -> None:
     # 고아 grant 방지 — content_grant 는 FK CASCADE 가 없어 수동 정리.
     grant_services.delete_all_for_content(db, GrantContentType.report, report.id)
+    # 종합보고 안건 처리: 발행 스냅샷(snapshot_content)이 있는 안건은 원본과
+    # 분리(ref_report_id FK SET NULL)돼 스냅샷으로 살아남고(발행 종합보고 보존),
+    # 스냅샷 없는(미발행/라이브) 안건은 여기서 함께 삭제한다 — 안 그러면 분리
+    # 후 두 ref 모두 NULL 이면서 snapshot 도 없어 제약을 위반한다.
+    refs = (
+        db.execute(
+            select(CompositeReportItem).where(
+                CompositeReportItem.ref_report_id == report.id
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for it in refs:
+        if not it.snapshot_content:
+            db.delete(it)
+    db.flush()
     db.delete(report)
     db.commit()
 

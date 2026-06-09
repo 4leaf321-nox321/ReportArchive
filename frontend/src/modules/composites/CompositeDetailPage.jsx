@@ -1668,13 +1668,16 @@ function GroupSectionHeader({
 
 /** 안건의 표시용 ref(보고서/하위종합)와 소속·작성자·제목을 뽑아 준다. */
 function itemMeta(it, workspaceName) {
-  const isReport = Boolean(it.ref_report_id)
+  const isReport =
+    it._display?.item_type === 'report' || Boolean(it.ref_report_id)
   const ref = isReport ? it._display?.ref_report : it._display?.ref_composite
   const deptSlug = isReport ? ref?.owner_dept_slug : ref?.workspace_slug
   return {
     isReport,
     ref,
-    title: ref?.title,
+    // 분리된 발행 안건은 ref 가 없으니 스냅샷 제목으로 폴백.
+    title: ref?.title ?? it._display?.snapshot_content?.title ?? null,
+    sourceDeleted: Boolean(it._display?.source_deleted),
     dept: deptSlug ? workspaceName(deptSlug) : null,
     author: ref?.owner_name ?? null,
     date: isReport ? ref?.report_date : ref?.period_date,
@@ -1836,7 +1839,8 @@ function CompositeListView({
               </button>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              {selected.ref_report_id ? (
+              {selected.ref_report_id || selected.snapshot_content ? (
+                // 분리된 발행 안건(원본 삭제)도 snapshot 으로 렌더.
                 <InlineReportView
                   reportId={selected.ref_report_id}
                   snapshot={selected.snapshot_content ?? undefined}
@@ -1902,8 +1906,14 @@ function ItemRow({
   // 셀 안에서도 시각적으로 분리되어 보이도록.
   compactCard = false,
 }) {
-  const isReport = Boolean(item.ref_report_id)
+  // 분리된 발행 안건은 ref_report_id 가 NULL 이라도 'report'(스냅샷만). 백엔드
+  // item_type 을 우선 신뢰하고, 없으면 ref_report_id 로 판정.
+  const isReport =
+    item._display?.item_type === 'report' || Boolean(item.ref_report_id)
   const ref = isReport ? item._display?.ref_report : item._display?.ref_composite
+  // 원본이 영구삭제돼 분리된 안건(스냅샷으로만 렌더).
+  const sourceDeleted = Boolean(item._display?.source_deleted)
+  const snapshot = item._display?.snapshot_content ?? item.snapshot_content ?? null
   // 게시 부서 이름 — 서버 projection 은 mounted_org_names(문자열 배열), picker
   // 로 막 추가한 _display 는 mount_workspaces(객체 배열)라 둘 다 받아준다.
   const mountNames =
@@ -2079,8 +2089,20 @@ function ItemRow({
               onClick={onOpen}
               className="font-medium text-sm hover:underline text-left truncate max-w-full shrink-0"
             >
-              {ref?.title ?? (isReport ? `report #${item.ref_report_id}` : `composite #${item.ref_composite_id}`)}
+              {ref?.title ??
+                snapshot?.title ??
+                (isReport
+                  ? `report #${item.ref_report_id ?? '—'}`
+                  : `composite #${item.ref_composite_id}`)}
             </button>
+            {sourceDeleted && (
+              <span
+                className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                title="원본 보고서가 삭제되어 발행 시점 스냅샷으로 표시됩니다."
+              >
+                원본 삭제됨
+              </span>
+            )}
             <div className="text-[11px] text-muted-foreground flex items-center gap-x-1.5 gap-y-0.5 flex-wrap min-w-0">
               {(() => {
                 // 표기 순서: 소속 → 작성자 → 기준일 → 게시. 보고서는 작성자
@@ -2160,15 +2182,16 @@ function ItemRow({
 
       {expanded && (
         <div className="mt-3 ml-12 pl-4 border-l-2">
-          {isReport && item.ref_report_id ? (
+          {isReport && (item.ref_report_id || snapshot) ? (
             // Phase 5A — pass snapshot when present. Published recurring
             // composites freeze each item's content into snapshot_content
             // so the as-of-publish state survives later edits to the
             // source report. Theme + unpublished recurring leave snapshot
-            // NULL → live fetch via reportId.
+            // NULL → live fetch via reportId. 원본이 삭제돼 분리된 안건은
+            // ref_report_id 가 NULL 이라도 snapshot 으로 렌더한다.
             <InlineReportView
               reportId={item.ref_report_id}
-              snapshot={item.snapshot_content ?? undefined}
+              snapshot={snapshot ?? undefined}
             />
           ) : item.ref_composite_id ? (
             <InlineCompositeView compositeId={item.ref_composite_id} />

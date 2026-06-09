@@ -155,6 +155,9 @@ class CompositeItemRead(BaseModel):
     ref_composite: Optional[ItemRefComposite] = None
     snapshot_content: Optional[dict] = None
     snapshot_taken_at: Optional[datetime] = None
+    # 원본 보고서가 영구삭제돼 분리된 발행 안건(스냅샷만 남음). 프런트가
+    # 스냅샷으로 렌더하되 "원본 삭제됨" 표시를 띄우게 한다.
+    source_deleted: bool = False
     # Phase 5B — per-item placement for the landscape-2col DOCX export.
     # 1=left, 2=right. Portrait/1-col mode ignores this.
     display_column: int = 1
@@ -167,7 +170,14 @@ class CompositeItemRead(BaseModel):
     def _decorate(cls, obj: Any) -> Any:
         if obj is None or isinstance(obj, dict):
             return obj
-        is_report = getattr(obj, "ref_report_id", None) is not None
+        ref_report_id = getattr(obj, "ref_report_id", None)
+        ref_composite_id = getattr(obj, "ref_composite_id", None)
+        snapshot = getattr(obj, "snapshot_content", None)
+        # 원본 영구삭제로 분리된 발행 안건: 두 ref 다 NULL 인데 snapshot 이 있음.
+        # 이 경우도 'report' 항목으로 렌더(스냅샷 기반)하고 source_deleted 표시.
+        is_report = ref_report_id is not None or (
+            ref_composite_id is None and snapshot is not None
+        )
         out = {
             "id": getattr(obj, "id"),
             "position": getattr(obj, "position"),
@@ -175,8 +185,9 @@ class CompositeItemRead(BaseModel):
             "item_type": "report" if is_report else "composite",
             "ref_report": getattr(obj, "ref_report", None) if is_report else None,
             "ref_composite": getattr(obj, "ref_composite", None) if not is_report else None,
-            "snapshot_content": getattr(obj, "snapshot_content", None),
+            "snapshot_content": snapshot,
             "snapshot_taken_at": getattr(obj, "snapshot_taken_at", None),
+            "source_deleted": is_report and ref_report_id is None,
             "display_column": getattr(obj, "display_column", 1) or 1,
             "group_name": getattr(obj, "group_name", None),
         }

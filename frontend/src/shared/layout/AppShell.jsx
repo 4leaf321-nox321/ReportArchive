@@ -2,6 +2,7 @@ import * as React from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import { Header } from './Header'
 import { Sidebar, MobileSidebar } from './Sidebar'
+import { MentionReturnBar } from './MentionReturnBar'
 import { ErrorBoundary } from '@/shared/components/ErrorBoundary'
 
 /**
@@ -24,6 +25,7 @@ export function AppShell() {
         <Sidebar />
         <MobileSidebar open={mobileOpen} onOpenChange={setMobileOpen} />
         <main className="flex-1 min-w-0 overflow-y-auto bg-muted/30">
+          <MentionReturnBar />
           <ErrorBoundary resetKey={location.pathname}>
             <Outlet />
           </ErrorBoundary>

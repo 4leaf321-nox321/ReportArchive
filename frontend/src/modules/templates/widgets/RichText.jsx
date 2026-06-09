@@ -664,7 +664,12 @@ function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
         else if (deptSlug) to = `/w/${deptSlug}/reports`
       }
       if (!to) return
-      if (mention?.navigate) mention.navigate(to)
+      // 도착 화면(AppShell)에서 "돌아가기" 알약이 뜨도록 출발 정보를 state 로
+      // 실어 보낸다. SPA 이동일 때만 가능 — 하드 폴백은 state 를 못 싣는다.
+      if (mention?.navigate)
+        mention.navigate(to, {
+          state: { fromMention: { fromTitle: mention?.hostReportTitle ?? null } },
+        })
       else window.location.assign(to)
     },
     [mention],

@@ -34,6 +34,8 @@ export function useReportMention() {
 
 export function ReportMentionProvider({
   hostReportId,
+  // 현재(출발) 보고서 제목 — 멘션 이동 시 도착 화면의 "돌아가기" 라벨에 쓴다.
+  hostReportTitle,
   enabled,
   navigate,
   addLink,
@@ -60,6 +62,7 @@ export function ReportMentionProvider({
   const value = useMemo(
     () => ({
       hostReportId: hostReportId ?? null,
+      hostReportTitle: hostReportTitle ?? null,
       enabled: !!enabled,
       navigate: navigate ?? null,
       addLink: addLink ?? null,
@@ -73,6 +76,7 @@ export function ReportMentionProvider({
     }),
     [
       hostReportId,
+      hostReportTitle,
       enabled,
       navigate,
       addLink,

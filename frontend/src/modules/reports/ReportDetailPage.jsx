@@ -3007,6 +3007,7 @@ export default function ReportDetailPage() {
     <ReportStyleContext.Provider value={reportStyleValue}>
     <ReportMentionProvider
       hostReportId={existingReport?.id ?? null}
+      hostReportTitle={existingReport?.title ?? null}
       // @ 트리거는 편집 모드 + 편집권한일 때만. navigate 는 enabled 무관 항상 제공
       // (뷰 모드/비편집자도 본문 링크 이동 가능).
       enabled={effectiveIsEditing && !!existingReport?.can_edit && existingReport?.id != null}

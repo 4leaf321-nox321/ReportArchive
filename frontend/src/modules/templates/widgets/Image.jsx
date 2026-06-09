@@ -556,6 +556,13 @@ function AnnotatableImageBox({
   // editable images are on a page they each register, but each only
   // does something for THEIR selection / tool, so they don't
   // interfere. Skip the binding entirely in read-only mode.
+  //
+  // ⚠ 리스너는 마운트 시 *한 번만* 등록한다(deps=[readOnly]). 도구/선택을
+  // deps 에 넣어 재등록하면, Radix Dialog 의 capture Esc 리스너(위젯 편집
+  // 모달)보다 등록 순서가 *뒤로* 밀려 모달이 먼저 닫힌다. 현재 도구/스토어는
+  // ref 로 읽어 항상 최신값을 보면서도 재등록을 피한다.
+  const escStateRef = useRef(null)
+  escStateRef.current = { annotationTool, annotationStore }
   useEffect(() => {
     if (readOnly) return undefined
     function isEditableTarget() {
@@ -568,6 +575,7 @@ function AnnotatableImageBox({
       )
     }
     function onKey(e) {
+      const { annotationTool, annotationStore } = escStateRef.current
       if (e.key === 'Escape') {
         // 라벨 입력 중 Esc 는 입력이 처리하도록 양보.
         if (isEditableTarget()) return
@@ -606,7 +614,9 @@ function AnnotatableImageBox({
     // capture 단계 — 모달(Radix Dialog)의 Esc 핸들러보다 먼저 잡기 위해.
     document.addEventListener('keydown', onKey, true)
     return () => document.removeEventListener('keydown', onKey, true)
-  }, [readOnly, annotationTool, annotationStore])
+    // deps=[readOnly] — 의도적으로 한 번만 등록(위 주석 참조). 상태는 ref.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readOnly])
 
   return (
     <div

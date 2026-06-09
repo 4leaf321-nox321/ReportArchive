@@ -199,9 +199,16 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
   // Esc cancels the active tool / clears selection. Listening at the
   // document level keeps the shortcut working regardless of where
   // focus sits (inside the chart, on a sibling input, etc.).
+  //
+  // ⚠ 한 번만 등록(deps=[readOnly]) + 상태는 ref. 도구/선택을 deps 에 넣어
+  // 재등록하면 Radix Dialog(위젯 편집 모달)의 capture Esc 리스너보다 뒤로
+  // 밀려 모달이 먼저 닫힌다.
+  const escStateRef = useRef(null)
+  escStateRef.current = { annotationTool, annotationStore }
   useEffect(() => {
     if (readOnly) return undefined
     function onKey(e) {
+      const { annotationTool, annotationStore } = escStateRef.current
       if (e.key === 'Escape') {
         // 라벨/데이터 입력 중 Esc 는 입력이 처리하도록 양보.
         const ea = document.activeElement
@@ -267,7 +274,9 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
     // capture 단계 — 모달(Radix Dialog)의 Esc 핸들러보다 먼저 잡기 위해.
     document.addEventListener('keydown', onKey, true)
     return () => document.removeEventListener('keydown', onKey, true)
-  }, [readOnly, annotationTool, annotationStore])
+    // deps=[readOnly] — 의도적으로 한 번만 등록. 상태는 escStateRef.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readOnly])
 
   function patch(next) {
     // Split incoming patch into structural (→ props_overrides) and

@@ -611,11 +611,12 @@ function AnnotatableImageBox({
         annotationStore.history.redo()
       }
     }
-    // capture 단계 — 모달(Radix Dialog)의 Esc 핸들러보다 먼저 잡기 위해.
-    document.addEventListener('keydown', onKey, true)
-    return () => document.removeEventListener('keydown', onKey, true)
-    // deps=[readOnly] — 의도적으로 한 번만 등록(위 주석 참조). 상태는 ref.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // ⚠ window capture 에 등록한다. 이벤트 capture 경로는 window → document
+    // → … 라, window capture 리스너는 Radix Dialog 의 document capture Esc
+    // 핸들러보다 *항상 먼저* 실행된다(등록 순서와 무관). 소비 시 stopPropagation
+    // 하면 document 까지 안 내려가 모달이 안 닫힌다.
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
   }, [readOnly])
 
   return (

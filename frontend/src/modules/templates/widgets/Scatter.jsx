@@ -268,11 +268,11 @@ export function ScatterEditor({ props, content, onChange, readOnly, autoFit }) {
         annotationStore.history.redo()
       }
     }
-    // capture 단계 — 모달(Radix Dialog)의 Esc 핸들러보다 먼저 잡기 위해.
-    document.addEventListener('keydown', onKey, true)
-    return () => document.removeEventListener('keydown', onKey, true)
-    // deps=[readOnly] — 의도적으로 한 번만 등록. 상태는 escStateRef.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // ⚠ window capture — capture 경로(window→document)상 Radix Dialog 의
+    // document capture Esc 보다 항상 먼저 실행돼, 소비(stopPropagation) 시
+    // document 까지 안 내려가 모달이 안 닫힌다(등록 순서 무관).
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
   }, [readOnly])
 
   // Row + column editing helpers (edit mode only)

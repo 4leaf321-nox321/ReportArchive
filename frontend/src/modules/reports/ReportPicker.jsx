@@ -154,7 +154,9 @@ function FilterCombo({
           <ChevronDown className="h-3 w-3 opacity-50" />
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-[240px] p-0" align="start">
+      {/* z-[70]: 멘션 다이얼로그 패널(z-[61]) 위로 띄운다. 기본 Popover
+          z-50 은 멘션 모달 안에서 쓰일 때 패널 뒤로 깔려 가려졌다. */}
+      <PopoverContent className="z-[70] w-[240px] p-0" align="start">
         <Command
           filter={(v, search) =>
             v.toLowerCase().includes(search.toLowerCase()) ? 1 : 0

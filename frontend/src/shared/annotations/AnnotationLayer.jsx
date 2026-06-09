@@ -1,5 +1,15 @@
 import { useMemo } from 'react'
 
+// 라벨 pill 폭은 글자 수 근사(len*6.5)로 잡으면 한글·긴 텍스트가 상자 밖으로
+// 넘쳤다. canvas measureText 로 실제 렌더 폭을 재서 정확히 맞춘다(싱글톤 ctx).
+let _measureCtx = null
+function measureLabelTextWidth(text, font) {
+  if (typeof document === 'undefined') return (text?.length ?? 0) * 6.5
+  if (!_measureCtx) _measureCtx = document.createElement('canvas').getContext('2d')
+  _measureCtx.font = font
+  return _measureCtx.measureText(text ?? '').width
+}
+
 /**
  * Pure rendering of an annotation array on top of a host widget's
  * canvas. Lives as an SVG overlay that sits over (and slightly extends
@@ -792,7 +802,10 @@ function AnnotationLabel({
   // which felt cramped against neighboring annotations.
   const LABEL_PAD_X = 8
   const LABEL_HEIGHT = 20
-  const approxWidth = display.length * 6.5 + LABEL_PAD_X * 2
+  const LABEL_FONT = '600 11px sans-serif'
+  // 실제 텍스트 폭 + 좌우 padding — 한글/긴 라벨도 상자 안에 들어온다.
+  const approxWidth =
+    Math.ceil(measureLabelTextWidth(display, LABEL_FONT)) + LABEL_PAD_X * 2
   // Double-click on the label area triggers edit mode when interactions
   // are available; otherwise label is purely display. The single-click
   // handler stays on the wrapping <g> so click-to-select keeps working

@@ -38,15 +38,43 @@ export function useImageAnnotationAdapter(
     const container = containerRef.current
     if (!container) return undefined
     function measure() {
-      const target = imgRef?.current ?? container
-      const tRect = target.getBoundingClientRect()
       const cRect = container.getBoundingClientRect()
-      // Round to integers so subpixel jitter doesn't churn renders.
-      const next = {
-        x: Math.round(tRect.left - cRect.left),
-        y: Math.round(tRect.top - cRect.top),
-        width: Math.round(tRect.width),
-        height: Math.round(tRect.height),
+      const img = imgRef?.current
+      let next
+      // object-contain 이미지: 엘리먼트 박스(=컨테이너를 채움)가 아니라 그 안에
+      // 자연 비율로 letterbox 된 *실제 보이는 이미지 영역* 을 bounds 로 쓴다.
+      // 이래야 좌표(%)가 컨테이너 모양(편집 maxHeight·fillCell·셀 폭 차이)과
+      // 무관하게 이미지 픽셀에 진짜 상대적이 돼, 편집/뷰에서 위치가 일치한다.
+      if (img && img.naturalWidth > 0 && img.naturalHeight > 0) {
+        const eRect = img.getBoundingClientRect()
+        const elW = eRect.width
+        const elH = eRect.height
+        const natAspect = img.naturalWidth / img.naturalHeight
+        const elAspect = elW / elH || 1
+        let cw
+        let ch
+        if (natAspect > elAspect) {
+          cw = elW
+          ch = elW / natAspect
+        } else {
+          ch = elH
+          cw = elH * natAspect
+        }
+        next = {
+          x: Math.round(eRect.left - cRect.left + (elW - cw) / 2),
+          y: Math.round(eRect.top - cRect.top + (elH - ch) / 2),
+          width: Math.round(cw),
+          height: Math.round(ch),
+        }
+      } else {
+        // 자연 크기 미확정(로딩 전) 또는 imgRef 없음 → 엘리먼트/컨테이너 박스.
+        const t = (img ?? container).getBoundingClientRect()
+        next = {
+          x: Math.round(t.left - cRect.left),
+          y: Math.round(t.top - cRect.top),
+          width: Math.round(t.width),
+          height: Math.round(t.height),
+        }
       }
       setBounds((prev) =>
         prev &&
@@ -61,8 +89,16 @@ export function useImageAnnotationAdapter(
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(container)
-    if (imgRef?.current) ro.observe(imgRef.current)
-    return () => ro.disconnect()
+    const img = imgRef?.current
+    if (img) {
+      ro.observe(img)
+      // 자연 크기는 load 후에 정해지므로 그때 content rect 를 다시 잰다.
+      img.addEventListener('load', measure)
+    }
+    return () => {
+      ro.disconnect()
+      if (img) img.removeEventListener('load', measure)
+    }
     // containerRef / imgRef are refs — their identity is stable, the
     // .current values change without triggering re-runs (which is what
     // we want — ResizeObserver picks up DOM mutations).

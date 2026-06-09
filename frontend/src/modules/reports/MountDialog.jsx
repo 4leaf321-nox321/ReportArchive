@@ -42,6 +42,7 @@ import {
   setMountFolder,
   setMountEditPolicy,
 } from '@/shared/api/mounts'
+import { requestTakedown } from '@/shared/api/takedowns'
 import { FolderPickerButton } from './FolderPickerButton'
 import { cn } from '@/shared/lib/utils'
 
@@ -359,6 +360,35 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
     }
   }
 
+  // "게시판에서 내리기 요청" — 작성자가 관리하지 않는 게시판은 직접 못 내리므로,
+  // 게시된 board 마다 게시취소 요청을 보낸다(관리하는 board 는 즉시 내려감).
+  const [requesting, setRequesting] = React.useState(false)
+  async function handleRequestTakedown() {
+    if (requesting) return
+    setRequesting(true)
+    try {
+      const res = await requestTakedown(report.id)
+      const requested = res?.requested ?? 0
+      const autoRemoved = res?.auto_removed ?? 0
+      if (requested === 0 && autoRemoved === 0) {
+        toast('게시된 게시판이 없습니다.')
+      } else {
+        const parts = []
+        if (autoRemoved) parts.push(`${autoRemoved}개 게시판에서 바로 내림`)
+        if (requested) parts.push(`${requested}개 게시판에 요청 보냄 (매니저 승인 대기)`)
+        toast.success(parts.join(' · '))
+      }
+      const rows = await listMounts(report.id)
+      setMounts(rows)
+      onChanged?.()
+    } catch (e) {
+      const msg = e?.response?.data?.message || e?.message || '요청 실패'
+      toast.error(msg)
+    } finally {
+      setRequesting(false)
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex flex-col w-[80vw] max-w-[80vw] h-[80vh]">
@@ -531,7 +561,22 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
         )}
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="sm:justify-between">
+          {/* 작성자: 게시된 모든 부서 게시판에서 내리기 요청. 관리하는 board 는
+              즉시 내려가고, 나머지는 그 board 매니저의 승인을 기다린다. */}
+          {isOwner && mountedBoards.length > 0 ? (
+            <Button
+              variant="outline"
+              className="text-destructive hover:text-destructive"
+              disabled={requesting}
+              onClick={handleRequestTakedown}
+              title="게시된 부서 게시판에서 내리기 요청 (매니저 승인)"
+            >
+              게시판에서 내리기 요청
+            </Button>
+          ) : (
+            <span />
+          )}
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             닫기
           </Button>

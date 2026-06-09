@@ -30,6 +30,11 @@ import {
   removeMember,
   searchUsers,
 } from '@/shared/api/members'
+import {
+  listTakedownRequests,
+  approveTakedown,
+  rejectTakedown,
+} from '@/shared/api/takedowns'
 import { DataTable } from '@/shared/components/DataTable'
 import { adminSetUserPassword } from '@/shared/api/me'
 
@@ -168,6 +173,10 @@ export default function MembersPage() {
           </div>
         }
       />
+
+      {/* 게시취소 요청 큐 — 작성자가 이 게시판에서 내려달라고 보낸 요청. 대기
+          중인 게 있을 때만 노출(없으면 숨김). */}
+      <TakedownRequestsPanel slug={slug} />
 
       {error ? (
         <ErrorState description={error.message} onRetry={reload} />
@@ -732,5 +741,87 @@ function AddMemberDialog({
         </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+
+/** 게시취소 요청 큐(보고서 삭제 재설계 2단계) — 이 게시판에 들어온 pending
+ *  요청을 매니저가 승인(게시취소)/거절(게시 유지). 대기 건이 없으면 숨긴다. */
+function TakedownRequestsPanel({ slug }) {
+  const { data, loading, reload } = useAsync(
+    () => (slug ? listTakedownRequests() : Promise.resolve([])),
+    [slug],
+  )
+  const [busyId, setBusyId] = useState(null)
+  const list = data ?? []
+
+  async function decide(id, approve) {
+    setBusyId(id)
+    try {
+      if (approve) await approveTakedown(id)
+      else await rejectTakedown(id)
+      toast.success(approve ? '승인 — 이 게시판에서 게시취소했습니다.' : '거절 — 게시를 유지합니다.')
+      reload()
+    } catch (e) {
+      toast.error(e?.response?.data?.message || e?.message || '처리 실패')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  // 대기 중 요청이 없으면 패널 자체를 숨긴다(잡음 최소화).
+  if (loading || list.length === 0) return null
+
+  return (
+    <Card className="border-amber-300 dark:border-amber-700">
+      <CardContent className="p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Trash2 className="h-4 w-4 text-amber-600" />
+          <span className="text-sm font-semibold">게시취소 요청</span>
+          <Badge variant="secondary">{list.length}</Badge>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          작성자가 이 게시판에서 보고서를 내려달라고 요청했습니다. 승인하면 이
+          게시판에서 게시취소되고(다른 게시판·원본은 유지), 거절하면 게시가
+          그대로 유지됩니다.
+        </p>
+        <div className="space-y-1.5">
+          {list.map((r) => (
+            <div
+              key={r.id}
+              className="flex items-center gap-2 rounded-md border px-3 py-2"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">
+                  {r.report_title || `보고서 #${r.report_id}`}
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  요청: {r.requested_by_name || '—'}
+                  {r.created_at
+                    ? ` · ${new Date(r.created_at).toLocaleDateString('ko-KR')}`
+                    : ''}
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busyId === r.id}
+                onClick={() => decide(r.id, true)}
+              >
+                승인(게시취소)
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={busyId === r.id}
+                onClick={() => decide(r.id, false)}
+              >
+                거절
+              </Button>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   )
 }

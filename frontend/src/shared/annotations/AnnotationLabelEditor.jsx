@@ -24,6 +24,10 @@ import { labelPositionFor } from './labelPosition'
 export function AnnotationLabelEditor({ interactions, annotations, adapter }) {
   const inputRef = useRef(null)
   const editingId = interactions?.editingId
+  // interactions 는 매 렌더 새 객체일 수 있어 ref 로 최신값을 잡아둔다(아래
+  // window-capture effect 가 재등록되지 않도록).
+  const interactionsRef = useRef(interactions)
+  interactionsRef.current = interactions
 
   // Auto-focus the input on every mount (i.e. every time editingId
   // flips to a new value). We focus in an effect rather than via the
@@ -35,6 +39,23 @@ export function AnnotationLabelEditor({ interactions, annotations, adapter }) {
     if (!el) return
     el.focus()
     el.select?.()
+  }, [editingId])
+
+  // 라벨 편집 중 Esc → 편집만 종료(포커스 해제)하고 위젯 편집 모달은 닫지
+  // 않는다. input 의 onKeyDown(bubble)은 Radix Dialog 의 document-capture Esc
+  // 보다 늦게 돌아 모달이 먼저 닫혔다 → window capture 로 잡아 먼저 처리한다.
+  // (capture 경로 window→document 라 window 가 항상 document 보다 앞선다.)
+  useEffect(() => {
+    if (!editingId) return undefined
+    function onKey(e) {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      e.stopImmediatePropagation?.()
+      interactionsRef.current?.cancelEditingLabel?.()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
   }, [editingId])
 
   if (!editingId || !interactions || !adapter) return null

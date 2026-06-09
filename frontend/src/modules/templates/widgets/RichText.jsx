@@ -1444,6 +1444,11 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
           onSplitLine={(split) => splitRowAt(i, split)}
           onDeleteEmpty={() => removeAt(i)}
           onMergeWithPrev={() => mergeWithPrevious(i)}
+          // Delete(앞으로 삭제)로 행 끝에서 다음 행을 끌어올림 = 다음 행을 이
+          // 행에 병합(mergeWithPrevious(i+1)). 마지막 행이면 없음.
+          onMergeWithNext={
+            i < items.length - 1 ? () => mergeWithPrevious(i + 1) : undefined
+          }
           onFocusPrev={(caret) => {
             const prev = i - 1
             if (prev < 0) return
@@ -1551,6 +1556,7 @@ function OutlineRow({
   onSplitLine,
   onDeleteEmpty,
   onMergeWithPrev,
+  onMergeWithNext,
   onFocusPrev,
   onFocusNext,
   bodyClassFor,
@@ -1795,6 +1801,14 @@ function OutlineRow({
       }
       e.preventDefault()
       onMergeWithPrev()
+      return true
+    }
+    if (e.key === 'Delete' && ctx?.atEnd && onMergeWithNext) {
+      // 행 끝에서 Delete(앞으로 삭제) → 다음 행을 이 행으로 끌어올려 병합
+      // (Backspace-at-start 의 대칭). 마지막 행이면 onMergeWithNext 가 없어
+      // 기본 동작에 맡긴다.
+      e.preventDefault()
+      onMergeWithNext()
       return true
     }
     if (e.key === 'ArrowUp' && ctx?.atStart) {

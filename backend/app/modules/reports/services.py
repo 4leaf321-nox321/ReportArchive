@@ -1159,9 +1159,12 @@ def _report_node(
     degree: int,
     is_center: bool = False,
     is_external_public: bool = False,
+    is_out_of_scope: bool = False,
 ) -> dict:
     """Report ORM → 관계도 노드 dict. owner 는 lazy='joined' 라 따라온다.
-    is_external_public = 내 스코프 밖이지만 공개로 보이는 다른 조직 보고서(§7.2)."""
+    is_external_public = 내 스코프 밖이지만 공개로 보이는 다른 조직 보고서(§7.2).
+    is_out_of_scope = primary 스코프(이 부서/하위 게시분) 밖인데 링크로 끌려온
+    외부 보고서(include_external)."""
     return {
         "id": f"report:{r.id}",
         "type": "report",
@@ -1174,6 +1177,7 @@ def _report_node(
         "degree": degree,
         "is_center": is_center,
         "is_external_public": is_external_public,
+        "is_out_of_scope": is_out_of_scope,
     }
 
 
@@ -1445,9 +1449,16 @@ def build_global_link_graph(
     tag_min_degree: int = 1,
     include_composites: bool = False,
     include_isolated: bool = False,
+    scope_mode: str = "subtree",
+    include_external: bool = False,
     limit: int = LINK_GRAPH_GLOBAL_LIMIT,
 ) -> dict:
     """워크스페이스 범위의 글로벌 관계도 (지식그래프 Phase 1b/2/4).
+
+    스코프(scope_mode): 'board'=이 게시판에 게시(mount)된 보고서만,
+    'subtree'=이 게시판 + 하위 부서 게시판까지 롤업. (virtual 글로벌 뷰는
+    무제한.) include_external=True 면 스코프 안 보고서와 *연결된* 스코프 밖
+    보고서도 노드로 추가(권한상 볼 수 있는 것만, is_out_of_scope 로 표시).
 
     로컬(build_link_graph)이 한 보고서에서 BFS 하는 것과 달리, 여기선
     *연결된 보고서들의 구조 전체* 를 그린다. 고립 노드(어떤 link 에도 안 낀
@@ -1467,14 +1478,31 @@ def build_global_link_graph(
     (양 끝이 모두 스코프 안인 link 만). limit 초과 시 degree 높은 노드부터
     남기고 truncated=True.
     """
-    # 스코프 = "내 스코프 ∪ 공개분"(조직간공개_설계.md §5). my_scope 는
-    # 멤버십 가시 집합(virtual 글로벌 뷰면 None=제한 없음), public_ids 는
-    # 공개로 표시된 보고서. 둘을 합쳐 그래프 적격 범위로 쓰고, 노드 표시는
-    # "내 스코프 밖 + 공개" 면 다른 조직 공개 노드로 구분한다.
-    my_scope = _scoped_report_ids(db, actor)
+    # 주 스코프(primary) = 이 부서(또는 +하위)에 *게시(mount)된* 보고서. 보고서
+    # 목록과 같은 "게시된 것" 기준 — virtual 글로벌 뷰는 무제한(None).
+    if is_global_view:
+        primary_ids = None
+    else:
+        scope_slugs = (
+            [workspace_slug]
+            if scope_mode == "board"
+            else ws_services.get_descendants_inclusive(db, workspace_slug)
+        )
+        primary_ids = set(
+            db.execute(
+                select(ReportMount.report_id).where(
+                    ReportMount.workspace_slug.in_(scope_slugs)
+                )
+            ).scalars()
+        )
+    # 외부 노드(include_external)를 켤 때, 권한상 볼 수 있는 것만 허용(누수 방지).
+    visible = _scoped_report_ids(db, actor)
     public_ids = public_report_ids(db) if not is_global_view else set()
-    scope_ids = None if my_scope is None else (my_scope | public_ids)
+    visible_all = None if visible is None else (visible | public_ids)
     type_set = set(type_ids) if type_ids else None
+
+    def _is_primary(rid: int) -> bool:
+        return primary_ids is None or rid in primary_ids
 
     # 시스템 전체 link (kind 필터만 SQL 로) — report_links 는 수동 생성이라
     # 작은 테이블. 스코프/날짜/종류 필터는 endpoint 보고서 단계에서 적용.
@@ -1488,12 +1516,28 @@ def build_global_link_graph(
         endpoint_ids.add(lk.from_report_id)
         endpoint_ids.add(lk.to_report_id)
 
+    # 적격 범위(scope_ids) = primary. include_external 면 primary 와 직접 연결된
+    # *볼 수 있는* 스코프 밖 보고서까지 더한다. (virtual=무제한이면 None 유지.)
+    if primary_ids is None:
+        scope_ids = None
+    else:
+        scope_ids = set(primary_ids)
+        if include_external:
+            for lk in link_rows:
+                f, t = lk.from_report_id, lk.to_report_id
+                fp, tp = _is_primary(f), _is_primary(t)
+                if fp and not tp and (visible_all is None or t in visible_all):
+                    scope_ids.add(t)
+                if tp and not fp and (visible_all is None or f in visible_all):
+                    scope_ids.add(f)
+
     # 후보 보고서 = 연결된 것(endpoints) + (고립 표시면) 스코프 내 모든 보고서.
     candidate_ids: set[int] = set(endpoint_ids)
     if include_isolated:
+        # 고립(연결 안 된) 노드는 *primary* 만 점으로 — 외부는 링크로만 등장.
         iso_q = select(Report.id)
-        if scope_ids is not None:
-            iso_q = iso_q.where(Report.id.in_(scope_ids))
+        if primary_ids is not None:
+            iso_q = iso_q.where(Report.id.in_(primary_ids))
         candidate_ids |= set(db.execute(iso_q).scalars())
     if not candidate_ids:
         return {"nodes": [], "edges": [], "truncated": False, "center_id": None}
@@ -1549,7 +1593,14 @@ def build_global_link_graph(
     kept_links = [
         lk
         for lk in link_rows
-        if lk.from_report_id in eligible and lk.to_report_id in eligible
+        if lk.from_report_id in eligible
+        and lk.to_report_id in eligible
+        # 외부-외부(둘 다 스코프 밖) 엣지는 제외 — 최소 한 끝이 primary 여야.
+        and (
+            primary_ids is None
+            or _is_primary(lk.from_report_id)
+            or _is_primary(lk.to_report_id)
+        )
     ]
 
     def _degree(links: list[ReportLink], ids: set[int]) -> dict[int, int]:
@@ -1590,10 +1641,12 @@ def build_global_link_graph(
             degree=degree.get(rid, 0),
             # 내 스코프 밖인데 공개라서 보이는 노드 → 다른 조직 공개로 표시.
             is_external_public=(
-                my_scope is not None
-                and rid not in my_scope
+                visible is not None
+                and rid not in visible
                 and rid in public_ids
             ),
+            # primary(이 부서/하위 게시분) 밖인데 링크로 끌려온 노드 → 외부로 표시.
+            is_out_of_scope=(primary_ids is not None and rid not in primary_ids),
         )
         for rid in node_ids
     ]

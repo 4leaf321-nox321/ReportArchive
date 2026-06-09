@@ -106,6 +106,14 @@ export default function ReportGraphPage() {
   const [includeIsolated, setIncludeIsolated] = useState(
     () => searchParams.get('iso') === '1',
   )
+  // 스코프 — 'board'=이 게시판 게시분만, 'subtree'=하위 부서까지(기본).
+  const [scopeMode, setScopeMode] = useState(
+    () => (searchParams.get('sc') === 'board' ? 'board' : 'subtree'),
+  )
+  // 외부 연결 보고서 표시 — 스코프 밖이지만 스코프 내 보고서와 연결된 것.
+  const [includeExternal, setIncludeExternal] = useState(
+    () => searchParams.get('ext') === '1',
+  )
   const [selectedEntities, setSelectedEntities] = useState([]) // [{id,value,type_slug}]
   const entityIds = useMemo(
     () => selectedEntities.map((e) => e.id),
@@ -176,6 +184,8 @@ export default function ReportGraphPage() {
       tagMinDegree: tagLayer.sharedOnly ? 2 : 1,
       includeComposites,
       includeIsolated,
+      scope: scopeMode,
+      includeExternal,
     })
       .then((data) => {
         if (!cancelled) setGraph(data)
@@ -201,6 +211,8 @@ export default function ReportGraphPage() {
     tagLayer,
     includeComposites,
     includeIsolated,
+    scopeMode,
+    includeExternal,
   ])
 
   // 필터 상태 → URL 쿼리스트링 동기화 (공유/뒤로가기 보존). 기본값은 안 적어
@@ -218,6 +230,8 @@ export default function ReportGraphPage() {
     if (timeBar) p.set('play', '1')
     if (includeComposites) p.set('comp', '1')
     if (includeIsolated) p.set('iso', '1')
+    if (scopeMode === 'board') p.set('sc', 'board')
+    if (includeExternal) p.set('ext', '1')
     if (tagLayer.enabled) {
       p.set('tag', '1')
       if (tagLayer.axes.join(',') !== DEFAULT_TAG_AXES.join(','))
@@ -237,6 +251,8 @@ export default function ReportGraphPage() {
     timeBar,
     includeComposites,
     includeIsolated,
+    scopeMode,
+    includeExternal,
     tagLayer,
     setSearchParams,
   ])
@@ -609,6 +625,38 @@ export default function ReportGraphPage() {
             title="연결 없는 보고서도 점으로 표시 (degree 0)"
           >
             고립 노드
+          </button>
+
+          {/* 스코프 — 이 게시판 게시분만 vs 하위 부서까지 롤업 */}
+          <button
+            type="button"
+            onClick={() =>
+              setScopeMode((v) => (v === 'board' ? 'subtree' : 'board'))
+            }
+            className={cn(
+              'h-7 rounded-md border px-2 text-[11px] font-medium transition-colors',
+              scopeMode === 'subtree'
+                ? 'border-sky-300 bg-sky-50 text-sky-700'
+                : 'border-border bg-background text-muted-foreground hover:bg-muted',
+            )}
+            title="이 게시판에 게시된 보고서만 / 하위 부서 게시판까지 포함"
+          >
+            {scopeMode === 'subtree' ? '하위 포함' : '이 게시판만'}
+          </button>
+
+          {/* 외부 연결 — 스코프 밖이지만 스코프 내 보고서와 연결된 보고서도 */}
+          <button
+            type="button"
+            onClick={() => setIncludeExternal((v) => !v)}
+            className={cn(
+              'h-7 rounded-md border px-2 text-[11px] font-medium transition-colors',
+              includeExternal
+                ? 'border-rose-300 bg-rose-50 text-rose-700'
+                : 'border-border bg-background text-muted-foreground hover:bg-muted',
+            )}
+            title="스코프 밖이지만 스코프 내 보고서와 연결된 보고서도 표시(흐리게)"
+          >
+            외부 연결
           </button>
 
           {/* 색 기준 — 노드를 어떤 범주로 칠할지 (plan §2.3) */}

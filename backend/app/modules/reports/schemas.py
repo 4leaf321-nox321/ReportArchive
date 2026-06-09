@@ -616,6 +616,9 @@ class LinkGraphNode(BaseModel):
     # 조직 간 공개(조직간공개_설계.md §7.2). 내 스코프 밖이지만 공개로 보이는
     # "다른 조직의 공개 보고서" 노드 — 프런트가 외곽선/색으로 구분한다.
     is_external_public: bool = False
+    # 부서 관계도에서 primary 스코프(이 부서/하위 게시분) 밖인데 링크로 끌려온
+    # 외부 보고서(include_external). 프런트가 흐리게/점선으로 구분한다.
+    is_out_of_scope: bool = False
 
     # ── entity 노드 전용 (관련정보 레이어) ──────────────────────────────
     entity_id: Optional[int] = None

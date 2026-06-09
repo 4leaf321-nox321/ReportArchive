@@ -121,6 +121,8 @@ export async function getGlobalLinkGraph({
   tagMinDegree,
   includeComposites = false,
   includeIsolated = false,
+  scope, // 'board' | 'subtree'
+  includeExternal = false,
   limit,
 } = {}) {
   // FastAPI 의 list[…] Query 는 반복 키(types=1&types=2, 대괄호 없음)를
@@ -137,6 +139,8 @@ export async function getGlobalLinkGraph({
   if (tagMinDegree) params.append('tag_min_degree', String(tagMinDegree))
   if (includeComposites) params.append('include_composites', 'true')
   if (includeIsolated) params.append('include_isolated', 'true')
+  if (scope) params.append('scope', scope)
+  if (includeExternal) params.append('include_external', 'true')
   if (limit) params.append('limit', String(limit))
   const qs = params.toString()
   const res = await apiClient.get(

@@ -243,6 +243,20 @@ def get_global_link_graph(
     tag_min_degree: int = Query(default=1, ge=1, le=20),
     include_composites: bool = Query(default=False),
     include_isolated: bool = Query(default=False),
+    scope: str = Query(
+        default="subtree",
+        description=(
+            "관계도 스코프 — 'board'=이 게시판에 게시된 보고서만, "
+            "'subtree'=이 게시판 + 하위 부서 게시판까지 롤업."
+        ),
+    ),
+    include_external: bool = Query(
+        default=False,
+        description=(
+            "스코프 밖이지만 스코프 내 보고서와 연결된 보고서도 노드로 추가"
+            "(권한상 볼 수 있는 것만)."
+        ),
+    ),
     limit: int = Query(default=services.LINK_GRAPH_GLOBAL_LIMIT, ge=1, le=2000),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
@@ -279,6 +293,8 @@ def get_global_link_graph(
         tag_min_degree=tag_min_degree,
         include_composites=include_composites,
         include_isolated=include_isolated,
+        scope_mode="board" if scope == "board" else "subtree",
+        include_external=include_external,
         limit=limit,
     )
     return success_response(data=LinkGraphResponse.model_validate(graph))

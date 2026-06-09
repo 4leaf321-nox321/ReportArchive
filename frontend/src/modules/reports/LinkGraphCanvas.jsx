@@ -659,6 +659,14 @@ export function LinkGraphCanvas({
       ctx.setLineDash([3 / globalScale, 2 / globalScale])
       ctx.stroke()
       ctx.setLineDash([])
+    } else if (node.is_out_of_scope) {
+      // 부서 스코프(이 게시판/하위 게시분) 밖인데 링크로 끌려온 외부 보고서 —
+      // 점선 회색 외곽선으로 "외부 연결"임을 구분한다.
+      ctx.lineWidth = 1.5 / globalScale
+      ctx.strokeStyle = '#9ca3af'
+      ctx.setLineDash([2 / globalScale, 2 / globalScale])
+      ctx.stroke()
+      ctx.setLineDash([])
     }
     // 라벨 — 확대됐을 때만(작게 줌아웃하면 글자 잡음). 노드 아래 가운데.
     if (globalScale > 0.9) {

@@ -140,6 +140,12 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
     // beat the editor's hard-coded `text-sm` baseline.
     style,
     editable = true,
+    // 표/비교표 셀에서 그리드 포커스 타깃(querySelector)으로 쓰도록 contenteditable
+    // DOM 에 data-grid-cell 을 달아 준다. 비우면 미부착.
+    gridCellKey,
+    // 탭/줄바꿈이 든 붙여넣기(엑셀 표)를 여러 셀로 펼치도록 부모에 위임.
+    // 호출되면 에디터 기본 붙여넣기는 막는다.
+    onPastePlain,
   },
   ref,
 ) {
@@ -162,12 +168,16 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
   const onFocusRef = useRef(onFocus)
   const onBlurRef = useRef(onBlur)
   const placeholderRef = useRef(placeholder)
+  // 표/비교표 셀: 탭/줄바꿈이 든 붙여넣기(엑셀)를 가로채 여러 셀로 펼치게
+  // 부모에 넘긴다. 단일 값 붙여넣기는 평소대로 에디터가 처리.
+  const onPastePlainRef = useRef(onPastePlain)
   useEffect(() => {
     onKeyDownRef.current = onKeyDown
     onChangeRef.current = onChange
     onFocusRef.current = onFocus
     onBlurRef.current = onBlur
     placeholderRef.current = placeholder
+    onPastePlainRef.current = onPastePlain
   })
 
   const editor = useEditor({
@@ -214,6 +224,20 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
       attributes: {
         class: className || '',
         spellcheck: 'false',
+        ...(gridCellKey ? { 'data-grid-cell': gridCellKey } : {}),
+      },
+      // 엑셀 등에서 탭/줄바꿈이 든 텍스트를 붙여넣으면 부모(표/비교표)가
+      // 여러 셀로 펼치게 위임 — 단일 값/일반 텍스트는 그대로 에디터가 처리.
+      handlePaste(_view, event) {
+        const cb = onPastePlainRef.current
+        if (!cb) return false
+        const text = event.clipboardData?.getData('text/plain')
+        if (!text || (text.indexOf('\t') === -1 && text.indexOf('\n') === -1)) {
+          return false
+        }
+        event.preventDefault()
+        cb(text)
+        return true
       },
       // Normalize pasted color before ProseMirror parses it: external sources
       // (Excel/Word/web) bring inline `color`/`<font color>`, most often a

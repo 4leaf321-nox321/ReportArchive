@@ -161,6 +161,14 @@ _CELL_STYLES_SCHEMA = {
     },
 }
 
+# 표/비교표 셀별 rich 마크업 사이드테이블(긴 글처럼 per-char 색·서식). 키는
+# cell_styles 와 동일("행::열key" / "행key::케이스key"), 값은 sanitize 된 html.
+# 평문 셀 값(rows/values)은 그대로 유지·동기화되고, 색이 입혀진 본문만 여기 둔다.
+_CELL_HTML_SCHEMA = {
+    "type": "object",
+    "additionalProperties": {"type": "string", "maxLength": 4000},
+}
+
 
 # Reusable text-style sub-schema. Mixed into every text-bearing widget's
 # props_schema so designers can override the visual treatment per block.
@@ -598,6 +606,7 @@ def _table_content(props: dict) -> dict:
                 "maximum": 4000,
             },
             "cell_styles": _CELL_STYLES_SCHEMA,
+            "cell_html": _CELL_HTML_SCHEMA,
         },
         "additionalProperties": False,
     }

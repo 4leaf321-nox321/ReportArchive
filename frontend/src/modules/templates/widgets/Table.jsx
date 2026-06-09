@@ -7,7 +7,8 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/shared/components/ui/popover'
-import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, NoteInput, PreviewLabel, TextStyleField, captionSkipProps, computeMergeMap, normalizeMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation } from './_shared'
+import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, NoteInput, PreviewLabel, TextStyleField, captionSkipProps, computeMergeMap, normalizeMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation, _richIsEmpty, _richSeed, sanitizeCaptionHtml } from './_shared'
+import { RichTextRowEditor } from './RichTextRowEditor'
 import { ColorSwatchPicker, bgTokenClass, colorTokenClass } from '@/shared/text-color'
 
 // 셀 색상 사이드테이블 키 — `${rowIndex}::${colKey}`. (열 key 는 안정적이라
@@ -157,6 +158,12 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     if (!s) return ''
     return `${bgTokenClass(s.bg)} ${colorTokenClass(s.fg)}`.trim()
   }
+  // 셀별 rich 마크업(긴 글처럼 per-char 색·서식). 평문 값(rows)과 분리된
+  // 사이드테이블 — 키는 cell_styles 와 동일한 `${r}::${colKey}`.
+  const cellHtml =
+    content?.cell_html && typeof content.cell_html === 'object'
+      ? content.cell_html
+      : {}
   const bodyTextClass = textStyleToClassName(props.text_style)
   const bodyTextStyle = textStyleToInlineStyle(props.text_style)
   // 읽기 모드 전용 — "전체 펼치기" 토글. 기본은 compact (셀이 잘림 +
@@ -205,6 +212,9 @@ export function TableEditor({ props, content, onChange, readOnly }) {
       Object.keys(merged.cell_styles).length === 0
     ) {
       delete merged.cell_styles
+    }
+    if (!merged.cell_html || Object.keys(merged.cell_html).length === 0) {
+      delete merged.cell_html
     }
     // 빈 폭 맵은 저장 안 함 — override 가 다시 0개가 되면 키 자체를 제거.
     if (
@@ -347,6 +357,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                           <ReadOnlyCell
                             key={ci}
                             value={row[c.key]}
+                            html={cellHtml[_cellKey(ri, c.key)]}
                             expanded={expanded}
                             rowSpan={span?.rs}
                             colSpan={span?.cs}
@@ -367,7 +378,29 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   }
   function updateCell(rowIdx, key, value) {
     const nextRows = rows.map((r, i) => (i === rowIdx ? { ...r, [key]: value } : r))
-    patch({ rows: nextRows })
+    // 평문으로 덮어쓰면(붙여넣기·비텍스트 입력) 그 셀의 rich 마크업은 버린다.
+    const k = _cellKey(rowIdx, key)
+    if (cellHtml[k]) {
+      const { [k]: _drop, ...rest } = cellHtml
+      patch({ rows: nextRows, cell_html: rest })
+    } else {
+      patch({ rows: nextRows })
+    }
+  }
+  // 텍스트 셀의 rich 편집 — 평문 text(rows)와 rich(cell_html)를 함께 동기화.
+  function updateCellRich(rowIdx, key, html, text) {
+    const nextRows = rows.map((r, i) =>
+      i === rowIdx ? { ...r, [key]: text || undefined } : r,
+    )
+    const k = _cellKey(rowIdx, key)
+    let nextHtml
+    if (_richIsEmpty(html)) {
+      const { [k]: _drop, ...rest } = cellHtml
+      nextHtml = rest
+    } else {
+      nextHtml = { ...cellHtml, [k]: html }
+    }
+    patch({ rows: nextRows, cell_html: nextHtml })
   }
   function addRow() {
     // 끝에 추가는 merges 영향 없음 (모든 anchor 가 이미 작은 r 인덱스).
@@ -387,6 +420,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
       rows: rows.filter((_, i) => i !== rowIdx),
       ...(merges.length || nextMerges.length ? { merges: nextMerges } : {}),
       cell_styles: _shiftCellStylesRowRemove(cellStyles, rowIdx),
+      cell_html: _shiftCellStylesRowRemove(cellHtml, rowIdx),
     })
   }
   function moveRow(rowIdx, dir) {
@@ -410,6 +444,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
         ? { merges: normalizeMerges(swapped, rows.length, cols.length) }
         : {}),
       cell_styles: _shiftCellStylesRowSwap(cellStyles, rowIdx, newIdx),
+      cell_html: _shiftCellStylesRowSwap(cellHtml, rowIdx, newIdx),
     })
   }
 
@@ -445,6 +480,11 @@ export function TableEditor({ props, content, onChange, readOnly }) {
       ...(merges.length || nextMerges.length ? { merges: nextMerges } : {}),
       cell_styles: Object.fromEntries(
         Object.entries(cellStyles).filter(
+          ([k]) => k.split('::')[1] !== removed.key,
+        ),
+      ),
+      cell_html: Object.fromEntries(
+        Object.entries(cellHtml).filter(
           ([k]) => k.split('::')[1] !== removed.key,
         ),
       ),
@@ -679,18 +719,21 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     let nextRows = [...rows]
     while (nextRows.length < neededRows) nextRows.push({})
 
-    // Fill values.
+    // Fill values. 붙여넣어 덮어쓴 셀의 기존 rich 마크업은 평문으로 대체되니
+    // cell_html 에서 제거한다.
+    const nextHtml = { ...cellHtml }
     for (let r = 0; r < grid.length; r += 1) {
       const target = { ...nextRows[startRow + r] }
       for (let c = 0; c < grid[r].length; c += 1) {
         const col = nextCols[startCol + c]
         if (!col) continue
         target[col.key] = coerceCellValue(col, grid[r][c])
+        delete nextHtml[_cellKey(startRow + r, col.key)]
       }
       nextRows[startRow + r] = target
     }
 
-    patch({ columns: nextCols, rows: nextRows })
+    patch({ columns: nextCols, rows: nextRows, cell_html: nextHtml })
   }
 
   if (cols.length === 0) {
@@ -993,7 +1036,11 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                       <CellInput
                         column={c}
                         value={row[c.key]}
+                        html={cellHtml[_cellKey(rowIdx, c.key)]}
                         onChange={(v) => updateCell(rowIdx, c.key, v)}
+                        onChangeRich={(html, text) =>
+                          updateCellRich(rowIdx, c.key, html, text)
+                        }
                         onMultiPaste={(text) => pasteGrid(rowIdx, ci, text)}
                         rowIdx={rowIdx}
                         colIdx={ci}
@@ -1104,7 +1151,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   )
 }
 
-function CellInput({ column, value, onChange, onMultiPaste, rowIdx, colIdx, onKeyDown }) {
+function CellInput({ column, value, html, onChange, onChangeRich, onMultiPaste, rowIdx, colIdx, onKeyDown }) {
   const t = column.type
   // 그리드 네비게이션이 querySelector 로 셀을 찾을 때 키. focusCell 의
   // 셀렉터와 1:1 매칭 — 형식이 바뀌면 useGridNavigation 도 같이 고쳐야 함.
@@ -1170,17 +1217,21 @@ function CellInput({ column, value, onChange, onMultiPaste, rowIdx, colIdx, onKe
       />
     )
   }
-  // 텍스트 셀 — multi-line textarea. Enter 로 줄바꿈, 화살표로 셀 이동
-  // (boundary 기준). 행 높이는 내용에 따라 auto-grow.
+  // 텍스트 셀 — rich 에디터(긴 글처럼 텍스트 선택 → 버블 메뉴로 색·서식).
+  // 평문 값(rows)도 onChangeRich 가 함께 동기화. 엑셀 붙여넣기(TSV)는
+  // onPastePlain 으로 가로채 여러 셀로 펼친다. data-grid-cell 로 그리드 포커스
+  // 타깃·Tab 이동 유지(화살표 셀 점프는 캐럿 이동으로 대체).
   return (
-    <AutoGrowTextarea
-      value={value ?? ''}
-      onChange={(v) => onChange(v || undefined)}
-      onPaste={handlePaste}
-      onKeyDown={onKeyDown}
-      data-grid-cell={gridCellKey}
-      className="w-full min-h-[2rem] resize-none rounded-md border border-input bg-background px-2 py-1 text-xs leading-snug text-center focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring whitespace-pre-wrap break-words"
-    />
+    <div className="outline-rich-row w-full">
+      <RichTextRowEditor
+        html={_richSeed(html, value)}
+        onChange={onChangeRich}
+        onKeyDown={onKeyDown}
+        onPastePlain={onMultiPaste}
+        gridCellKey={gridCellKey}
+        className="w-full min-h-[2rem] rounded-md border border-input bg-background px-2 py-1 text-xs leading-snug text-center whitespace-pre-wrap break-words"
+      />
+    </div>
   )
 }
 
@@ -1226,9 +1277,18 @@ function coerceCellValue(column, raw) {
  *
  *  Expanded 모드: 전체 펼치기 토글이 켜진 상태 — 셀이 줄바꿈 되어 자연
  *  스럽게 늘어남. 이미 다 보이므로 hover popover 는 띄우지 않는다. */
-function ReadOnlyCell({ value, expanded, rowSpan, colSpan, cellClass = '' }) {
-  const isEmpty = value === undefined || value === null || value === ''
-  const text = isEmpty ? '' : String(value)
+function ReadOnlyCell({ value, html, expanded, rowSpan, colSpan, cellClass = '' }) {
+  const hasRich = !_richIsEmpty(html)
+  const isEmpty =
+    !hasRich && (value === undefined || value === null || value === '')
+  const text = value === undefined || value === null ? '' : String(value)
+  // rich 마크업이 있으면 그걸 우선 렌더(긴 글처럼 부분 색). 없으면 평문.
+  const richNode = hasRich ? (
+    <span
+      className="[&_p]:m-0 [&_p]:inline"
+      dangerouslySetInnerHTML={{ __html: sanitizeCaptionHtml(html) }}
+    />
+  ) : null
   // rowSpan / colSpan 은 1 일 땐 HTML attr 자체를 비워둠 — DOM 상 깔끔.
   const spanAttrs = {
     ...(rowSpan && rowSpan > 1 ? { rowSpan } : {}),
@@ -1250,7 +1310,7 @@ function ReadOnlyCell({ value, expanded, rowSpan, colSpan, cellClass = '' }) {
         {...spanAttrs}
         className={`px-2 py-1.5 text-center whitespace-pre-wrap break-words align-top ${cellClass}`}
       >
-        {text}
+        {richNode ?? text}
       </td>
     )
   }
@@ -1260,7 +1320,7 @@ function ReadOnlyCell({ value, expanded, rowSpan, colSpan, cellClass = '' }) {
       className={`px-2 py-1.5 text-center truncate relative group ${cellClass}`}
     >
       <span title={text} className="block truncate">
-        {text}
+        {richNode ?? text}
       </span>
       {/* 호버 popover — Tailwind group-hover 만으로 동작. 셀 아래에 떠서
           row 위로 z-index 올림. 긴 글도 줄바꿈 / 폭 제한으로 깔끔하게

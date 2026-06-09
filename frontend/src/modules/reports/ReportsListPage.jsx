@@ -72,6 +72,7 @@ import {
   FolderSidebar,
   FOLDER_FILTER_ALL,
   FOLDER_FILTER_UNCATEGORIZED,
+  FOLDER_FILTER_TRASH,
 } from './FolderSidebar'
 import { MountDialog } from './MountDialog'
 import { cn } from '@/shared/lib/utils'
@@ -116,11 +117,10 @@ export default function ReportsListPage() {
   // 조직 간 공개 탐색 토글 — org 에서만. 켜면 다른 조직 공개분까지 합쳐
   // 보여준다(조직간공개_설계.md §5). 기본 off 라 자기 게시판 목록은 깨끗.
   const [includePublic, setIncludePublic] = useState(false)
-  // 휴지통 보기 — 개인 공간에서 소프트삭제된 보고서만(복구 가능). org 게시판엔
-  // 의미 없어 personal 에서만 노출.
-  const [trashView, setTrashView] = useState(false)
   const isPersonal = workspace?.kind === 'personal'
   const isOrg = workspace?.kind === 'org'
+  // 휴지통 보기 — 좌측 사이드바의 "휴지통" 고정 항목 선택 상태(개인 공간 한정).
+  const trashView = isPersonal && folderFilter === FOLDER_FILTER_TRASH
   const showFolderSidebar = isPersonal || isOrg
   // 시스템 관리자가 '가입자 공간' 으로 다른 가입자의 personal 워크스페이스
   // 에 진입한 경우. 폴더 API 는 backend 가 personal-{N} 슬러그를 받아
@@ -202,7 +202,9 @@ export default function ReportsListPage() {
   // Encode folder filter into a stable string for the dep array. null
   // is "no filter" — don't send `folder_id` at all in that case.
   const folderQueryValue =
-    folderFilter === FOLDER_FILTER_ALL || !showFolderSidebar
+    folderFilter === FOLDER_FILTER_ALL ||
+    folderFilter === FOLDER_FILTER_TRASH ||
+    !showFolderSidebar
       ? undefined
       : folderFilter
   const { data: reports, loading, error, reload } = useAsync(
@@ -255,7 +257,9 @@ export default function ReportsListPage() {
   // collection, just re-ordered.
   useEffect(() => {
     setSelectedIds(new Set())
-  }, [slug, folderQueryValue, entityFilterKey])
+    // trashView 도 포함 — 전체↔휴지통 은 folderQueryValue 가 둘 다 undefined 라
+    // 그것만으론 데이터 전환을 못 감지한다(선택 잔류 방지).
+  }, [slug, folderQueryValue, entityFilterKey, trashView])
 
   // 기간 필터의 lower-bound 를 ISO 문자열로 한 번 계산. 'd30'/'d90'/
   // 'd365' → now - N일, 'y2026' → 2026-01-01. Compare 가 ISO 문자열로
@@ -758,6 +762,8 @@ export default function ReportsListPage() {
           onSetBoardExternalView={handleSetBoardPublic}
           // 외부 공개 열람자에겐 게시판 공개정책 바를 숨긴다(남 조직 정책).
           showBoardBar={!isPublicView}
+          // 휴지통 고정 항목 — 개인 공간(소프트삭제 보고서 복구)에서만.
+          showTrash={isPersonal && !isPublicView}
         />
       )}
 
@@ -770,28 +776,13 @@ export default function ReportsListPage() {
               : ''
           }
           actions={
-            <div className="flex items-center gap-2">
-              {/* 휴지통 보기 토글 — 개인 공간에서만(소프트삭제 보고서 복구). */}
-              {isPersonal && !isPublicView && (
-                <Button
-                  variant={trashView ? 'default' : 'outline'}
-                  onClick={() => {
-                    setTrashView((v) => !v)
-                    setSelectedIds(new Set())
-                  }}
-                >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  {trashView ? '목록으로' : '휴지통'}
-                </Button>
-              )}
-              {/* 외부 공개 열람자(읽기전용)·휴지통 보기에선 신규 작성 숨김. */}
-              {!workspace?.virtual && !isPublicView && !trashView && (
-                <Button onClick={() => navigate(`/w/${slug}/reports/new`)}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  신규 작성
-                </Button>
-              )}
-            </div>
+            // 외부 공개 열람자(읽기전용)·휴지통 보기에선 신규 작성 숨김.
+            !workspace?.virtual && !isPublicView && !trashView && (
+              <Button onClick={() => navigate(`/w/${slug}/reports/new`)}>
+                <Plus className="mr-2 h-4 w-4" />
+                신규 작성
+              </Button>
+            )
           }
         />
 

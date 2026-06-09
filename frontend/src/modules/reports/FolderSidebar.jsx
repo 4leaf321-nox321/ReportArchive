@@ -39,6 +39,9 @@ import { cn } from '@/shared/lib/utils'
 /** Sentinel filter values understood by the parent. */
 export const FOLDER_FILTER_ALL = null
 export const FOLDER_FILTER_UNCATEGORIZED = 'uncategorized'
+// 휴지통 보기(개인 공간) — 폴더 필터가 아니라 소프트삭제된 보고서 목록으로
+// 전환하는 좌측 고정 항목. 부모가 trashed 조회로 분기한다.
+export const FOLDER_FILTER_TRASH = '__trash__'
 
 /** MIME type carried by a report-row drag. Kept verbatim here (not
  *  imported) so the sidebar doesn't pull a dependency on the list page;
@@ -102,6 +105,8 @@ export function FolderSidebar({
   orgScope = false,
   // 게시판 공유 바 표시 여부. 외부 공개 열람자에겐 false.
   showBoardBar = true,
+  // 휴지통 고정 항목 표시 — 개인 공간에서만(소프트삭제 보고서 복구).
+  showTrash = false,
 }) {
   const [folders, setFolders] = React.useState([])
   const [uncategorizedCount, setUncategorizedCount] = React.useState(0)
@@ -644,6 +649,15 @@ export function FolderSidebar({
               : undefined
           }
         />
+        {/* 휴지통 — 소프트삭제된 보고서(개인 공간). 전체/미분류 아래 고정. */}
+        {showTrash && (
+          <FixedRow
+            icon={Trash2}
+            label="휴지통"
+            active={selected === FOLDER_FILTER_TRASH}
+            onClick={() => onSelect(FOLDER_FILTER_TRASH)}
+          />
+        )}
 
         <div className="h-px bg-border my-1.5" />
 

@@ -121,11 +121,20 @@ export function WorkspaceProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace?.slug])
 
+  // 부서 전환 — 부서 홈으로 가지 않고, 현재 보던 *섹션*(보고서/관계도/종합보고/
+  // 대시보드 등)을 유지한 채 부서만 바꾼다. 상세(ID) 경로는 그 부서 전용이라
+  // 섹션 루트로 떨어뜨린다. 쿼리(관계도 등 URL 기반 설정)는 유지해 설정도
+  // 보존한다 — 단 보고서는 부서마다 폴더구조가 달라 메인(쿼리 미유지)으로.
   const switchWorkspace = React.useCallback(
     (nextSlug) => {
-      navigate(`/w/${nextSlug}`)
+      const m = matchPath({ path: '/w/:workspace/*' }, location.pathname)
+      const rest = m?.params?.['*'] ?? ''
+      const section = rest.split('/')[0] ?? ''
+      const dest = section ? `/w/${nextSlug}/${section}` : `/w/${nextSlug}`
+      const search = section && section !== 'reports' ? location.search : ''
+      navigate(`${dest}${search}`)
     },
-    [navigate]
+    [navigate, location.pathname, location.search]
   )
 
   // Tree helpers — kept here so the provider is the single source of truth.

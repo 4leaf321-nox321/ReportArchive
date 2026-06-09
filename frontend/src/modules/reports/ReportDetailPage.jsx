@@ -86,7 +86,8 @@ import {
   createReport,
   copyReport,
   updateReport,
-  deleteReport,
+  trashReport,
+  restoreReport,
   publishReport,
   unpublishReport,
   setAuthorLock,
@@ -2318,15 +2319,25 @@ export default function ReportDetailPage() {
 
   async function onDelete() {
     try {
-      await deleteReport(draft.id)
-      toast.success('보고서가 삭제되었습니다.')
-      // Bypass the dirty guard — the report we'd be guarding no longer
-      // exists, and the redirect below is a deliberate consequence of
-      // the user's destructive action.
+      // "삭제" = 소프트삭제(휴지통). 개인 목록에선 숨지만 게시된 부서
+      // 게시판엔 그대로 남고, 휴지통에서 복구할 수 있다.
+      await trashReport(draft.id)
+      toast.success('휴지통으로 이동했습니다. (휴지통에서 복구 가능)')
+      // dirty guard 우회 — 사용자의 의도된 이동.
       isEditingRef.current = false
       navigate(`/w/${slug}/reports`)
     } catch (err) {
       toast.error(err.message || '삭제 실패')
+    }
+  }
+
+  async function onRestore() {
+    try {
+      await restoreReport(draft.id)
+      toast.success('복구되었습니다.')
+      reloadReport()
+    } catch (err) {
+      toast.error(err.message || '복구 실패')
     }
   }
 
@@ -3051,6 +3062,22 @@ export default function ReportDetailPage() {
     >
     <div className="flex h-full report-detail-root">
       <div className="relative flex-1 min-w-0 flex flex-col">
+        {/* 휴지통 배너 — 소프트삭제된 보고서를 열었을 때(개인 목록엔 숨지만
+            게시판엔 남아 직접 열람 가능). 소유자/시스템관리자는 여기서 복구. */}
+        {existingReport?.deleted_at && (
+          <div className="flex items-center gap-3 border-b bg-amber-50 px-6 py-2 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200 print:hidden">
+            <Trash2 className="h-3.5 w-3.5 shrink-0" />
+            <span className="flex-1">
+              이 보고서는 휴지통에 있습니다. 개인 목록에선 숨겨지지만 게시된 부서
+              게시판에는 그대로 남아 있습니다.
+            </span>
+            {existingReport?.can_trash && (
+              <Button size="sm" variant="outline" className="h-7" onClick={onRestore}>
+                복구
+              </Button>
+            )}
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-3 border-b bg-background px-6 py-3 report-detail-toolbar">
           <div className="flex-1 min-w-[280px]">
             {isEditing ? (
@@ -3409,10 +3436,10 @@ export default function ReportDetailPage() {
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-              {/* 삭제는 소유자/시스템관리자/게시판 매니저만(백엔드 can_delete).
-                  coauthor·추가편집자는 편집은 되지만 삭제 버튼은 숨긴다 — 삭제는
-                  게시된 모든 부서에서 cascade 로 사라지는 파괴적 작업이라. */}
-              {existingReport?.can_delete && (
+              {/* "삭제"=소프트삭제(휴지통). 소유자/시스템관리자만(can_trash).
+                  게시분은 보존되고 휴지통에서 복구 가능. 게시판에서 내리는 건
+                  매니저의 '게시취소'(별도). */}
+              {existingReport?.can_trash && (
                 <Button
                   variant="destructive"
                   size="sm"
@@ -3917,9 +3944,9 @@ export default function ReportDetailPage() {
       <ConfirmDialog
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
-        title="보고서 삭제"
-        description="이 보고서를 정말 삭제하시겠습니까? 되돌릴 수 없습니다."
-        confirmLabel="삭제"
+        title="휴지통으로 이동"
+        description="이 보고서를 휴지통으로 보냅니다. 게시된 부서 게시판에는 그대로 남아 있으며, 휴지통에서 복구할 수 있습니다."
+        confirmLabel="휴지통으로 이동"
         variant="destructive"
         onConfirm={onDelete}
       />

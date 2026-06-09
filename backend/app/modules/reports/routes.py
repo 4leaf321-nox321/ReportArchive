@@ -46,6 +46,9 @@ def _read_with_perms(db: Session, actor: CurrentUser, report) -> ReportRead:
     # 삭제는 편집보다 좁은 권한(소유자/시스템관리자/게시판 매니저) — 프런트가
     # 삭제 버튼을 이 플래그로 게이팅하도록 함께 내려준다.
     obj.can_delete = services.can_delete_report(db, actor, report)
+    # 소프트삭제(휴지통)·복구 권한 — 소유자/시스템관리자. 프런트 "삭제"(휴지통)
+    # 버튼과 휴지통 복구 버튼을 이 값으로 게이팅.
+    obj.can_trash = services.can_trash_report(db, actor, report)
     # 조직 간 공개(§6) — 외부 공개 열람자면 읽기전용 플래그를 세워 프런트가
     # 배너·곁다리 숨김을 그린다. virtual(글로벌/관리자)은 공개 열람자가 아님.
     is_public_view = not actor.workspace.virtual and (
@@ -102,6 +105,14 @@ def list_reports(
             "안건 picker 처럼 상위 조직이 하위팀 보고서를 묶어야 할 때 True."
         ),
     ),
+    trashed: bool = Query(
+        default=False,
+        description=(
+            "휴지통 보기 — 개인 공간 컨텍스트에서 소프트삭제된(deleted_at) "
+            "보고서만 반환. 기본 False(살아있는 것만). org 게시판 목록은 "
+            "게시분 보존이라 이 플래그와 무관하게 게시된 것을 그대로 보여준다."
+        ),
+    ),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
@@ -150,6 +161,7 @@ def list_reports(
         folder_filter=folder_filter,
         include_public=include_public,
         include_descendants=include_descendants,
+        trashed=trashed,
     )
     # 공개 탐색 시 "내 스코프 밖 + 공개" 인 행을 표시 — 프런트가 뱃지로 구분.
     external_ids: set[int] = set()
@@ -784,12 +796,13 @@ def delete_report(
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(require_writer),
 ):
+    """영구삭제(purge) — 원본을 지워 게시된 모든 부서 게시판·종합보고 안건에서
+    cascade 로 사라진다. 평소 "삭제"는 이게 아니라 소프트삭제(/trash)를 쓴다.
+    (보고서 삭제 재설계 3단계에서 '게시 중 차단·확인' 가드를 더 붙일 예정.)
+    권한: 조회가 아니라 소유자/시스템관리자/게시판 매니저로 한정."""
     report = services.get_report(db, report_id)
     if not report:
         return not_found_response(f"Report not found: {report_id}")
-    # 삭제는 조회(can_read)가 아니라 더 좁은 권한 — 소유자/시스템관리자/게시판
-    # 매니저만. 보고서를 지우면 게시된 모든 부서 게시판에서 cascade 로 사라지기
-    # 때문(coauthor·추가편집자는 편집은 되지만 삭제는 불가).
     if not services.can_delete_report(db, actor, report):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
@@ -797,6 +810,46 @@ def delete_report(
         )
     services.delete_report(db, report)
     return success_response(data=None, message="Deleted")
+
+
+@router.post("/{report_id}/trash")
+def trash_report(
+    report_id: int,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_writer),
+):
+    """소프트삭제 — 휴지통으로 보낸다(deleted_at set). 개인 목록/검색에서
+    숨지만 게시된 부서 게시판에는 그대로 남는다(게시분 보존). 복구 가능.
+    권한: 소유자/시스템관리자(개인 공간 회수)."""
+    report = services.get_report(db, report_id)
+    if not report:
+        return not_found_response(f"Report not found: {report_id}")
+    if not services.can_trash_report(db, actor, report):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "이 보고서를 삭제할 권한이 없습니다 (소유자만 가능).",
+        )
+    services.soft_delete_report(db, report, actor)
+    return success_response(data=None, message="Trashed")
+
+
+@router.post("/{report_id}/restore")
+def restore_report(
+    report_id: int,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_writer),
+):
+    """휴지통에서 복구 — deleted_at 해제. 권한: 소유자/시스템관리자."""
+    report = services.get_report(db, report_id)
+    if not report:
+        return not_found_response(f"Report not found: {report_id}")
+    if not services.can_trash_report(db, actor, report):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "이 보고서를 복구할 권한이 없습니다 (소유자만 가능).",
+        )
+    services.restore_report(db, report)
+    return success_response(data=None, message="Restored")
 
 
 # ─── Report links ────────────────────────────────────────────────────────── #

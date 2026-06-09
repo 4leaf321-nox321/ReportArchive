@@ -47,7 +47,12 @@ import { WorkspaceCombobox } from '@/shared/components/WorkspaceCombobox'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
-import { deleteReport, listReports, moveReportToFolder } from './api'
+import {
+  trashReport,
+  restoreReport,
+  listReports,
+  moveReportToFolder,
+} from './api'
 import { setMountFolder } from '@/shared/api/mounts'
 
 /** MIME type carried by a report-row drag. FolderSidebar checks for this
@@ -111,6 +116,9 @@ export default function ReportsListPage() {
   // 조직 간 공개 탐색 토글 — org 에서만. 켜면 다른 조직 공개분까지 합쳐
   // 보여준다(조직간공개_설계.md §5). 기본 off 라 자기 게시판 목록은 깨끗.
   const [includePublic, setIncludePublic] = useState(false)
+  // 휴지통 보기 — 개인 공간에서 소프트삭제된 보고서만(복구 가능). org 게시판엔
+  // 의미 없어 personal 에서만 노출.
+  const [trashView, setTrashView] = useState(false)
   const isPersonal = workspace?.kind === 'personal'
   const isOrg = workspace?.kind === 'org'
   const showFolderSidebar = isPersonal || isOrg
@@ -204,9 +212,11 @@ export default function ReportsListPage() {
             entityIds: entityFilterIds,
             folderId: folderQueryValue,
             includePublic: isOrg && includePublic,
+            // 휴지통 보기(개인 공간 한정) — 소프트삭제된 것만.
+            trashed: isPersonal && trashView,
           })
         : Promise.resolve([]),
-    [slug, entityFilterKey, folderQueryValue, isOrg, includePublic]
+    [slug, entityFilterKey, folderQueryValue, isOrg, includePublic, isPersonal, trashView]
   )
   const { data: templates } = useAsync(
     () => (slug ? listTemplates() : Promise.resolve([])),
@@ -603,7 +613,12 @@ export default function ReportsListPage() {
   }
 
   function handleBulkDelete() {
-    runBulk((id) => deleteReport(id), { successWord: '삭제됨' })
+    // "삭제"=소프트삭제(휴지통). 게시분은 보존되고 휴지통에서 복구 가능.
+    runBulk((id) => trashReport(id), { successWord: '휴지통으로 이동됨' })
+  }
+
+  function handleBulkRestore() {
+    runBulk((id) => restoreReport(id), { successWord: '복구됨' })
   }
 
   /** Bulk folder change — branches on isOrg because the two scopes use
@@ -755,13 +770,28 @@ export default function ReportsListPage() {
               : ''
           }
           actions={
-            // 외부 공개 열람자(읽기전용)에겐 신규 작성 버튼을 숨긴다.
-            !workspace?.virtual && !isPublicView && (
-              <Button onClick={() => navigate(`/w/${slug}/reports/new`)}>
-                <Plus className="mr-2 h-4 w-4" />
-                신규 작성
-              </Button>
-            )
+            <div className="flex items-center gap-2">
+              {/* 휴지통 보기 토글 — 개인 공간에서만(소프트삭제 보고서 복구). */}
+              {isPersonal && !isPublicView && (
+                <Button
+                  variant={trashView ? 'default' : 'outline'}
+                  onClick={() => {
+                    setTrashView((v) => !v)
+                    setSelectedIds(new Set())
+                  }}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  {trashView ? '목록으로' : '휴지통'}
+                </Button>
+              )}
+              {/* 외부 공개 열람자(읽기전용)·휴지통 보기에선 신규 작성 숨김. */}
+              {!workspace?.virtual && !isPublicView && !trashView && (
+                <Button onClick={() => navigate(`/w/${slug}/reports/new`)}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  신규 작성
+                </Button>
+              )}
+            </div>
           }
         />
 
@@ -783,7 +813,23 @@ export default function ReportsListPage() {
           <Skeleton className="h-96" />
         ) : (
           <>
-            {effectiveSelected.size > 0 && (
+            {effectiveSelected.size > 0 && trashView && (
+              // 휴지통 보기 — 일괄 복구만.
+              <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                <span className="text-muted-foreground">{effectiveSelected.size}건 선택</span>
+                <Button size="sm" disabled={bulkBusy} onClick={handleBulkRestore}>
+                  복구
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setSelectedIds(new Set())}
+                >
+                  선택 해제
+                </Button>
+              </div>
+            )}
+            {effectiveSelected.size > 0 && !trashView && (
               <BulkActionBar
                 count={effectiveSelected.size}
                 busy={bulkBusy}
@@ -876,9 +922,9 @@ export default function ReportsListPage() {
         <ConfirmDialog
           open={bulkDeleteOpen}
           onOpenChange={setBulkDeleteOpen}
-          title="선택한 보고서 삭제"
-          description={`선택한 ${effectiveSelected.size}건의 보고서를 삭제합니다. 되돌릴 수 없습니다.`}
-          confirmLabel="삭제"
+          title="휴지통으로 이동"
+          description={`선택한 ${effectiveSelected.size}건을 휴지통으로 보냅니다. 게시된 부서 게시판에는 그대로 남으며, 휴지통에서 복구할 수 있습니다.`}
+          confirmLabel="휴지통으로 이동"
           variant="destructive"
           onConfirm={handleBulkDelete}
         />

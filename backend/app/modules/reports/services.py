@@ -113,6 +113,7 @@ def list_reports_in_workspace(
     folder_filter: Optional[int | str] = None,
     include_public: bool = False,
     include_descendants: bool = False,
+    trashed: bool = False,
 ) -> list[Report]:
     """Returns reports visible in the given workspace.
 
@@ -146,6 +147,13 @@ def list_reports_in_workspace(
         # the user's tree), so we skip the descendants walk for them.
         if ws is not None and ws.kind == WorkspaceKind.personal:
             query = query.where(Report.workspace_slug == workspace_slug)
+            # 소프트삭제(휴지통) 필터는 *개인 공간*에만 — 게시된 부서 게시판
+            # 목록(org 분기)은 게시분을 그대로 보여줘 보존한다. trashed=True
+            # 면 휴지통 보기(삭제된 것만).
+            if trashed:
+                query = query.where(Report.deleted_at.is_not(None))
+            else:
+                query = query.where(Report.deleted_at.is_(None))
         elif include_descendants:
             # Org workspace + descendant rollup — 상위 조직이 하위팀 게시글까지
             # 묶을 수 있게(예: 종합보고 안건 picker). 기본 게시판 목록은 이
@@ -274,6 +282,38 @@ def can_delete_report(db: Session, actor, report: Report) -> bool:
     if report.owner_user_id == user.id:
         return True
     return is_report_board_manager(db, user.id, report)
+
+
+def can_trash_report(db: Session, actor, report: Report) -> bool:
+    """소프트삭제(휴지통) 권한 — 개인 공간에서 회수하는 행위라 **소유자 /
+    시스템 관리자**만. 게시판 매니저는 자기 board 게시취소(unpublish)로
+    다루지, 남의 개인 공간 보고서를 휴지통에 넣지 않는다."""
+    user = actor.user
+    return bool(getattr(user, "is_system_admin", False)) or (
+        report.owner_user_id == user.id
+    )
+
+
+def soft_delete_report(db: Session, report: Report, actor) -> Report:
+    """보고서를 휴지통으로 — deleted_at set. 개인 목록/검색에서 숨지만 게시된
+    부서 게시판에는 그대로 남는다(게시분 보존). 이미 휴지통이면 무변경."""
+    if report.deleted_at is None:
+        report.deleted_at = datetime.utcnow()
+        report.deleted_by_user_id = actor.user.id
+        db.commit()
+        db.refresh(report)
+    return report
+
+
+def restore_report(db: Session, report: Report) -> Report:
+    """휴지통에서 복구 — deleted_at 해제. (2단계에서 진행 중 게시취소 요청
+    자동 철회를 여기 연결할 예정.)"""
+    if report.deleted_at is not None:
+        report.deleted_at = None
+        report.deleted_by_user_id = None
+        db.commit()
+        db.refresh(report)
+    return report
 
 
 def list_public_reports_on_board(

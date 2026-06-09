@@ -308,6 +308,12 @@ class ReportRead(BaseModel):
     # 삭제 권한(소유자/시스템관리자/게시판 매니저) — 편집보다 좁다. 프런트가
     # 삭제 버튼 노출을 이 값으로 게이팅한다. None = 비결정(목록).
     can_delete: Optional[bool] = None
+    # 소프트삭제(휴지통)·복구 권한 — 소유자/시스템관리자. 평소 "삭제" 버튼은
+    # 이 값으로 게이팅(휴지통行). None = 비결정(목록).
+    can_trash: Optional[bool] = None
+    # 소프트삭제 시각 — 휴지통이면 set, 살아있으면 None. 상세 화면에서 "휴지통에
+    # 있음 / 복구" 배너 표시용.
+    deleted_at: Optional[UtcDatetime] = None
     # 조직 간 공개(조직간공개_설계.md §6) — 외부 공개 열람자 여부와 곁다리
     # 가능 여부. is_public_view=True 면 프런트가 "다른 조직의 공개 보고서 ·
     # 읽기 전용" 배너를 띄우고 댓글/편집/이력 UI 를 숨긴다. can_comment 는
@@ -376,6 +382,9 @@ class ReportSummary(BaseModel):
     mount_workspaces: list[MountWorkspaceMini] = []
     created_at: UtcDatetime
     updated_at: UtcDatetime
+    # 소프트삭제 시각 — 휴지통(trashed=True) 목록에서 "삭제일" 표기용. 살아있는
+    # 보고서는 None.
+    deleted_at: Optional[UtcDatetime] = None
     # 조직 간 공개 탐색(조직간공개_설계.md §5·§7.2). include_public 탐색에서
     # "내 스코프 밖 + 공개라서 끼어든" 보고서 행을 라우트가 표시한다 — 목록이
     # 자기 게시판 분과 섞이지 않게 프런트가 뱃지/구분을 그린다. 기본 목록은 0.

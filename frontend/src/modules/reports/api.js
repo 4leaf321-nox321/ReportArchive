@@ -10,6 +10,8 @@ export async function listReports({
   // 이 호출에 한해 워크스페이스 컨텍스트를 덮어쓴다(부서 멘션 미리보기가
   // 현재 부서가 아닌 *멘션된* 부서의 보고서를 조회할 때). 비우면 전역 컨텍스트.
   workspaceSlug,
+  // 휴지통 보기 — 개인 공간에서 소프트삭제된 보고서만.
+  trashed,
 } = {}) {
   // Build via URLSearchParams instead of axios's default params object:
   // axios 1.x serializes arrays as `entity_ids[]=1&entity_ids[]=2`, but
@@ -29,6 +31,8 @@ export async function listReports({
   if (includePublic) params.append('include_public', 'true')
   // 하위 부서(자손) 게시판까지 포함 — 종합보고 안건 picker 등에서만 사용.
   if (includeDescendants) params.append('include_descendants', 'true')
+  // 휴지통 보기(개인 공간 한정).
+  if (trashed) params.append('trashed', 'true')
   const qs = params.toString()
   const cfg = workspaceSlug
     ? { headers: { 'X-Workspace-Slug': workspaceSlug } }
@@ -100,6 +104,18 @@ export async function updateReport(id, payload) {
 
 export async function deleteReport(id) {
   const res = await apiClient.delete(`${BASE}/${id}`)
+  return extractData(res)
+}
+
+// 소프트삭제(휴지통으로) — 평소 "삭제"는 이걸 쓴다. 개인 목록에서 숨지만
+// 게시된 부서 게시판엔 남고, restoreReport 로 복구 가능.
+export async function trashReport(id) {
+  const res = await apiClient.post(`${BASE}/${id}/trash`)
+  return extractData(res)
+}
+
+export async function restoreReport(id) {
+  const res = await apiClient.post(`${BASE}/${id}/restore`)
   return extractData(res)
 }
 

@@ -289,6 +289,18 @@ class Report(Base):
         DateTime, nullable=True
     )
 
+    # ── Soft delete (휴지통) ───────────────────────────────────────────
+    # "삭제"는 즉시 파괴가 아니라 소프트삭제 — deleted_at 이 set 되면 작성자
+    # 개인 목록·검색에서 숨고(=휴지통), 복구 가능. 단 게시(mount)된 부서
+    # 게시판에는 그대로 남는다(게시분 보존). 영구삭제(purge)는 별도 경로.
+    # 보고서 삭제 재설계(소프트삭제+게시판별 게시취소 요청) 1단계.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, index=True
+    )
+    deleted_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
     # ── Fork lineage (referenced copy from another team's report) ──────
     # Set when this report was created via "참조 복제" from another
     # report (Phase 8 feature; columns laid down now to avoid a later

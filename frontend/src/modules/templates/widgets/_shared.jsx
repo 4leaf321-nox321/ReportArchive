@@ -1057,7 +1057,7 @@ function _escapeHtml(s) {
 
 // True when rich html has no actual text (e.g. "<p></p>"). Used to fall back
 // to the plain value / autofill hint.
-function _richIsEmpty(html) {
+export function _richIsEmpty(html) {
   return (
     typeof html !== 'string' ||
     html.replace(/<[^>]*>/g, '').replace(/ |&nbsp;/g, '').trim().length === 0
@@ -1067,7 +1067,7 @@ function _richIsEmpty(html) {
 // Seed html for the rich editor: prefer the stored rich html; otherwise lift
 // an existing plain caption/note into a paragraph so legacy content shows up
 // (and graduates to *_html on the first edit).
-function _richSeed(html, plain) {
+export function _richSeed(html, plain) {
   if (!_richIsEmpty(html)) return html
   const p = (plain ?? '').trim()
   return p ? `<p>${_escapeHtml(p)}</p>` : '<p></p>'

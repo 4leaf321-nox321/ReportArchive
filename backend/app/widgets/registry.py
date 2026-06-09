@@ -301,6 +301,9 @@ HEADING: WidgetDescriptor = {
         "type": "object",
         "properties": {
             "text": {"type": "string", "maxLength": 200},
+            # 제목 텍스트의 rich 마크업(긴 글처럼 per-char 색·서식). 평문 text 는
+            # 제목 역할로 유지·동기화되고, 색이 입혀진 본문은 여기에 둔다.
+            "text_html": _CAPTION_HTML_FIELD,
             # Per-report overrides — let the writer tune heading level,
             # text style, and bottom spacing from the inline popover
             # without touching the template. Renderer reads

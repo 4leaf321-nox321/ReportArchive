@@ -14,7 +14,11 @@ import {
   pruneOverrideKeys,
   textStyleToClassName,
   textStyleToInlineStyle,
+  _richIsEmpty,
+  _richSeed,
+  sanitizeCaptionHtml,
 } from './_shared'
+import { RichTextRowEditor } from './RichTextRowEditor'
 
 // --------------------------------------------------------------------------- //
 // Effective-value plumbing                                                    //
@@ -140,6 +144,11 @@ export function HeadingPreview({ props }) {
 // --------------------------------------------------------------------------- //
 export function HeadingEditor({ props, content, onChange, readOnly }) {
   const value = content?.text ?? ''
+  // dual-field: 평문 text(제목 역할·TOC·export)는 유지하고, 색·서식 일부만 칠한
+  // rich 마크업은 text_html 에 둔다(긴 글처럼 per-char). 둘 다 RichTextRowEditor
+  // 가 onChange(html, text) 로 동기화.
+  const htmlValue = content?.text_html ?? ''
+  const hasRich = !_richIsEmpty(htmlValue)
   const level = effectiveLevel(content, props)
   const textStyle = effectiveTextStyle(content, props)
   const marginBottomPx = effectiveMarginBottomPx(content, props)
@@ -181,28 +190,42 @@ export function HeadingEditor({ props, content, onChange, readOnly }) {
   }
 
   if (readOnly) {
-    if (!value) return null
+    if (!value && !hasRich) return null
     return (
       <div className={`px-2 py-1 ${cls}`} style={{ ...inlineTextStyle, ...wrapperStyle }}>
-        {value}
+        {hasRich ? (
+          <span
+            className="[&_p]:m-0 [&_p]:inline"
+            dangerouslySetInnerHTML={{ __html: sanitizeCaptionHtml(htmlValue) }}
+          />
+        ) : (
+          value
+        )}
       </div>
     )
   }
 
   return (
     <div className="relative group/heading" style={wrapperStyle}>
-      <input
-        type="text"
-        value={value}
-        onChange={(e) => patch({ text: e.target.value })}
-        placeholder={props.default_text || '제목 입력'}
-        className={cn(
-          'w-full bg-transparent border-0 outline-none focus:ring-0',
-          'placeholder:text-muted-foreground/50 px-2 py-1 pr-9',
-          cls,
-        )}
-        style={inlineTextStyle}
-      />
+      {/* 색·서식은 텍스트 선택 시 뜨는 버블 메뉴에서(긴 글과 동일). 평문 text 도
+          onChange 가 함께 동기화해 제목 역할을 유지. */}
+      <div className="outline-rich-row">
+        <RichTextRowEditor
+          html={_richSeed(htmlValue, value)}
+          placeholder={props.default_text || '제목 입력'}
+          onChange={(html, text) =>
+            patch({
+              text_html: _richIsEmpty(html) ? undefined : html,
+              text: text ?? '',
+            })
+          }
+          className={cn(
+            'placeholder:text-muted-foreground/50 px-2 py-1 pr-9',
+            cls,
+          )}
+          style={inlineTextStyle}
+        />
+      </div>
       <HeadingOptionsPopover
         props={props}
         content={content}

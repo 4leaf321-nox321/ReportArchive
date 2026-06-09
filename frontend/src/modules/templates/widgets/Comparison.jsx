@@ -48,7 +48,11 @@ import {
   useCellSelection,
   textStyleToInlineStyle,
   useGridNavigation,
+  _richIsEmpty,
+  _richSeed,
+  sanitizeCaptionHtml,
 } from './_shared'
+import { RichTextRowEditor } from './RichTextRowEditor'
 
 // Hard guards for the optional layout props — match the backend's
 // props_schema (minimum / maximum). Used both in the props panel and
@@ -432,6 +436,12 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     if (!s) return ''
     return `${bgTokenClass(s.bg)} ${colorTokenClass(s.fg)}`.trim()
   }
+  // 셀별 rich 마크업(긴 글처럼 per-char 색). 키는 cell_styles 와 동일
+  // ("행key::케이스key"). 평문 값(values)과 분리된 사이드테이블.
+  const cellHtml =
+    content?.cell_html && typeof content.cell_html === 'object'
+      ? content.cell_html
+      : {}
   const textClass = textStyleToClassName(props.text_style)
   const textStyle = textStyleToInlineStyle(props.text_style)
   // 셀(헤더·행라벨·값) 본문 글자 크기 — 긴 글(RichText)과 동일한 기본값
@@ -509,6 +519,9 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       Object.keys(merged.cell_styles).length === 0
     ) {
       delete merged.cell_styles
+    }
+    if (!merged.cell_html || Object.keys(merged.cell_html).length === 0) {
+      delete merged.cell_html
     }
     if (
       !merged.column_widths ||
@@ -823,6 +836,10 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     })
   }
   function setCellText(rowIdx, caseKey, text) {
+    const rowKey = rows[rowIdx]?.key
+    const k = `${rowKey}::${caseKey}`
+    const nextHtml = cellHtml[k] ? { ...cellHtml } : null
+    if (nextHtml) delete nextHtml[k] // 평문 덮어쓰기 → 기존 rich 버림
     patch({
       rows: rows.map((r, i) => {
         if (i !== rowIdx) return r
@@ -831,6 +848,28 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
         else nextValues[caseKey] = text
         return { ...r, values: nextValues }
       }),
+      ...(nextHtml ? { cell_html: nextHtml } : {}),
+    })
+  }
+  // 텍스트 셀 rich 편집 — 평문 값(values)과 rich(cell_html)를 함께 동기화.
+  function setCellRich(rowIdx, rowKey, caseKey, html, text) {
+    const k = `${rowKey}::${caseKey}`
+    let nextHtml
+    if (_richIsEmpty(html)) {
+      nextHtml = { ...cellHtml }
+      delete nextHtml[k]
+    } else {
+      nextHtml = { ...cellHtml, [k]: html }
+    }
+    patch({
+      rows: rows.map((r, i) => {
+        if (i !== rowIdx) return r
+        const nextValues = { ...(r.values ?? {}) }
+        if (!text) delete nextValues[caseKey]
+        else nextValues[caseKey] = text
+        return { ...r, values: nextValues }
+      }),
+      cell_html: nextHtml,
     })
   }
   function setCellImage(rowIdx, caseKey, fileMeta) {
@@ -875,6 +914,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       startCaseIdx + width,
       startRowIdx + tsv.length,
     )
+    const nextHtml = { ...cellHtml }
     for (let r = 0; r < tsv.length; r += 1) {
       const row = nextRows[startRowIdx + r]
       if (!row || row.kind === 'image') continue
@@ -885,10 +925,11 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
         const v = tsv[r][c]
         if (v === '' || v == null) delete values[cs.key]
         else values[cs.key] = v
+        delete nextHtml[`${row.key}::${cs.key}`] // 평문 덮어쓰기 → rich 버림
       }
       nextRows[startRowIdx + r] = { ...row, values }
     }
-    patch({ cases: nextCases, rows: nextRows })
+    patch({ cases: nextCases, rows: nextRows, cell_html: nextHtml })
     maybeWarnMaxCases(nextCases.length)
   }
   /** 행 라벨 칸에 붙여넣기 — 엑셀에서 "라벨 + CASE 값" 표를 통째로 붙일 때.
@@ -901,6 +942,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       Math.max(cases.length, width - 1),
       startRowIdx + tsv.length,
     )
+    const nextHtml = { ...cellHtml }
     for (let r = 0; r < tsv.length; r += 1) {
       const row = nextRows[startRowIdx + r]
       if (!row) continue
@@ -914,11 +956,12 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           const v = cells[c]
           if (v === '' || v == null) delete next.values[cs.key]
           else next.values[cs.key] = v
+          delete nextHtml[`${row.key}::${cs.key}`]
         }
       }
       nextRows[startRowIdx + r] = next
     }
-    patch({ cases: nextCases, rows: nextRows })
+    patch({ cases: nextCases, rows: nextRows, cell_html: nextHtml })
     maybeWarnMaxCases(nextCases.length)
   }
   /** CASE 라벨 칸에 붙여넣기(표 위젯 pasteOntoHeader 대응): TSV 첫 행 → CASE
@@ -937,6 +980,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
         nextCases[idx] = { ...nextCases[idx], label: tsv[0][c] }
       }
     }
+    const nextHtml = { ...cellHtml }
     for (let r = 1; r < tsv.length; r += 1) {
       const row = nextRows[r - 1]
       if (!row || row.kind === 'image') continue
@@ -947,10 +991,11 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
         const v = tsv[r][c]
         if (v === '' || v == null) delete values[cs.key]
         else values[cs.key] = v
+        delete nextHtml[`${row.key}::${cs.key}`]
       }
       nextRows[r - 1] = { ...row, values }
     }
-    patch({ cases: nextCases, rows: nextRows })
+    patch({ cases: nextCases, rows: nextRows, cell_html: nextHtml })
     maybeWarnMaxCases(nextCases.length)
   }
 
@@ -1128,6 +1173,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                             <ReadOnlyCell
                               row={row}
                               caseKey={c.key}
+                              html={cellHtml[`${row.key}::${c.key}`]}
                               imageMaxHeightPx={imageMaxHeightPx}
                               fontSizePx={bodyFontPx}
                             />
@@ -1572,7 +1618,10 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                           ) : (
                             <TextCellEditor
                               value={row.values?.[c.key]}
-                              onChange={(v) => setCellText(ri, c.key, v)}
+                              html={cellHtml[`${row.key}::${c.key}`]}
+                              onChangeRich={(html, text) =>
+                                setCellRich(ri, row.key, c.key, html, text)
+                              }
                               onKeyDown={(e) => grid.handleKey(e, ri, ci + 1)}
                               onMultiPaste={(text) => pasteGrid(ri, ci, text)}
                               gridCellKey={`${ri}:${ci + 1}`}
@@ -1679,36 +1728,30 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
 
 function TextCellEditor({
   value,
-  onChange,
+  html,
+  onChangeRich,
   onKeyDown,
   gridCellKey,
   fontSizePx = DEFAULT_BODY_FONT_PX,
   onMultiPaste,
 }) {
-  // `value` is a plain string for text rows. We render a multi-line textarea
-  // so writers can compare longer descriptions side by side without
-  // truncating; rows naturally grow as content gets longer. Enter inserts a
-  // newline; arrow keys at the cell boundary jump to the neighbor cell
-  // (wired via the `useGridNavigation` hook on the editor).
+  // rich 에디터 — 셀 안 텍스트 일부를 선택해 색·서식(긴 글처럼). 평문 값은
+  // onChangeRich 가 함께 동기화. 엑셀 TSV 붙여넣기는 onPastePlain 으로 가로채
+  // 여러 셀로 펼친다. data-grid-cell 로 그리드 포커스·Tab 이동 유지(화살표
+  // 셀 점프는 캐럿 이동으로 대체).
   return (
-    <textarea
-      value={typeof value === 'string' ? value : ''}
-      onChange={(e) => onChange(e.target.value)}
-      onKeyDown={onKeyDown}
-      onPaste={(e) => {
-        // 엑셀에서 복사한 여러 셀(TSV)이면 그리드로 채운다. 단일 셀은 기본
-        // 붙여넣기(textarea)에 맡긴다.
-        const text = e.clipboardData?.getData('text/plain')
-        if (!isMultiCellPaste(text)) return
-        e.preventDefault()
-        onMultiPaste?.(text)
-      }}
-      data-grid-cell={gridCellKey}
-      rows={2}
-      placeholder="텍스트 / 숫자"
-      style={{ fontSize: fontSizePx }}
-      className="w-full min-h-[2.5rem] resize-y rounded-md border border-input bg-background px-2 py-1 leading-snug focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-    />
+    <div className="outline-rich-row w-full">
+      <RichTextRowEditor
+        html={_richSeed(html, typeof value === 'string' ? value : '')}
+        onChange={onChangeRich}
+        onKeyDown={onKeyDown}
+        onPastePlain={onMultiPaste}
+        gridCellKey={gridCellKey}
+        placeholder="텍스트 / 숫자"
+        style={{ fontSize: fontSizePx }}
+        className="w-full min-h-[2.5rem] rounded-md border border-input bg-background px-2 py-1 leading-snug whitespace-pre-wrap break-words"
+      />
+    </div>
   )
 }
 
@@ -1833,11 +1876,13 @@ function ImageCellEditor({ value, onChange, maxHeightPx = DEFAULT_IMAGE_MAX_HEIG
 function ReadOnlyCell({
   row,
   caseKey,
+  html,
   imageMaxHeightPx = DEFAULT_IMAGE_MAX_HEIGHT_PX,
   fontSizePx = DEFAULT_BODY_FONT_PX,
 }) {
   const value = row.values?.[caseKey]
-  if (value == null || value === '') {
+  const hasRich = row.kind !== 'image' && !_richIsEmpty(html)
+  if (!hasRich && (value == null || value === '')) {
     return <span className="text-muted-foreground italic">—</span>
   }
   if (row.kind === 'image') {
@@ -1861,13 +1906,20 @@ function ReadOnlyCell({
       </div>
     )
   }
-  // Text rows: preserve newlines but keep things readable.
+  // Text rows: rich 마크업이 있으면 우선 렌더(긴 글처럼 부분 색), 없으면 평문.
   return (
     <div
       className="whitespace-pre-wrap break-words"
       style={{ fontSize: fontSizePx }}
     >
-      {String(value)}
+      {hasRich ? (
+        <span
+          className="[&_p]:m-0 [&_p]:inline"
+          dangerouslySetInnerHTML={{ __html: sanitizeCaptionHtml(html) }}
+        />
+      ) : (
+        String(value)
+      )}
     </div>
   )
 }

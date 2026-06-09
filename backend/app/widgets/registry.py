@@ -2934,6 +2934,7 @@ def _comparison_content(props: dict) -> dict:  # noqa: ARG001
                 "maximum": 4000,
             },
             "cell_styles": _CELL_STYLES_SCHEMA,
+            "cell_html": _CELL_HTML_SCHEMA,
         },
         "additionalProperties": False,
     }

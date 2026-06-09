@@ -786,24 +786,35 @@ function MountedBoardRow({
           ))}
         </select>
       )}
-      {/* 게시 해제 — 같은 handleToggle 재사용(이미 mounted 이므로 unmount). */}
-      <Button
-        variant="ghost"
-        size="sm"
-        disabled={isPending}
-        onClick={() => onToggle(slug)}
-        className="h-7 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10 shrink-0"
-        title="이 게시판에서 게시 해제"
-      >
-        {isPending ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        ) : (
-          <>
-            <X className="h-3.5 w-3.5 mr-0.5" />
-            해제
-          </>
-        )}
-      </Button>
+      {/* 게시 해제 — 이 게시판을 *관리하는* 사람만(매니저/시스템관리자). 작성자라도
+          관리 안 하는 board 는 해제 버튼 대신, 푸터의 "게시판에서 내리기 요청"으로
+          매니저 승인을 받는다(can_unmount 로 게이팅). */}
+      {mount?.can_unmount ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={isPending}
+          onClick={() => onToggle(slug)}
+          className="h-7 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10 shrink-0"
+          title="이 게시판에서 게시 해제"
+        >
+          {isPending ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <>
+              <X className="h-3.5 w-3.5 mr-0.5" />
+              해제
+            </>
+          )}
+        </Button>
+      ) : (
+        <span
+          className="h-7 px-2 text-[11px] text-muted-foreground shrink-0 inline-flex items-center"
+          title="이 게시판은 매니저만 게시취소할 수 있습니다. 아래 '게시판에서 내리기 요청'을 보내세요."
+        >
+          요청 필요
+        </span>
+      )}
     </div>
   )
 }

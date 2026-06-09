@@ -297,6 +297,19 @@ def report_mount_count(db: Session, report_id: int) -> int:
     )
 
 
+def composite_ref_count(db: Session, report_id: int) -> int:
+    """이 보고서를 안건으로 참조하는 종합보고 항목 수. 영구삭제 시
+    CompositeReportItem.ref_report_id 가 CASCADE 라 함께 사라지므로, 삭제 전
+    "종합보고 N건의 안건" 경고에 쓴다."""
+    return int(
+        db.execute(
+            select(func.count())
+            .select_from(CompositeReportItem)
+            .where(CompositeReportItem.ref_report_id == report_id)
+        ).scalar_one()
+    )
+
+
 def can_purge_report(db: Session, actor, report: Report) -> bool:
     """영구삭제(purge) 권한 — 소유자 / 시스템관리자만. 영구삭제는 원본을 지워
     게시된 모든 게시판·종합보고 안건에서 cascade 로 사라지는 비가역 작업이라,

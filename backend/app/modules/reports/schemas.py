@@ -318,6 +318,8 @@ class ReportRead(BaseModel):
     # 먼저 게시취소해야 하므로 False. is_mounted 는 그 안내용.
     can_purge: Optional[bool] = None
     is_mounted: Optional[bool] = None
+    # 영구삭제 시 cascade 로 함께 사라질 종합보고 안건 수 — 삭제 경고용.
+    composite_ref_count: Optional[int] = None
     # 조직 간 공개(조직간공개_설계.md §6) — 외부 공개 열람자 여부와 곁다리
     # 가능 여부. is_public_view=True 면 프런트가 "다른 조직의 공개 보고서 ·
     # 읽기 전용" 배너를 띄우고 댓글/편집/이력 UI 를 숨긴다. can_comment 는

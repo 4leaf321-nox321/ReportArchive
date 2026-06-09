@@ -55,6 +55,8 @@ def _read_with_perms(db: Session, actor: CurrentUser, report) -> ReportRead:
     _mounted = services.report_mount_count(db, report.id) > 0
     obj.is_mounted = _mounted
     obj.can_purge = services.can_purge_report(db, actor, report) and not _mounted
+    # 영구삭제 시 함께 사라질 종합보고 안건 수 — 삭제 경고용.
+    obj.composite_ref_count = services.composite_ref_count(db, report.id)
     # 조직 간 공개(§6) — 외부 공개 열람자면 읽기전용 플래그를 세워 프런트가
     # 배너·곁다리 숨김을 그린다. virtual(글로벌/관리자)은 공개 열람자가 아님.
     is_public_view = not actor.workspace.virtual and (

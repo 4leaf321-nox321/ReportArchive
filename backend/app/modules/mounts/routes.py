@@ -54,7 +54,15 @@ def list_mounts(
     metadata anyone with the report id already saw to ask the question.
     """
     rows = services.list_mounts_for_report(db, report_id)
-    payload = MountListResponse(items=[MountRead.model_validate(r) for r in rows])
+    items = []
+    for r in rows:
+        mr = MountRead.model_validate(r)
+        # 현재 사용자가 이 게시판에서 직접 게시취소 가능한지(매니저/시스템관리자).
+        mr.can_unmount = services._can_unmount_board(
+            db, actor.user.id, r.workspace_slug
+        )
+        items.append(mr)
+    payload = MountListResponse(items=items)
     return success_response(data=payload.model_dump(mode="json"))
 
 

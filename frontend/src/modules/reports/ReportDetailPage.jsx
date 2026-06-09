@@ -88,6 +88,7 @@ import {
   updateReport,
   trashReport,
   restoreReport,
+  deleteReport,
   publishReport,
   unpublishReport,
   setAuthorLock,
@@ -2341,6 +2342,26 @@ export default function ReportDetailPage() {
     }
   }
 
+  // 영구삭제(purge) — 휴지통 배너에서. 비가역. 백엔드가 게시 중이면 막고
+  // (can_purge=false 면 버튼 자체가 안 뜸), 종합보고 안건도 cascade 로 사라진다.
+  async function onPurge() {
+    const n = existingReport?.composite_ref_count ?? 0
+    const warn =
+      '이 보고서를 영구히 삭제합니다. 되돌릴 수 없습니다.' +
+      (n > 0 ? `\n\n종합보고 ${n}건의 안건에서도 함께 사라집니다.` : '')
+    if (!window.confirm(warn)) return
+    try {
+      await deleteReport(draft.id)
+      toast.success('영구 삭제되었습니다.')
+      isEditingRef.current = false
+      navigate(`/w/${slug}/reports`)
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err.message || '영구 삭제 실패',
+      )
+    }
+  }
+
   /** Clone the current report's pages (content + layouts + overrides + extras
    *  + section tags) into a brand-new draft owned by the current user.
    *  Title comes from the dialog input; report_date resets to today and the
@@ -3070,10 +3091,23 @@ export default function ReportDetailPage() {
             <span className="flex-1">
               이 보고서는 휴지통에 있습니다. 개인 목록에선 숨겨지지만 게시된 부서
               게시판에는 그대로 남아 있습니다.
+              {existingReport?.is_mounted && (
+                <> 영구 삭제하려면 먼저 게시판에서 내려야 합니다.</>
+              )}
             </span>
             {existingReport?.can_trash && (
               <Button size="sm" variant="outline" className="h-7" onClick={onRestore}>
                 복구
+              </Button>
+            )}
+            {existingReport?.can_purge && (
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-7"
+                onClick={onPurge}
+              >
+                완전 삭제
               </Button>
             )}
           </div>

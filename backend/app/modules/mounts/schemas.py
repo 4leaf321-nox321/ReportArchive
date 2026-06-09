@@ -20,6 +20,10 @@ class MountRead(BaseModel):
     mounted_by_user_id: Optional[int] = None
     mounted_at: datetime
     note: str
+    # 이 게시판에서 *현재 사용자가 직접* 게시취소할 수 있는지(그 board 매니저/
+    # 시스템관리자). 작성자라도 관리 안 하는 board 는 False — 프런트가 "해제"
+    # 버튼을 이 값으로 게이팅하고, 나머지는 "게시판에서 내리기 요청"으로 보낸다.
+    can_unmount: Optional[bool] = None
     # Org folder placement on this board. NULL = 미분류 in that board's
     # listing. Same Report can be in different folders on different
     # boards (folder is mount-level, not report-level).

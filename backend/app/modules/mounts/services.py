@@ -435,6 +435,17 @@ def unmount_report(
         GrantPrincipalType.workspace_manager,
         workspace_slug,
     )
+    # 감사 로그 — 게시취소 이벤트(수동 해제·게시취소 요청 승인 모두 이 경로).
+    from app.modules.activities.models import ReportActivityType
+    from app.modules.activities.services import record_activity
+
+    record_activity(
+        db,
+        report_id=report_id,
+        type=ReportActivityType.unmounted,
+        actor_user_id=actor_user_id,
+        payload={"workspace_slug": workspace_slug},
+    )
     db.flush()
     return True
 

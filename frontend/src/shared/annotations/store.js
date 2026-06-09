@@ -53,9 +53,11 @@ export function useAnnotationStore({ annotations, onChange }) {
       console.error('[annot] 렌더 폭주 감지', {
         annPropChangedRatio: `${w.__annChanges}/${w.__asRenders}`,
         len: annotations?.length,
+        applyCallers: w.__applyCallers,
       })
       w.__annChanges = 0
       w.__asRenders = 0
+      w.__applyCallers = {}
     }
   }
   // Echo prop into local state so the user's draft survives a parent
@@ -99,14 +101,12 @@ export function useAnnotationStore({ annotations, onChange }) {
    *  ends up as a single undo step instead of one per pointer event. */
   const apply = useCallback(
     (next, options) => {
-      // [임시 디버그] apply 호출 스택 — 처음 8회만(도배 방지).
+      // [임시 디버그] apply 호출자별 카운트(폭주 시 누가 도배하는지).
       if (typeof window !== 'undefined') {
-        window.__applyN = (window.__applyN || 0) + 1
-        if (window.__applyN <= 8) {
-          const st = new Error().stack?.split('\n').slice(2, 7).join('\n')
-          // eslint-disable-next-line no-console
-          console.log(`[annot] apply #${window.__applyN}\n` + st)
-        }
+        const st = new Error().stack?.split('\n') || []
+        const key = (st[3] || st[2] || '?').trim().slice(0, 90)
+        window.__applyCallers = window.__applyCallers || {}
+        window.__applyCallers[key] = (window.__applyCallers[key] || 0) + 1
       }
       setLocal((prev) => {
         const resolved = typeof next === 'function' ? next(prev) : next

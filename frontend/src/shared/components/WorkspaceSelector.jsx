@@ -169,11 +169,9 @@ function WorkspaceDpad({ nav, onGo }) {
     )
   }
   return (
-    <div className="mx-auto mt-1.5 grid w-fit grid-cols-3 gap-0.5">
-      <span />
-      {arrow(nav.up, ArrowUp, '상위 부서')}
-      <span />
+    <div className="mx-auto mt-1.5 flex w-fit items-center gap-0.5">
       {arrow(nav.left, ArrowLeft, '이전 부서')}
+      {arrow(nav.up, ArrowUp, '상위 부서')}
       {arrow(nav.down, ArrowDown, '하위 부서')}
       {arrow(nav.right, ArrowRight, '다음 부서')}
     </div>

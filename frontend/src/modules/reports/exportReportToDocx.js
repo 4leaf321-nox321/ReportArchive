@@ -35,6 +35,12 @@ import html2canvas from 'html2canvas'
 // pulling auth helpers in, and the apiClient already handles refresh /
 // 401 retries uniformly.
 import { apiClient } from '@/shared/api/client'
+import { COLOR_TOKENS } from '@/shared/text-color'
+// rt-c-{token} 클래스(현재 색 저장 형식) → 라이트모드 hex(swatch). DOCX 는
+// 문서(밝은 배경)라 라이트 hex 가 적절. walkInline 이 클래스 색을 이걸로 매핑.
+const _TOKEN_HEX = Object.fromEntries(
+  COLOR_TOKENS.map((t) => [t.token, t.swatch.replace('#', '').toUpperCase()]),
+)
 // Post-process docx-js`s output to remove the always-empty `comments`
 // part that triggers Word`s "복구하겠습니까?" recovery dialog on every
 // open. See exportDocxStripOrphans.js for the full rationale.
@@ -532,19 +538,21 @@ async function convertBlock(block, props, content, opts = {}) {
 
 function convertHeading(props, content) {
   const text = content?.text ?? props?.default_text ?? ''
-  if (!text) return []
+  const html = content?.text_html
+  const hasRich = typeof html === 'string' && html.replace(/<[^>]*>/g, '').trim()
+  if (!text && !hasRich) return []
   const level = clamp(Number(props?.level ?? 1), 1, 3)
   const headingLevel = {
     1: HeadingLevel.HEADING_1,
     2: HeadingLevel.HEADING_2,
     3: HeadingLevel.HEADING_3,
   }[level]
-  return [
-    new Paragraph({
-      heading: headingLevel,
-      children: [new TextRun({ text, size: TITLE_SIZE, color: '000000' })],
-    }),
-  ]
+  // rich(text_html)면 per-char 색·서식을 colored run 으로(긴 글처럼), 없으면
+  // 기존처럼 검정 단색. 기본 크기는 TITLE_SIZE, 색 없는 run 은 검정.
+  const children = hasRich
+    ? htmlToTextRuns(html, text, { size: TITLE_SIZE, color: '000000' })
+    : [new TextRun({ text, size: TITLE_SIZE, color: '000000' })]
+  return [new Paragraph({ heading: headingLevel, children })]
 }
 
 // Depth glyphs mirror the RichText widget's display set. depth 0 is
@@ -973,16 +981,22 @@ async function convertVisualBlock(
 // TextRun objects preserving bold/italic/underline/strike + inline
 // color and font-size from <span style="...">. Empty html falls back to
 // the plain `text` argument so legacy rows without html still convert.
-function htmlToTextRuns(html, fallbackText) {
-  if (typeof html !== 'string' || html.length === 0) {
-    return [new TextRun({ text: fallbackText || '', size: BODY_SIZE })]
-  }
-  if (typeof DOMParser === 'undefined') {
-    return [new TextRun({ text: fallbackText || '', size: BODY_SIZE })]
-  }
+function htmlToTextRuns(html, fallbackText, opts = {}) {
+  // 명시 size 없는 run 의 기본 크기/색 — heading 은 TITLE_SIZE·검정으로,
+  // rich_text/캡션은 BODY_SIZE·문서기본색(null)로.
+  const defaultSize = opts.size || BODY_SIZE
+  const defaultColor = opts.color ?? null
+  const fallbackRun = () =>
+    new TextRun({
+      text: fallbackText || '',
+      size: defaultSize,
+      color: defaultColor || undefined,
+    })
+  if (typeof html !== 'string' || html.length === 0) return [fallbackRun()]
+  if (typeof DOMParser === 'undefined') return [fallbackRun()]
   const doc = new DOMParser().parseFromString(html, 'text/html')
   const p = doc.body.firstElementChild
-  if (!p) return [new TextRun({ text: fallbackText || '' })]
+  if (!p) return [fallbackRun()]
   const runs = []
   walkInline(
     p,
@@ -991,15 +1005,16 @@ function htmlToTextRuns(html, fallbackText) {
       italic: false,
       underline: false,
       strike: false,
-      color: null,
+      color: defaultColor,
       sizeHalfPts: null,
     },
     runs,
+    defaultSize,
   )
-  return runs.length > 0 ? runs : [new TextRun({ text: fallbackText || '' })]
+  return runs.length > 0 ? runs : [fallbackRun()]
 }
 
-function walkInline(node, fmt, out) {
+function walkInline(node, fmt, out, defaultSize = BODY_SIZE) {
   for (const child of node.childNodes) {
     if (child.nodeType === 3 /* TEXT */) {
       const text = child.nodeValue ?? ''
@@ -1012,11 +1027,11 @@ function walkInline(node, fmt, out) {
           underline: fmt.underline ? {} : undefined,
           strike: fmt.strike || undefined,
           color: fmt.color || undefined,
-          // Editor-picked size wins; otherwise fall back to the doc-
-          // wide body size so the rich_text paragraph stays in lockstep
-          // with everything else (instead of inheriting Word's
-          // out-of-the-box 11pt default).
-          size: fmt.sizeHalfPts || BODY_SIZE,
+          // Editor-picked size wins; otherwise fall back to the caller's
+          // default (BODY_SIZE for rich_text, TITLE_SIZE for heading) so
+          // the paragraph stays in lockstep instead of inheriting Word's
+          // out-of-the-box 11pt default.
+          size: fmt.sizeHalfPts || defaultSize,
         }),
       )
     } else if (child.nodeType === 1 /* ELEMENT */) {
@@ -1036,8 +1051,13 @@ function walkInline(node, fmt, out) {
         const fm = style.match(/(^|;)\s*font-size\s*:\s*([^;]+)/i)
         if (cm) next.color = normalizeColor(cm[2].trim())
         if (fm) next.sizeHalfPts = cssFontSizeToHalfPts(fm[2].trim())
+        // 현재 색 저장 형식은 rt-c-{token} 클래스 — swatch hex 로 매핑(인라인
+        // style 색이 없을 때만; 둘 다면 토큰을 정본으로).
+        const cls = child.getAttribute('class') || ''
+        const tok = cls.match(/\brt-c-([a-z0-9]+)\b/)
+        if (tok && _TOKEN_HEX[tok[1]]) next.color = _TOKEN_HEX[tok[1]]
       }
-      walkInline(child, next, out)
+      walkInline(child, next, out, defaultSize)
     }
   }
 }

@@ -100,24 +100,28 @@ export function useImageAnnotationAdapter(
     // 나중에 <img> 로 교체된다. 그래서 마운트 시점엔 imgRef 가 비어 있을 수
     // 있어, img 가 *생기고 load 될 때* 다시 측정해야 content rect 보정이 켜진다.
     let boundImg = null
+    // img 가 *새로* 나타났을 때만 true 를 돌려준다(바인딩 수행). 측정은 호출부에서.
     function bindImg() {
       const img = imgRef?.current
-      if (img && img !== boundImg) {
-        if (boundImg) {
-          ro.unobserve(boundImg)
-          boundImg.removeEventListener('load', measure)
-        }
-        boundImg = img
-        ro.observe(img)
-        img.addEventListener('load', measure) // 자연 크기는 load 후 확정
+      if (!img || img === boundImg) return false
+      if (boundImg) {
+        ro.unobserve(boundImg)
+        boundImg.removeEventListener('load', measure)
       }
-      measure()
+      boundImg = img
+      ro.observe(img)
+      img.addEventListener('load', measure) // 자연 크기는 load 후 확정
+      return true
     }
     bindImg()
-    // AuthedImage 가 placeholder div ↔ <img> 를 교체할 때(컨테이너 직계 자식)
-    // 다시 바인딩 + 측정. subtree 는 안 본다 — 주석 레이어 DOM 변화까지 잡혀
-    // 불필요하게 자주 측정되는 걸 피한다.
-    const mo = new MutationObserver(bindImg)
+    measure() // 초기 1회
+    // ⚠ MutationObserver 는 img 가 *새로 생겼을 때만* 재측정한다. 라벨에디터·
+    // 스타일바·오버레이가 mount/unmount 될 때마다 측정하면 bounds 가 미세하게
+    // 흔들려(±1px) re-render→자식토글→측정 무한 루프가 났다(point freeze).
+    // 실제 크기 변화는 ResizeObserver + img load 가 따로 잡는다.
+    const mo = new MutationObserver(() => {
+      if (bindImg()) measure()
+    })
     mo.observe(container, { childList: true })
 
     return () => {

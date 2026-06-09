@@ -1,5 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+// 라벨 텍스트 적용 — 변화가 없으면 *원본 a 를 그대로* 반환해 store.update 가
+// no-op(새 배열 미생성)이 되게 한다. 라벨 없는 점에 빈 라벨을 "commit" 하면
+// 매번 `{...a}`(새 객체)를 반환해 store 가 새 배열을 만들고 onChange→리렌더가
+// 돌아 무한 루프가 났었다(라벨 안 붙이고 점 여러 개 클릭 시 freeze).
+function applyLabelText(a, rawText) {
+  const trimmed = (rawText ?? '').trim()
+  if (trimmed === '') {
+    if (!a.label) return a // 이미 라벨 없음 → 변화 없음
+    const next = { ...a }
+    delete next.label
+    return next
+  }
+  if (a.label?.text === trimmed) return a // 동일 텍스트 → 변화 없음
+  return { ...a, label: { text: trimmed, position: a.label?.position ?? 'auto' } }
+}
+
 /**
  * Interaction layer for annotation editing — drag-to-move + double-click
  * label edit. Pairs with an `AnnotationStore` (provides the data + undo
@@ -70,23 +86,7 @@ export function useAnnotationInteractions({ store, adapter, readOnly }) {
     setEditingText('')
     const s = storeRef.current
     if (!s) return
-    s.update(id, (a) => {
-      const trimmed = (text ?? '').trim()
-      if (trimmed === '') {
-        // Empty input → drop the label entirely so the saved payload
-        // stays tight and the placeholder shows on selection again.
-        const next = { ...a }
-        delete next.label
-        return next
-      }
-      return {
-        ...a,
-        label: {
-          text: trimmed,
-          position: a.label?.position ?? 'auto',
-        },
-      }
-    })
+    s.update(id, (a) => applyLabelText(a, text))
   }, [])
 
   // Commits an active edit WITHOUT touching React state — used when we
@@ -98,21 +98,7 @@ export function useAnnotationInteractions({ store, adapter, readOnly }) {
     const text = editingTextRef.current
     const s = storeRef.current
     if (!s) return false
-    s.update(id, (a) => {
-      const trimmed = (text ?? '').trim()
-      if (trimmed === '') {
-        const next = { ...a }
-        delete next.label
-        return next
-      }
-      return {
-        ...a,
-        label: {
-          text: trimmed,
-          position: a.label?.position ?? 'auto',
-        },
-      }
-    })
+    s.update(id, (a) => applyLabelText(a, text))
     return true
   }, [])
 

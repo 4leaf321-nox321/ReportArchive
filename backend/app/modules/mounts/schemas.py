@@ -30,6 +30,27 @@ class MountListResponse(BaseModel):
     items: list[MountRead]
 
 
+class TakedownRequestRead(BaseModel):
+    """게시취소 요청 한 건 — 매니저 큐 표시용. 평면화된 표시 필드는 라우트가
+    ORM 관계에서 채운다."""
+
+    id: int
+    report_id: int
+    report_title: Optional[str] = None
+    workspace_slug: str
+    workspace_name: Optional[str] = None
+    requested_by_name: Optional[str] = None
+    status: str
+    created_at: datetime
+
+
+class TakedownRequestResult(BaseModel):
+    """POST /api/reports/{id}/takedown-requests 결과 요약."""
+
+    requested: int  # 매니저 승인 대기로 새로 만든 요청 수
+    auto_removed: int  # 요청자가 관리해 즉시 게시취소된 게시판 수
+
+
 class MountCreate(BaseModel):
     """POST /api/mounts payload — promote a report to one or more org
     boards in a single request.

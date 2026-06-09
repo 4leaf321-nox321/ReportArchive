@@ -306,11 +306,14 @@ def soft_delete_report(db: Session, report: Report, actor) -> Report:
 
 
 def restore_report(db: Session, report: Report) -> Report:
-    """휴지통에서 복구 — deleted_at 해제. (2단계에서 진행 중 게시취소 요청
-    자동 철회를 여기 연결할 예정.)"""
+    """휴지통에서 복구 — deleted_at 해제 + 진행 중 게시취소 요청 자동 철회
+    (복구=요청 철회). 지역 import 로 mounts 서비스를 끌어와 순환 import 회피."""
     if report.deleted_at is not None:
         report.deleted_at = None
         report.deleted_by_user_id = None
+        from app.modules.mounts import services as mount_services
+
+        mount_services.cancel_takedowns_for_report(db, report.id)
         db.commit()
         db.refresh(report)
     return report

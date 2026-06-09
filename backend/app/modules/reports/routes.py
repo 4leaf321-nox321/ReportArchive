@@ -852,6 +852,28 @@ def restore_report(
     return success_response(data=None, message="Restored")
 
 
+@router.post("/{report_id}/takedown-requests")
+def request_report_takedown(
+    report_id: int,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_writer),
+):
+    """"게시판에서 내리기 요청" — 게시된 부서 게시판마다 게시취소 요청을
+    팬아웃한다. 요청자가 관리하는 게시판은 즉시 게시취소되고, 나머지는 그
+    board 매니저의 승인을 기다리는 pending 요청이 된다. 권한: 작성자 본인."""
+    from app.modules.mounts import services as mount_services
+
+    try:
+        result = mount_services.request_takedown(
+            db, report_id=report_id, actor_user_id=actor.user.id
+        )
+    except mount_services.MountForbiddenError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
+    except mount_services.MountTargetInvalidError as exc:
+        return not_found_response(str(exc))
+    return success_response(data=result, message="Takedown requested")
+
+
 # ─── Report links ────────────────────────────────────────────────────────── #
 
 

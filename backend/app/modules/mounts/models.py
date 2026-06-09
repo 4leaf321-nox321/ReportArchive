@@ -110,3 +110,71 @@ class ReportMount(Base):
         "Workspace",
         lazy="joined",
     )
+
+
+class TakedownStatus(str, enum.Enum):
+    """게시취소 요청 상태.
+
+    - pending  — 접수, 그 게시판 매니저의 처리 대기.
+    - approved — 매니저 승인 → 그 게시판에서 게시취소(unmount)됨.
+    - rejected — 매니저 거절 → 그 게시판 게시 유지(부서가 보존 결정).
+    - canceled — 요청 철회(작성자 직접 / 휴지통 복구 시 자동).
+    """
+
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
+    canceled = "canceled"
+
+
+class ReportTakedownRequest(Base):
+    """게시판별 게시취소 요청 큐 (보고서 삭제 재설계 2단계).
+
+    작성자가 "게시판에서 내리기"를 요청하면, 보고서가 게시(mount)된 부서
+    게시판마다 한 건씩 pending 으로 쌓인다(팬아웃). 각 게시판 매니저가
+    자기 board 건만 승인/거절한다 — 승인하면 그 게시판에서 게시취소되고,
+    거절하면 그 게시판엔 게시가 유지된다(부서 보존 결정). PasswordResetRequest
+    요청 큐 패턴을 따른다.
+    """
+
+    __tablename__ = "report_takedown_requests"
+    __table_args__ = (
+        # 게시판별 큐 조회(매니저가 자기 board 의 pending 을 본다).
+        Index("ix_takedown_workspace_status", "workspace_slug", "status"),
+        Index("ix_takedown_report", "report_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_id: Mapped[int] = mapped_column(
+        ForeignKey("reports.id", ondelete="CASCADE"), nullable=False
+    )
+    # 게시취소 대상 게시판(이 보고서가 게시된 org board).
+    workspace_slug: Mapped[str] = mapped_column(
+        ForeignKey("workspaces.slug", ondelete="CASCADE"), nullable=False
+    )
+    requested_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[TakedownStatus] = mapped_column(
+        Enum(TakedownStatus, name="takedown_status_enum"),
+        default=TakedownStatus.pending,
+        server_default="pending",
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    decided_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    report: Mapped["Report"] = relationship(  # noqa: F821
+        "Report", foreign_keys=[report_id]
+    )
+    workspace: Mapped["Workspace"] = relationship(  # noqa: F821
+        "Workspace", foreign_keys=[workspace_slug], lazy="joined"
+    )
+    requested_by: Mapped["User | None"] = relationship(  # noqa: F821
+        "User", foreign_keys=[requested_by_user_id]
+    )

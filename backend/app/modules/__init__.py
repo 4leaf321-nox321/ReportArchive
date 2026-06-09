@@ -24,6 +24,7 @@ from app.modules.folders.routes import router as folders_router
 from app.modules.grants.routes import router as grants_router
 from app.modules.members.routes import router as members_router
 from app.modules.mounts.routes import router as mounts_router
+from app.modules.mounts.routes import takedown_router
 from app.modules.notifications.routes import router as notifications_router
 from app.modules.presets.routes import router as presets_router
 from app.modules.prompts.routes import router as prompts_router
@@ -88,6 +89,9 @@ def register_routers(app: FastAPI) -> None:
     # add endpoints without touching this file. See each module's
     # routes.py for the activation phase.
     app.include_router(mounts_router, prefix="/api/mounts", tags=["mounts"])
+    app.include_router(
+        takedown_router, prefix="/api/takedown-requests", tags=["takedowns"]
+    )
     # Comments routes span multiple root paths (/api/reports/.../threads,
     # /api/threads/..., /api/comments/...) so we mount with just /api.
     app.include_router(comments_router, prefix="/api", tags=["comments"])

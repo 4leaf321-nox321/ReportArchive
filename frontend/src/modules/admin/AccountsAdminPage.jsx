@@ -76,6 +76,29 @@ import { setSystemAdmin } from '@/shared/api/systemAdmins'
 import { WorkspaceCombobox } from '@/shared/components/WorkspaceCombobox'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 
+/** navigator.clipboard 는 보안 컨텍스트(HTTPS·localhost)에서만 존재한다.
+ *  운영서버를 평문 HTTP 로 접속하면 navigator.clipboard 자체가 undefined 라
+ *  .writeText 접근에서 터진다. 그 경우 레거시 execCommand('copy') 로 폴백. */
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(text)
+  }
+  const ta = document.createElement('textarea')
+  ta.value = text
+  // 화면 밖으로 빼되 포커스/선택은 가능하게 — display:none 이면 선택이 안 됨.
+  ta.style.position = 'fixed'
+  ta.style.left = '-9999px'
+  ta.setAttribute('readonly', '')
+  document.body.appendChild(ta)
+  ta.select()
+  try {
+    const ok = document.execCommand('copy')
+    if (!ok) throw new Error('execCommand copy 실패')
+  } finally {
+    document.body.removeChild(ta)
+  }
+}
+
 export default function AccountsAdminPage() {
   const { me } = useAuth()
   const { all: workspaces } = useWorkspace()
@@ -276,7 +299,7 @@ export default function AccountsAdminPage() {
       return
     }
     try {
-      await navigator.clipboard.writeText(emails)
+      await copyTextToClipboard(emails)
       const n = emails.split(';').length
       toast.success(
         homeFilter

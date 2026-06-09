@@ -50,6 +50,7 @@ import { useAsync } from '@/shared/hooks/useAsync'
 import {
   trashReport,
   restoreReport,
+  deleteReport,
   listReports,
   moveReportToFolder,
 } from './api'
@@ -159,6 +160,7 @@ export default function ReportsListPage() {
   // that the user can no longer see in the table.
   const [selectedIds, setSelectedIds] = useState(() => new Set())
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+  const [bulkPurgeOpen, setBulkPurgeOpen] = useState(false)
   const [bulkUnmountOpen, setBulkUnmountOpen] = useState(false)
   const [bulkMountOpen, setBulkMountOpen] = useState(false)
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -625,6 +627,12 @@ export default function ReportsListPage() {
     runBulk((id) => restoreReport(id), { successWord: '복구됨' })
   }
 
+  function handleBulkPurge() {
+    // 영구삭제(비가역). 게시 중인 항목은 백엔드가 409로 막으므로 "N건 실패"로
+    // 안내된다(먼저 게시취소 필요).
+    runBulk((id) => deleteReport(id), { successWord: '영구 삭제됨' })
+  }
+
   /** Bulk folder change — branches on isOrg because the two scopes use
    *  different routes (Report.folder_id vs ReportMount.folder_id). The
    *  same `folderId === null` sentinel means "uncategorized" in both. */
@@ -805,11 +813,20 @@ export default function ReportsListPage() {
         ) : (
           <>
             {effectiveSelected.size > 0 && trashView && (
-              // 휴지통 보기 — 일괄 복구만.
+              // 휴지통 보기 — 복구 / 완전 삭제.
               <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm">
                 <span className="text-muted-foreground">{effectiveSelected.size}건 선택</span>
                 <Button size="sm" disabled={bulkBusy} onClick={handleBulkRestore}>
                   복구
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={bulkBusy}
+                  onClick={() => setBulkPurgeOpen(true)}
+                  title="원본을 완전히 삭제 (게시 중이면 먼저 게시취소 필요)"
+                >
+                  완전 삭제
                 </Button>
                 <Button
                   size="sm"
@@ -918,6 +935,15 @@ export default function ReportsListPage() {
           confirmLabel="휴지통으로 이동"
           variant="destructive"
           onConfirm={handleBulkDelete}
+        />
+        <ConfirmDialog
+          open={bulkPurgeOpen}
+          onOpenChange={setBulkPurgeOpen}
+          title="영구 삭제"
+          description={`선택한 ${effectiveSelected.size}건을 영구히 삭제합니다. 되돌릴 수 없으며, 종합보고 안건 등 참조에서도 사라집니다. 아직 부서 게시판에 게시 중인 보고서는 먼저 게시취소해야 하며, 그런 항목은 삭제되지 않습니다.`}
+          confirmLabel="영구 삭제"
+          variant="destructive"
+          onConfirm={handleBulkPurge}
         />
         <MountDialog
           open={Boolean(mountDialogReport)}

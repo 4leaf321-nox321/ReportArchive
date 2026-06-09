@@ -314,6 +314,10 @@ class ReportRead(BaseModel):
     # 소프트삭제 시각 — 휴지통이면 set, 살아있으면 None. 상세 화면에서 "휴지통에
     # 있음 / 복구" 배너 표시용.
     deleted_at: Optional[UtcDatetime] = None
+    # 영구삭제(purge) 가능 — 소유자/시스템관리자 AND 게시 중 아님. 게시 중이면
+    # 먼저 게시취소해야 하므로 False. is_mounted 는 그 안내용.
+    can_purge: Optional[bool] = None
+    is_mounted: Optional[bool] = None
     # 조직 간 공개(조직간공개_설계.md §6) — 외부 공개 열람자 여부와 곁다리
     # 가능 여부. is_public_view=True 면 프런트가 "다른 조직의 공개 보고서 ·
     # 읽기 전용" 배너를 띄우고 댓글/편집/이력 UI 를 숨긴다. can_comment 는

@@ -284,6 +284,30 @@ def can_delete_report(db: Session, actor, report: Report) -> bool:
     return is_report_board_manager(db, user.id, report)
 
 
+def report_mount_count(db: Session, report_id: int) -> int:
+    """이 보고서가 게시(mount)된 부서 게시판 수."""
+    from app.modules.mounts.models import ReportMount
+
+    return int(
+        db.execute(
+            select(func.count())
+            .select_from(ReportMount)
+            .where(ReportMount.report_id == report_id)
+        ).scalar_one()
+    )
+
+
+def can_purge_report(db: Session, actor, report: Report) -> bool:
+    """영구삭제(purge) 권한 — 소유자 / 시스템관리자만. 영구삭제는 원본을 지워
+    게시된 모든 게시판·종합보고 안건에서 cascade 로 사라지는 비가역 작업이라,
+    그 보고서를 소유한 사람만 할 수 있다(게시판 매니저는 자기 board 게시취소로
+    다룬다). 단, 게시 중이면 라우트가 추가로 차단한다(게시취소 먼저)."""
+    user = actor.user
+    return bool(getattr(user, "is_system_admin", False)) or (
+        report.owner_user_id == user.id
+    )
+
+
 def can_trash_report(db: Session, actor, report: Report) -> bool:
     """소프트삭제(휴지통) 권한 — 개인 공간에서 회수하는 행위라 **소유자 /
     시스템 관리자**만. 게시판 매니저는 자기 board 게시취소(unpublish)로

@@ -1,8 +1,10 @@
-"""삭제 권한 한정 — 소유자 / 시스템관리자 / 게시판 매니저만.
+"""영구삭제(purge) 권한·가드 — 보고서 삭제 재설계 3단계.
 
-기존 버그: 삭제가 can_read(조회 가능) 기준이라 열람자도 지울 수 있었다.
-이제 can_delete_report 로 좁혔다(coauthor·추가편집자 같은 편집권자도 삭제 불가).
-삭제는 게시된 모든 부서에서 cascade 로 사라지는 파괴적 작업이라.
+DELETE /api/reports/{id} 는 비가역 영구삭제(원본·게시·종합보고 안건 cascade).
+  - 권한: 소유자 / 시스템관리자만 (게시판 매니저는 자기 board 게시취소로 다룸).
+  - 게시 중이면 차단(409) — 게시취소(해제/내리기 요청 승인)로 mount 가 0이
+    된 뒤에만 영구삭제할 수 있다.
+평소 "삭제"는 이게 아니라 소프트삭제(/trash) — test_report_soft_delete 참고.
 """
 from __future__ import annotations
 
@@ -45,6 +47,17 @@ def _h(uid=1, slug="dx"):
     return {"Authorization": f"Bearer {create_access_token(uid)}", "X-Workspace-Slug": slug}
 
 
+def _purge(rid):
+    db = SessionLocal()
+    try:
+        r = db.get(Report, rid)
+        if r:
+            db.delete(r)
+            db.commit()
+    finally:
+        db.close()
+
+
 def _make_mounted_report(client):
     tpl = client.get("/api/templates", headers=_h()).json()["data"][0]
     rid = client.post(
@@ -53,7 +66,7 @@ def _make_mounted_report(client):
         json={
             "template_id": tpl["template_id"],
             "template_version": tpl["version"],
-            "title": "삭제권한 테스트",
+            "title": "영구삭제 테스트",
             "tags": [],
         },
     ).json()["data"]["id"]
@@ -66,7 +79,7 @@ def _make_mounted_report(client):
 
 
 def test_is_report_board_manager():
-    """게시판 매니저는 True, 일반 멤버는 False."""
+    """게시판 매니저는 True, 일반 멤버는 False (게시취소 권한 판정용)."""
     client = TestClient(app)
     mgr = _ensure_member("del-mgr@test.local", BOARD, Role.manager)
     member = _ensure_member("del-member@test.local", BOARD, Role.user)
@@ -80,39 +93,52 @@ def test_is_report_board_manager():
         finally:
             db.close()
     finally:
-        client.delete(f"/api/reports/{rid}", headers=_h())
+        _purge(rid)
 
 
-def test_delete_blocked_for_plain_member_allowed_for_board_manager():
-    """일반 부서 멤버(소유자도 매니저도 아님)는 삭제 403, 게시판 매니저는 200."""
+def test_purge_blocked_while_mounted_then_allowed():
+    """게시 중이면 영구삭제 409, 게시취소 후 200."""
+    client = TestClient(app)
+    rid = _make_mounted_report(client)
+    purged = False
+    try:
+        # 게시 중 → 차단.
+        r = client.delete(f"/api/reports/{rid}", headers=_h())
+        assert r.status_code == 409, r.text
+
+        # 게시취소(시스템관리자) 후 → 영구삭제 허용.
+        assert (
+            client.delete(f"/api/mounts/{rid}/{BOARD}", headers=_h()).status_code == 200
+        )
+        r = client.delete(f"/api/reports/{rid}", headers=_h())
+        assert r.status_code == 200, r.text
+        purged = True
+        # 정말 사라졌는지.
+        assert client.get(f"/api/reports/{rid}", headers=_h()).status_code == 404
+    finally:
+        if not purged:
+            _purge(rid)
+
+
+def test_purge_forbidden_for_non_owner_board_manager():
+    """소유자도 시스템관리자도 아닌 게시판 매니저는 영구삭제 403."""
     client = TestClient(app)
     mgr = _ensure_member("del-mgr@test.local", BOARD, Role.manager)
-    member = _ensure_member("del-member@test.local", BOARD, Role.user)
     rid = _make_mounted_report(client)
-
-    # 일반 멤버 → 403 (writer 역할이지만 소유자/매니저 아님)
-    r = client.delete(f"/api/reports/{rid}", headers=_h(member, BOARD))
-    assert r.status_code == 403, r.text
-
-    # 게시판 매니저 → 200 (삭제 성공)
-    r = client.delete(f"/api/reports/{rid}", headers=_h(mgr, BOARD))
-    assert r.status_code == 200, r.text
+    try:
+        r = client.delete(f"/api/reports/{rid}", headers=_h(mgr, BOARD))
+        assert r.status_code == 403, r.text
+    finally:
+        _purge(rid)
 
 
-def test_delete_allowed_for_owner():
-    """소유자(겸 작성자)는 삭제 가능."""
-    client = TestClient(app)
-    rid = _make_mounted_report(client)
-    r = client.delete(f"/api/reports/{rid}", headers=_h())
-    assert r.status_code == 200, r.text
-
-
-def test_read_response_exposes_can_delete():
-    """ReportRead.can_delete 가 응답에 실린다(프런트 버튼 게이팅용)."""
+def test_read_response_exposes_purge_flags():
+    """ReportRead.can_purge/is_mounted — 게시 중이면 can_purge False."""
     client = TestClient(app)
     rid = _make_mounted_report(client)
     try:
         obj = client.get(f"/api/reports/{rid}", headers=_h()).json()["data"]
-        assert obj.get("can_delete") is True  # 소유자
+        assert obj.get("is_mounted") is True
+        assert obj.get("can_purge") is False  # 게시 중이라 불가
     finally:
-        client.delete(f"/api/reports/{rid}", headers=_h())
+        _purge(rid)

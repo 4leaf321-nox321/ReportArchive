@@ -49,6 +49,12 @@ def _read_with_perms(db: Session, actor: CurrentUser, report) -> ReportRead:
     # 소프트삭제(휴지통)·복구 권한 — 소유자/시스템관리자. 프런트 "삭제"(휴지통)
     # 버튼과 휴지통 복구 버튼을 이 값으로 게이팅.
     obj.can_trash = services.can_trash_report(db, actor, report)
+    # 영구삭제(purge) 가능 여부 — 소유자/시스템관리자 AND 게시 중이 아닐 때만.
+    # 게시 중이면 먼저 게시취소해야 해서 False(프런트가 "완전 삭제" 버튼을
+    # 비활성/숨김 처리하고 안내).
+    _mounted = services.report_mount_count(db, report.id) > 0
+    obj.is_mounted = _mounted
+    obj.can_purge = services.can_purge_report(db, actor, report) and not _mounted
     # 조직 간 공개(§6) — 외부 공개 열람자면 읽기전용 플래그를 세워 프런트가
     # 배너·곁다리 숨김을 그린다. virtual(글로벌/관리자)은 공개 열람자가 아님.
     is_public_view = not actor.workspace.virtual and (
@@ -797,16 +803,25 @@ def delete_report(
     actor: CurrentUser = Depends(require_writer),
 ):
     """영구삭제(purge) — 원본을 지워 게시된 모든 부서 게시판·종합보고 안건에서
-    cascade 로 사라진다. 평소 "삭제"는 이게 아니라 소프트삭제(/trash)를 쓴다.
-    (보고서 삭제 재설계 3단계에서 '게시 중 차단·확인' 가드를 더 붙일 예정.)
-    권한: 조회가 아니라 소유자/시스템관리자/게시판 매니저로 한정."""
+    cascade 로 사라지는 비가역 작업. 평소 "삭제"는 이게 아니라 소프트삭제
+    (/trash)를 쓴다. 권한: 소유자/시스템관리자만. **게시 중이면 차단** — 부서
+    기록을 작성자가 일방적으로 날리지 못하게, 게시취소(해제/내리기 요청 승인)
+    가 끝나 mount 가 0이 된 뒤에만 영구삭제할 수 있다."""
     report = services.get_report(db, report_id)
     if not report:
         return not_found_response(f"Report not found: {report_id}")
-    if not services.can_delete_report(db, actor, report):
+    if not services.can_purge_report(db, actor, report):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
-            "이 보고서를 삭제할 권한이 없습니다 (소유자 또는 게시판 매니저만 가능).",
+            "이 보고서를 영구 삭제할 권한이 없습니다 (소유자만 가능).",
+        )
+    mount_count = services.report_mount_count(db, report.id)
+    if mount_count > 0:
+        return error_response(
+            f"아직 {mount_count}개 부서 게시판에 게시 중입니다. 먼저 게시취소"
+            "(해제 또는 '게시판에서 내리기 요청' 승인) 후 영구 삭제하세요.",
+            errors=[{"code": "report_still_mounted"}],
+            status_code=409,
         )
     services.delete_report(db, report)
     return success_response(data=None, message="Deleted")

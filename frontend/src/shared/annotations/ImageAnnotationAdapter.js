@@ -86,18 +86,37 @@ export function useImageAnnotationAdapter(
           : next,
       )
     }
-    measure()
     const ro = new ResizeObserver(measure)
     ro.observe(container)
-    const img = imgRef?.current
-    if (img) {
-      ro.observe(img)
-      // 자연 크기는 load 후에 정해지므로 그때 content rect 를 다시 잰다.
-      img.addEventListener('load', measure)
+
+    // AuthedImage 는 blob 을 비동기로 받아 처음엔 placeholder(div)를 그리고
+    // 나중에 <img> 로 교체된다. 그래서 마운트 시점엔 imgRef 가 비어 있을 수
+    // 있어, img 가 *생기고 load 될 때* 다시 측정해야 content rect 보정이 켜진다.
+    let boundImg = null
+    function bindImg() {
+      const img = imgRef?.current
+      if (img && img !== boundImg) {
+        if (boundImg) {
+          ro.unobserve(boundImg)
+          boundImg.removeEventListener('load', measure)
+        }
+        boundImg = img
+        ro.observe(img)
+        img.addEventListener('load', measure) // 자연 크기는 load 후 확정
+      }
+      measure()
     }
+    bindImg()
+    // AuthedImage 가 placeholder div ↔ <img> 를 교체할 때(컨테이너 직계 자식)
+    // 다시 바인딩 + 측정. subtree 는 안 본다 — 주석 레이어 DOM 변화까지 잡혀
+    // 불필요하게 자주 측정되는 걸 피한다.
+    const mo = new MutationObserver(bindImg)
+    mo.observe(container, { childList: true })
+
     return () => {
       ro.disconnect()
-      if (img) img.removeEventListener('load', measure)
+      mo.disconnect()
+      if (boundImg) boundImg.removeEventListener('load', measure)
     }
     // containerRef / imgRef are refs — their identity is stable, the
     // .current values change without triggering re-runs (which is what

@@ -1,0 +1,1206 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ReportArchive — 모듈 지도</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --fg: #0f172a;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --card: #ffffff;
+      --accent: #2563eb;
+      --accent-soft: #dbeafe;
+      --code-bg: #f1f5f9;
+      --row-alt: #f8fafc;
+      --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+
+      --fe-color: #1d4ed8;
+      --fe-bg: #dbeafe;
+      --be-color: #b45309;
+      --be-bg: #fef3c7;
+      --db-color: #065f46;
+      --db-bg: #d1fae5;
+      --shared-color: #6b21a8;
+      --shared-bg: #ede9fe;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b1220;
+        --fg: #e2e8f0;
+        --muted: #94a3b8;
+        --border: #1e293b;
+        --card: #111827;
+        --accent: #60a5fa;
+        --accent-soft: #1e3a8a;
+        --code-bg: #1e293b;
+        --row-alt: #0f172a;
+
+        --fe-color: #93c5fd;
+        --fe-bg: #1e3a8a;
+        --be-color: #fcd34d;
+        --be-bg: #78350f;
+        --db-color: #6ee7b7;
+        --db-bg: #064e3b;
+        --shared-color: #c4b5fd;
+        --shared-bg: #4c1d95;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+        "Pretendard", "Noto Sans KR", "Segoe UI", Roboto, sans-serif;
+      line-height: 1.55;
+      font-size: 15px;
+    }
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 32px 28px 64px;
+    }
+    header.hero {
+      padding-bottom: 24px;
+      margin-bottom: 32px;
+      border-bottom: 1px solid var(--border);
+    }
+    header.hero h1 {
+      margin: 0 0 6px;
+      font-size: 30px;
+      letter-spacing: -0.01em;
+    }
+    header.hero p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    nav.tabs {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 32px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      z-index: 10;
+      padding-top: 12px;
+    }
+    nav.tabs a {
+      padding: 8px 16px;
+      border-radius: 999px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--fg);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 500;
+    }
+    nav.tabs a:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+    section.view {
+      margin-bottom: 56px;
+      scroll-margin-top: 72px;
+    }
+    section.view > header {
+      margin-bottom: 20px;
+      display: flex;
+      align-items: baseline;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    section.view > header h2 {
+      margin: 0;
+      font-size: 24px;
+      letter-spacing: -0.01em;
+    }
+    section.view > header .badge {
+      font-size: 12px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+    section.view > header .lede {
+      flex-basis: 100%;
+      color: var(--muted);
+      font-size: 14px;
+      margin: 0;
+    }
+
+    /* 표 */
+    .table-wrap {
+      overflow-x: auto;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+      min-width: 900px;
+    }
+    thead th {
+      text-align: left;
+      padding: 12px 14px;
+      background: var(--code-bg);
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    tbody td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    tbody tr:nth-child(even) { background: var(--row-alt); }
+    tbody tr:last-child td { border-bottom: none; }
+    .group-row td {
+      background: var(--accent-soft);
+      color: var(--fg);
+      font-weight: 700;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 8px 14px;
+    }
+
+    /* 카드 그리드 */
+    .grid {
+      display: grid;
+      gap: 14px;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 18px;
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 0;
+    }
+    .card .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .card h3 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.005em;
+    }
+    .card .pill {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+    .pill.fe { color: var(--fe-color); background: var(--fe-bg); }
+    .pill.be { color: var(--be-color); background: var(--be-bg); }
+    .pill.db { color: var(--db-color); background: var(--db-bg); }
+    .pill.shared { color: var(--shared-color); background: var(--shared-bg); }
+
+    .badge.fe { color: var(--fe-color); background: var(--fe-bg); }
+    .badge.be { color: var(--be-color); background: var(--be-bg); }
+    .badge.db { color: var(--db-color); background: var(--db-bg); }
+
+    .card .desc {
+      color: var(--muted);
+      font-size: 13px;
+      margin: 2px 0 4px;
+    }
+    .card dl {
+      margin: 0;
+      display: grid;
+      grid-template-columns: 70px 1fr;
+      gap: 4px 10px;
+      font-size: 12.5px;
+    }
+    .card dt {
+      color: var(--muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-size: 10.5px;
+      padding-top: 2px;
+    }
+    .card dd {
+      margin: 0;
+      word-break: break-word;
+    }
+    .card dd code, .card dd .chip {
+      font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+      font-size: 11.5px;
+      background: var(--code-bg);
+      padding: 1px 6px;
+      border-radius: 4px;
+      display: inline-block;
+      margin: 1px 2px 1px 0;
+    }
+    code, kbd {
+      font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+      font-size: 12.5px;
+      background: var(--code-bg);
+      padding: 1.5px 6px;
+      border-radius: 4px;
+    }
+    td code { font-size: 12px; }
+
+    /* 3-layer overview */
+    .layers {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 14px;
+      margin-top: 8px;
+    }
+    @media (max-width: 1000px) {
+      .layers { grid-template-columns: 1fr; }
+    }
+    .layer {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: var(--shadow);
+    }
+    .layer h3 {
+      margin: 0 0 4px;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .layer h3 .pill { font-size: 11px; }
+    .layer .layer-desc {
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0 0 14px;
+    }
+    .layer ul {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      font-size: 13px;
+    }
+    .layer ul li {
+      padding: 6px 0;
+      border-bottom: 1px dashed var(--border);
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .layer ul li:last-child { border-bottom: none; }
+    .layer ul li .name { font-weight: 600; }
+    .layer ul li .note { color: var(--muted); font-size: 12px; text-align: right; }
+
+    footer {
+      margin-top: 32px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    /* legend */
+    .legend {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 16px;
+    }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .legend span::before {
+      content: "";
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+      background: currentColor;
+    }
+    .legend .fe { color: var(--fe-color); }
+    .legend .be { color: var(--be-color); }
+    .legend .db { color: var(--db-color); }
+    .legend .shared { color: var(--shared-color); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="hero">
+      <h1>ReportArchive — 모듈 지도</h1>
+      <p>"무엇이 어디에 사는가" 를 모듈 단위로 명확히 보여주는 페이지.
+        다이어그램 없이 표 · 카드로만 구성해 각 모듈이 또렷이 보이도록 했음.</p>
+    </header>
+
+    <nav class="tabs" aria-label="섹션 목차">
+      <a href="#sec1">1. 사용자 관점 — 화면별 모듈 표</a>
+      <a href="#sec2">2. 시스템 3계층 한눈에</a>
+      <a href="#sec3">3. 프론트엔드 모듈 카드</a>
+      <a href="#sec4">4. 백엔드 모듈 카드</a>
+      <a href="#sec5">5. DB 테이블 카드</a>
+    </nav>
+
+    <div class="legend">
+      <span class="fe">프론트엔드</span>
+      <span class="be">백엔드</span>
+      <span class="db">DB 테이블</span>
+      <span class="shared">공통 인프라</span>
+    </div>
+
+    <!-- ========== 1. 사용자 관점 표 ========== -->
+    <section class="view" id="sec1">
+      <header>
+        <h2>1. 사용자 관점 — 화면별 모듈 표</h2>
+        <span class="badge fe">화면 → 페이지 → API → 테이블</span>
+        <p class="lede">사용자가 실제로 클릭하는 화면 한 행마다, 어떤 프론트 페이지가 뜨고
+          어떤 백엔드 API를 부르고 어떤 테이블이 움직이는지.</p>
+      </header>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 180px;">사용자 화면 / 기능</th>
+              <th style="width: 220px;">URL</th>
+              <th>프론트엔드 페이지</th>
+              <th>백엔드 API</th>
+              <th>DB 테이블</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="group-row"><td colspan="5">인증</td></tr>
+            <tr>
+              <td>로그인</td>
+              <td><code>/login</code></td>
+              <td><code>modules/auth/LoginPage</code></td>
+              <td><code>/api/auth/login</code>, <code>/api/me</code></td>
+              <td><code>users</code></td>
+            </tr>
+            <tr>
+              <td>회원가입</td>
+              <td><code>/signup</code></td>
+              <td><code>modules/auth/SignupPage</code></td>
+              <td><code>/api/auth/signup</code></td>
+              <td><code>users</code></td>
+            </tr>
+
+            <tr class="group-row"><td colspan="5">부서 스코프 (/w/:workspace/*)</td></tr>
+            <tr>
+              <td>부서 홈</td>
+              <td><code>/w/:ws</code></td>
+              <td><code>modules/workspace/WorkspaceHomePage</code></td>
+              <td><code>/api/workspaces/:slug</code></td>
+              <td><code>workspaces</code>, <code>workspace_members</code></td>
+            </tr>
+            <tr>
+              <td>보고서 목록</td>
+              <td><code>/w/:ws/reports</code></td>
+              <td><code>modules/reports/ReportsListPage</code></td>
+              <td><code>/api/reports</code>, <code>/api/folders</code>, <code>/api/mounts</code></td>
+              <td><code>reports</code>, <code>folders</code>, <code>report_mounts</code></td>
+            </tr>
+            <tr>
+              <td>보고서 생성</td>
+              <td><code>/w/:ws/reports/new</code></td>
+              <td><code>modules/reports/ReportNewPage</code></td>
+              <td><code>/api/templates</code>, <code>/api/reports</code> (POST)</td>
+              <td><code>templates</code>, <code>reports</code></td>
+            </tr>
+            <tr>
+              <td>보고서 편집 (위젯 · 멘션 · 코멘트 · 활동)</td>
+              <td><code>/w/:ws/reports/:id</code></td>
+              <td><code>modules/reports/ReportDetailPage</code></td>
+              <td><code>/api/reports/:id</code>, <code>/api/widgets</code>,
+                <code>/api/widget-relations</code>, <code>/api/threads</code>,
+                <code>/api/comments</code>, <code>/api/reports/:id/editors</code>,
+                <code>/api/reports/:id/activities</code></td>
+              <td><code>reports</code>, <code>report_edit_locks</code>, <code>widget_relations</code>,
+                <code>comment_threads</code>, <code>comments</code>, <code>report_editors</code>,
+                <code>report_activities</code></td>
+            </tr>
+            <tr>
+              <td>대시보드</td>
+              <td><code>/w/:ws/dashboard</code></td>
+              <td><code>modules/dashboard/DashboardPage</code></td>
+              <td><code>/api/reports</code>, <code>/api/activities</code></td>
+              <td><code>reports</code>, <code>report_activities</code></td>
+            </tr>
+            <tr>
+              <td>종합보고 목록</td>
+              <td><code>/w/:ws/composites</code></td>
+              <td><code>modules/composites/CompositesListPage</code></td>
+              <td><code>/api/composites</code></td>
+              <td><code>composite_reports</code></td>
+            </tr>
+            <tr>
+              <td>종합보고 상세</td>
+              <td><code>/w/:ws/composites/:id</code></td>
+              <td><code>modules/composites/CompositeDetailPage</code></td>
+              <td><code>/api/composites/:id</code></td>
+              <td><code>composite_reports</code>, <code>composite_report_items</code></td>
+            </tr>
+            <tr>
+              <td>부서 멤버</td>
+              <td><code>/w/:ws/members</code></td>
+              <td><code>modules/members/MembersPage</code></td>
+              <td><code>/api/workspaces/:slug/members</code></td>
+              <td><code>workspace_members</code>, <code>users</code></td>
+            </tr>
+
+            <tr class="group-row"><td colspan="5">개인공간 (/personal/*)</td></tr>
+            <tr>
+              <td>내 보고서 목록</td>
+              <td><code>/personal/reports</code></td>
+              <td><code>modules/reports/ReportsListPage</code></td>
+              <td><code>/api/reports</code> (personal slug)</td>
+              <td><code>reports</code>, <code>folders</code></td>
+            </tr>
+            <tr>
+              <td>받은 코멘트 인박스</td>
+              <td><code>/personal/inbox</code></td>
+              <td><code>modules/inbox/InboxPage</code></td>
+              <td><code>/api/comments</code>, <code>/api/threads</code></td>
+              <td><code>comment_threads</code>, <code>comments</code></td>
+            </tr>
+
+            <tr class="group-row"><td colspan="5">부서 횡단</td></tr>
+            <tr>
+              <td>프로필</td>
+              <td><code>/profile</code></td>
+              <td><code>modules/profile/ProfilePage</code></td>
+              <td><code>/api/me</code>, <code>/api/users</code></td>
+              <td><code>users</code></td>
+            </tr>
+            <tr>
+              <td>알림</td>
+              <td><code>/notifications</code></td>
+              <td><code>modules/notifications/NotificationsPage</code></td>
+              <td><code>/api/notifications</code></td>
+              <td><code>notifications</code></td>
+            </tr>
+            <tr>
+              <td>템플릿 목록</td>
+              <td><code>/templates</code></td>
+              <td><code>modules/templates/TemplatesPage</code></td>
+              <td><code>/api/templates</code>, <code>/api/template-categories</code></td>
+              <td><code>templates</code>, <code>template_categories</code></td>
+            </tr>
+            <tr>
+              <td>템플릿 편집</td>
+              <td><code>/templates/:id/edit</code></td>
+              <td><code>modules/templates/TemplateEditorPage</code></td>
+              <td><code>/api/templates/:id</code>, <code>/api/section-taxonomy</code></td>
+              <td><code>templates</code>, <code>section_categories</code>, <code>section_items</code></td>
+            </tr>
+            <tr>
+              <td>VOC 목록</td>
+              <td><code>/voc</code></td>
+              <td><code>modules/voc/VocListPage</code></td>
+              <td><code>/api/voc</code></td>
+              <td><code>voc_posts</code></td>
+            </tr>
+            <tr>
+              <td>VOC 상세 · 댓글</td>
+              <td><code>/voc/:postId</code></td>
+              <td><code>modules/voc/VocDetailPage</code></td>
+              <td><code>/api/voc/:id</code>, <code>/api/voc/:id/comments</code></td>
+              <td><code>voc_posts</code>, <code>voc_comments</code></td>
+            </tr>
+            <tr>
+              <td>AI 설정 (프롬프트 관리)</td>
+              <td><code>/ai-settings</code></td>
+              <td><code>modules/ai_settings/AiSettingsPage</code></td>
+              <td><code>/api/prompts</code></td>
+              <td><code>prompts</code></td>
+            </tr>
+
+            <tr class="group-row"><td colspan="5">관리자</td></tr>
+            <tr>
+              <td>관리자 홈</td>
+              <td><code>/admin</code></td>
+              <td><code>modules/admin/AdminPage</code></td>
+              <td><code>/api/admin/*</code></td>
+              <td>(다수 — 운영용)</td>
+            </tr>
+            <tr>
+              <td>계정 관리</td>
+              <td><code>/admin/accounts</code></td>
+              <td><code>modules/admin/AccountsAdminPage</code></td>
+              <td><code>/api/admin/accounts</code></td>
+              <td><code>users</code></td>
+            </tr>
+            <tr>
+              <td>사용자 공간 관리</td>
+              <td><code>/admin/user-spaces</code></td>
+              <td><code>modules/admin/UserSpaceAdminPage</code></td>
+              <td><code>/api/admin/user-spaces</code></td>
+              <td><code>workspaces</code></td>
+            </tr>
+            <tr>
+              <td>엔티티(기준데이터) 관리</td>
+              <td><code>/admin/entities</code></td>
+              <td><code>modules/entities/EntitiesAdminPage</code></td>
+              <td><code>/api/entities</code>, <code>/api/entity-types</code></td>
+              <td><code>entities</code>, <code>entity_types</code>, <code>report_entities</code></td>
+            </tr>
+            <tr>
+              <td>서버 / 시스템 정보</td>
+              <td><code>/server</code></td>
+              <td><code>modules/admin/ServerPage</code></td>
+              <td><code>/api/admin/server</code>, <code>/api/health</code></td>
+              <td>—</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ========== 2. 3-Layer 한눈에 ========== -->
+    <section class="view" id="sec2">
+      <header>
+        <h2>2. 시스템 3계층 한눈에</h2>
+        <p class="lede">프론트엔드 · 백엔드 · DB 가 각각 어떤 단위로 쪼개져 있는지 요약.</p>
+      </header>
+
+      <div class="layers">
+        <div class="layer">
+          <h3>프론트엔드 <span class="pill fe">React 18 + Vite 5</span></h3>
+          <p class="layer-desc"><code>frontend/src/modules/*</code> 16개 모듈 · 공통 인프라는
+            <code>shared/*</code>.</p>
+          <ul>
+            <li><span class="name">auth</span><span class="note">로그인 / 가입</span></li>
+            <li><span class="name">workspace</span><span class="note">부서 홈 · 컨텍스트</span></li>
+            <li><span class="name">reports</span><span class="note">목록 / 생성 / 편집</span></li>
+            <li><span class="name">dashboard</span><span class="note">부서 대시보드</span></li>
+            <li><span class="name">composites</span><span class="note">종합보고</span></li>
+            <li><span class="name">members</span><span class="note">부서원 관리</span></li>
+            <li><span class="name">templates</span><span class="note">템플릿 편집</span></li>
+            <li><span class="name">comments</span><span class="note">스레드 · 인박스 헬퍼</span></li>
+            <li><span class="name">inbox</span><span class="note">받은 코멘트</span></li>
+            <li><span class="name">notifications</span><span class="note">알림 센터</span></li>
+            <li><span class="name">profile</span><span class="note">내 프로필</span></li>
+            <li><span class="name">voc</span><span class="note">VOC 게시판</span></li>
+            <li><span class="name">ai_settings</span><span class="note">프롬프트 관리</span></li>
+            <li><span class="name">entities</span><span class="note">기준데이터 관리</span></li>
+            <li><span class="name">admin</span><span class="note">관리자 · 서버</span></li>
+            <li><span class="name">dashboard</span><span class="note">홈 위젯</span></li>
+          </ul>
+        </div>
+
+        <div class="layer">
+          <h3>백엔드 <span class="pill be">FastAPI + SQLAlchemy</span></h3>
+          <p class="layer-desc"><code>backend/app/modules/*</code> 22개 모듈을 <code>/api/*</code>
+            로 마운트. 공통은 <code>app/shared/*</code>.</p>
+          <ul>
+            <li><span class="name">auth</span><span class="note">/api/auth</span></li>
+            <li><span class="name">users</span><span class="note">/api/me · /api/users</span></li>
+            <li><span class="name">workspaces</span><span class="note">/api/workspaces</span></li>
+            <li><span class="name">members</span><span class="note">/api/workspaces/:s/members</span></li>
+            <li><span class="name">reports</span><span class="note">/api/reports</span></li>
+            <li><span class="name">report_types</span><span class="note">/api/report-types</span></li>
+            <li><span class="name">templates</span><span class="note">/api/templates</span></li>
+            <li><span class="name">template_categories</span><span class="note">/api/template-categories</span></li>
+            <li><span class="name">section_taxonomy</span><span class="note">/api/section-taxonomy</span></li>
+            <li><span class="name">composites</span><span class="note">/api/composites</span></li>
+            <li><span class="name">folders</span><span class="note">/api/folders</span></li>
+            <li><span class="name">mounts</span><span class="note">/api/mounts</span></li>
+            <li><span class="name">entities</span><span class="note">/api/entities · /entity-types</span></li>
+            <li><span class="name">widgets</span><span class="note">/api/widgets</span></li>
+            <li><span class="name">widget_relations</span><span class="note">/api/widget-relations</span></li>
+            <li><span class="name">prompts</span><span class="note">/api/prompts</span></li>
+            <li><span class="name">comments</span><span class="note">/api/threads · /comments</span></li>
+            <li><span class="name">editors</span><span class="note">/api/reports/:id/editors</span></li>
+            <li><span class="name">activities</span><span class="note">/api/reports/:id/activities</span></li>
+            <li><span class="name">notifications</span><span class="note">/api/notifications</span></li>
+            <li><span class="name">files</span><span class="note">/api/files</span></li>
+            <li><span class="name">voc</span><span class="note">/api/voc</span></li>
+            <li><span class="name">admin</span><span class="note">/api/admin</span></li>
+          </ul>
+        </div>
+
+        <div class="layer">
+          <h3>DB <span class="pill db">PostgreSQL :5433</span></h3>
+          <p class="layer-desc">테이블 28개 · SQLAlchemy ORM · Alembic 마이그레이션. 호스트
+            서비스로 SIF 바깥에 있음 (데이터 영속).</p>
+          <ul>
+            <li><span class="name">users</span><span class="note">계정 · 비밀번호</span></li>
+            <li><span class="name">workspaces</span><span class="note">부서 / 개인공간</span></li>
+            <li><span class="name">workspace_members</span><span class="note">멤버십 · 역할</span></li>
+            <li><span class="name">reports</span><span class="note">보고서 본체</span></li>
+            <li><span class="name">report_edit_locks</span><span class="note">편집 락</span></li>
+            <li><span class="name">report_editors</span><span class="note">편집 참여자</span></li>
+            <li><span class="name">report_activities</span><span class="note">활동 로그</span></li>
+            <li><span class="name">report_entities</span><span class="note">보고서↔엔티티</span></li>
+            <li><span class="name">report_mounts</span><span class="note">폴더 배치</span></li>
+            <li><span class="name">report_types</span><span class="note">보고서 유형</span></li>
+            <li><span class="name">templates</span><span class="note">템플릿</span></li>
+            <li><span class="name">template_categories</span><span class="note">템플릿 분류</span></li>
+            <li><span class="name">section_categories</span><span class="note">섹션 분류</span></li>
+            <li><span class="name">section_items</span><span class="note">섹션 항목</span></li>
+            <li><span class="name">composite_reports</span><span class="note">종합보고</span></li>
+            <li><span class="name">composite_report_items</span><span class="note">종합보고 항목</span></li>
+            <li><span class="name">folders</span><span class="note">폴더 트리</span></li>
+            <li><span class="name">entity_types</span><span class="note">엔티티 유형</span></li>
+            <li><span class="name">entities</span><span class="note">기준데이터</span></li>
+            <li><span class="name">widget_relations</span><span class="note">위젯 간 연결</span></li>
+            <li><span class="name">prompts</span><span class="note">AI 프롬프트</span></li>
+            <li><span class="name">comment_threads</span><span class="note">댓글 스레드</span></li>
+            <li><span class="name">comments</span><span class="note">댓글</span></li>
+            <li><span class="name">notifications</span><span class="note">알림</span></li>
+            <li><span class="name">files</span><span class="note">업로드 파일 메타</span></li>
+            <li><span class="name">voc_posts</span><span class="note">VOC 글</span></li>
+            <li><span class="name">voc_comments</span><span class="note">VOC 댓글</span></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 3. 프론트엔드 카드 ========== -->
+    <section class="view" id="sec3">
+      <header>
+        <h2>3. 프론트엔드 모듈 카드</h2>
+        <span class="badge fe">frontend/src/modules/*</span>
+        <p class="lede">각 모듈이 책임지는 페이지와 호출하는 백엔드 API.</p>
+      </header>
+
+      <div class="grid">
+        <div class="card">
+          <div class="card-head"><h3>auth</h3><span class="pill fe">FE</span></div>
+          <p class="desc">로그인 / 회원가입 · 토큰 발급</p>
+          <dl>
+            <dt>페이지</dt><dd><code>LoginPage</code> <code>SignupPage</code></dd>
+            <dt>API</dt><dd><code>/api/auth/*</code></dd>
+            <dt>shared</dt><dd><code>shared/auth/AuthProvider</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>workspace</h3><span class="pill fe">FE</span></div>
+          <p class="desc">부서 홈 · 부서 컨텍스트 / 슬러그 해석</p>
+          <dl>
+            <dt>페이지</dt><dd><code>WorkspaceHomePage</code></dd>
+            <dt>API</dt><dd><code>/api/workspaces/:slug</code></dd>
+            <dt>shared</dt><dd><code>shared/workspace/WorkspaceProvider</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>reports</h3><span class="pill fe">FE</span></div>
+          <p class="desc">보고서 목록 / 생성 / 편집 — 가장 큰 모듈</p>
+          <dl>
+            <dt>페이지</dt><dd><code>ReportsListPage</code> <code>ReportNewPage</code> <code>ReportDetailPage</code></dd>
+            <dt>API</dt><dd><code>/api/reports</code> <code>/api/widgets</code> <code>/api/widget-relations</code></dd>
+            <dt>shared</dt><dd><code>shared/reports/*</code> <code>shared/annotations</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>dashboard</h3><span class="pill fe">FE</span></div>
+          <p class="desc">부서 대시보드 · 최근 활동</p>
+          <dl>
+            <dt>페이지</dt><dd><code>DashboardPage</code></dd>
+            <dt>API</dt><dd><code>/api/reports</code> <code>/api/activities</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>composites</h3><span class="pill fe">FE</span></div>
+          <p class="desc">여러 보고서를 묶은 종합보고</p>
+          <dl>
+            <dt>페이지</dt><dd><code>CompositesListPage</code> <code>CompositeDetailPage</code></dd>
+            <dt>API</dt><dd><code>/api/composites</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>members</h3><span class="pill fe">FE</span></div>
+          <p class="desc">부서원 초대 · 역할 관리</p>
+          <dl>
+            <dt>페이지</dt><dd><code>MembersPage</code></dd>
+            <dt>API</dt><dd><code>/api/workspaces/:s/members</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>templates</h3><span class="pill fe">FE</span></div>
+          <p class="desc">템플릿 목록 · 편집 (섹션/위젯 정의)</p>
+          <dl>
+            <dt>페이지</dt><dd><code>TemplatesPage</code> <code>TemplateEditorPage</code></dd>
+            <dt>API</dt><dd><code>/api/templates</code> <code>/api/template-categories</code> <code>/api/section-taxonomy</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>comments</h3><span class="pill fe">FE</span></div>
+          <p class="desc">댓글 스레드 컴포넌트 · 인박스 헬퍼</p>
+          <dl>
+            <dt>API</dt><dd><code>/api/threads</code> <code>/api/comments</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>inbox</h3><span class="pill fe">FE</span></div>
+          <p class="desc">받은 코멘트 인박스 (개인공간)</p>
+          <dl>
+            <dt>페이지</dt><dd><code>InboxPage</code></dd>
+            <dt>API</dt><dd><code>/api/comments</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>notifications</h3><span class="pill fe">FE</span></div>
+          <p class="desc">알림 센터 · 읽음 처리</p>
+          <dl>
+            <dt>페이지</dt><dd><code>NotificationsPage</code></dd>
+            <dt>API</dt><dd><code>/api/notifications</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>profile</h3><span class="pill fe">FE</span></div>
+          <p class="desc">내 프로필 · 비밀번호 변경</p>
+          <dl>
+            <dt>페이지</dt><dd><code>ProfilePage</code></dd>
+            <dt>API</dt><dd><code>/api/me</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>voc</h3><span class="pill fe">FE</span></div>
+          <p class="desc">VOC 게시판 · 사용자 피드백</p>
+          <dl>
+            <dt>페이지</dt><dd><code>VocListPage</code> <code>VocDetailPage</code></dd>
+            <dt>API</dt><dd><code>/api/voc</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>ai_settings</h3><span class="pill fe">FE</span></div>
+          <p class="desc">AI 프롬프트 등록/편집</p>
+          <dl>
+            <dt>페이지</dt><dd><code>AiSettingsPage</code></dd>
+            <dt>API</dt><dd><code>/api/prompts</code></dd>
+            <dt>shared</dt><dd><code>shared/ai/*</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>entities</h3><span class="pill fe">FE</span></div>
+          <p class="desc">기준데이터(엔티티) 관리</p>
+          <dl>
+            <dt>페이지</dt><dd><code>EntitiesAdminPage</code></dd>
+            <dt>API</dt><dd><code>/api/entities</code> <code>/api/entity-types</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>admin</h3><span class="pill fe">FE</span></div>
+          <p class="desc">관리자 메인 · 계정/공간/서버</p>
+          <dl>
+            <dt>페이지</dt><dd><code>AdminPage</code> <code>AccountsAdminPage</code> <code>UserSpaceAdminPage</code> <code>ServerPage</code></dd>
+            <dt>API</dt><dd><code>/api/admin/*</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>shared/*</h3><span class="pill shared">공통</span></div>
+          <p class="desc">api · auth · workspace · theme · layout(AppShell) · components(ui/CommandPalette) · reports · annotations · ai · hooks · utils · lib</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 4. 백엔드 카드 ========== -->
+    <section class="view" id="sec4">
+      <header>
+        <h2>4. 백엔드 모듈 카드</h2>
+        <span class="badge be">backend/app/modules/*</span>
+        <p class="lede">각 모듈의 API prefix · 소유 DB 테이블 · 다른 모듈 의존(<code>users</code>는 생략).</p>
+      </header>
+
+      <div class="grid">
+        <div class="card">
+          <div class="card-head"><h3>auth</h3><span class="pill be">BE</span></div>
+          <p class="desc">로그인 · JWT 발급 · 비밀번호 해시</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/auth</code></dd>
+            <dt>테이블</dt><dd><span class="chip">users</span></dd>
+            <dt>의존</dt><dd><code>users</code> <code>workspaces</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>users</h3><span class="pill be">BE</span></div>
+          <p class="desc">계정 정보 · /api/me</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api</code> (<code>/me</code>, <code>/users</code>)</dd>
+            <dt>테이블</dt><dd><span class="chip">users</span> <span class="chip">workspace_members</span></dd>
+            <dt>의존</dt><dd><code>auth</code> <code>workspaces</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>workspaces</h3><span class="pill be">BE</span></div>
+          <p class="desc">부서 · 개인공간 워크스페이스</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/workspaces</code></dd>
+            <dt>테이블</dt><dd><span class="chip">workspaces</span></dd>
+            <dt>의존</dt><dd><code>reports</code> <code>templates</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>members</h3><span class="pill be">BE</span></div>
+          <p class="desc">부서원 · 역할(owner/admin/member)</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/workspaces/:s/members</code></dd>
+            <dt>테이블</dt><dd><span class="chip">workspace_members</span></dd>
+            <dt>의존</dt><dd><code>workspaces</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>reports</h3><span class="pill be">BE</span></div>
+          <p class="desc">보고서 본체 · 편집 락 · 가장 무거운 모듈</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/reports</code></dd>
+            <dt>테이블</dt><dd><span class="chip">reports</span> <span class="chip">report_edit_locks</span></dd>
+            <dt>의존</dt><dd><code>workspaces</code> <code>templates</code> <code>report_types</code> <code>entities</code> <code>mounts</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>report_types</h3><span class="pill be">BE</span></div>
+          <p class="desc">보고서 유형 정의</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/report-types</code></dd>
+            <dt>테이블</dt><dd><span class="chip">report_types</span></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>templates</h3><span class="pill be">BE</span></div>
+          <p class="desc">템플릿 정의 (섹션 + 위젯 청사진)</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/templates</code></dd>
+            <dt>테이블</dt><dd><span class="chip">templates</span></dd>
+            <dt>의존</dt><dd><code>workspaces</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>template_categories</h3><span class="pill be">BE</span></div>
+          <p class="desc">템플릿 분류 트리</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/template-categories</code></dd>
+            <dt>테이블</dt><dd><span class="chip">template_categories</span></dd>
+            <dt>의존</dt><dd><code>templates</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>section_taxonomy</h3><span class="pill be">BE</span></div>
+          <p class="desc">섹션 분류 · 표준 항목 정의</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/section-taxonomy</code></dd>
+            <dt>테이블</dt><dd><span class="chip">section_categories</span> <span class="chip">section_items</span></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>composites</h3><span class="pill be">BE</span></div>
+          <p class="desc">여러 보고서를 묶은 종합보고</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/composites</code></dd>
+            <dt>테이블</dt><dd><span class="chip">composite_reports</span> <span class="chip">composite_report_items</span></dd>
+            <dt>의존</dt><dd><code>reports</code> <code>workspaces</code> <code>notifications</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>folders</h3><span class="pill be">BE</span></div>
+          <p class="desc">보고서 폴더 트리</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/folders</code></dd>
+            <dt>테이블</dt><dd><span class="chip">folders</span></dd>
+            <dt>의존</dt><dd><code>mounts</code> <code>reports</code> <code>workspaces</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>mounts</h3><span class="pill be">BE</span></div>
+          <p class="desc">보고서를 폴더에 배치/링크</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/mounts</code></dd>
+            <dt>테이블</dt><dd><span class="chip">report_mounts</span></dd>
+            <dt>의존</dt><dd><code>folders</code> <code>reports</code> <code>notifications</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>entities</h3><span class="pill be">BE</span></div>
+          <p class="desc">기준데이터(설비/품목/조직 등)</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/entities</code> <code>/api/entity-types</code></dd>
+            <dt>테이블</dt><dd><span class="chip">entity_types</span> <span class="chip">entities</span> <span class="chip">report_entities</span></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>widgets</h3><span class="pill be">BE</span></div>
+          <p class="desc">위젯 레지스트리 · 스키마 검증</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/widgets</code></dd>
+            <dt>테이블</dt><dd>(없음 — 코드 레지스트리)</dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>widget_relations</h3><span class="pill be">BE</span></div>
+          <p class="desc">위젯 간 데이터 연결</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/widget-relations</code></dd>
+            <dt>테이블</dt><dd><span class="chip">widget_relations</span></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>prompts</h3><span class="pill be">BE</span></div>
+          <p class="desc">AI 프롬프트 저장/조회</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/prompts</code></dd>
+            <dt>테이블</dt><dd><span class="chip">prompts</span></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>comments</h3><span class="pill be">BE</span></div>
+          <p class="desc">댓글 스레드 · 인박스 쿼리</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api</code> (<code>/threads</code> <code>/comments</code>)</dd>
+            <dt>테이블</dt><dd><span class="chip">comment_threads</span> <span class="chip">comments</span></dd>
+            <dt>의존</dt><dd><code>reports</code> <code>mounts</code> <code>activities</code> <code>notifications</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>editors</h3><span class="pill be">BE</span></div>
+          <p class="desc">보고서 편집 참여자 트래킹</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/reports/:id/editors</code></dd>
+            <dt>테이블</dt><dd><span class="chip">report_editors</span></dd>
+            <dt>의존</dt><dd><code>reports</code> <code>notifications</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>activities</h3><span class="pill be">BE</span></div>
+          <p class="desc">보고서 활동 로그</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/reports/:id/activities</code></dd>
+            <dt>테이블</dt><dd><span class="chip">report_activities</span></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>notifications</h3><span class="pill be">BE</span></div>
+          <p class="desc">알림 발행/조회</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/notifications</code></dd>
+            <dt>테이블</dt><dd><span class="chip">notifications</span></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>files</h3><span class="pill be">BE</span></div>
+          <p class="desc">업로드 메타 · 실제 바이트는 <code>uploads/</code></p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/files</code></dd>
+            <dt>테이블</dt><dd><span class="chip">files</span></dd>
+            <dt>shared</dt><dd><code>shared/storage.py</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>voc</h3><span class="pill be">BE</span></div>
+          <p class="desc">VOC 게시판 + 댓글</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/voc</code></dd>
+            <dt>테이블</dt><dd><span class="chip">voc_posts</span> <span class="chip">voc_comments</span></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>admin</h3><span class="pill be">BE</span></div>
+          <p class="desc">계정/공간/서버 관리 API</p>
+          <dl>
+            <dt>prefix</dt><dd><code>/api/admin</code></dd>
+            <dt>의존</dt><dd><code>files</code> <code>workspaces</code></dd>
+          </dl>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>shared/*</h3><span class="pill shared">공통</span></div>
+          <p class="desc">auth.py(JWT/현재유저) · permissions.py · errors.py(예외 핸들러)
+            · responses.py(envelope) · storage.py(uploads) · datetime_utils.py</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 5. DB 테이블 카드 ========== -->
+    <section class="view" id="sec5">
+      <header>
+        <h2>5. DB 테이블 카드</h2>
+        <span class="badge db">PostgreSQL</span>
+        <p class="lede">테이블 한 장당 카드 하나. 소유 모듈과 핵심 역할.</p>
+      </header>
+
+      <div class="grid">
+        <div class="card"><div class="card-head"><h3>users</h3><span class="pill db">DB</span></div>
+          <p class="desc">계정 · 비밀번호 해시 · 활성 상태</p>
+          <dl><dt>모듈</dt><dd><code>users</code> · <code>auth</code></dd></dl>
+        </div>
+        <div class="card"><div class="card-head"><h3>workspaces</h3><span class="pill db">DB</span></div>
+          <p class="desc">부서 / 개인공간 워크스페이스</p>
+          <dl><dt>모듈</dt><dd><code>workspaces</code></dd></dl>
+        </div>
+        <div class="card"><div class="card-head"><h3>workspace_members</h3><span class="pill db">DB</span></div>
+          <p class="desc">사용자↔워크스페이스 멤버십 · 역할</p>
+          <dl><dt>모듈</dt><dd><code>users</code> · <code>members</code></dd></dl>
+        </div>
+
+        <div class="card"><div class="card-head"><h3>reports</h3><span class="pill db">DB</span></div>
+          <p class="desc">보고서 본체 · 메타 · 위젯 JSON</p>
+          <dl><dt>모듈</dt><dd><code>reports</code></dd></dl>
+        </div>
+        <div class="card"><div class="card-head"><h3>report_edit_locks</h3><span class="pill db">DB</span></div>
+          <p class="desc">동시 편집 방지 락</p>
+          <dl><dt>모듈</dt><dd><code>reports</code></dd></dl>
+        </div>
+        <div class="card"><div class="card-head"><h3>report_editors</h3><span class="pill db">DB</span></div>
+          <p class="desc">편집 참여자 트래킹</p>
+          <dl><dt>모듈</dt><dd><code>editors</code></dd></dl>
+        </div>
+        <div class="card"><div class="card-head"><h3>report_activities</h3><span class="pill db">DB</span></div>
+          <p class="desc">활동 로그 (생성/수정/공유 등)</p>
+          <dl><dt>모듈</dt><dd><code>activities</code></dd></dl>
+        </div>
+        <div class="card"><div class="card-head"><h3>report_entities</h3><span class="pill db">DB</span></div>
+          <p class="desc">보고서↔엔티티 N:M 연결</p>
+          <dl><dt>모듈</dt><dd><code>entities</code></dd></dl>
+        </div>
+        <div class="card"><div class="card-head"><h3>report_mounts</h3><span class="pill db">DB</span></div>
+          <p class="desc">보고서를 폴더에 배치 (link)</p>
+          <dl><dt>모듈</dt><dd><code>mounts</code></dd></dl>
+        </div>
+        <div class="card"><div class="card-head"><h3>report_types</h3><span class="pill db">DB</span></div>
+          <p class="desc">보고서 유형 정의</p>
+          <dl><dt>모듈</dt><dd><code>report_types</code></dd></dl>
+        </div>
+
+        <div class="card"><div class="card-head"><h3>templates</h3><span class="pill db">DB</span></div>
+          <p class="desc">템플릿 (섹션 + 위젯 청사진)</p>
+          <dl><dt>모듈</dt><dd><code>templates</code></dd></dl>
+        </div>
+        <div class="card"><div class="card-head"><h3>template_categories</h3><span class="pill db">DB</span></div>
+          <p class="desc">템플릿 분류 트리</p>
+          <dl><dt>모듈</dt><dd><code>template_categories</code></dd></dl>
+        </div>
+        <div class="card"><div class="card-head"><h3>section_categories</h3><span class="pill db">DB</span></div>
+          <p class="desc">표준 섹션 분류</p>
+          <dl><dt>모듈</dt><dd><code>section_taxonomy</code></dd></dl>
+        </div>
+        <div class="card"><div class="card-head"><h3>section_items</h3><span class="pill db">DB</span></div>
+          <p class="desc">섹션 안 표준 항목</p>
+          <dl><dt>모듈</dt><dd><code>section_taxonomy</code></dd></dl>
+        </div>
+
+        <div class="card"><div class="card-head"><h3>composite_reports</h3><span class="pill db">DB</span></div>
+          <p class="desc">종합보고 본체</p>
+          <dl><dt>모듈</dt><dd><code>composites</code></dd></dl>
+        </div>
+        <div class="card"><div class="card-head"><h3>composite_report_items</h3><span class="pill db">DB</span></div>
+          <p class="desc">종합보고에 포함된 개별 보고서</p>
+          <dl><dt>모듈</dt><dd><code>composites</code></dd></dl>
+        </div>
+
+        <div class="card"><div class="card-head"><h3>folders</h3><span class="pill db">DB</span></div>
+          <p class="desc">보고서 폴더 트리</p>
+          <dl><dt>모듈</dt><dd><code>folders</code></dd></dl>
+        </div>
+
+        <div class="card"><div class="card-head"><h3>entity_types</h3><span class="pill db">DB</span></div>
+          <p class="desc">엔티티 유형 (설비/품목/조직 등)</p>
+          <dl><dt>모듈</dt><dd><code>entities</code></dd></dl>
+        </div>
+        <div class="card"><div class="card-head"><h3>entities</h3><span class="pill db">DB</span></div>
+          <p class="desc">기준데이터 인스턴스</p>
+          <dl><dt>모듈</dt><dd><code>entities</code></dd></dl>
+        </div>
+
+        <div class="card"><div class="card-head"><h3>widget_relations</h3><span class="pill db">DB</span></div>
+          <p class="desc">위젯 간 데이터 연결 그래프</p>
+          <dl><dt>모듈</dt><dd><code>widget_relations</code></dd></dl>
+        </div>
+
+        <div class="card"><div class="card-head"><h3>prompts</h3><span class="pill db">DB</span></div>
+          <p class="desc">AI 프롬프트 라이브러리</p>
+          <dl><dt>모듈</dt><dd><code>prompts</code></dd></dl>
+        </div>
+
+        <div class="card"><div class="card-head"><h3>comment_threads</h3><span class="pill db">DB</span></div>
+          <p class="desc">댓글 스레드 (보고서 위 위치 고정)</p>
+          <dl><dt>모듈</dt><dd><code>comments</code></dd></dl>
+        </div>
+        <div class="card"><div class="card-head"><h3>comments</h3><span class="pill db">DB</span></div>
+          <p class="desc">스레드 안 개별 댓글</p>
+          <dl><dt>모듈</dt><dd><code>comments</code></dd></dl>
+        </div>
+
+        <div class="card"><div class="card-head"><h3>notifications</h3><span class="pill db">DB</span></div>
+          <p class="desc">알림 (멘션·코멘트·공유 등)</p>
+          <dl><dt>모듈</dt><dd><code>notifications</code></dd></dl>
+        </div>
+
+        <div class="card"><div class="card-head"><h3>files</h3><span class="pill db">DB</span></div>
+          <p class="desc">업로드 파일 메타 (실제 파일은 <code>uploads/</code>)</p>
+          <dl><dt>모듈</dt><dd><code>files</code></dd></dl>
+        </div>
+
+        <div class="card"><div class="card-head"><h3>voc_posts</h3><span class="pill db">DB</span></div>
+          <p class="desc">VOC 게시글</p>
+          <dl><dt>모듈</dt><dd><code>voc</code></dd></dl>
+        </div>
+        <div class="card"><div class="card-head"><h3>voc_comments</h3><span class="pill db">DB</span></div>
+          <p class="desc">VOC 댓글</p>
+          <dl><dt>모듈</dt><dd><code>voc</code></dd></dl>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      소스 인용: <code>backend/app/modules/__init__.py</code> · 각 모듈의 <code>models.py</code> ·
+      <code>frontend/src/App.jsx</code>. 모듈 추가 시 이 페이지도 같이 갱신.
+    </footer>
+  </div>
+</body>
+</html>

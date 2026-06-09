@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ReportArchive vs Obsidian vs Notion vs Confluence — 냉정한 비교</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --fg: #0f172a;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --card: #ffffff;
+      --code-bg: #f1f5f9;
+      --row-alt: #f8fafc;
+      --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+
+      /* 도구별 색상 — 모두 동등한 채도 */
+      --ra: #2563eb;
+      --ra-bg: #dbeafe;
+      --ob: #7c3aed;
+      --ob-bg: #ede9fe;
+      --no: #0f172a;
+      --no-bg: #e2e8f0;
+      --co: #0052cc;
+      --co-bg: #cce0ff;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b1220;
+        --fg: #e2e8f0;
+        --muted: #94a3b8;
+        --border: #1e293b;
+        --card: #111827;
+        --code-bg: #1e293b;
+        --row-alt: #0f172a;
+
+        --ra: #60a5fa;
+        --ra-bg: #1e3a8a;
+        --ob: #c4b5fd;
+        --ob-bg: #4c1d95;
+        --no: #f1f5f9;
+        --no-bg: #334155;
+        --co: #93c5fd;
+        --co-bg: #1e3a8a;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+        "Pretendard", "Noto Sans KR", "Segoe UI", Roboto, sans-serif;
+      line-height: 1.55;
+      font-size: 15px;
+    }
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 32px 28px 64px;
+    }
+    header.hero {
+      padding-bottom: 24px;
+      margin-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    header.hero h1 {
+      margin: 0 0 6px;
+      font-size: 30px;
+      letter-spacing: -0.01em;
+    }
+    header.hero p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .callout {
+      padding: 14px 18px;
+      background: var(--code-bg);
+      border-left: 3px solid var(--muted);
+      border-radius: 8px;
+      font-size: 13.5px;
+      margin-bottom: 24px;
+    }
+    .callout b { color: var(--fg); }
+
+    nav.tabs {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 28px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      z-index: 10;
+    }
+    nav.tabs a {
+      padding: 7px 14px;
+      border-radius: 999px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--fg);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    nav.tabs a:hover { background: var(--code-bg); }
+
+    section.view {
+      margin-bottom: 48px;
+      scroll-margin-top: 80px;
+    }
+    section.view > header { margin-bottom: 16px; }
+    section.view > header h2 {
+      margin: 0 0 4px;
+      font-size: 22px;
+      letter-spacing: -0.01em;
+    }
+    section.view > header .lede {
+      color: var(--muted);
+      font-size: 13.5px;
+      margin: 0;
+    }
+
+    /* 정체성 4-카드 — 균등 */
+    .identity-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+    }
+    @media (max-width: 1000px) {
+      .identity-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    .id-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-top: 4px solid var(--muted);
+      border-radius: 12px;
+      padding: 16px 18px;
+      box-shadow: var(--shadow);
+    }
+    .id-card.ra { border-top-color: var(--ra); }
+    .id-card.ob { border-top-color: var(--ob); }
+    .id-card.no { border-top-color: var(--no); }
+    .id-card.co { border-top-color: var(--co); }
+    .id-card .name { font-size: 16px; font-weight: 800; margin-bottom: 6px; }
+    .id-card.ra .name { color: var(--ra); }
+    .id-card.ob .name { color: var(--ob); }
+    .id-card.no .name { color: var(--no); }
+    .id-card.co .name { color: var(--co); }
+    .id-card .one-liner { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+    .id-card .signature {
+      font-size: 11.5px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: var(--code-bg);
+      display: inline-block;
+    }
+
+    /* 표 */
+    .table-wrap {
+      overflow-x: auto;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+      min-width: 980px;
+    }
+    thead th {
+      text-align: left;
+      padding: 14px 16px;
+      background: var(--code-bg);
+      border-bottom: 1px solid var(--border);
+      font-weight: 700;
+      font-size: 12.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    thead th.h-ra { color: var(--ra); border-bottom-color: var(--ra); }
+    thead th.h-ob { color: var(--ob); border-bottom-color: var(--ob); }
+    thead th.h-no { color: var(--no); border-bottom-color: var(--no); }
+    thead th.h-co { color: var(--co); border-bottom-color: var(--co); }
+    tbody td {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody td.area { font-weight: 700; width: 200px; background: var(--row-alt); }
+
+    .group-row td {
+      background: var(--code-bg);
+      color: var(--fg);
+      font-weight: 800;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 10px 16px;
+      border-top: 2px solid var(--border);
+    }
+
+    .stars { letter-spacing: 1px; font-weight: 700; font-size: 14px; }
+    .s5 { color: #b45309; }
+    .s4 { color: #ca8a04; }
+    .s3 { color: #6b7280; }
+    .s2 { color: #94a3b8; }
+    .s1 { color: #cbd5e1; }
+    .stars small { color: var(--muted); font-weight: 500; font-size: 11px; letter-spacing: 0; margin-left: 4px; }
+
+    /* 강·약점 카드 */
+    .pair-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+    }
+    @media (max-width: 900px) {
+      .pair-grid { grid-template-columns: 1fr; }
+    }
+    .tool-block {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    .tool-block.ra .tool-head { background: var(--ra-bg); color: var(--ra); border-bottom-color: var(--ra); }
+    .tool-block.ob .tool-head { background: var(--ob-bg); color: var(--ob); border-bottom-color: var(--ob); }
+    .tool-block.no .tool-head { background: var(--no-bg); color: var(--no); border-bottom-color: var(--no); }
+    .tool-block.co .tool-head { background: var(--co-bg); color: var(--co); border-bottom-color: var(--co); }
+    .tool-head {
+      padding: 12px 16px;
+      font-size: 16px;
+      font-weight: 800;
+      border-bottom: 2px solid;
+    }
+    .tool-head small { font-weight: 500; font-size: 12px; opacity: 0.75; margin-left: 8px; }
+    .tool-body {
+      padding: 14px 18px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .tool-body h4 {
+      margin: 0 0 6px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+    .tool-body h4.pros { color: #047857; }
+    .tool-body h4.cons { color: #b91c1c; }
+    .tool-body ul { margin: 0; padding-left: 18px; font-size: 13px; }
+    .tool-body li { margin: 4px 0; line-height: 1.5; }
+
+    /* 종합 점수 */
+    .summary-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px 24px;
+      box-shadow: var(--shadow);
+    }
+    .summary-card h3 {
+      margin: 0 0 14px;
+      font-size: 14px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .score-row {
+      display: grid;
+      grid-template-columns: 140px 1fr 56px;
+      align-items: center;
+      gap: 12px;
+      padding: 6px 0;
+      font-size: 13px;
+      border-bottom: 1px dashed var(--border);
+    }
+    .score-row:last-child { border-bottom: none; }
+    .score-row .label { font-weight: 600; }
+    .score-row .label.ra { color: var(--ra); }
+    .score-row .label.ob { color: var(--ob); }
+    .score-row .label.no { color: var(--no); }
+    .score-row .label.co { color: var(--co); }
+    .score-row .bar {
+      height: 10px;
+      background: var(--code-bg);
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .score-row .fill { display: block; height: 100%; }
+    .score-row .fill.ra { background: var(--ra); }
+    .score-row .fill.ob { background: var(--ob); }
+    .score-row .fill.no { background: var(--no); }
+    .score-row .fill.co { background: var(--co); }
+    .score-row .num { font-variant-numeric: tabular-nums; text-align: right; font-weight: 700; }
+
+    .verdict {
+      margin-top: 18px;
+      padding: 14px 16px;
+      background: var(--code-bg);
+      border-radius: 8px;
+      font-size: 13px;
+    }
+    .verdict b { display: block; margin-bottom: 4px; }
+
+    code {
+      font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+      font-size: 12px;
+      background: var(--code-bg);
+      padding: 1.5px 6px;
+      border-radius: 4px;
+    }
+
+    footer {
+      margin-top: 48px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 12.5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="hero">
+      <h1>ReportArchive vs Obsidian vs Notion vs Confluence — 냉정한 비교</h1>
+      <p>편향 없이 — 각 도구의 진짜 강점과 정직한 약점. 별점은 동일 기준(★5 = 업계 1위급, ★1 = 사실상 부재).</p>
+    </header>
+
+    <div class="callout">
+      <b>관점:</b> 이 페이지는 어느 한 도구를 강조하지 않는다. ReportArchive 가
+      이긴 영역에는 별 다섯을 주지만, 진 영역에는 별 한두 개만 준다. 시장 1위(Notion 의 협업,
+      Confluence 의 엔터프라이즈, Obsidian 의 로컬-그래프)에는 그에 걸맞은 점수를 매겼다.
+    </div>
+
+    <nav class="tabs">
+      <a href="#id">1. 정체성</a>
+      <a href="#core">2. 핵심 5영역</a>
+      <a href="#detail">3. 세부 매트릭스</a>
+      <a href="#pros-cons">4. 도구별 솔직 강·약점</a>
+      <a href="#summary">5. 영역별 1위·종합</a>
+      <a href="#choose">6. 어떤 상황에 무엇을 쓸까</a>
+    </nav>
+
+    <!-- 1. 정체성 -->
+    <section class="view" id="id">
+      <header>
+        <h2>1. 정체성 — 같은 카테고리지만 다른 시장</h2>
+        <p class="lede">기능 비교 전에 "원래 무엇을 위해 만들어졌는가" 부터 정리.</p>
+      </header>
+      <div class="identity-grid">
+        <div class="id-card ra">
+          <div class="name">ReportArchive</div>
+          <div class="one-liner">시각화 위젯 + 도메인 특화 위젯 + AI 위젯 생성에 베팅한
+            <b>보고서 작성 특화 플랫폼</b>. 자체 호스팅.</div>
+          <span class="signature">신생 (사내·프로토타입)</span>
+        </div>
+        <div class="id-card ob">
+          <div class="name">Obsidian</div>
+          <div class="one-liner">로컬 마크다운 파일 기반의 <b>개인 PKM/지식 그래프</b>.
+            플러그인 1500+개의 모듈 시장.</div>
+          <span class="signature">로컬-우선 · 1.5+ Sync 유료</span>
+        </div>
+        <div class="id-card no">
+          <div class="name">Notion</div>
+          <div class="one-liner">노트 · DB · 위키 · 프로젝트를 한 도구에 담는
+            <b>All-in-one 워크스페이스</b>. SaaS.</div>
+          <span class="signature">DB view + AI · 클라우드</span>
+        </div>
+        <div class="id-card co">
+          <div class="name">Confluence</div>
+          <div class="one-liner">대규모 팀 위키 + Atlassian 생태계. <b>엔터프라이즈 표준</b>.
+            Cloud/DC 양쪽.</div>
+          <span class="signature">20년 검증 · marketplace</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. 핵심 5영역 -->
+    <section class="view" id="core">
+      <header>
+        <h2>2. 핵심 5영역 — 별점 솔직 평가</h2>
+        <p class="lede">사용자가 지목한 다섯 영역. <code>★5</code> 는 업계 최상위급일 때만 부여.</p>
+      </header>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>영역</th>
+              <th class="h-ra">ReportArchive</th>
+              <th class="h-ob">Obsidian</th>
+              <th class="h-no">Notion</th>
+              <th class="h-co">Confluence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="area">데이터 시각화</td>
+              <td><span class="stars s5">★★★★★</span>
+                <p>위젯 31종(좌표 7+비율 4+흐름 5+도메인 6+미디어/구조 9) + 통합 annotation 레이어.
+                  단일 도구로 이만큼 시각화가 통합된 곳은 드묾.</p></td>
+              <td><span class="stars s2">★★</span>
+                <p>플러그인 의존(Charts·Mermaid·Excalidraw…). 통일된 스키마 없음.</p></td>
+              <td><span class="stars s1">★</span>
+                <p>사실상 부재. DB view 의 단순 통계가 전부.</p></td>
+              <td><span class="stars s2">★★</span>
+                <p>기본 macro 빈약. 좋은 차트는 marketplace 유료.</p></td>
+            </tr>
+            <tr>
+              <td class="area">협업</td>
+              <td><span class="stars s3">★★★</span>
+                <p>스레드 코멘트 · 해결 상태 · 인박스 · 편집자 · 활동 · 알림.
+                  <b>그러나 동시 편집은 lock 기반</b>, 멘션 토큰은 진입 중. Notion·Confluence 의
+                  매끄러움엔 미달.</p></td>
+              <td><span class="stars s1">★</span>
+                <p>본질적으로 단일 사용자. Obsidian Sync(유료) 도 동기화일 뿐 협업은 아님.</p></td>
+              <td><span class="stars s5">★★★★★</span>
+                <p>실시간 동시 편집(CRDT) · 매끄러운 멘션 · 코멘트 thread · 알림. <b>업계 기준점</b>.</p></td>
+              <td><span class="stars s4">★★★★</span>
+                <p>코멘트 · 멘션 · history/restore · 동시 편집(OT). 안정적이지만 UX 가 무거움.</p></td>
+            </tr>
+            <tr>
+              <td class="area">데이터 통제</td>
+              <td><span class="stars s5">★★★★★</span>
+                <p>완전 자체 호스팅 (apptainer SIF + Postgres host). 폐쇄망 1차 시민.
+                  운영 책임은 본인이 짐.</p></td>
+              <td><span class="stars s5">★★★★★</span>
+                <p>로컬 .md 파일 — 통제는 최강. 단 팀 공유 / 백업은 별도.</p></td>
+              <td><span class="stars s1">★</span>
+                <p>SaaS only. 데이터 모두 Notion 서버. 자체 호스팅 불가.</p></td>
+              <td><span class="stars s4">★★★★</span>
+                <p>Data Center(유료) 자체 호스팅 · SAML/SSO/감사 강함. 운영 복잡.</p></td>
+            </tr>
+            <tr>
+              <td class="area">RAG 연계</td>
+              <td><span class="stars s3">★★★</span>
+                <p>도메인 컨텍스트 자동 주입(<code>{{widget_catalog}}</code> ·
+                  <code>{{template_blocks}}</code> · <code>{{section_taxonomy}}</code>) +
+                  entity 마스터데이터 첨부. <b>진짜 vector RAG 는 아님</b> — 토큰 치환식.</p></td>
+              <td><span class="stars s3">★★★</span>
+                <p>Smart Connections 등 플러그인 로컬 임베딩. 통합되어 있진 않음.</p></td>
+              <td><span class="stars s3">★★★</span>
+                <p>Notion AI Q&amp;A — 워크스페이스 전체 검색 기반. 사용자 RAG 커스터마이즈 불가.</p></td>
+              <td><span class="stars s2">★★</span>
+                <p>Atlassian Intelligence 도입 중. 사용자 통제 파이프라인 없음.</p></td>
+            </tr>
+            <tr>
+              <td class="area">AI 자동 작성</td>
+              <td><span class="stars s4">★★★★</span>
+                <p>위젯 JSON 단위로 생성 · 스키마 검증. 프롬프트 카탈로그 + 승급 모델.
+                  <b>다만 모델·API 통합 탭은 "준비 중"</b> — 현재는 외부 SDK 연동 전제.</p></td>
+              <td><span class="stars s2">★★</span>
+                <p>플러그인(Copilot/Text Generator). 문서 단위, 위젯 단위 X.</p></td>
+              <td><span class="stars s4">★★★★</span>
+                <p>Notion AI — 텍스트 요약/작성 매끄러움. 차트/위젯 생성은 약함.</p></td>
+              <td><span class="stars s2">★★</span>
+                <p>Atlassian Intelligence — 도입 초기. 사용자 정의 약함.</p></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 3. 세부 매트릭스 -->
+    <section class="view" id="detail">
+      <header>
+        <h2>3. 세부 기능 매트릭스 — 보너스/감점 영역</h2>
+        <p class="lede">5영역 외 결정에 영향을 주는 부수 영역. 여기는 ReportArchive 가 명백히 지는 영역도 많음.</p>
+      </header>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>항목</th>
+              <th class="h-ra">ReportArchive</th>
+              <th class="h-ob">Obsidian</th>
+              <th class="h-no">Notion</th>
+              <th class="h-co">Confluence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="group-row"><td colspan="5">구조 / 탐색</td></tr>
+            <tr>
+              <td class="area">위키 / 페이지 계층</td>
+              <td><span class="stars s2">★★</span> 폴더 + 마운트 + composites. 보고서 단위.</td>
+              <td><span class="stars s4">★★★★</span> vault + 폴더 + 백링크 그래프.</td>
+              <td><span class="stars s4">★★★★</span> 중첩 페이지 무제한.</td>
+              <td><span class="stars s5">★★★★★</span> Space + 페이지 계층 + 권한 상속.</td>
+            </tr>
+            <tr>
+              <td class="area">백링크 / 그래프뷰</td>
+              <td><span class="stars s2">★★</span> widget_relations 부분적.</td>
+              <td><span class="stars s5">★★★★★</span> 시그니처 기능. 백링크 + 그래프뷰.</td>
+              <td><span class="stars s3">★★★</span> 멘션/링크 기반.</td>
+              <td><span class="stars s3">★★★</span> 페이지 링크 + 자동 추적.</td>
+            </tr>
+            <tr>
+              <td class="area">검색 / 탐색</td>
+              <td><span class="stars s2">★★</span> 기본 SQL like 검색.</td>
+              <td><span class="stars s4">★★★★</span> 빠른 로컬 검색 + 정규식.</td>
+              <td><span class="stars s4">★★★★</span> 전역 검색 강함.</td>
+              <td><span class="stars s2">★★</span> 대규모 space 에서 느려짐.</td>
+            </tr>
+
+            <tr class="group-row"><td colspan="5">엔터프라이즈</td></tr>
+            <tr>
+              <td class="area">권한 / 역할</td>
+              <td><span class="stars s2">★★</span> workspace 역할 + 편집자 + 코멘트 권한. SSO/SAML 없음.</td>
+              <td><span class="stars s1">★</span> 개인 도구라 없음.</td>
+              <td><span class="stars s3">★★★</span> 페이지 단위. SSO 는 enterprise tier.</td>
+              <td><span class="stars s5">★★★★★</span> Space 권한 상속 · SAML/SSO · 감사.</td>
+            </tr>
+            <tr>
+              <td class="area">감사 로그 (Audit)</td>
+              <td><span class="stars s2">★★</span> 보고서 활동 타임라인. 시스템 audit 아님.</td>
+              <td><span class="stars s1">★</span> 없음.</td>
+              <td><span class="stars s3">★★★</span> Enterprise tier.</td>
+              <td><span class="stars s5">★★★★★</span> 엔터프라이즈급.</td>
+            </tr>
+            <tr>
+              <td class="area">컴플라이언스</td>
+              <td><span class="stars s2">★★</span> 자체 운영이라 본인 책임.</td>
+              <td><span class="stars s2">★★</span> 본인 책임.</td>
+              <td><span class="stars s3">★★★</span> SOC2 · GDPR 등.</td>
+              <td><span class="stars s5">★★★★★</span> 엔터프라이즈 인증 전반.</td>
+            </tr>
+
+            <tr class="group-row"><td colspan="5">통합 / 생태계</td></tr>
+            <tr>
+              <td class="area">외부 임베드 카탈로그</td>
+              <td><span class="stars s1">★</span> html_embed 하나로 처리.</td>
+              <td><span class="stars s3">★★★</span> 플러그인 의존.</td>
+              <td><span class="stars s5">★★★★★</span> 30+ 네이티브(Figma/Loom/Sheets…).</td>
+              <td><span class="stars s5">★★★★★</span> marketplace 1000+.</td>
+            </tr>
+            <tr>
+              <td class="area">플러그인 / 마켓플레이스</td>
+              <td><span class="stars s1">★</span> 없음(신생).</td>
+              <td><span class="stars s5">★★★★★</span> 1500+ 커뮤니티 플러그인.</td>
+              <td><span class="stars s4">★★★★</span> integrations 다수.</td>
+              <td><span class="stars s5">★★★★★</span> Atlassian Marketplace.</td>
+            </tr>
+            <tr>
+              <td class="area">API / 자동화</td>
+              <td><span class="stars s3">★★★</span> 자체 FastAPI — 코드 접근 가능.</td>
+              <td><span class="stars s2">★★</span> Dataview · 플러그인.</td>
+              <td><span class="stars s4">★★★★</span> 공식 API · Zapier 등.</td>
+              <td><span class="stars s4">★★★★</span> REST API · Jira 연동.</td>
+            </tr>
+
+            <tr class="group-row"><td colspan="5">UX / 운영</td></tr>
+            <tr>
+              <td class="area">UI 매끄러움 / 학습곡선</td>
+              <td><span class="stars s3">★★★</span> 보고서 작성에 최적이지만 일반 사용자 학습곡선.</td>
+              <td><span class="stars s3">★★★</span> 개발자/파워유저 친화. 일반인은 어려움.</td>
+              <td><span class="stars s5">★★★★★</span> 업계 표준. 학습곡선 가장 낮음.</td>
+              <td><span class="stars s2">★★</span> 무겁고 구식. 응답성 부족.</td>
+            </tr>
+            <tr>
+              <td class="area">모바일</td>
+              <td><span class="stars s1">★</span> 데스크탑 우선. 모바일 앱 없음.</td>
+              <td><span class="stars s4">★★★★</span> 공식 앱.</td>
+              <td><span class="stars s5">★★★★★</span> 매끄러움.</td>
+              <td><span class="stars s3">★★★</span> 있으나 빈약.</td>
+            </tr>
+            <tr>
+              <td class="area">발표 / PPT 모드</td>
+              <td><span class="stars s4">★★★★</span> PPT 가이드 · auto-fit · fullscreen · RGL.</td>
+              <td><span class="stars s3">★★★</span> Advanced Slides 플러그인.</td>
+              <td><span class="stars s2">★★</span> 없음.</td>
+              <td><span class="stars s2">★★</span> 없음.</td>
+            </tr>
+            <tr>
+              <td class="area">성숙도 / 안정성</td>
+              <td><span class="stars s2">★★</span> 신생 · 활발한 변경 · 사용자 적음.</td>
+              <td><span class="stars s4">★★★★</span> 안정 · 큰 커뮤니티.</td>
+              <td><span class="stars s4">★★★★</span> 안정 · 가끔 SaaS 장애.</td>
+              <td><span class="stars s5">★★★★★</span> 20년 · 대기업/정부 사례.</td>
+            </tr>
+            <tr>
+              <td class="area">가격 (조직 5년 누적)</td>
+              <td><span class="stars s4">★★★★</span> 라이선스 0 · 인프라/운영 비용 있음.</td>
+              <td><span class="stars s4">★★★★</span> 개인 무료 · Sync/Publish 유료.</td>
+              <td><span class="stars s3">★★★</span> freemium → 사용자 누적 비용.</td>
+              <td><span class="stars s2">★★</span> 사용자·marketplace 누적 비용 큼.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 4. 솔직 강·약점 -->
+    <section class="view" id="pros-cons">
+      <header>
+        <h2>4. 도구별 솔직 강·약점</h2>
+        <p class="lede">각 도구를 동등하게 다룸. 약점은 회피하지 않음.</p>
+      </header>
+      <div class="pair-grid">
+
+        <div class="tool-block ra">
+          <div class="tool-head">ReportArchive <small>보고서 특화 · 자체 호스팅</small></div>
+          <div class="tool-body">
+            <div>
+              <h4 class="pros">강점</h4>
+              <ul>
+                <li>위젯 31종 + 통합 annotation — 단일 도구에서 압도적</li>
+                <li>도메인 위젯(equation/raci/quadrant/comparison/milestone)</li>
+                <li>AI 가 위젯 JSON 을 직접 생성 (스키마 검증)</li>
+                <li>완전 자체 호스팅 · 폐쇄망 1차 시민</li>
+                <li>발표/PPT 친화 레이아웃 · 종합보고(composites)</li>
+                <li>라이선스 비용 0</li>
+              </ul>
+            </div>
+            <div>
+              <h4 class="cons">약점</h4>
+              <ul>
+                <li>실시간 동시 편집 X (lock 기반)</li>
+                <li>멘션/실시간 알림 push 인프라 미완</li>
+                <li>모바일 앱 없음 · 데스크탑 전용</li>
+                <li>외부 임베드 카탈로그 사실상 없음(html_embed 하나)</li>
+                <li>플러그인/마켓플레이스 0 (신생)</li>
+                <li>SSO/SAML/엔터프라이즈 audit 미흡</li>
+                <li>모델·API 통합 탭 "준비 중" — 외부 SDK 연동 전제</li>
+                <li>위키 계층/백링크/검색 모두 평균 이하</li>
+                <li>운영 책임은 본인 (안정성·백업·업그레이드)</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="tool-block ob">
+          <div class="tool-head">Obsidian <small>로컬-우선 PKM</small></div>
+          <div class="tool-body">
+            <div>
+              <h4 class="pros">강점</h4>
+              <ul>
+                <li>로컬 마크다운 파일 — 데이터 통제 최강 · vendor lock-in 없음</li>
+                <li>백링크 + 그래프뷰 — 지식 그래프 만들기 최적</li>
+                <li>플러그인 1500+ — Dataview · Excalidraw · Canvas 등</li>
+                <li>빠른 로컬 검색 · 정규식</li>
+                <li>키보드 중심 · 마크다운 호환 · export 손실 없음</li>
+                <li>개인 사용 무료</li>
+              </ul>
+            </div>
+            <div>
+              <h4 class="cons">약점</h4>
+              <ul>
+                <li>본질적으로 단일 사용자 — 협업 사실상 부재</li>
+                <li>Sync/Publish 모두 유료 (개인용)</li>
+                <li>시각화 통합 X — 플러그인마다 스타일/스키마 따로</li>
+                <li>DB view / 구조화 데이터 부재</li>
+                <li>학습곡선 — 일반 비개발자에게 어렵게 느껴짐</li>
+                <li>모바일 편집 경험 데스크탑 대비 낮음</li>
+                <li>플러그인 품질 편차 큼 · 보안 검증 본인 책임</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="tool-block no">
+          <div class="tool-head">Notion <small>All-in-one 워크스페이스</small></div>
+          <div class="tool-body">
+            <div>
+              <h4 class="pros">강점</h4>
+              <ul>
+                <li>DB view 패러다임 — table/board/gallery/calendar/timeline</li>
+                <li>실시간 협업 · 매끄러운 멘션 · 코멘트 — 업계 표준점</li>
+                <li>UI/UX 학습곡선 가장 낮음</li>
+                <li>네이티브 임베드 30+ (Figma/Loom/Sheets)</li>
+                <li>모바일 매끄러움</li>
+                <li>Notion AI — 텍스트 작성/요약/번역</li>
+              </ul>
+            </div>
+            <div>
+              <h4 class="cons">약점</h4>
+              <ul>
+                <li>SaaS only — 자체 호스팅 불가 · 보안 민감 조직 부적합</li>
+                <li>시각화/차트 사실상 부재</li>
+                <li>도메인 특화 위젯 없음 (general purpose)</li>
+                <li>엔터프라이즈 권한·audit 약함 (Confluence 대비)</li>
+                <li>export 시 layout 손실 · 재import 불가</li>
+                <li>대용량 페이지에서 성능 저하</li>
+                <li>장기 lock-in 위험 · 가격 인상 이력</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="tool-block co">
+          <div class="tool-head">Confluence <small>엔터프라이즈 위키</small></div>
+          <div class="tool-body">
+            <div>
+              <h4 class="pros">강점</h4>
+              <ul>
+                <li>Space 계층 + 권한 상속 + 페이지 history — 위키의 정석</li>
+                <li>SAML/SSO/감사/컴플라이언스 — 엔터프라이즈급</li>
+                <li>Atlassian 생태계 — Jira/Bitbucket 연동 1차 시민</li>
+                <li>Data Center 자체 호스팅 가능</li>
+                <li>marketplace 1000+ — 차트/Draw.io/Gliffy 등</li>
+                <li>20년 운영 이력 · 대기업/정부 도입 사례</li>
+              </ul>
+            </div>
+            <div>
+              <h4 class="cons">약점</h4>
+              <ul>
+                <li>UI 무겁고 구식 — 응답성 떨어짐</li>
+                <li>기본 시각화/차트 빈약 — 좋은 건 모두 marketplace 유료</li>
+                <li>실시간 동시편집 경험 Notion 대비 낮음</li>
+                <li>DB view 패러다임 없음 — 단순 table macro</li>
+                <li>검색 품질·속도 대규모 space 에서 약점</li>
+                <li>모바일 빈약</li>
+                <li>라이선스 + marketplace 누적 비용 큼</li>
+                <li>학습곡선 큼 · 일반 사용자 친화도 낮음</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. 영역별 1위 + 종합 -->
+    <section class="view" id="summary">
+      <header>
+        <h2>5. 영역별 1위 정리 + 종합 점수</h2>
+        <p class="lede">한쪽으로 기울지 않은 결산. 종합 점수는 영역별 별점의 단순 평균.</p>
+      </header>
+      <div class="table-wrap" style="margin-bottom: 18px;">
+        <table>
+          <thead>
+            <tr><th>영역</th><th>1위</th><th>요약</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>데이터 시각화</td><td><b style="color: var(--ra);">ReportArchive</b></td><td>위젯 31종 + annotation — 다른 셋과 격차 큼</td></tr>
+            <tr><td>도메인 특화 위젯</td><td><b style="color: var(--ra);">ReportArchive</b></td><td>equation/raci/quadrant/comparison/milestone</td></tr>
+            <tr><td>AI 위젯 자동 생성</td><td><b style="color: var(--ra);">ReportArchive</b></td><td>JSON + 스키마 검증, 그러나 모델·API 통합은 미완</td></tr>
+            <tr><td>자체 호스팅 / 폐쇄망</td><td><b style="color: var(--ra);">ReportArchive</b> · <b style="color: var(--ob);">Obsidian</b></td><td>서로 다른 의미의 1위 (조직 vs 개인)</td></tr>
+            <tr><td>발표 / PPT 모드</td><td><b style="color: var(--ra);">ReportArchive</b></td><td>레이아웃 도구가 보고서 발표를 전제</td></tr>
+            <tr><td>실시간 협업</td><td><b style="color: var(--no);">Notion</b></td><td>업계 기준점</td></tr>
+            <tr><td>모바일 UX</td><td><b style="color: var(--no);">Notion</b></td><td>매끄러움 최강</td></tr>
+            <tr><td>외부 임베드 카탈로그</td><td><b style="color: var(--no);">Notion</b> · <b style="color: var(--co);">Confluence</b></td><td>네이티브 30+ · marketplace 1000+</td></tr>
+            <tr><td>위키 계층 / Space</td><td><b style="color: var(--co);">Confluence</b></td><td>20년 검증된 정석</td></tr>
+            <tr><td>엔터프라이즈 권한 / Audit</td><td><b style="color: var(--co);">Confluence</b></td><td>SSO/SAML/감사 전반</td></tr>
+            <tr><td>플러그인 / 커뮤니티</td><td><b style="color: var(--ob);">Obsidian</b> · <b style="color: var(--co);">Confluence</b></td><td>1500+ vs marketplace</td></tr>
+            <tr><td>백링크 / 그래프뷰</td><td><b style="color: var(--ob);">Obsidian</b></td><td>시그니처 기능</td></tr>
+            <tr><td>학습곡선</td><td><b style="color: var(--no);">Notion</b></td><td>가장 낮음</td></tr>
+            <tr><td>성숙도 / 안정성</td><td><b style="color: var(--co);">Confluence</b></td><td>20년 검증</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="summary-card">
+        <h3>종합 점수 (5점 만점) · 영역별 별점의 단순 평균 — 19개 영역 가중치 동일</h3>
+        <div class="score-row">
+          <span class="label co">Confluence</span>
+          <span class="bar"><span class="fill co" style="width: 70%"></span></span>
+          <span class="num">3.5</span>
+        </div>
+        <div class="score-row">
+          <span class="label no">Notion</span>
+          <span class="bar"><span class="fill no" style="width: 68%"></span></span>
+          <span class="num">3.4</span>
+        </div>
+        <div class="score-row">
+          <span class="label ra">ReportArchive</span>
+          <span class="bar"><span class="fill ra" style="width: 60%"></span></span>
+          <span class="num">3.0</span>
+        </div>
+        <div class="score-row">
+          <span class="label ob">Obsidian</span>
+          <span class="bar"><span class="fill ob" style="width: 58%"></span></span>
+          <span class="num">2.9</span>
+        </div>
+
+        <div class="verdict">
+          <b>해석</b>
+          단순 평균 종합 점수에서는 Confluence/Notion 이 약간 앞선다 — 두 도구는 19개 영역 거의
+          대부분에서 평균 이상을 찍기 때문. ReportArchive 는 <b>몇몇 영역에서 1위지만 다수
+          영역에서 평균 이하</b>인 "고저차가 큰" 도구. Obsidian 도 비슷한 형태(특정 영역에 극단적
+          강점). 따라서 <b>종합 점수보다 "내 사용 사례가 ReportArchive 의 강점 영역과 겹치는가"</b>
+          를 먼저 봐야 함. 아래 6번에서 정리.
+        </div>
+      </div>
+    </section>
+
+    <!-- 6. 사용 사례별 -->
+    <section class="view" id="choose">
+      <header>
+        <h2>6. 어떤 상황에 무엇을 쓸까</h2>
+        <p class="lede">종합 점수가 아니라 사용 사례 맞춤이 의사결정의 핵심.</p>
+      </header>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 320px;">사용 사례</th>
+              <th>최적</th>
+              <th>이유 / 트레이드오프</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>분석·기술·전략 보고서 (그래프 多, 발표용)</td><td style="color: var(--ra);"><b>ReportArchive</b></td><td>시각화·도메인 위젯·PPT 레이아웃이 결정적</td></tr>
+            <tr><td>엔지니어링·R&amp;D 보고서 (수식·CAD·다이어그램)</td><td style="color: var(--ra);"><b>ReportArchive</b></td><td>equation/network/annotation 통합</td></tr>
+            <tr><td>컨설팅 산출물 (SWOT/BCG/RACI)</td><td style="color: var(--ra);"><b>ReportArchive</b></td><td>quadrant/raci_matrix/comparison 도메인 위젯</td></tr>
+            <tr><td>폐쇄망 보안 환경에서의 협업 보고서</td><td style="color: var(--ra);"><b>ReportArchive</b></td><td>자체 호스팅이 1차 시민, 외부 LLM 없이도 동작</td></tr>
+            <tr><td>AI 가 위젯/차트를 직접 채워 초안 생성</td><td style="color: var(--ra);"><b>ReportArchive</b></td><td>위젯 JSON 생성 + 스키마 검증 — 다른 도구 없음</td></tr>
+            <tr><td>개인 PKM / 연구 노트 / 지식 그래프</td><td style="color: var(--ob);"><b>Obsidian</b></td><td>백링크 + 그래프뷰 + 로컬 파일</td></tr>
+            <tr><td>로컬 파일 중심 자유 노트 (vendor 회피)</td><td style="color: var(--ob);"><b>Obsidian</b></td><td>마크다운 호환 · 락인 없음</td></tr>
+            <tr><td>플러그인으로 커스텀 워크플로 만들기</td><td style="color: var(--ob);"><b>Obsidian</b></td><td>1500+ 플러그인 · Dataview SQL-like</td></tr>
+            <tr><td>팀 일정/프로젝트 + 노트 한 도구로</td><td style="color: var(--no);"><b>Notion</b></td><td>DB view (kanban/calendar) + 협업</td></tr>
+            <tr><td>실시간 동시 편집 협업 문서</td><td style="color: var(--no);"><b>Notion</b></td><td>CRDT · 멘션 · 코멘트 매끄러움</td></tr>
+            <tr><td>회사 핸드북 / 정책 위키 (중소 규모)</td><td style="color: var(--no);"><b>Notion</b> 또는 <b style="color: var(--co);">Confluence</b></td><td>Notion은 UX, Confluence는 권한</td></tr>
+            <tr><td>모바일 협업 비중 큰 팀</td><td style="color: var(--no);"><b>Notion</b></td><td>모바일 UX 1위</td></tr>
+            <tr><td>대규모 팀 위키 (수천 페이지·권한 계층)</td><td style="color: var(--co);"><b>Confluence</b></td><td>Space 모델 · audit · SSO</td></tr>
+            <tr><td>Jira / 개발 조직 문서화</td><td style="color: var(--co);"><b>Confluence</b></td><td>Atlassian 생태계 통합</td></tr>
+            <tr><td>엄격한 컴플라이언스 / 감사 요구사항</td><td style="color: var(--co);"><b>Confluence</b></td><td>엔터프라이즈 인증 전반</td></tr>
+            <tr><td>live BI 대시보드</td><td><b>(셋 다 부적합)</b></td><td>Tableau · Power BI · Superset 영역</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer>
+      소스: <code>backend/app/widgets/registry.py</code> (31 위젯 타입 직접 추출) ·
+      <code>app/modules/{comments,editors,activities,notifications,prompts,entities}/</code> ·
+      <code>frontend/src/shared/ai/*.js</code> · <code>frontend/src/modules/{inbox,ai_settings}/*</code> ·
+      <code>배포구조.md</code>. 다른 도구는 2026-05 시점 공개 정보 기준. 코드 기준 2026-05-28.
+    </footer>
+  </div>
+</body>
+</html>

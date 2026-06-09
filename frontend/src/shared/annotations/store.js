@@ -65,9 +65,6 @@ export function useAnnotationStore({ annotations, onChange }) {
     if (annotations !== lastSeenProp.current) {
       lastSeenProp.current = annotations
       setLocal(annotations ?? [])
-      // [임시 디버그] 이게 연속으로 찍히면 prop 식별자가 매 렌더 바뀌어
-      // 발생하는 무한 루프다.
-      if (typeof console !== 'undefined') console.log('[annot] propSync setLocal', annotations?.length)
     }
   }, [annotations])
 
@@ -93,6 +90,15 @@ export function useAnnotationStore({ annotations, onChange }) {
    *  ends up as a single undo step instead of one per pointer event. */
   const apply = useCallback(
     (next, options) => {
+      // [임시 디버그] apply 호출 스택 — 처음 8회만(도배 방지).
+      if (typeof window !== 'undefined') {
+        window.__applyN = (window.__applyN || 0) + 1
+        if (window.__applyN <= 8) {
+          const st = new Error().stack?.split('\n').slice(2, 7).join('\n')
+          // eslint-disable-next-line no-console
+          console.log(`[annot] apply #${window.__applyN}\n` + st)
+        }
+      }
       setLocal((prev) => {
         const resolved = typeof next === 'function' ? next(prev) : next
         if (resolved === prev) return prev

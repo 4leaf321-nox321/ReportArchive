@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ReportArchive — 시스템 아키텍처 (3관점)</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --fg: #0f172a;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --card: #ffffff;
+      --code-bg: #f1f5f9;
+      --accent: #2563eb;
+      --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+
+      --core: #b45309;
+      --core-bg: #fef3c7;
+      --support: #1d4ed8;
+      --support-bg: #dbeafe;
+      --generic: #475569;
+      --generic-bg: #e2e8f0;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b1220;
+        --fg: #e2e8f0;
+        --muted: #94a3b8;
+        --border: #1e293b;
+        --card: #111827;
+        --code-bg: #1e293b;
+        --accent: #60a5fa;
+        --core: #fcd34d;
+        --core-bg: #78350f;
+        --support: #93c5fd;
+        --support-bg: #1e3a8a;
+        --generic: #cbd5e1;
+        --generic-bg: #334155;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+        "Pretendard", "Noto Sans KR", "Segoe UI", Roboto, sans-serif;
+      line-height: 1.55;
+      font-size: 15px;
+    }
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 32px 28px 64px;
+    }
+    header.hero {
+      padding-bottom: 24px;
+      margin-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    header.hero h1 {
+      margin: 0 0 6px;
+      font-size: 30px;
+      letter-spacing: -0.01em;
+    }
+    header.hero p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .intro {
+      padding: 14px 18px;
+      background: var(--code-bg);
+      border-left: 3px solid var(--accent);
+      border-radius: 8px;
+      font-size: 13.5px;
+      margin-bottom: 24px;
+    }
+    nav.tabs {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 28px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      z-index: 10;
+    }
+    nav.tabs a {
+      padding: 7px 14px;
+      border-radius: 999px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--fg);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    nav.tabs a:hover { background: var(--code-bg); color: var(--accent); }
+
+    section.view {
+      margin-bottom: 56px;
+      scroll-margin-top: 80px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 28px 32px;
+      box-shadow: var(--shadow);
+    }
+    section.view > header {
+      margin-bottom: 20px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    section.view > header .tag {
+      display: inline-block;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    section.view > header h2 {
+      margin: 0 0 6px;
+      font-size: 24px;
+      letter-spacing: -0.01em;
+    }
+    section.view > header .lede {
+      color: var(--muted);
+      font-size: 14px;
+      margin: 0;
+    }
+
+    .diagram-wrap {
+      overflow-x: auto;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 22px;
+      margin-bottom: 16px;
+    }
+    .diagram-wrap .mermaid {
+      display: flex;
+      justify-content: center;
+      min-width: max-content;
+    }
+    .mermaid svg { max-width: none !important; }
+
+    .read-guide {
+      padding: 14px 18px;
+      background: var(--code-bg);
+      border-radius: 8px;
+      font-size: 13.5px;
+    }
+    .read-guide h3 {
+      margin: 0 0 8px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+    .read-guide ul { margin: 0; padding-left: 20px; }
+    .read-guide li { margin: 4px 0; }
+    .read-guide b { color: var(--accent); }
+
+    /* 도메인 분류 표 */
+    .domain-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+      margin-top: 14px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .domain-table th {
+      text-align: left;
+      padding: 10px 14px;
+      background: var(--code-bg);
+      font-size: 11.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .domain-table td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    .domain-table tr:last-child td { border-bottom: none; }
+    .tag-pill {
+      display: inline-block;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+    .tag-pill.core { background: var(--core-bg); color: var(--core); }
+    .tag-pill.support { background: var(--support-bg); color: var(--support); }
+    .tag-pill.generic { background: var(--generic-bg); color: var(--generic); }
+
+    /* Capability + Lifecycle */
+    .capabilities {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    @media (max-width: 1000px) {
+      .capabilities { grid-template-columns: repeat(3, 1fr); }
+    }
+    .cap-card {
+      background: var(--core-bg);
+      border: 1px solid var(--core);
+      border-radius: 10px;
+      padding: 12px 10px;
+      text-align: center;
+      font-weight: 700;
+      color: var(--core);
+      font-size: 13px;
+    }
+    .cap-card .icon {
+      display: block;
+      font-size: 22px;
+      margin-bottom: 4px;
+    }
+    .cap-card .sub {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--muted);
+      margin-top: 3px;
+    }
+
+    .lifecycle-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin-top: 14px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .lifecycle-table th {
+      text-align: left;
+      padding: 10px 14px;
+      background: var(--code-bg);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .lifecycle-table td {
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    .lifecycle-table tr:last-child td { border-bottom: none; }
+    .lifecycle-table .stage {
+      font-weight: 700;
+      color: var(--accent);
+      white-space: nowrap;
+    }
+
+    code {
+      font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+      font-size: 12.5px;
+      background: var(--code-bg);
+      padding: 1.5px 6px;
+      border-radius: 4px;
+    }
+
+    footer {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 12.5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="hero">
+      <h1>ReportArchive — 시스템 아키텍처 (3관점)</h1>
+      <p>같은 시스템을 세 가지 관점에서 그림. 각 그림이 보여주는 정보가 의도적으로 다름.</p>
+    </header>
+
+    <div class="intro">
+      <b>왜 3장인가:</b> 시스템 아키텍처는 한 장으로 다 표현할 수 없음. 운영자가 알아야 할 것
+      (어디서 도는가) · 설계자가 알아야 할 것 (도메인이 어떻게 나뉘는가) · 제품 관점 (사용자가
+      뭘 할 수 있고 보고서 한 권이 어떤 경로를 거치는가) 는 서로 다른 그림이 필요. 그래서 같은
+      시스템을 <b>C4 Container View · Bounded Context Map · Capability + Lifecycle</b> 세 각도로
+      그렸음.
+    </div>
+
+    <nav class="tabs">
+      <a href="#c4">1. C4 Container View — 운영 관점</a>
+      <a href="#dom">2. Bounded Context Map — 도메인 관점</a>
+      <a href="#cap">3. Capability + Lifecycle — 제품 관점</a>
+    </nav>
+
+    <!-- =========================================================== -->
+    <!-- 1. C4 Container View -->
+    <!-- =========================================================== -->
+    <section class="view" id="c4">
+      <header>
+        <span class="tag">관점 1 · 운영 / 배포</span>
+        <h2>C4 Container View — 무엇이 어디서 도는가</h2>
+        <p class="lede">사용자 · 외부 시스템 · 우리 시스템의 컨테이너(배포 단위)를 한 장에.
+          상자 안 줄은 사용 기술. 화살표는 통신 방식. 운영팀·신규 개발자가 가장 먼저 봐야 할 그림.</p>
+      </header>
+
+      <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart TB
+  classDef person fill:#1e40af,stroke:#1e3a8a,color:#fff,font-weight:bold
+  classDef ext fill:#94a3b8,stroke:#475569,color:#fff
+  classDef webapp fill:#dbeafe,stroke:#1d4ed8,color:#0f172a,font-weight:bold
+  classDef api fill:#fef3c7,stroke:#b45309,color:#0f172a,font-weight:bold
+  classDef db fill:#d1fae5,stroke:#065f46,color:#0f172a,font-weight:bold
+  classDef fs fill:#fce7f3,stroke:#9d174d,color:#0f172a,font-weight:bold
+
+  user(("👤 사용자<br/><i>보고서 작성자·리뷰어·관리자</i>")):::person
+
+  subgraph BOUNDARY["━━━ ReportArchive 시스템 (운영 서버 1대) ━━━"]
+    direction TB
+    spa["📱 <b>Web App</b><br/>━━━━━━━━━━━━━<br/>React 18 · Vite 5<br/>react-router · shadcn/ui<br/>━━━━━━━━━━━━━<br/>브라우저에서 실행<br/>(번들 자체는 SIF 안 dist/)"]:::webapp
+
+    api["⚙️ <b>API Server</b><br/>━━━━━━━━━━━━━<br/>FastAPI · Python 3.12<br/>SQLAlchemy · uvicorn workers=4<br/>━━━━━━━━━━━━━<br/>apptainer SIF (app.sif)<br/>:3000"]:::api
+
+    db[("🗄️ <b>Database</b><br/>━━━━━━━━━━━━━<br/>PostgreSQL 16<br/>━━━━━━━━━━━━━<br/>호스트 서비스 :5433<br/>SIF 교체에도 영속")]:::db
+
+    files[/"📁 <b>File Storage</b><br/>━━━━━━━━━━━━━<br/>로컬 파일시스템<br/>━━━━━━━━━━━━━<br/>호스트 uploads/<br/>bind-mount"/]:::fs
+  end
+
+  llm[/"🧠 <b>External LLM</b><br/>━━━━━━━━━━━━━<br/>Claude / GPT / 사내 모델<br/>━━━━━━━━━━━━━<br/>SDK 호출 (선택)<br/>폐쇄망에선 생략"/]:::ext
+
+  user == "HTTPS · 브라우저" ==> spa
+  spa -- "JSON over HTTPS<br/>/api/* · Bearer token" --> api
+  api -- "SQL<br/>(SQLAlchemy ORM)" --> db
+  api -- "read/write<br/>업로드 파일" --> files
+  spa -. "프롬프트 + 컨텍스트<br/>(클라이언트 SDK)" .-> llm
+</pre>
+      </div>
+
+      <div class="read-guide">
+        <h3>읽는 법</h3>
+        <ul>
+          <li><b>사용자</b>가 브라우저로 <b>Web App</b>(React SPA) 을 다운로드해서 실행. SPA 자체는 정적 자산</li>
+          <li>SPA 가 <b>API Server</b>(FastAPI) 에 JSON 요청, 표준 envelope 로 응답</li>
+          <li>API 는 <b>DB</b>(PostgreSQL) 와 <b>File Storage</b>(uploads/)를 읽고 씀</li>
+          <li><b>외부 LLM</b> 은 점선 — <b>SPA 클라이언트가 직접 호출</b>(현재 모델·API 통합 탭은 준비 중).
+            폐쇄망에서는 외부 호출 없이 본문 기능 100% 동작</li>
+          <li><b>경계 박스 안</b> = 운영 서버 1대에 모두 함께 사는 컴포넌트. 모놀리식 배포</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- =========================================================== -->
+    <!-- 2. Bounded Context Map -->
+    <!-- =========================================================== -->
+    <section class="view" id="dom">
+      <header>
+        <span class="tag">관점 2 · 도메인 / 설계</span>
+        <h2>Bounded Context Map — 도메인이 어떻게 나뉘는가</h2>
+        <p class="lede">DDD 의 도메인 분류 — <b>Core</b>(차별점) · <b>Supporting</b>(필수 동반) ·
+          <b>Generic</b>(도메인 무관). 시스템의 "심장"이 무엇이고 그 주변이 무엇을 떠받치는지
+          보여줌. 화살표는 컨텍스트 간 관계.</p>
+      </header>
+
+      <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart TB
+  classDef core fill:#fef3c7,stroke:#b45309,color:#0f172a,stroke-width:3px,font-weight:bold
+  classDef support fill:#dbeafe,stroke:#1d4ed8,color:#0f172a,stroke-width:1.5px
+  classDef generic fill:#e2e8f0,stroke:#475569,color:#0f172a,stroke-width:1px
+
+  subgraph CORE["⭐ Core Domain — 이 시스템이 존재하는 이유"]
+    direction LR
+    c1["<b>보고서 저작</b><br/>Report Authoring<br/>━━━━━━━━<br/>위젯 31종 · annotation<br/>템플릿 · 폴더 · 마운트<br/><i>reports · widgets · templates<br/>widget_relations · folders · mounts</i>"]:::core
+    c2["<b>AI 자동 생성</b><br/>AI Generation<br/>━━━━━━━━<br/>위젯 JSON 직접 생성<br/>컨텍스트 토큰 주입<br/><i>prompts · widget_catalog<br/>section_taxonomy</i>"]:::core
+  end
+
+  subgraph SUPPORT["🔧 Supporting Domain — Core 가 작동하려면 필요"]
+    direction LR
+    s1["<b>협업·이벤트</b><br/>Collaboration<br/>━━━━━━━━<br/>스레드 코멘트 · 인박스<br/>편집자 · 활동 · 알림<br/><i>comments · editors<br/>activities · notifications</i>"]:::support
+    s2["<b>워크스페이스·접근</b><br/>Workspace &amp; Access<br/>━━━━━━━━<br/>부서/개인공간 · 멤버십<br/>JWT 인증 · 권한<br/><i>workspaces · members<br/>auth · users</i>"]:::support
+    s3["<b>종합 보고</b><br/>Composite<br/>━━━━━━━━<br/>여러 보고서 묶음<br/><i>composites</i>"]:::support
+    s4["<b>도메인 분류</b><br/>Classification<br/>━━━━━━━━<br/>보고서 유형 · 섹션·템플릿 분류<br/><i>report_types · section_taxonomy<br/>template_categories</i>"]:::support
+  end
+
+  subgraph GENERIC["📦 Generic Domain — 어느 시스템에나 있는"]
+    direction LR
+    g1["<b>기준 데이터</b><br/>Master Data<br/>━━━━━━━━<br/><i>entities · entity_types<br/>report_entities</i>"]:::generic
+    g2["<b>피드백</b><br/>VOC<br/>━━━━━━━━<br/><i>voc_posts · voc_comments</i>"]:::generic
+    g3["<b>운영·파일</b><br/>Operations<br/>━━━━━━━━<br/><i>admin · files</i>"]:::generic
+  end
+
+  c1 -- "<b>PL</b>: 위젯 스키마<br/>(공개 언어)" --> c2
+  c2 -- "<b>Conformist</b>:<br/>catalog 형식 따름" --> c1
+  c1 == "이벤트 발행<br/>(편집·코멘트)" ==> s1
+  s2 -- "<b>U/S</b>: 스코프 제공" --> c1
+  s2 -- "<b>U/S</b>" --> s3
+  s3 -. "참조 (재사용)" .-> c1
+  s4 -. "분류 부여" .-> c1
+  g1 -. "lookup" .-> c1
+  g3 -. "지원" .-> c1
+  g3 -. "지원" .-> s2
+</pre>
+      </div>
+
+      <table class="domain-table">
+        <thead>
+          <tr>
+            <th style="width: 110px;">분류</th>
+            <th style="width: 200px;">컨텍스트</th>
+            <th>왜 이렇게 분류하는가</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="tag-pill core">CORE</span></td>
+            <td><b>Report Authoring</b><br/>Report Generation (AI)</td>
+            <td>이 시스템의 <b>존재 이유</b>. 다른 도구로 대체할 수 없는 차별점이 여기 모임 —
+              위젯 31종 + annotation + 위젯 단위 AI 생성. 가장 깊이 투자해야 할 영역.</td>
+          </tr>
+          <tr>
+            <td><span class="tag-pill support">SUPPORTING</span></td>
+            <td>Collaboration · Workspace &amp; Access · Composite · Classification</td>
+            <td>Core 가 동작하려면 반드시 있어야 하지만, 그 자체로 이 도구를 선택할 이유는 아님.
+              필요한 만큼만 만들고 안정적으로 유지. 외부 솔루션과 교체 가능성도 검토 대상.</td>
+          </tr>
+          <tr>
+            <td><span class="tag-pill generic">GENERIC</span></td>
+            <td>Master Data · VOC · Operations</td>
+            <td>어느 시스템에나 있는 흔한 기능. <b>제일 적은 시간을 써야 할</b> 영역 —
+              가능하면 표준 라이브러리/패턴으로 빨리 끝내고 Core 에 자원을 돌릴 것.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="read-guide" style="margin-top: 14px;">
+        <h3>화살표 표기 (DDD Context Mapping)</h3>
+        <ul>
+          <li><b>PL</b> (Published Language) — 한 컨텍스트가 형식을 공표하면 다른 쪽이 따름. 위젯 스키마가 그 예</li>
+          <li><b>Conformist</b> — 상대 컨텍스트의 모델을 그대로 받아들임. AI Generation 이 Authoring 의 스키마를 따름</li>
+          <li><b>U/S</b> (Upstream/Downstream) — Workspace 가 Upstream, 다른 컨텍스트가 Downstream</li>
+          <li><b>이벤트 발행</b> (==&gt;) — 상태 변경을 이벤트로 알림 (코멘트/활동/알림)</li>
+          <li>점선 (-.-&gt;) — 약한 참조 · lookup</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- =========================================================== -->
+    <!-- 3. Capability + Lifecycle -->
+    <!-- =========================================================== -->
+    <section class="view" id="cap">
+      <header>
+        <span class="tag">관점 3 · 제품 / 사용자</span>
+        <h2>Capability + Lifecycle — 사용자가 뭘 하고, 보고서는 어떤 경로를 거치는가</h2>
+        <p class="lede">위는 사용자가 이 시스템으로 할 수 있는 <b>능력 6가지</b>, 아래는 보고서
+          한 권의 <b>라이프사이클 7단계</b>. 각 단계에 어느 모듈이 움직이는지 표로 매핑.</p>
+      </header>
+
+      <h3 style="margin-top: 0; font-size: 15px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em;">사용자 능력</h3>
+      <div class="capabilities">
+        <div class="cap-card">
+          <span class="icon">📝</span>
+          보고서 작성
+          <div class="sub">위젯·차트·표 채우기</div>
+        </div>
+        <div class="cap-card">
+          <span class="icon">🤖</span>
+          AI 초안 생성
+          <div class="sub">위젯 단위 자동 채움</div>
+        </div>
+        <div class="cap-card">
+          <span class="icon">💬</span>
+          협업·리뷰
+          <div class="sub">스레드 · 편집자 · 인박스</div>
+        </div>
+        <div class="cap-card">
+          <span class="icon">📊</span>
+          발표·PPT
+          <div class="sub">슬라이드 모드 · auto-fit</div>
+        </div>
+        <div class="cap-card">
+          <span class="icon">📚</span>
+          종합 보고
+          <div class="sub">여러 보고서 묶음</div>
+        </div>
+        <div class="cap-card">
+          <span class="icon">🏷️</span>
+          기준 데이터
+          <div class="sub">설비·품목 마스터</div>
+        </div>
+      </div>
+
+      <h3 style="font-size: 15px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 28px;">보고서 한 권의 라이프사이클</h3>
+      <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart LR
+  classDef stage fill:#dbeafe,stroke:#1d4ed8,color:#0f172a,font-weight:bold
+
+  s1["<b>① 발의</b><br/>━━━━━<br/>템플릿 선택<br/>유형 지정"]:::stage
+  s2["<b>② 초안</b><br/>━━━━━<br/>AI 생성 또는<br/>수기 시작"]:::stage
+  s3["<b>③ 채움</b><br/>━━━━━<br/>위젯·차트·표<br/>엔티티 연결"]:::stage
+  s4["<b>④ 리뷰</b><br/>━━━━━<br/>코멘트 · 편집자<br/>활동 로그"]:::stage
+  s5["<b>⑤ 확정</b><br/>━━━━━<br/>락 해제<br/>발행"]:::stage
+  s6["<b>⑥ 발표</b><br/>━━━━━<br/>PPT 모드<br/>fullscreen"]:::stage
+  s7["<b>⑦ 묶음·보관</b><br/>━━━━━<br/>종합보고<br/>폴더·검색"]:::stage
+
+  s1 ==> s2 ==> s3 ==> s4 ==> s5 ==> s6 ==> s7
+  s4 -. "재작업" .-> s3
+  s7 -. "참고용 검색" .-> s1
+</pre>
+      </div>
+
+      <table class="lifecycle-table">
+        <thead>
+          <tr>
+            <th style="width: 120px;">단계</th>
+            <th style="width: 240px;">사용자 액션</th>
+            <th>관여 모듈 (FE → BE → DB)</th>
+            <th style="width: 130px;">관여 능력</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="stage">① 발의</td>
+            <td>"새 보고서 만들기" — 템플릿 선택, 보고서 유형/제목 입력</td>
+            <td><code>ReportNewPage</code> → <code>templates · report_types · reports</code> →
+              <code>templates · report_types · reports</code></td>
+            <td>📝 보고서 작성</td>
+          </tr>
+          <tr>
+            <td class="stage">② 초안</td>
+            <td>AI 프롬프트 실행 ("위젯 채워줘") 또는 빈 페이지에서 직접 시작</td>
+            <td><code>ReportDetailPage</code> + 외부 LLM SDK → <code>prompts · widgets · reports</code> →
+              <code>reports.payload</code></td>
+            <td>🤖 AI 초안</td>
+          </tr>
+          <tr>
+            <td class="stage">③ 채움</td>
+            <td>위젯 추가/편집, 차트 데이터 입력, 엔티티 연결, 첨부 파일</td>
+            <td><code>ReportDetailPage</code> · 위젯 에디터 → <code>widgets · widget_relations · entities · files</code>
+              → <code>reports · widget_relations · report_entities · files</code></td>
+            <td>📝 보고서 작성</td>
+          </tr>
+          <tr>
+            <td class="stage">④ 리뷰</td>
+            <td>리뷰어 추가 → 코멘트 스레드 → 멘션/알림 → 해결</td>
+            <td>댓글 컴포넌트 + <code>InboxPage · NotificationsPage</code> →
+              <code>comments · editors · activities · notifications</code> →
+              <code>comment_threads · comments · report_editors · report_activities · notifications</code></td>
+            <td>💬 협업·리뷰</td>
+          </tr>
+          <tr>
+            <td class="stage">⑤ 확정</td>
+            <td>편집 락 해제, 변경 잠금. 발행 마킹</td>
+            <td><code>ReportDetailPage</code> → <code>reports · activities</code> →
+              <code>reports · report_edit_locks · report_activities</code></td>
+            <td>📝 보고서 작성</td>
+          </tr>
+          <tr>
+            <td class="stage">⑥ 발표</td>
+            <td>PPT/슬라이드 모드 진입, auto-fit, fullscreen viewer</td>
+            <td><code>ReportDetailPage</code> (슬라이드 모드) → <code>reports · files</code> →
+              <code>reports · files</code></td>
+            <td>📊 발표·PPT</td>
+          </tr>
+          <tr>
+            <td class="stage">⑦ 묶음·보관</td>
+            <td>여러 보고서를 종합보고로 묶음, 폴더 정리, 다른 사람이 검색</td>
+            <td><code>CompositeDetailPage · ReportsListPage</code> →
+              <code>composites · folders · mounts · reports</code> →
+              <code>composite_reports · composite_report_items · folders · report_mounts</code></td>
+            <td>📚 종합 보고</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="read-guide" style="margin-top: 16px;">
+        <h3>읽는 법</h3>
+        <ul>
+          <li><b>능력</b> 카드는 "사용자가 할 수 있는 것" — 영업·기획에서 시스템을 소개할 때 출발점</li>
+          <li><b>라이프사이클</b> 7단계는 보고서 한 권이 거치는 표준 경로. 점선은 역방향(재작업·재참조)</li>
+          <li><b>표</b> 는 각 단계에서 실제로 움직이는 코드 — 디버깅/개발 회의에서 "어디 봐야 하지?" 답</li>
+          <li>한 능력이 여러 단계에 걸쳐 있음 — 예: <b>협업·리뷰</b>는 ④ 리뷰가 주이지만 ③ 채움 단계에도 일부 등장</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- =========================================================== -->
+    <!-- 정리 -->
+    <!-- =========================================================== -->
+    <section class="view" style="background: var(--code-bg);">
+      <header style="border-bottom: none; margin-bottom: 0; padding-bottom: 0;">
+        <span class="tag">정리</span>
+        <h2>세 그림 사용 가이드</h2>
+      </header>
+      <div class="read-guide" style="background: var(--card);">
+        <ul>
+          <li><b>운영팀 · 신규 개발자 온보딩</b> → <b>관점 1 (C4)</b> 부터. "어떤 프로세스가 어디서 돌고 어떻게 연결되어 있나"</li>
+          <li><b>설계 · 리팩터 · 기술부채 회의</b> → <b>관점 2 (도메인)</b>. "어디에 자원을 더 쓰고 어디는 줄일까"</li>
+          <li><b>임원 보고 · 영업 자료 · 제품 회의</b> → <b>관점 3 (능력+라이프사이클)</b>. "사용자가 이걸로 뭘 하는가"</li>
+          <li>한 그림이 한 장에 끝나야 한다 — 한 그림에 세 관점을 다 넣으면 정보가 뭉개져서 셋 다 못 읽힘</li>
+        </ul>
+      </div>
+    </section>
+
+    <footer>
+      소스: <code>backend/app/widgets/registry.py</code> · 모듈 매핑은 v2/v3 분석 그대로.
+      관점 분류는 일반적인 아키텍처 표현 방식을 ReportArchive 에 적용한 것 — DDD/C4 정통은 아님.
+    </footer>
+  </div>
+
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: prefersDark ? 'dark' : 'default',
+      securityLevel: 'loose',
+      flowchart: {
+        htmlLabels: true,
+        curve: 'basis',
+        nodeSpacing: 30,
+        rankSpacing: 70,
+        padding: 8,
+      },
+      themeVariables: {
+        fontFamily: '-apple-system, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", sans-serif',
+        fontSize: '13px',
+      },
+    });
+  </script>
+</body>
+</html>

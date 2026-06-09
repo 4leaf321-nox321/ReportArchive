@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ReportArchive — 시스템 연결도</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --fg: #0f172a;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --card: #ffffff;
+      --accent: #2563eb;
+      --accent-soft: #dbeafe;
+      --code-bg: #f1f5f9;
+      --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b1220;
+        --fg: #e2e8f0;
+        --muted: #94a3b8;
+        --border: #1e293b;
+        --card: #111827;
+        --accent: #60a5fa;
+        --accent-soft: #1e3a8a;
+        --code-bg: #1e293b;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+        "Pretendard", "Noto Sans KR", "Segoe UI", Roboto, sans-serif;
+      line-height: 1.55;
+      font-size: 15px;
+    }
+    .container {
+      max-width: 1500px;
+      margin: 0 auto;
+      padding: 32px 28px 64px;
+    }
+    header.hero {
+      padding-bottom: 24px;
+      margin-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    header.hero h1 {
+      margin: 0 0 6px;
+      font-size: 30px;
+      letter-spacing: -0.01em;
+    }
+    header.hero p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    nav.tabs {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 32px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      z-index: 10;
+    }
+    nav.tabs a {
+      padding: 7px 14px;
+      border-radius: 999px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--fg);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    nav.tabs a:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+    .legend {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+      font-size: 13px;
+      margin-bottom: 22px;
+      padding: 12px 16px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+    .legend .key {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .legend .swatch {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border-radius: 4px;
+      border: 1.5px solid;
+    }
+    .sw-fe { background: #dbeafe; border-color: #1d4ed8; }
+    .sw-be { background: #fef3c7; border-color: #b45309; }
+    .sw-db { background: #d1fae5; border-color: #065f46; }
+    .sw-fs { background: #fce7f3; border-color: #9d174d; }
+
+    section.view {
+      margin-bottom: 48px;
+      scroll-margin-top: 80px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 24px 28px;
+      box-shadow: var(--shadow);
+    }
+    section.view > header {
+      margin-bottom: 18px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    section.view > header h2 {
+      margin: 0 0 4px;
+      font-size: 22px;
+      letter-spacing: -0.01em;
+    }
+    section.view > header .lede {
+      color: var(--muted);
+      font-size: 13.5px;
+      margin: 0;
+    }
+    .diagram-wrap {
+      overflow-x: auto;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+    }
+    .diagram-wrap .mermaid {
+      display: flex;
+      justify-content: center;
+      min-width: max-content;
+    }
+    .mermaid svg { max-width: none !important; }
+    code, kbd {
+      font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+      font-size: 12.5px;
+      background: var(--code-bg);
+      padding: 1.5px 6px;
+      border-radius: 4px;
+    }
+    .helper {
+      margin: 12px 0 0;
+      padding: 12px 16px;
+      background: var(--accent-soft);
+      border-left: 3px solid var(--accent);
+      border-radius: 8px;
+      font-size: 13px;
+    }
+    .helper strong { color: var(--accent); }
+    footer {
+      margin-top: 16px;
+      padding-top: 16px;
+      color: var(--muted);
+      font-size: 13px;
+      border-top: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="hero">
+      <h1>ReportArchive — 시스템 연결도 (v3)</h1>
+      <p>화면(Frontend) → API(Backend) → 테이블(DB) 의 흐름을 도메인 단위로 끊어
+        보여주는 페이지. 도메인 8장 + 마지막에 전체 결선도 한 장.</p>
+    </header>
+
+    <nav class="tabs" aria-label="섹션 목차">
+      <a href="#d1">1. 인증·사용자·워크스페이스</a>
+      <a href="#d2">2. 보고서 작성/편집</a>
+      <a href="#d3">3. 협업 · 알림 · 인박스</a>
+      <a href="#d4">4. 종합보고</a>
+      <a href="#d5">5. 템플릿 · 분류 메타</a>
+      <a href="#d6">6. 엔티티 · 위젯 관계</a>
+      <a href="#d7">7. AI 프롬프트 · VOC · 파일</a>
+      <a href="#d8">8. 관리자</a>
+      <a href="#all">9. 전체 결선도</a>
+    </nav>
+
+    <div class="legend">
+      <span class="key"><span class="swatch sw-fe"></span> Frontend 모듈</span>
+      <span class="key"><span class="swatch sw-be"></span> Backend 모듈 (API)</span>
+      <span class="key"><span class="swatch sw-db"></span> DB 테이블</span>
+      <span class="key"><span class="swatch sw-fs"></span> 파일시스템 / 외부</span>
+      <span class="key" style="color: var(--muted);">화살표 = 호출 / 소유</span>
+    </div>
+
+    <!-- 1. 인증/사용자/워크스페이스 -->
+    <section class="view" id="d1">
+      <header>
+        <h2>1. 인증 · 사용자 · 워크스페이스</h2>
+        <p class="lede">로그인 → 토큰 → 모든 후속 요청의 컨텍스트(현재 유저 · 소속 워크스페이스).
+          AuthProvider · WorkspaceProvider 가 프론트엔드 트리 최상단에 위치.</p>
+      </header>
+      <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart LR
+  classDef fe fill:#dbeafe,stroke:#1d4ed8,color:#111
+  classDef be fill:#fef3c7,stroke:#b45309,color:#111
+  classDef db fill:#d1fae5,stroke:#065f46,color:#111
+
+  subgraph FE["프론트엔드"]
+    direction TB
+    fe_login["LoginPage<br/>/login"]:::fe
+    fe_signup["SignupPage<br/>/signup"]:::fe
+    fe_profile["ProfilePage<br/>/profile"]:::fe
+    fe_wshome["WorkspaceHomePage<br/>/w/:ws"]:::fe
+    fe_members["MembersPage<br/>/w/:ws/members"]:::fe
+    fe_authprov["AuthProvider<br/>(shared/auth)"]:::fe
+    fe_wsprov["WorkspaceProvider<br/>(shared/workspace)"]:::fe
+  end
+
+  subgraph BE["백엔드"]
+    direction TB
+    be_auth["auth<br/>/api/auth"]:::be
+    be_users["users<br/>/api/me · /api/users"]:::be
+    be_ws["workspaces<br/>/api/workspaces"]:::be
+    be_members["members<br/>/api/workspaces/:s/members"]:::be
+  end
+
+  subgraph DB["DB"]
+    direction TB
+    db_users[("users")]:::db
+    db_ws[("workspaces")]:::db
+    db_wm[("workspace_members")]:::db
+  end
+
+  fe_login --> be_auth
+  fe_signup --> be_auth
+  fe_authprov -- "Bearer token" --> be_users
+  fe_profile --> be_users
+  fe_wsprov --> be_ws
+  fe_wshome --> be_ws
+  fe_members --> be_members
+
+  be_auth --> db_users
+  be_users --> db_users
+  be_users --> db_wm
+  be_ws --> db_ws
+  be_members --> db_wm
+  be_members --> db_users
+</pre>
+      </div>
+      <div class="helper">
+        <strong>흐름:</strong> 로그인 성공 → JWT 발급 → <code>AuthProvider</code> 가 보관 →
+        모든 fetch에 <code>Authorization: Bearer</code> 헤더 자동 첨부 → 백엔드
+        <code>get_current_user</code> 의존성이 <code>users</code> 조회 →
+        <code>WorkspaceProvider</code> 가 <code>/api/workspaces</code> 로 멤버십 가져와 라우트 매칭에 사용.
+      </div>
+    </section>
+
+    <!-- 2. 보고서 작성/편집 -->
+    <section class="view" id="d2">
+      <header>
+        <h2>2. 보고서 작성 / 편집 — 시스템에서 가장 무거운 도메인</h2>
+        <p class="lede">템플릿을 골라 보고서를 만들고, 위젯을 채우고, 폴더에 배치하고, 엔티티와
+          연결한다. <code>ReportDetailPage</code> 가 가장 많은 API를 부르는 페이지.</p>
+      </header>
+      <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart LR
+  classDef fe fill:#dbeafe,stroke:#1d4ed8,color:#111
+  classDef be fill:#fef3c7,stroke:#b45309,color:#111
+  classDef db fill:#d1fae5,stroke:#065f46,color:#111
+  classDef fs fill:#fce7f3,stroke:#9d174d,color:#111
+
+  subgraph FE["프론트엔드"]
+    direction TB
+    fe_list["ReportsListPage"]:::fe
+    fe_new["ReportNewPage"]:::fe
+    fe_detail["ReportDetailPage"]:::fe
+    fe_dash["DashboardPage"]:::fe
+    fe_shared["shared/reports<br/>위젯·편집 헬퍼"]:::fe
+  end
+
+  subgraph BE["백엔드"]
+    direction TB
+    be_reports["reports<br/>/api/reports"]:::be
+    be_rtypes["report_types<br/>/api/report-types"]:::be
+    be_tpl["templates<br/>/api/templates"]:::be
+    be_widgets["widgets<br/>/api/widgets"]:::be
+    be_wrel["widget_relations<br/>/api/widget-relations"]:::be
+    be_folders["folders<br/>/api/folders"]:::be
+    be_mounts["mounts<br/>/api/mounts"]:::be
+    be_entities["entities<br/>/api/entities"]:::be
+    be_files["files<br/>/api/files"]:::be
+  end
+
+  subgraph DB["DB"]
+    direction TB
+    db_reports[("reports")]:::db
+    db_locks[("report_edit_locks")]:::db
+    db_tpl[("templates")]:::db
+    db_rtypes[("report_types")]:::db
+    db_wrel[("widget_relations")]:::db
+    db_folders[("folders")]:::db
+    db_mounts[("report_mounts")]:::db
+    db_entities[("entities")]:::db
+    db_etypes[("entity_types")]:::db
+    db_rentities[("report_entities")]:::db
+    db_files[("files")]:::db
+  end
+
+  fs_uploads["uploads/<br/>(bind-mount)"]:::fs
+
+  fe_list --> be_reports
+  fe_list --> be_folders
+  fe_list --> be_mounts
+  fe_new --> be_tpl
+  fe_new --> be_reports
+  fe_detail --> be_reports
+  fe_detail --> be_widgets
+  fe_detail --> be_wrel
+  fe_detail --> be_entities
+  fe_detail --> be_files
+  fe_dash --> be_reports
+  fe_shared -. 공통 .- fe_detail
+
+  be_reports --> db_reports
+  be_reports --> db_locks
+  be_reports --> db_tpl
+  be_reports --> db_rtypes
+  be_rtypes --> db_rtypes
+  be_tpl --> db_tpl
+  be_widgets -. "스키마만<br/>레지스트리" .-> db_reports
+  be_wrel --> db_wrel
+  be_folders --> db_folders
+  be_mounts --> db_mounts
+  be_mounts --> db_reports
+  be_entities --> db_entities
+  be_entities --> db_etypes
+  be_entities --> db_rentities
+  be_files --> db_files
+  be_files --> fs_uploads
+</pre>
+      </div>
+      <div class="helper">
+        <strong>요점:</strong> 보고서 본체(<code>reports.payload</code>)는 위젯 JSON을 그대로
+        품고 있어 <code>widgets</code> 모듈은 별도 테이블 없이 <em>스키마 검증·레지스트리</em> 역할만 한다.
+        파일은 메타(<code>files</code>)와 실제 바이트(<code>uploads/</code>)가 분리.
+      </div>
+    </section>
+
+    <!-- 3. 협업 -->
+    <section class="view" id="d3">
+      <header>
+        <h2>3. 협업 — 코멘트 · 편집자 · 활동 · 알림</h2>
+        <p class="lede"><code>ReportDetailPage</code> 안에서 동시에 굴러가는 4개 모듈.
+          한 액션이 여러 테이블을 가로지른다 (코멘트 작성 = thread + comment + activity + notification).</p>
+      </header>
+      <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart LR
+  classDef fe fill:#dbeafe,stroke:#1d4ed8,color:#111
+  classDef be fill:#fef3c7,stroke:#b45309,color:#111
+  classDef db fill:#d1fae5,stroke:#065f46,color:#111
+
+  subgraph FE["프론트엔드"]
+    direction TB
+    fe_detail["ReportDetailPage<br/>(편집 화면 내부)"]:::fe
+    fe_inbox["InboxPage<br/>/personal/inbox"]:::fe
+    fe_notif["NotificationsPage<br/>/notifications"]:::fe
+    fe_cmt["modules/comments<br/>스레드 컴포넌트"]:::fe
+  end
+
+  subgraph BE["백엔드"]
+    direction TB
+    be_comments["comments<br/>/api/threads · /comments"]:::be
+    be_editors["editors<br/>/api/reports/:id/editors"]:::be
+    be_acts["activities<br/>/api/reports/:id/activities"]:::be
+    be_notifs["notifications<br/>/api/notifications"]:::be
+    be_mounts["mounts<br/>(배치 변경 알림)"]:::be
+  end
+
+  subgraph DB["DB"]
+    direction TB
+    db_threads[("comment_threads")]:::db
+    db_comments[("comments")]:::db
+    db_editors[("report_editors")]:::db
+    db_acts[("report_activities")]:::db
+    db_notifs[("notifications")]:::db
+  end
+
+  fe_detail --> be_comments
+  fe_detail --> be_editors
+  fe_detail --> be_acts
+  fe_cmt --> be_comments
+  fe_inbox --> be_comments
+  fe_notif --> be_notifs
+
+  be_comments --> db_threads
+  be_comments --> db_comments
+  be_comments -. "멘션 시" .-> be_notifs
+  be_comments -. "이벤트 기록" .-> be_acts
+  be_editors --> db_editors
+  be_editors -. "참여 알림" .-> be_notifs
+  be_acts --> db_acts
+  be_notifs --> db_notifs
+  be_mounts -. "배치 변경 알림" .-> be_notifs
+</pre>
+      </div>
+      <div class="helper">
+        <strong>핵심 패턴:</strong> 협업 모듈들은 서로 직접 부르지 않고 알림/활동을 <em>이벤트</em>처럼
+        쌓는다 — <code>comments</code> 가 멘션을 만나면 <code>notifications</code> 에 한 줄,
+        <code>activities</code> 에 한 줄을 같이 남기는 식.
+      </div>
+    </section>
+
+    <!-- 4. 종합보고 -->
+    <section class="view" id="d4">
+      <header>
+        <h2>4. 종합보고 (Composites)</h2>
+        <p class="lede">여러 일반 보고서를 묶어 하나의 종합보고로. 보고서는 그대로 두고
+          <code>composite_report_items</code> 가 참조만 한다.</p>
+      </header>
+      <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart LR
+  classDef fe fill:#dbeafe,stroke:#1d4ed8,color:#111
+  classDef be fill:#fef3c7,stroke:#b45309,color:#111
+  classDef db fill:#d1fae5,stroke:#065f46,color:#111
+
+  subgraph FE["프론트엔드"]
+    fe_list["CompositesListPage<br/>/w/:ws/composites"]:::fe
+    fe_detail["CompositeDetailPage<br/>/w/:ws/composites/:id"]:::fe
+  end
+
+  subgraph BE["백엔드"]
+    be_comp["composites<br/>/api/composites"]:::be
+    be_reports["reports<br/>(참조용)"]:::be
+    be_notifs["notifications"]:::be
+  end
+
+  subgraph DB["DB"]
+    db_comp[("composite_reports")]:::db
+    db_items[("composite_report_items")]:::db
+    db_reports[("reports")]:::db
+  end
+
+  fe_list --> be_comp
+  fe_detail --> be_comp
+  be_comp --> db_comp
+  be_comp --> db_items
+  db_items -. "참조" .-> db_reports
+  be_comp -. "공유 알림" .-> be_notifs
+  be_comp -. "본문 fetch" .-> be_reports
+</pre>
+      </div>
+    </section>
+
+    <!-- 5. 템플릿 / 분류 -->
+    <section class="view" id="d5">
+      <header>
+        <h2>5. 템플릿 · 분류 메타</h2>
+        <p class="lede">보고서를 만들 때 베이스가 되는 청사진. 템플릿은 분류 트리에 걸리고,
+          섹션 분류(taxonomy)는 어느 섹션에 어떤 표준 항목이 들어가야 하는지 정의.</p>
+      </header>
+      <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart LR
+  classDef fe fill:#dbeafe,stroke:#1d4ed8,color:#111
+  classDef be fill:#fef3c7,stroke:#b45309,color:#111
+  classDef db fill:#d1fae5,stroke:#065f46,color:#111
+
+  subgraph FE["프론트엔드"]
+    fe_list["TemplatesPage<br/>/templates"]:::fe
+    fe_editor["TemplateEditorPage<br/>/templates/:id/edit"]:::fe
+  end
+
+  subgraph BE["백엔드"]
+    be_tpl["templates<br/>/api/templates"]:::be
+    be_tcat["template_categories<br/>/api/template-categories"]:::be
+    be_sec["section_taxonomy<br/>/api/section-taxonomy"]:::be
+    be_rtypes["report_types<br/>/api/report-types"]:::be
+  end
+
+  subgraph DB["DB"]
+    db_tpl[("templates")]:::db
+    db_tcat[("template_categories")]:::db
+    db_seccat[("section_categories")]:::db
+    db_secit[("section_items")]:::db
+    db_rtypes[("report_types")]:::db
+  end
+
+  fe_list --> be_tpl
+  fe_list --> be_tcat
+  fe_editor --> be_tpl
+  fe_editor --> be_sec
+  fe_editor --> be_rtypes
+
+  be_tpl --> db_tpl
+  be_tcat --> db_tcat
+  be_tcat -. "분류 부여" .-> be_tpl
+  be_sec --> db_seccat
+  be_sec --> db_secit
+  be_rtypes --> db_rtypes
+</pre>
+      </div>
+    </section>
+
+    <!-- 6. 엔티티 -->
+    <section class="view" id="d6">
+      <header>
+        <h2>6. 엔티티(기준데이터) · 위젯 관계</h2>
+        <p class="lede">설비/품목/조직 같은 마스터 데이터. 보고서는 <code>report_entities</code>
+          로 N:M 연결되어 "이 보고서는 어떤 자산을 다루는가" 를 표현. 위젯 간 데이터 연결도 별도 그래프로.</p>
+      </header>
+      <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart LR
+  classDef fe fill:#dbeafe,stroke:#1d4ed8,color:#111
+  classDef be fill:#fef3c7,stroke:#b45309,color:#111
+  classDef db fill:#d1fae5,stroke:#065f46,color:#111
+
+  subgraph FE["프론트엔드"]
+    fe_eadmin["EntitiesAdminPage<br/>/admin/entities"]:::fe
+    fe_detail["ReportDetailPage<br/>(엔티티 선택 UI)"]:::fe
+  end
+
+  subgraph BE["백엔드"]
+    be_ents["entities<br/>/api/entities · /entity-types"]:::be
+    be_wrel["widget_relations<br/>/api/widget-relations"]:::be
+  end
+
+  subgraph DB["DB"]
+    db_etypes[("entity_types")]:::db
+    db_ents[("entities")]:::db
+    db_rents[("report_entities")]:::db
+    db_wrel[("widget_relations")]:::db
+    db_reports[("reports")]:::db
+  end
+
+  fe_eadmin --> be_ents
+  fe_detail --> be_ents
+  fe_detail --> be_wrel
+
+  be_ents --> db_etypes
+  be_ents --> db_ents
+  be_ents --> db_rents
+  db_rents -. "참조" .-> db_reports
+  be_wrel --> db_wrel
+</pre>
+      </div>
+    </section>
+
+    <!-- 7. AI / VOC / 파일 -->
+    <section class="view" id="d7">
+      <header>
+        <h2>7. AI 프롬프트 · VOC · 파일</h2>
+        <p class="lede">서로 독립적이지만 부속 모듈이라 한 데 묶음.</p>
+      </header>
+      <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart LR
+  classDef fe fill:#dbeafe,stroke:#1d4ed8,color:#111
+  classDef be fill:#fef3c7,stroke:#b45309,color:#111
+  classDef db fill:#d1fae5,stroke:#065f46,color:#111
+  classDef fs fill:#fce7f3,stroke:#9d174d,color:#111
+
+  subgraph FE["프론트엔드"]
+    fe_ai["AiSettingsPage<br/>/ai-settings"]:::fe
+    fe_voc1["VocListPage"]:::fe
+    fe_voc2["VocDetailPage"]:::fe
+    fe_detail["ReportDetailPage<br/>(파일 첨부 · AI 호출)"]:::fe
+  end
+
+  subgraph BE["백엔드"]
+    be_prompts["prompts<br/>/api/prompts"]:::be
+    be_voc["voc<br/>/api/voc"]:::be
+    be_files["files<br/>/api/files"]:::be
+  end
+
+  subgraph DB["DB"]
+    db_prompts[("prompts")]:::db
+    db_vp[("voc_posts")]:::db
+    db_vc[("voc_comments")]:::db
+    db_files[("files")]:::db
+  end
+
+  fs_uploads["uploads/<br/>(bind-mount)"]:::fs
+  ext_ai["외부 LLM<br/>(설정에 따라)"]:::fs
+
+  fe_ai --> be_prompts
+  fe_detail -. "프롬프트 조회" .-> be_prompts
+  fe_voc1 --> be_voc
+  fe_voc2 --> be_voc
+  fe_detail --> be_files
+
+  be_prompts --> db_prompts
+  be_prompts -. "외부 호출은<br/>프론트 SDK에서" .-> ext_ai
+  be_voc --> db_vp
+  be_voc --> db_vc
+  be_files --> db_files
+  be_files --> fs_uploads
+</pre>
+      </div>
+    </section>
+
+    <!-- 8. 관리자 -->
+    <section class="view" id="d8">
+      <header>
+        <h2>8. 관리자</h2>
+        <p class="lede">계정 · 공간 · 서버 정보를 한 모듈이 모아서 처리. 다른 도메인 테이블을
+          <em>읽고 쓰기</em> 위해 여러 모듈로 분기.</p>
+      </header>
+      <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart LR
+  classDef fe fill:#dbeafe,stroke:#1d4ed8,color:#111
+  classDef be fill:#fef3c7,stroke:#b45309,color:#111
+  classDef db fill:#d1fae5,stroke:#065f46,color:#111
+
+  subgraph FE["프론트엔드"]
+    fe_home["AdminPage<br/>/admin"]:::fe
+    fe_acc["AccountsAdminPage"]:::fe
+    fe_usp["UserSpaceAdminPage"]:::fe
+    fe_srv["ServerPage<br/>/server"]:::fe
+  end
+
+  subgraph BE["백엔드"]
+    be_admin["admin<br/>/api/admin"]:::be
+    be_users["users"]:::be
+    be_ws["workspaces"]:::be
+    be_files["files"]:::be
+  end
+
+  subgraph DB["DB"]
+    db_users[("users")]:::db
+    db_ws[("workspaces")]:::db
+    db_wm[("workspace_members")]:::db
+    db_files[("files")]:::db
+  end
+
+  fe_home --> be_admin
+  fe_acc --> be_admin
+  fe_usp --> be_admin
+  fe_srv --> be_admin
+
+  be_admin --> be_users
+  be_admin --> be_ws
+  be_admin --> be_files
+  be_users --> db_users
+  be_ws --> db_ws
+  be_ws --> db_wm
+  be_files --> db_files
+</pre>
+      </div>
+    </section>
+
+    <!-- 9. 전체 결선도 -->
+    <section class="view" id="all">
+      <header>
+        <h2>9. 전체 결선도 — 한 장 요약</h2>
+        <p class="lede">위 8개 도메인을 한 그래프에 합친 모습. 가로 스크롤 가능.
+          색 = 계층 (파랑 FE / 노랑 BE / 초록 DB / 분홍 외부·파일).</p>
+      </header>
+      <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart LR
+  classDef fe fill:#dbeafe,stroke:#1d4ed8,color:#111
+  classDef be fill:#fef3c7,stroke:#b45309,color:#111
+  classDef db fill:#d1fae5,stroke:#065f46,color:#111
+  classDef fs fill:#fce7f3,stroke:#9d174d,color:#111
+
+  subgraph FE["프론트엔드 (modules/*)"]
+    direction TB
+    F1["auth<br/>Login·Signup"]:::fe
+    F2["profile"]:::fe
+    F3["workspace<br/>HomePage"]:::fe
+    F4["members"]:::fe
+    F5["reports<br/>List·New·Detail"]:::fe
+    F6["dashboard"]:::fe
+    F7["composites"]:::fe
+    F8["templates<br/>Editor"]:::fe
+    F9["inbox"]:::fe
+    F10["notifications"]:::fe
+    F11["ai_settings"]:::fe
+    F12["entities"]:::fe
+    F13["voc"]:::fe
+    F14["admin"]:::fe
+  end
+
+  subgraph BE["백엔드 (app/modules/*)"]
+    direction TB
+    B1["auth"]:::be
+    B2["users"]:::be
+    B3["workspaces"]:::be
+    B4["members"]:::be
+    B5["reports"]:::be
+    B6["report_types"]:::be
+    B7["templates"]:::be
+    B8["template_categories"]:::be
+    B9["section_taxonomy"]:::be
+    B10["composites"]:::be
+    B11["folders"]:::be
+    B12["mounts"]:::be
+    B13["widgets"]:::be
+    B14["widget_relations"]:::be
+    B15["entities"]:::be
+    B16["comments"]:::be
+    B17["editors"]:::be
+    B18["activities"]:::be
+    B19["notifications"]:::be
+    B20["prompts"]:::be
+    B21["files"]:::be
+    B22["voc"]:::be
+    B23["admin"]:::be
+  end
+
+  subgraph DB["PostgreSQL"]
+    direction TB
+    T1[("users")]:::db
+    T2[("workspaces")]:::db
+    T3[("workspace_members")]:::db
+    T4[("reports")]:::db
+    T5[("report_edit_locks")]:::db
+    T6[("report_types")]:::db
+    T7[("templates")]:::db
+    T8[("template_categories")]:::db
+    T9[("section_categories")]:::db
+    T10[("section_items")]:::db
+    T11[("composite_reports")]:::db
+    T12[("composite_report_items")]:::db
+    T13[("folders")]:::db
+    T14[("report_mounts")]:::db
+    T15[("widget_relations")]:::db
+    T16[("entity_types")]:::db
+    T17[("entities")]:::db
+    T18[("report_entities")]:::db
+    T19[("comment_threads")]:::db
+    T20[("comments")]:::db
+    T21[("report_editors")]:::db
+    T22[("report_activities")]:::db
+    T23[("notifications")]:::db
+    T24[("prompts")]:::db
+    T25[("files")]:::db
+    T26[("voc_posts")]:::db
+    T27[("voc_comments")]:::db
+  end
+
+  FS1["uploads/"]:::fs
+  FS2["외부 LLM"]:::fs
+
+  %% FE -> BE
+  F1 --> B1
+  F2 --> B2
+  F3 --> B3
+  F4 --> B4
+  F5 --> B5
+  F5 --> B7
+  F5 --> B11
+  F5 --> B12
+  F5 --> B13
+  F5 --> B14
+  F5 --> B15
+  F5 --> B16
+  F5 --> B17
+  F5 --> B18
+  F5 --> B21
+  F6 --> B5
+  F6 --> B18
+  F7 --> B10
+  F8 --> B7
+  F8 --> B8
+  F8 --> B9
+  F8 --> B6
+  F9 --> B16
+  F10 --> B19
+  F11 --> B20
+  F12 --> B15
+  F13 --> B22
+  F14 --> B23
+
+  %% BE -> DB
+  B1 --> T1
+  B2 --> T1
+  B2 --> T3
+  B3 --> T2
+  B4 --> T3
+  B5 --> T4
+  B5 --> T5
+  B6 --> T6
+  B7 --> T7
+  B8 --> T8
+  B9 --> T9
+  B9 --> T10
+  B10 --> T11
+  B10 --> T12
+  B11 --> T13
+  B12 --> T14
+  B14 --> T15
+  B15 --> T16
+  B15 --> T17
+  B15 --> T18
+  B16 --> T19
+  B16 --> T20
+  B17 --> T21
+  B18 --> T22
+  B19 --> T23
+  B20 --> T24
+  B21 --> T25
+  B22 --> T26
+  B22 --> T27
+  B21 --> FS1
+  B20 -. "프롬프트 사용" .-> FS2
+  B23 --> B2
+  B23 --> B3
+  B23 --> B21
+</pre>
+      </div>
+      <div class="helper">
+        <strong>읽는 법:</strong>
+        왼쪽(파랑 FE) 한 노드를 골라, 오른쪽으로 따라가면 어떤 BE 모듈을 부르고 그게 어떤 테이블을
+        건드리는지 한 번에 보인다. 예) <code>reports/Detail</code> → <code>reports · widgets · widget_relations · entities · comments · editors · activities · files</code> → 13개 테이블.
+      </div>
+    </section>
+
+    <footer>
+      도메인 분할 기준은 v2 (<code>시스템아키텍처2.html</code>) 의 모듈 데이터를 그대로 사용.
+      Mermaid CDN(v11) 로드. 구조 바뀌면 같은 도메인 섹션을 수정.
+    </footer>
+  </div>
+
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: prefersDark ? 'dark' : 'default',
+      securityLevel: 'loose',
+      flowchart: { htmlLabels: true, curve: 'basis', nodeSpacing: 40, rankSpacing: 70 },
+      themeVariables: {
+        fontFamily: '-apple-system, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", sans-serif',
+        fontSize: '14px',
+      },
+    });
+  </script>
+</body>
+</html>

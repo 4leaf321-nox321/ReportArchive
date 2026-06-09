@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ReportArchive — 개발 일정 및 마일스톤</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --fg: #0f172a;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --card: #ffffff;
+      --code-bg: #f1f5f9;
+      --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+
+      --done: #16a34a;
+      --done-bg: #dcfce7;
+      --in-progress: #2563eb;
+      --in-progress-bg: #dbeafe;
+      --planned: #ca8a04;
+      --planned-bg: #fef3c7;
+      --option: #94a3b8;
+      --option-bg: #e2e8f0;
+      --risk: #b91c1c;
+      --risk-bg: #fee2e2;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b1220;
+        --fg: #e2e8f0;
+        --muted: #94a3b8;
+        --border: #1e293b;
+        --card: #111827;
+        --code-bg: #1e293b;
+
+        --done: #86efac;
+        --done-bg: #14532d;
+        --in-progress: #93c5fd;
+        --in-progress-bg: #1e3a8a;
+        --planned: #fcd34d;
+        --planned-bg: #78350f;
+        --option: #cbd5e1;
+        --option-bg: #334155;
+        --risk: #fca5a5;
+        --risk-bg: #7f1d1d;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+        "Pretendard", "Noto Sans KR", "Segoe UI", Roboto, sans-serif;
+      line-height: 1.55;
+      font-size: 15px;
+    }
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 32px 28px 64px;
+    }
+    header.hero {
+      padding-bottom: 24px;
+      margin-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    header.hero h1 {
+      margin: 0 0 6px;
+      font-size: 30px;
+      letter-spacing: -0.01em;
+    }
+    header.hero p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    nav.tabs {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 28px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      z-index: 10;
+    }
+    nav.tabs a {
+      padding: 7px 14px;
+      border-radius: 999px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--fg);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    nav.tabs a:hover { background: var(--code-bg); color: var(--in-progress); }
+
+    section.view {
+      margin-bottom: 48px;
+      scroll-margin-top: 80px;
+    }
+    section.view > header { margin-bottom: 18px; }
+    section.view > header h2 {
+      margin: 0 0 4px;
+      font-size: 22px;
+      letter-spacing: -0.01em;
+    }
+    section.view > header .lede {
+      color: var(--muted);
+      font-size: 13.5px;
+      margin: 0;
+    }
+
+    /* ─ 대시보드 ─ */
+    .dashboard {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+    @media (max-width: 1100px) {
+      .dashboard { grid-template-columns: repeat(3, 1fr); }
+    }
+    @media (max-width: 700px) {
+      .dashboard { grid-template-columns: repeat(2, 1fr); }
+    }
+    .stat {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 16px;
+      box-shadow: var(--shadow);
+    }
+    .stat .label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .stat .value {
+      font-size: 26px;
+      font-weight: 800;
+      margin-top: 4px;
+      letter-spacing: -0.02em;
+    }
+    .stat .value small { font-size: 13px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+    .stat.done .value { color: var(--done); }
+    .stat.next .value { color: var(--in-progress); }
+    .stat.queued .value { color: var(--planned); }
+
+    /* ─ 간트 ─ */
+    .gantt-wrap {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+      overflow-x: auto;
+    }
+    .gantt {
+      min-width: 1080px;
+      width: 100%;
+    }
+    .gantt-head {
+      display: grid;
+      grid-template-columns: 220px repeat(12, 1fr);
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 6px;
+      margin-bottom: 8px;
+    }
+    .gantt-head .col {
+      font-size: 11px;
+      color: var(--muted);
+      text-align: center;
+      border-left: 1px dashed var(--border);
+      padding: 2px 4px;
+      font-weight: 600;
+    }
+    .gantt-head .col:first-child {
+      border-left: none;
+      text-align: left;
+      font-weight: 700;
+      padding: 2px 8px;
+    }
+    .gantt-row {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      gap: 0;
+      align-items: center;
+      padding: 6px 0;
+      border-bottom: 1px dashed var(--border);
+    }
+    .gantt-row:last-child { border-bottom: none; }
+    .gantt-row .label {
+      font-size: 13px;
+      font-weight: 600;
+      padding-right: 10px;
+    }
+    .gantt-row .label small {
+      display: block;
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 500;
+    }
+    .gantt-track {
+      position: relative;
+      height: 22px;
+      background:
+        linear-gradient(90deg,
+          transparent calc((100% / 12) - 1px),
+          var(--border) calc((100% / 12) - 1px),
+          var(--border) calc(100% / 12),
+          transparent calc(100% / 12)
+        );
+      background-size: calc(100% / 12) 100%;
+    }
+    .gantt-bar {
+      position: absolute;
+      top: 3px;
+      height: 16px;
+      border-radius: 4px;
+      padding: 0 8px;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 16px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+    }
+    .gantt-bar.done { background: var(--done); color: white; }
+    .gantt-bar.in-progress { background: var(--in-progress); color: white; }
+    .gantt-bar.planned { background: var(--planned); color: #0f172a; }
+    .gantt-bar.option {
+      background: repeating-linear-gradient(
+        45deg, var(--option), var(--option) 5px,
+        rgba(255,255,255,0.3) 5px, rgba(255,255,255,0.3) 10px
+      );
+      color: white;
+    }
+    .today-line {
+      position: absolute;
+      top: -8px;
+      bottom: -8px;
+      width: 2px;
+      background: var(--risk);
+      z-index: 5;
+    }
+    .today-line::after {
+      content: "오늘";
+      position: absolute;
+      top: -16px;
+      left: -16px;
+      width: 36px;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--risk);
+      text-align: center;
+    }
+
+    /* ─ 범례 ─ */
+    .legend {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+      font-size: 12.5px;
+      margin-top: 12px;
+      color: var(--muted);
+    }
+    .legend .key { display: inline-flex; align-items: center; gap: 6px; }
+    .legend .swatch {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+    }
+    .sw-done { background: var(--done); }
+    .sw-prog { background: var(--in-progress); }
+    .sw-plan { background: var(--planned); }
+    .sw-opt {
+      background: repeating-linear-gradient(45deg, var(--option), var(--option) 4px, rgba(255,255,255,0.3) 4px, rgba(255,255,255,0.3) 8px);
+    }
+
+    /* ─ 마일스톤 카드 ─ */
+    .ms-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 14px;
+    }
+    .ms {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 18px;
+      box-shadow: var(--shadow);
+    }
+    .ms.done { border-left: 4px solid var(--done); }
+    .ms.in-progress { border-left: 4px solid var(--in-progress); }
+    .ms.planned { border-left: 4px solid var(--planned); }
+    .ms.option { border-left: 4px solid var(--option); }
+    .ms .ms-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: baseline;
+      margin-bottom: 4px;
+    }
+    .ms h3 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .ms .status {
+      font-size: 10.5px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+    .status.done { background: var(--done-bg); color: var(--done); }
+    .status.in-progress { background: var(--in-progress-bg); color: var(--in-progress); }
+    .status.planned { background: var(--planned-bg); color: var(--planned); }
+    .status.option { background: var(--option-bg); color: var(--muted); }
+    .ms .when {
+      font-size: 11.5px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    .ms .desc { font-size: 13px; margin: 4px 0 8px; color: var(--muted); }
+    .ms ul { margin: 0; padding-left: 18px; font-size: 12.5px; }
+    .ms li { margin: 3px 0; }
+
+    /* ─ 결정 표 ─ */
+    .decision-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    .decision-table th, .decision-table td {
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+      text-align: left;
+    }
+    .decision-table tr:last-child td { border-bottom: none; }
+    .decision-table th {
+      background: var(--code-bg);
+      font-size: 11.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .decision-table .blocker { font-weight: 700; color: var(--risk); }
+
+    code {
+      font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+      font-size: 12.5px;
+      background: var(--code-bg);
+      padding: 1.5px 6px;
+      border-radius: 4px;
+    }
+    footer {
+      margin-top: 48px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 12.5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="hero">
+      <h1>ReportArchive — 개발 일정 및 마일스톤</h1>
+      <p>2026-05-28 기준. Phase 0~4(인프라 + 협업 토대) 완료, 다음은 종합보고를 살아 있게 만드는 Phase 5.</p>
+    </header>
+
+    <nav class="tabs">
+      <a href="#now">1. 현재 상태</a>
+      <a href="#gantt">2. 전체 타임라인 (간트)</a>
+      <a href="#done">3. 완료된 마일스톤</a>
+      <a href="#next">4. 다음 마일스톤 (Phase 5~8)</a>
+      <a href="#option">5. 옵션·미결정 (Phase 9~)</a>
+      <a href="#risk">6. 위험·결정 보류</a>
+    </nav>
+
+    <!-- 1. 현재 상태 대시보드 -->
+    <section class="view" id="now">
+      <header>
+        <h2>1. 현재 상태 한눈에</h2>
+        <p class="lede">2026-05-28 시점. 산출물 수치는 코드 직접 카운트.</p>
+      </header>
+      <div class="dashboard">
+        <div class="stat done">
+          <div class="label">완료 Phase</div>
+          <div class="value">5<small>/ Phase 0–4</small></div>
+        </div>
+        <div class="stat next">
+          <div class="label">다음 마일스톤</div>
+          <div class="value">Phase 5<small> 종합보고</small></div>
+        </div>
+        <div class="stat queued">
+          <div class="label">잔여 Phase</div>
+          <div class="value">4<small>+옵션 Phase 9</small></div>
+        </div>
+        <div class="stat">
+          <div class="label">위젯 라인업</div>
+          <div class="value">31<small>종 + annotation</small></div>
+        </div>
+        <div class="stat">
+          <div class="label">백엔드 모듈</div>
+          <div class="value">22<small>·DB 27테이블</small></div>
+        </div>
+      </div>
+      <div style="padding: 14px 18px; background: var(--in-progress-bg); border-left: 3px solid var(--in-progress); border-radius: 8px; font-size: 13.5px;">
+        <b>핵심 한 줄:</b> 인프라 · 협업 · 권한 토대는 굳어졌고, 이제 <b>종합보고를 살아 있게
+        만드는 단계</b>(Phase 5)에서부터 사용자 가치가 누적되는 구간으로 진입.
+      </div>
+    </section>
+
+    <!-- 2. 간트 -->
+    <section class="view" id="gantt">
+      <header>
+        <h2>2. 전체 타임라인 — 간트 차트</h2>
+        <p class="lede">2025-Q4 ~ 2026-Q4. 빨간 선이 오늘(2026-05). 완료(녹색) · 다음(파랑) · 예정(노랑) · 옵션(빗금).</p>
+      </header>
+      <div class="gantt-wrap">
+        <div class="gantt">
+          <div class="gantt-head">
+            <div class="col">분기 / 월</div>
+            <div class="col">2025-10</div>
+            <div class="col">11</div>
+            <div class="col">12</div>
+            <div class="col">2026-01</div>
+            <div class="col">02</div>
+            <div class="col">03</div>
+            <div class="col">04</div>
+            <div class="col">05</div>
+            <div class="col">06</div>
+            <div class="col">07</div>
+            <div class="col">08</div>
+            <div class="col">09~</div>
+          </div>
+
+          <!-- Phase 0 GUI 골격 -->
+          <div class="gantt-row">
+            <div class="label">Phase 0 — GUI 골격<small>shadcn · AppShell · 라우팅</small></div>
+            <div class="gantt-track">
+              <div class="gantt-bar done" style="left: 0%; width: 33%;">완료 (Lv B)</div>
+              <div class="today-line" style="left: 66.66%;"></div>
+            </div>
+          </div>
+
+          <!-- Phase 1 백엔드 골격 -->
+          <div class="gantt-row">
+            <div class="label">Phase 1 — 백엔드 골격<small>모델·CRUD·인증·시드</small></div>
+            <div class="gantt-track">
+              <div class="gantt-bar done" style="left: 25%; width: 33%;">완료 2026-05-05</div>
+              <div class="today-line" style="left: 66.66%;"></div>
+            </div>
+          </div>
+
+          <!-- 협업 Phase 0 마이그레이션 -->
+          <div class="gantt-row">
+            <div class="label">협업 P0 — 단일 마이그레이션<small>kind·mount·phase·folder</small></div>
+            <div class="gantt-track">
+              <div class="gantt-bar done" style="left: 50%; width: 8%;">완료</div>
+              <div class="today-line" style="left: 66.66%;"></div>
+            </div>
+          </div>
+
+          <!-- 협업 Phase 1 개인/조직 분리 -->
+          <div class="gantt-row">
+            <div class="label">협업 P1 — 개인/조직 분리<small>workspace.kind · mount UI</small></div>
+            <div class="gantt-track">
+              <div class="gantt-bar done" style="left: 56%; width: 8%;">2주</div>
+              <div class="today-line" style="left: 66.66%;"></div>
+            </div>
+          </div>
+
+          <!-- Phase 1.5/1.6/1.7 folder · sys admin -->
+          <div class="gantt-row">
+            <div class="label">P1.5–1.7 — 폴더 + 권한 분리<small>folder · sys admin</small></div>
+            <div class="gantt-track">
+              <div class="gantt-bar done" style="left: 58%; width: 8%;">완료</div>
+              <div class="today-line" style="left: 66.66%;"></div>
+            </div>
+          </div>
+
+          <!-- 협업 Phase 2 코멘트 lock -->
+          <div class="gantt-row">
+            <div class="label">협업 P2 — 인라인 코멘트<small>thread · phase · lock · 알림</small></div>
+            <div class="gantt-track">
+              <div class="gantt-bar done" style="left: 60%; width: 6%;">~2주</div>
+              <div class="today-line" style="left: 66.66%;"></div>
+            </div>
+          </div>
+
+          <!-- 협업 Phase 3 권한 -->
+          <div class="gantt-row">
+            <div class="label">협업 P3 — 권한 본격화<small>can_edit · ReportEditor</small></div>
+            <div class="gantt-track">
+              <div class="gantt-bar done" style="left: 62.5%; width: 2%;">1일</div>
+              <div class="today-line" style="left: 66.66%;"></div>
+            </div>
+          </div>
+
+          <!-- 협업 Phase 4 개인공간 hub -->
+          <div class="gantt-row">
+            <div class="label">협업 P4 — 개인공간 hub<small>filter · inbox · bulk unmount</small></div>
+            <div class="gantt-track">
+              <div class="gantt-bar done" style="left: 64.5%; width: 2%;">~1일</div>
+              <div class="today-line" style="left: 66.66%;"></div>
+            </div>
+          </div>
+
+          <!-- ============ 미래 ============ -->
+          <!-- 협업 Phase 5 종합보고 -->
+          <div class="gantt-row">
+            <div class="label">협업 P5 — 종합보고 살리기<small>publish snapshot · 양방향 네비</small></div>
+            <div class="gantt-track">
+              <div class="gantt-bar in-progress" style="left: 66.66%; width: 12%;">2~3주 (6월)</div>
+              <div class="today-line" style="left: 66.66%;"></div>
+            </div>
+          </div>
+
+          <!-- 협업 Phase 6 반복 자동화 -->
+          <div class="gantt-row">
+            <div class="label">협업 P6 — 매주 반복 자동화<small>lifecycle · 회차 chain · carry-over</small></div>
+            <div class="gantt-track">
+              <div class="gantt-bar planned" style="left: 75%; width: 8%;">2주 (7월)</div>
+              <div class="today-line" style="left: 66.66%;"></div>
+            </div>
+          </div>
+
+          <!-- 협업 Phase 7 임원가치 -->
+          <div class="gantt-row">
+            <div class="label">협업 P7 — 임원·delta<small>위젯 delta · 매트릭스 · 멘션</small></div>
+            <div class="gantt-track">
+              <div class="gantt-bar planned" style="left: 80%; width: 8%;">3주 (7~8월)</div>
+              <div class="today-line" style="left: 66.66%;"></div>
+            </div>
+          </div>
+
+          <!-- 협업 Phase 8 확장 -->
+          <div class="gantt-row">
+            <div class="label">협업 P8 — 확장 (Fork·검색·공유)<small>fork · 전역검색 · share token</small></div>
+            <div class="gantt-track">
+              <div class="gantt-bar planned" style="left: 86%; width: 8%;">3주 (8~9월)</div>
+              <div class="today-line" style="left: 66.66%;"></div>
+            </div>
+          </div>
+
+          <!-- AI 모델·API 통합 -->
+          <div class="gantt-row">
+            <div class="label">AI 모델·API 통합<small>현재 "준비 중" 탭</small></div>
+            <div class="gantt-track">
+              <div class="gantt-bar planned" style="left: 75%; width: 12%;">병행 (TBD)</div>
+              <div class="today-line" style="left: 66.66%;"></div>
+            </div>
+          </div>
+
+          <!-- Phase 9 옵션 -->
+          <div class="gantt-row">
+            <div class="label">Phase 9 — 옵션<small>diff · auto-gen · 9C 추적성</small></div>
+            <div class="gantt-track">
+              <div class="gantt-bar option" style="left: 92%; width: 8%;">데이터 보고 결정</div>
+              <div class="today-line" style="left: 66.66%;"></div>
+            </div>
+          </div>
+
+          <!-- CRDT/Dataset 옵션 큰 방향 -->
+          <div class="gantt-row">
+            <div class="label">큰 방향 결정 필요<small>CRDT · Dataset/DB view</small></div>
+            <div class="gantt-track">
+              <div class="gantt-bar option" style="left: 92%; width: 8%;">의사결정 필요</div>
+              <div class="today-line" style="left: 66.66%;"></div>
+            </div>
+          </div>
+
+        </div>
+        <div class="legend">
+          <span class="key"><span class="swatch sw-done"></span>완료</span>
+          <span class="key"><span class="swatch sw-prog"></span>진행/직후</span>
+          <span class="key"><span class="swatch sw-plan"></span>예정</span>
+          <span class="key"><span class="swatch sw-opt"></span>옵션 (결정 필요)</span>
+          <span class="key" style="color: var(--risk);">━ 오늘 (2026-05-28)</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. 완료된 마일스톤 -->
+    <section class="view" id="done">
+      <header>
+        <h2>3. 완료된 마일스톤</h2>
+        <p class="lede">시간순. 각 카드 = 발행/마무리 시점의 핵심 산출물.</p>
+      </header>
+      <div class="ms-grid">
+        <div class="ms done">
+          <div class="ms-head">
+            <h3>Phase 0 — GUI 골격 (Lv B)</h3>
+            <span class="status done">완료</span>
+          </div>
+          <div class="when">2025-Q4 ~ 2026-Q1 · 약 3개월</div>
+          <p class="desc">데이터 모델이 흔들리는 동안에도 굳혀둘 수 있는 부분.</p>
+          <ul>
+            <li>shadcn/ui + Tailwind · AppShell · 디자인 토큰</li>
+            <li>WorkspaceProvider · 라우팅 구조</li>
+            <li>7개 페이지 mock</li>
+            <li>의도적으로 미구현: JSON Schema 폼·검색 UI</li>
+          </ul>
+        </div>
+
+        <div class="ms done">
+          <div class="ms-head">
+            <h3>Phase 1 — 백엔드 골격 + end-to-end</h3>
+            <span class="status done">완료</span>
+          </div>
+          <div class="when">~ 2026-05-05</div>
+          <p class="desc">DB 모델 · CRUD · 더미 인증 · 시드 템플릿 · 프론트가 실제 API 호출.</p>
+          <ul>
+            <li>workspaces / templates / reports / users / workspace_members</li>
+            <li>템플릿 immutable 버전 + 글로벌·트리 종속 가시성</li>
+            <li>admin/editor/viewer 트리 상속 권한</li>
+            <li>스키마 빌더 MVP</li>
+          </ul>
+        </div>
+
+        <div class="ms done">
+          <div class="ms-head">
+            <h3>협업 P0 — 단일 마이그레이션</h3>
+            <span class="status done">완료</span>
+          </div>
+          <div class="when">2026-05 초</div>
+          <p class="desc">모든 후속 Phase의 토대.</p>
+          <ul>
+            <li><code>Workspace.kind</code> (personal/org/virtual)</li>
+            <li><code>ReportMount</code> 신설</li>
+            <li><code>ReportStatus</code> → <code>ReportPhase</code> 교체</li>
+            <li>Folder · Notification · CommentThread · Comment · ReportEditor 테이블 신설</li>
+          </ul>
+        </div>
+
+        <div class="ms done">
+          <div class="ms-head">
+            <h3>협업 P1 — 개인/조직 분리</h3>
+            <span class="status done">완료 · 2주</span>
+          </div>
+          <div class="when">2026-05 중반</div>
+          <ul>
+            <li>좌측 트리 "내 공간" · 조직 게시판 listing(<code>ReportMount</code> JOIN)</li>
+            <li>"게시" 다이얼로그 + 해제 UI</li>
+            <li>mount 알림 wiring</li>
+            <li>보고서 생성 default = 작성자 personal</li>
+          </ul>
+        </div>
+
+        <div class="ms done">
+          <div class="ms-head">
+            <h3>P1.5 + 1.6 — 폴더 (개인 + 조직)</h3>
+            <span class="status done">완료</span>
+          </div>
+          <div class="when">2026-05 중반</div>
+          <ul>
+            <li>다단계 nesting · DnD · 인라인 rename</li>
+            <li><code>ReportMount.folder_id</code> — 같은 보고서가 게시판마다 다른 폴더</li>
+            <li>"폴더는 자료의 속성이 아니라 배치의 속성" 통찰 반영</li>
+          </ul>
+        </div>
+
+        <div class="ms done">
+          <div class="ms-head">
+            <h3>P1.7 — 시스템·부서 관리자 분리</h3>
+            <span class="status done">완료</span>
+          </div>
+          <div class="when">2026-05 중반</div>
+          <ul>
+            <li><code>User.is_system_admin</code> 도입</li>
+            <li>시스템급 / 워크스페이스급 라우트 가드 분리</li>
+            <li>Last-admin lockout 보호</li>
+          </ul>
+        </div>
+
+        <div class="ms done">
+          <div class="ms-head">
+            <h3>협업 P2 — 인라인 코멘트 + Phase + Lock</h3>
+            <span class="status done">완료 · ~2주</span>
+          </div>
+          <div class="when">2026-05 중후반</div>
+          <ul>
+            <li>block 단위 thread + floating 핀 · resolve/reopen</li>
+            <li><code>ReportPhase</code> 자동 전환 (drafting → reviewing → finalized)</li>
+            <li>작성자 lock + 시스템 관리자 강제 해제</li>
+            <li>알림 inbox + retention(1000 cap) + 활동 이력</li>
+          </ul>
+        </div>
+
+        <div class="ms done">
+          <div class="ms-head">
+            <h3>협업 P3 — 권한 본격화</h3>
+            <span class="status done">완료 · 1일</span>
+          </div>
+          <div class="when">2026-05-25</div>
+          <ul>
+            <li><code>can_edit()</code> single source of truth</li>
+            <li>ReportEditor CRUD + 편집 attribution</li>
+            <li>mount별 edit_policy (default · owner_only · coauthor)</li>
+            <li>검증 스크립트로 5+1 path 자동 검증</li>
+          </ul>
+        </div>
+
+        <div class="ms done">
+          <div class="ms-head">
+            <h3>협업 P4 — 개인 공간 hub화</h3>
+            <span class="status done">완료 · ~1일</span>
+          </div>
+          <div class="when">2026-05 말</div>
+          <p class="desc">원안 4-탭 hub → 사이드바 "내 활동" 그룹으로 재설계.</p>
+          <ul>
+            <li>내 보고서 게시 칩 + phase/기간/게시판 필터 + bulk unmount</li>
+            <li>받은 코멘트 cross-workspace inbox (<code>/personal/inbox</code>)</li>
+            <li>부서 컨텍스트 silent flip 문제 해결</li>
+          </ul>
+        </div>
+
+        <div class="ms done">
+          <div class="ms-head">
+            <h3>위젯 라인업 31종 + Annotation</h3>
+            <span class="status done">병행 확장</span>
+          </div>
+          <div class="when">2025-Q4 → 2026-Q2 (지속)</div>
+          <p class="desc">기존 9종 → 31종 + 통합 annotation 레이어.</p>
+          <ul>
+            <li>좌표 7 · 비율 4 · 흐름 5 · 도메인 6 · 미디어/구조 9</li>
+            <li>annotation: vline / range / point / rect / arrow / text</li>
+            <li>AI 토큰 자동 주입 (widget_catalog / examples)</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4. 다음 마일스톤 -->
+    <section class="view" id="next">
+      <header>
+        <h2>4. 다음 마일스톤 — Phase 5 ~ 8</h2>
+        <p class="lede">권장 진행 순서대로. 각 카드 = 핵심 산출물 + 예상 일정 + 의존성.</p>
+      </header>
+      <div class="ms-grid">
+
+        <div class="ms in-progress">
+          <div class="ms-head">
+            <h3>Phase 5 — 종합보고 살리기</h3>
+            <span class="status in-progress">다음 · 2026-06</span>
+          </div>
+          <div class="when">2~3주 · 5A → 5B → 5C → 5E → 5D 순</div>
+          <p class="desc">현재 모든 composite 가 항상 live. recurring/theme 두 모드 분리부터.</p>
+          <ul>
+            <li><b>5B</b> ItemPicker mount 필터 (30분)</li>
+            <li><b>5A</b> recurring publish + snapshot freeze (1~2일) — 5/6/7 전제</li>
+            <li><b>5C</b> 양방향 네비 (1일)</li>
+            <li><b>5E</b> composite 알림 4종 (half-day)</li>
+            <li><b>5D</b> 원본 inline 편집 (4~5일) — 큰 작업</li>
+          </ul>
+        </div>
+
+        <div class="ms planned">
+          <div class="ms-head">
+            <h3>Phase 6 — 매주 반복 자동화</h3>
+            <span class="status planned">예정 · 2026-07</span>
+          </div>
+          <div class="when">2주 · 매주 체감 효율 가장 큰 phase</div>
+          <p class="desc">"팀장이 매주 종합 만드는 시간 X분 → Y분".</p>
+          <ul>
+            <li><b>6A</b> <code>Report.lifecycle</code> UI (single_shot/ongoing)</li>
+            <li><b>6B</b> <code>series_id</code> 처리 — 회차 chain</li>
+            <li><b>6C</b> ⭐ "이전 회차에서 이어 가기" — carry-over 자동</li>
+            <li><b>6D</b> 신규 단발 후보 listing</li>
+            <li><b>6E</b> 금요일 17:00 ongoing reminder (scheduled)</li>
+          </ul>
+        </div>
+
+        <div class="ms planned">
+          <div class="ms-head">
+            <h3>Phase 7 — 임원·본부장 시점</h3>
+            <span class="status planned">예정 · 2026-07~08</span>
+          </div>
+          <div class="when">3주 · 7A 가 widget timestamp 모델 변경으로 큼</div>
+          <p class="desc">"이번 회차 진전사항" 이 한 눈에.</p>
+          <ul>
+            <li><b>7A</b> 위젯 단위 delta (5A snapshot 의존)</li>
+            <li><b>7B</b> 진행 현황 매트릭스 view</li>
+            <li><b>7C</b> entity 기반 grouping (모델별·단계별)</li>
+            <li><b>7D</b> 코멘트 멘션 (tiptap mention extension)</li>
+          </ul>
+        </div>
+
+        <div class="ms planned">
+          <div class="ms-head">
+            <h3>Phase 8 — 확장 (Fork·검색·공유)</h3>
+            <span class="status planned">예정 · 2026-08~09</span>
+          </div>
+          <div class="when">3주 · 권한 모델 안정 후</div>
+          <ul>
+            <li><b>8A</b> 참조 복제 (Fork) — 다른 팀 자료 스냅샷 가져오기</li>
+            <li><b>8B</b> 전역 검색 (CommandPalette 강화) — 사용자 요청 강하면 끌어올림</li>
+            <li><b>8C</b> 외부 공유 링크 (token + 만료 + 비밀번호)</li>
+            <li><b>8D</b> workspace admin 강제 락 해제</li>
+          </ul>
+        </div>
+
+        <div class="ms planned">
+          <div class="ms-head">
+            <h3>AI 모델·API 통합 (병행)</h3>
+            <span class="status planned">병행 · TBD</span>
+          </div>
+          <div class="when">현재 "준비 중" 탭 · 결정 보류</div>
+          <p class="desc">프롬프트 카탈로그·토큰 주입은 이미 동작. 모델 호출 자체가 미통합.</p>
+          <ul>
+            <li>Anthropic Messages API + structured output 연결</li>
+            <li>AI 도크 5단계 (Intake → Plan → Generate → Validate → Cite) 실연결</li>
+            <li>프롬프트 캐싱 + 회사 용어집</li>
+            <li><code>ai_jobs</code> 테이블 + 큐</li>
+            <li><b>결정 보류</b>: Claude / OpenAI / 둘 다 · 비용 모델</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. 옵션 / 미결정 -->
+    <section class="view" id="option">
+      <header>
+        <h2>5. Phase 9 옵션 — 정량 데이터 보고 결정</h2>
+        <p class="lede">미리 만들면 yagni. 실제 사용 패턴을 보고 우선순위 결정.</p>
+      </header>
+      <div class="ms-grid">
+        <div class="ms option">
+          <div class="ms-head"><h3>9A — 이전 회차 vs 이번 회차 diff view</h3><span class="status option">옵션</span></div>
+          <p class="desc">두 회차 composite 를 나란히 비교. 7A 의 item 단위 확장.</p>
+        </div>
+        <div class="ms option">
+          <div class="ms-head"><h3>9B — 종합보고 자동 생성</h3><span class="status option">옵션</span></div>
+          <p class="desc">매주 월요일 0시 자동 생성 + carry-over 90% 채움. 6C 가 깔린 뒤에야 의미.</p>
+        </div>
+        <div class="ms option">
+          <div class="ms-head"><h3>9C — 보고서 ↔ 개발 업무 entity</h3><span class="status option">옵션</span></div>
+          <p class="desc">GitHub/Jira/Linear 연동. "이 PR 이 어느 분석에서 파생됐나" 추적.</p>
+        </div>
+        <div class="ms option">
+          <div class="ms-head"><h3>9D — 동시 편집 indicator</h3><span class="status option">옵션</span></div>
+          <p class="desc">lock 충돌 시 "편집 요청" 버튼. CRDT 진입 전 단계.</p>
+        </div>
+        <div class="ms option">
+          <div class="ms-head"><h3>9E — composite mount</h3><span class="status option">옵션</span></div>
+          <p class="desc">종합도 다른 게시판에 mount. 사용 패턴 보고.</p>
+        </div>
+        <div class="ms option">
+          <div class="ms-head"><h3>CRDT 실시간 동시 편집</h3><span class="status option">큰 방향</span></div>
+          <p class="desc">yjs + tiptap collaboration. 1~2개월. 9D lock indicator 로 충분한지 보고.</p>
+        </div>
+        <div class="ms option">
+          <div class="ms-head"><h3>Dataset / DB view 패러다임</h3><span class="status option">큰 방향</span></div>
+          <p class="desc">Notion DB 같은 멀티-view. "보고서 툴 → 워크스페이스 툴" 정체성 결정 필요.</p>
+        </div>
+        <div class="ms option">
+          <div class="ms-head"><h3>그래프 쿼리 (AGE) · 온톨로지 (RDF)</h3><span class="status option">먼 미래</span></div>
+          <p class="desc">v0.5+ — 평면 entity 테이블만으로 충분히 가치 회수. 워크로드 보고 결정.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6. 결정 보류 / 위험 -->
+    <section class="view" id="risk">
+      <header>
+        <h2>6. 결정 보류 사항</h2>
+        <p class="lede">데이터·피드백 보고 결정할 항목. 일부는 다음 Phase 진행에 영향.</p>
+      </header>
+      <table class="decision-table">
+        <thead>
+          <tr>
+            <th style="width: 50px;">#</th>
+            <th>항목</th>
+            <th style="width: 200px;">영향</th>
+            <th style="width: 130px;">언제 결정</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td><b>AI 모델 / 프로바이더</b> (Claude · OpenAI · 둘 다)</td>
+            <td class="blocker">AI 도크 실연결 블로커</td>
+            <td>Phase 5 병행</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td><b>인증 방식</b> (자체 JWT / OAuth / SSO)</td>
+            <td>외부 출시 직전</td>
+            <td>Phase 8 전</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td><b>Postgres RLS vs 앱 레이어</b> — 멀티테넌트 강화 시</td>
+            <td>현재는 앱 레이어 OK</td>
+            <td>외부 SaaS 전환 시</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td><b>본부 게시판 노출</b> — 팀 mount 자동 합산 vs 명시만</td>
+            <td>현 안: 명시만 (노이즈 회피)</td>
+            <td>Phase 5 후 사용 패턴 보고</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td><b>다른 사람 보고서 mount</b> (PR 흐름)</td>
+            <td>현 안: 본인만</td>
+            <td>요청 들어오면</td>
+          </tr>
+          <tr>
+            <td>6</td>
+            <td><b>AI-friendly report JSON 포맷</b></td>
+            <td>위젯 안정화 후 재논의</td>
+            <td>위젯 변동 잦으면 보류</td>
+          </tr>
+          <tr>
+            <td>7</td>
+            <td><b>CRDT 동시 편집 도입</b></td>
+            <td>Phase 9D lock indicator 로 충분한지</td>
+            <td>실 사용 데이터 후</td>
+          </tr>
+          <tr>
+            <td>8</td>
+            <td><b>종합보고 자체의 mount</b></td>
+            <td>composite of composites 와 중복 여지</td>
+            <td>Phase 9E</td>
+          </tr>
+          <tr>
+            <td>9</td>
+            <td><b>MountDialog 게시판별 폴더 동시 선택</b></td>
+            <td>현재 2단계 (게시 → 폴더 변경)</td>
+            <td>빈도 보고</td>
+          </tr>
+          <tr>
+            <td>10</td>
+            <td><b>"보직장(lead)" 별도 role</b></td>
+            <td>현재 admin/manager 2단계</td>
+            <td>Phase 2 후 별도 필요해지면</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <footer>
+      소스: <code>개발계획.md</code> · <code>약점보강_로드맵.md</code> · <code>협업개선_설계.md</code> ·
+      모듈/위젯 수치는 코드 직접 카운트. 시점·소요일은 실제 git 커밋 + 문서의 "실제 N주" 기록 기준.
+    </footer>
+  </div>
+</body>
+</html>

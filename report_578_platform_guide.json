@@ -1,0 +1,437 @@
+{
+  "_type": "report_archive_draft_v1",
+  "title": "ReportArchive 플랫폼 사용 설명서",
+  "report_date": "2026-05-27",
+  "tags": ["설명서", "플랫폼 가이드", "온보딩"],
+  "pages": [
+    {
+      "template_id": "1da9d132-fe8d-4139-9176-4184be86c011",
+      "template_version": 2,
+      "name": "1. 플랫폼 개요",
+      "extra_blocks": [
+        { "id": "h1_intro", "type": "heading", "props": { "level": 1, "default_text": "ReportArchive 플랫폼 개요" } },
+        { "id": "rt_intro", "type": "rich_text", "props": {} },
+        { "id": "h2_purpose", "type": "heading", "props": { "level": 2, "default_text": "도입 목적" } },
+        { "id": "bl_purpose", "type": "bulleted_list", "props": { "label": "이 플랫폼이 해결하는 문제" } },
+        { "id": "h2_stack", "type": "heading", "props": { "level": 2, "default_text": "기술 스택" } },
+        { "id": "kv_stack", "type": "key_value", "props": { "label": "런타임 / 의존성" } },
+        { "id": "h2_layers", "type": "heading", "props": { "level": 2, "default_text": "3계층 시스템 구조" } },
+        { "id": "tree_layers", "type": "tree", "props": { "label": "시스템 계층 구조" } },
+        { "id": "rt_layers", "type": "rich_text", "props": {} }
+      ],
+      "content": {
+        "h1_intro": { "text": "ReportArchive 플랫폼 개요" },
+        "rt_intro": { "markdown": "ReportArchive는 **엔지니어 개인이 보고서 초안을 작성**하고, **조직(팀/본부) 게시판에 게시**하고, **상위가 종합보고로 묶어 위계적으로 보고**하는 조직 워크플로를 한 플랫폼 안에서 처리하기 위한 도구이다.\n\nFastAPI(백엔드) + React/Vite(프론트엔드) + PostgreSQL 단일 구조이며, 독립 배포(서로 다른 서버)와 결합 배포(백엔드가 React 빌드를 함께 서빙)를 모두 지원한다. 운영 환경은 apptainer SIF 단일 이미지로 패키징된다." },
+        "h2_purpose": { "text": "도입 목적" },
+        "bl_purpose": { "items": [
+          "개인 시험 작성 보고서와 조직 공식 보고서가 섞이지 않도록 공간을 분리한다.",
+          "보고서를 사본이 아닌 live link로 여러 게시판에 동시 노출(Mount)한다.",
+          "주간업무보고·본부 종합보고 같은 정기 취합 작업을 반복 노동에서 빼낸다.",
+          "보직장이 부하 보고서를 직접 손볼 수 있도록 권한·잠금 모델을 분리한다.",
+          "AI/위젯 기반 보고서 작성으로 표·차트·관계도·플로우 등을 한 화면에서 조합한다."
+        ] },
+        "h2_stack": { "text": "기술 스택" },
+        "kv_stack": {
+          "items": [
+            { "key": "backend",     "label": "백엔드",          "type": "text" },
+            { "key": "frontend",    "label": "프론트엔드",      "type": "text" },
+            { "key": "database",    "label": "데이터베이스",    "type": "text" },
+            { "key": "orm",         "label": "ORM / 마이그레이션", "type": "text" },
+            { "key": "auth",        "label": "인증",            "type": "text" },
+            { "key": "office",      "label": "문서 출력",       "type": "text" },
+            { "key": "editor",      "label": "에디터 / 위젯",   "type": "text" },
+            { "key": "container",   "label": "배포 컨테이너",   "type": "text" },
+            { "key": "api_pattern", "label": "API 응답 규약",   "type": "text" }
+          ],
+          "backend":     "FastAPI 0.115 + Uvicorn 0.32 + Python 3.12",
+          "frontend":    "React 18 + Vite 5 (TipTap 에디터, recharts, plotly)",
+          "database":    "PostgreSQL 16 (운영 :5433 / 개발 :5432)",
+          "orm":         "SQLAlchemy 2.0 + Alembic (setup_and_upgrade_db.py 1줄 운영)",
+          "auth":        "JWT (python-jose) + bcrypt 4.0.1 (passlib 호환 고정)",
+          "office":      "python-docx, python-pptx, openpyxl (Word/PPT/Excel 출력)",
+          "editor":      "TipTap 기반 본문 + 35종 위젯 (표·차트·관계도·플로우 등)",
+          "container":   "apptainer 1.x SIF 단일 이미지 (Ubuntu 24.04 베이스)",
+          "api_pattern": "{ success, data, message, errors } envelope (shared/responses.py · shared/api/client.js)"
+        },
+        "h2_layers": { "text": "3계층 시스템 구조" },
+        "tree_layers": {
+          "rows": [
+            { "label": "ReportArchive" },
+            { "label": "개인 작업공간 (personal)", "parent": "ReportArchive", "subtitle": "모든 보고서가 태어나는 곳" },
+            { "label": "초안 / 메모 / 시험 작성",   "parent": "개인 작업공간 (personal)" },
+            { "label": "폴더 정리 (진행 중 / 종결 / 보관)", "parent": "개인 작업공간 (personal)" },
+            { "label": "조직 워크스페이스 (org)",   "parent": "ReportArchive", "subtitle": "팀 · 본부 트리" },
+            { "label": "조직 게시판 (Report Mount)", "parent": "조직 워크스페이스 (org)", "subtitle": "개인 보고서를 live link로 노출" },
+            { "label": "종합보고 (CompositeReport)", "parent": "조직 워크스페이스 (org)", "subtitle": "정기 / 주제별" },
+            { "label": "멤버 · 설정",               "parent": "조직 워크스페이스 (org)" },
+            { "label": "공통 메뉴",                 "parent": "ReportArchive", "subtitle": "모든 부서에서 공유" },
+            { "label": "내 공간",       "parent": "공통 메뉴" },
+            { "label": "알림 인박스",   "parent": "공통 메뉴" },
+            { "label": "템플릿 관리",   "parent": "공통 메뉴" },
+            { "label": "VOC",          "parent": "공통 메뉴" },
+            { "label": "AI 설정",       "parent": "공통 메뉴" },
+            { "label": "시스템 관리",   "parent": "공통 메뉴", "subtitle": "시스템 관리자 전용" }
+          ],
+          "orientation": "horizontal",
+          "node_shape": "rect",
+          "edge_style": "step",
+          "color_by_group": true
+        },
+        "rt_layers": { "markdown": "- **개인 작업공간** (`Workspace.kind = personal`) : 가입 시 자동 생성. 본인만 접근. 모든 Report는 여기서 태어난다.\n- **조직 워크스페이스** (`Workspace.kind = org`) : 팀·본부 위계 트리. 개인 보고서를 `ReportMount` 로 게시한 view.\n- **종합보고** (`CompositeReport`, `kind = recurring | theme`) : 게시된 개별 보고서를 item으로 묶은 별도 산출물. 종합보고가 다른 종합보고의 item이 될 수도 있다 (위계적 roll-up)." }
+      },
+      "layout_overrides": null,
+      "props_overrides": null,
+      "blocks_order": [],
+      "block_sections": {
+        "rt_intro": "background",
+        "bl_purpose": "purpose",
+        "kv_stack": "current_state",
+        "tree_layers": "scope",
+        "rt_layers": "scope"
+      }
+    },
+    {
+      "template_id": "1da9d132-fe8d-4139-9176-4184be86c011",
+      "template_version": 2,
+      "name": "2. 보고서 워크플로",
+      "extra_blocks": [
+        { "id": "h1_flow", "type": "heading", "props": { "level": 1, "default_text": "보고서 작성 · 게시 · 종합 워크플로" } },
+        { "id": "rt_flow_intro", "type": "rich_text", "props": {} },
+        { "id": "h2_flow", "type": "heading", "props": { "level": 2, "default_text": "엔지니어 → 임원 까지의 흐름" } },
+        { "id": "fc_flow", "type": "flowchart", "props": { "label": "조직 보고 워크플로", "orientation": "vertical" } },
+        { "id": "h2_rel", "type": "heading", "props": { "level": 2, "default_text": "보고서 관계 3종 비교" } },
+        { "id": "cmp_rel", "type": "comparison", "props": {
+            "label": "Mount / Fork / Composite 비교",
+            "cases": [
+              { "key": "mount",     "label": "게시 (Mount)" },
+              { "key": "fork",      "label": "참조 복제 (Fork)" },
+              { "key": "composite", "label": "종합 포함 (Composite Item)" }
+            ]
+          } },
+        { "id": "h2_steps", "type": "heading", "props": { "level": 2, "default_text": "보고서 한 건의 라이프사이클" } },
+        { "id": "bl_steps", "type": "bulleted_list", "props": { "label": "실제 사용 순서" } }
+      ],
+      "content": {
+        "h1_flow": { "text": "보고서 작성 · 게시 · 종합 워크플로" },
+        "rt_flow_intro": { "markdown": "엔지니어가 작성한 개별 분석 보고서가 팀 주간업무보고에 묶이고, 다시 본부 종합보고로 roll-up 되는 위계적 보고 흐름을 그대로 시스템화한다. 보고서는 항상 개인 공간에서 태어나고, 게시(Mount)를 거쳐 조직 시야에 등장한다." },
+        "h2_flow": { "text": "엔지니어 → 임원 까지의 흐름" },
+        "fc_flow": { "items": [
+          { "label": "엔지니어 — 개인 공간 작성", "description": "초안/메모/시험까지 모두 personal workspace에서" },
+          { "label": "조직 게시판에 게시 (Mount)", "description": "여러 게시판 동시 게시 가능, live link (별도 사본 아님)" },
+          { "label": "보직장 검토 · 인라인 의견", "description": "ancestor walk 기반 자동 편집권" },
+          { "label": "팀 주간업무보고 취합 (Composite recurring)", "description": "게시된 N개 보고서를 item으로 묶음 + 본인 요약" },
+          { "label": "본부 종합보고로 roll-up", "description": "Composite of composites — 팀별 주간보고를 다시 item으로" },
+          { "label": "임원 — 이전 회차 대비 변동 확인", "description": "지속 진행 보고서 추적" }
+        ] },
+        "h2_rel": { "text": "보고서 관계 3종 비교" },
+        "cmp_rel": { "rows": [
+          { "key": "direction", "label": "방향",          "kind": "text", "values": {
+              "mount":     "개인 → 조직 게시판",
+              "fork":      "다른 팀 게시판 → 내 공간",
+              "composite": "조직 게시판 → 종합보고"
+          } },
+          { "key": "copy",      "label": "사본 여부",      "kind": "text", "values": {
+              "mount":     "사본 아님 — live link, 원본 수정 시 즉시 반영",
+              "fork":      "스냅샷 — 새 Report, 출처 라벨만 유지",
+              "composite": "kind별 분기 — recurring=발행 시 freeze / theme=항상 live"
+          } },
+          { "key": "edit",      "label": "편집 권한",     "kind": "text", "values": {
+              "mount":     "원본 작성자 + 보직장 (mount.edit_policy 별 조정)",
+              "fork":      "내 사본은 완전히 내 것 (자유 편집)",
+              "composite": "종합보고 자체는 lead, item은 원본 정책 그대로"
+          } },
+          { "key": "model",     "label": "데이터 모델",   "kind": "text", "values": {
+              "mount":     "ReportMount(report_id, workspace_slug, edit_policy, mounted_by, note)",
+              "fork":      "Report.forked_from_report_id + forked_at_revision",
+              "composite": "CompositeReportItem(composite_id, ref_report_id|ref_composite_id, snapshot_content, snapshot_taken_at)"
+          } },
+          { "key": "status",    "label": "구현 상태",     "kind": "text", "values": {
+              "mount":     "Phase 1 완료",
+              "fork":      "Phase 8 예정 (권한 체계 정비 후)",
+              "composite": "기존 모델 존재, UI 정비 Phase 5"
+          } }
+        ] },
+        "h2_steps": { "text": "보고서 한 건의 라이프사이클" },
+        "bl_steps": { "items": [
+          "내 공간에서 [+ 새 보고서] → 템플릿 / 빈 보고서 / AI 생성 중 선택.",
+          "위젯을 조합해 본문 작성 (heading · rich_text · table · chart · raci_matrix 등 자유롭게).",
+          "보고서를 저장하면 자동으로 개인 공간 폴더에 들어감 (기본: 진행 중).",
+          "[게시] 다이얼로그에서 게시할 조직 게시판 선택 + 게시판별 edit_policy 지정.",
+          "게시판에서 보직장/동료가 코멘트 또는 직접 편집 (정책에 따라).",
+          "팀 주간 종합보고에 item으로 묶임 → 본부 종합보고로 roll-up.",
+          "민감 보고서는 [작성자 수정 잠금]을 켜 외부 제출 직전 변동 차단."
+        ] }
+      },
+      "layout_overrides": null,
+      "props_overrides": null,
+      "blocks_order": [],
+      "block_sections": {
+        "rt_flow_intro": "background",
+        "fc_flow": "current_state",
+        "cmp_rel": "analysis",
+        "bl_steps": "action_item"
+      }
+    },
+    {
+      "template_id": "1da9d132-fe8d-4139-9176-4184be86c011",
+      "template_version": 2,
+      "name": "3. 위젯 카탈로그",
+      "extra_blocks": [
+        { "id": "h1_widgets", "type": "heading", "props": { "level": 1, "default_text": "위젯 카탈로그" } },
+        { "id": "rt_widgets_intro", "type": "rich_text", "props": {} },
+        { "id": "tbl_widgets", "type": "table", "props": {
+            "label": "사용 가능한 위젯 (총 35종)",
+            "columns": [
+              { "key": "category", "label": "카테고리", "type": "text" },
+              { "key": "widget",   "label": "위젯",     "type": "text" },
+              { "key": "purpose",  "label": "용도",     "type": "text" }
+            ]
+          } },
+        { "id": "h2_widget_tips", "type": "heading", "props": { "level": 2, "default_text": "혼동하기 쉬운 위젯 쌍" } },
+        { "id": "bl_widget_tips", "type": "bulleted_list", "props": { "label": "선택 가이드" } }
+      ],
+      "content": {
+        "h1_widgets": { "text": "위젯 카탈로그" },
+        "rt_widgets_intro": { "markdown": "보고서 본문은 **위젯 블록의 조합**으로 구성된다. 템플릿이 기본 블록을 제공하고, 작성자는 자유롭게 `extra_blocks` 를 추가한다. 각 위젯은 `props`(스키마/표시 옵션) 와 `content`(실제 데이터) 가 분리되어 있어, 템플릿이 열을 정의하고 보고서마다 행을 채우는 방식이 가능하다." },
+        "tbl_widgets": { "rows": [
+          { "category": "텍스트", "widget": "heading",       "purpose": "섹션 제목 (level 1·2·3)" },
+          { "category": "텍스트", "widget": "rich_text",     "purpose": "마크다운 자유 서술 (depth_styles 로 글머리 depth별 스타일)" },
+          { "category": "텍스트", "widget": "bulleted_list", "purpose": "한 줄 항목 리스트 (문자열 배열)" },
+          { "category": "텍스트", "widget": "key_value",     "purpose": "자유 정의 키-값 카드 (메모·사양표·메타정보)" },
+          { "category": "텍스트", "widget": "equation",      "purpose": "LaTeX 수식 (KaTeX)" },
+          { "category": "표",     "widget": "table",         "purpose": "공통 컬럼 + 행 입력 정형 표" },
+          { "category": "표",     "widget": "comparison",    "purpose": "AS-IS / TO-BE / 다중 CASE 비교 표" },
+          { "category": "표",     "widget": "raci_matrix",   "purpose": "역할 × 작업 책임 분담 (R/A/C/I)" },
+          { "category": "차트",   "widget": "chart",         "purpose": "막대 / 선 — 범주형 x축" },
+          { "category": "차트",   "widget": "scatter",       "purpose": "산점도 / 곡선 (x·y 모두 수치)" },
+          { "category": "차트",   "widget": "scatter3d",     "purpose": "3D 산점도 / 응답면 (Plotly)" },
+          { "category": "차트",   "widget": "heatmap",       "purpose": "2D 매트릭스 색상 히트맵" },
+          { "category": "차트",   "widget": "contour",       "purpose": "등고선 (matrix · rows 두 모드)" },
+          { "category": "차트",   "widget": "pie",           "purpose": "파이 / 도넛 (단일 계층 비중)" },
+          { "category": "차트",   "widget": "waffle",        "purpose": "격자 100칸 비중 (파이 대안)" },
+          { "category": "차트",   "widget": "box",           "purpose": "박스플롯 — 그룹별 분포 (rows: long-form)" },
+          { "category": "차트",   "widget": "density",       "purpose": "1D KDE 곡선 — 그룹별 분포 (groups: raw array)" },
+          { "category": "차트",   "widget": "radar",         "purpose": "다축 폴라 비교 (사양·평가표)" },
+          { "category": "계층",   "widget": "treemap",       "purpose": "계층 면적 차트 (BoM·비용 분해)" },
+          { "category": "계층",   "widget": "packing",       "purpose": "원·원 패킹 (treemap 의 원형 대안)" },
+          { "category": "계층",   "widget": "tree",          "purpose": "조직도·결정 트리 (노드·엣지)" },
+          { "category": "계층",   "widget": "mind_map",      "purpose": "방사형 / 좌우 분기 마인드맵" },
+          { "category": "관계",   "widget": "network",       "purpose": "노드·엣지 일반 그래프 (force/circular/radial)" },
+          { "category": "관계",   "widget": "sankey",        "purpose": "흐름 두께 다이어그램 (자금 / funnel / 에너지)" },
+          { "category": "관계",   "widget": "quadrant",      "purpose": "2x2 매트릭스 (SWOT · BCG · Eisenhower · Risk)" },
+          { "category": "진행",   "widget": "milestone",     "purpose": "타임라인 마커 (pending / done / delayed)" },
+          { "category": "진행",   "widget": "flowchart",     "purpose": "순차 플로우 (가로 / 세로)" },
+          { "category": "진행",   "widget": "progress_bar",  "purpose": "여러 작업 진척도 한 번에 (자동 색상 매핑)" },
+          { "category": "미디어", "widget": "image",         "purpose": "이미지 1장 또는 갤러리" },
+          { "category": "미디어", "widget": "attachment",    "purpose": "PDF / 스프레드시트 등 다운로드 카드" },
+          { "category": "미디어", "widget": "video",         "purpose": "mp4 / webm 동영상 재생" },
+          { "category": "미디어", "widget": "cad_3d",        "purpose": "3D CAD 모델 뷰어 (GLB/GLTF/STL/OBJ)" },
+          { "category": "미디어", "widget": "html_embed",    "purpose": "업로드 HTML 파일 sandbox iframe 렌더" }
+        ] },
+        "h2_widget_tips": { "text": "혼동하기 쉬운 위젯 쌍" },
+        "bl_widget_tips": { "items": [
+          "box vs density — box 는 rows: [{group, value}] (long-form 관측값), density 는 groups: [{name, values: []}] (raw array). 키 절대 섞지 말 것.",
+          "chart vs scatter — chart 는 x축이 카테고리(text/date), scatter 는 x·y 모두 number. x 가 수치면 scatter.",
+          "tree / mind_map vs flowchart — 앞의 둘은 rows: [{label, parent}] (계층), flowchart 는 items: [{label}] (순차, parent 없음).",
+          "table vs comparison vs raci_matrix — table 행 키 = columns.key, comparison 행 values 키 = cases.key, raci_matrix 행 assignments 값 = R/A/C/I.",
+          "treemap vs packing — content 모양 완전 동일, 시각만 사각 / 원형 차이.",
+          "key_value vs table — key_value 는 보고서마다 항목 다른 자유 카드, table 은 모든 보고서가 공유하는 정형 표."
+        ] }
+      },
+      "layout_overrides": null,
+      "props_overrides": null,
+      "blocks_order": [],
+      "block_sections": {
+        "rt_widgets_intro": "scope",
+        "tbl_widgets": "reference",
+        "bl_widget_tips": "recommendation"
+      }
+    },
+    {
+      "template_id": "1da9d132-fe8d-4139-9176-4184be86c011",
+      "template_version": 2,
+      "name": "4. 권한 모델",
+      "extra_blocks": [
+        { "id": "h1_perm", "type": "heading", "props": { "level": 1, "default_text": "권한 · 역할 모델" } },
+        { "id": "rt_perm_intro", "type": "rich_text", "props": {} },
+        { "id": "h2_can_edit", "type": "heading", "props": { "level": 2, "default_text": "can_edit() 판정 순서" } },
+        { "id": "fc_can_edit", "type": "flowchart", "props": { "label": "편집 권한 판정", "orientation": "vertical" } },
+        { "id": "h2_raci", "type": "heading", "props": { "level": 2, "default_text": "역할 × 작업 매트릭스" } },
+        { "id": "raci_perm", "type": "raci_matrix", "props": { "label": "ReportArchive 표준 RACI" } },
+        { "id": "h2_mount_policy", "type": "heading", "props": { "level": 2, "default_text": "Mount 별 편집 정책 (per-mount)" } },
+        { "id": "bl_mount_policy", "type": "bulleted_list", "props": { "label": "ReportMount.edit_policy" } },
+        { "id": "h2_lock", "type": "heading", "props": { "level": 2, "default_text": "작성자 수정 잠금 (Hard Lock)" } },
+        { "id": "rt_lock", "type": "rich_text", "props": {} }
+      ],
+      "content": {
+        "h1_perm": { "text": "권한 · 역할 모델" },
+        "rt_perm_intro": { "markdown": "**소유권(owner)** 과 **편집권(edit right)** 은 별개. 보직장이 손봐도 소유권은 작성자에게 유지된다. 편집권은 단일 진입점 함수 `can_edit(db, user, report) -> EditDecision` 으로만 판정한다 (PATCH /reports/{id}, 향후 composite inline 편집 등 모든 편집 시점에서 호출)." },
+        "h2_can_edit": { "text": "can_edit() 판정 순서" },
+        "fc_can_edit": { "items": [
+          { "label": "0. 시스템 관리자 우회",        "description": "is_system_admin → 항상 허용 (lock 도 무시)" },
+          { "label": "1. Hard lock 체크",             "description": "author_lock_enabled & user ≠ owner → 거부 (sys admin 제외)" },
+          { "label": "2. 작성자(owner) 본인",         "description": "owner_user_id 일치 → 허용 (role=owner)" },
+          { "label": "3. 명시 추가 편집자",            "description": "is_listed_editor → 허용 (role=editor)" },
+          { "label": "4. Mount 별 walk",               "description": "각 mount.edit_policy 에 따라: lead(ancestor) / coauthor(ancestor 포함 멤버)" },
+          { "label": "5. 모두 실패 → 거부",            "description": "role=none, allowed=false" }
+        ] },
+        "h2_raci": { "text": "역할 × 작업 매트릭스" },
+        "raci_perm": {
+          "roles": [
+            { "key": "owner",    "label": "작성자",       "group": "보고서 권한" },
+            { "key": "editor",   "label": "추가 편집자",  "group": "보고서 권한" },
+            { "key": "lead",     "label": "보직장",       "group": "조직 권한" },
+            { "key": "member",   "label": "부서 멤버",    "group": "조직 권한" },
+            { "key": "sysadmin", "label": "시스템 관리자","group": "운영" }
+          ],
+          "rows": [
+            { "label": "보고서 본문 작성 / 저장",       "assignments": { "owner": "R/A", "editor": "R",   "lead": "R",   "member": "I",   "sysadmin": "R" } },
+            { "label": "조직 게시판에 게시 (Mount)",    "assignments": { "owner": "R/A", "editor": "C",   "lead": "C",   "member": "I",   "sysadmin": "R" } },
+            { "label": "코멘트 작성 / 의견 제시",        "assignments": { "owner": "A",   "editor": "R",   "lead": "R",   "member": "R",   "sysadmin": "R" } },
+            { "label": "작성자 수정 잠금 ON/OFF",        "assignments": { "owner": "R/A", "editor": "I",   "lead": "I",   "member": "I",   "sysadmin": "I" } },
+            { "label": "잠금 강제 해제 (작성자 부재)",   "assignments": { "owner": "C",   "editor": "I",   "lead": "I",   "member": "I",   "sysadmin": "R/A" } },
+            { "label": "종합보고 작성 / item 묶기",      "assignments": { "owner": "C",   "editor": "I",   "lead": "R/A", "member": "I",   "sysadmin": "R" } },
+            { "label": "워크스페이스 멤버 관리",          "assignments": { "owner": "I",   "editor": "I",   "lead": "R/A", "member": "I",   "sysadmin": "R" } },
+            { "label": "템플릿 / 위젯 / 시스템 설정",    "assignments": { "owner": "I",   "editor": "I",   "lead": "C",   "member": "I",   "sysadmin": "R/A" } }
+          ]
+        },
+        "h2_mount_policy": { "text": "Mount 별 편집 정책 (per-mount)" },
+        "bl_mount_policy": { "items": [
+          "default — 작성자 + 보직장 편집 (가장 일반적, 한국 조직 문화 기본값).",
+          "owner_only — 작성자만 편집 (보직장도 차단). 외부 제출 직전이나 인사평가 보고서.",
+          "coauthor — 게시판 멤버 전원 편집 가능 (ancestor 포함). 공동 작성 프로젝트.",
+          "같은 보고서라도 mount 된 게시판마다 다르게 설정 가능 — \"팀1엔 공동 작성, 본부엔 본인만\" 같은 케이스 지원.",
+          "게시 다이얼로그에서 게시판별 dropdown 으로 선택."
+        ] },
+        "h2_lock": { "text": "작성자 수정 잠금 (Hard Lock)" },
+        "rt_lock": { "markdown": "민감한 보고서(외부 제출, 인사평가)용 최상위 veto.\n\n- 락 ON → **작성자 외 모든 편집 차단** (보직장 · 추가편집자 · coauthor 모두).\n- 해제는 **작성자 본인**. 부재 시 **시스템 관리자만 강제 해제** 가능 (액션 로그 영구 기록).\n- 락 ON 시 게시된 모든 게시판의 lead 에게 알림 발송 (보직장이 황당하지 않도록).\n- 헤더 표시 예: *\"박과장이 수정 잠금 (사유: 외부 제출 준비) — 작성자 외 편집 불가\"*\n- 모델: `Report.author_lock_enabled`, `author_lock_reason`, `author_lock_set_at`." }
+      },
+      "layout_overrides": null,
+      "props_overrides": null,
+      "blocks_order": [],
+      "block_sections": {
+        "rt_perm_intro": "background",
+        "fc_can_edit": "analysis",
+        "raci_perm": "stakeholders",
+        "bl_mount_policy": "decision",
+        "rt_lock": "constraint"
+      }
+    },
+    {
+      "template_id": "1da9d132-fe8d-4139-9176-4184be86c011",
+      "template_version": 2,
+      "name": "5. 배포 · 실행 · 향후 계획",
+      "extra_blocks": [
+        { "id": "h1_deploy", "type": "heading", "props": { "level": 1, "default_text": "배포 구조 · 실행 방법" } },
+        { "id": "rt_deploy_intro", "type": "rich_text", "props": {} },
+        { "id": "h2_endpoints", "type": "heading", "props": { "level": 2, "default_text": "포트 · 엔드포인트" } },
+        { "id": "kv_endpoints", "type": "key_value", "props": { "label": "주요 포트 / 경로" } },
+        { "id": "h2_modes", "type": "heading", "props": { "level": 2, "default_text": "배포 시나리오 비교" } },
+        { "id": "cmp_modes", "type": "comparison", "props": {
+            "label": "독립 배포 vs 결합 배포",
+            "cases": [
+              { "key": "split",    "label": "A. 독립 (서로 다른 서버)" },
+              { "key": "combined", "label": "B. 결합 (한 서버, 백엔드가 dist 서빙)" }
+            ]
+          } },
+        { "id": "h2_steps_deploy", "type": "heading", "props": { "level": 2, "default_text": "초기 셋업 순서" } },
+        { "id": "fc_deploy", "type": "flowchart", "props": { "label": "최초 실행", "orientation": "vertical" } },
+        { "id": "h2_progress", "type": "heading", "props": { "level": 2, "default_text": "협업 개선 도입 진행도" } },
+        { "id": "pb_progress", "type": "progress_bar", "props": { "label": "Phase 별 진척", "default_max": 100, "unit": "%" } },
+        { "id": "h2_quick", "type": "heading", "props": { "level": 2, "default_text": "새 기능 모듈 추가하기" } },
+        { "id": "tbl_quick", "type": "table", "props": {
+            "label": "백엔드 / 프론트엔드 모듈 스캐폴드",
+            "columns": [
+              { "key": "side",   "label": "쪽",        "type": "text" },
+              { "key": "path",   "label": "경로",      "type": "text" },
+              { "key": "files",  "label": "기본 파일", "type": "text" },
+              { "key": "wire",   "label": "등록 위치", "type": "text" }
+            ]
+          } }
+      ],
+      "content": {
+        "h1_deploy": { "text": "배포 구조 · 실행 방법" },
+        "rt_deploy_intro": { "markdown": "운영 환경은 **apptainer SIF 단일 이미지** 안에 백엔드(FastAPI + venv) 와 프론트엔드 빌드 산출물(`frontend/dist`) 을 함께 박아 둔다. 호스트에는 **apptainer 1.x + PostgreSQL** 만 깔려 있으면 된다. Node.js / npm 은 운영 서버에 불필요 (빌드 타임 의존성)." },
+        "h2_endpoints": { "text": "포트 · 엔드포인트" },
+        "kv_endpoints": {
+          "items": [
+            { "key": "backend_port",  "label": "백엔드 (uvicorn)",   "type": "text" },
+            { "key": "frontend_port", "label": "프론트엔드 (개발)",  "type": "text" },
+            { "key": "db_port",       "label": "PostgreSQL",          "type": "text" },
+            { "key": "api_root",      "label": "API 루트",           "type": "text" },
+            { "key": "health",        "label": "헬스 체크",          "type": "text" },
+            { "key": "docs",          "label": "API 문서 (Swagger)", "type": "text" },
+            { "key": "spa_fallback",  "label": "SPA 폴백",            "type": "text" },
+            { "key": "uploads_dir",   "label": "업로드 (bind mount)", "type": "text" }
+          ],
+          "backend_port":  "3000",
+          "frontend_port": "3001 (Vite — /api/* 는 :3000 으로 프록시)",
+          "db_port":       "5433 (운영, 비표준) · 5432 (개발 기본)",
+          "api_root":      "/api",
+          "health":        "/api/health",
+          "docs":          "/api/docs",
+          "spa_fallback":  "결합 배포 시 /api/* 외 모든 경로 → index.html",
+          "uploads_dir":   "uploads/ · logs/ · .env (ro) 가 컨테이너에 bind"
+        },
+        "h2_modes": { "text": "배포 시나리오 비교" },
+        "cmp_modes": { "rows": [
+          { "key": "host",        "label": "호스트 구성",     "kind": "text", "values": {
+              "split":    "백엔드 서버 + 프론트엔드 서버 (CDN/nginx)",
+              "combined": "단일 호스트 (백엔드가 dist 까지 서빙)"
+          } },
+          { "key": "cors",        "label": "CORS",            "kind": "text", "values": {
+              "split":    "CORS_ORIGINS=https://app.example.com",
+              "combined": "동일 origin → CORS 불필요"
+          } },
+          { "key": "api_base",    "label": "프론트 API base", "kind": "text", "values": {
+              "split":    "VITE_API_BASE_URL=https://api.example.com",
+              "combined": "비워둠 → 상대 경로 /api/*"
+          } },
+          { "key": "serve_dist",  "label": "백엔드 .env",     "kind": "text", "values": {
+              "split":    "SERVE_FRONTEND_DIST= (빈 값)",
+              "combined": "SERVE_FRONTEND_DIST=../frontend/dist"
+          } },
+          { "key": "best_for",    "label": "추천 상황",       "kind": "text", "values": {
+              "split":    "프론트를 CDN 으로 캐싱 / 인프라 분리 / 멀티 프론트",
+              "combined": "사내 단일 서버 / 운영 단순화 / 기본 권장"
+          } }
+        ] },
+        "h2_steps_deploy": { "text": "초기 셋업 순서" },
+        "fc_deploy": { "items": [
+          { "label": "PostgreSQL 인스턴스 준비",              "description": "DATABASE_URL 가 가리키는 계정으로 접속만 가능하면 OK" },
+          { "label": "백엔드 venv 셋업",                       "description": "setup_venv.bat / setup_venv.sh 실행" },
+          { "label": "DB 생성 + 스키마 적용",                  "description": "python scripts/setup_and_upgrade_db.py (idempotent — 운영 매번 실행 OK)" },
+          { "label": "프론트엔드 빌드",                         "description": "cd frontend && npm install && npm run build" },
+          { "label": "apptainer SIF 빌드",                     "description": "deploy/apptainer.def → app.sif" },
+          { "label": "운영 서버 systemd 기동",                  "description": "APP_ENV=production · UVICORN_WORKERS=4" }
+        ] },
+        "h2_progress": { "text": "협업 개선 도입 진행도" },
+        "pb_progress": { "items": [
+          { "label": "Phase 0/1 — 작성자 owner check · 게시(Mount)",                  "value": 100 },
+          { "label": "Phase 1.7 — 시스템 관리자 분리",                                  "value": 100 },
+          { "label": "Phase 2 — 작성자 hard lock",                                       "value": 100 },
+          { "label": "Phase 3 — can_edit() 풀 함수 (4가지 의사결정 확정 2026-05-25)", "value": 70, "note": "검증 스크립트로 via_workspace_slug 버그 수정" },
+          { "label": "Phase 4 — 내 공간 hub (mount 매트릭스 · 받은 코멘트)",            "value": 30 },
+          { "label": "Phase 5 — 종합보고 탭 분리",                                       "value": 20 },
+          { "label": "Phase 8 — 참조 복제 (Fork)",                                        "value": 0,  "note": "권한 체계 정비 후 도입" }
+        ] },
+        "h2_quick": { "text": "새 기능 모듈 추가하기" },
+        "tbl_quick": { "rows": [
+          { "side": "백엔드",     "path": "app/modules/<your_module>/",  "files": "__init__.py · routes.py · schemas.py · services.py · models.py", "wire": "app/modules/__init__.py 에서 include_router(...)" },
+          { "side": "프론트엔드", "path": "src/modules/<your-module>/",  "files": "api.js · <YourModule>Page.jsx",                                    "wire": "src/App.jsx 에 라우트 추가" }
+        ] }
+      },
+      "layout_overrides": null,
+      "props_overrides": null,
+      "blocks_order": [],
+      "block_sections": {
+        "rt_deploy_intro": "current_state",
+        "kv_endpoints": "reference",
+        "cmp_modes": "alternatives",
+        "fc_deploy": "action_item",
+        "pb_progress": "schedule",
+        "tbl_quick": "reference"
+      }
+    }
+  ]
+}

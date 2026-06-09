@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ReportArchive — 시스템 구조 한 장 요약 (PPT용)</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #e5e7eb;
+      color: #111827;
+      font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+        "Pretendard", "Noto Sans KR", "Segoe UI", Roboto, sans-serif;
+      line-height: 1.4;
+    }
+    .page-wrap {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+    }
+    .hint {
+      font-size: 13px;
+      color: #475569;
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      padding: 8px 14px;
+      border-radius: 8px;
+      max-width: 1280px;
+    }
+    .hint b { color: #1d4ed8; }
+
+    /* 16:9 슬라이드 — PPT 와이드 비율 그대로 */
+    .slide {
+      width: 1280px;
+      height: 720px;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+      padding: 28px 36px;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 14px;
+      overflow: hidden;
+    }
+    .slide header h1 {
+      margin: 0;
+      font-size: 24px;
+      letter-spacing: -0.01em;
+    }
+    .slide header p {
+      margin: 4px 0 0;
+      font-size: 13px;
+      color: #475569;
+    }
+    .slide .diagram {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .slide .diagram .mermaid {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .slide .diagram svg {
+      width: 100% !important;
+      height: 100% !important;
+      max-width: none !important;
+      max-height: none !important;
+    }
+    .slide footer.legend {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      font-size: 12px;
+      color: #475569;
+      border-top: 1px solid #e2e8f0;
+      padding-top: 8px;
+    }
+    .slide footer.legend .keys {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+    }
+    .slide footer.legend .key {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .slide footer.legend .swatch {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      border: 1.5px solid;
+    }
+    .sw-fe { background: #dbeafe; border-color: #1d4ed8; }
+    .sw-be { background: #fef3c7; border-color: #b45309; }
+    .sw-db { background: #d1fae5; border-color: #065f46; }
+    .slide footer.legend .meta {
+      color: #94a3b8;
+      font-size: 11px;
+    }
+
+    @media print {
+      body { background: #ffffff; }
+      .page-wrap { padding: 0; }
+      .hint { display: none; }
+      .slide { border: none; box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page-wrap">
+    <div class="hint">
+      <b>PPT 한 페이지에 넣는 법:</b> 이 슬라이드 박스 위에서 우클릭 → "이미지 저장(SVG)"
+      또는 화면 캡쳐(Win+Shift+S). 슬라이드 박스 자체가 정확히 1280×720 (16:9) 라서 PPT
+      와이드 슬라이드에 그대로 들어감.
+    </div>
+
+    <div class="slide">
+      <header>
+        <h1>ReportArchive — 시스템 구조</h1>
+        <p>화면(Frontend) → API(Backend) → 테이블(DB) 의 흐름. 비슷한 모듈은 하나로 묶음.</p>
+      </header>
+
+      <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+  classDef fe fill:#dbeafe,stroke:#1d4ed8,color:#0f172a,stroke-width:1.5px
+  classDef be fill:#fef3c7,stroke:#b45309,color:#0f172a,stroke-width:1.5px
+  classDef db fill:#d1fae5,stroke:#065f46,color:#0f172a,stroke-width:1.5px
+
+  subgraph FE["🖥️ Frontend (React)"]
+    direction TB
+    F1["인증·프로필<br/><i>auth · profile</i>"]:::fe
+    F2["부서 홈·멤버·대시보드<br/><i>workspace · members · dashboard</i>"]:::fe
+    F3["보고서 작성/편집<br/><i>reports List · New · Detail</i>"]:::fe
+    F4["종합보고<br/><i>composites</i>"]:::fe
+    F5["템플릿 편집<br/><i>templates</i>"]:::fe
+    F6["협업 인박스·알림<br/><i>inbox · notifications</i>"]:::fe
+    F7["관리·부속<br/><i>admin · ai_settings · voc · entities</i>"]:::fe
+  end
+
+  subgraph BE["⚙️ Backend API (FastAPI)"]
+    direction TB
+    B1["인증·사용자<br/><i>auth + users</i>"]:::be
+    B2["워크스페이스·멤버<br/><i>workspaces + members</i>"]:::be
+    B3["보고서 코어<br/><i>reports + report_types<br/>+ folders + mounts</i>"]:::be
+    B4["콘텐츠·연결<br/><i>widgets + widget_relations<br/>+ entities + files</i>"]:::be
+    B5["템플릿·분류<br/><i>templates + categories<br/>+ section_taxonomy</i>"]:::be
+    B6["종합보고<br/><i>composites</i>"]:::be
+    B7["협업·이벤트<br/><i>comments + editors<br/>+ activities + notifications</i>"]:::be
+    B8["AI·VOC·관리<br/><i>prompts + voc + admin</i>"]:::be
+  end
+
+  subgraph DB["🗄️ PostgreSQL"]
+    direction TB
+    D1[("사용자·워크스페이스<br/><i>users · workspaces<br/>workspace_members</i>")]:::db
+    D2[("보고서<br/><i>reports · report_edit_locks<br/>report_types · folders<br/>report_mounts</i>")]:::db
+    D3[("콘텐츠<br/><i>widget_relations · files<br/>entities · entity_types<br/>report_entities</i>")]:::db
+    D4[("템플릿<br/><i>templates · template_categories<br/>section_categories · section_items</i>")]:::db
+    D5[("종합보고<br/><i>composite_reports<br/>composite_report_items</i>")]:::db
+    D6[("협업<br/><i>comment_threads · comments<br/>report_editors · report_activities<br/>notifications</i>")]:::db
+    D7[("부속<br/><i>prompts · voc_posts<br/>voc_comments</i>")]:::db
+  end
+
+  F1 --> B1
+  F2 --> B2
+  F3 --> B3
+  F3 --> B4
+  F3 --> B7
+  F4 --> B6
+  F5 --> B5
+  F6 --> B7
+  F7 --> B8
+  F7 --> B4
+
+  B1 --> D1
+  B2 --> D1
+  B3 --> D2
+  B4 --> D3
+  B5 --> D4
+  B6 --> D5
+  B6 -.->|참조| D2
+  B7 --> D6
+  B8 --> D7
+  B8 -.->|관리| D1
+</pre>
+      </div>
+
+      <footer class="legend">
+        <div class="keys">
+          <span class="key"><span class="swatch sw-fe"></span><b>FE</b> Frontend 모듈</span>
+          <span class="key"><span class="swatch sw-be"></span><b>BE</b> Backend API</span>
+          <span class="key"><span class="swatch sw-db"></span><b>DB</b> 테이블 그룹</span>
+          <span class="key">실선 = 직접 호출/소유 · 점선 = 보조 참조</span>
+        </div>
+        <div class="meta">FE 14모듈 · BE 23모듈 · DB 27테이블 → 7 · 8 · 7 그룹으로 압축</div>
+      </footer>
+    </div>
+  </div>
+
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'default',
+      securityLevel: 'loose',
+      flowchart: {
+        htmlLabels: true,
+        curve: 'basis',
+        nodeSpacing: 18,
+        rankSpacing: 80,
+        padding: 8,
+      },
+      themeVariables: {
+        fontFamily: '-apple-system, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", sans-serif',
+        fontSize: '13px',
+        clusterBkg: '#f8fafc',
+        clusterBorder: '#cbd5e1',
+      },
+    });
+  </script>
+</body>
+</html>

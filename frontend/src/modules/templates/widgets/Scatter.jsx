@@ -227,11 +227,20 @@ export function ScatterEditor({ props, content, onChange, readOnly, autoFit }) {
     }
     function onKey(e) {
       if (e.key === 'Escape') {
+        // 라벨/데이터 입력 중 Esc 는 입력이 처리하도록 양보.
+        if (editable()) return
+        // 주석 도구/선택 활성 시 Esc 는 그것만 취소하고 이벤트를 *소비*한다 —
+        // 안 그러면 위젯 편집 모달(Radix Dialog)이 같이 닫힌다. capture 단계라
+        // 모달의 Esc 핸들러보다 먼저 잡아 stopPropagation 으로 막는다.
         if (annotationTool) {
           e.preventDefault()
+          e.stopPropagation()
+          e.stopImmediatePropagation?.()
           setAnnotationTool(null)
         } else if (annotationStore.selectedIds.size > 0) {
           e.preventDefault()
+          e.stopPropagation()
+          e.stopImmediatePropagation?.()
           annotationStore.clearSelection()
         }
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -252,8 +261,9 @@ export function ScatterEditor({ props, content, onChange, readOnly, autoFit }) {
         annotationStore.history.redo()
       }
     }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
+    // capture 단계 — 모달(Radix Dialog)의 Esc 핸들러보다 먼저 잡기 위해.
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
   }, [readOnly, annotationTool, annotationStore])
 
   // Row + column editing helpers (edit mode only)

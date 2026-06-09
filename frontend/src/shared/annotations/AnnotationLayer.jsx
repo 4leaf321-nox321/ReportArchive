@@ -270,6 +270,7 @@ const DRAWERS = {
           y={top}
           color={color}
           anchor="middle"
+          selected={selected}
           interactions={interactions}
         />
         {selected && (
@@ -321,6 +322,7 @@ const DRAWERS = {
           color={color}
           anchor="end"
           dy={-4}
+          selected={selected}
           interactions={interactions}
         />
       </g>
@@ -372,6 +374,7 @@ const DRAWERS = {
           y={bounds.y}
           color={color}
           anchor="middle"
+          selected={selected}
           interactions={interactions}
         />
         {selected && (
@@ -425,6 +428,7 @@ const DRAWERS = {
           color={color}
           anchor="end"
           dy={4}
+          selected={selected}
           interactions={interactions}
         />
         {selected && (
@@ -476,6 +480,7 @@ const DRAWERS = {
           y={px.y - 10}
           color={color}
           anchor="middle"
+          selected={selected}
           interactions={interactions}
         />
       </g>
@@ -519,6 +524,7 @@ const DRAWERS = {
           color={color}
           anchor="start"
           dy={-4}
+          selected={selected}
           interactions={interactions}
         />
         {selected && (
@@ -658,6 +664,7 @@ const DRAWERS = {
           color={color}
           anchor="middle"
           dy={-6}
+          selected={selected}
           interactions={interactions}
         />
         {selected && (

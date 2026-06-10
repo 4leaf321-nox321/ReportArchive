@@ -50,13 +50,15 @@ function _shiftCellStylesRowSwap(styles, a, b) {
  * 동작한다. */
 export const TableViewContext = createContext(null)
 
-function useTableExpanded() {
+function useTableExpanded(initial = false) {
   const ctx = useContext(TableViewContext)
   // Provider 가 없으면 컴포넌트 내부 useState 로 폴백. Hook 호출 위치는
   // 컴포넌트 함수 본문 한 곳이라 React 의 Rules of Hooks 와 충돌 안 함.
   // (ctx 가 null/undefined 인 경우에만 useState 가 의미 있는 값을 들고
   // 가고, ctx 가 있으면 useState 의 setter 는 그냥 무시된다.)
-  const local = useState(false)
+  // initial = content.expanded — 보고서에 저장된 기본 펼침 상태로 시작하고,
+  // 독자가 토글로 일시 변경 가능(저장값은 안 바뀜).
+  const local = useState(initial)
   if (ctx) return [ctx.expanded, ctx.setExpanded]
   return local
 }
@@ -189,7 +191,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   // 눈에 보인다. BlockEditorCard 가 Provider 로 감싸서 측정용 mirror 와
   // 본체가 같은 expanded 를 공유 — 그래야 펼침 시 컨테이너 높이도 같이
   // 자란다.
-  const [expanded, setExpanded] = useTableExpanded()
+  const [expanded, setExpanded] = useTableExpanded(content?.expanded ?? false)
   // 셀간 화살표 네비게이션 — 텍스트 셀은 boundary 기준, 그 외 입력
   // (number/date/select) 은 left/right boundary 이동만 (up/down 은 native).
   const grid = useGridNavigation()
@@ -370,7 +372,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                             >
                               {hasRich ? (
                                 <span
-                                  className="[&_p]:m-0 [&_p]:inline"
+                                  className="[&_p]:m-0"
                                   dangerouslySetInnerHTML={{
                                     __html: sanitizeCaptionHtml(html),
                                   }}
@@ -1085,6 +1087,26 @@ export function TableEditor({ props, content, onChange, readOnly }) {
             +
           </button>
         </div>
+        {/* 기본 펼침 — 읽기 시 셀을 펼친 상태(Enter 줄바꿈·긴 글 모두 보임)로
+            저장. 끄면 compact(요약 + 호버 전체보기). 독자는 따로 토글 가능. */}
+        <button
+          type="button"
+          onClick={() => patch({ expanded: !content?.expanded || undefined })}
+          className={`flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] ${
+            content?.expanded
+              ? 'border-primary/40 bg-primary/10 text-foreground'
+              : 'bg-muted/40 text-muted-foreground'
+          }`}
+          title="읽기 시 셀을 펼친 상태로 저장(Enter 줄바꿈·긴 글 모두 보임). 끄면 요약(compact)."
+          data-cell-selection-allow
+        >
+          {content?.expanded ? (
+            <Maximize2 className="h-3 w-3" />
+          ) : (
+            <Minimize2 className="h-3 w-3" />
+          )}
+          기본 펼침
+        </button>
         <label
           className="flex items-center gap-1 rounded-md border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"
           title="표 전체 폭(px). 비우면 전체 폭. 좌측 정렬이라 절반 폭 등으로 만들 수 있습니다."
@@ -1572,7 +1594,9 @@ function ReadOnlyCell({ value, html, expanded, rowSpan, colSpan, cellClass = '' 
   // rich 마크업이 있으면 그걸 우선 렌더(긴 글처럼 부분 색). 없으면 평문.
   const richNode = hasRich ? (
     <span
-      className="[&_p]:m-0 [&_p]:inline"
+      // 펼침 모드면 문단을 block 으로 쌓아 Enter 줄바꿈을 보존, compact 모드는
+      // 한 줄(inline) 미리보기로 truncate.
+      className={expanded ? '[&_p]:m-0' : '[&_p]:m-0 [&_p]:inline'}
       dangerouslySetInnerHTML={{ __html: sanitizeCaptionHtml(html) }}
     />
   ) : null

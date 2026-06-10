@@ -1414,7 +1414,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                           >
                             {hasRich ? (
                               <span
-                                className="[&_p]:m-0 [&_p]:inline"
+                                className="[&_p]:m-0"
                                 dangerouslySetInnerHTML={{
                                   __html: sanitizeCaptionHtml(html),
                                 }}
@@ -2265,7 +2265,7 @@ function ReadOnlyCell({
     >
       {hasRich ? (
         <span
-          className="[&_p]:m-0 [&_p]:inline"
+          className="[&_p]:m-0"
           dangerouslySetInnerHTML={{ __html: sanitizeCaptionHtml(html) }}
         />
       ) : (

@@ -653,6 +653,9 @@ def _table_content(props: dict) -> dict:
             "cell_html": _CELL_HTML_SCHEMA,
             # 다중행·병합 헤더(선택). 없으면 columns[].label / cases[].label 1줄 헤더.
             "header": _HEADER_SCHEMA,
+            # 읽기 모드 기본 펼침 — true 면 셀이 줄바꿈으로 다 펼쳐진 채 시작
+            # (Enter 줄바꿈·긴 글 그대로). 미설정/false=compact(요약+호버).
+            "expanded": {"type": "boolean"},
         },
         "additionalProperties": False,
     }
@@ -2983,6 +2986,9 @@ def _comparison_content(props: dict) -> dict:  # noqa: ARG001
             "cell_html": _CELL_HTML_SCHEMA,
             # 다중행·병합 헤더(선택). 없으면 columns[].label / cases[].label 1줄 헤더.
             "header": _HEADER_SCHEMA,
+            # 읽기 모드 기본 펼침 — true 면 셀이 줄바꿈으로 다 펼쳐진 채 시작
+            # (Enter 줄바꿈·긴 글 그대로). 미설정/false=compact(요약+호버).
+            "expanded": {"type": "boolean"},
         },
         "additionalProperties": False,
     }

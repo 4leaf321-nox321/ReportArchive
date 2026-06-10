@@ -1304,11 +1304,10 @@ function HomeWorkspaceDialog({ target, assignableWorkspaces, onClose, onChanged 
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      {/* 고정 폭 — 콤보박스를 truncate 모드로 두므로 긴 부서 경로도 모달
-          안에서 잘려 표시(전체 경로는 트리거 tooltip·드롭다운에서 확인).
-          예전 w-fit + noTruncate 조합은 경로가 길면 트리거가 whitespace-nowrap
-          이라 줄지 못해 모달 밖으로 삐져나왔다. */}
-      <DialogContent className="sm:max-w-lg">
+      {/* 고정 폭 + 콤보박스 wrap — 깊은 부서 경로는 트리거 안에서 여러 줄로
+          줄바꿈돼(버튼 높이만 늘어남) 가로로 모달 밖을 넘지 않는다. 예전
+          w-fit + noTruncate 는 경로가 길면 nowrap 이라 모달 밖으로 삐져나왔다. */}
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>소속 부서 변경</DialogTitle>
           <DialogDescription className="break-words">
@@ -1327,6 +1326,7 @@ function HomeWorkspaceDialog({ target, assignableWorkspaces, onClose, onChanged 
               onChange={(s) => setWorkspaceSlug(s ?? '')}
               placeholder="소속 없음"
               searchPlaceholder="부서 검색"
+              wrap
             />
             <p className="text-[11px] text-muted-foreground">
               비워두면 소속 해제. 부서 멤버십 자체는 별도 — 소속 해제

@@ -49,6 +49,12 @@ export function WorkspaceCombobox({
   // size up to the combobox content rather than clipping the path.
   // Default false keeps the existing truncation behavior everywhere else.
   noTruncate = false,
+  // When true, the selected label WRAPS to multiple lines instead of
+  // truncating or expanding horizontally — the trigger button grows
+  // TALLER. Use inside fixed-width dialogs where a deep workspace path
+  // would otherwise overflow the modal horizontally (truncate hides it,
+  // noTruncate spills it out). Takes precedence over noTruncate.
+  wrap = false,
 }) {
   const [open, setOpen] = React.useState(false)
 
@@ -103,6 +109,8 @@ export function WorkspaceCombobox({
           className={cn(
             'justify-between font-normal',
             compact ? 'h-9 text-sm' : 'w-full',
+            // wrap: 버튼이 세로로 자라도록 고정 높이 해제.
+            wrap && 'h-auto min-h-9 py-1.5',
             className,
           )}
         >
@@ -118,15 +126,20 @@ export function WorkspaceCombobox({
             //     revealing the full workspace path.
             <span
               className={cn(
-                'flex items-center gap-2',
-                noTruncate ? '' : 'flex-1 min-w-0',
+                'flex gap-2',
+                wrap ? 'items-start flex-1 min-w-0' : 'items-center',
+                !wrap && !noTruncate ? 'flex-1 min-w-0' : '',
               )}
             >
-              <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <Building2 className="h-4 w-4 shrink-0 text-muted-foreground mt-0.5" />
               <span
                 className={cn(
                   'text-left',
-                  noTruncate ? 'whitespace-nowrap' : 'truncate min-w-0 flex-1',
+                  wrap
+                    ? 'whitespace-normal break-words min-w-0 flex-1'
+                    : noTruncate
+                      ? 'whitespace-nowrap'
+                      : 'truncate min-w-0 flex-1',
                 )}
               >
                 <span>{selected.name}</span>

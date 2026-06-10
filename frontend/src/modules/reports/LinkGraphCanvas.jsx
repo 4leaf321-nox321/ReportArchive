@@ -42,6 +42,7 @@ const COMPOSITE_EDGE = '#fbbf24' // amber-400 — composite_member 엣지(점선
 const CANVAS_BG = '#f8fafc' // slate-50
 const DIM_ALPHA = 0.1 // 타임바 기간 밖 노드 흐리기
 const DIM_EDGE_COLOR = 'rgba(148,163,184,0.1)' // 기간 밖 엣지(아주 옅게)
+const LINK_LABEL_BG = 'rgba(248,250,252,0.85)' // 엣지 관계 라벨 뒤 가독성 배경(슬레이트-50 반투명)
 // 스윔레인(타임라인+레인) 시각 상수 — world 단위.
 const LANE_ROW_H = 30 // 레인 안 서브행(겹침 회피용) 높이
 const LANE_GAP = 18 // 레인 사이 간격
@@ -595,6 +596,46 @@ export function LinkGraphCanvas({
     [],
   )
 
+  // 엣지 위에 관계 라벨(forward_label)을 그린다 — 보고서↔보고서 link 만
+  // (has_tag·composite_member·관련정보 엣지는 제외). 화살표 방향과 함께 읽혀
+  // source → target 의 상호 관계를 모사한다(예: '참조', '후속', '원본').
+  // hover 시엔 forward ↔ reverse 둘 다 툴팁으로 보여준다(linkLabel).
+  const paintLinkLabel = useCallback(
+    (link, ctx, globalScale) => {
+      const kindRow = byKey[link.kind]
+      if (!kindRow) return // report↔report(카탈로그 kind) 만
+      if (dimEdge(link)) return // 흐림 대상은 라벨 생략(잡음 줄임)
+      if (globalScale < 0.6) return // 너무 축소되면 생략(겹침 방지)
+      const label = kindRow.forward_label
+      if (!label) return
+      const s = link.source
+      const t = link.target
+      if (!s || !t || typeof s.x !== 'number' || typeof t.x !== 'number') return
+      const mx = (s.x + t.x) / 2
+      const my = (s.y + t.y) / 2
+      const fontSize = Math.min(11, 10 / globalScale)
+      ctx.save()
+      ctx.font = `${fontSize}px sans-serif`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      const w = ctx.measureText(label).width
+      const padX = 3 / globalScale
+      const padY = 1.5 / globalScale
+      ctx.fillStyle = LINK_LABEL_BG
+      ctx.fillRect(
+        mx - w / 2 - padX,
+        my - fontSize / 2 - padY,
+        w + padX * 2,
+        fontSize + padY * 2,
+      )
+      ctx.fillStyle = colorHex(kindRow.color)
+      ctx.fillText(label, mx, my)
+      ctx.restore()
+    },
+    [byKey, dimEdge],
+  )
+  const linkCanvasMode = useCallback(() => 'after', [])
+
   const paintNode = useCallback((node, ctx, globalScale) => {
     const r = nodeRadius(node)
     // 기간 밖·강조 밖이면 흐리게. save/restore 로 globalAlpha 가 다음 노드에
@@ -792,6 +833,16 @@ export function LinkGraphCanvas({
               linkDirectionalArrowLength={linkArrowLength}
               linkDirectionalArrowRelPos={1}
               linkDirectionalParticles={0}
+              linkCanvasObject={paintLinkLabel}
+              linkCanvasObjectMode={linkCanvasMode}
+              linkLabel={(l) => {
+                const k = byKey[l.kind]
+                if (!k) return ''
+                // 상호 관계 — 양방향 라벨을 모두 보여준다.
+                return `${escapeHtml(k.forward_label)} ↔ ${escapeHtml(
+                  k.reverse_label,
+                )}`
+              }}
               cooldownTicks={80}
               onRenderFramePre={handleRenderFramePre}
               onNodeHover={(node) => setHoveredId(node?.id ?? null)}

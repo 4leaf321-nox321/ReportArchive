@@ -9187,6 +9187,13 @@ function BlockEditorCard({
   const [tableExpanded, setTableExpanded] = useState(() =>
     block.type === 'table' ? (content?.expanded ?? true) : false,
   )
+  // 작성자가 '기본 펼침'을 토글하면 content.expanded 가 바뀌므로 즉시 동기화 —
+  // 새로고침 없이 보기 화면에 반영된다. 독자의 수동 펼침/접기 토글은
+  // content.expanded 를 건드리지 않아(읽기 state 만 변경) 이 effect 가 그걸
+  // 덮어쓰지 않는다(deps = content.expanded 값).
+  useEffect(() => {
+    if (block.type === 'table') setTableExpanded(content?.expanded ?? true)
+  }, [block.type, content?.expanded])
   const tableViewValue = useMemo(
     () => ({ expanded: tableExpanded, setExpanded: setTableExpanded }),
     [tableExpanded],

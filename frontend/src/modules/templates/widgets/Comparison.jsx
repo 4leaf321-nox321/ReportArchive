@@ -442,6 +442,30 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     content?.cell_html && typeof content.cell_html === 'object'
       ? content.cell_html
       : {}
+  // ── 다중행·병합 헤더(선택) ───────────────────────────────────────────
+  // header 가 있으면 (row_count × totalColCount) 헤더 그리드를 thead 로 렌더.
+  // 열 매핑: ci=0 → 행라벨 컬럼('__row__'), ci=1..M → cases[ci-1]. 데이터 셀과
+  // 같은 키("헤더행idx::열key")·머지·색·rich 재사용. 없으면 기존 case 라벨 1줄
+  // 헤더로 폴백(하위호환).
+  const header =
+    content?.header && typeof content.header === 'object' ? content.header : null
+  const headerRowCount = header
+    ? Math.max(1, Math.min(8, Number(header.row_count) || 1))
+    : 0
+  const headerCells =
+    header?.cells && typeof header.cells === 'object' ? header.cells : {}
+  const headerMerges = Array.isArray(header?.merges) ? header.merges : []
+  const headerMergeMap = computeMergeMap(
+    headerMerges,
+    headerRowCount,
+    totalColCount,
+  )
+  const colKeyAt = (ci) => (ci === 0 ? '__row__' : cases[ci - 1]?.key)
+  function headerCellClass(hr, colKey) {
+    const s = headerCells[`${hr}::${colKey}`]
+    if (!s || (!s.bg && !s.fg)) return ''
+    return `${bgTokenClass(s.bg)} ${colorTokenClass(s.fg)}`.trim()
+  }
   const textClass = textStyleToClassName(props.text_style)
   const textStyle = textStyleToInlineStyle(props.text_style)
   // 셀(헤더·행라벨·값) 본문 글자 크기 — 긴 글(RichText)과 동일한 기본값
@@ -777,6 +801,26 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       rows: nextRows,
       column_widths: nextColumnWidths,
       ...(merges.length || nextMerges.length ? { merges: nextMerges } : {}),
+      // 다중행 헤더가 있으면 그 case 열의 셀/머지도 같이 정리.
+      ...(header
+        ? {
+            header: {
+              ...header,
+              cells: Object.fromEntries(
+                Object.entries(headerCells).filter(
+                  ([k]) => k.split('::')[1] !== removedKey,
+                ),
+              ),
+              merges: shiftMergesForCol(
+                headerMerges,
+                'remove',
+                idx + 1,
+                headerRowCount,
+                totalCol,
+              ),
+            },
+          }
+        : {}),
     })
   }
   function moveCase(idx, dir) {
@@ -1005,58 +1049,170 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
   // 의미가 모호하므로 차단 — selection 범위가 그 경계를 넘으면 합치기
   // 버튼이 비활성화된다. 합치기 후엔 normalizeMerges 가 다시 한번
   // grid clamp / overlap dissolve / 1×1 drop 까지 보정.
+  // ── 통일 selection (헤더 band + 데이터) ──────────────────────────────
+  // 헤더 행(0..headerOffset-1)을 데이터 위에 얹어 하나의 selection 으로. 데이터
+  // 행은 headerOffset 만큼 아래(offset 0=헤더없음=기존과 동일). band 로 라우팅.
+  const headerOffset = headerRowCount
   const selection = useCellSelection({
-    rowCount: rows.length,
-    colCount: cases.length + 1,
+    rowCount: headerOffset + rows.length,
+    colCount: totalColCount,
   })
+  // 헤더가 없으면 현재 case 라벨로 1행짜리 header 를 만들어 반환.
+  function ensureHeader() {
+    if (header) return header
+    const cells = {}
+    cases.forEach((c) => {
+      if (c.label) cells[`0::${c.key}`] = { text: c.label }
+    })
+    return { row_count: 1, cells, merges: [] }
+  }
+  function patchHeader(nextHeader) {
+    patch({ header: nextHeader })
+  }
+  function updateHeaderCellRich(hr, colKey, html, text) {
+    const h = ensureHeader()
+    const k = `${hr}::${colKey}`
+    const cells = { ...(h.cells || {}) }
+    const cur = { ...(cells[k] || {}) }
+    if (text) cur.text = text
+    else delete cur.text
+    if (_richIsEmpty(html)) delete cur.html
+    else cur.html = html
+    if (cur.text || cur.html || cur.bg || cur.fg) cells[k] = cur
+    else delete cells[k]
+    patchHeader({ ...h, cells })
+  }
+  function addHeaderRowTop() {
+    const h = ensureHeader()
+    const cells = {}
+    for (const [k, v] of Object.entries(h.cells || {})) {
+      const [rStr, colKey] = k.split('::')
+      cells[`${Number(rStr) + 1}::${colKey}`] = v
+    }
+    const mergesNext = shiftMergesForRow(
+      h.merges || [],
+      'insert',
+      0,
+      h.row_count,
+      totalColCount,
+    )
+    patchHeader({ row_count: h.row_count + 1, cells, merges: mergesNext })
+    selection.clear()
+  }
+  function removeHeaderRowTop() {
+    const h = ensureHeader()
+    if (h.row_count <= 1) {
+      patch({ header: undefined })
+      selection.clear()
+      return
+    }
+    const cells = {}
+    for (const [k, v] of Object.entries(h.cells || {})) {
+      const [rStr, colKey] = k.split('::')
+      const r = Number(rStr)
+      if (r === 0) continue
+      cells[`${r - 1}::${colKey}`] = v
+    }
+    const mergesNext = shiftMergesForRow(
+      h.merges || [],
+      'remove',
+      0,
+      h.row_count,
+      totalColCount,
+    )
+    patchHeader({ row_count: h.row_count - 1, cells, merges: mergesNext })
+    selection.clear()
+  }
   function mergeSelection() {
     const r = selection.rect
     if (!r) return
     const rs = r.r2 - r.r1 + 1
     const cs = r.c2 - r.c1 + 1
     if (rs === 1 && cs === 1) return
-    const nextMerges = normalizeMerges(
-      [...(merges ?? []), { r: r.r1, c: r.c1, rs, cs }],
-      rows.length,
-      cases.length + 1,
-    )
-    patch({ merges: nextMerges })
-    selection.clear()
+    if (r.r2 < headerOffset) {
+      const h = ensureHeader()
+      const nm = normalizeMerges(
+        [...(h.merges || []), { r: r.r1, c: r.c1, rs, cs }],
+        h.row_count,
+        totalColCount,
+      )
+      patchHeader({ ...h, merges: nm })
+      selection.clear()
+    } else if (r.r1 >= headerOffset) {
+      const nm = normalizeMerges(
+        [...(merges ?? []), { r: r.r1 - headerOffset, c: r.c1, rs, cs }],
+        rows.length,
+        totalColCount,
+      )
+      patch({ merges: nm })
+      selection.clear()
+    }
   }
   function unmergeSelection() {
     const r = selection.rect
     if (!r) return
-    const kept = (merges ?? []).filter((m) => {
-      const last_r = m.r + m.rs - 1
-      const last_c = m.c + m.cs - 1
-      return !(m.r <= r.r2 && last_r >= r.r1 && m.c <= r.c2 && last_c >= r.c1)
-    })
-    patch({
-      merges: normalizeMerges(kept, rows.length, cases.length + 1),
-    })
-    selection.clear()
+    const overlaps = (m, r1, r2) => {
+      const lr = m.r + m.rs - 1
+      const lc = m.c + m.cs - 1
+      return m.r <= r2 && lr >= r1 && m.c <= r.c2 && lc >= r.c1
+    }
+    if (r.r2 < headerOffset && header) {
+      const kept = (header.merges || []).filter(
+        (m) => !overlaps(m, r.r1, r.r2),
+      )
+      patchHeader({
+        ...header,
+        merges: normalizeMerges(kept, header.row_count, totalColCount),
+      })
+      selection.clear()
+    } else if (r.r1 >= headerOffset) {
+      const kept = (merges ?? []).filter(
+        (m) => !overlaps(m, r.r1 - headerOffset, r.r2 - headerOffset),
+      )
+      patch({ merges: normalizeMerges(kept, rows.length, totalColCount) })
+      selection.clear()
+    }
   }
-  // 선택 영역의 모든 셀에 배경(bg)/글자(fg) 토큰 적용. 좌표 c=0 → 행 라벨,
-  // c≥1 → cases[c-1]. 행·케이스 안정적 key 라 키도 안정적(시프트 불필요).
+  // 선택 영역의 모든 셀에 배경/글자 색 — band 별 라우팅. 좌표 c=0 → 행 라벨
+  // ('__row__'), c≥1 → cases[c-1].
   function applyCellColor(field, token) {
     const r = selection.rect
     if (!r) return
-    const next = { ...cellStyles }
-    for (let ri = r.r1; ri <= r.r2; ri++) {
-      const rowKey = rows[ri]?.key
-      if (!rowKey) continue
+    const nextStyles = { ...cellStyles }
+    let hObj = header
+    let hCells = header ? { ...(header.cells || {}) } : null
+    let hTouched = false
+    for (let rr = r.r1; rr <= r.r2; rr++) {
       for (let ci = r.c1; ci <= r.c2; ci++) {
-        const colKey = ci === 0 ? ROW_LABEL_KEY : cases[ci - 1]?.key
+        const colKey = colKeyAt(ci)
         if (!colKey) continue
-        const k = `${rowKey}::${colKey}`
-        const cur = { ...(next[k] ?? {}) }
-        if (token) cur[field] = token
-        else delete cur[field]
-        if (cur.bg || cur.fg) next[k] = cur
-        else delete next[k]
+        if (rr < headerOffset) {
+          if (!hCells) {
+            hObj = ensureHeader()
+            hCells = { ...(hObj.cells || {}) }
+          }
+          const k = `${rr}::${colKey}`
+          const cur = { ...(hCells[k] || {}) }
+          if (token) cur[field] = token
+          else delete cur[field]
+          if (cur.text || cur.html || cur.bg || cur.fg) hCells[k] = cur
+          else delete hCells[k]
+          hTouched = true
+        } else {
+          const rowKey = rows[rr - headerOffset]?.key
+          if (!rowKey) continue
+          const k = `${rowKey}::${colKey}`
+          const cur = { ...(nextStyles[k] || {}) }
+          if (token) cur[field] = token
+          else delete cur[field]
+          if (cur.bg || cur.fg) nextStyles[k] = cur
+          else delete nextStyles[k]
+        }
       }
     }
-    patch({ cell_styles: next })
+    const next = { cell_styles: nextStyles }
+    if (hTouched) next.header = { ...(hObj || ensureHeader()), cells: hCells }
+    patch(next)
   }
   const selectionRect_ = selection.rect
   const selectionCrossesZone =
@@ -1066,11 +1222,16 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
   const selectionHasMerge = (() => {
     const r = selectionRect_
     if (!r) return false
-    return (merges ?? []).some((m) => {
-      const last_r = m.r + m.rs - 1
-      const last_c = m.c + m.cs - 1
-      return m.r <= r.r2 && last_r >= r.r1 && m.c <= r.c2 && last_c >= r.c1
-    })
+    const hit = (list, r1, r2) =>
+      (list ?? []).some((m) => {
+        const lr = m.r + m.rs - 1
+        const lc = m.c + m.cs - 1
+        return m.r <= r2 && lr >= r1 && m.c <= r.c2 && lc >= r.c1
+      })
+    if (r.r2 < headerOffset) return hit(header?.merges, r.r1, r.r2)
+    if (r.r1 >= headerOffset)
+      return hit(merges, r.r1 - headerOffset, r.r2 - headerOffset)
+    return false
   })()
   const selectionSpansMultiple =
     !!selectionRect_ &&
@@ -1079,6 +1240,119 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
   // 선택이 2개 이상 열에 걸쳤나 — "폭을 균일하게" 버튼 노출 조건.
   const selectionSpansCols =
     !!selectionRect_ && selectionRect_.c2 > selectionRect_.c1
+
+  // 다중행 헤더 편집 행(편집 모드) — 각 셀 RichTextRowEditor(색·서식), 드래그
+  // 선택으로 병합/색. 맨 아래 행(열과 1:1)에 코너 폭핸들 / case 이동·삭제·폭핸들.
+  function renderHeaderEditRows() {
+    return Array.from({ length: headerRowCount }).map((_, hr) => (
+      <tr key={hr}>
+        {Array.from({ length: totalColCount }).map((_, ci) => {
+          if (headerMergeMap.covered.has(`${hr},${ci}`)) return null
+          const span = headerMergeMap.anchors.get(`${hr},${ci}`)
+          const isBottom = hr === headerRowCount - 1
+          const isCorner = ci === 0
+          const colKey = colKeyAt(ci)
+          const caseIdx = ci - 1
+          const selH = selection.isCellSelected(hr, ci)
+          const hcell = headerCells[`${hr}::${colKey}`]
+          return (
+            <th
+              key={ci}
+              data-cell-coord={`${hr},${ci}`}
+              onMouseDown={(e) => selection.handleMouseDown(e, hr, ci)}
+              onMouseEnter={() => selection.handleMouseEnter(hr, ci)}
+              onMouseLeave={() => selection.handleMouseLeave(hr, ci)}
+              {...(span?.rs > 1 ? { rowSpan: span.rs } : {})}
+              {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
+              style={{ fontSize: bodyFontPx }}
+              className={cn(
+                'px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b border-r last:border-r-0 group relative',
+                headerCellClass(hr, colKey),
+                selH && 'bg-primary/10 ring-1 ring-primary/40',
+              )}
+            >
+              <div className="outline-rich-row">
+                <RichTextRowEditor
+                  html={_richSeed(hcell?.html, hcell?.text)}
+                  onChange={(html, text) =>
+                    updateHeaderCellRich(hr, colKey, html, text)
+                  }
+                  gridCellKey={`h-${hr}-${ci}`}
+                  className="w-full min-h-[1.5rem] rounded px-1 py-0.5 text-center whitespace-pre-wrap break-words"
+                />
+              </div>
+              {isBottom && isCorner && (
+                <div
+                  role="separator"
+                  aria-orientation="vertical"
+                  title="끌어서 행 라벨 폭 조절"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    startCaseResize(ROW_LABEL_KEY, e.currentTarget.closest('th'), e)
+                  }}
+                  className="absolute right-0 top-0 h-full w-2 cursor-col-resize flex items-center justify-end group/handle z-10"
+                >
+                  <span className="block w-0.5 h-1/2 bg-border group-hover/handle:bg-primary transition-colors" />
+                </div>
+              )}
+              {isBottom && !isCorner && (
+                <>
+                  <div className="absolute left-0.5 top-0.5 flex gap-0.5 rounded border bg-background/90 opacity-0 shadow-sm group-hover:opacity-100">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5"
+                      disabled={caseIdx === 0}
+                      onClick={() => moveCase(caseIdx, -1)}
+                      title="왼쪽으로"
+                    >
+                      <ChevronLeft className="h-3 w-3" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5"
+                      disabled={caseIdx === cases.length - 1}
+                      onClick={() => moveCase(caseIdx, 1)}
+                      title="오른쪽으로"
+                    >
+                      <ChevronRight className="h-3 w-3" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5 text-destructive"
+                      disabled={cases.length <= 1}
+                      onClick={() => removeCase(caseIdx)}
+                      title="CASE 삭제"
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </div>
+                  {ci < totalColCount - 1 && (
+                    <div
+                      role="separator"
+                      aria-orientation="vertical"
+                      title="끌어서 컬럼 폭 조절"
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        startCaseResize(colKey, e.currentTarget.closest('th'), e)
+                      }}
+                      className="absolute right-0 top-0 h-full w-2 cursor-col-resize flex items-center justify-end group/handle z-10"
+                    >
+                      <span className="block w-0.5 h-1/2 bg-border group-hover/handle:bg-primary transition-colors" />
+                    </div>
+                  )}
+                </>
+              )}
+            </th>
+          )
+        })}
+      </tr>
+    ))
+  }
 
   // ─── Read-only render ────────────────────────────────────────────────
   if (readOnly) {
@@ -1117,18 +1391,56 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                 ))}
               </colgroup>
               <thead className="bg-muted/40">
-                <tr>
-                  <th className="px-2 py-1.5 text-center font-medium text-xs text-muted-foreground border-b" />
-                  {cases.map((c, i) => (
-                    <th
-                      key={i}
-                      style={{ fontSize: bodyFontPx }}
-                      className="px-2 py-1.5 text-center font-medium text-muted-foreground border-b whitespace-pre-wrap break-words"
-                    >
-                      {c.label || c.key}
-                    </th>
-                  ))}
-                </tr>
+                {headerRowCount > 0 ? (
+                  Array.from({ length: headerRowCount }).map((_, hr) => (
+                    <tr key={hr}>
+                      {Array.from({ length: totalColCount }).map((_, ci) => {
+                        if (headerMergeMap.covered.has(`${hr},${ci}`)) return null
+                        const span = headerMergeMap.anchors.get(`${hr},${ci}`)
+                        const colKey = colKeyAt(ci)
+                        const cell = headerCells[`${hr}::${colKey}`]
+                        const html = cell?.html
+                        const hasRich = html && !_richIsEmpty(html)
+                        return (
+                          <th
+                            key={ci}
+                            rowSpan={span?.rs > 1 ? span.rs : undefined}
+                            colSpan={span?.cs > 1 ? span.cs : undefined}
+                            style={{ fontSize: bodyFontPx }}
+                            className={cn(
+                              'px-2 py-1.5 text-center font-medium text-muted-foreground border-b border-r last:border-r-0 whitespace-pre-wrap break-words',
+                              headerCellClass(hr, colKey),
+                            )}
+                          >
+                            {hasRich ? (
+                              <span
+                                className="[&_p]:m-0 [&_p]:inline"
+                                dangerouslySetInnerHTML={{
+                                  __html: sanitizeCaptionHtml(html),
+                                }}
+                              />
+                            ) : (
+                              cell?.text || ''
+                            )}
+                          </th>
+                        )
+                      })}
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <th className="px-2 py-1.5 text-center font-medium text-xs text-muted-foreground border-b" />
+                    {cases.map((c, i) => (
+                      <th
+                        key={i}
+                        style={{ fontSize: bodyFontPx }}
+                        className="px-2 py-1.5 text-center font-medium text-muted-foreground border-b whitespace-pre-wrap break-words"
+                      >
+                        {c.label || c.key}
+                      </th>
+                    ))}
+                  </tr>
+                )}
               </thead>
               <tbody>
                 {rows.map((row, ri) => {
@@ -1256,11 +1568,39 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       ) : (
         <>
         <div
-          className="flex justify-end items-center gap-2"
+          className="flex justify-end items-center gap-2 flex-wrap"
           // outside-click 핸들러가 액션 바 클릭으로 selection 을 지우지
           // 못하게 면역 영역으로 표시.
           data-cell-selection-allow
         >
+          {/* 헤더(제목) 행 수 — + 로 맨 위에 그룹 헤더 행을 얹고, 헤더 셀을
+              드래그 선택해 '셀 합치기'·'셀 색'으로 병합·색 지정. */}
+          <div
+            className="flex items-center gap-0.5 rounded-md border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"
+            title="헤더(제목) 행 수. + 로 위에 그룹 헤더 행을 추가하고, 셀을 드래그 선택해 '셀 합치기'로 병합·색을 줄 수 있습니다."
+            data-cell-selection-allow
+          >
+            헤더 행
+            <button
+              type="button"
+              onClick={removeHeaderRowTop}
+              className="px-1 text-sm leading-none hover:text-foreground"
+              title={headerRowCount <= 1 ? '헤더를 기본(1줄)으로' : '맨 위 헤더 행 삭제'}
+            >
+              −
+            </button>
+            <span className="w-3 text-center tabular-nums">
+              {headerRowCount || 1}
+            </span>
+            <button
+              type="button"
+              onClick={addHeaderRowTop}
+              className="px-1 text-sm leading-none hover:text-foreground"
+              title="맨 위에 헤더 행 추가(그룹 헤더)"
+            >
+              +
+            </button>
+          </div>
           {/* 셀 색 — 선택이 있으면(1셀 포함) 배경/글자색 지정. */}
           {selection.rect && (
             <Popover>
@@ -1386,6 +1726,9 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
               ))}
             </colgroup>
             <thead className="bg-muted/40">
+              {headerRowCount > 0 ? (
+                renderHeaderEditRows()
+              ) : (
               <tr>
                 <th className="px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b border-r relative">
                   <span className="text-[10px]">행 / CASE</span>
@@ -1494,6 +1837,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                   </th>
                 ))}
               </tr>
+              )}
             </thead>
             <tbody>
               {rows.map((row, ri) => {
@@ -1506,20 +1850,24 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                   <tr key={row.key ?? ri} className="border-b last:border-b-0 group">
                     {!labelCovered && (
                       <td
-                        data-cell-coord={`${ri},0`}
+                        data-cell-coord={`${headerOffset + ri},0`}
                         // 일반 클릭은 input focus 그대로. 드래그가 셀
                         // 경계를 넘으면 hook 이 promote 해 multi-cell 전환.
                         onMouseDown={(e) =>
-                          selection.handleMouseDown(e, ri, 0)
+                          selection.handleMouseDown(e, headerOffset + ri, 0)
                         }
-                        onMouseEnter={() => selection.handleMouseEnter(ri, 0)}
-                        onMouseLeave={() => selection.handleMouseLeave(ri, 0)}
+                        onMouseEnter={() =>
+                          selection.handleMouseEnter(headerOffset + ri, 0)
+                        }
+                        onMouseLeave={() =>
+                          selection.handleMouseLeave(headerOffset + ri, 0)
+                        }
                         {...(labelSpan?.rs > 1 ? { rowSpan: labelSpan.rs } : {})}
                         {...(labelSpan?.cs > 1 ? { colSpan: labelSpan.cs } : {})}
                         className={cn(
                           'px-1 py-1 align-top border-r bg-muted/10',
                           cellStyleClass(row.key, ROW_LABEL_KEY),
-                          selection.isCellSelected(ri, 0) &&
+                          selection.isCellSelected(headerOffset + ri, 0) &&
                             'bg-primary/10 ring-1 ring-primary/40',
                         )}
                       >
@@ -1587,19 +1935,22 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                       const coord = `${ri},${ci + 1}`
                       if (mergeMap.covered.has(coord)) return null
                       const span = mergeMap.anchors.get(coord)
-                      const selected = selection.isCellSelected(ri, ci + 1)
+                      const selected = selection.isCellSelected(
+                        headerOffset + ri,
+                        ci + 1,
+                      )
                       return (
                         <td
                           key={ci}
-                          data-cell-coord={`${ri},${ci + 1}`}
+                          data-cell-coord={`${headerOffset + ri},${ci + 1}`}
                           onMouseDown={(e) =>
-                            selection.handleMouseDown(e, ri, ci + 1)
+                            selection.handleMouseDown(e, headerOffset + ri, ci + 1)
                           }
                           onMouseEnter={() =>
-                            selection.handleMouseEnter(ri, ci + 1)
+                            selection.handleMouseEnter(headerOffset + ri, ci + 1)
                           }
                           onMouseLeave={() =>
-                            selection.handleMouseLeave(ri, ci + 1)
+                            selection.handleMouseLeave(headerOffset + ri, ci + 1)
                           }
                           {...(span?.rs > 1 ? { rowSpan: span.rs } : {})}
                           {...(span?.cs > 1 ? { colSpan: span.cs } : {})}

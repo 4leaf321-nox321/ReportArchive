@@ -46,10 +46,20 @@ export default function TemplatesPage() {
   )
   const workspaceName = (s) =>
     (workspaces ?? []).find((w) => w.slug === s)?.name ?? s
-  // Template lifecycle (create / publish / delete) is the manager role's
-  // responsibility. Regular users can view templates but can't author them.
-  const canManageTemplates = me?.role === 'manager'
-  const canDeleteTemplates = canManageTemplates
+  // 매니저: 보이는 템플릿 전반을 관리. 일반 멤버: *자기 부서* 템플릿만
+  // 생성/수정/삭제(전사공개·타부서·공유 범위는 매니저 영역).
+  const role = me?.role
+  const isManager = role === 'manager'
+  const currentWs = (workspaces ?? []).find((w) => w.slug === slug)
+  const currentIsOrgDept = currentWs?.kind === 'org' && !currentWs?.virtual
+  // 신규 생성 가능: 매니저, 또는 현재 조직 부서를 보고 있는 일반 멤버.
+  const canCreateTemplates = isManager || (role === 'user' && currentIsOrgDept)
+  // 특정 템플릿 수정/삭제: 매니저(보이는 것 전부) 또는 멤버(자기 부서 소유).
+  const canManageTemplate = (t) =>
+    isManager ||
+    (role === 'user' &&
+      Array.isArray(t?.owner_workspace_slugs) &&
+      t.owner_workspace_slugs.includes(slug))
   // Gate on `slug` so we don't fire the request before WorkspaceProvider
   // has set the X-Workspace-Slug header on the API client.
   const { data: templates, loading, error, reload } = useAsync(
@@ -138,7 +148,7 @@ export default function TemplatesPage() {
         title="템플릿 관리"
         description="JSON Schema 2020-12 기반 보고서 양식. 글로벌 + 부서 트리 종속 혼합 가시성."
         actions={
-          canManageTemplates && (
+          canCreateTemplates && (
             <Button asChild>
               <Link to="/templates/new">
                 <Plus className="mr-2 h-4 w-4" />
@@ -160,9 +170,9 @@ export default function TemplatesPage() {
         <EmptyState
           title="템플릿이 없습니다"
           description={
-            canManageTemplates
+            canCreateTemplates
               ? '신규 템플릿 버튼을 눌러 첫 양식을 만드세요.'
-              : '관리자/매니저가 템플릿을 추가하면 여기에 표시됩니다.'
+              : '매니저 또는 부서 멤버가 템플릿을 추가하면 여기에 표시됩니다.'
           }
         />
       ) : (
@@ -205,8 +215,9 @@ export default function TemplatesPage() {
                 template={selected}
                 categoryName={categoryName}
                 workspaceName={workspaceName}
-                canManage={canManageTemplates}
-                canDelete={canDeleteTemplates}
+                canManage={canManageTemplate(selected)}
+                canDelete={canManageTemplate(selected)}
+                canEditScope={isManager}
                 onDelete={() => setPendingDelete(selected)}
                 onEditScope={() => setScopeEditFor(selected)}
                 presets={selectedPresets}
@@ -294,6 +305,7 @@ function TemplateDetail({
   workspaceName,
   canManage,
   canDelete,
+  canEditScope,
   onDelete,
   onEditScope,
   presets,
@@ -371,7 +383,7 @@ function TemplateDetail({
           <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             공유 부서
           </div>
-          {canManage && scoped && (
+          {canEditScope && scoped && (
             <Button
               variant="ghost"
               size="sm"

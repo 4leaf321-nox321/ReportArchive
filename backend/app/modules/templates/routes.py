@@ -13,10 +13,63 @@ from app.modules.templates.schemas import (
     TemplateScopeUpdate,
     TemplateVersionSummary,
 )
+from app.modules.workspaces import services as ws_services
+from app.modules.workspaces.models import WorkspaceKind
 from app.shared.auth import CurrentUser, get_current_user, require_manager
 from app.shared.responses import created_response, not_found_response, success_response
 
 router = APIRouter()
+
+
+def _assert_can_create_template(db: Session, actor: CurrentUser, owner_slugs) -> None:
+    """신규 템플릿 생성 권한.
+
+    - 매니저: 소유 부서가 본인 관리 트리(자신+자손) 안이어야 함. 빈/전사 허용.
+    - 일반 멤버: *자기(현재) 부서* 단독 소유만. 전사·타부서·다중부서 불가.
+    """
+    if actor.public_viewer:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "권한이 없습니다.")
+    owners = list(owner_slugs or [])
+    if actor.is_manager:
+        if owners:
+            accessible = set(
+                ws_services.get_descendants_inclusive(db, actor.workspace.slug)
+            )
+            bad = [s for s in owners if s not in accessible]
+            if bad:
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    f"Cannot create template in workspace(s): {', '.join(bad)}",
+                )
+        return
+    # 일반 멤버
+    if getattr(actor.workspace, "virtual", False) or actor.workspace.kind != WorkspaceKind.org:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "부서에서만 템플릿을 만들 수 있습니다."
+        )
+    if owners != [actor.workspace.slug]:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "일반 멤버는 자기 부서 템플릿만 만들 수 있습니다 (전사 공개·타부서·공유는 매니저).",
+        )
+
+
+def _assert_can_manage_template(actor: CurrentUser, template) -> None:
+    """기존 템플릿의 새 버전 발행/삭제 권한.
+
+    - 매니저: is_visible 을 통과한 템플릿이면 관리 가능(기존 동작 유지).
+    - 일반 멤버: *자기 부서가 소유한* 템플릿만.
+    """
+    if actor.public_viewer:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "권한이 없습니다.")
+    if actor.is_manager:
+        return
+    owners = template.owner_workspace_slugs or []
+    if actor.workspace.slug not in owners:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "자기 부서가 소유한 템플릿만 수정/삭제할 수 있습니다.",
+        )
 
 
 @router.get("")
@@ -72,22 +125,10 @@ def get_specific_version(
 def create_template(
     payload: TemplateCreate,
     db: Session = Depends(get_db),
-    actor: CurrentUser = Depends(require_manager),
+    actor: CurrentUser = Depends(get_current_user),
 ):
-    # Each requested owner workspace must lie inside the actor's accessible
-    # tree (= where they have manager+ access). NULL / empty = global is
-    # allowed for any manager+. If global creation needs to be admin-only
-    # later, gate it here.
-    if payload.owner_workspace_slugs:
-        from app.modules.workspaces import services as ws_services
-
-        accessible = set(ws_services.get_descendants_inclusive(db, actor.workspace.slug))
-        bad = [s for s in payload.owner_workspace_slugs if s not in accessible]
-        if bad:
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN,
-                f"Cannot create template in workspace(s): {', '.join(bad)}",
-            )
+    # 매니저는 본인 트리 안 부서(또는 전사)에, 일반 멤버는 *자기 부서* 에만.
+    _assert_can_create_template(db, actor, payload.owner_workspace_slugs)
     try:
         template = services.create_template(db, payload, created_by_user_id=actor.user.id)
     except ValueError as exc:
@@ -99,15 +140,15 @@ def create_template(
 def delete_template(
     template_id: str,
     db: Session = Depends(get_db),
-    actor: CurrentUser = Depends(require_manager),
+    actor: CurrentUser = Depends(get_current_user),
 ):
-    """Deletes ALL versions of a template. Manager-and-up: template
-    lifecycle (create / publish / delete) is the manager role's
-    responsibility. Refuses if any reports still reference the
-    template (409)."""
+    """Deletes ALL versions of a template. 매니저는 보이는 템플릿을, 일반
+    멤버는 자기 부서가 소유한 템플릿을 삭제할 수 있다. 보고서가 아직 참조 중
+    이면 거부(409)."""
     latest = services.get_latest_version(db, template_id)
     if not latest or not services.is_visible(db, latest, actor.workspace.slug):
         return not_found_response(f"Template not found: {template_id}")
+    _assert_can_manage_template(actor, latest)
     try:
         result = services.delete_template(db, template_id)
     except ValueError as exc:
@@ -167,11 +208,12 @@ def publish_new_version(
     template_id: str,
     payload: TemplateNewVersion,
     db: Session = Depends(get_db),
-    actor: CurrentUser = Depends(require_manager),
+    actor: CurrentUser = Depends(get_current_user),
 ):
     latest = services.get_latest_version(db, template_id)
     if not latest or not services.is_visible(db, latest, actor.workspace.slug):
         return not_found_response(f"Template not found: {template_id}")
+    _assert_can_manage_template(actor, latest)
     try:
         template = services.create_new_version(
             db, template_id, payload, created_by_user_id=actor.user.id

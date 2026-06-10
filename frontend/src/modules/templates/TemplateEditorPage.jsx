@@ -88,13 +88,17 @@ export default function TemplateEditorPage() {
   // between "loading" and "loaded" states.
   const rglItems = useMemo(() => buildRglItems(draft.blocks), [draft.blocks])
 
-  const canManageTemplates = me?.role === 'manager'
+  // 매니저는 보이는 템플릿 전반을, 일반 멤버는 자기 부서 템플릿을 만들/고칠 수
+  // 있다(소유 검증은 백엔드가 강제). 외부 열람자/역할 없음은 차단.
+  const role = me?.role
+  const isManager = role === 'manager'
+  const canManageTemplates = isManager || role === 'user'
   if (!canManageTemplates) {
     return (
       <div className="p-6">
         <ErrorState
           title="권한 없음"
-          description="템플릿 편집은 관리자 / 매니저만 가능합니다."
+          description="템플릿 편집은 매니저 또는 부서 멤버만 가능합니다."
           action={
             <Button asChild variant="outline">
               <Link to="/templates">목록으로</Link>
@@ -220,7 +224,8 @@ export default function TemplateEditorPage() {
           description: draft.description,
           category: draft.category,
           schema,
-          owner_workspace_slugs: draft.owner_workspace_slugs,
+          // 일반 멤버는 자기 부서 단독 소유로만 생성(가시성 선택 불가).
+          owner_workspace_slugs: isManager ? draft.owner_workspace_slugs : [slug],
         })
         toast.success('템플릿이 생성되었습니다.')
       }
@@ -329,19 +334,31 @@ export default function TemplateEditorPage() {
                 {!isEdit && (
                   <div>
                     <Label className="text-xs">가시성</Label>
-                    <div className="mt-1">
-                      <WorkspaceMultiSelect
-                        value={draft.owner_workspace_slugs}
-                        onChange={(next) =>
-                          setDraft({ ...draft, owner_workspace_slugs: next })
-                        }
-                        workspaces={workspaces}
-                        myUserId={me?.user?.id}
-                      />
-                    </div>
-                    <p className="mt-1 text-[10px] text-muted-foreground">
-                      여러 부서 선택 가능. 비워두면 전사 공유.
-                    </p>
+                    {isManager ? (
+                      <>
+                        <div className="mt-1">
+                          <WorkspaceMultiSelect
+                            value={draft.owner_workspace_slugs}
+                            onChange={(next) =>
+                              setDraft({ ...draft, owner_workspace_slugs: next })
+                            }
+                            workspaces={workspaces}
+                            myUserId={me?.user?.id}
+                          />
+                        </div>
+                        <p className="mt-1 text-[10px] text-muted-foreground">
+                          여러 부서 선택 가능. 비워두면 전사 공유.
+                        </p>
+                      </>
+                    ) : (
+                      // 일반 멤버: 자기 부서 단독 소유로 고정(전사공개·타부서·공유는 매니저).
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        자기 부서(
+                        {(workspaces ?? []).find((w) => w.slug === slug)?.name ??
+                          slug}
+                        )에만 생성됩니다. 전사 공개·다른 부서 공유는 매니저에게 문의하세요.
+                      </p>
+                    )}
                   </div>
                 )}
                 <div>

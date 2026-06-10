@@ -1304,14 +1304,14 @@ function HomeWorkspaceDialog({ target, assignableWorkspaces, onClose, onChanged 
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      {/* Dynamic width — 부서 트리 경로(전체 슬러그 path)가 길어지면
-          기본 max-w-lg(512px) 으로 부서명/이메일/안내문이 모달 밖으로
-          삐져나오는 케이스가 있어서 WorkspaceEditDialog 와 같은 정책으로
-          맞춤. w-fit + min-w 베이스라인 + 95vw 캡. */}
-      <DialogContent className="w-fit min-w-[28rem] max-w-[min(95vw,48rem)]">
+      {/* 고정 폭 — 콤보박스를 truncate 모드로 두므로 긴 부서 경로도 모달
+          안에서 잘려 표시(전체 경로는 트리거 tooltip·드롭다운에서 확인).
+          예전 w-fit + noTruncate 조합은 경로가 길면 트리거가 whitespace-nowrap
+          이라 줄지 못해 모달 밖으로 삐져나왔다. */}
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>소속 부서 변경</DialogTitle>
-          <DialogDescription className="break-all">
+          <DialogDescription className="break-words">
             {target.email}. 소속을 바꾸면 새 부서에는 자동으로 멤버로
             추가됩니다 (기존 다른 부서 멤버십은 그대로 유지). 부서 멤버
             페이지에서 그 사용자의 소속 row 는 직접 제거할 수 없으니
@@ -1327,7 +1327,6 @@ function HomeWorkspaceDialog({ target, assignableWorkspaces, onClose, onChanged 
               onChange={(s) => setWorkspaceSlug(s ?? '')}
               placeholder="소속 없음"
               searchPlaceholder="부서 검색"
-              noTruncate
             />
             <p className="text-[11px] text-muted-foreground">
               비워두면 소속 해제. 부서 멤버십 자체는 별도 — 소속 해제

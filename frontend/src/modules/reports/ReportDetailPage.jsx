@@ -9181,7 +9181,12 @@ function BlockEditorCard({
   // 컨테이너 row_span 도 따라서 늘어난다. Card 전체를 TableViewContext.
   // Provider 로 감싸서 두 곳 모두 같은 state 참조. 비-table 위젯은 이
   // Context 를 무시한다.
-  const [tableExpanded, setTableExpanded] = useState(false)
+  // 표의 저장된 기본 펼침(content.expanded, 미설정=펼침)으로 시작. mirror·본체
+  // 가 같은 Provider 값을 보므로, 보기 화면에서 곧바로 펼친 상태로 뜬다(예전엔
+  // 항상 false 라 매번 '펼치기'를 눌러야 했음). 독자는 토글로 변경 가능.
+  const [tableExpanded, setTableExpanded] = useState(() =>
+    block.type === 'table' ? (content?.expanded ?? true) : false,
+  )
   const tableViewValue = useMemo(
     () => ({ expanded: tableExpanded, setExpanded: setTableExpanded }),
     [tableExpanded],

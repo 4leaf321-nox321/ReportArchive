@@ -30,6 +30,7 @@ from app.modules.users.schemas import (
     SetSystemAdminRequest,
     SetUserActiveRequest,
     SystemAdminUserRead,
+    UpdatePreferencesRequest,
     UpdateProfileRequest,
     UserRead,
 )
@@ -144,8 +145,35 @@ def get_me(
             for m in memberships
         ],
         is_system_admin=user.is_system_admin,
+        preferences=user.preferences or {},
     )
     return success_response(data=payload)
+
+
+def _deep_merge_prefs(base: dict, patch: dict) -> dict:
+    """중첩 dict 는 재귀 병합, 그 외 값은 교체. 새 dict 를 만들어 반환해
+    JSONB 변경이 SQLAlchemy 에 dirty 로 잡히게 한다."""
+    out = dict(base or {})
+    for key, val in (patch or {}).items():
+        if isinstance(val, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge_prefs(out[key], val)
+        else:
+            out[key] = val
+    return out
+
+
+@router.patch("/me/preferences")
+def update_my_preferences(
+    payload: UpdatePreferencesRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user_no_workspace),
+):
+    """현재 사용자 환경설정 부분 패치(깊은 병합). 위젯 "제목 생략" 기본값처럼
+    클라이언트가 자유롭게 쓰는 설정을 저장한다. 병합된 preferences 를 반환."""
+    user.preferences = _deep_merge_prefs(user.preferences or {}, payload.preferences)
+    db.commit()
+    db.refresh(user)
+    return success_response(data={"preferences": user.preferences or {}})
 
 
 @router.patch("/me")

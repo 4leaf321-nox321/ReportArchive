@@ -36,6 +36,7 @@ import enum
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -87,6 +88,14 @@ class User(Base):
         ForeignKey("workspaces.slug", ondelete="SET NULL"),
         nullable=True,
         index=True,
+    )
+
+    # 사용자별 UI/작성 환경설정 — 클라이언트가 자유롭게 쓰는 JSON 가방.
+    # 현재 키: `widget_caption_skip_autofill`(위젯 type → bool) — 새 위젯의
+    # "제목 생략" 기본값을 마지막으로 고른 값으로 기억(위젯 종류별). 이 컬럼은
+    # 본인 /api/me 응답에만 실리고 다른 사용자에겐 노출되지 않는다.
+    preferences: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
     )
 
     created_at: Mapped[datetime] = mapped_column(

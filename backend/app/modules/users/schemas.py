@@ -31,10 +31,21 @@ class MembershipRead(BaseModel):
     workspace_kind: Optional[str] = None
 
 
+class UpdatePreferencesRequest(BaseModel):
+    """현재 사용자의 환경설정(preferences) 부분 패치. 보낸 키만 깊은 병합
+    되므로 한 위젯 type 의 "제목 생략" 기본값 하나만 보내도 나머지는 유지된다.
+    예: {"preferences": {"widget_caption_skip_autofill": {"image": true}}}"""
+
+    preferences: dict
+
+
 class MeRead(BaseModel):
     user: UserRead
     workspace_slug: Optional[str] = None
     role: Optional[Role] = None
+    # 사용자별 환경설정 — 본인 응답에만 실린다(UserRead 는 타 사용자 목록에도
+    # 쓰여서 거기에 두면 새므로, 여기 MeRead 최상위에 둔다).
+    preferences: dict = {}
     # 조직 간 공개(조직간공개_설계.md Phase 5). 현재 워크스페이스의 멤버는
     # 아니지만 공개 컨텐츠가 있어 *읽기전용*으로 진입한 외부 열람자면 True.
     # 프런트가 읽기전용 배너·쓰기 affordance 숨김을 그리는 신호.

@@ -6,7 +6,21 @@ import {
   setOnUnauthorized,
 } from '@/shared/api/client'
 import { login as loginApi, signup as signupApi } from '@/shared/api/auth'
-import { fetchMe } from '@/shared/api/me'
+import { fetchMe, updateMyPreferences } from '@/shared/api/me'
+
+/** 중첩 dict 는 재귀 병합, 그 외는 교체 — 백엔드 _deep_merge_prefs 와 동형.
+ *  preferences 부분 패치를 로컬 me 에 낙관적으로 반영할 때 쓴다. */
+function deepMergePrefs(base, patch) {
+  const out = { ...(base ?? {}) }
+  for (const [key, val] of Object.entries(patch ?? {})) {
+    out[key] =
+      val && typeof val === 'object' && !Array.isArray(val) &&
+      out[key] && typeof out[key] === 'object' && !Array.isArray(out[key])
+        ? deepMergePrefs(out[key], val)
+        : val
+  }
+  return out
+}
 
 const AuthContext = React.createContext(null)
 
@@ -72,6 +86,18 @@ export function AuthProvider({ children }) {
     refresh()
   }, [refresh])
 
+  /** 현재 사용자 환경설정 부분 패치 — 로컬 me.preferences 를 낙관적으로 깊은
+   *  병합한 뒤 서버에 PATCH. 설정값은 비핵심이라 실패해도 조용히 넘어간다
+   *  (다음 새로고침에 서버값으로 재동기화). */
+  const updatePreferences = React.useCallback((patch) => {
+    setMe((prev) =>
+      prev
+        ? { ...prev, preferences: deepMergePrefs(prev.preferences, patch) }
+        : prev,
+    )
+    return updateMyPreferences(patch).catch(() => {})
+  }, [])
+
   const login = React.useCallback(
     async ({ email, password }) => {
       const data = await loginApi({ email, password })
@@ -104,8 +130,9 @@ export function AuthProvider({ children }) {
       signup,
       logout,
       refresh,
+      updatePreferences,
     }),
-    [me, loading, error, login, signup, logout, refresh]
+    [me, loading, error, login, signup, logout, refresh, updatePreferences]
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

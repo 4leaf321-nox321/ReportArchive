@@ -45,6 +45,7 @@ import {
   unpublishComposite,
   updateComposite,
 } from '@/shared/api/composites'
+import { createCompositePreset } from '@/shared/api/compositePresets'
 import {
   Dialog,
   DialogContent,
@@ -90,6 +91,7 @@ export default function CompositeDetailPage() {
   const [addGroupOpen, setAddGroupOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [copyOpen, setCopyOpen] = useState(false)
+  const [savePresetOpen, setSavePresetOpen] = useState(false)
   // Drag-and-drop state for item reorder. Declared up here with the
   // other hooks (not next to the reorderItems handler below) because
   // hooks must run in the same order every render — the component has
@@ -128,7 +130,12 @@ export default function CompositeDetailPage() {
   // 이 두 hook 은 반드시 early-return 위에 있어야 한다 — draft 가 아직
   // null 인 첫 render 와 로드된 두 번째 render 사이에서 hook 수가 달라지면
   // React 의 "Rendered more hooks than during the previous render" 가 터짐.
-  const [pendingGroups, setPendingGroups] = useState([])
+  // 양식에서 시작한 경우 — NewCompositeDialog 가 navigate 시 state.seedGroups
+  // 로 빈 그룹 골격을 실어 보낸다(빈 그룹은 DB 에 못 들어가 pendingGroups 로만
+  // 존재). 사용자가 각 그룹에 안건을 채우고 저장하면 그제서야 영구 보존된다.
+  const [pendingGroups, setPendingGroups] = useState(
+    () => location.state?.seedGroups ?? [],
+  )
   const knownGroups = useMemo(() => {
     const set = new Set()
     for (const it of draft?.items ?? []) {
@@ -289,6 +296,30 @@ export default function CompositeDetailPage() {
       navigate(`/w/${created.workspace_slug}/composites/${created.id}`)
     } catch (err) {
       toast.error(err?.response?.data?.message || err.message || '복사 실패')
+      throw err
+    }
+  }
+
+  /** Snapshot the 요약(summary widgets) + 그룹 골격 + 보기설정 into a reusable
+   *  양식. 안건(item refs) are intentionally not captured. `knownGroups`
+   *  carries empty scaffold groups (pendingGroups) too, so the skeleton
+   *  survives even when a group has no items yet. 요약·보기설정·설명은
+   *  서버가 저장된 종합보고(source_composite_id)에서 읽으므로, 미저장 편집이
+   *  있으면 먼저 저장한 뒤 양식으로 저장한다. */
+  async function onSavePreset(name, description, ownerWorkspaceSlugs) {
+    if (!composite) return
+    try {
+      await createCompositePreset({
+        source_composite_id: composite.id,
+        name,
+        description: description ?? '',
+        owner_workspace_slugs: ownerWorkspaceSlugs,
+        groups: knownGroups,
+      })
+      toast.success('양식으로 저장되었습니다.')
+      setSavePresetOpen(false)
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err.message || '양식 저장 실패')
       throw err
     }
   }
@@ -870,6 +901,19 @@ export default function CompositeDetailPage() {
                 복사
               </Button>
             )}
+            {/* 양식으로 저장 — 요약·그룹 골격·보기설정을 이름 붙인 양식으로
+                저장해, 새 종합보고를 그 골격으로 시작할 수 있게 한다(보고서
+                프리셋과 동형). 안건은 담지 않는다. */}
+            {!isPublicView && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSavePresetOpen(true)}
+              >
+                <Layers className="mr-1 h-3 w-3" />
+                양식으로 저장
+              </Button>
+            )}
             {!isPublicView && (
               <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setConfirmDelete(true)}>
                 <Trash2 className="mr-1 h-3 w-3" />
@@ -1193,6 +1237,22 @@ export default function CompositeDetailPage() {
         onConfirm={onCopy}
       />
 
+      <CompositeSavePresetDialog
+        open={savePresetOpen}
+        onOpenChange={setSavePresetOpen}
+        sourceTitle={composite.title}
+        groupCount={knownGroups.length}
+        summaryCount={(draft.summary_widgets ?? []).length}
+        orgOptions={(me?.memberships ?? [])
+          .map((m) => m.workspace_slug)
+          .filter((s) => s && !s.startsWith('personal-'))
+          .map((wsSlug) => ({
+            slug: wsSlug,
+            name: (workspaces ?? []).find((w) => w.slug === wsSlug)?.name ?? wsSlug,
+          }))}
+        onConfirm={onSavePreset}
+      />
+
       {docxProgress && (
         <DocxExportOverlay
           title="Word 파일로 저장 중"
@@ -1280,6 +1340,124 @@ function CompositeCopyDialog({ open, onOpenChange, sourceTitle, sourceKind, onCo
             </Button>
             <Button type="submit" disabled={submitting || !title.trim()}>
               {submitting ? '복사 중...' : '복사'}
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** "양식으로 저장" — 요약·그룹 골격·보기설정을 이름 붙인 양식으로 스냅샷.
+ *  ReportSavePresetDialog 와 동형이되 템플릿 바인딩 안내가 없다(종합보고는
+ *  템플릿에 묶이지 않음). 공개 범위는 전사(null) 또는 특정 조직 트리([slug]). */
+function CompositeSavePresetDialog({
+  open,
+  onOpenChange,
+  sourceTitle,
+  groupCount,
+  summaryCount,
+  orgOptions,
+  onConfirm,
+}) {
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [scope, setScope] = useState('') // '' = 전사, 그 외 = workspace slug
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      const base = (sourceTitle ?? '').trim()
+      setName(base ? `${base} 양식` : '')
+      setDescription('')
+      setScope('')
+      setSubmitting(false)
+    }
+  }, [open, sourceTitle])
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    const trimmed = name.trim()
+    if (!trimmed) return
+    setSubmitting(true)
+    try {
+      // 전사 = null, 특정 조직 = [slug]
+      await onConfirm(trimmed, description.trim(), scope ? [scope] : null)
+    } catch {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>양식으로 저장</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <label htmlFor="composite-preset-name" className="text-sm font-medium">
+              양식 이름
+            </label>
+            <Input
+              id="composite-preset-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="예: 개발본부 주간 종합 양식"
+              autoFocus
+              required
+            />
+            <p className="text-[11px] text-muted-foreground">
+              현재 종합보고의 요약 {summaryCount}개 · 그룹 {groupCount}개 골격과
+              보기 설정이 양식에 담깁니다. 안건은 포함되지 않습니다 — 새 종합보고를
+              이 양식으로 시작할 수 있습니다.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="composite-preset-desc" className="text-sm font-medium">
+              설명 (선택)
+            </label>
+            <Textarea
+              id="composite-preset-desc"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="이 양식을 언제 쓰는지 간단히"
+              rows={2}
+              className="resize-none text-sm"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="composite-preset-scope" className="text-sm font-medium">
+              공개 범위
+            </label>
+            <select
+              id="composite-preset-scope"
+              value={scope}
+              onChange={(e) => setScope(e.target.value)}
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+            >
+              <option value="">전사 공개 (모든 조직)</option>
+              {(orgOptions ?? []).map((o) => (
+                <option key={o.slug} value={o.slug}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              특정 조직을 고르면 그 조직 트리에서만 이 양식이 보입니다.
+            </p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={submitting}
+            >
+              취소
+            </Button>
+            <Button type="submit" disabled={submitting || !name.trim()}>
+              {submitting ? '저장 중...' : '양식으로 저장'}
             </Button>
           </div>
         </form>

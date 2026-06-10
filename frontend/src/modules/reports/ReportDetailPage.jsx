@@ -18,6 +18,7 @@ import {
   ChevronUp,
   ClipboardPaste,
   Copy,
+  Activity,
   Download,
   FileBox,
   FileCode,
@@ -35,6 +36,7 @@ import {
   LockOpen,
   Maximize2,
   Minimize2,
+  MoreHorizontal,
   Network,
   Pencil,
   Plus,
@@ -71,6 +73,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/shared/components/ui/dropdown-menu'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
@@ -125,6 +129,7 @@ import {
 } from '@/shared/api/templates'
 import { listTemplateCategories } from '@/shared/api/templateCategories'
 import { getRenderer } from '@/modules/templates/widgets'
+import { useCaptionSkipPref } from '@/shared/widgets/useCaptionSkipPref'
 import { TableViewContext } from '@/modules/templates/widgets/Table'
 import { WidgetPicker } from '@/modules/templates/WidgetPicker'
 import { DepthStyleField, TextStyleField } from '@/modules/templates/widgets/_shared'
@@ -133,7 +138,7 @@ import { SectionPickerDialog } from './SectionPickerDialog'
 import { PromptPickerDialog } from './PromptPickerDialog'
 import { MountDialog } from './MountDialog'
 import { SharePopover } from '@/shared/components/SharePopover'
-import { FolderPickerButton } from './FolderPickerButton'
+import { FolderPickerDialog } from './FolderPickerButton'
 import { listMounts, mountReport } from '@/shared/api/mounts'
 import { listFolders } from '@/shared/api/folders'
 import { listCompositesContainingReport } from '@/shared/api/composites'
@@ -142,7 +147,7 @@ import { createPreset } from '@/shared/api/presets'
 import { CommentsProvider, useComments } from '@/modules/comments/CommentsContext'
 import { CommentPanel } from '@/modules/comments/CommentPanel'
 import { CommentPin } from '@/modules/comments/CommentPin'
-import { ActivityTimelineButton } from './ActivityTimeline'
+import { ActivityTimelineDialog } from './ActivityTimeline'
 import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
 import { cn } from '@/shared/lib/utils'
 import { toast } from 'sonner'
@@ -165,6 +170,9 @@ export default function ReportDetailPage() {
   const { slug, workspace, all: workspaces } = useWorkspace()
   const { me } = useAuth()
   const currentUserId = me?.user?.id ?? null
+  // 새 위젯 "제목 생략" 기본값 기억(위젯 type별 user preference).
+  const { getSkip: getCaptionSkip, rememberSkip: rememberCaptionSkip } =
+    useCaptionSkipPref()
   const isNew = Boolean(templateId)
   // When the previous page handed us `state.startEditing` (the "복사"
   // flow does this so the new copy lands directly in edit mode), we
@@ -195,6 +203,9 @@ export default function ReportDetailPage() {
   // 보고서 관계도 모달 (지식그래프 Phase 1a). 저장된 보고서일 때만 의미.
   const [graphOpen, setGraphOpen] = useState(false)
   const [mountOpen, setMountOpen] = useState(false)
+  // "더보기" 메뉴에서 여는 controlled 표면들(폴더 이동 · 활동 이력).
+  const [folderPickOpen, setFolderPickOpen] = useState(false)
+  const [activityOpen, setActivityOpen] = useState(false)
   // Mounts state declared here, the fetching useEffect lives further
   // down past `existingReport`'s declaration — TDZ would fire otherwise.
   const [mountByWorkspace, setMountByWorkspace] = useState({})
@@ -352,6 +363,16 @@ export default function ReportDetailPage() {
     () => (!isNew && reportId && slug ? getReport(reportId) : Promise.resolve(null)),
     [isNew, reportId, slug]
   )
+
+  // "더보기 > 폴더 이동"의 적용 모드 — 개인 헤더(owner)면 personal, 게시판
+  // 헤더(게시된 상태)면 org, 둘 다 아니면 null(메뉴에서 숨김).
+  const folderPickMode =
+    !isNew && isPersonalContext &&
+    existingReport?.owner_user_id === me?.user?.id
+      ? 'personal'
+      : !isNew && isOrgContext && currentMount
+        ? 'org'
+        : null
 
   // 보고서 간 link (참조 / 후속 …). 칩과 본문 하단 섹션 양쪽에서 같은
   // 데이터를 봐야 하므로 페이지 레벨에서 hook 을 한 번만 호출하고 결과를
@@ -1117,6 +1138,19 @@ export default function ReportDetailPage() {
   }
 
   function updateBlockContent(pageIdx, blockId, value) {
+    // "제목 생략" 토글이 바뀌면 그 위젯 type 의 새-위젯 기본값으로 기억.
+    // 모든 블록 콘텐츠 변경이 이 함수를 거치므로, 플래그가 실제로 뒤집힐
+    // 때만(타이핑 등은 무시) rememberSkip 을 부른다.
+    const page = draft?.pages?.[pageIdx]
+    if (page) {
+      const oldSkip = page.content?.[blockId]?.caption_skip_autofill === true
+      const newSkip = value?.caption_skip_autofill === true
+      if (oldSkip !== newSkip) {
+        const tpl = getCachedTemplate(pageTemplateMap, page)
+        const block = combinedBlocks(tpl, page).find((b) => b.id === blockId)
+        if (block?.type) rememberCaptionSkip(block.type, newSkip)
+      }
+    }
     setDraft((d) => {
       if (!d) return d
       const next = [...d.pages]
@@ -1301,6 +1335,9 @@ export default function ReportDetailPage() {
       const nextSections = defaultSection
         ? { ...(page.block_sections ?? {}), [id]: defaultSection }
         : page.block_sections
+      // 새 위젯 "제목 생략" 기본값 — 이 type 에 대해 기억된 값이 on 이면 새
+      // 블록의 content 에 미리 박는다(report 는 content 가 블록과 분리 저장).
+      const skipSeed = getCaptionSkip(widgetType)
       const nextPages = d.pages.map((p, i) =>
         i === pageIdx
           ? {
@@ -1308,6 +1345,14 @@ export default function ReportDetailPage() {
               extra_blocks: [...(p.extra_blocks ?? []), newBlock],
               blocks_order: nextOrder,
               ...(defaultSection ? { block_sections: nextSections } : {}),
+              ...(skipSeed
+                ? {
+                    content: {
+                      ...(p.content ?? {}),
+                      [id]: { caption_skip_autofill: true },
+                    },
+                  }
+                : {}),
             }
           : p,
       )
@@ -1443,6 +1488,8 @@ export default function ReportDetailPage() {
         ? { ...(page.block_sections ?? {}), [id]: defaultSection }
         : page.block_sections
 
+      // 새 위젯 "제목 생략" 기본값 시드 — addExtraBlock 과 동일.
+      const skipSeed = getCaptionSkip(widgetType)
       const nextPages = d.pages.map((p, i) =>
         i === pageIdx
           ? {
@@ -1451,6 +1498,14 @@ export default function ReportDetailPage() {
               blocks_order: nextOrder,
               layout_overrides: nextOverrides,
               ...(defaultSection ? { block_sections: nextSections } : {}),
+              ...(skipSeed
+                ? {
+                    content: {
+                      ...(p.content ?? {}),
+                      [id]: { caption_skip_autofill: true },
+                    },
+                  }
+                : {}),
             }
           : p,
       )
@@ -2329,6 +2384,28 @@ export default function ReportDetailPage() {
       navigate(`/w/${slug}/reports`)
     } catch (err) {
       toast.error(err.message || '삭제 실패')
+    }
+  }
+
+  // 작성자 hard lock 토글(owner only) — "더보기" 메뉴 항목에서 호출.
+  async function toggleAuthorLock() {
+    try {
+      if (existingReport.author_lock_enabled) {
+        if (!window.confirm('수정 잠금을 해제하시겠어요?')) return
+        await setAuthorLock(existingReport.id, { enabled: false })
+        toast.success('잠금 해제')
+      } else {
+        const reason = window.prompt(
+          '수정 잠금 사유 (선택, 비워두면 미기재):',
+          '',
+        )
+        if (reason === null) return
+        await setAuthorLock(existingReport.id, { enabled: true, reason })
+        toast.success('수정 잠금 활성화')
+      }
+      reloadReport()
+    } catch (e) {
+      toast.error(e?.response?.data?.message || '잠금 변경 실패')
     }
   }
 
@@ -3278,31 +3355,9 @@ export default function ReportDetailPage() {
               <Separator orientation="vertical" className="h-6 mx-1" />
 
               {/* ─── Group 4: Collaboration / Sharing ───
-                  폴더 → 게시 → 발행 → 편집자 → 활동 → 잠금. 보고서가 다른
-                  이해관계자에게 어떻게 노출되는지를 다루는 묶음. */}
-              {!isNew && isPersonalContext &&
-                existingReport?.owner_user_id === me?.user?.id && (
-                  <FolderPickerButton
-                    mode="personal"
-                    reportId={existingReport.id}
-                    folderId={existingReport.folder_id}
-                    onChanged={() => reloadReport()}
-                  />
-              )}
-              {!isNew && isOrgContext && currentMount && (
-                <FolderPickerButton
-                  mode="org"
-                  workspaceSlug={slug}
-                  reportId={existingReport.id}
-                  folderId={currentMount.folder_id}
-                  onChanged={(newFolderId) =>
-                    setMountByWorkspace((m) => ({
-                      ...m,
-                      [slug]: { ...m[slug], folder_id: newFolderId },
-                    }))
-                  }
-                />
-              )}
+                  게시 → 발행 → 제출 → 공유 → 더보기. 보고서가 다른 이해
+                  관계자에게 어떻게 노출되는지를 다루는 묶음. 저빈도 액션
+                  (폴더 이동·활동·수정 잠금)은 "더보기"로 접었다. */}
               {!isNew && existingReport?.owner_user_id === me?.user?.id && (
                 <Button
                   variant="outline"
@@ -3371,59 +3426,6 @@ export default function ReportDetailPage() {
                   triggerClassName="h-8 rounded-md border border-input bg-background px-2.5 hover:bg-accent hover:text-accent-foreground"
                 />
               )}
-              {/* 활동 이력 popover — 누구나 조회. 내부에 Activity 아이콘 + "활동" */}
-              {!isNew && existingReport?.id && (
-                <ActivityTimelineButton reportId={existingReport.id} />
-              )}
-              {/* 작성자 hard lock — owner only. 잠금 상태에선 같은 버튼이 해제로
-                  전환. Lock/LockOpen 아이콘으로 통일 (이전엔 🔒 emoji 섞임). */}
-              {!isNew && existingReport?.owner_user_id === me?.user?.id && (
-                <Button
-                  variant={existingReport?.author_lock_enabled ? 'destructive' : 'outline'}
-                  size="sm"
-                  onClick={async () => {
-                    try {
-                      if (existingReport.author_lock_enabled) {
-                        if (!window.confirm('수정 잠금을 해제하시겠어요?')) return
-                        await setAuthorLock(existingReport.id, { enabled: false })
-                        toast.success('잠금 해제')
-                      } else {
-                        const reason = window.prompt(
-                          '수정 잠금 사유 (선택, 비워두면 미기재):',
-                          '',
-                        )
-                        if (reason === null) return
-                        await setAuthorLock(existingReport.id, {
-                          enabled: true,
-                          reason,
-                        })
-                        toast.success('수정 잠금 활성화')
-                      }
-                      reloadReport()
-                    } catch (e) {
-                      toast.error(e?.response?.data?.message || '잠금 변경 실패')
-                    }
-                  }}
-                  title={
-                    existingReport?.author_lock_enabled
-                      ? '수정 잠금 해제'
-                      : '작성자 외 편집 차단'
-                  }
-                >
-                  {existingReport?.author_lock_enabled ? (
-                    <>
-                      <LockOpen className="mr-1 h-3 w-3" />
-                      잠금 해제
-                    </>
-                  ) : (
-                    <>
-                      <Lock className="mr-1 h-3 w-3" />
-                      수정 잠금
-                    </>
-                  )}
-                </Button>
-              )}
-
               <Separator orientation="vertical" className="h-6 mx-1" />
 
               {/* ─── Group 5: Report variants ───
@@ -3437,39 +3439,6 @@ export default function ReportDetailPage() {
                 <Copy className="mr-1 h-3 w-3" />
                 복사
               </Button>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    title="이 보고서를 재사용 가능한 템플릿 또는 프리셋으로 저장"
-                  >
-                    <FileBox className="mr-1 h-3 w-3" />
-                    재사용 저장
-                    <ChevronDown className="ml-1 h-3 w-3 opacity-60" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => setSaveTemplateOpen(true)}>
-                    <FileBox className="mr-2 h-3.5 w-3.5" />
-                    <span className="flex flex-col">
-                      <span>템플릿으로 저장</span>
-                      <span className="text-[11px] text-muted-foreground">
-                        위젯 배치(구조)만
-                      </span>
-                    </span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => setSavePresetOpen(true)}>
-                    <Sparkles className="mr-2 h-3.5 w-3.5" />
-                    <span className="flex flex-col">
-                      <span>프리셋으로 저장</span>
-                      <span className="text-[11px] text-muted-foreground">
-                        내용까지 채운 프리셋
-                      </span>
-                    </span>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
               {/* "삭제"=소프트삭제(휴지통). 소유자/시스템관리자만(can_trash).
                   게시분은 보존되고 휴지통에서 복구 가능. 게시판에서 내리는 건
                   매니저의 '게시취소'(별도). */}
@@ -3490,21 +3459,6 @@ export default function ReportDetailPage() {
           {/* ─── Group 6: Output / AI ───
               AI 프롬프트 + 로컬 파일 입출력. 편집/뷰 모드와 무관하게 항상
               노출 (편집 중에도 AI 도움이나 로컬 백업이 필요할 수 있음). */}
-
-          {/* 관계도 — 이 보고서를 중심으로 연결된 보고서들의 그래프.
-              저장된 보고서(existingReport.id)일 때만 의미가 있어 새 보고서
-              작성 중엔 숨김. */}
-          {existingReport?.id != null && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setGraphOpen(true)}
-              title="연결된 보고서 관계도 보기"
-            >
-              <Network className="mr-1 h-3 w-3" />
-              관계도
-            </Button>
-          )}
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -3564,6 +3518,85 @@ export default function ReportDetailPage() {
             onChange={handleLocalLoad}
             className="hidden"
           />
+
+          {/* 더보기 — 툴바 맨 오른쪽. 저빈도 액션(관계도·폴더 이동·활동 이력·
+              재사용 저장·수정 잠금)을 접어 혼잡을 줄인다. 편집 중엔 숨김
+              (보기 모드 전용 액션). */}
+          {!isEditing && !isNew && existingReport?.id && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" title="더보기">
+                  <MoreHorizontal className="h-4 w-4" />
+                  <span className="sr-only">더보기</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => setGraphOpen(true)}>
+                  <Network className="mr-2 h-3.5 w-3.5" />
+                  관계도
+                </DropdownMenuItem>
+                {folderPickMode && (
+                  <DropdownMenuItem onSelect={() => setFolderPickOpen(true)}>
+                    <Folder className="mr-2 h-3.5 w-3.5" />
+                    {folderPickMode === 'org' ? '게시판 폴더 이동' : '폴더 이동'}
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onSelect={() => setActivityOpen(true)}>
+                  <Activity className="mr-2 h-3.5 w-3.5" />
+                  활동 이력
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
+                  재사용 저장
+                </DropdownMenuLabel>
+                <DropdownMenuItem onSelect={() => setSaveTemplateOpen(true)}>
+                  <FileBox className="mr-2 h-3.5 w-3.5" />
+                  <span className="flex flex-col">
+                    <span>템플릿으로 저장</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      위젯 배치(구조)만
+                    </span>
+                  </span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setSavePresetOpen(true)}>
+                  <Sparkles className="mr-2 h-3.5 w-3.5" />
+                  <span className="flex flex-col">
+                    <span>프리셋으로 저장</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      내용까지 채운 프리셋
+                    </span>
+                  </span>
+                </DropdownMenuItem>
+
+                {existingReport?.owner_user_id === me?.user?.id && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onSelect={() => toggleAuthorLock()}
+                      className={
+                        existingReport?.author_lock_enabled
+                          ? 'text-destructive focus:text-destructive'
+                          : undefined
+                      }
+                    >
+                      {existingReport?.author_lock_enabled ? (
+                        <>
+                          <LockOpen className="mr-2 h-3.5 w-3.5" />
+                          수정 잠금 해제
+                        </>
+                      ) : (
+                        <>
+                          <Lock className="mr-2 h-3.5 w-3.5" />
+                          수정 잠금
+                        </>
+                      )}
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           </div>
         </div>
 
@@ -4084,6 +4117,37 @@ export default function ReportDetailPage() {
           /* future: refresh report meta to pick up phase auto-transition */
         }}
       />
+
+      {/* "더보기"에서 여는 controlled 표면들 — 폴더 이동 · 활동 이력. */}
+      {folderPickMode && existingReport?.id && (
+        <FolderPickerDialog
+          open={folderPickOpen}
+          onOpenChange={setFolderPickOpen}
+          reportId={existingReport.id}
+          mode={folderPickMode}
+          {...(folderPickMode === 'org'
+            ? {
+                workspaceSlug: slug,
+                folderId: currentMount?.folder_id,
+                onChanged: (newFolderId) =>
+                  setMountByWorkspace((m) => ({
+                    ...m,
+                    [slug]: { ...m[slug], folder_id: newFolderId },
+                  })),
+              }
+            : {
+                folderId: existingReport?.folder_id,
+                onChanged: () => reloadReport(),
+              })}
+        />
+      )}
+      {existingReport?.id && (
+        <ActivityTimelineDialog
+          reportId={existingReport.id}
+          open={activityOpen}
+          onOpenChange={setActivityOpen}
+        />
+      )}
 
 
       <ReportSettingsDialog

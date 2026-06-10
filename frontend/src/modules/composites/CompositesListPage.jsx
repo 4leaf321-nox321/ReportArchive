@@ -156,12 +156,14 @@ export default function CompositesListPage() {
         onOpenChange={setNewOpen}
         currentWorkspaceSlug={slug}
         workspaces={workspaces}
-        onCreated={(id) => {
+        onCreated={(id, opts) => {
           setNewOpen(false)
           toast.success('종합보고가 생성되었습니다.')
           // 생성 직후 바로 편집 모드로 진입 — 사용자가 어차피 곧장 편집한다.
+          // 양식에서 시작했으면 빈 그룹 골격(seedGroups)을 함께 실어 상세
+          // 페이지의 pendingGroups 로 시딩한다.
           navigate(`/w/${slug}/composites/${id}`, {
-            state: { startEditing: true },
+            state: { startEditing: true, seedGroups: opts?.seedGroups ?? [] },
           })
         }}
       />

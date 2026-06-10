@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Plus,
@@ -11,16 +11,26 @@ import {
   Building2,
   ChevronRight,
   ChevronDown,
+  ChevronUp,
+  Layers,
+  X,
 } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/shared/components/ui/dialog'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs'
+import {
+  ScopeCategorySidebar,
+  useScopeCategories,
+} from '@/shared/components/ScopeCategories'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
+import { Textarea } from '@/shared/components/ui/textarea'
 import { Badge } from '@/shared/components/ui/badge'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { Skeleton } from '@/shared/components/ui/skeleton'
@@ -32,6 +42,11 @@ import { useAuth } from '@/shared/auth/AuthContext'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { deleteTemplate, listTemplates, setTemplateScope } from '@/shared/api/templates'
 import { listPresets, deletePreset } from '@/shared/api/presets'
+import {
+  listCompositePresets,
+  updateCompositePreset,
+  deleteCompositePreset,
+} from '@/shared/api/compositePresets'
 import { listTemplateCategories } from '@/shared/api/templateCategories'
 import { makeCategoryNameLookup } from '@/modules/reports/constants'
 import { cn } from '@/shared/lib/utils'
@@ -89,29 +104,39 @@ export default function TemplatesPage() {
   const [scopeEditFor, setScopeEditFor] = useState(null) // 공유 부서 편집 대상
   const [selectedId, setSelectedId] = useState(null) // template_id
   const [query, setQuery] = useState('')
+  const [tab, setTab] = useState('templates') // 'templates' | 'composite-presets'
 
   const list = useMemo(() => templates ?? [], [templates])
+  // 전사/조직별/개인 분류 — 종합보고 양식 picker 와 같은 방식(공용 훅).
+  const tplCat = useScopeCategories(list, {
+    currentUserId: me?.user?.id,
+    getName: workspaceName,
+  })
+  const byCat = list.filter(tplCat.filter)
   const trimmed = query.trim().toLowerCase()
   const filteredTemplates = trimmed
-    ? list.filter(
+    ? byCat.filter(
         (t) =>
           t.name.toLowerCase().includes(trimmed) ||
           (t.description || '').toLowerCase().includes(trimmed) ||
           t.template_id.toLowerCase().includes(trimmed),
       )
-    : list
+    : byCat
 
-  // 선택 유지: 목록이 로드되면 첫 항목을 선택하고, 선택한 템플릿이 사라지면
-  // (삭제 등) 첫 항목으로 되돌린다.
+  // 선택 유지: 현재 분류에서 첫 항목을 선택하고, 선택한 템플릿이 분류 밖으로
+  // 벗어나거나(분류 전환·삭제) 사라지면 분류의 첫 항목으로 되돌린다. 검색은
+  // 선택을 리셋하지 않도록 분류(byCat) 기준으로만 본다.
   useEffect(() => {
-    if (list.length === 0) {
+    const visible = list.filter(tplCat.filter)
+    if (visible.length === 0) {
       setSelectedId(null)
       return
     }
-    if (!list.some((t) => t.template_id === selectedId)) {
-      setSelectedId(list[0].template_id)
+    if (!visible.some((t) => t.template_id === selectedId)) {
+      setSelectedId(visible[0].template_id)
     }
-  }, [list, selectedId])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [list, tplCat.cat, selectedId])
 
   const selected = list.find((t) => t.template_id === selectedId) ?? null
   const selectedPresets = selected
@@ -146,8 +171,9 @@ export default function TemplatesPage() {
     <div className="p-6 space-y-6">
       <PageHeader
         title="템플릿 관리"
-        description="JSON Schema 2020-12 기반 보고서 양식. 글로벌 + 부서 트리 종속 혼합 가시성."
+        description="JSON Schema 2020-12 기반 보고서 양식 + 종합보고 양식. 글로벌 + 부서 트리 종속 혼합 가시성."
         actions={
+          tab === 'templates' &&
           canCreateTemplates && (
             <Button asChild>
               <Link to="/templates/new">
@@ -159,80 +185,115 @@ export default function TemplatesPage() {
         }
       />
 
-      {error ? (
-        <ErrorState description={error.message} onRetry={reload} />
-      ) : loading ? (
-        <div className="flex gap-6">
-          <Skeleton className="h-96 w-72 shrink-0" />
-          <Skeleton className="h-96 flex-1" />
-        </div>
-      ) : list.length === 0 ? (
-        <EmptyState
-          title="템플릿이 없습니다"
-          description={
-            canCreateTemplates
-              ? '신규 템플릿 버튼을 눌러 첫 양식을 만드세요.'
-              : '매니저 또는 부서 멤버가 템플릿을 추가하면 여기에 표시됩니다.'
-          }
-        />
-      ) : (
-        <div className="flex items-start gap-6">
-          {/* ── 좌측: 템플릿 목록 (sticky) ── */}
-          <aside className="sticky top-6 w-72 shrink-0 self-start">
-            <div className="relative mb-2">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="템플릿 검색"
-                className="h-8 pl-8 text-sm"
-              />
-            </div>
-            <ul className="max-h-[calc(100vh-200px)] space-y-1 overflow-y-auto pr-1">
-              {filteredTemplates.length === 0 ? (
-                <li className="px-2 py-3 text-xs text-muted-foreground">
-                  검색 결과가 없습니다.
-                </li>
-              ) : (
-                filteredTemplates.map((t) => (
-                  <li key={t.template_id}>
-                    <TemplateListItem
-                      template={t}
-                      active={t.template_id === selectedId}
-                      presetCount={(presetsByTemplate.get(t.template_id) ?? []).length}
-                      onClick={() => setSelectedId(t.template_id)}
-                    />
-                  </li>
-                ))
-              )}
-            </ul>
-          </aside>
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList>
+          <TabsTrigger value="templates">
+            <FileCode2 className="mr-1.5 h-3.5 w-3.5" />
+            보고서 템플릿
+          </TabsTrigger>
+          <TabsTrigger value="composite-presets">
+            <Layers className="mr-1.5 h-3.5 w-3.5" />
+            종합보고 양식
+          </TabsTrigger>
+        </TabsList>
 
-          {/* ── 우측: 선택한 템플릿 상세 + 프리셋 ── */}
-          <section className="min-w-0 flex-1">
-            {selected ? (
-              <TemplateDetail
-                template={selected}
-                categoryName={categoryName}
-                workspaceName={workspaceName}
-                canManage={canManageTemplate(selected)}
-                canDelete={canManageTemplate(selected)}
-                canEditScope={isManager}
-                onDelete={() => setPendingDelete(selected)}
-                onEditScope={() => setScopeEditFor(selected)}
-                presets={selectedPresets}
-                currentUserId={me?.user?.id}
-                isAdmin={me?.is_system_admin === true}
-                onDeletePreset={(p) => setPendingPresetDelete(p)}
+        <TabsContent value="templates" className="mt-4">
+          {error ? (
+            <ErrorState description={error.message} onRetry={reload} />
+          ) : loading ? (
+            <div className="flex gap-6">
+              <Skeleton className="h-96 w-72 shrink-0" />
+              <Skeleton className="h-96 flex-1" />
+            </div>
+          ) : list.length === 0 ? (
+            <EmptyState
+              title="템플릿이 없습니다"
+              description={
+                canCreateTemplates
+                  ? '신규 템플릿 버튼을 눌러 첫 양식을 만드세요.'
+                  : '매니저 또는 부서 멤버가 템플릿을 추가하면 여기에 표시됩니다.'
+              }
+            />
+          ) : (
+            <div className="flex items-start gap-5">
+              {/* ── 분류 사이드바(공용) — 전사/조직별/개인 ── */}
+              <ScopeCategorySidebar
+                counts={tplCat.counts}
+                orgGroups={tplCat.orgGroups}
+                cat={tplCat.cat}
+                onChange={tplCat.setCat}
+                mineLabel="개인 (내 템플릿)"
+                emptyOrgText="조직 템플릿이 없습니다."
+                className="sticky top-6 w-44 shrink-0 self-start border-r pr-2"
               />
-            ) : (
-              <div className="py-12 text-center text-sm text-muted-foreground">
-                왼쪽에서 템플릿을 선택하세요.
-              </div>
-            )}
-          </section>
-        </div>
-      )}
+              {/* ── 좌측: 템플릿 목록 (sticky) ── */}
+              <aside className="sticky top-6 w-64 shrink-0 self-start">
+                <div className="relative mb-2">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="템플릿 검색"
+                    className="h-8 pl-8 text-sm"
+                  />
+                </div>
+                <ul className="max-h-[calc(100vh-200px)] space-y-1 overflow-y-auto pr-1">
+                  {filteredTemplates.length === 0 ? (
+                    <li className="px-2 py-3 text-xs text-muted-foreground">
+                      {trimmed ? '검색 결과가 없습니다.' : '이 분류에 템플릿이 없습니다.'}
+                    </li>
+                  ) : (
+                    filteredTemplates.map((t) => (
+                      <li key={t.template_id}>
+                        <TemplateListItem
+                          template={t}
+                          active={t.template_id === selectedId}
+                          presetCount={(presetsByTemplate.get(t.template_id) ?? []).length}
+                          onClick={() => setSelectedId(t.template_id)}
+                        />
+                      </li>
+                    ))
+                  )}
+                </ul>
+              </aside>
+
+              {/* ── 우측: 선택한 템플릿 상세 + 프리셋 ── */}
+              <section className="min-w-0 flex-1">
+                {selected ? (
+                  <TemplateDetail
+                    template={selected}
+                    categoryName={categoryName}
+                    workspaceName={workspaceName}
+                    canManage={canManageTemplate(selected)}
+                    canDelete={canManageTemplate(selected)}
+                    canEditScope={isManager}
+                    onDelete={() => setPendingDelete(selected)}
+                    onEditScope={() => setScopeEditFor(selected)}
+                    presets={selectedPresets}
+                    currentUserId={me?.user?.id}
+                    isAdmin={me?.is_system_admin === true}
+                    onDeletePreset={(p) => setPendingPresetDelete(p)}
+                  />
+                ) : (
+                  <div className="py-12 text-center text-sm text-muted-foreground">
+                    왼쪽에서 템플릿을 선택하세요.
+                  </div>
+                )}
+              </section>
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="composite-presets" className="mt-4">
+          <CompositePresetsPanel
+            orgOptions={orgWorkspaces}
+            workspaceName={workspaceName}
+            isManager={isManager}
+            isAdmin={me?.is_system_admin === true}
+            currentUserId={me?.user?.id}
+          />
+        </TabsContent>
+      </Tabs>
 
       <ConfirmDialog
         open={!!pendingDelete}
@@ -269,6 +330,423 @@ export default function TemplatesPage() {
         onSaved={() => reload()}
       />
     </div>
+  )
+}
+
+/** 종합보고 양식 관리 탭 — 보고서 템플릿과 달리 종합보고 양식은 템플릿에
+ *  묶이지 않으므로 좌우 패널이 아닌 단일 목록으로 관리한다. 메타정보(이름·
+ *  설명·공개범위)와 그룹 골격을 편집 다이얼로그에서 수정. 권한: 만든 사람 ·
+ *  매니저 · 시스템관리자. */
+function CompositePresetsPanel({
+  orgOptions,
+  workspaceName,
+  isManager,
+  isAdmin,
+  currentUserId,
+}) {
+  const { data: presets, loading, error, reload } = useAsync(
+    () => listCompositePresets(),
+    [],
+  )
+  const [query, setQuery] = useState('')
+  const [editing, setEditing] = useState(null) // preset or null
+  const [pendingDelete, setPendingDelete] = useState(null)
+
+  const canManage = (p) =>
+    isManager || isAdmin || (currentUserId && p.created_by_user_id === currentUserId)
+
+  const rows = useMemo(() => presets ?? [], [presets])
+  // 전사/조직별/개인 분류 — 보고서 템플릿 탭·picker 와 같은 방식(공용 훅).
+  const { cat, setCat, counts, orgGroups, filter } = useScopeCategories(rows, {
+    currentUserId,
+    getName: workspaceName,
+  })
+  const byCat = rows.filter(filter)
+  const trimmed = query.trim().toLowerCase()
+  const filtered = trimmed
+    ? byCat.filter(
+        (p) =>
+          p.name.toLowerCase().includes(trimmed) ||
+          (p.description || '').toLowerCase().includes(trimmed) ||
+          (p.groups ?? []).some((g) => g.toLowerCase().includes(trimmed)),
+      )
+    : byCat
+
+  async function onConfirmDelete() {
+    if (!pendingDelete) return
+    try {
+      await deleteCompositePreset(pendingDelete.id)
+      toast.success(`'${pendingDelete.name}' 양식 삭제됨`)
+      setPendingDelete(null)
+      reload()
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err.message || '양식 삭제 실패')
+    }
+  }
+
+  if (error) {
+    return <ErrorState description={error.message} onRetry={reload} />
+  }
+  if (loading) {
+    return <Skeleton className="h-72" />
+  }
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        title="종합보고 양식이 없습니다"
+        description="종합보고 상세에서 '양식으로 저장'을 누르면 여기에 표시됩니다."
+      />
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-sm font-semibold">
+          <Layers className="h-4 w-4 text-primary" />
+          종합보고 양식 {rows.length}개
+        </div>
+        <div className="relative w-full max-w-xs">
+          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="양식 이름·설명·그룹 검색"
+            className="h-8 pl-8 text-sm"
+          />
+        </div>
+      </div>
+      <div className="flex items-start gap-5">
+        {/* ── 분류 사이드바(공용) — 전사/조직별/개인 ── */}
+        <ScopeCategorySidebar
+          counts={counts}
+          orgGroups={orgGroups}
+          cat={cat}
+          onChange={setCat}
+          mineLabel="개인 (내 양식)"
+          emptyOrgText="조직 양식이 없습니다."
+          className="sticky top-6 w-44 shrink-0 self-start border-r pr-2"
+        />
+        <div className="min-w-0 flex-1">
+          {filtered.length === 0 ? (
+            <p className="py-10 text-center text-sm text-muted-foreground">
+              {trimmed ? '검색 결과가 없습니다.' : '이 분류에 양식이 없습니다.'}
+            </p>
+          ) : (
+            <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              {filtered.map((p) => {
+                const isGlobal = (p.owner_workspace_slugs ?? []).length === 0
+                const manage = canManage(p)
+                return (
+                  <li
+                    key={p.id}
+                    className="flex items-start gap-2 rounded-md border px-3 py-2.5"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 text-sm font-medium">
+                        <Layers className="h-3.5 w-3.5 shrink-0 text-primary" />
+                        <span className="truncate">{p.name}</span>
+                        {isGlobal ? (
+                          <Badge variant="secondary" className="text-[9px]">
+                            전사
+                          </Badge>
+                        ) : (
+                          (p.owner_workspace_slugs ?? []).map((s) => (
+                            <Badge key={s} variant="outline" className="text-[9px]">
+                              {workspaceName ? workspaceName(s) : s}
+                            </Badge>
+                          ))
+                        )}
+                      </div>
+                      {p.description && (
+                        <p className="mt-0.5 text-[11px] text-muted-foreground line-clamp-2">
+                          {p.description}
+                        </p>
+                      )}
+                      <p className="mt-1 text-[10px] text-muted-foreground">
+                        요약 {p.summary_widget_count ?? 0}개 · 그룹{' '}
+                        {(p.groups ?? []).length}개
+                        {(p.groups ?? []).length > 0 &&
+                          ` (${p.groups.slice(0, 4).join(', ')}${
+                            p.groups.length > 4 ? ' …' : ''
+                          })`}
+                      </p>
+                      {p.created_by_name && (
+                        <p className="mt-0.5 text-[10px] text-muted-foreground">
+                          만든 사람: {p.created_by_name}
+                        </p>
+                      )}
+                    </div>
+                    {manage && (
+                      <div className="flex shrink-0 gap-0.5">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground"
+                          onClick={() => setEditing(p)}
+                          title="양식 정보 수정"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                          onClick={() => setPendingDelete(p)}
+                          title="양식 삭제"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      <CompositePresetEditDialog
+        preset={editing}
+        orgOptions={orgOptions}
+        onClose={() => setEditing(null)}
+        onSaved={() => {
+          setEditing(null)
+          reload()
+        }}
+      />
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        onOpenChange={(open) => !open && setPendingDelete(null)}
+        title="종합보고 양식 삭제"
+        description={
+          pendingDelete
+            ? `'${pendingDelete.name}' 양식을 삭제합니다. 이 양식으로 이미 만든 종합보고에는 영향이 없습니다. 되돌릴 수 없습니다.`
+            : ''
+        }
+        confirmLabel="삭제"
+        variant="destructive"
+        onConfirm={onConfirmDelete}
+      />
+    </div>
+  )
+}
+
+/** 종합보고 양식 메타정보 + 그룹 골격 편집. 요약 위젯·보기설정은 여기서
+ *  못 고친다(종합보고 에디터에서 다시 저장). 공개범위는 전사 또는 특정 조직
+ *  하나(생성 다이얼로그와 동일 단일 선택). */
+function CompositePresetEditDialog({ preset, orgOptions, onClose, onSaved }) {
+  const open = Boolean(preset)
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [scope, setScope] = useState('') // '' = 전사
+  const [groups, setGroups] = useState([]) // [{ id, name }]
+  const [submitting, setSubmitting] = useState(false)
+  const nextId = useRef(0)
+
+  useEffect(() => {
+    if (!preset) return
+    setName(preset.name ?? '')
+    setDescription(preset.description ?? '')
+    setScope((preset.owner_workspace_slugs ?? [])[0] ?? '')
+    nextId.current = 0
+    setGroups(
+      (preset.groups ?? []).map((g) => ({ id: nextId.current++, name: g })),
+    )
+    setSubmitting(false)
+  }, [preset])
+
+  function setGroupName(id, value) {
+    setGroups((prev) => prev.map((g) => (g.id === id ? { ...g, name: value } : g)))
+  }
+  function removeGroup(id) {
+    setGroups((prev) => prev.filter((g) => g.id !== id))
+  }
+  function addGroup() {
+    setGroups((prev) => [...prev, { id: nextId.current++, name: '' }])
+  }
+  function moveGroup(idx, dir) {
+    setGroups((prev) => {
+      const j = idx + dir
+      if (j < 0 || j >= prev.length) return prev
+      const next = [...prev]
+      ;[next[idx], next[j]] = [next[j], next[idx]]
+      return next
+    })
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    const trimmedName = name.trim()
+    if (!trimmedName) return
+    // 빈 그룹·중복 제거(순서 유지) — 백엔드도 정규화하지만 미리 다듬는다.
+    const seen = new Set()
+    const cleanGroups = []
+    for (const g of groups) {
+      const t = (g.name || '').trim()
+      if (t && !seen.has(t)) {
+        seen.add(t)
+        cleanGroups.push(t)
+      }
+    }
+    setSubmitting(true)
+    try {
+      await updateCompositePreset(preset.id, {
+        name: trimmedName,
+        description: description.trim(),
+        owner_workspace_slugs: scope ? [scope] : null,
+        groups: cleanGroups,
+      })
+      toast.success('양식이 수정되었습니다.')
+      onSaved?.()
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err.message || '양식 수정 실패')
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="flex max-h-[85vh] flex-col">
+        <DialogHeader>
+          <DialogTitle>양식 정보 수정</DialogTitle>
+          <DialogDescription>
+            이름·설명·공개범위와 그룹 골격을 수정합니다. 요약 위젯과 보기 설정은
+            종합보고에서 다시 “양식으로 저장”해야 반영됩니다.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+            <div className="space-y-1.5">
+              <label htmlFor="cp-edit-name" className="text-sm font-medium">
+                양식 이름
+              </label>
+              <Input
+                id="cp-edit-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                autoFocus
+                required
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor="cp-edit-desc" className="text-sm font-medium">
+                설명 (선택)
+              </label>
+              <Textarea
+                id="cp-edit-desc"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                rows={2}
+                className="resize-none text-sm"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor="cp-edit-scope" className="text-sm font-medium">
+                공개 범위
+              </label>
+              <select
+                id="cp-edit-scope"
+                value={scope}
+                onChange={(e) => setScope(e.target.value)}
+                className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+              >
+                <option value="">전사 공개 (모든 조직)</option>
+                {(orgOptions ?? []).map((o) => (
+                  <option key={o.slug} value={o.slug}>
+                    {o.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">그룹 골격</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={addGroup}
+                >
+                  <Plus className="mr-1 h-3 w-3" />
+                  그룹 추가
+                </Button>
+              </div>
+              {groups.length === 0 ? (
+                <p className="text-[11px] text-muted-foreground">
+                  그룹이 없습니다. “그룹 추가”로 골격을 만드세요.
+                </p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {groups.map((g, idx) => (
+                    <li key={g.id} className="flex items-center gap-1.5">
+                      <Input
+                        value={g.name}
+                        onChange={(e) => setGroupName(g.id, e.target.value)}
+                        placeholder="그룹 이름"
+                        className="h-8 text-sm"
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 shrink-0 text-muted-foreground"
+                        onClick={() => moveGroup(idx, -1)}
+                        disabled={idx === 0}
+                        title="위로"
+                      >
+                        <ChevronUp className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 shrink-0 text-muted-foreground"
+                        onClick={() => moveGroup(idx, 1)}
+                        disabled={idx === groups.length - 1}
+                        title="아래로"
+                      >
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
+                        onClick={() => removeGroup(g.id)}
+                        title="삭제"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="text-[11px] text-muted-foreground">
+                새 종합보고를 이 양식으로 시작하면 이 그룹들이 빈 골격으로
+                채워집니다.
+              </p>
+            </div>
+          </div>
+          <DialogFooter className="mt-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onClose}
+              disabled={submitting}
+            >
+              취소
+            </Button>
+            <Button type="submit" disabled={submitting || !name.trim()}>
+              {submitting ? '저장 중...' : '저장'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }
 

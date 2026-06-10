@@ -34,6 +34,7 @@ import { cn } from '@/shared/lib/utils'
 import { getRenderer } from '@/modules/templates/widgets'
 import { WidgetPicker } from '@/modules/templates/WidgetPicker'
 import { useWidgetCatalog } from '@/shared/hooks/useWidgetCatalog'
+import { useCaptionSkipPref } from '@/shared/widgets/useCaptionSkipPref'
 
 const COLS = 12
 // 한 행(grid unit) 높이(px). 그리드 전체 높이는 라이브러리가
@@ -60,6 +61,7 @@ function newId() {
  */
 export function CompositeSummary({ widgets, editing, onChange }) {
   const { catalog } = useWidgetCatalog()
+  const { getSkip, rememberSkip } = useCaptionSkipPref()
   const list = useMemo(() => widgets ?? [], [widgets])
 
   const containerRef = useRef(null)
@@ -92,6 +94,15 @@ export function CompositeSummary({ widgets, editing, onChange }) {
   )
 
   function updateWidget(id, patch) {
+    // "제목 생략" 토글이 바뀌면 그 위젯 type 의 새-위젯 기본값으로 기억.
+    if (patch?.content) {
+      const w = list.find((x) => x.id === id)
+      if (w) {
+        const oldSkip = w.content?.caption_skip_autofill === true
+        const newSkip = patch.content.caption_skip_autofill === true
+        if (oldSkip !== newSkip) rememberSkip(w.type, newSkip)
+      }
+    }
     onChange(list.map((w) => (w.id === id ? { ...w, ...patch } : w)))
   }
   function removeWidget(id) {
@@ -109,7 +120,9 @@ export function CompositeSummary({ widgets, editing, onChange }) {
         id: newId(),
         type,
         props: { ...(meta?.default_props ?? {}) },
-        content: {},
+        // 새 위젯의 "제목 생략" 기본값 — 이 type 에 대해 사용자가 마지막으로
+        // 고른 값(없으면 표시 = 빈 content).
+        content: getSkip(type) ? { caption_skip_autofill: true } : {},
         layout: { x: 0, y: maxY, w: COLS, h: DEFAULT_H },
       },
     ])
@@ -126,7 +139,7 @@ export function CompositeSummary({ widgets, editing, onChange }) {
       id: newId(),
       type,
       props: { ...(defaults ?? {}) },
-      content: {},
+      content: getSkip(type) ? { caption_skip_autofill: true } : {},
     }
     if (direction === 'up' || direction === 'down') {
       const newH = DEFAULT_H

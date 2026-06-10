@@ -10,6 +10,13 @@ export async function updateMyProfile({ name }) {
   return extractData(res)
 }
 
+/** 현재 사용자 환경설정 부분 패치(깊은 병합). 보낸 키만 갱신되고 나머지는
+ *  유지. 병합된 preferences({ preferences }) 를 반환. */
+export async function updateMyPreferences(preferences) {
+  const res = await apiClient.patch('/api/me/preferences', { preferences })
+  return extractData(res)
+}
+
 export async function changeMyPassword({ currentPassword, newPassword }) {
   const res = await apiClient.post('/api/me/password', {
     current_password: currentPassword,

@@ -36,7 +36,7 @@ export function SubmitToCompositeButton({ reportId }) {
         title="이 보고서를 종합보고에 안건으로 제출 (작성자 승인 후 추가)"
       >
         <Send className="mr-1 h-3 w-3" />
-        제출
+        종합보고 제출
       </Button>
       {open && (
         <SubmitToCompositeDialog

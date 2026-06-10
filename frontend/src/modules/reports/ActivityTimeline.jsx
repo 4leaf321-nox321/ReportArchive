@@ -76,7 +76,7 @@ export function ActivityTimelineButton({ reportId }) {
   )
 }
 
-function ActivityTimelineDialog({ reportId, open, onOpenChange }) {
+export function ActivityTimelineDialog({ reportId, open, onOpenChange }) {
   const [items, setItems] = React.useState([])
   const [loading, setLoading] = React.useState(false)
   const [loadingMore, setLoadingMore] = React.useState(false)

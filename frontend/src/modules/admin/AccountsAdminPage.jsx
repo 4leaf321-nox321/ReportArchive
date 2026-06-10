@@ -798,6 +798,32 @@ export default function AccountsAdminPage() {
   )
 }
 
+// 트리맵 색 — 상위(루트) 부서마다 조화로운 뮤트 톤 한 색을 배정하고, 하위로
+// 갈수록 같은 색을 흰색과 섞어 옅게(브랜치가 한 계열로 묶여 보이도록). seaborn
+// 'muted' 계열 — 채도가 과하지 않아 정돈된 인상.
+const TREEMAP_PALETTE = [
+  '#4878d0',
+  '#ee854a',
+  '#6acc64',
+  '#d65f5f',
+  '#956cb4',
+  '#8c613c',
+  '#dc7ec0',
+  '#797979',
+  '#d5bb67',
+  '#82c6e2',
+]
+
+function _tintHex(hex, amount) {
+  const h = hex.replace('#', '')
+  const r = parseInt(h.slice(0, 2), 16)
+  const g = parseInt(h.slice(2, 4), 16)
+  const b = parseInt(h.slice(4, 6), 16)
+  const mix = (c) => Math.round(c + (255 - c) * amount)
+  const to2 = (n) => n.toString(16).padStart(2, '0')
+  return '#' + to2(mix(r)) + to2(mix(g)) + to2(mix(b))
+}
+
 /** 부서별 가입자 현황 — 트리맵(Plotly). 사각형 크기 = 인원수, 부모가 자식
  *  부서를 품어 상위/하위 관계를 화면 전체로 보여준다. 각 칸의 값은 그 부서에
  *  *직접* 소속된 가입자(branchvalues='remainder' 라 부모 면적 = 직접 + 하위
@@ -845,6 +871,22 @@ function DeptMembersTab({ accounts, workspaces, descendantsBySlug }) {
     const inTree = new Set(
       orgs.filter((w) => subtreeCountFor(w.slug) > 0).map((w) => w.slug),
     )
+    const parentOf = new Map(orgs.map((w) => [w.slug, w.parent_slug ?? null]))
+    // 루트(트리 안에서 부모가 없는 노드)별 팔레트 인덱스 배정.
+    const rootIndex = new Map()
+    const resolve = (slug) => {
+      let depth = 0
+      let cur = slug
+      while (true) {
+        const p = parentOf.get(cur)
+        if (!p || !inTree.has(p)) {
+          if (!rootIndex.has(cur)) rootIndex.set(cur, rootIndex.size)
+          return { root: cur, depth }
+        }
+        cur = p
+        depth += 1
+      }
+    }
     for (const w of orgs) {
       if (!inTree.has(w.slug)) continue
       ids.push(w.slug)
@@ -854,7 +896,11 @@ function DeptMembersTab({ accounts, workspaces, descendantsBySlug }) {
       )
       values.push(directCount.get(w.slug) ?? 0) // 직접 인원(면적은 누적)
       customdata.push(subtreeCountFor(w.slug)) // 하위 포함 합계(hover)
-      colors.push(w.color || '#cbd5e1')
+      const { root, depth } = resolve(w.slug)
+      const base = TREEMAP_PALETTE[(rootIndex.get(root) ?? 0) % TREEMAP_PALETTE.length]
+      // 루트도 살짝 옅게(0.18) 시작 → 어두운 텍스트가 어디서나 읽힘. 하위로
+      // 갈수록 +0.15 씩 더 옅게(최대 0.72).
+      colors.push(_tintHex(base, Math.min(0.18 + depth * 0.15, 0.72)))
     }
     return { ids, labels, parents, values, customdata, colors }
   }, [orgs, directCount, subtreeCountFor])
@@ -878,20 +924,38 @@ function DeptMembersTab({ accounts, workspaces, descendantsBySlug }) {
           values: fig.values,
           customdata: fig.customdata,
           branchvalues: 'remainder',
-          marker: { colors: fig.colors, line: { width: 1.5, color: '#fff' } },
-          tiling: { pad: 3 },
+          marker: {
+            colors: fig.colors,
+            line: { width: 2.5, color: '#ffffff' },
+            cornerradius: 5,
+            pad: 3,
+          },
+          tiling: { pad: 0 },
           textinfo: 'label+value',
-          texttemplate: '<b>%{label}</b><br>직접 %{value}명',
+          texttemplate: '<b>%{label}</b><br>%{value}명',
           hovertemplate:
             '<b>%{label}</b><br>직접 소속 %{value}명<br>하위 포함 %{customdata}명<extra></extra>',
           textposition: 'middle center',
-          textfont: { size: 13 },
+          textfont: { size: 13, color: '#1f2937', family: 'inherit' },
+          pathbar: {
+            visible: true,
+            side: 'top',
+            thickness: 24,
+            textfont: { size: 12, color: '#475569' },
+          },
+          hoverlabel: {
+            bgcolor: '#1e293b',
+            bordercolor: '#1e293b',
+            font: { color: '#f8fafc', size: 12 },
+          },
         },
       ]
       const layout = {
         margin: { t: 28, l: 0, r: 0, b: 0 },
         height: ref.current.clientHeight || 600,
         font: { family: 'inherit' },
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor: 'rgba(0,0,0,0)',
       }
       const config = {
         responsive: true,

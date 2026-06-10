@@ -12,7 +12,7 @@
  *  Backend: GET /api/users/all + PUT /api/users/{id}/active. 비밀번호
  *  재설정 / 시스템 관리자 토글은 기존 엔드포인트를 그대로 호출.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Building2,
@@ -736,10 +736,6 @@ export default function AccountsAdminPage() {
             accounts={accounts}
             workspaces={workspaces}
             descendantsBySlug={descendantsBySlug}
-            onPickDept={(slug) => {
-              setHomeFilter(new Set([slug]))
-              setActiveTab('list')
-            }}
           />
         </TabsContent>
       </Tabs>
@@ -802,11 +798,12 @@ export default function AccountsAdminPage() {
   )
 }
 
-/** 부서별 가입자 현황 — 부서 트리(상위/하위 관계)를 펼쳐 각 부서의 소속
- *  가입자 수를 보여준다. 숫자는 (이 부서 직접 소속) + 하위 부서까지 합한
- *  합계 두 가지. 부서명을 클릭하면 계정 목록 탭으로 이동해 그 부서(+하위)로
- *  필터한다. 가입자 수는 계정의 home(소속) 부서 기준 — 별도 API 불필요. */
-function DeptMembersTab({ accounts, workspaces, descendantsBySlug, onPickDept }) {
+/** 부서별 가입자 현황 — 트리맵(Plotly). 사각형 크기 = 인원수, 부모가 자식
+ *  부서를 품어 상위/하위 관계를 화면 전체로 보여준다. 각 칸의 값은 그 부서에
+ *  *직접* 소속된 가입자(branchvalues='remainder' 라 부모 면적 = 직접 + 하위
+ *  합계로 자동 누적). 부서를 클릭하면 그 부서로 줌인(드릴다운), 상단 경로
+ *  막대로 복귀. 가입자 수는 계정의 home(소속) 부서 기준 — 별도 API 불필요. */
+function DeptMembersTab({ accounts, workspaces, descendantsBySlug }) {
   const orgs = useMemo(
     () => (workspaces ?? []).filter((w) => !w.virtual && w.kind !== 'personal'),
     [workspaces],
@@ -820,43 +817,16 @@ function DeptMembersTab({ accounts, workspaces, descendantsBySlug, onPickDept })
     }
     return m
   }, [accounts])
-  // 부모 → 자식들 (한국어 정렬).
-  const childrenMap = useMemo(() => {
-    const m = new Map()
-    for (const w of orgs) {
-      const p = w.parent_slug ?? null
-      const arr = m.get(p) ?? []
-      arr.push(w)
-      m.set(p, arr)
-    }
-    for (const arr of m.values())
-      arr.sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '', 'ko'))
-    return m
-  }, [orgs])
   const orgSlugs = useMemo(() => new Set(orgs.map((w) => w.slug)), [orgs])
-  // 루트 = 부모가 없거나 부모가 트리(org 집합) 밖인 부서.
-  const roots = useMemo(
-    () =>
-      orgs
-        .filter((w) => !w.parent_slug || !orgSlugs.has(w.parent_slug))
-        .sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '', 'ko')),
-    [orgs, orgSlugs],
-  )
-  const subtreeCount = (slug) => {
-    const desc = descendantsBySlug.get(slug) ?? new Set([slug])
-    let c = 0
-    for (const d of desc) c += directCount.get(d) ?? 0
-    return c
-  }
-
-  const [collapsed, setCollapsed] = useState(() => new Set())
-  const toggle = (slug) =>
-    setCollapsed((prev) => {
-      const next = new Set(prev)
-      if (next.has(slug)) next.delete(slug)
-      else next.add(slug)
-      return next
-    })
+  const subtreeCountFor = useMemo(() => {
+    const f = (slug) => {
+      const desc = descendantsBySlug.get(slug) ?? new Set([slug])
+      let c = 0
+      for (const d of desc) c += directCount.get(d) ?? 0
+      return c
+    }
+    return f
+  }, [descendantsBySlug, directCount])
 
   const noHome = useMemo(
     () => accounts.reduce((n, a) => (a.home_workspace_slug ? n : n + 1), 0),
@@ -864,73 +834,87 @@ function DeptMembersTab({ accounts, workspaces, descendantsBySlug, onPickDept })
   )
   const withHome = accounts.length - noHome
 
-  function DeptNode({ w }) {
-    const kids = childrenMap.get(w.slug) ?? []
-    const direct = directCount.get(w.slug) ?? 0
-    const sub = subtreeCount(w.slug)
-    const isCollapsed = collapsed.has(w.slug)
-    return (
-      <div>
-        <div className="flex items-center gap-2 rounded-md px-1.5 py-1 hover:bg-muted/60">
-          {kids.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => toggle(w.slug)}
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted"
-              aria-label={isCollapsed ? '펼치기' : '접기'}
-            >
-              <ChevronDown
-                className={
-                  'h-3.5 w-3.5 transition-transform ' +
-                  (isCollapsed ? '-rotate-90' : '')
-                }
-              />
-            </button>
-          ) : (
-            <span className="inline-block h-5 w-5 shrink-0" />
-          )}
-          <span
-            className="h-2.5 w-2.5 shrink-0 rounded-full"
-            style={{ backgroundColor: w.color || '#94a3b8' }}
-          />
-          <button
-            type="button"
-            onClick={() => onPickDept?.(w.slug)}
-            className="min-w-0 flex-1 truncate text-left text-sm hover:underline"
-            title="이 부서(+하위)로 계정 목록 필터"
-          >
-            {w.name || w.slug}
-          </button>
-          <Badge
-            variant="secondary"
-            className="shrink-0 text-[10px] tabular-nums"
-            title="이 부서에 직접 소속된 가입자"
-          >
-            {direct}명
-          </Badge>
-          {kids.length > 0 && sub !== direct && (
-            <Badge
-              variant="outline"
-              className="shrink-0 text-[10px] tabular-nums text-muted-foreground"
-              title="하위 부서까지 합한 가입자"
-            >
-              ↳ {sub}
-            </Badge>
-          )}
-        </div>
-        {kids.length > 0 && !isCollapsed && (
-          <div className="ml-3 border-l border-dashed border-border/60 pl-2">
-            {kids.map((k) => (
-              <DeptNode key={k.slug} w={k} />
-            ))}
-          </div>
-        )}
-      </div>
+  // Plotly 트리맵 trace — 인원이 1명 이상인 서브트리만(0 면적 칸 제거).
+  const fig = useMemo(() => {
+    const ids = []
+    const labels = []
+    const parents = []
+    const values = []
+    const customdata = []
+    const colors = []
+    const inTree = new Set(
+      orgs.filter((w) => subtreeCountFor(w.slug) > 0).map((w) => w.slug),
     )
-  }
+    for (const w of orgs) {
+      if (!inTree.has(w.slug)) continue
+      ids.push(w.slug)
+      labels.push(w.name || w.slug)
+      parents.push(
+        w.parent_slug && inTree.has(w.parent_slug) ? w.parent_slug : '',
+      )
+      values.push(directCount.get(w.slug) ?? 0) // 직접 인원(면적은 누적)
+      customdata.push(subtreeCountFor(w.slug)) // 하위 포함 합계(hover)
+      colors.push(w.color || '#cbd5e1')
+    }
+    return { ids, labels, parents, values, customdata, colors }
+  }, [orgs, directCount, subtreeCountFor])
+
+  const ref = useRef(null)
+  const plotlyRef = useRef(null)
+  useEffect(() => {
+    let cancelled = false
+    const el = ref.current
+    if (!el) return undefined
+    import('plotly.js-dist').then((mod) => {
+      if (cancelled || !ref.current) return
+      const Plotly = mod.default
+      plotlyRef.current = Plotly
+      const data = [
+        {
+          type: 'treemap',
+          ids: fig.ids,
+          labels: fig.labels,
+          parents: fig.parents,
+          values: fig.values,
+          customdata: fig.customdata,
+          branchvalues: 'remainder',
+          marker: { colors: fig.colors, line: { width: 1.5, color: '#fff' } },
+          tiling: { pad: 3 },
+          textinfo: 'label+value',
+          texttemplate: '<b>%{label}</b><br>직접 %{value}명',
+          hovertemplate:
+            '<b>%{label}</b><br>직접 소속 %{value}명<br>하위 포함 %{customdata}명<extra></extra>',
+          textposition: 'middle center',
+          textfont: { size: 13 },
+        },
+      ]
+      const layout = {
+        margin: { t: 28, l: 0, r: 0, b: 0 },
+        height: ref.current.clientHeight || 600,
+        font: { family: 'inherit' },
+      }
+      const config = {
+        responsive: true,
+        displaylogo: false,
+        modeBarButtonsToRemove: ['sendDataToCloud'],
+      }
+      Plotly.react(ref.current, data, layout, config)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [fig])
+
+  // 언마운트 시 정리.
+  useEffect(() => {
+    const el = ref.current
+    return () => {
+      if (el && plotlyRef.current) plotlyRef.current.purge(el)
+    }
+  }, [])
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
         <span>
           소속 있는 가입자 <b className="text-foreground">{withHome}</b>명 · 부서{' '}
@@ -940,19 +924,22 @@ function DeptMembersTab({ accounts, workspaces, descendantsBySlug, onPickDept })
           <span className="text-amber-700">소속 없음 {noHome}명</span>
         )}
         <span className="ml-auto">
-          <b className="text-foreground">N명</b> = 직접 소속 · <b>↳ N</b> = 하위
-          포함 합계. 부서명 클릭 시 계정 목록을 그 부서로 필터.
+          칸 크기 = 인원수 · 부서를 클릭하면 그 부서로 확대(상단 경로로 복귀).
         </span>
       </div>
-      <div className="rounded-lg border p-2">
-        {roots.length === 0 ? (
-          <p className="px-2 py-6 text-center text-sm text-muted-foreground">
-            표시할 부서가 없습니다.
+      {fig.ids.length === 0 ? (
+        <div className="rounded-lg border p-2">
+          <p className="px-2 py-10 text-center text-sm text-muted-foreground">
+            소속이 지정된 가입자가 없습니다.
           </p>
-        ) : (
-          roots.map((w) => <DeptNode key={w.slug} w={w} />)
-        )}
-      </div>
+        </div>
+      ) : (
+        <div
+          ref={ref}
+          className="rounded-lg border"
+          style={{ height: 'calc(100vh - 320px)', minHeight: 460 }}
+        />
+      )}
     </div>
   )
 }

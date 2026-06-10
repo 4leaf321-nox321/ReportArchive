@@ -43,6 +43,7 @@ const CANVAS_BG = '#f8fafc' // slate-50
 const DIM_ALPHA = 0.1 // 타임바 기간 밖 노드 흐리기
 const DIM_EDGE_COLOR = 'rgba(148,163,184,0.1)' // 기간 밖 엣지(아주 옅게)
 const LINK_LABEL_BG = 'rgba(248,250,252,0.85)' // 엣지 관계 라벨 뒤 가독성 배경(슬레이트-50 반투명)
+const ARROW_LEN = 6 // 방향 화살표 길이(world) — 노드 밖에 보이도록 약간 키움
 // 스윔레인(타임라인+레인) 시각 상수 — world 단위.
 const LANE_ROW_H = 30 // 레인 안 서브행(겹침 회피용) 높이
 const LANE_GAP = 18 // 레인 사이 간격
@@ -592,9 +593,22 @@ export function LinkGraphCanvas({
   // 방향 화살표는 explicit link 에만 (has_tag·composite_member 는 무방향).
   const linkArrowLength = useCallback(
     (link) =>
-      link.kind === 'has_tag' || link.kind === 'composite_member' ? 0 : 4,
+      link.kind === 'has_tag' || link.kind === 'composite_member'
+        ? 0
+        : ARROW_LEN,
     [],
   )
+  // 화살표 머리를 타깃 노드 *밖*(반지름 + 화살표 + 여유)에 둔다 — relPos=1 이면
+  // 노드 중심에 찍혀 원에 가려 보이지 않던 문제를 해결. 엣지 길이에 맞춰 비율로
+  // 환산하고, 너무 짧은 엣지는 0 으로 클램프.
+  const linkArrowRelPos = useCallback((link) => {
+    const s = link.source
+    const t = link.target
+    if (!s || !t || typeof s.x !== 'number' || typeof t.x !== 'number') return 1
+    const len = Math.hypot(t.x - s.x, t.y - s.y) || 1
+    const back = nodeRadius(t) + ARROW_LEN + 2
+    return Math.max(0, 1 - back / len)
+  }, [])
 
   // 엣지 위에 관계 라벨(forward_label)을 그린다 — 보고서↔보고서 link 만
   // (has_tag·composite_member·관련정보 엣지는 제외). 화살표 방향과 함께 읽혀
@@ -831,7 +845,7 @@ export function LinkGraphCanvas({
               linkLineDash={linkLineDash}
               linkWidth={1.5}
               linkDirectionalArrowLength={linkArrowLength}
-              linkDirectionalArrowRelPos={1}
+              linkDirectionalArrowRelPos={linkArrowRelPos}
               linkDirectionalParticles={0}
               linkCanvasObject={paintLinkLabel}
               linkCanvasObjectMode={linkCanvasMode}

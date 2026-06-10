@@ -693,8 +693,8 @@ def copy_report(
     mode == "full":    + tags, report_type, entity tags, lifecycle, and the
                        source's *outgoing* report_links (R→X ⇒ R'→X).
     mode == "summary": "content" 와 동일하게 본문만 복사하되, 새(요약) 보고서를
-                       원본과 'summary' kind 로 연결한다 (from=요약본 → to=원본).
-                       두 보고서 상세에 요약↔원본 관계가 보인다.
+                       원본과 'summary' kind 로 연결한다 (from=원본 → to=요약본).
+                       원본=outgoing '요약본', 요약본=incoming '원본'.
 
     Never copies instance-bound data (mounts, comments, activities, owner
     locks, phase). report_date defaults to today (left unset). Files in the
@@ -779,13 +779,14 @@ def copy_report(
             changed = True
 
     if is_summary:
-        # 요약본(new) → 원본(source) 단방향 row 하나. 양쪽 상세는 forward/
-        # reverse 라벨로 요약↔원본을 모두 보여준다(list_links_for_report 가
-        # outgoing+incoming 을 합쳐 줌). (from,to,kind) 는 새 보고서라 충돌 없음.
+        # 원본(source) → 요약본(new) 단방향 row 하나. 관계도 엣지가 원본→요약본
+        # 으로 그려지고 forward_label('요약본')이 보인다. 보고서 상세는 양쪽 모두
+        # 표시: 원본=outgoing '요약본', 요약본=incoming '원본'(list_links_for_report
+        # 가 합쳐 줌). (from,to,kind) 는 새 보고서라 충돌 없음.
         db.add(
             ReportLink(
-                from_report_id=new_report.id,
-                to_report_id=source.id,
+                from_report_id=source.id,
+                to_report_id=new_report.id,
                 kind="summary",
                 note="",
                 created_by_user_id=owner_user_id,

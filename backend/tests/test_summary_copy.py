@@ -44,19 +44,19 @@ def test_summary_copy_creates_bidirectional_link():
         summ = r.json()["data"]["id"]
         assert summ != orig
 
-        # 요약본(from) → 원본(to): outgoing 'summary'
-        sl = _links(client, summ)
-        out = next((x for x in sl if x["kind"] == "summary"), None)
-        assert out is not None, sl
-        assert out["direction"] == "outgoing"
-        assert out["counterpart"]["id"] == orig
-
-        # 원본(to)에서 같은 row 가 incoming 으로 보인다 → 요약본
+        # 원본(from) → 요약본(to): 원본에서 outgoing 'summary' → 요약본
         ol = _links(client, orig)
-        inc = next((x for x in ol if x["kind"] == "summary"), None)
-        assert inc is not None, ol
+        out = next((x for x in ol if x["kind"] == "summary"), None)
+        assert out is not None, ol
+        assert out["direction"] == "outgoing"
+        assert out["counterpart"]["id"] == summ
+
+        # 요약본(to)에서 같은 row 가 incoming 으로 보인다 → 원본
+        sl = _links(client, summ)
+        inc = next((x for x in sl if x["kind"] == "summary"), None)
+        assert inc is not None, sl
         assert inc["direction"] == "incoming"
-        assert inc["counterpart"]["id"] == summ
+        assert inc["counterpart"]["id"] == orig
     finally:
         if summ:
             client.delete(f"/api/reports/{summ}", headers=_h())

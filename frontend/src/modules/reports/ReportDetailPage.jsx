@@ -4479,7 +4479,7 @@ function ReportCopyDialog({ open, onOpenChange, sourceTitle, onConfirm }) {
   const [submitting, setSubmitting] = useState(false)
   const [folderId, setFolderId] = useState(null) // null = 미분류
   const [folders, setFolders] = useState(null) // null = 로딩 중
-  const [mode, setMode] = useState('full') // 'full' | 'content'
+  const [mode, setMode] = useState('full') // 'full' | 'content' | 'summary'
 
   useEffect(() => {
     if (open) {
@@ -4575,6 +4575,11 @@ function ReportCopyDialog({ open, onOpenChange, sourceTitle, onConfirm }) {
                   value: 'content',
                   title: '메인 내용만 복사',
                   desc: '본문·레이아웃·표시 설정만 (부가 정보 제외)',
+                },
+                {
+                  value: 'summary',
+                  title: '요약본 만들기',
+                  desc: '본문만 가져오고, 원본과 "요약 ↔ 원본"으로 연결',
                 },
               ].map((opt) => (
                 <button

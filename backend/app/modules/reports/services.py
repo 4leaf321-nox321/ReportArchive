@@ -692,6 +692,9 @@ def copy_report(
     mode == "content": pages + display settings only.
     mode == "full":    + tags, report_type, entity tags, lifecycle, and the
                        source's *outgoing* report_links (R→X ⇒ R'→X).
+    mode == "summary": "content" 와 동일하게 본문만 복사하되, 새(요약) 보고서를
+                       원본과 'summary' kind 로 연결한다 (from=요약본 → to=원본).
+                       두 보고서 상세에 요약↔원본 관계가 보인다.
 
     Never copies instance-bound data (mounts, comments, activities, owner
     locks, phase). report_date defaults to today (left unset). Files in the
@@ -701,6 +704,7 @@ def copy_report(
     if source is None:
         raise ValueError(f"원본 보고서를 찾을 수 없습니다: {source_report_id}")
     full = mode == "full"
+    is_summary = mode == "summary"
 
     # Validate the destination folder up front (belongs to the new owner) so
     # we don't create the copy and then fail to place it.
@@ -773,6 +777,21 @@ def copy_report(
                 )
             )
             changed = True
+
+    if is_summary:
+        # 요약본(new) → 원본(source) 단방향 row 하나. 양쪽 상세는 forward/
+        # reverse 라벨로 요약↔원본을 모두 보여준다(list_links_for_report 가
+        # outgoing+incoming 을 합쳐 줌). (from,to,kind) 는 새 보고서라 충돌 없음.
+        db.add(
+            ReportLink(
+                from_report_id=new_report.id,
+                to_report_id=source.id,
+                kind="summary",
+                note="",
+                created_by_user_id=owner_user_id,
+            )
+        )
+        changed = True
 
     if changed:
         db.commit()

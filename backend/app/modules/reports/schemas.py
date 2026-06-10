@@ -465,13 +465,15 @@ class ReportCopy(BaseModel):
         가이드·머리기호)만. 부가 정보는 떼고 깔끔한 사본.
       * ``full`` — 위 + 메타데이터: 태그, 보고서 종류, 엔티티 태그,
         lifecycle, 그리고 원본이 *나가는* 방향으로 건 연결(report_links).
+      * ``summary`` — ``content`` 처럼 본문만 복사하되, 새(요약) 보고서를
+        원본과 'summary' kind 로 연결(요약↔원본). 두 보고서 상세에 관계가 보인다.
     어느 모드든 게시·댓글·이력 등 인스턴스 고유 데이터는 따라오지 않는다
     (사본은 새 개인 초안). 작성일은 항상 오늘.
     """
 
     title: str = Field(..., min_length=1, max_length=255)
     folder_id: Optional[int] = None
-    mode: Literal["content", "full"] = "full"
+    mode: Literal["content", "full", "summary"] = "full"
 
 
 class ReportUpdate(BaseModel):

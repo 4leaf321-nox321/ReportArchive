@@ -11,6 +11,7 @@ import {
   Inbox,
   Link2,
   Loader2,
+  MessageSquare,
   Plus,
   Search,
   ShieldCheck,
@@ -483,7 +484,9 @@ export default function ReportsListPage() {
             </button>
           )
         }
-        const fullText = mounts.map((m) => m.name).join(', ')
+        const fullText = mounts
+          .map((m) => (m.note ? `${m.name} (메모: ${m.note})` : m.name))
+          .join(', ')
         const visible = mounts.slice(0, 2)
         const overflow = mounts.length - visible.length
         return (
@@ -496,9 +499,13 @@ export default function ReportsListPage() {
             {visible.map((m) => (
               <span
                 key={m.slug}
-                className="inline-flex items-center rounded-full bg-primary/10 text-primary px-1.5 py-0.5 text-[10px] font-medium max-w-[70px] truncate"
+                className="inline-flex items-center gap-0.5 rounded-full bg-primary/10 text-primary px-1.5 py-0.5 text-[10px] font-medium max-w-[90px]"
+                title={m.note ? `${m.name} · 게시 메모: ${m.note}` : m.name}
               >
-                {m.name}
+                {m.note && (
+                  <MessageSquare className="h-2.5 w-2.5 shrink-0 opacity-80" />
+                )}
+                <span className="truncate">{m.name}</span>
               </span>
             ))}
             {overflow > 0 && (

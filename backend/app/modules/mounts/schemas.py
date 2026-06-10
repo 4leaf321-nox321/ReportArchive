@@ -89,6 +89,13 @@ class MountEditPolicyUpdate(BaseModel):
     edit_policy: MountEditPolicy
 
 
+class MountNoteUpdate(BaseModel):
+    """PUT /api/mounts/{report_id}/{workspace_slug}/note payload — 게시 메모
+    수정. 권한: 작성자 / 게시자 / 게시판 매니저."""
+
+    note: str = Field(default="", max_length=1000)
+
+
 class UnmountResponse(BaseModel):
     """Acknowledgement for DELETE /api/mounts/{report_id}/{workspace_slug}."""
 

@@ -23,6 +23,7 @@ from app.modules.mounts.schemas import (
     MountEditPolicyUpdate,
     MountFolderUpdate,
     MountListResponse,
+    MountNoteUpdate,
     MountRead,
     TakedownRequestRead,
     UnmountResponse,
@@ -151,6 +152,35 @@ def set_mount_edit_policy(
             "report_id": report_id,
             "workspace_slug": workspace_slug,
             "edit_policy": payload.edit_policy.value,
+        }
+    )
+
+
+@router.put("/{report_id}/{workspace_slug}/note")
+def set_mount_note(
+    report_id: int,
+    workspace_slug: str,
+    payload: MountNoteUpdate,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """게시 메모 수정. 권한: 작성자 / 게시자 / 게시판 매니저."""
+    try:
+        row = services.set_mount_note(
+            db,
+            report_id=report_id,
+            workspace_slug=workspace_slug,
+            note=payload.note,
+            actor_user_id=actor.user.id,
+        )
+    except services.MountError as e:
+        return _to_http(e)
+    db.commit()
+    return success_response(
+        data={
+            "report_id": report_id,
+            "workspace_slug": workspace_slug,
+            "note": row.note,
         }
     )
 

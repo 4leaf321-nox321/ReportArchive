@@ -20,6 +20,7 @@ import {
   ChevronsDownUp,
   Search,
   X,
+  MessageSquare,
 } from 'lucide-react'
 import {
   Dialog,
@@ -41,6 +42,7 @@ import {
   unmountReport,
   setMountFolder,
   setMountEditPolicy,
+  setMountNote,
 } from '@/shared/api/mounts'
 import { requestTakedown } from '@/shared/api/takedowns'
 import { FolderPickerButton } from './FolderPickerButton'
@@ -732,13 +734,49 @@ function MountedBoardRow({
   onPolicyChange,
 }) {
   const isPending = Boolean(pending[slug])
+  const note = mount?.note ?? ''
+  const [editingNote, setEditingNote] = React.useState(false)
+  const [noteDraft, setNoteDraft] = React.useState(note)
+  const [savingNote, setSavingNote] = React.useState(false)
+  // mount.note 가 외부에서 바뀌면(다른 행 저장 등) 편집 중이 아닐 때만 동기화.
+  React.useEffect(() => {
+    if (!editingNote) setNoteDraft(note)
+  }, [note, editingNote])
+
+  async function saveNote() {
+    if (!report) return
+    setSavingNote(true)
+    try {
+      const data = await setMountNote({
+        reportId: report.id,
+        workspaceSlug: slug,
+        note: noteDraft,
+      })
+      const saved = data?.note ?? noteDraft.trim()
+      setMounts((prev) =>
+        prev.map((m) =>
+          m.workspace_slug === slug ? { ...m, note: saved } : m,
+        ),
+      )
+      setEditingNote(false)
+      onChanged?.()
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err.message || '메모 저장 실패',
+      )
+    } finally {
+      setSavingNote(false)
+    }
+  }
+
   return (
     <div
       className={cn(
-        'flex items-center gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-sm transition-colors',
+        'rounded-md border border-primary/40 bg-primary/5 transition-colors',
         isPending && 'opacity-60',
       )}
     >
+      <div className="flex items-center gap-2 px-3 py-2 text-sm">
       <span
         className="h-2.5 w-2.5 rounded-full shrink-0"
         style={{ backgroundColor: ws?.color || '#cbd5e1' }}
@@ -752,6 +790,23 @@ function MountedBoardRow({
           </span>
         )}
       </span>
+      {/* 게시 메모 — 클릭하면 아래에 표시/편집. 메모 있으면 점 표시. */}
+      {report && (
+        <button
+          type="button"
+          onClick={() => setEditingNote((v) => !v)}
+          className={cn(
+            'relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded hover:bg-primary/10',
+            note ? 'text-primary' : 'text-muted-foreground',
+          )}
+          title={note ? `게시 메모: ${note}` : '게시 메모 추가'}
+        >
+          <MessageSquare className="h-3.5 w-3.5" />
+          {note && (
+            <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-primary" />
+          )}
+        </button>
+      )}
       {/* 폴더 — report 가 null 인 stale 렌더 가드 (BoardRow 와 동일). */}
       {report && (
         <FolderPickerButton
@@ -814,6 +869,56 @@ function MountedBoardRow({
         >
           요청 필요
         </span>
+      )}
+      </div>
+      {/* 게시 메모 표시/편집 영역 — 메모가 있거나 편집 중일 때만. */}
+      {report && (editingNote || note) && (
+        <div className="px-3 pb-2">
+          {editingNote ? (
+            <div className="space-y-1.5">
+              <Textarea
+                value={noteDraft}
+                onChange={(e) => setNoteDraft(e.target.value)}
+                placeholder="이 게시판에 남길 메모 (예: 본부 보고 자료로 활용 부탁드립니다.)"
+                rows={2}
+                maxLength={1000}
+                className="resize-none text-xs"
+                autoFocus
+              />
+              <div className="flex items-center gap-1.5">
+                <Button
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={saveNote}
+                  disabled={savingNote}
+                >
+                  {savingNote ? '저장 중...' : '저장'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    setEditingNote(false)
+                    setNoteDraft(note)
+                  }}
+                >
+                  취소
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setEditingNote(true)}
+              className="flex w-full items-start gap-1 text-left text-xs text-muted-foreground hover:text-foreground"
+              title="클릭해서 메모 수정"
+            >
+              <MessageSquare className="mt-0.5 h-3 w-3 shrink-0 opacity-70" />
+              <span className="whitespace-pre-wrap break-words">{note}</span>
+            </button>
+          )}
+        </div>
       )}
     </div>
   )

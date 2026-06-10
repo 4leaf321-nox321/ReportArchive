@@ -394,6 +394,45 @@ def set_mount_edit_policy(
     return row
 
 
+def set_mount_note(
+    db: Session,
+    *,
+    report_id: int,
+    workspace_slug: str,
+    note: str,
+    actor_user_id: int,
+) -> ReportMount:
+    """게시 메모(자유 기재)를 수정한다. 권한은 폴더 이동과 동일 — 작성자 OR
+    게시한 사람 OR 그 게시판 매니저. (메모는 조직 맥락이라 게시판 매니저도 손볼
+    수 있게.)"""
+    row = db.get(ReportMount, (report_id, workspace_slug))
+    if row is None:
+        raise MountTargetInvalidError(
+            f"게시 정보를 찾을 수 없습니다: report={report_id} board={workspace_slug}"
+        )
+    report = db.get(Report, report_id)
+    if report is None:
+        raise MountTargetInvalidError(f"보고서를 찾을 수 없습니다: {report_id}")
+
+    is_owner = report.owner_user_id == actor_user_id
+    is_mounter = row.mounted_by_user_id == actor_user_id
+    is_board_admin = False
+    if not (is_owner or is_mounter):
+        m = db.execute(
+            select(WorkspaceMember).where(
+                WorkspaceMember.user_id == actor_user_id,
+                WorkspaceMember.workspace_slug == workspace_slug,
+            )
+        ).scalar_one_or_none()
+        is_board_admin = m is not None and m.role == Role.manager
+    if not (is_owner or is_mounter or is_board_admin):
+        raise MountForbiddenError("이 게시의 메모를 수정할 권한이 없습니다.")
+
+    row.note = (note or "").strip()
+    db.flush()
+    return row
+
+
 def unmount_report(
     db: Session,
     *,

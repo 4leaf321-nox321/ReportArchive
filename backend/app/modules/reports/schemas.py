@@ -99,6 +99,7 @@ def _flatten_user_refs(obj: Any) -> Any:
             {
                 "slug": m.workspace_slug,
                 "name": m.workspace.name if m.workspace else m.workspace_slug,
+                "note": getattr(m, "note", "") or "",
             }
             for m in mounts_rel
         ]
@@ -123,10 +124,12 @@ def _flatten_user_refs(obj: Any) -> Any:
 class MountWorkspaceMini(BaseModel):
     """Slim mount projection — what the personal-list "게시" cell needs to
     render chip strips ("팀1·본부A에 게시됨"). The full ReportMount payload
-    (edit_policy, mounted_by, note, folder_id) is fetchable via /api/mounts."""
+    (edit_policy, mounted_by, folder_id) is fetchable via /api/mounts."""
 
     slug: str
     name: str
+    # 게시 메모 — 목록 칩에 💬 아이콘+툴팁으로 노출(옵션 1).
+    note: str = ""
 
 
 class ReportTypeRef(BaseModel):

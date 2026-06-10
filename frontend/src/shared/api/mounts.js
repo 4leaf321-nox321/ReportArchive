@@ -50,6 +50,15 @@ export async function setMountEditPolicy({ reportId, workspaceSlug, editPolicy }
   return extractData(res)
 }
 
+/** 게시 메모 수정. 권한: 작성자 / 게시자 / 게시판 매니저(서버 강제). */
+export async function setMountNote({ reportId, workspaceSlug, note }) {
+  const res = await apiClient.put(
+    `${BASE}/${reportId}/${workspaceSlug}/note`,
+    { note: note ?? '' },
+  )
+  return extractData(res)
+}
+
 /** Unmount from one specific board. Idempotent. */
 export async function unmountReport({ reportId, workspaceSlug }) {
   const res = await apiClient.delete(`${BASE}/${reportId}/${workspaceSlug}`)

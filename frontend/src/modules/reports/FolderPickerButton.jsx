@@ -45,7 +45,11 @@ export function FolderPickerButton({
   const [saving, setSaving] = React.useState(false)
 
   React.useEffect(() => {
-    if (!open) return
+    // 폴더 목록은 (a) popover 를 열 때, 또는 (b) 이미 선택된 폴더(folderId)가
+    // 있어 버튼에 *그 이름을 바로* 표시해야 할 때 불러온다. 둘 다 아니면(닫혀
+    // 있고 미분류면) 굳이 요청하지 않는다. 한 번 로드되면 재요청하지 않는다.
+    if (!open && folderId == null) return
+    if (folders.length > 0) return
     let cancelled = false
     setLoading(true)
     const args = mode === 'org' ? { workspaceSlug } : {}
@@ -54,7 +58,8 @@ export function FolderPickerButton({
         if (!cancelled) setFolders(items)
       })
       .catch(() => {
-        if (!cancelled) toast.error('폴더 목록 불러오기 실패')
+        // 이름 미리 채우려는 백그라운드 로드 실패는 조용히 — 열었을 때만 알림.
+        if (!cancelled && open) toast.error('폴더 목록 불러오기 실패')
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -62,7 +67,7 @@ export function FolderPickerButton({
     return () => {
       cancelled = true
     }
-  }, [open, mode, workspaceSlug])
+  }, [open, folderId, mode, workspaceSlug, folders.length])
 
   const currentFolder = folders.find((f) => f.id === folderId)
   const label = mode === 'org' ? '게시판 폴더' : '폴더 이동'

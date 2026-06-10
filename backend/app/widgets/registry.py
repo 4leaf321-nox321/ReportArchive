@@ -169,6 +169,50 @@ _CELL_HTML_SCHEMA = {
     "additionalProperties": {"type": "string", "maxLength": 4000},
 }
 
+# 셀 병합 사각형 한 칸 — 0-기반 행/열 좌표 + 행/열 스팬. 데이터 그리드와
+# 헤더 그리드(아래 _HEADER_SCHEMA)가 공유.
+_MERGE_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "r": {"type": "integer", "minimum": 0},
+        "c": {"type": "integer", "minimum": 0},
+        "rs": {"type": "integer", "minimum": 1},
+        "cs": {"type": "integer", "minimum": 1},
+    },
+    "required": ["r", "c", "rs", "cs"],
+    "additionalProperties": False,
+}
+
+# 다중행·병합 헤더(표·비교표). 헤더는 (row_count × 열수) 작은 그리드로,
+# 데이터 셀과 동일하게 평문(text)+rich(html)+셀 색(bg/fg)을 갖고, 자체 merges
+# 로 colspan/rowspan 을 표현. 없으면(=이 필드 미존재) 기존 1줄 헤더
+# (columns[].label / cases[].label)로 렌더 — 100% 하위호환.
+_HEADER_CELL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "text": {"type": "string", "maxLength": 2000},
+        "html": {"type": "string", "maxLength": 4000},
+        "bg": _COLOR_TOKEN_FIELD,
+        "fg": _COLOR_TOKEN_FIELD,
+    },
+    "additionalProperties": False,
+}
+
+_HEADER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "row_count": {"type": "integer", "minimum": 1, "maximum": 8},
+        # 키 = "헤더행idx::열key" (cell_styles 와 같은 포맷).
+        "cells": {
+            "type": "object",
+            "additionalProperties": _HEADER_CELL_SCHEMA,
+        },
+        "merges": {"type": "array", "items": _MERGE_ITEM_SCHEMA},
+    },
+    "required": ["row_count"],
+    "additionalProperties": False,
+}
+
 
 # Reusable text-style sub-schema. Mixed into every text-bearing widget's
 # props_schema so designers can override the visual treatment per block.
@@ -607,6 +651,8 @@ def _table_content(props: dict) -> dict:
             },
             "cell_styles": _CELL_STYLES_SCHEMA,
             "cell_html": _CELL_HTML_SCHEMA,
+            # 다중행·병합 헤더(선택). 없으면 columns[].label / cases[].label 1줄 헤더.
+            "header": _HEADER_SCHEMA,
         },
         "additionalProperties": False,
     }
@@ -2935,6 +2981,8 @@ def _comparison_content(props: dict) -> dict:  # noqa: ARG001
             },
             "cell_styles": _CELL_STYLES_SCHEMA,
             "cell_html": _CELL_HTML_SCHEMA,
+            # 다중행·병합 헤더(선택). 없으면 columns[].label / cases[].label 1줄 헤더.
+            "header": _HEADER_SCHEMA,
         },
         "additionalProperties": False,
     }

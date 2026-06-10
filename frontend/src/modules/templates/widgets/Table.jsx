@@ -164,6 +164,24 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     content?.cell_html && typeof content.cell_html === 'object'
       ? content.cell_html
       : {}
+  // ── 다중행·병합 헤더(선택) ───────────────────────────────────────────
+  // header 가 있으면 (row_count × 열수) 작은 그리드를 thead 로 렌더 — 데이터
+  // 셀과 같은 키 포맷("행::열key")·머지·색·rich 를 재사용. 없으면 기존
+  // columns[].label 한 줄 헤더로 폴백(하위호환).
+  const header =
+    content?.header && typeof content.header === 'object' ? content.header : null
+  const headerRowCount = header
+    ? Math.max(1, Math.min(8, Number(header.row_count) || 1))
+    : 0
+  const headerCells =
+    header?.cells && typeof header.cells === 'object' ? header.cells : {}
+  const headerMerges = Array.isArray(header?.merges) ? header.merges : []
+  const headerMergeMap = computeMergeMap(headerMerges, headerRowCount, cols.length)
+  function headerCellClass(r, colKey) {
+    const s = headerCells[_cellKey(r, colKey)]
+    if (!s || (!s.bg && !s.fg)) return ''
+    return `${bgTokenClass(s.bg)} ${colorTokenClass(s.fg)}`.trim()
+  }
   const bodyTextClass = textStyleToClassName(props.text_style)
   const bodyTextStyle = textStyleToInlineStyle(props.text_style)
   // 읽기 모드 전용 — "전체 펼치기" 토글. 기본은 compact (셀이 잘림 +
@@ -334,16 +352,49 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                   ))}
                 </colgroup>
                 <thead className="bg-muted/40">
-                  <tr>
-                    {cols.map((c, i) => (
-                      <th
-                        key={i}
-                        className="px-2 py-1.5 text-center font-medium text-xs text-muted-foreground border-b"
-                      >
-                        {c.label || c.key}
-                      </th>
-                    ))}
-                  </tr>
+                  {headerRowCount > 0 ? (
+                    Array.from({ length: headerRowCount }).map((_, hr) => (
+                      <tr key={hr}>
+                        {cols.map((c, ci) => {
+                          if (headerMergeMap.covered.has(`${hr},${ci}`)) return null
+                          const span = headerMergeMap.anchors.get(`${hr},${ci}`)
+                          const cell = headerCells[_cellKey(hr, c.key)]
+                          const html = cell?.html
+                          const hasRich = html && !_richIsEmpty(html)
+                          return (
+                            <th
+                              key={ci}
+                              rowSpan={span?.rs}
+                              colSpan={span?.cs}
+                              className={`px-2 py-1.5 text-center font-medium text-xs text-muted-foreground border-b border-r last:border-r-0 ${headerCellClass(hr, c.key)}`.trim()}
+                            >
+                              {hasRich ? (
+                                <span
+                                  className="[&_p]:m-0 [&_p]:inline"
+                                  dangerouslySetInnerHTML={{
+                                    __html: sanitizeCaptionHtml(html),
+                                  }}
+                                />
+                              ) : (
+                                cell?.text || ''
+                              )}
+                            </th>
+                          )
+                        })}
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      {cols.map((c, i) => (
+                        <th
+                          key={i}
+                          className="px-2 py-1.5 text-center font-medium text-xs text-muted-foreground border-b"
+                        >
+                          {c.label || c.key}
+                        </th>
+                      ))}
+                    </tr>
+                  )}
                 </thead>
                 <tbody>
                   {rows.map((row, ri) => (

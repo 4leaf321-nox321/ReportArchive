@@ -191,7 +191,9 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   // 눈에 보인다. BlockEditorCard 가 Provider 로 감싸서 측정용 mirror 와
   // 본체가 같은 expanded 를 공유 — 그래야 펼침 시 컨테이너 높이도 같이
   // 자란다.
-  const [expanded, setExpanded] = useTableExpanded(content?.expanded ?? false)
+  // 기본값은 '펼침' — 미설정(신규 표 포함)이면 펼친 상태로 시작. 작성자가
+  // 토글로 명시적 압축(false)을 저장한 표만 compact 로 본다.
+  const [expanded, setExpanded] = useTableExpanded(content?.expanded ?? true)
   // 셀간 화살표 네비게이션 — 텍스트 셀은 boundary 기준, 그 외 입력
   // (number/date/select) 은 left/right boundary 이동만 (up/down 은 native).
   const grid = useGridNavigation()
@@ -1089,18 +1091,20 @@ export function TableEditor({ props, content, onChange, readOnly }) {
         </div>
         {/* 기본 펼침 — 읽기 시 셀을 펼친 상태(Enter 줄바꿈·긴 글 모두 보임)로
             저장. 끄면 compact(요약 + 호버 전체보기). 독자는 따로 토글 가능. */}
+        {/* 기본값은 펼침 — 미설정이면 펼침으로 본다. 토글은 명시적 true/false
+            를 저장(끄면 그 표만 compact). */}
         <button
           type="button"
-          onClick={() => patch({ expanded: !content?.expanded || undefined })}
+          onClick={() => patch({ expanded: !(content?.expanded ?? true) })}
           className={`flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] ${
-            content?.expanded
+            (content?.expanded ?? true)
               ? 'border-primary/40 bg-primary/10 text-foreground'
               : 'bg-muted/40 text-muted-foreground'
           }`}
           title="읽기 시 셀을 펼친 상태로 저장(Enter 줄바꿈·긴 글 모두 보임). 끄면 요약(compact)."
           data-cell-selection-allow
         >
-          {content?.expanded ? (
+          {(content?.expanded ?? true) ? (
             <Maximize2 className="h-3 w-3" />
           ) : (
             <Minimize2 className="h-3 w-3" />

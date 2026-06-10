@@ -87,7 +87,8 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
   const [pending, setPending] = React.useState({}) // slug → 'mounting' | 'unmounting'
   const [loading, setLoading] = React.useState(false)
   const [error, setError] = React.useState(null)
-  const [note, setNote] = React.useState('')
+  // 방금 게시한 게시판 slug — 그 행의 메모 입력을 자동으로 열어 안내한다.
+  const [justMountedSlug, setJustMountedSlug] = React.useState(null)
   const isOwner = me?.user?.id && report?.owner_user_id === me.user.id
 
   // Eligible boards = org workspaces the user can publish to.
@@ -341,9 +342,10 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
         const created = await mountReport({
           reportId: report.id,
           workspaceSlugs: [workspaceSlug],
-          note: note.trim() || undefined,
         })
         setMounts((prev) => [...prev, ...created])
+        // 방금 게시한 게시판 행의 메모 입력을 자동으로 열어 안내(per-board).
+        setJustMountedSlug(workspaceSlug)
         // 새 게시는 기본 '열람 전용' 정책 — 선택한 방식 설명을 함께 안내.
         toast.success(`${wsLabel} 게시판에 게시`, {
           description: `${POLICY_BY_VALUE.default.label} — ${POLICY_BY_VALUE.default.description}`,
@@ -509,16 +511,15 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
                   </div>
 
                   <div className="border-t pt-3">
-                    <label className="text-xs text-muted-foreground block mb-1">
-                      게시 메모 (선택, 새 게시에만 적용)
-                    </label>
-                    <Textarea
-                      value={note}
-                      onChange={(e) => setNote(e.target.value)}
-                      placeholder="예: 본부 보고 자료로 활용 부탁드립니다."
-                      rows={2}
-                      className="resize-none text-sm"
-                    />
+                    <p className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
+                      <MessageSquare className="mt-0.5 h-3 w-3 shrink-0 opacity-70" />
+                      <span>
+                        게시 메모는 게시판을 게시한 뒤 오른쪽{' '}
+                        <b className="text-foreground">현재 게시됨</b> 목록에서
+                        게시판마다 따로 남길 수 있어요. (게시하면 메모 입력이
+                        바로 열립니다.)
+                      </span>
+                    </p>
                   </div>
                 </>
               )}
@@ -554,6 +555,7 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
                       onChanged={onChanged}
                       onToggle={handleToggle}
                       onPolicyChange={handlePolicyChange}
+                      autoEditNote={justMountedSlug === slug}
                     />
                   ))}
                 </div>
@@ -732,10 +734,12 @@ function MountedBoardRow({
   onChanged,
   onToggle,
   onPolicyChange,
+  autoEditNote = false,
 }) {
   const isPending = Boolean(pending[slug])
   const note = mount?.note ?? ''
-  const [editingNote, setEditingNote] = React.useState(false)
+  // 방금 게시한 게시판이면 메모 입력을 자동으로 펼쳐 사용자를 안내.
+  const [editingNote, setEditingNote] = React.useState(Boolean(autoEditNote))
   const [noteDraft, setNoteDraft] = React.useState(note)
   const [savingNote, setSavingNote] = React.useState(false)
   // mount.note 가 외부에서 바뀌면(다른 행 저장 등) 편집 중이 아닐 때만 동기화.

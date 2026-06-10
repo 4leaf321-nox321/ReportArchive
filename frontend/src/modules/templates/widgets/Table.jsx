@@ -539,6 +539,26 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           ([k]) => k.split('::')[1] !== removed.key,
         ),
       ),
+      // 다중행 헤더가 있으면 그 셀/머지도 같은 열 기준으로 정리.
+      ...(header
+        ? {
+            header: {
+              ...header,
+              cells: Object.fromEntries(
+                Object.entries(headerCells).filter(
+                  ([k]) => k.split('::')[1] !== removed.key,
+                ),
+              ),
+              merges: shiftMergesForCol(
+                headerMerges,
+                'remove',
+                idx,
+                headerRowCount,
+                cols.length,
+              ),
+            },
+          }
+        : {}),
     })
   }
 
@@ -551,28 +571,123 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   // anchor 셀에만 rs/cs 부여 — 나머지 셀은 자동으로 covered 처리되어
   // 렌더 단계에서 skip 된다. 데이터 (각 셀 값) 자체는 보존 — anchor 가
   // 변경되지 않는 한 unmerge 시 같은 자리에 같은 값이 복원됨.
+  // ── 통일 selection (헤더 band + 데이터) ──────────────────────────────
+  // 헤더 행(0..headerOffset-1)을 데이터 위에 얹어 *하나의* selection 좌표로
+  // 다룬다. 데이터 행은 headerOffset 만큼 아래로(offset 0=헤더없음=기존과 동일).
+  // 핸들러는 rect 가 어느 band 인지로 header.* / cell_* 로 라우팅.
+  const headerOffset = headerRowCount
   const selection = useCellSelection({
-    rowCount: rows.length,
+    rowCount: headerOffset + rows.length,
     colCount: cols.length,
   })
-  // 선택 영역의 모든 셀에 배경(bg)/글자(fg) 토큰 적용. token=null 이면 해제.
+  // 헤더가 없으면 현재 columns 라벨로 1행짜리 header 를 만들어 반환(머터리얼).
+  function ensureHeader() {
+    if (header) return header
+    const cells = {}
+    cols.forEach((c) => {
+      if (c.label) cells[_cellKey(0, c.key)] = { text: c.label }
+    })
+    return { row_count: 1, cells, merges: [] }
+  }
+  function patchHeader(nextHeader) {
+    patch({ header: nextHeader })
+  }
+  // 헤더 셀 rich 편집 — 평문 text + rich html(+ bg/fg 보존).
+  function updateHeaderCellRich(hr, colKey, html, text) {
+    const h = ensureHeader()
+    const k = _cellKey(hr, colKey)
+    const cells = { ...(h.cells || {}) }
+    const cur = { ...(cells[k] || {}) }
+    if (text) cur.text = text
+    else delete cur.text
+    if (_richIsEmpty(html)) delete cur.html
+    else cur.html = html
+    if (cur.text || cur.html || cur.bg || cur.fg) cells[k] = cur
+    else delete cells[k]
+    patchHeader({ ...h, cells })
+  }
+  // 헤더 행을 맨 위에 한 줄 삽입(그룹 헤더용). 기존 셀/머지는 한 줄 아래로.
+  function addHeaderRowTop() {
+    const h = ensureHeader()
+    const cells = {}
+    for (const [k, v] of Object.entries(h.cells || {})) {
+      const [rStr, colKey] = k.split('::')
+      cells[`${Number(rStr) + 1}::${colKey}`] = v
+    }
+    const mergesNext = shiftMergesForRow(
+      h.merges || [],
+      'insert',
+      0,
+      h.row_count,
+      cols.length,
+    )
+    patchHeader({ row_count: h.row_count + 1, cells, merges: mergesNext })
+    selection.clear()
+  }
+  // 맨 위 헤더 행 제거. 마지막 1줄까지 줄이면 header 자체를 떼고 기존
+  // columns[].label 1줄 헤더로 복귀.
+  function removeHeaderRowTop() {
+    const h = ensureHeader()
+    if (h.row_count <= 1) {
+      patch({ header: undefined })
+      selection.clear()
+      return
+    }
+    const cells = {}
+    for (const [k, v] of Object.entries(h.cells || {})) {
+      const [rStr, colKey] = k.split('::')
+      const r = Number(rStr)
+      if (r === 0) continue
+      cells[`${r - 1}::${colKey}`] = v
+    }
+    const mergesNext = shiftMergesForRow(
+      h.merges || [],
+      'remove',
+      0,
+      h.row_count,
+      cols.length,
+    )
+    patchHeader({ row_count: h.row_count - 1, cells, merges: mergesNext })
+    selection.clear()
+  }
+
+  // 선택 영역의 모든 셀에 배경(bg)/글자(fg) 토큰 적용 — band 별로 라우팅.
   function applyCellColor(field, token) {
     const r = selection.rect
     if (!r) return
-    const next = { ...cellStyles }
-    for (let ri = r.r1; ri <= r.r2; ri++) {
+    const nextStyles = { ...cellStyles }
+    let hObj = header
+    let hCells = header ? { ...(header.cells || {}) } : null
+    let hTouched = false
+    for (let rr = r.r1; rr <= r.r2; rr++) {
       for (let ci = r.c1; ci <= r.c2; ci++) {
         const col = cols[ci]
         if (!col) continue
-        const k = _cellKey(ri, col.key)
-        const cur = { ...(next[k] ?? {}) }
-        if (token) cur[field] = token
-        else delete cur[field]
-        if (cur.bg || cur.fg) next[k] = cur
-        else delete next[k]
+        if (rr < headerOffset) {
+          if (!hCells) {
+            hObj = ensureHeader()
+            hCells = { ...(hObj.cells || {}) }
+          }
+          const k = _cellKey(rr, col.key)
+          const cur = { ...(hCells[k] || {}) }
+          if (token) cur[field] = token
+          else delete cur[field]
+          if (cur.text || cur.html || cur.bg || cur.fg) hCells[k] = cur
+          else delete hCells[k]
+          hTouched = true
+        } else {
+          const k = _cellKey(rr - headerOffset, col.key)
+          const cur = { ...(nextStyles[k] || {}) }
+          if (token) cur[field] = token
+          else delete cur[field]
+          if (cur.bg || cur.fg) nextStyles[k] = cur
+          else delete nextStyles[k]
+        }
       }
     }
-    patch({ cell_styles: next })
+    const next = { cell_styles: nextStyles }
+    if (hTouched) next.header = { ...(hObj || ensureHeader()), cells: hCells }
+    patch(next)
   }
 
   function mergeSelection() {
@@ -581,38 +696,69 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     const rs = r.r2 - r.r1 + 1
     const cs = r.c2 - r.c1 + 1
     if (rs === 1 && cs === 1) return
-    const nextMerges = normalizeMerges(
-      [...(merges ?? []), { r: r.r1, c: r.c1, rs, cs }],
-      rows.length,
-      cols.length,
-    )
-    patch({ merges: nextMerges })
-    selection.clear()
+    if (r.r2 < headerOffset) {
+      // 헤더 band — header.merges 에.
+      const h = ensureHeader()
+      const nm = normalizeMerges(
+        [...(h.merges || []), { r: r.r1, c: r.c1, rs, cs }],
+        h.row_count,
+        cols.length,
+      )
+      patchHeader({ ...h, merges: nm })
+      selection.clear()
+    } else if (r.r1 >= headerOffset) {
+      const nm = normalizeMerges(
+        [...(merges ?? []), { r: r.r1 - headerOffset, c: r.c1, rs, cs }],
+        rows.length,
+        cols.length,
+      )
+      patch({ merges: nm })
+      selection.clear()
+    }
+    // 헤더+데이터를 가로지르는 선택은 병합 불가 — no-op.
   }
   function unmergeSelection() {
     const r = selection.rect
     if (!r) return
-    // 선택 영역에 (anchor 가 또는 covered 가) 겹치는 모든 merge 제거.
-    const kept = (merges ?? []).filter((m) => {
-      const last_r = m.r + m.rs - 1
-      const last_c = m.c + m.cs - 1
-      const overlaps =
-        m.r <= r.r2 && last_r >= r.r1 && m.c <= r.c2 && last_c >= r.c1
-      return !overlaps
-    })
-    patch({ merges: normalizeMerges(kept, rows.length, cols.length) })
-    selection.clear()
+    const overlaps = (m, r1, r2, c1, c2) => {
+      const lr = m.r + m.rs - 1
+      const lc = m.c + m.cs - 1
+      return m.r <= r2 && lr >= r1 && m.c <= c2 && lc >= c1
+    }
+    if (r.r2 < headerOffset && header) {
+      const kept = (header.merges || []).filter(
+        (m) => !overlaps(m, r.r1, r.r2, r.c1, r.c2),
+      )
+      patchHeader({
+        ...header,
+        merges: normalizeMerges(kept, header.row_count, cols.length),
+      })
+      selection.clear()
+    } else if (r.r1 >= headerOffset) {
+      const dr1 = r.r1 - headerOffset
+      const dr2 = r.r2 - headerOffset
+      const kept = (merges ?? []).filter(
+        (m) => !overlaps(m, dr1, dr2, r.c1, r.c2),
+      )
+      patch({ merges: normalizeMerges(kept, rows.length, cols.length) })
+      selection.clear()
+    }
   }
   // 액션 바 상태 — 선택 영역 안에 기존 merge 가 있으면 「분할」, 없으면
   // 사각형이 2셀 이상일 때만 「합치기」.
   const selectionHasMerge = (() => {
     const r = selection.rect
     if (!r) return false
-    return (merges ?? []).some((m) => {
-      const last_r = m.r + m.rs - 1
-      const last_c = m.c + m.cs - 1
-      return m.r <= r.r2 && last_r >= r.r1 && m.c <= r.c2 && last_c >= r.c1
-    })
+    const hit = (list, r1, r2) =>
+      (list ?? []).some((m) => {
+        const lr = m.r + m.rs - 1
+        const lc = m.c + m.cs - 1
+        return m.r <= r2 && lr >= r1 && m.c <= r.c2 && lc >= r.c1
+      })
+    if (r.r2 < headerOffset) return hit(header?.merges, r.r1, r.r2)
+    if (r.r1 >= headerOffset)
+      return hit(merges, r.r1 - headerOffset, r.r2 - headerOffset)
+    return false
   })()
   const selectionSpansMultiple = (() => {
     const r = selection.rect
@@ -911,6 +1057,34 @@ export function TableEditor({ props, content, onChange, readOnly }) {
         {/* 표 전체 폭(px) — 비우면 전체 폭. 설정 시 좌측 정렬이라 "왼쪽
             절반만" 같은 부분 폭도 가능하고, 편집·뷰 폭이 일치한다. 빈 칸에서
             벗어날 때(blur)·Enter 에 commit 해 입력 중 clamp 점프를 막는다. */}
+        {/* 헤더(제목) 행 수 — + 로 맨 위에 그룹 헤더 행을 얹고, 헤더 셀을
+            드래그 선택해 위 액션바의 '셀 합치기'·'셀 색'으로 병합·색 지정. */}
+        <div
+          className="flex items-center gap-0.5 rounded-md border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"
+          title="헤더(제목) 행 수. + 로 위에 그룹 헤더 행을 추가하고, 셀을 드래그 선택해 '셀 합치기'로 병합·색을 줄 수 있습니다."
+          data-cell-selection-allow
+        >
+          헤더 행
+          <button
+            type="button"
+            onClick={removeHeaderRowTop}
+            className="px-1 text-sm leading-none hover:text-foreground"
+            title={headerRowCount <= 1 ? '헤더를 기본(1줄)으로' : '맨 위 헤더 행 삭제'}
+          >
+            −
+          </button>
+          <span className="w-3 text-center tabular-nums">
+            {headerRowCount || 1}
+          </span>
+          <button
+            type="button"
+            onClick={addHeaderRowTop}
+            className="px-1 text-sm leading-none hover:text-foreground"
+            title="맨 위에 헤더 행 추가(그룹 헤더)"
+          >
+            +
+          </button>
+        </div>
         <label
           className="flex items-center gap-1 rounded-md border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"
           title="표 전체 폭(px). 비우면 전체 폭. 좌측 정렬이라 절반 폭 등으로 만들 수 있습니다."
@@ -989,67 +1163,133 @@ export function TableEditor({ props, content, onChange, readOnly }) {
             ))}
           </colgroup>
           <thead className="bg-muted/40">
-            <tr>
-              {cols.map((c, i) => (
-                <th
-                  key={i}
-                  data-col-idx={i}
-                  className="px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b group relative"
-                >
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="text"
-                      value={c.label || ''}
-                      onChange={(e) => renameColumn(i, e.target.value)}
-                      onPaste={(e) => {
-                        const text = e.clipboardData?.getData('text/plain')
-                        if (!text) return
-                        if (text.indexOf('\t') === -1 && text.indexOf('\n') === -1) return
-                        e.preventDefault()
-                        pasteOntoHeader(i, text)
-                      }}
-                      placeholder={c.key}
-                      className="bg-transparent border-0 outline-none focus:ring-1 focus:ring-ring rounded px-1 py-0.5 text-xs text-center flex-1 min-w-0"
-                    />
-                    {c.required && <span className="text-destructive">*</span>}
-                  </div>
-                  {/* Column delete — hover overlay on the right edge of
-                      the header cell. No reserved space when idle. */}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="absolute right-0.5 top-1/2 -translate-y-1/2 h-5 w-5 opacity-0 group-hover:opacity-100 text-destructive bg-background/90 border shadow-sm"
-                    onClick={() => removeColumn(i)}
-                    title="열 삭제"
-                  >
-                    <X className="h-3 w-3" />
-                  </Button>
-                  {/* 우측 가장자리 드래그 핸들 — 개별 열 폭 조절. 마지막 열은
-                      표 우측 경계 핸들(아래 외곽 div)이 그 자리를 맡으므로 헤더
-                      핸들을 그리지 않는다(중복 방지). */}
-                  {i < cols.length - 1 && (
-                    <div
-                      role="separator"
-                      aria-orientation="vertical"
-                      title="끌어서 열 폭 조절 · 더블클릭하면 자동"
-                      onMouseDown={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        startColResize(c.key, e.currentTarget.closest('th'), e)
-                      }}
-                      onDoubleClick={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        resetColWidth(c.key)
-                      }}
-                      className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize flex items-center justify-end group/handle z-20"
+            {headerRowCount > 0
+              ? // 다중행·병합 헤더 그리드 — 각 셀은 RichTextRowEditor(색·서식),
+                // 드래그 선택으로 병합/색(상단 액션바). 열 삭제·폭핸들은 *맨 아래*
+                // 헤더 행(열과 1:1)에만 얹는다.
+                Array.from({ length: headerRowCount }).map((_, hr) => (
+                  <tr key={hr}>
+                    {cols.map((c, ci) => {
+                      if (headerMergeMap.covered.has(`${hr},${ci}`)) return null
+                      const span = headerMergeMap.anchors.get(`${hr},${ci}`)
+                      const isBottom = hr === headerRowCount - 1
+                      const selH = selection.isCellSelected(hr, ci)
+                      const hcell = headerCells[_cellKey(hr, c.key)]
+                      return (
+                        <th
+                          key={ci}
+                          {...(isBottom ? { 'data-col-idx': ci } : {})}
+                          data-cell-coord={`${hr},${ci}`}
+                          onMouseDown={(e) => selection.handleMouseDown(e, hr, ci)}
+                          onMouseEnter={() => selection.handleMouseEnter(hr, ci)}
+                          onMouseLeave={() => selection.handleMouseLeave(hr, ci)}
+                          {...(span?.rs > 1 ? { rowSpan: span.rs } : {})}
+                          {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
+                          className={`px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b border-r last:border-r-0 group relative ${headerCellClass(hr, c.key)} ${selH ? 'bg-primary/10 ring-1 ring-primary/40' : ''}`.trim()}
+                        >
+                          <div className="outline-rich-row">
+                            <RichTextRowEditor
+                              html={_richSeed(hcell?.html, hcell?.text)}
+                              onChange={(html, text) =>
+                                updateHeaderCellRich(hr, c.key, html, text)
+                              }
+                              gridCellKey={`h-${hr}-${ci}`}
+                              className="w-full min-h-[1.5rem] rounded px-1 py-0.5 text-xs text-center whitespace-pre-wrap break-words"
+                            />
+                          </div>
+                          {isBottom && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="absolute right-0.5 top-1/2 -translate-y-1/2 h-5 w-5 opacity-0 group-hover:opacity-100 text-destructive bg-background/90 border shadow-sm"
+                              onClick={() => removeColumn(ci)}
+                              title="열 삭제"
+                            >
+                              <X className="h-3 w-3" />
+                            </Button>
+                          )}
+                          {isBottom && ci < cols.length - 1 && (
+                            <div
+                              role="separator"
+                              aria-orientation="vertical"
+                              title="끌어서 열 폭 조절 · 더블클릭하면 자동"
+                              onMouseDown={(e) => {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                startColResize(c.key, e.currentTarget.closest('th'), e)
+                              }}
+                              onDoubleClick={(e) => {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                resetColWidth(c.key)
+                              }}
+                              className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize flex items-center justify-end group/handle z-20"
+                            >
+                              <span className="block w-0.5 h-1/2 bg-border group-hover/handle:bg-primary transition-colors" />
+                            </div>
+                          )}
+                        </th>
+                      )
+                    })}
+                  </tr>
+                ))
+              : // 헤더 없음 — 기존 1줄 라벨 입력 행(하위호환).
+                <tr>
+                  {cols.map((c, i) => (
+                    <th
+                      key={i}
+                      data-col-idx={i}
+                      className="px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b group relative"
                     >
-                      <span className="block w-0.5 h-1/2 bg-border group-hover/handle:bg-primary transition-colors" />
-                    </div>
-                  )}
-                </th>
-              ))}
-            </tr>
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="text"
+                          value={c.label || ''}
+                          onChange={(e) => renameColumn(i, e.target.value)}
+                          onPaste={(e) => {
+                            const text = e.clipboardData?.getData('text/plain')
+                            if (!text) return
+                            if (text.indexOf('\t') === -1 && text.indexOf('\n') === -1) return
+                            e.preventDefault()
+                            pasteOntoHeader(i, text)
+                          }}
+                          placeholder={c.key}
+                          className="bg-transparent border-0 outline-none focus:ring-1 focus:ring-ring rounded px-1 py-0.5 text-xs text-center flex-1 min-w-0"
+                        />
+                        {c.required && <span className="text-destructive">*</span>}
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="absolute right-0.5 top-1/2 -translate-y-1/2 h-5 w-5 opacity-0 group-hover:opacity-100 text-destructive bg-background/90 border shadow-sm"
+                        onClick={() => removeColumn(i)}
+                        title="열 삭제"
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
+                      {i < cols.length - 1 && (
+                        <div
+                          role="separator"
+                          aria-orientation="vertical"
+                          title="끌어서 열 폭 조절 · 더블클릭하면 자동"
+                          onMouseDown={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            startColResize(c.key, e.currentTarget.closest('th'), e)
+                          }}
+                          onDoubleClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            resetColWidth(c.key)
+                          }}
+                          className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize flex items-center justify-end group/handle z-20"
+                        >
+                          <span className="block w-0.5 h-1/2 bg-border group-hover/handle:bg-primary transition-colors" />
+                        </div>
+                      )}
+                    </th>
+                  ))}
+                </tr>}
           </thead>
           <tbody>
             {rows.map((row, rowIdx) => (
@@ -1061,23 +1301,19 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                   if (mergeMap.covered.has(`${rowIdx},${ci}`)) return null
                   const span = mergeMap.anchors.get(`${rowIdx},${ci}`)
                   const isLast = ci === cols.length - 1
-                  const selected = selection.isCellSelected(rowIdx, ci)
+                  // 통일 selection 좌표 — 데이터 행은 headerOffset 만큼 아래.
+                  const sr = headerOffset + rowIdx
+                  const selected = selection.isCellSelected(sr, ci)
                   return (
                     <td
                       key={ci}
-                      data-cell-coord={`${rowIdx},${ci}`}
+                      data-cell-coord={`${sr},${ci}`}
                       // 일반 클릭은 input focus 가 그대로 — 셀 안 텍스트
                       // 편집/커서 이동 정상. 드래그가 셀 경계를 넘는 순간
                       // hook 이 promote 해서 multi-cell 선택으로 전환.
-                      onMouseDown={(e) =>
-                        selection.handleMouseDown(e, rowIdx, ci)
-                      }
-                      onMouseEnter={() =>
-                        selection.handleMouseEnter(rowIdx, ci)
-                      }
-                      onMouseLeave={() =>
-                        selection.handleMouseLeave(rowIdx, ci)
-                      }
+                      onMouseDown={(e) => selection.handleMouseDown(e, sr, ci)}
+                      onMouseEnter={() => selection.handleMouseEnter(sr, ci)}
+                      onMouseLeave={() => selection.handleMouseLeave(sr, ci)}
                       {...(span?.rs > 1 ? { rowSpan: span.rs } : {})}
                       {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
                       className={`px-1 py-1 ${cellStyleClass(rowIdx, c.key)} ${

@@ -56,6 +56,7 @@ import {
   CommandItem,
   CommandList,
 } from '@/shared/components/ui/command'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { DataTable } from '@/shared/components/DataTable'
 import { PageHeader } from '@/shared/components/PageHeader'
@@ -141,6 +142,8 @@ export default function AccountsAdminPage() {
   // Popover open/close. 복수선택이라 항목 클릭으로는 닫지 않고, 「전체」
   // 만 한 번에 clear + close.
   const [filterOpen, setFilterOpen] = useState(false)
+  // 탭 — 'list'(계정 목록) / 'depts'(부서별 가입자 현황 트리).
+  const [activeTab, setActiveTab] = useState('list')
 
   function reload() {
     setReloadKey((k) => k + 1)
@@ -547,6 +550,13 @@ export default function AccountsAdminPage() {
 
       <PasswordResetRequestsPanel />
 
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList>
+          <TabsTrigger value="list">계정 목록</TabsTrigger>
+          <TabsTrigger value="depts">부서별 가입자 현황</TabsTrigger>
+        </TabsList>
+        <TabsContent value="list" className="space-y-4 mt-4">
+
       <div className="flex items-center gap-3 flex-wrap">
         <label className="inline-flex items-center gap-1.5 cursor-pointer select-none text-xs">
           <input
@@ -720,6 +730,19 @@ export default function AccountsAdminPage() {
           onRowClick={(a) => setDetailTarget(a)}
         />
       )}
+        </TabsContent>
+        <TabsContent value="depts" className="mt-4">
+          <DeptMembersTab
+            accounts={accounts}
+            workspaces={workspaces}
+            descendantsBySlug={descendantsBySlug}
+            onPickDept={(slug) => {
+              setHomeFilter(new Set([slug]))
+              setActiveTab('list')
+            }}
+          />
+        </TabsContent>
+      </Tabs>
 
       {newAccountOpen && (
         <NewAccountDialog
@@ -775,6 +798,161 @@ export default function AccountsAdminPage() {
           }
         />
       )}
+    </div>
+  )
+}
+
+/** 부서별 가입자 현황 — 부서 트리(상위/하위 관계)를 펼쳐 각 부서의 소속
+ *  가입자 수를 보여준다. 숫자는 (이 부서 직접 소속) + 하위 부서까지 합한
+ *  합계 두 가지. 부서명을 클릭하면 계정 목록 탭으로 이동해 그 부서(+하위)로
+ *  필터한다. 가입자 수는 계정의 home(소속) 부서 기준 — 별도 API 불필요. */
+function DeptMembersTab({ accounts, workspaces, descendantsBySlug, onPickDept }) {
+  const orgs = useMemo(
+    () => (workspaces ?? []).filter((w) => !w.virtual && w.kind !== 'personal'),
+    [workspaces],
+  )
+  // 이 부서를 소속(home)으로 둔 가입자 수(직접).
+  const directCount = useMemo(() => {
+    const m = new Map()
+    for (const a of accounts) {
+      if (!a.home_workspace_slug) continue
+      m.set(a.home_workspace_slug, (m.get(a.home_workspace_slug) ?? 0) + 1)
+    }
+    return m
+  }, [accounts])
+  // 부모 → 자식들 (한국어 정렬).
+  const childrenMap = useMemo(() => {
+    const m = new Map()
+    for (const w of orgs) {
+      const p = w.parent_slug ?? null
+      const arr = m.get(p) ?? []
+      arr.push(w)
+      m.set(p, arr)
+    }
+    for (const arr of m.values())
+      arr.sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '', 'ko'))
+    return m
+  }, [orgs])
+  const orgSlugs = useMemo(() => new Set(orgs.map((w) => w.slug)), [orgs])
+  // 루트 = 부모가 없거나 부모가 트리(org 집합) 밖인 부서.
+  const roots = useMemo(
+    () =>
+      orgs
+        .filter((w) => !w.parent_slug || !orgSlugs.has(w.parent_slug))
+        .sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '', 'ko')),
+    [orgs, orgSlugs],
+  )
+  const subtreeCount = (slug) => {
+    const desc = descendantsBySlug.get(slug) ?? new Set([slug])
+    let c = 0
+    for (const d of desc) c += directCount.get(d) ?? 0
+    return c
+  }
+
+  const [collapsed, setCollapsed] = useState(() => new Set())
+  const toggle = (slug) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(slug)) next.delete(slug)
+      else next.add(slug)
+      return next
+    })
+
+  const noHome = useMemo(
+    () => accounts.reduce((n, a) => (a.home_workspace_slug ? n : n + 1), 0),
+    [accounts],
+  )
+  const withHome = accounts.length - noHome
+
+  function DeptNode({ w }) {
+    const kids = childrenMap.get(w.slug) ?? []
+    const direct = directCount.get(w.slug) ?? 0
+    const sub = subtreeCount(w.slug)
+    const isCollapsed = collapsed.has(w.slug)
+    return (
+      <div>
+        <div className="flex items-center gap-2 rounded-md px-1.5 py-1 hover:bg-muted/60">
+          {kids.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => toggle(w.slug)}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted"
+              aria-label={isCollapsed ? '펼치기' : '접기'}
+            >
+              <ChevronDown
+                className={
+                  'h-3.5 w-3.5 transition-transform ' +
+                  (isCollapsed ? '-rotate-90' : '')
+                }
+              />
+            </button>
+          ) : (
+            <span className="inline-block h-5 w-5 shrink-0" />
+          )}
+          <span
+            className="h-2.5 w-2.5 shrink-0 rounded-full"
+            style={{ backgroundColor: w.color || '#94a3b8' }}
+          />
+          <button
+            type="button"
+            onClick={() => onPickDept?.(w.slug)}
+            className="min-w-0 flex-1 truncate text-left text-sm hover:underline"
+            title="이 부서(+하위)로 계정 목록 필터"
+          >
+            {w.name || w.slug}
+          </button>
+          <Badge
+            variant="secondary"
+            className="shrink-0 text-[10px] tabular-nums"
+            title="이 부서에 직접 소속된 가입자"
+          >
+            {direct}명
+          </Badge>
+          {kids.length > 0 && sub !== direct && (
+            <Badge
+              variant="outline"
+              className="shrink-0 text-[10px] tabular-nums text-muted-foreground"
+              title="하위 부서까지 합한 가입자"
+            >
+              ↳ {sub}
+            </Badge>
+          )}
+        </div>
+        {kids.length > 0 && !isCollapsed && (
+          <div className="ml-3 border-l border-dashed border-border/60 pl-2">
+            {kids.map((k) => (
+              <DeptNode key={k.slug} w={k} />
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <span>
+          소속 있는 가입자 <b className="text-foreground">{withHome}</b>명 · 부서{' '}
+          <b className="text-foreground">{orgs.length}</b>개
+        </span>
+        {noHome > 0 && (
+          <span className="text-amber-700">소속 없음 {noHome}명</span>
+        )}
+        <span className="ml-auto">
+          <b className="text-foreground">N명</b> = 직접 소속 · <b>↳ N</b> = 하위
+          포함 합계. 부서명 클릭 시 계정 목록을 그 부서로 필터.
+        </span>
+      </div>
+      <div className="rounded-lg border p-2">
+        {roots.length === 0 ? (
+          <p className="px-2 py-6 text-center text-sm text-muted-foreground">
+            표시할 부서가 없습니다.
+          </p>
+        ) : (
+          roots.map((w) => <DeptNode key={w.slug} w={w} />)
+        )}
+      </div>
     </div>
   )
 }

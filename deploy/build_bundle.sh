@@ -47,10 +47,30 @@ echo
 echo "==> [3/4] Staging install scripts"
 cp deploy/deploy.sh                          "$STAGE/"
 cp deploy/reportarchive.service.template     "$STAGE/"
+cp deploy/reportarchive-mcp.service.template "$STAGE/"
 cp deploy/.env.production.example            "$STAGE/.env.example"
 cp deploy/README_OPERATOR.md                 "$STAGE/README.md"
 echo "$VERSION" > "$STAGE/VERSION"
 chmod +x "$STAGE"/*.sh
+
+# --- 3b. MCP server (별도 venv 로 운영서버에서 돌아감) ---
+# 백엔드 SIF 와 의존성이 충돌해 컨테이너에 못 넣는다. 소스 + 오프라인 설치용 휠을
+# 동봉 → deploy.sh 가 운영 호스트에서 venv 만들고 `pip install --no-index` 로 설치.
+echo "==> [3b/4] Staging MCP server + vendored wheels (offline install)"
+mkdir -p "$STAGE/mcp_server"
+cp mcp_server/server.py        "$STAGE/mcp_server/"
+cp mcp_server/requirements.txt "$STAGE/mcp_server/"
+[[ -f mcp_server/README.md ]] && cp mcp_server/README.md "$STAGE/mcp_server/" || true
+# 작성 스킬(사용자가 ~/.claude/skills 로 설치) — 번들에 동봉
+[[ -d mcp_server/skill ]] && cp -r mcp_server/skill "$STAGE/mcp_server/skill" || true
+# 빌드 머신(인터넷 O)에서 휠을 받아 둔다. 운영 호스트가 airgap 이어도 설치되게.
+# 빌드/운영 아키텍처가 같다고 가정(둘 다 linux x86_64). 다르면 --platform 지정 필요.
+if python3 -m pip download --only-binary=:all: \
+        -r mcp_server/requirements.txt -d "$STAGE/mcp_server/wheels" >/dev/null 2>&1; then
+    echo "    vendored $(ls "$STAGE/mcp_server/wheels" | wc -l) wheels"
+else
+    echo "    ⚠ pip download 실패 — 휠 미동봉. 운영 호스트에 인터넷/사내 PyPI 있어야 MCP 설치됨."
+fi
 
 # --- 4. Pack tarball ---
 echo

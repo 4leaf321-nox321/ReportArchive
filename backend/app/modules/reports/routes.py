@@ -7,8 +7,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.database import get_db
-from app.modules.reports import services, versioning
+from app.modules.reports import ai_authoring, services, versioning
 from app.modules.reports.schemas import (
+    AiDraftCreate,
     LinkGraphResponse,
     LockInfo,
     ReportCopy,
@@ -17,11 +18,13 @@ from app.modules.reports.schemas import (
     ReportLinkKindRead,
     ReportLinkRead,
     ReportLinkRefMini,
+    ReportPage,
     ReportRead,
     ReportSummary,
     ReportUpdate,
     ReportVersionMeta,
 )
+from app.modules.templates import services as template_services
 from app.modules.users.models import User
 from app.shared.auth import CurrentUser, get_current_user, require_writer
 from app.shared.responses import (
@@ -326,6 +329,78 @@ def get_global_link_graph(
         limit=limit,
     )
     return success_response(data=LinkGraphResponse.model_validate(graph))
+
+
+# ─── AI 작성(MCP) — 작성 안내 + 초안 생성 ───────────────────────────────
+# /{report_id} 보다 위에 등록(정적 path 가 동적 path 에 안 가려지게).
+@router.get("/authoring-guide")
+def report_authoring_guide(
+    template_id: str = Query(..., min_length=1, max_length=64),
+    template_version: int = Query(..., ge=1),
+    db: Session = Depends(get_db),
+    _: CurrentUser = Depends(get_current_user),
+):
+    """이 템플릿으로 보고서를 쓸 때 각 블록을 무엇으로 채우는지 안내(AI/MCP describe_template 용)."""
+    template = template_services.get_template(db, template_id, template_version)
+    if not template:
+        return not_found_response(f"Template not found: {template_id}@{template_version}")
+    return success_response(
+        data={
+            "template_id": template_id,
+            "template_version": template_version,
+            "blocks": ai_authoring.build_authoring_guide(template.schema),
+        }
+    )
+
+
+@router.post("/ai-draft")
+def create_ai_draft(
+    payload: AiDraftCreate,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_writer),
+):
+    """AI(Claude)가 만든 느슨한 블록을 받아 정규화·검증 후 **초안**으로 생성. 검증
+    실패 시 블록별 에러를 400 으로 돌려 AI 가 고쳐 재호출하게 한다."""
+    if actor.workspace.virtual:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "가상 워크스페이스에선 보고서를 만들 수 없습니다."
+        )
+    template = template_services.get_template(
+        db, payload.template_id, payload.template_version
+    )
+    if not template:
+        return not_found_response(
+            f"Template not found: {payload.template_id}@{payload.template_version}"
+        )
+    content, warnings = ai_authoring.normalize_content(template.schema, payload.blocks)
+    report_create = ReportCreate(
+        template_id=payload.template_id,
+        template_version=payload.template_version,
+        title=payload.title,
+        pages=[
+            ReportPage(
+                template_id=payload.template_id,
+                template_version=payload.template_version,
+                content=content,
+            )
+        ],
+    )
+    # create_report 와 동일 — 작성자 개인 공간에 초안(drafting)으로.
+    target_workspace = f"personal-{actor.user.id}"
+    try:
+        report = services.create_report(
+            db, target_workspace, report_create, owner_user_id=actor.user.id
+        )
+    except ValueError as exc:
+        # 정규화로도 못 맞춘 부분 — 블록별 검증 에러를 그대로 전달(AI 재시도용).
+        return error_response(str(exc), status_code=400)
+    return created_response(
+        data={
+            "report": _read_with_perms(db, actor, report),
+            "warnings": warnings,
+            "url": f"/w/{report.workspace_slug}/reports/{report.id}",
+        }
+    )
 
 
 @router.get("/{report_id}")

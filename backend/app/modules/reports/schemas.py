@@ -708,3 +708,13 @@ class ReportVersionMeta(BaseModel):
     body_bytes: int
     label: Optional[str] = None
     is_pinned: bool
+
+
+class AiDraftCreate(BaseModel):
+    """AI(Claude)가 보고서를 초안으로 만들 때의 입력 — 느슨한 블록(block_id→간이
+    콘텐츠)을 ai_authoring.normalize_content 가 widget-v1 로 정규화한다."""
+
+    template_id: str = Field(..., min_length=1, max_length=64)
+    template_version: int = Field(..., ge=1)
+    title: str = Field(..., min_length=1, max_length=255)
+    blocks: dict = Field(default_factory=dict)

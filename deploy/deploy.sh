@@ -41,6 +41,14 @@ DB_USER="${DB_USER:-reportarchive}"
 SERVICE_NAME="reportarchive"
 SERVICE_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 
+# MCP server (Claude 연동) — 선택. 별도 venv + 별도 systemd 유닛.
+MCP_SERVICE_NAME="reportarchive-mcp"
+MCP_SERVICE_UNIT="/etc/systemd/system/${MCP_SERVICE_NAME}.service"
+MCP_ENABLED="${MCP_ENABLED:-1}"                        # 0 으로 두면 MCP 전체 건너뜀
+MCP_HOST="${MCP_HOST:-127.0.0.1}"                      # 외부 노출하려면 0.0.0.0 (또는 리버스프록시)
+MCP_PORT="${MCP_PORT:-3002}"
+MCP_API_BASE="${MCP_API_BASE:-http://127.0.0.1:3000}"  # MCP 가 호출할 백엔드 주소
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Shorthand: run a command as the operator account
@@ -114,12 +122,74 @@ render_service_unit() {
     systemctl daemon-reload
 }
 
+# ── MCP server (선택) — 별도 venv + systemd. 실패는 전부 비치명적(백엔드 배포 무관). ──
+render_mcp_service_unit() {
+    [[ -f "$HERE/reportarchive-mcp.service.template" ]] \
+        || { warn "reportarchive-mcp.service.template 없음 — MCP 유닛 건너뜀"; return 1; }
+    info "Rendering MCP systemd unit → $MCP_SERVICE_UNIT"
+    sed -e "s|@@USER@@|$OPERATOR|g" \
+        -e "s|@@INSTALL_DIR@@|$INSTALL_DIR|g" \
+        -e "s|@@API_BASE@@|$MCP_API_BASE|g" \
+        -e "s|@@MCP_HOST@@|$MCP_HOST|g" \
+        -e "s|@@MCP_PORT@@|$MCP_PORT|g" \
+        "$HERE/reportarchive-mcp.service.template" > "$MCP_SERVICE_UNIT"
+    chmod 644 "$MCP_SERVICE_UNIT"
+    systemctl daemon-reload
+}
+
+setup_mcp() {
+    [[ "$MCP_ENABLED" == "1" ]] || { info "MCP 비활성(MCP_ENABLED=0) — 건너뜀"; return 0; }
+    [[ -d "$HERE/mcp_server" ]] || { warn "번들에 mcp_server/ 없음 — MCP 건너뜀"; return 0; }
+
+    info "Setting up MCP server (별도 venv + systemd)"
+    local md="$INSTALL_DIR/mcp_server"
+
+    # 1) 소스 배치
+    as_op mkdir -p "$md"
+    install -o "$OPERATOR" -g "$OPERATOR" -m 644 "$HERE/mcp_server/server.py" "$md/server.py"
+    install -o "$OPERATOR" -g "$OPERATOR" -m 644 "$HERE/mcp_server/requirements.txt" "$md/requirements.txt"
+    [[ -f "$HERE/mcp_server/README.md" ]] \
+        && install -o "$OPERATOR" -g "$OPERATOR" -m 644 "$HERE/mcp_server/README.md" "$md/README.md" || true
+
+    # 2) venv 없으면 생성
+    if [[ ! -x "$md/venv/bin/python" ]]; then
+        info "Creating MCP venv: $md/venv"
+        if ! as_op python3 -m venv "$md/venv"; then
+            warn "python3 -m venv 실패('python3-venv' 설치 필요?) — MCP 미설치(백엔드 영향 없음)"; return 0
+        fi
+    fi
+
+    # 3) 의존성 설치 — 동봉 휠 우선(오프라인), 없으면 온라인 시도
+    local pip="$md/venv/bin/pip"
+    if [[ -d "$HERE/mcp_server/wheels" ]]; then
+        as_op rm -rf "$md/wheels"
+        as_op cp -r "$HERE/mcp_server/wheels" "$md/wheels"   # 재실행 안전(중첩 방지)
+        info "Installing MCP deps (오프라인 휠)"
+        if ! as_op "$pip" install -q --no-index --find-links "$md/wheels" -r "$md/requirements.txt"; then
+            warn "오프라인 휠 설치 실패 — MCP 미설치. 수동: cd $md && ./venv/bin/pip install --no-index --find-links wheels -r requirements.txt"; return 0
+        fi
+    else
+        info "Installing MCP deps (온라인 pip — 휠 미동봉)"
+        if ! as_op "$pip" install -q -r "$md/requirements.txt"; then
+            warn "pip 설치 실패(airgap?). 백엔드 배포는 정상. 수동 설치 후 'systemctl restart $MCP_SERVICE_NAME'"; return 0
+        fi
+    fi
+
+    # 4) 유닛 렌더 + 기동
+    render_mcp_service_unit || return 0
+    systemctl enable "$MCP_SERVICE_NAME" >/dev/null 2>&1 || true
+    systemctl restart "$MCP_SERVICE_NAME" \
+        || warn "MCP 서비스 기동 실패 — 'journalctl -u $MCP_SERVICE_NAME' 확인"
+    info "MCP server: http://$MCP_HOST:$MCP_PORT/mcp  → backend $MCP_API_BASE"
+}
+
 # ───────────────────────── subcommands ──────────────────────
 cmd_prepare() {
     info "Installing OS packages (apptainer, postgresql)"
     apt-get update
     apt-get install -y --no-install-recommends \
-        apptainer postgresql postgresql-contrib ca-certificates python3
+        apptainer postgresql postgresql-contrib ca-certificates \
+        python3 python3-venv python3-pip
 
     info "Enabling postgresql"
     systemctl enable postgresql
@@ -168,12 +238,15 @@ cmd_install() {
     sleep 2
     systemctl --no-pager --lines=5 status "$SERVICE_NAME" || true
 
+    setup_mcp || warn "MCP 설정 건너뜀(비치명적)"
+
     cat <<MSG
 
 [OK] Install complete.
   Logs:    sudo journalctl -u $SERVICE_NAME -f
   Health:  curl http://localhost:3000/api/health
   Seed login: admin / 32167  (change immediately)
+  MCP:     sudo systemctl status $MCP_SERVICE_NAME   (Claude 연동, 선택)
 MSG
 }
 
@@ -195,6 +268,9 @@ cmd_update() {
     systemctl start "$SERVICE_NAME"
     sleep 2
     systemctl --no-pager --lines=5 status "$SERVICE_NAME" || true
+
+    # MCP 서버도 함께 갱신(venv 생성/의존성 설치/유닛 재기동까지). 비치명적.
+    setup_mcp || warn "MCP 설정 건너뜀(비치명적)"
 
     cat <<MSG
 

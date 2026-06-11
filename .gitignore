@@ -14,6 +14,8 @@
 # ==============================================================================
 backend/venv/
 backend/.venv/
+mcp_server/venv/
+**/venv/
 **/__pycache__/
 **/.pytest_cache/
 **/.mypy_cache/

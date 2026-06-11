@@ -1,0 +1,29 @@
+[Unit]
+Description=Report Archive MCP Server (Claude integration)
+After=network-online.target reportarchive.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@@USER@@
+Group=@@USER@@
+WorkingDirectory=@@INSTALL_DIR@@/mcp_server
+
+# 백엔드(REST API)로 요청을 중계 — 사용자 JWT 는 클라이언트가 보낸 헤더를 그대로 전달.
+Environment=REPORTARCHIVE_API_BASE=@@API_BASE@@
+Environment=MCP_HOST=@@MCP_HOST@@
+Environment=MCP_PORT=@@MCP_PORT@@
+ExecStart=@@INSTALL_DIR@@/mcp_server/venv/bin/python @@INSTALL_DIR@@/mcp_server/server.py
+
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20
+
+# Light hardening (백엔드 유닛과 동일 기조). 설치 dir 가 /home 아래라 ProtectHome=false.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=false
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

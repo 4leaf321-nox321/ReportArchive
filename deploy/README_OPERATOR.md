@@ -154,6 +154,27 @@ sudo INSTALL_DIR=/srv/reportarchive ./deploy.sh install
 
 ---
 
+## MCP 서버 (Claude 연동, 선택)
+
+`deploy.sh install`/`update` 가 **MCP 서버까지 자동 설치**합니다 — 별도 venv 생성 + (번들에
+동봉된 휠로) **오프라인 pip 설치** + `reportarchive-mcp` systemd 서비스 기동까지. 사용자는
+Claude Code 에서 보고서를 검색·작성(초안)할 수 있습니다.
+
+- **상태**: `sudo systemctl status reportarchive-mcp` / 로그 `journalctl -u reportarchive-mcp -f`
+- **끄기**: `MCP_ENABLED=0 sudo ./deploy.sh update` (유닛은 별도 `systemctl disable --now reportarchive-mcp`)
+- **외부 노출**: 기본 `127.0.0.1:3002` (로컬만). 사내망에 열려면 `MCP_HOST=0.0.0.0 sudo ./deploy.sh update`
+  하거나 nginx 리버스프록시(TLS) 권장. 백엔드 포트가 3000이 아니면 `MCP_API_BASE=http://127.0.0.1:<포트>`.
+- **사용자 등록(각자)**:
+  ```bash
+  claude mcp add --transport http reportarchive http://<서버>:3002/mcp \
+    --header "Authorization: Bearer <내 토큰>" --header "X-Workspace-Slug: <부서slug>"
+  ```
+  → 인증은 **사용자별 토큰**이 그대로 백엔드로 전달돼 그 사람 권한으로 동작. 생성물은 **초안**.
+- **오프라인 휠이 없던 빌드**라면 MCP 만 설치가 건너뛰어집니다(백엔드는 정상). 그땐 호스트에서
+  `cd <INSTALL_DIR>/mcp_server && ./venv/bin/pip install -r requirements.txt` 후 서비스 재기동.
+
+---
+
 ## 트러블슈팅
 
 | 증상 | 확인 |

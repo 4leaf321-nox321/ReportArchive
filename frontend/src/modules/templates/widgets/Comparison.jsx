@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, useCallback } from 'react'
 import {
   ChevronDown,
   ChevronLeft,
@@ -52,7 +52,7 @@ import {
   _richSeed,
   sanitizeCaptionHtml,
 } from './_shared'
-import { RichTextRowEditor } from './RichTextRowEditor'
+import { RichTextRowEditor, RichTextFormatToolbarBody } from './RichTextRowEditor'
 
 // Hard guards for the optional layout props — match the backend's
 // props_schema (minimum / maximum). Used both in the props panel and
@@ -405,6 +405,19 @@ export function ComparisonPreview({ props }) {
 // --------------------------------------------------------------------------- //
 // Editor                                                                      //
 // --------------------------------------------------------------------------- //
+// 다중 셀 일괄 서식 툴바의 정적 state — 선택 영역이 여러 셀이라 "현재 활성
+// 서식" 개념이 없어 전부 비활성. 클릭하면 적용(set)만 한다.
+const _BULK_TOOLBAR_STATE = {
+  bold: false,
+  italic: false,
+  underline: false,
+  strike: false,
+  fontSize: '',
+  fontFamily: '',
+  color: null,
+  reportLink: false,
+}
+
 export function ComparisonEditor({ props, content, onChange, readOnly }) {
   const caption = content?.caption ?? ''
   const note = content?.note ?? ''
@@ -435,6 +448,11 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     const s = cellStyles[`${rowKey}::${colKey}`]
     if (!s) return ''
     return `${bgTokenClass(s.bg)} ${colorTokenClass(s.fg)}`.trim()
+  }
+  // 셀 단위 글자 크기(px 문자열, 예: '20px') — 행 라벨/이미지 등 인라인 마크업
+  // 이 없는 셀에 일괄 크기를 줄 때 사용. 없으면 undefined.
+  function cellSizePx(rowKey, colKey) {
+    return cellStyles[`${rowKey}::${colKey}`]?.size
   }
   // 셀별 rich 마크업(긴 글처럼 per-char 색). 키는 cell_styles 와 동일
   // ("행key::케이스key"). 평문 값(values)과 분리된 사이드테이블.
@@ -524,6 +542,15 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
   // 셀간 화살표 네비게이션. 컬럼 좌표: 0 = 행 라벨, 1..M = case 셀.
   // 행 좌표: 0..N-1 = 데이터 행 (헤더는 Tab 으로만 이동).
   const grid = useGridNavigation()
+  // 텍스트 셀(헤더 포함)의 RichTextRowEditor imperative handle 등록소.
+  // 키: 헤더 `h-${hr}-${ci}`, 케이스 데이터 셀 `${rowIdx}:${ci+1}`
+  // (= gridCellKey). 다중 셀 일괄 서식이 각 셀 에디터에 직접 명령을 적용·수확.
+  const cellEditorsRef = useRef(new Map())
+  const registerEditor = useCallback((key, api) => {
+    const m = cellEditorsRef.current
+    if (api) m.set(key, api)
+    else m.delete(key)
+  }, [])
 
   function patch(next) {
     const merged = {
@@ -1214,6 +1241,145 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     if (hTouched) next.header = { ...(hObj || ensureHeader()), cells: hCells }
     patch(next)
   }
+
+  // 선택 영역의 모든 셀에 글자 서식을 일괄 적용. `run(editor)` 은 각 텍스트
+  // 셀(헤더·케이스) 에디터에서 실행할 명령(예: selectAll → setMark). 에디터가
+  // 없는 셀(행 라벨 textarea·이미지)은 인라인 서식은 건너뛰되 `cellStyleFn`
+  // 이 있으면 cell_styles 항목을 (cur)=>next 로 변환해 셀 단위 색/크기를 준다.
+  function applyRichToSelection(run, cellStyleFn) {
+    const r = selection.rect
+    if (!r) return
+    const reg = cellEditorsRef.current
+    let nextRows = rows
+    const nextHtml = { ...cellHtml }
+    const nextStyles = { ...cellStyles }
+    let hCells = header ? { ...(header.cells || {}) } : null
+    let hTouched = false
+    let stylesTouched = false
+    let rowsTouched = false
+    for (let rr = r.r1; rr <= r.r2; rr++) {
+      for (let cc = r.c1; cc <= r.c2; cc++) {
+        const colKey = colKeyAt(cc)
+        if (!colKey) continue
+        if (rr < headerOffset) {
+          // ── 헤더 band ── 헤더 셀은 항상 RichTextRowEditor.
+          const api = reg.get(`h-${rr}-${cc}`)
+          if (!api?.applyAndCapture) continue
+          const { html, text } = api.applyAndCapture((ed) => run(ed))
+          if (!hCells) hCells = {}
+          const k = `${rr}::${colKey}`
+          const cur = { ...(hCells[k] || {}) }
+          if (text) cur.text = text
+          else delete cur.text
+          if (_richIsEmpty(html)) delete cur.html
+          else cur.html = html
+          if (cur.text || cur.html || cur.bg || cur.fg) hCells[k] = cur
+          else delete hCells[k]
+          hTouched = true
+        } else {
+          // ── 데이터 band ── c=0 행 라벨(textarea, 에디터 없음), c≥1 케이스.
+          const rowIdx = rr - headerOffset
+          const row = rows[rowIdx]
+          if (!row) continue
+          const rowKey = row.key
+          const api = cc >= 1 ? reg.get(`${rowIdx}:${cc}`) : null
+          if (api?.applyAndCapture) {
+            const { html, text } = api.applyAndCapture((ed) => run(ed))
+            const k = `${rowKey}::${colKey}`
+            nextRows = nextRows.map((rw, i) => {
+              if (i !== rowIdx) return rw
+              const values = { ...(rw.values || {}) }
+              if (text) values[colKey] = text
+              else delete values[colKey]
+              return { ...rw, values }
+            })
+            rowsTouched = true
+            if (_richIsEmpty(html)) delete nextHtml[k]
+            else nextHtml[k] = html
+          } else if (cellStyleFn) {
+            // 행 라벨/이미지 셀 — 인라인 서식은 없지만 셀 단위 색/크기는 가능.
+            const k = `${rowKey}::${colKey}`
+            const nx = cellStyleFn({ ...(nextStyles[k] || {}) }) || {}
+            if (nx.bg || nx.fg || nx.size) nextStyles[k] = nx
+            else delete nextStyles[k]
+            stylesTouched = true
+          }
+        }
+      }
+    }
+    const next = { cell_html: nextHtml }
+    if (rowsTouched) next.rows = nextRows
+    if (stylesTouched) next.cell_styles = nextStyles
+    if (hTouched) next.header = { ...(header || ensureHeader()), cells: hCells }
+    patch(next)
+  }
+
+  // 일괄 서식 툴바 액션 — 각 텍스트 셀에서 전체 선택 후 서식을 set(토글이
+  // 아니라 적용). 색·크기는 행 라벨/이미지 셀까지 셀 단위로 함께 적용한다.
+  const bulkFormatActions = {
+    toggleBold: () =>
+      applyRichToSelection((ed) => ed.chain().selectAll().setMark('bold').run()),
+    toggleItalic: () =>
+      applyRichToSelection((ed) => ed.chain().selectAll().setMark('italic').run()),
+    toggleUnderline: () =>
+      applyRichToSelection((ed) =>
+        ed.chain().selectAll().setMark('underline').run(),
+      ),
+    toggleStrike: () =>
+      applyRichToSelection((ed) => ed.chain().selectAll().setMark('strike').run()),
+    setFontSize: (v) =>
+      applyRichToSelection(
+        (ed) =>
+          v
+            ? ed.chain().selectAll().setFontSize(v).run()
+            : ed.chain().selectAll().unsetFontSize().run(),
+        (cur) => {
+          if (v) cur.size = v
+          else delete cur.size
+          return cur
+        },
+      ),
+    setFontFamily: (v) =>
+      applyRichToSelection((ed) =>
+        v
+          ? ed.chain().selectAll().setFontFamily(v).run()
+          : ed.chain().selectAll().unsetFontFamily().run(),
+      ),
+    setColor: (c) =>
+      applyRichToSelection(
+        (ed) =>
+          c
+            ? ed.chain().selectAll().setColor(c).run()
+            : ed.chain().selectAll().unsetColor().run(),
+        (cur) => {
+          if (c) cur.fg = c
+          else delete cur.fg
+          return cur
+        },
+      ),
+  }
+  function clearBulkFormat() {
+    applyRichToSelection(
+      (ed) =>
+        ed
+          .chain()
+          .selectAll()
+          .unsetBold()
+          .unsetItalic()
+          .unsetUnderline()
+          .unsetStrike()
+          .unsetFontSize()
+          .unsetFontFamily()
+          .unsetColor()
+          .run(),
+      (cur) => {
+        delete cur.fg
+        delete cur.size
+        return cur
+      },
+    )
+  }
+
   const selectionRect_ = selection.rect
   const selectionCrossesZone =
     selectionRect_ != null &&
@@ -1273,11 +1439,13 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
             >
               <div className="outline-rich-row">
                 <RichTextRowEditor
+                  ref={(api) => registerEditor(`h-${hr}-${ci}`, api)}
                   html={_richSeed(hcell?.html, hcell?.text)}
                   onChange={(html, text) =>
                     updateHeaderCellRich(hr, colKey, html, text)
                   }
                   gridCellKey={`h-${hr}-${ci}`}
+                  defaultSizePx={bodyFontPx}
                   className="w-full min-h-[1.5rem] rounded px-1 py-0.5 text-center whitespace-pre-wrap break-words"
                 />
               </div>
@@ -1455,7 +1623,9 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                         <td
                           {...(labelSpan?.rs > 1 ? { rowSpan: labelSpan.rs } : {})}
                           {...(labelSpan?.cs > 1 ? { colSpan: labelSpan.cs } : {})}
-                          style={{ fontSize: bodyFontPx }}
+                          style={{
+                            fontSize: cellSizePx(row.key, ROW_LABEL_KEY) ?? bodyFontPx,
+                          }}
                           className={cn(
                             'px-2 py-1.5 font-medium border-r bg-muted/20 align-top whitespace-pre-wrap break-words',
                             cellStyleClass(row.key, ROW_LABEL_KEY),
@@ -1601,7 +1771,8 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
               +
             </button>
           </div>
-          {/* 셀 색 — 선택이 있으면(1셀 포함) 배경/글자색 지정. */}
+          {/* 셀 배경 — 선택이 있으면(1셀 포함) 배경색 지정. 글자색은 "글자
+              서식"으로 옮겨 중복 제거. */}
           {selection.rect && (
             <Popover>
               <PopoverTrigger asChild>
@@ -1609,36 +1780,59 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                   variant="ghost"
                   size="sm"
                   className="h-6 px-2 text-[11px] rounded-md border bg-muted/40"
-                  title="선택한 셀의 배경/글자 색"
+                  title="선택한 셀의 배경색"
                 >
-                  <Palette className="mr-1 h-3 w-3" />셀 색
+                  <Palette className="mr-1 h-3 w-3" />셀 배경
                 </Button>
               </PopoverTrigger>
               <PopoverContent
                 align="end"
-                className="w-auto p-3 space-y-2"
+                className="w-auto p-3"
                 data-cell-selection-allow
               >
-                <div className="space-y-1">
-                  <div className="text-[10px] font-medium uppercase text-muted-foreground">
-                    배경
-                  </div>
-                  <ColorSwatchPicker
-                    value={null}
-                    onChange={(t) => applyCellColor('bg', t)}
-                    size={18}
+                <ColorSwatchPicker
+                  value={null}
+                  onChange={(t) => applyCellColor('bg', t)}
+                  size={18}
+                />
+              </PopoverContent>
+            </Popover>
+          )}
+          {/* 글자 서식 — 선택한 셀들의 굵기/기울임/크기/글꼴/색을 한꺼번에.
+              텍스트 셀은 글자 내부 서식으로, 행 라벨/이미지 셀은 색·크기만
+              셀 단위로 함께 적용된다. */}
+          {selection.rect && (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-[11px] rounded-md border bg-muted/40"
+                  title="선택한 셀들의 글자 서식(굵기·크기·글꼴·색)을 일괄 변경"
+                >
+                  <TypeIcon className="mr-1 h-3 w-3" />글자 서식
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="end"
+                className="w-auto p-2 space-y-2"
+                data-cell-selection-allow
+              >
+                <div className="flex items-center gap-1 flex-wrap">
+                  <RichTextFormatToolbarBody
+                    state={_BULK_TOOLBAR_STATE}
+                    actions={bulkFormatActions}
+                    defaultSizePx={bodyFontPx}
                   />
                 </div>
-                <div className="space-y-1">
-                  <div className="text-[10px] font-medium uppercase text-muted-foreground">
-                    글자
-                  </div>
-                  <ColorSwatchPicker
-                    value={null}
-                    onChange={(t) => applyCellColor('fg', t)}
-                    size={18}
-                  />
-                </div>
+                <button
+                  type="button"
+                  onClick={clearBulkFormat}
+                  className="text-[11px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+                  title="선택한 셀들의 글자 서식을 모두 지움"
+                >
+                  서식 지우기
+                </button>
               </PopoverContent>
             </Popover>
           )}
@@ -1896,7 +2090,9 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                             }}
                             data-grid-cell={`${ri}:0`}
                             placeholder="행 이름"
-                            style={{ fontSize: bodyFontPx }}
+                            style={{
+                              fontSize: cellSizePx(row.key, ROW_LABEL_KEY) ?? bodyFontPx,
+                            }}
                             className="flex-1 min-w-0 resize-none rounded-md border border-input bg-background px-2 py-0.5 leading-snug focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring whitespace-pre-wrap break-words"
                           />
                           <div className="flex flex-col">
@@ -1977,6 +2173,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                               onMultiPaste={(text) => pasteGrid(ri, ci, text)}
                               gridCellKey={`${ri}:${ci + 1}`}
                               fontSizePx={bodyFontPx}
+                              registerEditor={registerEditor}
                             />
                           )}
                         </td>
@@ -2085,6 +2282,7 @@ function TextCellEditor({
   gridCellKey,
   fontSizePx = DEFAULT_BODY_FONT_PX,
   onMultiPaste,
+  registerEditor,
 }) {
   // rich 에디터 — 셀 안 텍스트 일부를 선택해 색·서식(긴 글처럼). 평문 값은
   // onChangeRich 가 함께 동기화. 엑셀 TSV 붙여넣기는 onPastePlain 으로 가로채
@@ -2093,12 +2291,16 @@ function TextCellEditor({
   return (
     <div className="outline-rich-row w-full">
       <RichTextRowEditor
+        ref={
+          registerEditor ? (api) => registerEditor(gridCellKey, api) : undefined
+        }
         html={_richSeed(html, typeof value === 'string' ? value : '')}
         onChange={onChangeRich}
         onKeyDown={onKeyDown}
         onPastePlain={onMultiPaste}
         gridCellKey={gridCellKey}
         placeholder="텍스트 / 숫자"
+        defaultSizePx={fontSizePx}
         style={{ fontSize: fontSizePx }}
         className="w-full min-h-[2.5rem] rounded-md border border-input bg-background px-2 py-1 leading-snug whitespace-pre-wrap break-words"
       />

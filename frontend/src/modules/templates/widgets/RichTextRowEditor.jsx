@@ -146,6 +146,10 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
     // 탭/줄바꿈이 든 붙여넣기(엑셀 표)를 여러 셀로 펼치도록 부모에 위임.
     // 호출되면 에디터 기본 붙여넣기는 막는다.
     onPastePlain,
+    // 버블 메뉴 글자크기 선택의 "기본" 라벨에 실제 기본 px 을 명시(예:
+    // "기본 (18px)"). 안 주면 그냥 "기본". 표 셀은 표의 기본 본문 크기를
+    // 내려보내 작성자가 기본값이 몇 px 인지 알게 한다.
+    defaultSizePx,
   },
   ref,
 ) {
@@ -171,6 +175,10 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
   // 표/비교표 셀: 탭/줄바꿈이 든 붙여넣기(엑셀)를 가로채 여러 셀로 펼치게
   // 부모에 넘긴다. 단일 값 붙여넣기는 평소대로 에디터가 처리.
   const onPastePlainRef = useRef(onPastePlain)
+  // 버블 툴바(글자크기/글꼴 select·색 스와치) 를 조작하는 동안만 true. 네이티브
+  // <select> 를 누르면 에디터가 blur 되는데, 그때 선택을 접어버리면 명령이
+  // 빈 선택에 적용돼 버린다. 이 플래그가 켜져 있으면 blur-collapse 를 건너뛴다.
+  const toolbarInteractingRef = useRef(false)
   useEffect(() => {
     onKeyDownRef.current = onKeyDown
     onChangeRef.current = onChange
@@ -303,7 +311,19 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
       onChangeRef.current?.(nextHtml, nextText)
     },
     onFocus: () => onFocusRef.current?.(),
-    onBlur: () => onBlurRef.current?.(),
+    onBlur: ({ editor }) => {
+      onBlurRef.current?.()
+      // 셀 밖/다른 셀로 포커스가 빠지면 남아 있던 텍스트 선택을 접어 버블
+      // 메뉴(서식 팔렛)를 닫는다 — 안 그러면 셀마다 에디터가 선택을 그대로
+      // 들고 있어 팔렛이 안 꺼지는 채로 남는다. 단, 자기 버블 툴바를 조작
+      // 중이면(글꼴/크기 select·색 스와치) 선택을 유지해야 명령이 먹는다.
+      window.setTimeout(() => {
+        if (!editor || editor.isDestroyed) return
+        if (editor.isFocused || toolbarInteractingRef.current) return
+        const { from, to } = editor.state.selection
+        if (from !== to) editor.commands.setTextSelection(from)
+      }, 150)
+    },
   })
 
   // External rewrites (parent prefix-strip, content reset on item swap)
@@ -480,12 +500,32 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
           options={{ placement: 'top' }}
           // Hide on empty selection so the toolbar doesn't flash while
           // the user is just typing — only show when actual text is picked.
+          // 포커스 조건이 핵심: 다중 셀 일괄 서식은 각 셀 에디터에서
+          // selectAll() 을 돌려 비어있지 않은 선택을 남기는데, 포커스까지
+          // 봐야 그 많은(포커스 없는) 셀들의 버블 팔렛이 한꺼번에 뜨는 걸
+          // 막는다. 자기 툴바 조작 중(네이티브 select 클릭 등)엔 blur 돼도
+          // 계속 보여야 하므로 toolbarInteractingRef 로 예외.
           shouldShow={({ editor, from, to }) =>
-            editor.isEditable && from !== to && !editor.state.selection.empty
+            editor.isEditable &&
+            from !== to &&
+            !editor.state.selection.empty &&
+            (editor.isFocused || toolbarInteractingRef.current)
           }
           className={RICH_TEXT_TOOLBAR_CLASS}
         >
+          {/* 툴바를 만지는 동안 blur-collapse 를 잠시 끈다(네이티브 select 가
+              에디터를 blur 시켜도 선택이 유지되도록). pointerdown 직후 잠깐만. */}
+          <div
+            className="contents"
+            onPointerDown={() => {
+              toolbarInteractingRef.current = true
+              window.setTimeout(() => {
+                toolbarInteractingRef.current = false
+              }, 400)
+            }}
+          >
           <RichTextFormatToolbarBody
+            defaultSizePx={defaultSizePx}
             state={{
               bold: editor.isActive('bold'),
               italic: editor.isActive('italic'),
@@ -517,6 +557,7 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
                   : editor.chain().focus().unsetColor().run(),
             }}
           />
+          </div>
         </BubbleMenu>
       )}
     </>
@@ -534,7 +575,7 @@ export const RICH_TEXT_TOOLBAR_CLASS =
  * TipTap instance — the in-editor bubble menu wires it to a single editor,
  * while the cross-row toolbar wires it to row-html manipulation helpers.
  */
-export function RichTextFormatToolbarBody({ state, actions }) {
+export function RichTextFormatToolbarBody({ state, actions, defaultSizePx }) {
   return (
     <>
       <ToolbarButton
@@ -567,7 +608,11 @@ export function RichTextFormatToolbarBody({ state, actions }) {
       </ToolbarButton>
       <ToolbarSeparator />
       <FontFamilySelect value={state.fontFamily} onChange={actions.setFontFamily} />
-      <FontSizeSelect value={state.fontSize} onChange={actions.setFontSize} />
+      <FontSizeSelect
+        value={state.fontSize}
+        onChange={actions.setFontSize}
+        defaultSizePx={defaultSizePx}
+      />
       <ToolbarSeparator />
       <ColorSwatchPicker value={state.color} onChange={actions.setColor} />
       {/* 보고서 멘션 링크가 선택에 걸려 있을 때만 — 링크 해제(텍스트는 유지). */}
@@ -628,7 +673,11 @@ function FontFamilySelect({ value, onChange }) {
   )
 }
 
-function FontSizeSelect({ value, onChange }) {
+function FontSizeSelect({ value, onChange, defaultSizePx }) {
+  // "기본" 행에 실제 기본 px 을 같이 표기 — 작성자가 기본이 몇 px 인지 알게.
+  const defaultLabel = Number.isFinite(defaultSizePx)
+    ? `기본 (${defaultSizePx}px)`
+    : '기본'
   return (
     <select
       value={value ?? ''}
@@ -640,7 +689,7 @@ function FontSizeSelect({ value, onChange }) {
       className="h-7 rounded border border-input bg-background px-1 text-[11px]"
       title="글자 크기 (px)"
     >
-      <option value="">기본</option>
+      <option value="">{defaultLabel}</option>
       {FONT_SIZE_OPTIONS.map((o) => (
         <option key={o.value} value={o.value}>
           {o.label}

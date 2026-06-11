@@ -1,5 +1,5 @@
-import { createContext, useContext, useState } from 'react'
-import { Maximize2, Minimize2, Palette } from 'lucide-react'
+import { createContext, useContext, useState, useRef, useCallback } from 'react'
+import { Maximize2, Minimize2, Palette, Type } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import {
@@ -8,7 +8,7 @@ import {
   PopoverTrigger,
 } from '@/shared/components/ui/popover'
 import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, NoteInput, PreviewLabel, TextStyleField, captionSkipProps, computeMergeMap, normalizeMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation, _richIsEmpty, _richSeed, sanitizeCaptionHtml } from './_shared'
-import { RichTextRowEditor } from './RichTextRowEditor'
+import { RichTextRowEditor, RichTextFormatToolbarBody } from './RichTextRowEditor'
 import { ColorSwatchPicker, bgTokenClass, colorTokenClass } from '@/shared/text-color'
 
 // 셀 색상 사이드테이블 키 — `${rowIndex}::${colKey}`. (열 key 는 안정적이라
@@ -35,6 +35,105 @@ function _shiftCellStylesRowSwap(styles, a, b) {
     out[`${nr}::${colKey}`] = v
   }
   return out
+}
+
+// 헤더에서 작성자가 고를 수 있는 열 타입 — 텍스트/숫자/날짜/선택지. 선택지는
+// 옵션 목록이 필요하므로 그 타입일 때만 옆에 '선택지 편집' 팝오버가 따로 뜬다.
+const _COL_TYPE_OFFER = [
+  { value: 'text', label: '텍스트' },
+  { value: 'number', label: '숫자' },
+  { value: 'date', label: '날짜' },
+  { value: 'select', label: '선택지' },
+]
+const _COL_TYPE_LABEL = {
+  text: '텍스트',
+  number: '숫자',
+  integer: '정수',
+  date: '날짜',
+  select: '선택지',
+}
+
+function ColumnTypeSelect({ value, onChange, options, onOptionsChange }) {
+  const cur = value ?? 'text'
+  const opts = [..._COL_TYPE_OFFER]
+  // 현재 타입이 제안 목록에 없으면(정수 등) 맨 앞에 끼워 현재값을 그대로
+  // 표시 — 그래야 select 가 빈칸으로 안 보이고, 다른 타입으로 바꿀 수도.
+  if (!opts.some((o) => o.value === cur)) {
+    opts.unshift({ value: cur, label: _COL_TYPE_LABEL[cur] ?? cur })
+  }
+  return (
+    <div className="flex items-center gap-0.5">
+      <select
+        value={cur}
+        // th 의 셀-선택 mousedown 으로 번지지 않게 — 클릭은 타입 변경만.
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => onChange(e.target.value)}
+        title="이 열의 입력 형식 — 텍스트(서식·자유 입력) / 숫자 / 날짜 / 선택지"
+        className="h-5 rounded border border-input bg-background/95 px-0.5 text-[10px] leading-none shadow-sm"
+      >
+        {opts.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      {/* 선택지 타입일 때만 옵션(드롭다운 항목) 편집 팝오버. */}
+      {cur === 'select' && onOptionsChange && (
+        <Popover>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              title="드롭다운 선택지 편집 (쉼표로 구분)"
+              className="h-5 rounded border border-input bg-background/95 px-1 text-[10px] leading-none shadow-sm hover:bg-muted"
+            >
+              선택지{options?.length ? ` ${options.length}` : ''}
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            className="w-56 p-2"
+            data-cell-selection-allow
+          >
+            <div className="text-[10px] uppercase text-muted-foreground mb-1">
+              선택지 (쉼표로 구분)
+            </div>
+            <Input
+              // 비제어(defaultValue) — 입력 중 trailing 쉼표가 잘려 다음 항목을
+              // 못 치는 걸 막는다. 팝오버를 열 때마다 현재 옵션으로 다시 초기화.
+              defaultValue={(options ?? []).join(', ')}
+              onMouseDown={(e) => e.stopPropagation()}
+              onChange={(e) =>
+                onOptionsChange(
+                  e.target.value
+                    .split(',')
+                    .map((s) => s.trim())
+                    .filter(Boolean),
+                )
+              }
+              placeholder="높음, 보통, 낮음"
+              className="h-8 text-xs"
+            />
+          </PopoverContent>
+        </Popover>
+      )}
+    </div>
+  )
+}
+
+// 다중 셀 일괄 서식 툴바의 정적 state — 선택 영역이 여러 셀이라 "현재 활성
+// 서식"이라는 개념이 없으므로 전부 비활성. 클릭하면 적용(set)만 한다.
+const _BULK_TOOLBAR_STATE = {
+  bold: false,
+  italic: false,
+  underline: false,
+  strike: false,
+  fontSize: '',
+  fontFamily: '',
+  color: null,
+  reportLink: false,
 }
 
 /**
@@ -160,6 +259,11 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     if (!s) return ''
     return `${bgTokenClass(s.bg)} ${colorTokenClass(s.fg)}`.trim()
   }
+  // 셀 단위 글자 크기(px 문자열, 예: '20px') — 숫자/날짜/선택 셀은 인라인
+  // 마크업이 없어 이걸로 크기를 준다. 없으면 undefined.
+  function cellSizePx(r, colKey) {
+    return cellStyles[_cellKey(r, colKey)]?.size
+  }
   // 셀별 rich 마크업(긴 글처럼 per-char 색·서식). 평문 값(rows)과 분리된
   // 사이드테이블 — 키는 cell_styles 와 동일한 `${r}::${colKey}`.
   const cellHtml =
@@ -197,6 +301,21 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   // 셀간 화살표 네비게이션 — 텍스트 셀은 boundary 기준, 그 외 입력
   // (number/date/select) 은 left/right boundary 이동만 (up/down 은 native).
   const grid = useGridNavigation()
+  // 표 셀 기본 글자 크기(px) — 버블/일괄 툴바의 "기본 (Npx)" 라벨용. 템플릿이
+  // text_style.font_size_px 를 지정했으면 그 값, 아니면 본문 기본(18px).
+  const cellDefaultSizePx = Number.isFinite(props.text_style?.font_size_px)
+    ? props.text_style.font_size_px
+    : DEFAULT_BODY_FONT_PX
+  // 각 텍스트 셀(헤더 포함)의 RichTextRowEditor imperative handle 등록소.
+  // 키: 데이터 셀 `${rowIdx}:${colIdx}` (gridCellKey 와 동일), 헤더 셀
+  // `h-${hr}-${ci}`. 다중 셀 일괄 서식이 셀별 에디터에 직접 명령을 적용·수확
+  // 하려고 모아 둔다. 콜백 ref 라 언마운트 시 자동 정리(null).
+  const cellEditorsRef = useRef(new Map())
+  const registerEditor = useCallback((key, api) => {
+    const m = cellEditorsRef.current
+    if (api) m.set(key, api)
+    else m.delete(key)
+  }, [])
   // ── 열 폭 조절 (content.column_widths) ───────────────────────────────
   // 헤더 우측 핸들을 드래그해 px 로 저장. 빠진 열은 자동(나머지 폭 균등
   // 분배). 편집/뷰 두 모드 공용 <colgroup> 으로 적용. resizePreview 는 드래그
@@ -417,6 +536,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                             rowSpan={span?.rs}
                             colSpan={span?.cs}
                             cellClass={cellStyleClass(ri, c.key)}
+                            cellSize={cellSizePx(ri, c.key)}
                           />
                         )
                       })}
@@ -512,6 +632,40 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   }
   function renameColumn(idx, label) {
     setCols(cols.map((c, i) => (i === idx ? { ...c, label } : c)))
+  }
+  // 보고서 작성자가 헤더에서 이 열의 입력 형식을 바꾼다(텍스트↔숫자 등).
+  // 비텍스트로 바꾸면 그 열의 rich 마크업은 의미가 없어 버리고, 숫자/정수
+  // 로 바꾸면 기존 값을 best-effort 로 숫자 변환한다. content.columns 를
+  // override 로 굳히는 효과(작성자가 명시적으로 손댔으므로).
+  function setColumnType(idx, type) {
+    const col = cols[idx]
+    if (!col || (col.type ?? 'text') === type) return
+    const nextCols = cols.map((c, i) => (i === idx ? { ...c, type } : c))
+    const out = { columns: nextCols }
+    if (type !== 'text') {
+      out.cell_html = Object.fromEntries(
+        Object.entries(cellHtml).filter(([k]) => k.split('::')[1] !== col.key),
+      )
+    }
+    if (type === 'number' || type === 'integer') {
+      out.rows = rows.map((r) => {
+        const v = r[col.key]
+        if (v === undefined || v === null || v === '') return r
+        return { ...r, [col.key]: coerceCellValue({ type }, v) }
+      })
+    }
+    patch(out)
+  }
+  // 선택지 열의 드롭다운 항목(options)을 갱신. 빈 배열이면 키를 떼 깔끔하게.
+  function setColumnOptions(idx, options) {
+    const nextCols = cols.map((c, i) => {
+      if (i !== idx) return c
+      const next = { ...c }
+      if (options && options.length) next.options = options
+      else delete next.options
+      return next
+    })
+    patch({ columns: nextCols })
   }
   function removeColumn(idx) {
     const removed = cols[idx]
@@ -692,6 +846,140 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     const next = { cell_styles: nextStyles }
     if (hTouched) next.header = { ...(hObj || ensureHeader()), cells: hCells }
     patch(next)
+  }
+
+  // 선택 영역의 모든 셀에 글자 서식을 일괄 적용. `run(editor)` 은 각 텍스트
+  // 셀 에디터에서 실행할 명령(예: selectAll → setMark). 비텍스트 셀(숫자/
+  // 날짜/선택)은 에디터가 없으므로 인라인 서식은 건너뛰되, `cellStyleFn`
+  // 이 주어지면 그 셀의 cell_styles 항목을 (cur)=>next 로 변환해 셀 단위
+  // 글자색/크기를 적용한다(헤더 셀은 항상 에디터라 이 경로를 안 탄다).
+  function applyRichToSelection(run, cellStyleFn) {
+    const r = selection.rect
+    if (!r) return
+    const reg = cellEditorsRef.current
+    let nextRows = rows
+    const nextHtml = { ...cellHtml }
+    const nextStyles = { ...cellStyles }
+    let hCells = header ? { ...(header.cells || {}) } : null
+    let hTouched = false
+    let stylesTouched = false
+    for (let rr = r.r1; rr <= r.r2; rr++) {
+      for (let ci = r.c1; ci <= r.c2; ci++) {
+        const col = cols[ci]
+        if (!col) continue
+        if (rr < headerOffset) {
+          // ── 헤더 band ── 헤더 셀은 항상 RichTextRowEditor 라 api 가 있다.
+          const api = reg.get(`h-${rr}-${ci}`)
+          if (!api?.applyAndCapture) continue
+          const { html, text } = api.applyAndCapture((ed) => run(ed))
+          if (!hCells) hCells = {}
+          const k = _cellKey(rr, col.key)
+          const cur = { ...(hCells[k] || {}) }
+          if (text) cur.text = text
+          else delete cur.text
+          if (_richIsEmpty(html)) delete cur.html
+          else cur.html = html
+          if (cur.text || cur.html || cur.bg || cur.fg) hCells[k] = cur
+          else delete hCells[k]
+          hTouched = true
+        } else {
+          // ── 데이터 band ──
+          const rowIdx = rr - headerOffset
+          const api = reg.get(`${rowIdx}:${ci}`)
+          if (api?.applyAndCapture) {
+            const { html, text } = api.applyAndCapture((ed) => run(ed))
+            const k = _cellKey(rowIdx, col.key)
+            nextRows = nextRows.map((row, i) =>
+              i === rowIdx ? { ...row, [col.key]: text || undefined } : row,
+            )
+            if (_richIsEmpty(html)) delete nextHtml[k]
+            else nextHtml[k] = html
+          } else if (cellStyleFn) {
+            // 숫자/날짜/선택 셀 — 인라인 서식은 없지만 셀 단위 색/크기는 가능.
+            const k = _cellKey(rowIdx, col.key)
+            const next = cellStyleFn({ ...(nextStyles[k] || {}) }) || {}
+            if (next.bg || next.fg || next.size) nextStyles[k] = next
+            else delete nextStyles[k]
+            stylesTouched = true
+          }
+        }
+      }
+    }
+    const next = { rows: nextRows, cell_html: nextHtml }
+    if (stylesTouched) next.cell_styles = nextStyles
+    if (hTouched) next.header = { ...(header || ensureHeader()), cells: hCells }
+    patch(next)
+  }
+
+  // 일괄 서식 툴바 액션 — 각 텍스트 셀에서 전체 선택 후 서식을 set(토글이
+  // 아니라 적용). 색은 비텍스트 셀까지 셀 단위로 함께 칠한다.
+  const bulkFormatActions = {
+    toggleBold: () =>
+      applyRichToSelection((ed) => ed.chain().selectAll().setMark('bold').run()),
+    toggleItalic: () =>
+      applyRichToSelection((ed) => ed.chain().selectAll().setMark('italic').run()),
+    toggleUnderline: () =>
+      applyRichToSelection((ed) =>
+        ed.chain().selectAll().setMark('underline').run(),
+      ),
+    toggleStrike: () =>
+      applyRichToSelection((ed) => ed.chain().selectAll().setMark('strike').run()),
+    setFontSize: (v) =>
+      applyRichToSelection(
+        (ed) =>
+          v
+            ? ed.chain().selectAll().setFontSize(v).run()
+            : ed.chain().selectAll().unsetFontSize().run(),
+        // 비텍스트 셀(숫자/날짜/선택)은 셀 단위 글자 크기로.
+        (cur) => {
+          if (v) cur.size = v
+          else delete cur.size
+          return cur
+        },
+      ),
+    setFontFamily: (v) =>
+      applyRichToSelection((ed) =>
+        v
+          ? ed.chain().selectAll().setFontFamily(v).run()
+          : ed.chain().selectAll().unsetFontFamily().run(),
+      ),
+    setColor: (c) =>
+      applyRichToSelection(
+        (ed) =>
+          c
+            ? ed.chain().selectAll().setColor(c).run()
+            : ed.chain().selectAll().unsetColor().run(),
+        // 비텍스트 셀은 셀 단위 글자색으로.
+        (cur) => {
+          if (c) cur.fg = c
+          else delete cur.fg
+          return cur
+        },
+      ),
+  }
+  // "서식 지우기" — 선택한 텍스트 셀의 인라인 서식을 전부 해제하고, 비텍스트
+  // 셀의 셀-레벨 글자색도 함께 해제.
+  function clearBulkFormat() {
+    applyRichToSelection(
+      (ed) =>
+        ed
+          .chain()
+          .selectAll()
+          .unsetBold()
+          .unsetItalic()
+          .unsetUnderline()
+          .unsetStrike()
+          .unsetFontSize()
+          .unsetFontFamily()
+          .unsetColor()
+          .run(),
+      // 비텍스트 셀의 셀 단위 글자색·크기도 함께 해제(배경색은 유지).
+      (cur) => {
+        delete cur.fg
+        delete cur.size
+        return cur
+      },
+    )
   }
 
   function mergeSelection() {
@@ -969,7 +1257,8 @@ export function TableEditor({ props, content, onChange, readOnly }) {
         // 못하게 면역 영역으로 표시.
         data-cell-selection-allow
       >
-        {/* 셀 색 — 선택이 있으면(1셀 포함) 배경/글자색 지정. */}
+        {/* 셀 배경 — 선택이 있으면(1셀 포함) 배경색 지정. 글자색은 "글자
+            서식"으로 옮겨 중복 제거. */}
         {selection.rect && (
           <Popover>
             <PopoverTrigger asChild>
@@ -977,36 +1266,59 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                 variant="ghost"
                 size="sm"
                 className="h-6 px-2 text-[11px] rounded-md border bg-muted/40"
-                title="선택한 셀의 배경/글자 색"
+                title="선택한 셀의 배경색"
               >
-                <Palette className="mr-1 h-3 w-3" />셀 색
+                <Palette className="mr-1 h-3 w-3" />셀 배경
               </Button>
             </PopoverTrigger>
             <PopoverContent
               align="end"
-              className="w-auto p-3 space-y-2"
+              className="w-auto p-3"
               data-cell-selection-allow
             >
-              <div className="space-y-1">
-                <div className="text-[10px] font-medium uppercase text-muted-foreground">
-                  배경
-                </div>
-                <ColorSwatchPicker
-                  value={null}
-                  onChange={(t) => applyCellColor('bg', t)}
-                  size={18}
+              <ColorSwatchPicker
+                value={null}
+                onChange={(t) => applyCellColor('bg', t)}
+                size={18}
+              />
+            </PopoverContent>
+          </Popover>
+        )}
+        {/* 글자 서식 — 선택한 셀들의 글자 굵기/기울임/크기/글꼴/색을 한꺼번에.
+            텍스트 셀은 글자 내부 서식으로, 숫자/날짜/선택 셀은 색만 셀 단위로
+            함께 적용된다. */}
+        {selection.rect && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-[11px] rounded-md border bg-muted/40"
+                title="선택한 셀들의 글자 서식(굵기·크기·글꼴·색)을 일괄 변경"
+              >
+                <Type className="mr-1 h-3 w-3" />글자 서식
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              className="w-auto p-2 space-y-2"
+              data-cell-selection-allow
+            >
+              <div className="flex items-center gap-1 flex-wrap">
+                <RichTextFormatToolbarBody
+                  state={_BULK_TOOLBAR_STATE}
+                  actions={bulkFormatActions}
+                  defaultSizePx={cellDefaultSizePx}
                 />
               </div>
-              <div className="space-y-1">
-                <div className="text-[10px] font-medium uppercase text-muted-foreground">
-                  글자
-                </div>
-                <ColorSwatchPicker
-                  value={null}
-                  onChange={(t) => applyCellColor('fg', t)}
-                  size={18}
-                />
-              </div>
+              <button
+                type="button"
+                onClick={clearBulkFormat}
+                className="text-[11px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+                title="선택한 셀들의 글자 서식을 모두 지움"
+              >
+                서식 지우기
+              </button>
             </PopoverContent>
           </Popover>
         )}
@@ -1215,14 +1527,31 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                         >
                           <div className="outline-rich-row">
                             <RichTextRowEditor
+                              ref={(api) => registerEditor(`h-${hr}-${ci}`, api)}
                               html={_richSeed(hcell?.html, hcell?.text)}
                               onChange={(html, text) =>
                                 updateHeaderCellRich(hr, c.key, html, text)
                               }
                               gridCellKey={`h-${hr}-${ci}`}
+                              defaultSizePx={cellDefaultSizePx}
                               className="w-full min-h-[1.5rem] rounded px-1 py-0.5 text-xs text-center whitespace-pre-wrap break-words"
                             />
                           </div>
+                          {/* 열 입력 형식(텍스트/숫자) — 맨 아래 헤더 행(열과
+                              1:1)에만, 호버 시 좌상단에. */}
+                          {isBottom && (
+                            <div
+                              className="absolute left-0.5 top-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-20"
+                              data-cell-selection-allow
+                            >
+                              <ColumnTypeSelect
+                                value={c.type}
+                                onChange={(t) => setColumnType(ci, t)}
+                                options={c.options}
+                                onOptionsChange={(o) => setColumnOptions(ci, o)}
+                              />
+                            </div>
+                          )}
                           {isBottom && (
                             <Button
                               variant="ghost"
@@ -1283,6 +1612,18 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                           className="bg-transparent border-0 outline-none focus:ring-1 focus:ring-ring rounded px-1 py-0.5 text-xs text-center flex-1 min-w-0"
                         />
                         {c.required && <span className="text-destructive">*</span>}
+                      </div>
+                      {/* 열 입력 형식(텍스트/숫자) — 호버 시 좌상단. */}
+                      <div
+                        className="absolute left-0.5 top-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-20"
+                        data-cell-selection-allow
+                      >
+                        <ColumnTypeSelect
+                          value={c.type}
+                          onChange={(t) => setColumnType(i, t)}
+                          options={c.options}
+                          onOptionsChange={(o) => setColumnOptions(i, o)}
+                        />
                       </div>
                       <Button
                         variant="ghost"
@@ -1358,6 +1699,9 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                         rowIdx={rowIdx}
                         colIdx={ci}
                         onKeyDown={(e) => grid.handleKey(e, rowIdx, ci)}
+                        registerEditor={registerEditor}
+                        defaultSizePx={cellDefaultSizePx}
+                        cellSize={cellSizePx(rowIdx, c.key)}
                       />
                       {/* Row action overlay — only on the last cell of a row.
                           Hidden until the row is hovered, then floats over
@@ -1464,8 +1808,11 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   )
 }
 
-function CellInput({ column, value, html, onChange, onChangeRich, onMultiPaste, rowIdx, colIdx, onKeyDown }) {
+function CellInput({ column, value, html, onChange, onChangeRich, onMultiPaste, rowIdx, colIdx, onKeyDown, registerEditor, defaultSizePx, cellSize }) {
   const t = column.type
+  // 네이티브 입력칸은 text-xs 가 크기를 고정하므로, 셀 단위 크기는 인라인
+  // style 로 덮어써야 먹는다(인라인 > 클래스). 없으면 undefined → text-xs 유지.
+  const sizeStyle = cellSize ? { fontSize: cellSize } : undefined
   // 그리드 네비게이션이 querySelector 로 셀을 찾을 때 키. focusCell 의
   // 셀렉터와 1:1 매칭 — 형식이 바뀌면 useGridNavigation 도 같이 고쳐야 함.
   const gridCellKey = `${rowIdx}:${colIdx}`
@@ -1490,6 +1837,7 @@ function CellInput({ column, value, html, onChange, onChangeRich, onMultiPaste, 
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value || undefined)}
         data-grid-cell={gridCellKey}
+        style={sizeStyle}
         className="flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs text-center"
       >
         <option value="">—</option>
@@ -1510,6 +1858,7 @@ function CellInput({ column, value, html, onChange, onChangeRich, onMultiPaste, 
         onPaste={handlePaste}
         onKeyDown={onKeyDown}
         data-grid-cell={gridCellKey}
+        style={sizeStyle}
         className="h-8 text-xs text-center"
       />
     )
@@ -1526,6 +1875,7 @@ function CellInput({ column, value, html, onChange, onChangeRich, onMultiPaste, 
         onPaste={handlePaste}
         onKeyDown={onKeyDown}
         data-grid-cell={gridCellKey}
+        style={sizeStyle}
         className="h-8 text-xs text-center"
       />
     )
@@ -1537,11 +1887,13 @@ function CellInput({ column, value, html, onChange, onChangeRich, onMultiPaste, 
   return (
     <div className="outline-rich-row w-full">
       <RichTextRowEditor
+        ref={registerEditor ? (api) => registerEditor(gridCellKey, api) : undefined}
         html={_richSeed(html, value)}
         onChange={onChangeRich}
         onKeyDown={onKeyDown}
         onPastePlain={onMultiPaste}
         gridCellKey={gridCellKey}
+        defaultSizePx={defaultSizePx}
         className="w-full min-h-[2rem] rounded-md border border-input bg-background px-2 py-1 text-xs leading-snug text-center whitespace-pre-wrap break-words"
       />
     </div>
@@ -1590,8 +1942,10 @@ function coerceCellValue(column, raw) {
  *
  *  Expanded 모드: 전체 펼치기 토글이 켜진 상태 — 셀이 줄바꿈 되어 자연
  *  스럽게 늘어남. 이미 다 보이므로 hover popover 는 띄우지 않는다. */
-function ReadOnlyCell({ value, html, expanded, rowSpan, colSpan, cellClass = '' }) {
+function ReadOnlyCell({ value, html, expanded, rowSpan, colSpan, cellClass = '', cellSize }) {
   const hasRich = !_richIsEmpty(html)
+  // 셀 단위 글자 크기(숫자/날짜/선택 셀) — 읽기 모드 td 에 인라인으로.
+  const sizeStyle = cellSize ? { fontSize: cellSize } : undefined
   const isEmpty =
     !hasRich && (value === undefined || value === null || value === '')
   const text = value === undefined || value === null ? '' : String(value)
@@ -1613,6 +1967,7 @@ function ReadOnlyCell({ value, html, expanded, rowSpan, colSpan, cellClass = '' 
     return (
       <td
         {...spanAttrs}
+        style={sizeStyle}
         className={`px-2 py-1.5 text-center text-muted-foreground ${cellClass}`}
       >
         —
@@ -1623,6 +1978,7 @@ function ReadOnlyCell({ value, html, expanded, rowSpan, colSpan, cellClass = '' 
     return (
       <td
         {...spanAttrs}
+        style={sizeStyle}
         className={`px-2 py-1.5 text-center whitespace-pre-wrap break-words align-top ${cellClass}`}
       >
         {richNode ?? text}
@@ -1632,6 +1988,7 @@ function ReadOnlyCell({ value, html, expanded, rowSpan, colSpan, cellClass = '' 
   return (
     <td
       {...spanAttrs}
+      style={sizeStyle}
       className={`px-2 py-1.5 text-center truncate relative group ${cellClass}`}
     >
       <span title={text} className="block truncate">

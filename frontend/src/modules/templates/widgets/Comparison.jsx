@@ -26,6 +26,12 @@ import { uploadFile } from '@/shared/api/files'
 import { toast } from 'sonner'
 import { cn } from '@/shared/lib/utils'
 import {
+  pickBestPastedImage,
+  pastedImageToFile,
+  logPastedImageDiagnostics,
+  lowResWarning,
+} from '@/shared/lib/clipboardImage'
+import {
   AutoGrowTextarea,
   CaptionInput,
   computeMergeMap,
@@ -2346,15 +2352,24 @@ function ImageCellEditor({ value, onChange, maxHeightPx = DEFAULT_IMAGE_MAX_HEIG
     e.preventDefault()
     handleFiles(e.dataTransfer.files)
   }
-  function onPaste(e) {
-    const items = Array.from(e.clipboardData?.items ?? [])
-    const imageFiles = items
-      .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
-      .map((it) => it.getAsFile())
-      .filter(Boolean)
-    if (imageFiles.length === 0) return
+  // 같은 복사라도 클립보드에 여러 포맷·해상도가 들어있을 수 있어(특히 PPT),
+  // 가장 큰 해상도를 골라 올린다. preventDefault·동기 후보 수집은 await 이전.
+  async function onPaste(e) {
+    const hasImage = Array.from(e.clipboardData?.items ?? []).some(
+      (it) => it.kind === 'file' && it.type.startsWith('image/'),
+    )
+    if (!hasImage) return
     e.preventDefault()
-    handleFiles(imageFiles)
+    const { chosen, candidates } = await pickBestPastedImage(e)
+    logPastedImageDiagnostics(candidates, chosen)
+    if (!chosen) {
+      toast.error('클립보드에서 이미지를 찾지 못했습니다.')
+      return
+    }
+    const warn = lowResWarning(chosen)
+    if (warn) toast.warning(warn, { duration: 6000 })
+    const file = pastedImageToFile(chosen)
+    if (file) handleFiles([file])
   }
   function clear() {
     onChange(null)

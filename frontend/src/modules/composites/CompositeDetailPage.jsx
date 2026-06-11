@@ -439,16 +439,30 @@ export default function CompositeDetailPage() {
     setDropOverIdx(null)
   }
   // 2단 미리보기 전용 — 빈 열(또는 열의 빈 영역)에 떨어뜨리면 그 열로
-  // 옮기고 flat 배열 맨 뒤로 보내 그 열의 마지막에 표시되게 한다.
-  function handleDropToColumn(col) {
+  // 옮긴다. 드롭한 열이 속한 섹션의 그룹(groupName)을 함께 받아 그 그룹의
+  // 마지막 안건 뒤에 삽입한다 — 그래야 안건이 다른 섹션 끝이 아니라 실제로
+  // 그 빈 열에 들어간다. 그 그룹에 안건이 하나도 없으면 맨 끝에.
+  function handleDropToColumn(col, groupName = null) {
     if (draggingIdx == null) return
     const from = draggingIdx
+    const targetGroup = groupName || null
     setDraft((d) => {
       if (!d) return d
-      const next = [...d.items]
-      const [moved] = next.splice(from, 1)
-      next.push({ ...moved, display_column: col })
-      return { ...d, items: next }
+      const items = [...d.items]
+      const [moved] = items.splice(from, 1)
+      let insertAt = items.length
+      for (let i = items.length - 1; i >= 0; i--) {
+        if ((items[i].group_name || null) === targetGroup) {
+          insertAt = i + 1
+          break
+        }
+      }
+      items.splice(insertAt, 0, {
+        ...moved,
+        display_column: col,
+        group_name: targetGroup,
+      })
+      return { ...d, items }
     })
     setDraggingIdx(null)
     setDropOverIdx(null)
@@ -1628,13 +1642,13 @@ function ItemsListContainer({
 }) {
   // 2단 보기에서 열의 빈 영역에 드롭하면 그 열로 옮기는 핸들러. 안건 위에
   // 직접 드롭한 경우는 ItemRow 가 stopPropagation 하므로 여기로 안 온다.
-  const colDropProps = (col) =>
+  const colDropProps = (col, groupName = null) =>
     editing && draggingIdx != null
       ? {
           onDragOver: (e) => e.preventDefault(),
           onDrop: (e) => {
             e.preventDefault()
-            onDropToColumn?.(col)
+            onDropToColumn?.(col, groupName)
           },
         }
       : {}
@@ -1657,23 +1671,26 @@ function ItemsListContainer({
   }
 
   // 한 섹션의 안건들을 단일(1열) 또는 2열(display_column 기준)로 렌더.
-  function renderSectionItems(idxs) {
+  // groupName 은 이 섹션이 속한 그룹(없으면 null) — 빈 열 드롭이 그 그룹·열로
+  // 정확히 들어가도록 colDropProps 에 넘긴다.
+  function renderSectionItems(idxs, groupName = null) {
     if (!twoColPreview) {
       return <ul className="divide-y">{idxs.map((i) => arr[i])}</ul>
     }
     const left = idxs.filter((i) => (items[i]?.display_column ?? 1) !== 2)
     const right = idxs.filter((i) => items[i]?.display_column === 2)
+    // 빈 열 힌트 — 드래그 중엔 열 전체 높이를 채워(드롭 영역 확보) 안내한다.
     const emptyHint = (col) => (
-      <p className="py-3 text-center text-[11px] italic text-muted-foreground">
+      <p className="flex h-full min-h-[2.5rem] items-center justify-center py-3 text-center text-[11px] italic text-muted-foreground">
         {editing && draggingIdx != null ? `여기에 놓으면 ${col}열로` : '(비어 있음)'}
       </p>
     )
     return (
       <div className="grid grid-cols-2 gap-x-3">
-        <div className="space-y-1 border-r pr-3" {...colDropProps(1)}>
+        <div className="space-y-1 border-r pr-3" {...colDropProps(1, groupName)}>
           {left.length > 0 ? left.map((i) => arr[i]) : emptyHint(1)}
         </div>
-        <div className="space-y-1" {...colDropProps(2)}>
+        <div className="space-y-1" {...colDropProps(2, groupName)}>
           {right.length > 0 ? right.map((i) => arr[i]) : emptyHint(2)}
         </div>
       </div>
@@ -1710,10 +1727,10 @@ function ItemsListContainer({
                   : undefined
               }
             />
-            <div className="px-3 py-1">{renderSectionItems(s.idxs)}</div>
+            <div className="px-3 py-1">{renderSectionItems(s.idxs, s.gn)}</div>
           </div>
         ) : (
-          <div key={`sec-${si}-none`}>{renderSectionItems(s.idxs)}</div>
+          <div key={`sec-${si}-none`}>{renderSectionItems(s.idxs, s.gn)}</div>
         ),
       )}
       {/* 아직 비어 있는 그룹 — 사용자가 그룹을 만들었다는 신호. */}

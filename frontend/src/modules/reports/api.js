@@ -46,6 +46,32 @@ export async function getReport(id) {
   return extractData(res)
 }
 
+// 수정 이력 — 메타만(최신순, cursor=beforeId). 반환: [{id, seq, revision, author_user_id,
+// author_name, source, created_at, body_bytes, label, is_pinned}]
+export async function listReportVersions(id, { limit = 50, beforeId } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (beforeId != null) params.set('before_id', String(beforeId))
+  const res = await apiClient.get(`${BASE}/${id}/versions?${params.toString()}`)
+  return extractData(res)
+}
+
+// 특정 버전 — 미리보기용 본문 포함. 반환: { version, body:{title,pages,content,...} }
+export async function getReportVersion(id, versionId) {
+  const res = await apiClient.get(`${BASE}/${id}/versions/${versionId}`)
+  return extractData(res)
+}
+
+// 이 버전으로 비파괴 되돌리기. 반환: 갱신된 ReportRead.
+export async function restoreReportVersion(id, versionId) {
+  try {
+    const res = await apiClient.post(`${BASE}/${id}/versions/${versionId}/restore`)
+    return extractData(res)
+  } catch (err) {
+    _maybeThrowLockError(err)
+    throw err
+  }
+}
+
 // 본문 전문검색 — 제목 + 모든 위젯 텍스트(서버 search_text, 부분일치). 가시 범위
 // 내에서만 결과가 온다. 반환: { results: [{report, snippet}], total, limit, offset }.
 export async function searchReports(q, { limit = 30, offset = 0 } = {}) {

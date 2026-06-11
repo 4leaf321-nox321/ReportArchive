@@ -19,8 +19,10 @@ from app.modules.reports.models import (
     ReportEditLock,
     ReportLink,
     ReportLinkKind,
+    ReportVersion,
 )
 from app.modules.reports.schemas import ReportCreate, ReportPage, ReportUpdate
+from app.modules.reports import versioning
 from app.modules.users.models import User
 from app.shared.link_kinds import is_valid_color
 from app.modules.templates import services as template_services
@@ -755,6 +757,11 @@ def create_report(
     db.commit()
     db.refresh(report)
 
+    # 초기 버전(v1) 시드 — 이후 저장부터 이력이 쌓인다.
+    versioning.record_version(db, report, source="save", author_user_id=owner_user_id)
+    db.commit()
+    db.refresh(report)
+
     # Entity tags — applied AFTER the initial commit so the report row
     # has its id. Validation happens inside set_report_entities (missing
     # ids raise ValueError → route maps to 400). Refresh again so the
@@ -1015,6 +1022,7 @@ def update_report(
     updated_by_user_id: Optional[int] = None,
     expected_revision: Optional[int] = None,
     require_lock: bool = True,
+    version_source: str = "save",
 ) -> Report:
     # Concurrency gates — both must pass before we touch anything. Lock
     # check first because a takeover invalidates revision assumptions too.
@@ -1121,6 +1129,11 @@ def update_report(
     # RevisionMismatchError on its next attempt.
     report.revision = (report.revision or 1) + 1
 
+    # 본문 스냅샷(수정 이력) — 세션병합·무변경 dedup 내장. 같은 트랜잭션에 커밋.
+    versioning.record_version(
+        db, report, source=version_source, author_user_id=updated_by_user_id
+    )
+
     db.commit()
     db.refresh(report)
 
@@ -1135,6 +1148,55 @@ def update_report(
         )
         db.commit()
         db.refresh(report)
+    return report
+
+
+# ─── 버전(수정 이력) ───────────────────────────────────────────────────
+def list_report_versions(
+    db: Session, report_id: int, *, limit: int = 50, before_id: Optional[int] = None
+) -> list[ReportVersion]:
+    """최신순(id desc) + cursor(before_id). 본문(body_gzip)은 메모리·전송 비용 때문에
+    목록에선 안 쓰지만 ORM 행 그대로 반환(라우트가 메타만 직렬화)."""
+    q = select(ReportVersion).where(ReportVersion.report_id == report_id)
+    if before_id is not None:
+        q = q.where(ReportVersion.id < before_id)
+    q = q.order_by(ReportVersion.id.desc()).limit(limit)
+    return list(db.execute(q).scalars().all())
+
+
+def get_report_version(
+    db: Session, report_id: int, version_id: int
+) -> Optional[ReportVersion]:
+    return db.execute(
+        select(ReportVersion).where(
+            ReportVersion.id == version_id, ReportVersion.report_id == report_id
+        )
+    ).scalars().first()
+
+
+def restore_version(
+    db: Session, report: Report, version: ReportVersion, *, actor_user_id: int
+) -> Report:
+    """비파괴 되돌리기 — 되돌리기 직전 현재 상태를 스냅샷(되돌리기도 되돌릴 수
+    있게)한 뒤, 그 버전의 본문을 새 저장으로 적용(revision +1). 적용 결과는
+    'restore' 버전으로 기록. 호출부(라우트)가 권한·잠금을 먼저 확인한다."""
+    body = versioning.decode_body(version)
+    # 1) 현재 상태 보존(같으면 dedup skip).
+    versioning.record_version(db, report, source="save", author_user_id=actor_user_id)
+    # 2) 옛 본문 적용. (모델 이벤트 훅이 search_text 도 자동 재색인.)
+    report.title = body.get("title") or report.title
+    report.content = body.get("content") or {}
+    report.layout_overrides = body.get("layout_overrides")
+    report.props_overrides = body.get("props_overrides")
+    report.pages = body.get("pages") or []
+    report.updated_by_user_id = actor_user_id
+    report.last_edited_by_user_id = actor_user_id
+    report.last_edited_at = datetime.utcnow()
+    report.revision = (report.revision or 1) + 1
+    # 3) 복원 상태를 'restore' 마커 버전으로(prune 에서 보존됨).
+    versioning.record_version(db, report, source="restore", author_user_id=actor_user_id)
+    db.commit()
+    db.refresh(report)
     return report
 
 

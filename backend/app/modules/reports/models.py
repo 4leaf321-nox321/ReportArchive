@@ -23,6 +23,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -524,4 +525,53 @@ class ReportLinkKind(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.current_timestamp(),
+    )
+
+
+class ReportVersion(Base):
+    """보고서 본문 과거 스냅샷 — 수정 이력·되돌리기. 핫 `reports` 와 분리한 콜드
+    테이블(보고서 삭제 시 CASCADE). 본문은 gzip 한 JSON 을 BYTEA(body_gzip)로
+    담는다(통째로 읽고 쓰는 불투명 blob — JSONB 오버헤드·파싱 불필요, 압축률↑).
+    비용은 (1) 세션 병합 + 무변경 dedup 으로 버전 수를, (2) gzip 으로 크기를,
+    (3) 보고서당 최근 N 보존(prune)으로 총량을 누른다. 미디어(영상/이미지)는
+    file_id 참조만 들어가 스냅샷에 복제되지 않는다(설계문서 §1).
+    """
+
+    __tablename__ = "report_versions"
+    __table_args__ = (
+        # 타임라인 목록(report 별 최신순) + FK 조회(report_id 선두) 겸용.
+        Index("ix_report_versions_report_created", "report_id", "created_at"),
+        UniqueConstraint("report_id", "seq", name="uq_report_versions_report_seq"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_id: Mapped[int] = mapped_column(
+        ForeignKey("reports.id", ondelete="CASCADE"), nullable=False
+    )
+    # 보고서당 1,2,3… 순번(표시·정렬·UNIQUE). revision 은 그때의 낙관적 잠금값.
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    author_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # 'save' | 'restore' | 'publish' — 이 버전이 생긴 경위(앱 레벨 값).
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="save"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    # gzip(JSON{title, pages, content, layout_overrides, props_overrides}).
+    body_gzip: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    # 압축 전 JSON 의 sha256 — 직전 버전과 같으면 무변경 dedup 으로 스냅샷 skip.
+    body_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 압축 전 바이트수(표시·용량 추정용).
+    body_bytes: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    # 명명 체크포인트(후순위) — 있으면 prune 에서 항상 보존.
+    label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # 고정(항상 보존) 플래그.
+    is_pinned: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
     )

@@ -691,3 +691,20 @@ class ReportLinkKindUpdate(BaseModel):
     reverse_label: Optional[str] = Field(default=None, min_length=1, max_length=40)
     color: Optional[str] = Field(default=None, min_length=1, max_length=16)
     sort_order: Optional[int] = None
+
+
+class ReportVersionMeta(BaseModel):
+    """버전(스냅샷) 메타 — 타임라인 목록·미리보기 헤더용. 본문(body)은 제외."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    seq: int
+    revision: int
+    author_user_id: Optional[int] = None
+    author_name: Optional[str] = None  # 라우트에서 채움
+    source: str
+    created_at: UtcDatetime
+    body_bytes: int
+    label: Optional[str] = None
+    is_pinned: bool

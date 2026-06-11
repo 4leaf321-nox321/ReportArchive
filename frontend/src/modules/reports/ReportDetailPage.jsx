@@ -19,6 +19,7 @@ import {
   ClipboardPaste,
   Copy,
   Activity,
+  History,
   Download,
   FileBox,
   FileCode,
@@ -148,6 +149,7 @@ import { CommentsProvider, useComments } from '@/modules/comments/CommentsContex
 import { CommentPanel } from '@/modules/comments/CommentPanel'
 import { CommentPin } from '@/modules/comments/CommentPin'
 import { ActivityTimelineDialog } from './ActivityTimeline'
+import { ReportVersionHistoryDialog } from './ReportVersionHistoryDialog'
 import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
 import { cn } from '@/shared/lib/utils'
 import { toast } from 'sonner'
@@ -206,6 +208,7 @@ export default function ReportDetailPage() {
   // "더보기" 메뉴에서 여는 controlled 표면들(폴더 이동 · 활동 이력).
   const [folderPickOpen, setFolderPickOpen] = useState(false)
   const [activityOpen, setActivityOpen] = useState(false)
+  const [versionsOpen, setVersionsOpen] = useState(false)
   // Mounts state declared here, the fetching useEffect lives further
   // down past `existingReport`'s declaration — TDZ would fire otherwise.
   const [mountByWorkspace, setMountByWorkspace] = useState({})
@@ -3545,6 +3548,10 @@ export default function ReportDetailPage() {
                   <Activity className="mr-2 h-3.5 w-3.5" />
                   활동 이력
                 </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setVersionsOpen(true)}>
+                  <History className="mr-2 h-3.5 w-3.5" />
+                  수정 이력 / 되돌리기
+                </DropdownMenuItem>
 
                 <DropdownMenuSeparator />
                 <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
@@ -4146,6 +4153,15 @@ export default function ReportDetailPage() {
           reportId={existingReport.id}
           open={activityOpen}
           onOpenChange={setActivityOpen}
+        />
+      )}
+      {existingReport?.id && (
+        <ReportVersionHistoryDialog
+          reportId={existingReport.id}
+          open={versionsOpen}
+          onOpenChange={setVersionsOpen}
+          canEdit={existingReport.can_edit !== false}
+          onRestored={reloadReport}
         />
       )}
 

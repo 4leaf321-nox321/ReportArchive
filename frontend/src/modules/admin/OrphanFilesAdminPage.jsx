@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  AlertTriangle,
   FileQuestion,
   Loader2,
   RefreshCw,
@@ -157,16 +156,6 @@ export default function OrphanFilesAdminPage() {
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
-          {data?.has_versions && (
-            <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-              <span>
-                버전 관리(report_versions)가 감지됐습니다. 옛 버전이 참조하는 파일까지
-                확인해야 안전해, 현재는 삭제가 차단됩니다(버전 스캔 구현 필요).
-              </span>
-            </div>
-          )}
-
           <div className="flex items-center gap-2">
             <label className="flex items-center gap-1.5 text-xs text-muted-foreground whitespace-nowrap">
               유예
@@ -197,7 +186,7 @@ export default function OrphanFilesAdminPage() {
             <Button
               variant="destructive"
               size="sm"
-              disabled={selected.size === 0 || deleting || data?.has_versions}
+              disabled={selected.size === 0 || deleting}
               onClick={() => setConfirmOpen(true)}
             >
               {deleting ? (

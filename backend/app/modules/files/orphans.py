@@ -16,22 +16,25 @@ CLI 스크립트(scripts/cleanup_orphan_files.py)와 관리자 API(modules/admin
 """
 from __future__ import annotations
 
+import gzip
+import json
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import inspect as sa_inspect, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.modules.composites.models import CompositeReport, CompositeReportItem
 from app.modules.files.models import File
-from app.modules.reports.models import Report
+from app.modules.reports.models import Report, ReportVersion
 
 DEFAULT_GRACE_HOURS = 48
 
 
 class OrphanVersionGuardError(RuntimeError):
-    """report_versions 가 있는데 버전 스캔이 아직 미구현 — 옛 버전이 참조하는
-    파일을 지워 깨뜨릴 위험이 있어 삭제를 막는다."""
+    """(레거시) 버전 스캔 미구현 시 삭제를 막던 가드. 이제 referenced_file_ids 가
+    report_versions 본문까지 스캔(version-aware)하므로 더는 발생하지 않는다 —
+    호환을 위해 클래스만 남겨둔다."""
 
 
 def _is_file_ref_key(k: str) -> bool:
@@ -71,16 +74,22 @@ def referenced_file_ids(db: Session) -> set[str]:
         select(CompositeReportItem.snapshot_content)
     ).yield_per(200):
         _collect_file_ids(snap, refs)
+    # 수정 이력(버전) 본문 — 옛 버전이 참조하는 파일을 오펀으로 오인·삭제하지
+    # 않도록 gzip 스냅샷을 풀어 file_id 를 수집(version-aware).
+    for (gz,) in db.execute(select(ReportVersion.body_gzip)).yield_per(200):
+        if not gz:
+            continue
+        try:
+            body = json.loads(gzip.decompress(gz).decode("utf-8"))
+        except Exception:
+            continue
+        _collect_file_ids(body, refs)
     return refs
 
 
 def _now_utc_naive() -> datetime:
     # File.uploaded_at 은 naive UTC(default datetime.utcnow).
     return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-def _has_versions(db: Session) -> bool:
-    return sa_inspect(db.get_bind()).has_table("report_versions")
 
 
 def find_orphans(db: Session, *, grace_hours: int = DEFAULT_GRACE_HOURS) -> dict:
@@ -117,7 +126,6 @@ def find_orphans(db: Session, *, grace_hours: int = DEFAULT_GRACE_HOURS) -> dict
         "referenced_count": len(referenced),
         "grace_protected": grace_protected,
         "grace_hours": grace_hours,
-        "has_versions": _has_versions(db),
     }
 
 
@@ -126,16 +134,11 @@ def delete_orphans(
     *,
     file_ids: list[str],
     grace_hours: int = DEFAULT_GRACE_HOURS,
-    ignore_versions: bool = False,
+    ignore_versions: bool = False,  # (레거시 호환 — 더는 안 씀)
 ) -> dict:
     """주어진 file_id 들을 삭제 — 단, 삭제 직전 **다시 검증**해 그 사이 참조됐거나
-    유예 안인 파일은 건너뛴다. 디스크 unlink(best-effort) + DB 행 삭제."""
-    if _has_versions(db) and not ignore_versions:
-        raise OrphanVersionGuardError(
-            "report_versions 가 있어 버전 참조까지 확인해야 안전합니다. "
-            "버전 스캔이 구현될 때까지 삭제를 막습니다."
-        )
-
+    유예 안인 파일은 건너뛴다. 참조 수집은 버전 본문까지 포함(version-aware)이라
+    옛 버전이 쓰는 파일은 애초에 후보에 안 든다. 디스크 unlink + DB 행 삭제."""
     referenced = referenced_file_ids(db)
     cutoff = _now_utc_naive() - timedelta(hours=grace_hours)
 

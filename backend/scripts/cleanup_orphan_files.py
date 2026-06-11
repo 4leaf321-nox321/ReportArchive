@@ -47,12 +47,6 @@ def main() -> int:
         result = orphans.find_orphans(db, grace_hours=args.grace_hours)
         items = result["items"]
 
-        if result["has_versions"]:
-            print(
-                "⚠ report_versions 감지 — 버전 참조까지 스캔해야 안전(미구현). "
-                "삭제는 --ignore-versions 없으면 막힙니다."
-            )
-
         print()
         print(f"참조되는 file_id:     {result['referenced_count']}")
         print(f"유예({args.grace_hours}h) 보호:    {result['grace_protected']}")

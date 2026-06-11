@@ -4,8 +4,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from sqlalchemy import select
+
 from app.database import get_db
-from app.modules.reports import services
+from app.modules.reports import services, versioning
 from app.modules.reports.schemas import (
     LinkGraphResponse,
     LockInfo,
@@ -18,7 +20,9 @@ from app.modules.reports.schemas import (
     ReportRead,
     ReportSummary,
     ReportUpdate,
+    ReportVersionMeta,
 )
+from app.modules.users.models import User
 from app.shared.auth import CurrentUser, get_current_user, require_writer
 from app.shared.responses import (
     created_response,
@@ -748,6 +752,114 @@ def update_report(
         db.commit()
 
     return success_response(data=_read_with_perms(db, actor, report))
+
+
+# --------------------------------------------------------------------------- #
+# Version history (수정 이력 · 되돌리기)                                        #
+# --------------------------------------------------------------------------- #
+def _version_meta_list(db: Session, rows) -> list[ReportVersionMeta]:
+    ids = {r.author_user_id for r in rows if r.author_user_id is not None}
+    names = {}
+    if ids:
+        names = {
+            u.id: u.name
+            for u in db.execute(select(User).where(User.id.in_(ids))).scalars()
+        }
+    out = []
+    for r in rows:
+        m = ReportVersionMeta.model_validate(r)
+        m.author_name = names.get(r.author_user_id)
+        out.append(m)
+    return out
+
+
+@router.get("/{report_id}/versions")
+def list_report_versions(
+    report_id: int,
+    limit: int = Query(default=50, ge=1, le=200),
+    before_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """보고서 수정 이력(최신순, cursor=before_id). 본문 제외 메타만. 보기 권한 필요."""
+    report = services.get_report(db, report_id)
+    if not report:
+        return not_found_response(f"Report not found: {report_id}")
+    if not services.can_read_report(db, actor, report):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+    rows = services.list_report_versions(
+        db, report_id, limit=limit, before_id=before_id
+    )
+    return success_response(data=_version_meta_list(db, rows))
+
+
+@router.get("/{report_id}/versions/{version_id}")
+def get_report_version(
+    report_id: int,
+    version_id: int,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """특정 버전의 본문(미리보기용)을 복원해 반환. 보기 권한 필요."""
+    report = services.get_report(db, report_id)
+    if not report:
+        return not_found_response(f"Report not found: {report_id}")
+    if not services.can_read_report(db, actor, report):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+    version = services.get_report_version(db, report_id, version_id)
+    if not version:
+        return not_found_response(f"Version not found: {version_id}")
+    meta = _version_meta_list(db, [version])[0]
+    return success_response(
+        data={"version": meta, "body": versioning.decode_body(version)}
+    )
+
+
+@router.post("/{report_id}/versions/{version_id}/restore")
+def restore_report_version(
+    report_id: int,
+    version_id: int,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_writer),
+):
+    """이 버전으로 비파괴 되돌리기 — 편집 권한 필요. 다른 사용자가 편집 중이면 막음."""
+    from app.shared.permissions import can_edit
+    from app.modules.reports.models import ReportPhase
+
+    report = services.get_report(db, report_id)
+    if not report:
+        return not_found_response(f"Report not found: {report_id}")
+    if not services.can_read_report(db, actor, report):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+    decision = can_edit(db, actor.user, report)
+    if not decision.allowed:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "이 보고서를 편집할 권한이 없습니다."
+        )
+    if report.phase == ReportPhase.finalized:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "발행된 보고서는 되돌릴 수 없습니다. '발행 취소' 후 시도하세요.",
+        )
+    version = services.get_report_version(db, report_id, version_id)
+    if not version:
+        return not_found_response(f"Version not found: {version_id}")
+
+    # 다른 사용자가 편집 잠금을 쥐고 있으면 충돌 — 덮어쓰기 방지. 본인/무잠금이면
+    # 잠시 점유했다가 되돌리기 후 해제.
+    try:
+        services.acquire_lock(db, report, actor.user.id)
+    except services.LockError as exc:
+        return _lock_conflict_response(exc)
+    try:
+        report = services.restore_version(
+            db, report, version, actor_user_id=actor.user.id
+        )
+    finally:
+        services.release_lock(db, report, actor.user.id)
+    return success_response(
+        data=_read_with_perms(db, actor, report), message="이 버전으로 되돌렸습니다."
+    )
 
 
 # --------------------------------------------------------------------------- #

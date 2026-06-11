@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.modules.auth.services import hash_password, verify_password
+from app.modules.users import pat
 from app.modules.users.models import (
     PasswordResetRequest,
     PasswordResetStatus,
@@ -22,6 +23,8 @@ from app.modules.users.schemas import (
     AccountMembershipRead,
     AdminSetPasswordRequest,
     ChangePasswordRequest,
+    McpTokenCreate,
+    McpTokenRead,
     MembershipRead,
     MeRead,
     PasswordResetRequestRead,
@@ -43,7 +46,7 @@ from app.shared.auth import (
     require_admin,
     require_system_admin,
 )
-from app.shared.responses import success_response
+from app.shared.responses import not_found_response, success_response
 
 router = APIRouter()
 
@@ -231,6 +234,45 @@ def change_my_password(
     user.must_change_password = False
     db.commit()
     return success_response(data=None, message="비밀번호가 변경되었습니다.")
+
+
+# ─── 개인 액세스 토큰 (MCP 등 외부 클라이언트용) ─────────────────────────
+@router.get("/me/mcp-tokens")
+def list_my_mcp_tokens(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user_no_workspace),
+):
+    """내 토큰 목록(평문 제외). 상태는 revoked_at/expires_at 로 판단."""
+    rows = pat.list_tokens(db, user.id)
+    return success_response(data=[McpTokenRead.model_validate(r) for r in rows])
+
+
+@router.post("/me/mcp-tokens")
+def create_my_mcp_token(
+    payload: McpTokenCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user_no_workspace),
+):
+    """새 토큰 발급. 평문(`token`)은 **이 응답에서 1회만** 노출된다(이후 조회 불가)."""
+    row, plaintext = pat.create_token(
+        db, user.id, payload.name, expires_days=payload.expires_days
+    )
+    return success_response(
+        data={"token": plaintext, "info": McpTokenRead.model_validate(row)},
+        message="토큰이 생성되었습니다. 지금 복사하세요 — 다시 볼 수 없습니다.",
+    )
+
+
+@router.delete("/me/mcp-tokens/{token_id}")
+def revoke_my_mcp_token(
+    token_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user_no_workspace),
+):
+    """토큰 취소(즉시 무효화). 남의 토큰이거나 없으면 404."""
+    if not pat.revoke_token(db, user.id, token_id):
+        return not_found_response("토큰을 찾을 수 없습니다.")
+    return success_response(data=None, message="토큰을 취소했습니다.")
 
 
 @router.get("/users")

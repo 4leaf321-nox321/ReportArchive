@@ -186,3 +186,24 @@ class SetHomeWorkspaceRequest(BaseModel):
     home 인데 멤버십 없는 모순 상태가 되지 않게."""
 
     workspace_slug: Optional[str] = Field(default=None, max_length=64)
+
+
+class McpTokenCreate(BaseModel):
+    """개인 액세스 토큰 발급 요청."""
+
+    name: str = Field(..., min_length=1, max_length=100)
+    expires_days: Optional[int] = Field(default=90, ge=1, le=3650)
+
+
+class McpTokenRead(BaseModel):
+    """토큰 메타(평문·해시 제외). 상태는 revoked_at/expires_at 로 프런트가 판단."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    token_prefix: str
+    created_at: datetime
+    last_used_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None

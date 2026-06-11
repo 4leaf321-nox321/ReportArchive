@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.modules.auth.services import decode_access_token
+from app.modules.users import pat
 from app.modules.users.models import Role, User, WorkspaceMember
 from app.modules.workspaces.models import Workspace, WorkspaceKind
 
@@ -77,6 +78,16 @@ def _resolve_user_from_token(
             "인증 토큰이 필요합니다.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    # 개인 액세스 토큰(rat_…) — JWT 와 접두사로 구분. MCP 등 외부 클라이언트용.
+    if credentials.credentials.startswith(pat.TOKEN_PREFIX):
+        user = pat.resolve_token(db, credentials.credentials)
+        if user is None:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                "토큰이 유효하지 않거나 취소·만료되었습니다.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return user
     try:
         payload = decode_access_token(credentials.credentials)
     except jwt.ExpiredSignatureError:

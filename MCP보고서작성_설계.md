@@ -98,10 +98,14 @@
 - [x] `build_bundle.sh` 가 스킬도 번들에 동봉
 - [x] 검증: SKILL.md frontmatter YAML 파싱·필드 OK, 도구 5개 `mcp__reportarchive__*` 정확 참조, 디렉터리=`/reportarchive`
 
-## Phase 4 — 하드닝 (나중)
+## Phase 4 — 하드닝
+- [x] **내 MCP 토큰 발급 화면** — 개인 액세스 토큰(`rat_…`, sha256 해시 저장, 취소·만료 가능).
+      마이그레이션 p39 + `PersonalAccessToken` 모델 + `users/pat.py`(발급/검증/취소) +
+      auth `_resolve_user_from_token` 에 PAT 분기(접두사로 JWT 와 구분) + `/api/me/mcp-tokens`(GET/POST/DELETE) +
+      ProfilePage "MCP 토큰" 카드(1회 노출·복사·바로 쓰는 `claude mcp add` 명령·목록·취소).
+      통합테스트 2개 통과 + 라이브 서버 확인.
 - [ ] 위젯 타입 확대(차트/이미지 일부), `update_report_draft`(기존 보고서 수정)
 - [ ] 예시(few-shot) 자동 생성, 길이/요청 제한, 감사 로그
-- [ ] 사내망 도달성(Claude Desktop/Code + 사내 MCP) 구성 문서
 
 ## 3. 주의 (정직하게)
 - **유효 content 생성**이 진짜 난관 → 정규화 + 검증 + 재시도 루프로 흡수(Phase 1·2).
@@ -119,4 +123,6 @@
   핵심 교훈: mcp SDK ↔ FastAPI 의존성 충돌 → **별도 프로세스 + REST 통신** 구조로 해결(백엔드 venv 원복).
 - **Phase 2.5 완료** — 운영 배포 통합(deploy.sh setup_mcp + 오프라인 휠 + systemd). `deploy.sh update` 가 MCP 까지 자동.
 - **Phase 3 완료** — 작성 스킬(SKILL.md) + 사용자 설치/등록 가이드 + 번들 동봉.
-- 남은(선택): **실제 2서버 띄워 Claude Code E2E 확인**. **Phase 4** 위젯 확대·`update_report_draft`·토큰 발급 UI·감사로그.
+- **E2E 확인됨** — 사용자가 프로필에서 토큰 셀프발급 → Claude Code 등록 → `list_templates`(부서 스코프 적용) 성공.
+- **Phase 4 일부 완료** — 내 MCP 토큰 발급(p39 + pat.py + auth 분기 + /api/me/mcp-tokens + 프로필 카드). 통합테스트 2 통과·라이브 확인.
+- 남은(선택): 쓰기 경로(create_report_draft) 사용자 직접 확인, `update_report_draft`(기존 보고서 수정), 위젯 확대, 감사로그.

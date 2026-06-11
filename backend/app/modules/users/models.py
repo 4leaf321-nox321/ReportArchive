@@ -164,3 +164,27 @@ class PasswordResetRequest(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     user: Mapped[User | None] = relationship("User", foreign_keys=[user_id])
+
+
+class PersonalAccessToken(Base):
+    """개인 액세스 토큰 (MCP 등 외부 클라이언트가 Bearer 로 사용). 평문 토큰은 발급
+    시 1회만 보여주고 DB 엔 sha256 해시만 둔다. 취소(revoked_at)·만료(expires_at)
+    가능하며, 인증 경로(_resolve_user_from_token)가 접두사로 JWT 와 구분한다."""
+
+    __tablename__ = "personal_access_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    token_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    token_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -25,6 +25,28 @@ export async function changeMyPassword({ currentPassword, newPassword }) {
   return extractData(res)
 }
 
+// ─── 개인 액세스 토큰 (MCP 등 외부 클라이언트) ───
+/** 내 토큰 목록(평문 제외). */
+export async function listMcpTokens() {
+  const res = await apiClient.get('/api/me/mcp-tokens')
+  return extractData(res)
+}
+
+/** 토큰 발급. 응답 data.token 이 평문(1회만 노출). data.info 는 메타. */
+export async function createMcpToken({ name, expiresDays = 90 }) {
+  const res = await apiClient.post('/api/me/mcp-tokens', {
+    name,
+    expires_days: expiresDays,
+  })
+  return extractData(res)
+}
+
+/** 토큰 취소(즉시 무효). */
+export async function revokeMcpToken(tokenId) {
+  const res = await apiClient.delete(`/api/me/mcp-tokens/${tokenId}`)
+  return extractData(res)
+}
+
 export async function adminSetUserPassword(userId, { newPassword }) {
   const res = await apiClient.post(`/api/users/${userId}/password`, {
     new_password: newPassword,

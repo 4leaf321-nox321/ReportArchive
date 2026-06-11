@@ -26,10 +26,11 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, attributes, mapped_column, relationship
 
 from app.database import Base
 from app.modules.users.models import User
@@ -86,6 +87,14 @@ class Report(Base):
         # report_date; updated_by_user_id powers the "최근 편집자" list.
         Index("ix_reports_report_date", "report_date"),
         Index("ix_reports_updated_by_user_id", "updated_by_user_id"),
+        # 본문 전문검색 — search_text 평문에 pg_trgm GIN(부분일치, 한국어). 인덱스는
+        # 마이그레이션 p37 이 만들지만, autogen 이 드롭하지 않게 여기 선언도 둔다.
+        Index(
+            "ix_reports_search_text_trgm",
+            "search_text",
+            postgresql_using="gin",
+            postgresql_ops={"search_text": "gin_trgm_ops"},
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -171,6 +180,11 @@ class Report(Base):
     # template. Subsequent pages reference their template only via id+version
     # inside this JSON blob (no DB-level FK).
     pages: Mapped[list[dict]] = mapped_column(JSONB, default=list, nullable=False)
+
+    # 본문 전문검색용 평탄화 평문(제목 + 모든 위젯 텍스트). app.widgets.
+    # text_extraction 으로 쓰기 경로에서 갱신, pg_trgm GIN 으로 부분일치 검색.
+    # NULL = 아직 색인 안 됨(백필 전 기존 행).
+    search_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
@@ -375,6 +389,28 @@ class Report(Base):
         order_by="ReportMount.mounted_at",
         viewonly=True,
     )
+
+
+@event.listens_for(Report, "before_insert")
+@event.listens_for(Report, "before_update")
+def _report_reindex_search_text(mapper, connection, target: "Report") -> None:
+    """본문 전문검색 평문(search_text) 자동 유지.
+
+    title / content / pages 중 하나라도 바뀐 insert·update 에서만 재계산한다 —
+    폴더 이동·잠금 터치·phase 변경 등 본문과 무관한 update 에서는 건너뛰어
+    불필요한 JSON 워킹을 피한다. 평문 추출은 위젯 구조·HTML strip 이 필요해
+    Python(app.widgets.text_extraction)이 담당하므로 DB 트리거가 아니라 여기서.
+    """
+    changed = any(
+        attributes.get_history(target, name).has_changes()
+        for name in ("title", "content", "pages")
+    )
+    if not changed:
+        return
+    # 지연 import — 위젯 레지스트리 패키지 init 과의 import 순서/순환 회피.
+    from app.widgets.text_extraction import extract_searchable_text_for_report
+
+    target.search_text = extract_searchable_text_for_report(target) or None
 
 
 class ReportEditLock(Base):

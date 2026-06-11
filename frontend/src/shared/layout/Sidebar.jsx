@@ -17,6 +17,7 @@ import {
   User,
   Bell,
   Inbox,
+  FileQuestion,
 } from 'lucide-react'
 import * as React from 'react'
 import { getUnreadCount } from '@/shared/api/notifications'
@@ -103,6 +104,7 @@ const ADMIN_MENU = [
   },
   { to: '/admin', label: '시스템 관리', icon: Settings, requireSystemAdmin: true },
   { to: '/admin/entities', label: '엔티티 관리', icon: Tags, requireSystemAdmin: true },
+  { to: '/admin/orphan-files', label: '오펀 파일 정리', icon: FileQuestion, requireSystemAdmin: true },
   { to: '/server', label: '서버', icon: HardDrive, requireSystemAdmin: true },
 ]
 

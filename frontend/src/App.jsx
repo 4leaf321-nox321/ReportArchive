@@ -26,6 +26,7 @@ import ReportsListPage from '@/modules/reports/ReportsListPage'
 import ReportNewPage from '@/modules/reports/ReportNewPage'
 import ReportDetailPage from '@/modules/reports/ReportDetailPage'
 import ReportGraphPage from '@/modules/reports/ReportGraphPage'
+import SearchPage from '@/modules/reports/SearchPage'
 import DashboardPage from '@/modules/dashboard/DashboardPage'
 import TemplatesPage from '@/modules/templates/TemplatesPage'
 import TemplateEditorPage from '@/modules/templates/TemplateEditorPage'
@@ -35,6 +36,7 @@ import AdminPage from '@/modules/admin/AdminPage'
 import AccountsAdminPage from '@/modules/admin/AccountsAdminPage'
 import UserSpaceAdminPage from '@/modules/admin/UserSpaceAdminPage'
 import ServerPage from '@/modules/admin/ServerPage'
+import OrphanFilesAdminPage from '@/modules/admin/OrphanFilesAdminPage'
 import EntitiesAdminPage from '@/modules/entities/EntitiesAdminPage'
 import VocListPage from '@/modules/voc/VocListPage'
 import VocDetailPage from '@/modules/voc/VocDetailPage'
@@ -113,6 +115,7 @@ const router = createBrowserRouter(
         {/* 부서 스코프 — /reports/new* 가 :reportId 보다 먼저 매치 */}
         <Route path="/w/:workspace" element={<WorkspaceHomePage />} />
         <Route path="/w/:workspace/reports" element={<ReportsListPage />} />
+        <Route path="/w/:workspace/search" element={<SearchPage />} />
         <Route path="/w/:workspace/report-graph" element={<ReportGraphPage />} />
         <Route path="/w/:workspace/reports/new" element={<ReportNewPage />} />
         <Route
@@ -147,6 +150,7 @@ const router = createBrowserRouter(
         <Route path="/admin/accounts" element={<AccountsAdminPage />} />
         <Route path="/admin/user-spaces" element={<UserSpaceAdminPage />} />
         <Route path="/admin/entities" element={<EntitiesAdminPage />} />
+        <Route path="/admin/orphan-files" element={<OrphanFilesAdminPage />} />
         <Route path="/server" element={<ServerPage />} />
 
         <Route path="*" element={<NotFoundPage />} />

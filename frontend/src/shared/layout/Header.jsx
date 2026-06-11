@@ -14,16 +14,28 @@ import { useCommandPalette } from '@/shared/components/CommandPalette'
 import { NotificationBell } from '@/shared/components/NotificationBell'
 import { useTheme } from '@/shared/theme/ThemeContext'
 import { useAuth } from '@/shared/auth/AuthContext'
+import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 
 export function Header({ onOpenMobileSidebar }) {
   const palette = useCommandPalette()
   const { theme, toggleTheme } = useTheme()
   const { me, logout } = useAuth()
+  const { slug } = useWorkspace()
   const navigate = useNavigate()
+  const [search, setSearch] = React.useState('')
 
   const isMac =
     typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform)
   const shortcut = isMac ? '⌘K' : 'Ctrl K'
+
+  // 헤더 검색창은 모달(명령 팔레트, ⌘K 로 별도 제공)을 열지 않고, 입력 후
+  // Enter 로 전용 검색 페이지(/w/:slug/search)로 바로 보낸다.
+  function submitSearch(e) {
+    e.preventDefault()
+    const q = search.trim()
+    if (!slug) return
+    navigate(q ? `/w/${slug}/search?q=${encodeURIComponent(q)}` : `/w/${slug}/search`)
+  }
 
   return (
     <header
@@ -49,27 +61,30 @@ export function Header({ onOpenMobileSidebar }) {
         </span>
       </Link>
 
-      {/* 검색 트리거 — 클릭 시 명령 팔레트 */}
-      <button
-        type="button"
-        onClick={palette.open}
-        className="relative ml-2 hidden md:flex items-center gap-2 max-w-md flex-1 h-9 rounded-md border border-input bg-background px-3 text-sm text-muted-foreground hover:bg-muted/50 transition-colors"
+      {/* 검색창 — 입력 후 Enter 로 전용 검색 페이지로(모달 안 띄움). */}
+      <form
+        onSubmit={submitSearch}
+        className="relative ml-2 hidden md:flex items-center max-w-md flex-1"
       >
-        <Search className="h-4 w-4 shrink-0" />
-        <span className="flex-1 text-left truncate">보고서 / 엔티티 검색...</span>
-        <kbd className="hidden sm:inline-flex h-5 items-center rounded border bg-muted px-1.5 font-mono text-[10px] text-muted-foreground">
-          {shortcut}
-        </kbd>
-      </button>
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="보고서 검색 (제목·본문) — Enter"
+          aria-label="보고서 검색"
+          className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        />
+      </form>
 
       <div className="ml-auto flex items-center gap-1">
-        {/* 모바일 검색 트리거 */}
+        {/* 모바일 검색 — 전용 검색 페이지로 이동(거기서 입력). */}
         <Button
           variant="ghost"
           size="icon"
           className="h-9 w-9 md:hidden"
           aria-label="검색"
-          onClick={palette.open}
+          onClick={() => slug && navigate(`/w/${slug}/search`)}
         >
           <Search className="h-4 w-4" />
         </Button>

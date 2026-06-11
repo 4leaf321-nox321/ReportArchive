@@ -46,6 +46,14 @@ export async function getReport(id) {
   return extractData(res)
 }
 
+// 본문 전문검색 — 제목 + 모든 위젯 텍스트(서버 search_text, 부분일치). 가시 범위
+// 내에서만 결과가 온다. 반환: { results: [{report, snippet}], total, limit, offset }.
+export async function searchReports(q, { limit = 30, offset = 0 } = {}) {
+  const params = new URLSearchParams({ q, limit: String(limit), offset: String(offset) })
+  const res = await apiClient.get(`${BASE}/search?${params.toString()}`)
+  return extractData(res)
+}
+
 /** Metadata-only folder placement — no lock required. Owner-only. */
 export async function moveReportToFolder(id, folderId) {
   const res = await apiClient.put(`${BASE}/${id}/folder`, {

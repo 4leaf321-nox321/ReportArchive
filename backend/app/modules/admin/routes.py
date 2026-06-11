@@ -1,12 +1,14 @@
 """Admin-only system endpoints (storage, etc.)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.modules.admin import services
+from app.modules.files import orphans as orphan_services
+from app.modules.files.orphans import OrphanVersionGuardError
 from app.modules.reports import services as report_services
 from app.modules.reports.schemas import (
     ReportLinkKindCreate,
@@ -29,6 +31,12 @@ class RuntimeTuningUpdate(BaseModel):
     value: int
 
 
+class OrphanFileDeletePayload(BaseModel):
+    file_ids: list[str] = Field(..., min_length=1, max_length=2000)
+    grace_hours: int = Field(default=48, ge=0, le=8760)
+    ignore_versions: bool = False
+
+
 @router.get("/storage")
 def storage_stats(
     db: Session = Depends(get_db),
@@ -37,6 +45,42 @@ def storage_stats(
     """Disk partition + per-workspace file footprint. Admin-only because
     the response reveals host paths and aggregate per-workspace sizes."""
     return success_response(data=services.get_storage_stats(db))
+
+
+@router.get("/orphan-files")
+def list_orphan_files(
+    grace_hours: int = Query(default=48, ge=0, le=8760),
+    db: Session = Depends(get_db),
+    _: CurrentUser = Depends(require_system_admin),
+):
+    """어느 보고서·종합보고에서도 참조하지 않는 업로드 파일 목록(+요약). 보고서에서
+    뺀 영상/이미지가 디스크에 쌓이는 걸 관리자가 확인·정리하도록. 최근 업로드는
+    유예(grace_hours) 보호."""
+    return success_response(
+        data=orphan_services.find_orphans(db, grace_hours=grace_hours)
+    )
+
+
+@router.post("/orphan-files/delete")
+def delete_orphan_files(
+    payload: OrphanFileDeletePayload,
+    db: Session = Depends(get_db),
+    _: CurrentUser = Depends(require_system_admin),
+):
+    """선택한 오펀 파일 삭제(디스크 + DB). 삭제 직전 다시 검증해 그 사이 참조됐거나
+    유예 안인 파일은 건너뛴다."""
+    try:
+        result = orphan_services.delete_orphans(
+            db,
+            file_ids=payload.file_ids,
+            grace_hours=payload.grace_hours,
+            ignore_versions=payload.ignore_versions,
+        )
+    except OrphanVersionGuardError as exc:
+        return error_response(str(exc), status_code=409)
+    return success_response(
+        data=result, message=f"{result['deleted']}개 파일을 삭제했습니다."
+    )
 
 
 @router.get("/server-info")

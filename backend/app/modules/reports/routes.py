@@ -185,6 +185,30 @@ def list_reports(
     return success_response(data=payload)
 
 
+@router.get("/search")
+def search_reports(
+    q: str = Query(..., min_length=1, max_length=200, description="검색어"),
+    limit: int = Query(default=30, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """보고서 본문 전문검색 — 제목 + 모든 위젯 텍스트(search_text, pg_trgm 부분일치).
+    가시 범위(소유·공유·게시) 안에서만, 휴지통 제외. 결과에 매치 스니펫 포함."""
+    rows, total = services.search_reports(db, actor, q, limit=limit, offset=offset)
+    needle = q.strip()
+    results = [
+        {
+            "report": ReportSummary.model_validate(r),
+            "snippet": services.search_snippet(r.search_text, needle),
+        }
+        for r in rows
+    ]
+    return success_response(
+        data={"results": results, "total": total, "limit": limit, "offset": offset}
+    )
+
+
 # /{report_id} 동적 path 보다 *위* 에 등록해야 한다 — 그래야 FastAPI 가
 # `link-kinds` 문자열을 reportId 로 잡으려고 시도(422)하지 않고 이 정적
 # path 와 먼저 매칭한다.

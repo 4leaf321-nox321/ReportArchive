@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Iterable, Optional
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import and_, case, desc, func, select
 from sqlalchemy.orm import Session
 
 from app.modules.composites.models import CompositeReport, CompositeReportItem
@@ -415,6 +415,100 @@ def visible_report_ids(db: Session, actor) -> Optional[set[int]]:
     if base is None:
         return None
     return base | _owned_report_ids(db, actor.user.id)
+
+
+def search_snippet(text: Optional[str], query: str, radius: int = 60) -> Optional[str]:
+    """검색어(여러 단어면 가장 먼저 등장하는 단어) 주변을 잘라 미리보기 스니펫으로
+    (원문 케이스 유지). 단어 AND 검색이라 전체 문구는 안 붙어 있을 수 있어, 토큰 중
+    가장 앞선 매치를 기준으로 한다."""
+    if not text or not query:
+        return None
+    low = text.lower()
+    tokens = [t for t in query.lower().split() if t] or [query.lower()]
+    pos, matched = -1, ""
+    for tok in tokens:
+        p = low.find(tok)
+        if p >= 0 and (pos < 0 or p < pos):
+            pos, matched = p, tok
+    if pos < 0:
+        return None
+    start = max(0, pos - radius)
+    end = min(len(text), pos + len(matched) + radius)
+    snippet = text[start:end].strip()
+    if start > 0:
+        snippet = "…" + snippet
+    if end < len(text):
+        snippet = snippet + "…"
+    return snippet
+
+
+def search_reports(
+    db: Session,
+    actor,
+    query: str,
+    *,
+    limit: int = 30,
+    offset: int = 0,
+) -> tuple[list[Report], int]:
+    """본문(search_text) + 제목 부분일치(pg_trgm ILIKE) 검색. 가시성 스코프 적용.
+
+    스코프: public_viewer=이 게시판 공개분, virtual=무스코프(전체), 그 외=
+    visible_report_ids(grant ∪ 소유). 정렬은 제목 매치 우선 → 최신순.
+    Returns (rows, total).
+    """
+    needle = (query or "").strip()
+    if not needle:
+        return [], 0
+    # 공백으로 단어 분리 → 각 단어를 AND(어디든 다 포함). "리스크 보고" 가 붙어
+    # 있어야만 잡히던(문자열 통째 부분일치) 문제를 없앤다.
+    tokens = [t for t in needle.split() if t]
+
+    # 가시 스코프 — None=무스코프, set=허용 id. 빈 스코프면 즉시 0.
+    scope_ids: Optional[set[int]]
+    if getattr(actor, "public_viewer", False):
+        scope_ids = {
+            r.id for r in list_public_reports_on_board(db, actor.workspace.slug)
+        }
+        if not scope_ids:
+            return [], 0
+    elif getattr(actor.workspace, "virtual", False):
+        scope_ids = None
+    else:
+        scope_ids = visible_report_ids(db, actor)
+        if scope_ids is not None and not scope_ids:
+            return [], 0
+
+    conditions = [
+        Report.deleted_at.is_(None),
+        Report.search_text.isnot(None),
+    ]
+    # 단어마다 ILIKE 조건 → AND.
+    for tok in tokens:
+        conditions.append(Report.search_text.ilike(f"%{tok}%"))
+    if scope_ids is not None:
+        conditions.append(Report.id.in_(scope_ids))
+
+    total = db.execute(select(func.count(Report.id)).where(*conditions)).scalar() or 0
+    if total == 0:
+        return [], 0
+
+    # 제목에 모든 단어가 들어간 보고서를 위로.
+    title_rank = case(
+        (and_(*[Report.title.ilike(f"%{tok}%") for tok in tokens]), 0),
+        else_=1,
+    )
+    rows = (
+        db.execute(
+            select(Report)
+            .where(*conditions)
+            .order_by(title_rank, desc(Report.updated_at))
+            .offset(offset)
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows), total
 
 
 def _validate_page(db: Session, page: ReportPage) -> None:

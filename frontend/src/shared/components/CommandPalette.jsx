@@ -6,6 +6,7 @@ import {
   FileCode2,
   LayoutDashboard,
   Plus,
+  Search,
   Sun,
   Moon,
 } from 'lucide-react'
@@ -77,6 +78,17 @@ function Palette({ open, onOpenChange }) {
     [open]
   )
 
+  // 입력값을 제어해 서버 본문검색에 쓴다. cmdk 의 정적 그룹 필터도 이 값을 본다.
+  const [query, setQuery] = React.useState('')
+  const [debounced, setDebounced] = React.useState('')
+  React.useEffect(() => {
+    if (!open) setQuery('')
+  }, [open])
+  React.useEffect(() => {
+    const t = setTimeout(() => setDebounced(query.trim()), 250)
+    return () => clearTimeout(t)
+  }, [query])
+
   function go(to) {
     navigate(to)
     onOpenChange(false)
@@ -98,9 +110,37 @@ function Palette({ open, onOpenChange }) {
       <DialogContent className="max-w-2xl p-0 gap-0 overflow-hidden">
         <DialogTitle className="sr-only">명령 팔레트</DialogTitle>
         <Command>
-          <CommandInput placeholder="검색하거나 명령을 입력하세요..." autoFocus />
+          <CommandInput
+            value={query}
+            onValueChange={setQuery}
+            placeholder="검색하거나 명령을 입력하세요... (제목·본문)"
+            autoFocus
+          />
           <CommandList>
             <CommandEmpty>일치하는 결과가 없습니다.</CommandEmpty>
+
+            {/* 본문 전문검색 진입 — 검색어가 있으면 최상단에 "전체 결과 보기".
+                cmdk 가 첫 항목을 자동 하이라이트하므로 Enter 로 바로 검색
+                페이지로 간다. value 에 query 를 박아 필터에 안 걸리게. */}
+            {slug && debounced.length >= 2 && (
+              <>
+                <CommandGroup heading="검색">
+                  <CommandItem
+                    value={`검색 ${query} search 전체 결과`}
+                    onSelect={() =>
+                      go(`/w/${slug}/search?q=${encodeURIComponent(debounced)}`)
+                    }
+                  >
+                    <Search className="h-4 w-4" />
+                    <span>“{debounced}” 검색 결과 전체 보기</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground">
+                      제목·본문
+                    </span>
+                  </CommandItem>
+                </CommandGroup>
+                <CommandSeparator />
+              </>
+            )}
 
             <CommandGroup heading="액션">
               {slug && (

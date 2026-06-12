@@ -102,6 +102,8 @@ import {
   LockConflictError,
 } from './api'
 import { FOLDER_FILTER_UNCATEGORIZED } from './FolderSidebar'
+import { isWidgetCopyable, copyWidget, widgetCopyKind } from './widgetCopy'
+import { copyTextToClipboard } from '@/shared/lib/clipboard'
 import { useReportLock } from './useReportLock'
 import {
   DEFAULT_REPORT_WIDTH_PX,
@@ -2695,18 +2697,7 @@ export default function ReportDetailPage() {
     const payload = buildDraftJsonPayload()
     const text = JSON.stringify(payload, null, 2)
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text)
-      } else {
-        const ta = document.createElement('textarea')
-        ta.value = text
-        ta.style.position = 'fixed'
-        ta.style.opacity = '0'
-        document.body.appendChild(ta)
-        ta.select()
-        document.execCommand('copy')
-        document.body.removeChild(ta)
-      }
+      await copyTextToClipboard(text)
       const sizeKb = Math.round(text.length / 102.4) / 10
       toast.success(`현재 문서 JSON 을 클립보드에 복사했습니다 (${sizeKb} KB).`)
     } catch (e) {
@@ -5184,7 +5175,7 @@ function AiPromptDialog({
 
   async function handleCopy() {
     try {
-      await navigator.clipboard.writeText(text)
+      await copyTextToClipboard(text)
       toast.success('프롬프트를 클립보드에 복사했습니다.')
     } catch {
       toast.error('클립보드 복사에 실패했습니다. 직접 선택해 복사해 주세요.')
@@ -9337,6 +9328,8 @@ function BlockEditorCard({
   const [fullscreenOpen, setFullscreenOpen] = useState(false)
   const canFullscreen =
     readOnly && WIDGETS_FULLSCREEN_VIEWER.has(block.type)
+  // 뷰 모드 전용 위젯 복사 — 긴 글(글자)·표(TSV)·차트(PNG 다운로드).
+  const canCopyWidget = readOnly && isWidgetCopyable(block.type)
   // 표 위젯의 "전체 펼치기" 토글 상태. autoFit 측정용 mirror Editor 와
   // 본체 Editor 두 인스턴스가 같은 expanded 를 봐야 mirror 가 같이 자라고
   // 컨테이너 row_span 도 따라서 늘어난다. Card 전체를 TableViewContext.
@@ -9825,17 +9818,51 @@ function BlockEditorCard({
           In edit mode the drag-handle bar owns the top strip and holds
           the trash button on its right side, so push this group below
           the bar to avoid stacking the pin on top of the trash icon. */}
-      {(reportId || canFullscreen) && (
-        <div className={cn(
-          'absolute right-2 z-10 flex items-center gap-1',
-          showDragHandle ? 'top-10' : 'top-2',
-        )}>
+      {(reportId || canFullscreen || canCopyWidget) && (
+        <div
+          // data-export-skip: 캡처(DOCX export·위젯 PNG 복사) 시 이 액션
+          // 버튼들이 이미지에 박히지 않도록 제외.
+          data-export-skip
+          className={cn(
+            'absolute right-2 z-10 flex items-center gap-1',
+            showDragHandle ? 'top-10' : 'top-2',
+          )}
+        >
           {reportId && (
             <CommentPin
               reportId={reportId}
               pageIndex={pageIndex ?? 0}
               blockId={block.id}
             />
+          )}
+          {canCopyWidget && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                copyWidget({
+                  type: block.type,
+                  content,
+                  blockId: block.id,
+                  label: content?.caption,
+                })
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-background/95 border border-transparent text-muted-foreground opacity-0 transition-opacity hover:border-border hover:text-foreground group-hover:opacity-100 print:hidden"
+              title={
+                widgetCopyKind(block.type) === 'image'
+                  ? '이미지로 저장 (PNG)'
+                  : widgetCopyKind(block.type) === 'table'
+                    ? '표 복사 (PPT·Word·엑셀에 붙여넣기)'
+                    : '글 복사'
+              }
+            >
+              {widgetCopyKind(block.type) === 'image' ? (
+                <Download className="h-3.5 w-3.5" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
+            </button>
           )}
           {canFullscreen && (
             <button

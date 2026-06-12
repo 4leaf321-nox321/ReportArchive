@@ -9,6 +9,7 @@ import { Badge } from '@/shared/components/ui/badge'
 import { Separator } from '@/shared/components/ui/separator'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { listMcpTokens, createMcpToken, revokeMcpToken } from '@/shared/api/me'
+import { copyTextToClipboard } from '@/shared/lib/clipboard'
 
 /**
  * MCP 토큰 탭 — 공통 → AI 설정 안에 있지만 내용은 개인 단위다.
@@ -32,8 +33,9 @@ function fmtDate(s) {
 }
 
 function copyText(text, label) {
-  navigator.clipboard
-    .writeText(text)
+  // HTTP(비보안 컨텍스트)에서도 동작하도록 공용 폴백 헬퍼 사용
+  // (운영서버는 평문 HTTP — navigator.clipboard 가 없음).
+  copyTextToClipboard(text)
     .then(() => toast.success(`${label} 복사됨`))
     .catch(() => toast.error('복사 실패 — 직접 선택해 복사하세요'))
 }

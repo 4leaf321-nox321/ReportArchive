@@ -6,6 +6,7 @@ import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import DOMPurify from 'dompurify'
 import { cn } from '@/shared/lib/utils'
+import { copyTextToClipboard } from '@/shared/lib/clipboard'
 import { ColorSwatchPicker, colorTokenClass } from '@/shared/text-color'
 import { useCurrentBlockRef } from '@/shared/reports/CurrentBlockRefContext'
 import { RichTextRowEditor } from './RichTextRowEditor'
@@ -40,7 +41,7 @@ export function DataTableActions({
         toast.info(`복사할 ${label}가 없습니다.`)
         return
       }
-      await navigator.clipboard.writeText(text)
+      await copyTextToClipboard(text)
       toast.success(`${label}를 클립보드에 복사했습니다.`)
     } catch (e) {
       toast.error('클립보드 복사 실패', {

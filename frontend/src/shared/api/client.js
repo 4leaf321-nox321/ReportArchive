@@ -25,26 +25,51 @@ let accessToken = loadToken()
 let currentWorkspaceSlug = null
 let onUnauthorized = null
 
+// 토큰은 두 저장소 중 하나에 둔다:
+//   - localStorage  : '로그인 유지' ON  — 브라우저를 닫아도 유지(영구)
+//   - sessionStorage: '로그인 유지' OFF — 탭/브라우저를 닫으면 사라짐
+// 부팅 시엔 둘 다 확인(localStorage 우선)하고, 저장 시엔 고른 쪽에만 두고
+// 반대쪽은 비워 토큰이 두 곳에 동시에 남지 않게 한다.
 function loadToken() {
   try {
-    return localStorage.getItem(TOKEN_STORAGE_KEY) || null
+    return (
+      localStorage.getItem(TOKEN_STORAGE_KEY) ||
+      sessionStorage.getItem(TOKEN_STORAGE_KEY) ||
+      null
+    )
   } catch {
     return null
   }
 }
 
-function persistToken(token) {
+function clearToken() {
   try {
-    if (token) localStorage.setItem(TOKEN_STORAGE_KEY, token)
-    else localStorage.removeItem(TOKEN_STORAGE_KEY)
+    localStorage.removeItem(TOKEN_STORAGE_KEY)
+    sessionStorage.removeItem(TOKEN_STORAGE_KEY)
   } catch {
     /* ignore */
   }
 }
 
-export function setAccessToken(token) {
+/**
+ * @param {string|null} token  null 이면 로그아웃(양쪽 저장소 모두 제거).
+ * @param {boolean} persist    true=localStorage(영구), false=sessionStorage(세션).
+ *                             생략 시 영구(기존 동작 유지).
+ */
+export function setAccessToken(token, persist = true) {
   accessToken = token
-  persistToken(token)
+  if (!token) {
+    clearToken()
+    return
+  }
+  try {
+    const keep = persist ? localStorage : sessionStorage
+    const drop = persist ? sessionStorage : localStorage
+    drop.removeItem(TOKEN_STORAGE_KEY)
+    keep.setItem(TOKEN_STORAGE_KEY, token)
+  } catch {
+    /* ignore */
+  }
 }
 
 export function getAccessToken() {

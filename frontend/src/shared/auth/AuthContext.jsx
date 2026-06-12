@@ -99,9 +99,10 @@ export function AuthProvider({ children }) {
   }, [])
 
   const login = React.useCallback(
-    async ({ email, password }) => {
+    // persist=true(기본): 로그인 유지(localStorage). false: 세션만(sessionStorage).
+    async ({ email, password, persist = true }) => {
       const data = await loginApi({ email, password })
-      setAccessToken(data.access_token)
+      setAccessToken(data.access_token, persist)
       await refresh()
       return data
     },

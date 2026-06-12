@@ -7,12 +7,29 @@ import { Label } from '@/shared/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/components/ui/card'
 import { useAuth } from '@/shared/auth/AuthContext'
 
+// 아이디 저장 / 로그인 유지 설정 키. 비밀번호 자체는 앱이 저장하지 않고
+// (보안) 브라우저 비밀번호 매니저에 맡긴다 — 폼이 autoComplete 를 갖춰 자동 제안됨.
+const SAVED_USERNAME_KEY = 'ra:saved-username:v1'
+const KEEP_LOGGED_IN_KEY = 'ra:keep-logged-in:v1'
+
+function readLS(key) {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
 export default function LoginPage() {
   const { login, isAuthenticated, loading } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const [email, setEmail] = useState('')
+  const [email, setEmail] = useState(() => readLS(SAVED_USERNAME_KEY) || '')
   const [password, setPassword] = useState('')
+  // 저장된 아이디가 있으면 '아이디 저장'을 켠 상태로 시작.
+  const [rememberId, setRememberId] = useState(() => Boolean(readLS(SAVED_USERNAME_KEY)))
+  // '로그인 유지'는 명시적으로 끈('0') 적이 없으면 기본 ON(기존 동작과 동일).
+  const [keepLoggedIn, setKeepLoggedIn] = useState(() => readLS(KEEP_LOGGED_IN_KEY) !== '0')
   const [submitting, setSubmitting] = useState(false)
   const [errorMsg, setErrorMsg] = useState(null)
 
@@ -26,8 +43,16 @@ export default function LoginPage() {
     e.preventDefault()
     setErrorMsg(null)
     setSubmitting(true)
+    // 설정 저장: 아이디 저장(체크 시 아이디 보관, 해제 시 삭제) + 로그인 유지 선택값.
     try {
-      await login({ email, password })
+      if (rememberId) localStorage.setItem(SAVED_USERNAME_KEY, email)
+      else localStorage.removeItem(SAVED_USERNAME_KEY)
+      localStorage.setItem(KEEP_LOGGED_IN_KEY, keepLoggedIn ? '1' : '0')
+    } catch {
+      /* localStorage 차단 환경 — 저장 생략 */
+    }
+    try {
+      await login({ email, password, persist: keepLoggedIn })
       const from = location.state?.from || '/'
       navigate(from, { replace: true })
     } catch (err) {
@@ -81,6 +106,27 @@ export default function LoginPage() {
                 autoComplete="current-password"
                 required
               />
+            </div>
+
+            <div className="flex items-center gap-4 text-sm">
+              <label className="flex cursor-pointer select-none items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-input accent-primary"
+                  checked={rememberId}
+                  onChange={(e) => setRememberId(e.target.checked)}
+                />
+                <span>아이디 저장</span>
+              </label>
+              <label className="flex cursor-pointer select-none items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-input accent-primary"
+                  checked={keepLoggedIn}
+                  onChange={(e) => setKeepLoggedIn(e.target.checked)}
+                />
+                <span>로그인 유지</span>
+              </label>
             </div>
 
             {errorMsg && (

@@ -9,6 +9,7 @@ from app.modules.reports.ai_authoring import (
     build_authoring_guide,
     build_example_input,
     normalize_content,
+    normalize_extra_blocks,
 )
 from app.widgets import validate_layout_overrides, validate_report_content
 
@@ -278,3 +279,63 @@ def test_auto_layout_respects_intentional_template_layout():
 
 def test_auto_layout_empty_template():
     assert auto_layout({"version": "widget-v1", "blocks": []}) == {}
+
+
+# ── extra_blocks (AI 가 위젯 직접 생성) + hide-empty ─────────────────────────
+def test_normalize_extra_blocks_builds_widgets():
+    """빈 템플릿이어도 AI 가 위젯 정의+내용을 주면 extra_block_defs + content 로 정규화."""
+    defs, content, warnings = normalize_extra_blocks([
+        {"id": "h", "type": "heading", "content": {"text": "제목"}},
+        {"id": "lst", "type": "bulleted_list", "content": ["a", "b"]},
+        {"id": "tbl", "type": "table",
+         "props": {"columns": [{"key": "n", "label": "이름", "type": "text"}]},
+         "content": [{"n": "X"}]},
+    ])
+    assert [d["id"] for d in defs] == ["h", "lst", "tbl"]
+    assert content["h"] == {"text": "제목"}
+    assert content["lst"]["items"] == ["a", "b"]
+    assert content["tbl"]["rows"] == [{"n": "X"}]
+    # 표는 default_props + 준 props 가 병합돼 columns 가 def 에 실린다.
+    tbl_def = next(d for d in defs if d["id"] == "tbl")
+    assert tbl_def["props"]["columns"][0]["key"] == "n"
+    # 빈 템플릿 + 이 extra_blocks 만으로 검증 통과해야 한다.
+    empty = {"version": "widget-v1", "blocks": []}
+    validate_report_content(empty, content, extra_blocks=defs)
+
+
+def test_normalize_extra_blocks_skips_empty_and_unknown():
+    defs, content, warnings = normalize_extra_blocks([
+        {"id": "ok", "type": "heading", "content": {"text": "있음"}},
+        {"id": "empty", "type": "heading", "content": {"text": "   "}},   # 빈 내용 → 제외
+        {"id": "bad", "type": "no_such_widget", "content": {}},            # 미지 타입 → 제외
+        {"type": "heading", "content": {"text": "no id"}},                 # id 없음 → 제외
+    ])
+    assert [d["id"] for d in defs] == ["ok"]
+    assert set(content) == {"ok"}
+    assert len(warnings) >= 3
+
+
+def test_auto_layout_over_extra_blocks_only():
+    """빈 템플릿(include_ids=[]) + extra_blocks 만으로도 그리드 배치가 나온다."""
+    extra = [
+        {"id": "h", "type": "heading"},
+        {"id": "c1", "type": "chart"},
+        {"id": "c2", "type": "chart"},
+    ]
+    ov = auto_layout({"version": "widget-v1", "blocks": []},
+                     include_ids=[], extra_blocks=extra)
+    assert set(ov) == {"h", "c1", "c2"}
+    assert ov["h"]["col_span"] == 12          # heading 전폭
+    assert ov["c1"]["col_span"] == 6 and ov["c2"]["col_span"] == 6
+    assert ov["c1"]["row"] == ov["c2"]["row"]  # 차트 2개 나란히
+
+
+def test_auto_layout_include_ids_filters():
+    """채운 블록만(include_ids) 배치 — 빈 블록은 레이아웃에서 제외."""
+    tmpl = {"version": "widget-v1", "blocks": [
+        {"id": "a", "type": "heading"},
+        {"id": "b", "type": "rich_text"},
+        {"id": "c", "type": "table", "props": {"columns": [{"key": "x", "label": "X", "type": "text"}]}},
+    ]}
+    ov = auto_layout(tmpl, include_ids=["a", "c"])  # b 제외
+    assert set(ov) == {"a", "c"}

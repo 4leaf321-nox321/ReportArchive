@@ -26,6 +26,7 @@ from app.modules.reports.schemas import (
 )
 from app.modules.templates import services as template_services
 from app.modules.users.models import User
+from app.widgets import authoring_rules
 from app.shared.auth import CurrentUser, get_current_user, require_writer
 from app.shared.responses import (
     created_response,
@@ -344,6 +345,13 @@ def report_authoring_guide(
     template = template_services.get_template(db, template_id, template_version)
     if not template:
         return not_found_response(f"Template not found: {template_id}@{template_version}")
+    # 이 템플릿에 쓰인 위젯들의 **상세 작성 룰**(content 형식·주의·혼동 위젯 등) —
+    # 프런트 '복사용 프롬프트'와 같은 단일 소스(authoring_rules.json).
+    block_types = {
+        b.get("type")
+        for b in (template.schema.get("blocks") or [])
+        if isinstance(b, dict) and b.get("type")
+    }
     return success_response(
         data={
             "template_id": template_id,
@@ -351,6 +359,9 @@ def report_authoring_guide(
             "blocks": ai_authoring.build_authoring_guide(template.schema),
             # few-shot — 이 템플릿을 채운 ai-draft 입력 예시({title, blocks}).
             "example_input": ai_authoring.build_example_input(template.schema),
+            # 위젯별 상세 룰(있는 블록만). extra_blocks 로 다른 위젯을 만들 땐
+            # describe_widgets(types) 로 그 위젯들의 룰을 받아 따른다.
+            "widget_rules": authoring_rules.rules_for_types(block_types),
         }
     )
 
@@ -370,15 +381,41 @@ def create_ai_draft(
     template = template_services.get_template(
         db, payload.template_id, payload.template_version
     )
-    if not template:
+    # 존재 + **현재 워크스페이스에서 보이는지(scope)** 둘 다 확인. 보고서를 이
+    # 워크스페이스에 만들 거라, 여기서 안 보이는 부서 전용 템플릿이면 만들어도
+    # 상세 화면이 템플릿을 못 불러와(404) "불러오는 중"에서 멈춘다 → 미리 막는다.
+    if not template or not template_services.is_visible(
+        db, template, actor.workspace.slug
+    ):
         return not_found_response(
-            f"Template not found: {payload.template_id}@{payload.template_version}"
+            f"Template not found or not visible in this workspace: "
+            f"{payload.template_id}@{payload.template_version}"
         )
     content, warnings = ai_authoring.normalize_content(template.schema, payload.blocks)
-    # AI/MCP 는 레이아웃을 못 주므로(내용만 전달) 위젯 타입별 휴리스틱으로 12칸
-    # 그리드에 매거진식 배치를 자동 생성한다. 템플릿이 이미 의도적 열 배치를 갖고
-    # 있으면 빈 dict 라 원본 레이아웃이 그대로 쓰인다.
-    layout_overrides = ai_authoring.auto_layout(template.schema) or None
+    # AI 가 직접 정의한 위젯(extra_blocks) — 빈 템플릿이어도 위젯을 만들며 보고서를 짓게.
+    extra_defs, extra_content, extra_warnings = ai_authoring.normalize_extra_blocks(
+        payload.extra_blocks
+    )
+    warnings = warnings + extra_warnings
+    content = {**content, **extra_content}
+
+    # "AI 가 채운 위젯만 보이게" — blocks_order 에 채워진 블록만 넣어 빈 템플릿
+    # 블록은 숨긴다. 순서: 채운 템플릿 블록(템플릿 순서) → AI 추가 블록(준 순서).
+    filled_tpl_ids = [
+        b["id"]
+        for b in (template.schema.get("blocks") or [])
+        if isinstance(b, dict) and b.get("id") in content
+    ]
+    extra_ids = [d["id"] for d in extra_defs]
+    blocks_order = filled_tpl_ids + extra_ids
+
+    # 레이아웃: 실제로 보이는(채운+추가) 블록만 12칸 그리드에 매거진식 배치.
+    layout_overrides = (
+        ai_authoring.auto_layout(
+            template.schema, include_ids=filled_tpl_ids, extra_blocks=extra_defs
+        )
+        or None
+    )
     report_create = ReportCreate(
         template_id=payload.template_id,
         template_version=payload.template_version,
@@ -388,11 +425,15 @@ def create_ai_draft(
                 template_id=payload.template_id,
                 template_version=payload.template_version,
                 content=content,
+                extra_blocks=extra_defs,
+                blocks_order=blocks_order,
                 layout_overrides=layout_overrides,
             )
         ],
     )
-    # create_report 와 동일 — 작성자 개인 공간에 초안(drafting)으로.
+    # 일반 create_report 와 동일 — 작성자 **개인 공간**에 초안(drafting)으로.
+    # (부서 전용 템플릿을 써도, 보고서 렌더는 계정 접근권 기준으로 템플릿을
+    #  불러오므로 개인공간에서도 정상 표시된다 — templates.get_specific_version 참고.)
     target_workspace = f"personal-{actor.user.id}"
     try:
         report = services.create_report(

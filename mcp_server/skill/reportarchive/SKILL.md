@@ -50,7 +50,16 @@ allowed-tools: mcp__reportarchive__*
 `describe_template` 응답은 각 블록에 **`example`**(이 템플릿에 맞춘 견본)과 전체 **`example_input`**
 을 포함한다 — 그 형태를 그대로 흉내내면 안전하다.
 
-그 외 타입(이미지·첨부·CAD 등 파일 기반, scatter·heatmap 등 고급 차트)은 **비워 둔다**(작성자가 채움).
+### 위젯 상세 룰 — 반드시 참고
+`describe_template` 응답의 **`widget_rules`** 에 그 템플릿이 쓰는 위젯들의 **상세 작성 룰**
+(content 형식·필수 키·★ 자주 틀리는 형식 ★·혼동되기 쉬운 위젯 쌍·다른 라이브러리에서 흔히
+가져오는 환각 키 등)이 담겨 있다. **위젯 content 를 채우기 전 이 룰을 읽고 그대로 따르라.**
+`extra_blocks` 로 템플릿에 없는 위젯을 직접 만들 때는, 만들 위젯 타입을
+**`describe_widgets(["chart","table",…])`** 로 넘겨 같은 룰을 받아 따른다.
+(예: box 는 `rows:[{group,value}]`·density 는 `groups:[{name,values}]`; radar 의 `values` 는
+series 안이 아니라 root 의 2D 배열; network 는 `edges`·sankey 는 `links` 등 — 룰에 다 있다.)
+
+그 외 타입(이미지·첨부·CAD 등 파일 기반)은 **비워 둔다**(작성자가 채움).
 
 ## 원칙
 - **항상 초안.** 게시·발행은 사람이 한다.
@@ -73,3 +82,25 @@ allowed-tools: mcp__reportarchive__*
    })
    ```
 4. 응답의 `url` 을 안내: "초안을 만들었습니다 → <url> 에서 검토·게시하세요."
+
+## 빈 템플릿에서 위젯 직접 만들기 (extra_blocks)
+적합한 템플릿이 없거나 **빈 템플릿**으로 처음부터 짤 때, `create_report_draft` 의
+`extra_blocks` 로 위젯을 직접 정의해 추가한다. 각 항목 `{id, type, props?, content}`:
+- `type`: heading/rich_text/bulleted_list/key_value/table/chart/pie/progress_bar/
+  milestone/flowchart/equation (content 형식은 위 표와 동일).
+- `props`: 열 정의가 필요한 위젯만 — 예 `table`/`chart`: `{"columns":[{key,label,type}]}`,
+  `chart` 는 `{"chart_type":"bar","x_column_key":"x","columns":[...]}`.
+- `content`: 느슨하게 줘도 정규화됨.
+
+예:
+```
+create_report_draft("<빈템플릿id>", 1, "분기 리뷰", {}, extra_blocks=[
+  {"id":"h","type":"heading","content":{"text":"3분기 리뷰"}},
+  {"id":"kv","type":"key_value","content":{"기간":"3분기","담당":"개발팀"}},
+  {"id":"tbl","type":"table","props":{"columns":[{"key":"item","label":"항목","type":"text"},
+     {"key":"val","label":"값","type":"number"}]},"content":[{"item":"매출","val":120}]}
+])
+```
+
+**참고:** 보고서엔 **AI 가 채운 위젯만** 보인다(템플릿의 빈 블록은 자동 숨김). 레이아웃은
+서버가 자동 배치하므로 위치는 신경 쓰지 않아도 된다.

@@ -718,3 +718,7 @@ class AiDraftCreate(BaseModel):
     template_version: int = Field(..., ge=1)
     title: str = Field(..., min_length=1, max_length=255)
     blocks: dict = Field(default_factory=dict)
+    # AI 가 **직접 정의해 추가하는** 위젯들 — 빈 템플릿이거나 템플릿에 없는 위젯이
+    # 필요할 때. 각 항목: {id, type, props?, content}. (block_id→content 인 blocks 와
+    # 달리 위젯 자체를 만든다.) ai_authoring.normalize_extra_blocks 가 처리.
+    extra_blocks: list[dict] = Field(default_factory=list)

@@ -9,6 +9,16 @@ const pkg = JSON.parse(
   readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'),
 )
 
+// 위젯 작성 상세 룰(AI 프롬프트용)의 **단일 소스** — 백엔드의 authoring_rules.json.
+// 빌드 시 읽어 __WIDGET_AUTHORING_RULES__ 로 주입(프런트는 동기 import, 런타임 fetch X).
+// MCP(describe_template/describe_widgets)도 같은 파일을 런타임에 읽으므로 출처가 하나다.
+const widgetAuthoringRules = JSON.parse(
+  readFileSync(
+    path.resolve(__dirname, '../backend/app/widgets/authoring_rules.json'),
+    'utf-8',
+  ),
+)
+
 /**
  * Vite config.
  *
@@ -27,6 +37,7 @@ export default defineConfig(({ mode }) => {
   return {
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),
+      __WIDGET_AUTHORING_RULES__: JSON.stringify(widgetAuthoringRules),
     },
     plugins: [react()],
     resolve: {

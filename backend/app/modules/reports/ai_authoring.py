@@ -169,15 +169,35 @@ def _normalize_block(wtype: str, raw, props: dict, warnings: list[str], block_id
             warnings.append(f"{block_id}: key_value 는 객체(키:값)여야 합니다 — 건너뜀")
             return None
         keys, label_to_key = _columns_maps(props.get("items") or [])
+        data = {
+            k: v
+            for k, v in raw.items()
+            if k not in ("caption", "caption_color", "caption_html", "caption_skip_autofill", "items")
+        }
         out = {}
-        for k, v in raw.items():
-            if k in ("caption", "caption_color", "caption_html", "caption_skip_autofill", "items"):
-                continue
-            key = k if k in keys else label_to_key.get(str(k).strip()) or (_slug(k) if not keys else None)
-            if key is None:
-                warnings.append(f"{block_id}: '{k}' 는 정의된 필드가 아니라 무시")
-                continue
-            out[key] = v
+        if keys:
+            # 템플릿이 필드를 정의함 — 키/라벨로 매핑(정의에 없는 키는 무시).
+            for k, v in data.items():
+                key = k if k in keys else label_to_key.get(str(k).strip())
+                if key is None:
+                    warnings.append(f"{block_id}: '{k}' 는 정의된 필드가 아니라 무시")
+                    continue
+                out[key] = v
+        else:
+            # 필드 정의가 없음(예: AI 가 직접 만든 key_value) — 입력 키로 필드를
+            # **합성**한다. 한글 라벨도 그대로 보존하고, 키는 유일 슬러그로(한글이라
+            # 슬러그가 'field'/빈값/충돌이면 f_1, f_2 …). 없으면 위젯이 빈 채로 렌더됨.
+            items = []
+            used: set[str] = set()
+            for i, (k, v) in enumerate(data.items(), 1):
+                slug = _slug(k)
+                if slug in ("field", "") or slug in used:
+                    slug = f"f_{i}"
+                used.add(slug)
+                items.append({"key": slug, "label": str(k), "type": "text"})
+                out[slug] = v
+            if items:
+                out["items"] = items
         return _with_caption(out, raw) if (out or _has_caption(raw)) else None
 
     if wtype == "table":
@@ -508,17 +528,28 @@ def _is_flat_layout(blocks: list[dict]) -> bool:
     return True
 
 
-def auto_layout(template_schema: dict) -> dict:
-    """템플릿 블록을 위젯 타입별 크기 휴리스틱으로 12칸 그리드에 매거진식으로 재배치한
-    layout_overrides({block_id: {row, col_span, row_span}})를 만든다. 템플릿이 이미
-    열 배치를 갖고 있으면(=의도적 레이아웃) 빈 dict 를 돌려 원본을 존중한다.
+def auto_layout(
+    template_schema: dict,
+    include_ids: list[str] | None = None,
+    extra_blocks: list[dict] | None = None,
+) -> dict:
+    """템플릿 블록(+AI 가 추가한 extra 블록)을 위젯 타입별 크기 휴리스틱으로 12칸
+    그리드에 매거진식 재배치한 layout_overrides({block_id: {row, col_span, row_span}}).
+    의도적 열 배치가 있으면 빈 dict 로 원본 존중.
 
-    모든 템플릿 블록을 한 번에 재배치해 행별 col_span 합이 12를 넘지 않게(=검증
-    통과) 보장한다. 빈(내용 없는) 블록도 같은 규칙으로 흐른다."""
-    blocks = [
+    - include_ids: 주면 그 id 의 템플릿 블록만 배치(=AI 가 채운 것만 보일 때). None=전부.
+    - extra_blocks: AI 가 직접 정의해 추가한 블록들([{id, type, ...}]). 템플릿 블록
+      뒤에 같은 규칙으로 흐른다. 빈 템플릿이어도 이걸로 레이아웃이 만들어진다."""
+    tpl = [
         b
         for b in (template_schema.get("blocks") or [])
         if isinstance(b, dict) and b.get("id")
+    ]
+    if include_ids is not None:
+        keep = set(include_ids)
+        tpl = [b for b in tpl if b["id"] in keep]
+    blocks = tpl + [
+        b for b in (extra_blocks or []) if isinstance(b, dict) and b.get("id")
     ]
     if not blocks or not _is_flat_layout(blocks):
         return {}
@@ -559,6 +590,43 @@ def normalize_content(template_schema: dict, blocks_input: dict) -> tuple[dict, 
         if norm is not None:
             content[block_id] = norm
     return content, warnings
+
+
+def normalize_extra_blocks(extra_input: list[dict] | None) -> tuple[list[dict], dict, list[str]]:
+    """AI 가 **직접 정의한 위젯 목록** → (extra_block_defs, content, warnings).
+    빈 템플릿(블록 0개)이거나 템플릿에 없는 위젯이 필요할 때, AI 가 위젯을
+    만들면서 보고서를 짓게 한다. 각 항목: {id, type, props?, content}.
+      - props 는 위젯 default_props 와 병합(표·차트 등 필수 props 자동 채움).
+      - content 는 느슨한 입력 → _normalize_block 으로 정규화.
+    내용이 비면(정규화 결과 None) 그 블록은 추가하지 않는다(= '채운 것만' 원칙)."""
+    defs: list[dict] = []
+    content: dict = {}
+    warnings: list[str] = []
+    seen: set[str] = set()
+    for item in extra_input or []:
+        if not isinstance(item, dict):
+            continue
+        bid, btype = item.get("id"), item.get("type")
+        if not isinstance(bid, str) or not bid or not isinstance(btype, str) or not btype:
+            warnings.append("extra block: id/type 누락 — 건너뜀")
+            continue
+        if bid in seen:
+            warnings.append(f"extra block '{bid}': 중복 id — 건너뜀")
+            continue
+        try:
+            w = get_widget(btype)
+        except Exception:
+            warnings.append(f"extra block '{bid}': 알 수 없는 위젯 '{btype}' — 건너뜀")
+            continue
+        props = {**(w.get("default_props") or {}), **(item.get("props") or {})}
+        norm = _normalize_block(btype, item.get("content"), props, warnings, bid)
+        if norm is None:
+            warnings.append(f"extra block '{bid}'({btype}): 내용 없음/형식 불일치 — 건너뜀")
+            continue
+        seen.add(bid)
+        defs.append({"id": bid, "type": btype, "props": props})
+        content[bid] = norm
+    return defs, content, warnings
 
 
 def build_authoring_guide(template_schema: dict) -> list[dict]:

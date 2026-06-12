@@ -78,6 +78,15 @@ async def describe_template(template_id: str, template_version: int, ctx: Contex
 
 
 @mcp.tool()
+async def describe_widgets(types: list, ctx: Context) -> dict:
+    """주어진 위젯 타입들의 **상세 작성 룰**(content 형식·필수 키·자주 틀리는 형식·
+    혼동되기 쉬운 위젯 쌍·흔한 환각 키 등)을 돌려준다. `extra_blocks` 로 위젯을 직접
+    만들기 전에 쓸 위젯 타입을 넣어 룰을 받아 **그대로** 따르라(예: ["chart","table","pie"]).
+    describe_template 응답의 widget_rules 와 같은 단일 소스다."""
+    return await _get(ctx, "/api/widgets/authoring-rules", {"types": types})
+
+
+@mcp.tool()
 async def search_reports(q: str, ctx: Context, limit: int = 20) -> dict:
     """보고서 제목·본문 전문검색(내가 볼 수 있는 범위 내). 기존 내용을 참고할 때."""
     return await _get(ctx, "/api/reports/search", {"q": q, "limit": limit})
@@ -96,10 +105,23 @@ async def create_report_draft(
     title: str,
     blocks: dict,
     ctx: Context,
+    extra_blocks: list | None = None,
 ) -> dict:
     """보고서를 **초안(draft)** 으로 생성. `blocks` 는 block_id→내용(describe_template 참고).
-    내용은 느슨하게 줘도 서버가 정규화·검증한다. 검증 실패 시 결과의 `error` 에 블록별
-    메시지가 오니, 그걸 보고 `blocks` 를 고쳐 다시 호출하라. 성공하면 `url` 로 사람이 검토."""
+    **AI 가 채운 위젯만** 보이고(빈 템플릿 블록은 자동 숨김), 레이아웃은 서버가 자동 배치한다.
+
+    `extra_blocks`: 템플릿에 없는 위젯을 **직접 만들어** 추가할 때(특히 **빈 템플릿**으로
+    처음부터 짤 때). 각 항목은 `{"id","type","props"?,"content"}`:
+      - type: heading/rich_text/bulleted_list/key_value/table/chart/pie/progress_bar/
+              milestone/flowchart/equation 등(content 형식은 describe_template/스킬 참고).
+      - props: 표·차트처럼 열 정의가 필요한 위젯만(예 table: {"columns":[{key,label,type}]}).
+      - content: 느슨하게 줘도 정규화됨.
+    예: [{"id":"h","type":"heading","content":{"text":"제목"}},
+         {"id":"t","type":"table","props":{"columns":[{"key":"a","label":"A","type":"text"}]},
+          "content":[{"a":"값"}]}]
+
+    내용은 느슨하게 줘도 서버가 정규화·검증한다. 검증 실패 시 결과의 `error`/`warnings` 를
+    보고 고쳐 다시 호출하라. 성공하면 `url` 로 사람이 검토."""
     return await _post(
         ctx,
         "/api/reports/ai-draft",
@@ -108,6 +130,7 @@ async def create_report_draft(
             "template_version": template_version,
             "title": title,
             "blocks": blocks,
+            "extra_blocks": extra_blocks or [],
         },
     )
 

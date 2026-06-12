@@ -90,7 +90,12 @@ def get_latest(
     actor: CurrentUser = Depends(get_current_user),
 ):
     template = services.get_latest_version(db, template_id)
-    if not template or not services.is_visible(db, template, actor.workspace.slug):
+    # 현재 워크스페이스 가시성 OR 계정 접근권(개인공간 보고서가 부서 템플릿의
+    # 최신 버전 힌트를 받을 수 있게) — get_specific_version 과 동일 기조.
+    if not template or not (
+        services.is_visible(db, template, actor.workspace.slug)
+        or services.is_visible_to_user(db, template, actor.user.id)
+    ):
         return not_found_response(f"Template not found: {template_id}")
     return success_response(data=TemplateRead.from_orm_(template))
 
@@ -116,7 +121,14 @@ def get_specific_version(
     actor: CurrentUser = Depends(get_current_user),
 ):
     template = services.get_template(db, template_id, version)
-    if not template or not services.is_visible(db, template, actor.workspace.slug):
+    # 현재 워크스페이스에서 보이거나(기존), 그게 아니어도 **이 계정이 접근 가능한**
+    # 템플릿이면 허용한다. 개인공간 보고서가 부서 전용 템플릿을 렌더할 때(개인공간
+    # 컨텍스트에선 그 부서가 안 보임) 템플릿 스키마를 못 불러와 "불러오는 중"에서
+    # 멈추던 문제를 푼다 — 렌더는 워크스페이스가 아니라 계정 접근권 기준이어야 한다.
+    if not template or not (
+        services.is_visible(db, template, actor.workspace.slug)
+        or services.is_visible_to_user(db, template, actor.user.id)
+    ):
         return not_found_response(f"Template version not found: {template_id}@{version}")
     return success_response(data=TemplateRead.from_orm_(template))
 

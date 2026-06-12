@@ -11,6 +11,7 @@ from sqlalchemy import cast
 
 from app.modules.templates.models import Template
 from app.modules.templates.schemas import TemplateCreate, TemplateNewVersion
+from app.modules.users.models import WorkspaceMember
 from app.modules.workspaces import services as ws_services
 from app.widgets import validate_template_schema as _validate_widget_v1_schema
 
@@ -89,6 +90,34 @@ def is_visible(db: Session, template: Template, workspace_slug: str) -> bool:
         return True
     visible = _visible_slugs_for(db, workspace_slug)
     return any(s in visible for s in (template.owner_workspace_slugs or []))
+
+
+def is_visible_to_user(db: Session, template: Template, user_id: int) -> bool:
+    """템플릿이 그 **계정(user)** 이 접근 가능한 범위에서 보이는지 — 자신이 멤버인
+    모든 워크스페이스의 트리 가시범위(조상·자손)를 합쳐 판정한다.
+
+    is_visible() 은 '지금 보고 있는 워크스페이스 한 곳' 기준이라, 개인공간에 둔
+    보고서가 부서 전용 템플릿을 참조하면(개인공간엔 그 부서가 안 보임) 렌더용
+    템플릿 조회가 막힌다. 보고서 렌더는 '현재 워크스페이스'가 아니라 '이 계정이
+    그 템플릿을 볼 수 있나'로 판정해야 하므로 이 헬퍼를 쓴다."""
+    if _is_global(template):
+        return True
+    owners = set(template.owner_workspace_slugs or [])
+    if not owners:
+        return True
+    member_slugs = (
+        db.execute(
+            select(WorkspaceMember.workspace_slug).where(
+                WorkspaceMember.user_id == user_id
+            )
+        )
+        .scalars()
+        .all()
+    )
+    visible: set[str] = set()
+    for s in member_slugs:
+        visible |= _visible_slugs_for(db, s)
+    return bool(owners & visible)
 
 
 def _normalize_owner_slugs(payload_slugs: Optional[list[str]]) -> Optional[list[str]]:

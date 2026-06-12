@@ -735,6 +735,8 @@ def create_report(
         init_kwargs["page_rich_text_prefix_d1"] = payload.page_rich_text_prefix_d1
     if payload.page_rich_text_prefix_d2 is not None:
         init_kwargs["page_rich_text_prefix_d2"] = payload.page_rich_text_prefix_d2
+    if payload.page_default_view_mode is not None:
+        init_kwargs["page_default_view_mode"] = payload.page_default_view_mode
     if payload.report_type_id is not None:
         init_kwargs["report_type_id"] = payload.report_type_id
     if payload.collab_workspace_slugs is not None:
@@ -835,6 +837,7 @@ def copy_report(
         page_rich_text_prefix_d0=source.page_rich_text_prefix_d0,
         page_rich_text_prefix_d1=source.page_rich_text_prefix_d1,
         page_rich_text_prefix_d2=source.page_rich_text_prefix_d2,
+        page_default_view_mode=source.page_default_view_mode,
         tags=list(source.tags or []) if full else [],
         report_type_id=source.report_type_id if full else None,
         lifecycle=source.lifecycle if full else None,
@@ -1099,6 +1102,7 @@ def update_report(
         "page_rich_text_prefix_d0",
         "page_rich_text_prefix_d1",
         "page_rich_text_prefix_d2",
+        "page_default_view_mode",
         "report_type_id",
     ):
         if key in data:

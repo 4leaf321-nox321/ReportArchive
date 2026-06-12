@@ -276,6 +276,8 @@ class ReportRead(BaseModel):
     page_rich_text_prefix_d0: Optional[str] = Field(default=None, max_length=8)
     page_rich_text_prefix_d1: Optional[str] = Field(default=None, max_length=8)
     page_rich_text_prefix_d2: Optional[str] = Field(default=None, max_length=8)
+    # 보고서별 기본 보기 모드. NULL → 프런트가 개인 전역설정→"paginated" 폴백.
+    page_default_view_mode: Optional[Literal["paginated", "all"]] = None
     # Optional report-type tag. `report_type_id` is the raw FK; the
     # embedded `report_type` carries name/description/status so the
     # frontend doesn't need a separate /api/report-types/<id> call.
@@ -446,6 +448,8 @@ class ReportCreate(BaseModel):
     page_rich_text_prefix_d0: Optional[str] = Field(default=None, max_length=8)
     page_rich_text_prefix_d1: Optional[str] = Field(default=None, max_length=8)
     page_rich_text_prefix_d2: Optional[str] = Field(default=None, max_length=8)
+    # 보고서별 기본 보기 모드 ("paginated"/"all"). 미지정이면 NULL.
+    page_default_view_mode: Optional[Literal["paginated", "all"]] = None
     # Optional FK to a report_types row. Created via the picker dialog;
     # may be null (no tag).
     report_type_id: Optional[int] = None
@@ -517,6 +521,9 @@ class ReportUpdate(BaseModel):
     page_rich_text_prefix_d0: Optional[str] = Field(default=None, max_length=8)
     page_rich_text_prefix_d1: Optional[str] = Field(default=None, max_length=8)
     page_rich_text_prefix_d2: Optional[str] = Field(default=None, max_length=8)
+    # 보고서별 기본 보기 모드. exclude_unset 으로 처리되므로 키를 보내면
+    # 갱신, 안 보내면 기존값 유지(다른 page_* 와 동일).
+    page_default_view_mode: Optional[Literal["paginated", "all"]] = None
     # Optional report-type FK. The field is consulted via model_dump's
     # `exclude_unset` so an explicit `null` clears the tag while an
     # absent key leaves the existing value alone.

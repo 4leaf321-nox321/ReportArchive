@@ -46,6 +46,7 @@ import {
   Scissors,
   Send,
   Settings2,
+  Share2,
   Sparkles,
   Tag,
   Trash2,
@@ -68,7 +69,7 @@ import { Skeleton } from '@/shared/components/ui/skeleton'
 import { Input } from '@/shared/components/ui/input'
 import { InlineReportView } from '@/modules/composites/InlineReportView'
 import { Textarea } from '@/shared/components/ui/textarea'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/components/ui/popover'
 import {
   DropdownMenu,
@@ -138,7 +139,7 @@ import { TemplatePicker } from './TemplatePicker'
 import { SectionPickerDialog } from './SectionPickerDialog'
 import { PromptPickerDialog } from './PromptPickerDialog'
 import { MountDialog } from './MountDialog'
-import { SharePopover } from '@/shared/components/SharePopover'
+import { ShareEditor } from '@/shared/components/ShareEditor'
 import { FolderPickerDialog } from './FolderPickerButton'
 import { listMounts, mountReport } from '@/shared/api/mounts'
 import { listFolders } from '@/shared/api/folders'
@@ -183,10 +184,16 @@ export default function ReportDetailPage() {
 
   // 'paginated' = show one page at a time with prev/next controls
   // 'all'       = stack every page vertically (scroll through them)
-  const [viewMode, setViewMode] = usePersistedState(
+  //
+  // 보기 모드는 이제 보고서별로 기억된다(draft.page_default_view_mode — 편집
+  // 모드에서 토글하면 저장). 저장값이 없는 보고서(기존·MCP·AI)는 아래 개인
+  // 전역설정(localStorage)으로 폴백. globalViewMode = 폴백 + 새 보고서/뷰모드
+  // 전환의 개인 기본값, viewMode = 실제 표시 상태.
+  const [globalViewMode, setGlobalViewMode] = usePersistedState(
     'ra:report-view-mode:v1',
     'paginated'
   )
+  const [viewMode, setViewMode] = useState(globalViewMode)
   const [confirmDelete, setConfirmDelete] = useState(false)
   // Right-click on the empty (block-less) area — or the floating
   // "보고서 설정" pill at the bottom-right — opens this tabbed dialog.
@@ -205,7 +212,8 @@ export default function ReportDetailPage() {
   // 보고서 관계도 모달 (지식그래프 Phase 1a). 저장된 보고서일 때만 의미.
   const [graphOpen, setGraphOpen] = useState(false)
   const [mountOpen, setMountOpen] = useState(false)
-  // "더보기" 메뉴에서 여는 controlled 표면들(폴더 이동 · 활동 이력).
+  // "더보기" 메뉴에서 여는 controlled 표면들(공유 · 폴더 이동 · 활동 이력).
+  const [shareOpen, setShareOpen] = useState(false)
   const [folderPickOpen, setFolderPickOpen] = useState(false)
   const [activityOpen, setActivityOpen] = useState(false)
   const [versionsOpen, setVersionsOpen] = useState(false)
@@ -472,6 +480,8 @@ export default function ReportDetailPage() {
         page_rich_text_prefix_d0: null,
         page_rich_text_prefix_d1: null,
         page_rich_text_prefix_d2: null,
+        // 새 보고서는 저장된 보기 모드 없음 → null(개인 전역설정 폴백).
+        page_default_view_mode: null,
         report_type_id: null,
         report_type: null,
         // Entity tags (모델/부품/BOM/단계/불량/시험/시뮬레이션) — starts
@@ -537,6 +547,8 @@ export default function ReportDetailPage() {
         page_rich_text_prefix_d0: existingReport.page_rich_text_prefix_d0 ?? null,
         page_rich_text_prefix_d1: existingReport.page_rich_text_prefix_d1 ?? null,
         page_rich_text_prefix_d2: existingReport.page_rich_text_prefix_d2 ?? null,
+        // 보고서별 기본 보기 모드. null → 표시 상태는 개인 전역설정으로 폴백.
+        page_default_view_mode: existingReport.page_default_view_mode ?? null,
         // 보고서 종류 — picker writes the FK + embedded ref so the
         // settings dialog (and the list view, once we rerender it)
         // can show the name/status without a second roundtrip.
@@ -553,6 +565,34 @@ export default function ReportDetailPage() {
       setCurrentPage((p) => clamp(p, 0, pages.length - 1))
     }
   }, [isNew, seedTemplate, existingReport])
+
+  // 보고서가 로드되면 그 보고서에 저장된 기본 보기 모드로 표시 상태를 맞춘다.
+  // 보고서 id 가 바뀔 때 한 번만 — 저장 후 reloadReport(같은 id) 에서는 방금
+  // 고른 모드를 덮어쓰지 않도록 ref 로 가드. 저장값이 없으면(기존/MCP/AI)
+  // 개인 전역설정으로 폴백한다.
+  const viewModeSyncedReportRef = useRef(undefined)
+  useEffect(() => {
+    if (isNew || !existingReport?.id) return
+    if (viewModeSyncedReportRef.current === existingReport.id) return
+    viewModeSyncedReportRef.current = existingReport.id
+    setViewMode(existingReport.page_default_view_mode ?? globalViewMode)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isNew, existingReport?.id])
+
+  // 보기 모드 전환. 편집 중이면 보고서별 설정(draft)에 써서 save 시 영속화하고,
+  // 보기 중이면 개인 전역설정만 갱신(저장값 없는 보고서의 폴백). 표시 상태는
+  // 항상 즉시 반영.
+  const handleViewModeChange = useCallback(
+    (next) => {
+      setViewMode(next)
+      if (isEditing) {
+        setDraft((d) => (d ? { ...d, page_default_view_mode: next } : d))
+      } else {
+        setGlobalViewMode(next)
+      }
+    },
+    [isEditing, setGlobalViewMode],
+  )
 
   // -------------------------------------------------------------------- //
   // Unsaved-changes guard                                                //
@@ -2168,6 +2208,8 @@ export default function ReportDetailPage() {
         page_rich_text_prefix_d0: normalizeRichTextPrefix(draft.page_rich_text_prefix_d0),
         page_rich_text_prefix_d1: normalizeRichTextPrefix(draft.page_rich_text_prefix_d1),
         page_rich_text_prefix_d2: normalizeRichTextPrefix(draft.page_rich_text_prefix_d2),
+        // 보고서별 기본 보기 모드. null 이면 저장값 해제(개인 전역설정 폴백).
+        page_default_view_mode: draft.page_default_view_mode ?? null,
         // 보고서 종류 — null clears the tag. The backend's update
         // schema uses `exclude_unset`, so always sending the key (even
         // when null) is the explicit "clear" signal.
@@ -2346,6 +2388,8 @@ export default function ReportDetailPage() {
         page_rich_text_prefix_d0: existingReport.page_rich_text_prefix_d0 ?? null,
         page_rich_text_prefix_d1: existingReport.page_rich_text_prefix_d1 ?? null,
         page_rich_text_prefix_d2: existingReport.page_rich_text_prefix_d2 ?? null,
+        // 보기 모드도 cancel 시 서버 스냅샷으로 복원.
+        page_default_view_mode: existingReport.page_default_view_mode ?? null,
         revision: existingReport.revision ?? 1,
         pages,
       })
@@ -3311,7 +3355,7 @@ export default function ReportDetailPage() {
           <Separator orientation="vertical" className="h-6 mx-1" />
 
           {/* ─── Group 2: View options ─── */}
-          <ViewModeToggle value={viewMode} onChange={setViewMode} />
+          <ViewModeToggle value={viewMode} onChange={handleViewModeChange} />
           <Button
             variant="ghost"
             size="sm"
@@ -3418,17 +3462,7 @@ export default function ReportDetailPage() {
               {!isNew && existingReport?.id && (
                 <SubmitToCompositeButton reportId={existingReport.id} />
               )}
-              {/* 공유 — 부서(하위 상속)·사용자·전체공개 + 열람/편집. 클릭하면
-                  팝오버로 그 자리에서 편집, 뱃지로 현재 공유 대상 표시. */}
-              {!isNew && existingReport?.id && !existingReport?.is_public_view && (
-                <SharePopover
-                  contentType="reports"
-                  contentId={existingReport.id}
-                  ownerUserId={existingReport.owner_user_id}
-                  label="공유"
-                  triggerClassName="h-8 rounded-md border border-input bg-background px-2.5 hover:bg-accent hover:text-accent-foreground"
-                />
-              )}
+              {/* 공유는 툴바 혼잡을 줄이려 "더보기" 메뉴 안으로 이동. */}
               <Separator orientation="vertical" className="h-6 mx-1" />
 
               {/* ─── Group 5: Report variants ───
@@ -3534,6 +3568,18 @@ export default function ReportDetailPage() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                {/* 공유 — 부서(하위 상속)·사용자·전체공개 + 열람/편집. 예전엔
+                    툴바의 독립 버튼이었으나 혼잡을 줄이려 여기로 이동.
+                    전체공개 뷰(is_public_view)에서는 공유 편집 불가라 숨김. */}
+                {!existingReport?.is_public_view && (
+                  <>
+                    <DropdownMenuItem onSelect={() => setShareOpen(true)}>
+                      <Share2 className="mr-2 h-3.5 w-3.5" />
+                      공유
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
                 <DropdownMenuItem onSelect={() => setGraphOpen(true)}>
                   <Network className="mr-2 h-3.5 w-3.5" />
                   관계도
@@ -4163,6 +4209,26 @@ export default function ReportDetailPage() {
           canEdit={existingReport.can_edit !== false}
           onRestored={reloadReport}
         />
+      )}
+      {/* 공유 — "더보기 > 공유"로 여는 controlled Dialog. ShareEditor 는
+          Dialog/Popover 양쪽 재사용용 알맹이. active 가 true 일 때 로드. */}
+      {existingReport?.id && !existingReport?.is_public_view && (
+        <Dialog open={shareOpen} onOpenChange={setShareOpen}>
+          <DialogContent className="max-w-md max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>공유</DialogTitle>
+              <DialogDescription>
+                부서(하위 상속)·사용자·전체 공개 대상과 열람/편집 권한을 설정합니다.
+              </DialogDescription>
+            </DialogHeader>
+            <ShareEditor
+              contentType="reports"
+              contentId={existingReport.id}
+              ownerUserId={existingReport.owner_user_id}
+              active={shareOpen}
+            />
+          </DialogContent>
+        </Dialog>
       )}
 
 
@@ -8845,7 +8911,9 @@ function DirectionalAddArrows({ canInsertHorizontally, onAdd }) {
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
             className={cn(
-              'absolute z-20 flex h-9 w-9 items-center justify-center rounded-full',
+              // z-30: 각 변 중앙의 추가 버튼이 변 전체에 깔린 리사이즈
+              // 선(z-20) 위에 오도록 — 중앙은 추가, 나머지 변은 크기조절.
+              'absolute z-30 flex h-9 w-9 items-center justify-center rounded-full',
               'border bg-background text-muted-foreground shadow-md',
               'opacity-0 transition-opacity pointer-events-none',
               'hover:bg-primary hover:text-primary-foreground hover:border-primary',
@@ -9965,6 +10033,20 @@ const REPORT_COL_GAP = 12
 // strip 처럼 보여 매번 사용자가 수동으로 키워야 했음.)
 const AUTO_FIT_INITIAL_ROWS = 28
 
+// 위젯을 드래그로 너무 얇은 strip 으로 만들지 못하게 하는 세로 최소 높이.
+// px 로 정의하고 행(row) 수로 환산해 두면 rowHeight/gap 이 바뀌어도 의도한
+// 픽셀 높이가 유지된다. 이 값은 리사이즈 핸들에만 적용되고
+// (applySizeConstraints 가 minH 로 클램프), 콘텐츠가 자연히 더 작은
+// 자동맞춤 위젯의 *표시* 높이를 부풀리지는 않는다 — RGL correctBounds 는
+// h 를 minH 로 보정하지 않기 때문(가로 x/w 만 보정).
+const REPORT_MIN_HEIGHT_PX = 56
+const REPORT_MIN_ROW_SPAN = Math.max(
+  1,
+  Math.ceil(
+    (REPORT_MIN_HEIGHT_PX + REPORT_ROW_GAP) / (REPORT_ROW_HEIGHT + REPORT_ROW_GAP),
+  ),
+)
+
 // Widget types whose auto_fit DEFAULTS to false (manual cell size).
 // Charts / scatter / heatmap need a real height to paint — letting
 // content drive the row_span makes them snap small repeatedly while
@@ -10102,7 +10184,10 @@ function buildRglItems(blocks, effectiveLayouts) {
       h: Math.max(1, layout.row_span ?? 2),
       minW: 1,
       maxW: REPORT_GRID_COLS,
-      minH: 1,
+      // 드래그 리사이즈로 내려갈 수 있는 세로 최소치. 1행(≈8px)까지 얇아져
+      // strip 처럼 보이던 문제를 막는다. 표시 height(h)는 그대로 두므로
+      // 자연히 더 작은 자동맞춤 위젯이 부풀지 않는다(위 상수 주석 참고).
+      minH: REPORT_MIN_ROW_SPAN,
     }
     // 자동맞춤 블록도 일반 블록과 동일하게 기본 핸들(코너) 노출 — 이전엔
     // height 가 content-driven 이라는 의미로 east 핸들만 남겼는데, "리사이즈
@@ -10180,6 +10265,14 @@ function ResizableGrid({
           }}
           resizeConfig={{
             enabled: !isStatic,
+            // 아래·좌·우 변(변 전체를 잡는 "선") + 아래 두 모서리(점)만 노출.
+            // 위쪽(n/ne/nw)은 의도적으로 뺐다 — compactType:"vertical" 레이아웃은
+            // 위젯 위에 빈칸을 허용하지 않아, 위 핸들로 줄이면 매 move마다
+            // moveElement 가 내려놓은 y 를 compact 가 다시 위로 끌어올려 위젯이
+            // 떨린다(아래 핸들은 h 만 바꾸고 y 를 안 건드려 매끄러움). 즉
+            // "위에서 줄이기"는 이 레이아웃 모델과 근본적으로 충돌하므로 제외.
+            // 모서리를 배열 뒤에 둬 코너에서 엣지 선 위에 그려지게 함. 기본값 ['se'].
+            handles: ['s', 'e', 'w', 'se', 'sw'],
           }}
           onLayoutChange={onLayoutChange}
           onResizeStart={onResizeStart}

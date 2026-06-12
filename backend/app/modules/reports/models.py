@@ -261,6 +261,14 @@ class Report(Base):
         String(8), nullable=True
     )
 
+    # 보고서별 기본 보기 모드 — "paginated"(페이지별) / "all"(전체 스택).
+    # NULL 이면 프런트가 개인 전역 환경설정(localStorage)→"paginated" 로 폴백.
+    # 편집모드에서 보기 토글을 바꾸면 여기에 저장돼 그 보고서를 다시 열 때
+    # 같은 모드로 뜬다. (기존/ MCP·AI 작성 보고서는 NULL 로 남아 폴백.)
+    page_default_view_mode: Mapped[str | None] = mapped_column(
+        String(16), nullable=True
+    )
+
     # Optional report-type tag — system-wide controlled vocabulary
     # orthogonal to the template (templates describe shape; types
     # describe purpose, e.g. "주간 보고", "안전 점검"). Managed by

@@ -354,6 +354,106 @@
   }
 }
 
+/* 위젯 리사이즈 핸들 (아래·좌·우 변 + 아래 두 모서리만 — 위쪽은 세로 압축
+   레이아웃과 충돌해 제외, ReportDetailPage 의 handles 주석 참고).
+   - 아래·좌·우 엣지: 변(border) 전체를 잡아 끄는 "선"으로 동작 — 변 가운데의
+     위젯 추가(+) 버튼(z-30)과 자리를 다투지 않도록, 추가 버튼이 차지하는
+     중앙만 빼고 변 전체 어디서든 크기를 조절할 수 있게 히트영역을 변 전체로
+     넓힌다.
+   - 아래 두 모서리(se/sw): 점 핸들로 대각 조절. 엣지 선 위에 오도록 z-index 를
+     한 단계 높여 코너에서 대각 리사이즈가 가려지지 않게 한다.
+   - 공통: .block-drag-handle(z-10) 위로 올리고, 다크모드에서도 보이도록
+     마크색을 테마 토큰(--primary)으로 칠한다.
+
+   주의(특이도): react-grid-layout / react-resizable 의 기본 CSS 가 각 엣지
+   핸들에 transform: rotate(...) 와 20px 중앙 배치, 코너 화살표 SVG 배경을
+   건다. 그 규칙은 `.react-grid-item > .react-resizable-handle.react-resizable-handle-s`
+   (특이도 0,3,0)이고 index.css 보다 *나중에* 로드되므로, 같은 0,3,0 으로는
+   못 이긴다. 그래서 아래는 일부러 두 클래스(`.react-resizable-handle.react-resizable-handle-s`)
+   를 함께 써 특이도(0,4,0)를 한 단계 높여 회전/중앙배치를 확실히 덮어쓴다. */
+.report-detail-root .react-grid-item > .react-resizable-handle {
+  z-index: 20;
+  /* react-resizable 의 코너 화살표 SVG 배경 제거 — 마크는 ::after 로 통일 */
+  background-image: none;
+}
+
+/* 모서리(대각) 점 핸들 — 엣지 선 위로, 마크는 테마색 L 자.
+   위 모서리(ne/nw)는 handles 에서 제외돼 렌더되지 않으므로 아래 두 개만. */
+.report-detail-root .react-grid-item > .react-resizable-handle.react-resizable-handle-se,
+.report-detail-root .react-grid-item > .react-resizable-handle.react-resizable-handle-sw {
+  z-index: 21;
+}
+.report-detail-root .react-grid-item > .react-resizable-handle.react-resizable-handle-se::after,
+.report-detail-root .react-grid-item > .react-resizable-handle.react-resizable-handle-sw::after {
+  border-right-color: hsl(var(--primary));
+  border-bottom-color: hsl(var(--primary));
+}
+
+/* 아래 엣지 — 변 전체를 덮는 가로 띠(히트영역). 회전/중앙배치 해제 후
+   변 전체로 넓히고, 위젯 사이 간격(margin) 쪽으로 살짝 바깥에 둔다.
+   (위 엣지 n 은 세로 압축 충돌로 제외 — ReportDetailPage 의 handles 주석 참고.) */
+.report-detail-root .react-grid-item > .react-resizable-handle.react-resizable-handle-s {
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 10px;
+  margin: 0;
+  transform: none;
+  bottom: -8px;
+  top: auto;
+}
+
+/* 좌우 엣지 — 변 전체를 덮는 세로 띠 */
+.report-detail-root .react-grid-item > .react-resizable-handle.react-resizable-handle-e,
+.report-detail-root .react-grid-item > .react-resizable-handle.react-resizable-handle-w {
+  top: 0;
+  bottom: 0;
+  height: auto;
+  width: 10px;
+  margin: 0;
+  transform: none;
+}
+.report-detail-root .react-grid-item > .react-resizable-handle.react-resizable-handle-w {
+  left: -8px;
+  right: auto;
+}
+.report-detail-root .react-grid-item > .react-resizable-handle.react-resizable-handle-e {
+  right: -8px;
+  left: auto;
+}
+
+/* 엣지 핸들의 기본 코너 마크(::after)를 변을 따라 그어진 "선"으로 교체.
+   양 끝은 모서리 점 핸들과 겹치지 않도록 조금 비운다. */
+.report-detail-root .react-grid-item > .react-resizable-handle.react-resizable-handle-s::after {
+  content: '';
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  top: 50%;
+  bottom: auto;
+  width: auto;
+  height: 2px;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 9999px;
+  background: hsl(var(--primary) / 0.85);
+}
+.report-detail-root .react-grid-item > .react-resizable-handle.react-resizable-handle-e::after,
+.report-detail-root .react-grid-item > .react-resizable-handle.react-resizable-handle-w::after {
+  content: '';
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: 50%;
+  right: auto;
+  width: 2px;
+  height: auto;
+  transform: translateX(-50%);
+  border: 0;
+  border-radius: 9999px;
+  background: hsl(var(--primary) / 0.85);
+}
+
 /* Annotation hover dim — when a filled annotation body (vrange /
    hrange / rect) is hovered, fade its fill so the chart data behind
    stays readable. `:first-of-type` targets the body rect specifically
@@ -372,15 +472,17 @@
 }
 
 /* 보고서 전체화면 모드 — ReportDetailPage가 켜질 때 body에 클래스를
-   붙이면 AppShell의 헤더/사이드바를 숨기고, 보고서 본문 div에 걸린
-   inline maxWidth(보고서 폭 설정)도 풀어 화면 전체를 채우게 한다.
+   붙이면 AppShell의 헤더/사이드바를 숨긴다. 본문 폭은 설정값
+   (inline maxWidth = page_width_px)을 그대로 유지하고 mx-auto 로 가운데
+   정렬한다 — 좁게 설정한 보고서는 그 폭에 맞춰 위젯을 배치했으므로,
+   전체화면이라고 화면 전체로 늘리면 레이아웃이 깨진다. (예전엔 여기서
+   max-width: none 으로 폭을 풀었으나, 설정 폭 존중으로 변경.)
    툴바와 페이지 스트립은 종료 동선이라 그대로 둔다. */
 body.report-fullscreen [data-app-chrome],
 body.report-fullscreen .report-detail-toolbar {
   display: none !important;
 }
 body.report-fullscreen .report-detail-content {
-  max-width: none !important;
   /* 전체화면에서는 페이지 strip 과 본문 사이 여백이 너무 크게 보임 —
      기본 p-6(상단 24px) 을 8px 로 줄여서 첫 위젯이 페이지 selector
      바로 아래에 붙는 인상으로. 좌우/하단 padding 은 본문 폭/스크롤

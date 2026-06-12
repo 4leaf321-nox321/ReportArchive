@@ -162,8 +162,13 @@ Claude Code 에서 보고서를 검색·작성(초안)할 수 있습니다.
 
 - **상태**: `sudo systemctl status reportarchive-mcp` / 로그 `journalctl -u reportarchive-mcp -f`
 - **끄기**: `MCP_ENABLED=0 sudo ./deploy.sh update` (유닛은 별도 `systemctl disable --now reportarchive-mcp`)
-- **외부 노출**: 기본 `127.0.0.1:3002` (로컬만). 사내망에 열려면 `MCP_HOST=0.0.0.0 sudo ./deploy.sh update`
-  하거나 nginx 리버스프록시(TLS) 권장. 백엔드 포트가 3000이 아니면 `MCP_API_BASE=http://127.0.0.1:<포트>`.
+- **외부 노출**: 기본 `127.0.0.1:3002` (로컬만). 사내망에 열려면 **한 번만**
+  `MCP_HOST=0.0.0.0 sudo ./deploy.sh update` — 이후 `./deploy.sh update` 는 설치된 유닛에서
+  값을 읽어 **자동으로 유지**하므로 매번 다시 붙일 필요 없습니다(되돌릴 땐 그때만 `MCP_HOST=127.0.0.1 …`).
+  외부망이면 nginx 리버스프록시(TLS) 권장. 백엔드 포트가 3000이 아니면 `MCP_API_BASE=http://127.0.0.1:<포트>`.
+- **Host 보호**: 비-localhost 로 열면 server.py 가 DNS rebinding 보호를 자동으로 끕니다(사내망 가정).
+  더 단단히 하려면 `MCP_ALLOWED_HOSTS="<서버호스트>:3002,<서버IP>:3002"` (또는 nginx 도메인) 지정 —
+  이 값도 유닛에 저장돼 자동 유지됩니다. (지정한 Host 만 허용, 나머지는 421 차단)
 - **사용자 등록(각자)**:
   ```bash
   claude mcp add --transport http reportarchive http://<서버>:3002/mcp \

@@ -113,6 +113,38 @@ async def create_report_draft(
 
 
 if __name__ == "__main__":
-    mcp.settings.host = os.environ.get("MCP_HOST", "127.0.0.1")
+    host = os.environ.get("MCP_HOST", "127.0.0.1")
+    mcp.settings.host = host
     mcp.settings.port = int(os.environ.get("MCP_PORT", "3002"))
+
+    # FastMCP 는 생성 시점(host=127.0.0.1)에 DNS rebinding 보호를 켜고
+    # allowed_hosts 를 localhost(127.0.0.1:* / localhost:* / [::1]:*)로 고정한다.
+    # 위에서 host 를 0.0.0.0 등으로 바꿔도 그 설정은 그대로라, 서버 IP·도메인으로
+    # 들어온 Host 헤더가 거부돼 421 "Invalid Host header" 가 난다(외부 노출 시).
+    # 비-localhost 바인딩이면 여기서 transport_security 를 다시 설정한다.
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        allowed = [
+            h.strip()
+            for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",")
+            if h.strip()
+        ]
+        if allowed:
+            # 권장: 허용할 Host 만 명시. 포트 와일드카드 가능.
+            #   MCP_ALLOWED_HOSTS="mcp.example.com,mcp.example.com:*,10.0.0.5:3002"
+            # nginx 리버스프록시면 proxy_set_header Host 로 넘어오는 값(도메인)을 넣는다.
+            mcp.settings.transport_security = TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=allowed,
+                allowed_origins=[],
+            )
+        else:
+            # 미지정이면 보호를 끈다 — 인증은 PAT(백엔드가 검증), 망 보호는
+            # nginx/방화벽에 맡기는 사내망 노출 시나리오. 외부망 노출 시엔
+            # MCP_ALLOWED_HOSTS 를 지정해 보호를 유지하길 권장.
+            mcp.settings.transport_security = TransportSecuritySettings(
+                enable_dns_rebinding_protection=False,
+            )
+
     mcp.run(transport="streamable-http")

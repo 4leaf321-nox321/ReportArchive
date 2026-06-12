@@ -13,6 +13,9 @@ WorkingDirectory=@@INSTALL_DIR@@/mcp_server
 Environment=REPORTARCHIVE_API_BASE=@@API_BASE@@
 Environment=MCP_HOST=@@MCP_HOST@@
 Environment=MCP_PORT=@@MCP_PORT@@
+# DNS rebinding 보호 허용 Host(쉼표구분). 비우면 server.py 가 비-localhost
+# 바인딩 시 보호를 끈다. 외부 노출 시 도메인/IP 지정 권장.
+Environment=MCP_ALLOWED_HOSTS=@@MCP_ALLOWED_HOSTS@@
 ExecStart=@@INSTALL_DIR@@/mcp_server/venv/bin/python @@INSTALL_DIR@@/mcp_server/server.py
 
 Restart=on-failure

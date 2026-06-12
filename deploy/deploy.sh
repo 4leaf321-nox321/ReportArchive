@@ -44,10 +44,23 @@ SERVICE_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 # MCP server (Claude 연동) — 선택. 별도 venv + 별도 systemd 유닛.
 MCP_SERVICE_NAME="reportarchive-mcp"
 MCP_SERVICE_UNIT="/etc/systemd/system/${MCP_SERVICE_NAME}.service"
+# 설치된 systemd 유닛에서 Environment=KEY=VALUE 값을 읽는다(없으면 빈 문자열).
+# → 한 번 배포한 MCP 설정을 다음 배포가 자동으로 기억하게 하는 장치.
+unit_env() {  # $1=key
+    [[ -f "$MCP_SERVICE_UNIT" ]] || return 0
+    sed -n "s|^Environment=$1=||p" "$MCP_SERVICE_UNIT" | tail -n1
+}
+
 MCP_ENABLED="${MCP_ENABLED:-1}"                        # 0 으로 두면 MCP 전체 건너뜀
-MCP_HOST="${MCP_HOST:-127.0.0.1}"                      # 외부 노출하려면 0.0.0.0 (또는 리버스프록시)
-MCP_PORT="${MCP_PORT:-3002}"
-MCP_API_BASE="${MCP_API_BASE:-http://127.0.0.1:3000}"  # MCP 가 호출할 백엔드 주소
+# 우선순위: 명시한 env > 설치된 유닛에 저장된 값 > 기본값.
+# → 최초 한 번 'MCP_HOST=0.0.0.0 ./deploy.sh' 하면, 이후 './deploy.sh update' 가
+#   매번 다시 지정하지 않아도 같은 값을 유지한다(되돌리려면 그때만 env 로 덮어쓰기).
+MCP_HOST="${MCP_HOST:-$(unit_env MCP_HOST)}";  MCP_HOST="${MCP_HOST:-127.0.0.1}"
+MCP_PORT="${MCP_PORT:-$(unit_env MCP_PORT)}";  MCP_PORT="${MCP_PORT:-3002}"
+MCP_API_BASE="${MCP_API_BASE:-$(unit_env REPORTARCHIVE_API_BASE)}"; MCP_API_BASE="${MCP_API_BASE:-http://127.0.0.1:3000}"
+# DNS rebinding 보호 허용 Host(쉼표구분). 비우면 server.py 가 비-localhost 바인딩 시
+# 보호를 끈다(사내망). 외부 노출 시 도메인/IP 지정 권장. 이 값도 위처럼 기억된다.
+MCP_ALLOWED_HOSTS="${MCP_ALLOWED_HOSTS:-$(unit_env MCP_ALLOWED_HOSTS)}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -132,6 +145,7 @@ render_mcp_service_unit() {
         -e "s|@@API_BASE@@|$MCP_API_BASE|g" \
         -e "s|@@MCP_HOST@@|$MCP_HOST|g" \
         -e "s|@@MCP_PORT@@|$MCP_PORT|g" \
+        -e "s|@@MCP_ALLOWED_HOSTS@@|$MCP_ALLOWED_HOSTS|g" \
         "$HERE/reportarchive-mcp.service.template" > "$MCP_SERVICE_UNIT"
     chmod 644 "$MCP_SERVICE_UNIT"
     systemctl daemon-reload

@@ -115,3 +115,24 @@ def update_item(
 def delete_item(db: Session, item: SectionItem) -> None:
     db.delete(item)
     db.commit()
+
+
+# ── AI(MCP) 작성용 헬퍼 ──────────────────────────────────────────────────
+def valid_codes(db: Session) -> set[str]:
+    """등록된 모든 단락 구분 코드(SectionItem.code) 집합 — block_sections 검증용."""
+    return {i.code for i in db.execute(select(SectionItem)).scalars()}
+
+
+def taxonomy_for_ai(db: Session) -> list[dict]:
+    """AI 가 block_sections 코드를 고를 수 있게 카테고리별 코드 목록을 내려준다.
+    describe_template 가 이걸 실어 보내 MCP 작성이 프런트 프롬프트와 같은 코드를 쓴다."""
+    return [
+        {
+            "category_slug": c.slug,
+            "category_name": c.name,
+            "items": [
+                {"code": it.code, "label": it.label, "en": it.en} for it in c.items
+            ],
+        }
+        for c in list_categories(db)
+    ]

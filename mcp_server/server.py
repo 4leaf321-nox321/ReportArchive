@@ -106,6 +106,8 @@ async def create_report_draft(
     blocks: dict,
     ctx: Context,
     extra_blocks: list | None = None,
+    block_sections: dict | None = None,
+    pages: list | None = None,
 ) -> dict:
     """보고서를 **초안(draft)** 으로 생성. `blocks` 는 block_id→내용(describe_template 참고).
     **AI 가 채운 위젯만** 보이고(빈 템플릿 블록은 자동 숨김), 레이아웃은 서버가 자동 배치한다.
@@ -120,6 +122,14 @@ async def create_report_draft(
          {"id":"t","type":"table","props":{"columns":[{"key":"a","label":"A","type":"text"}]},
           "content":[{"a":"값"}]}]
 
+    `block_sections`: 단락 구분 — `{block_id: section_code}`. code 는 describe_template 의
+    `section_taxonomy` 에 있는 값만 쓴다(라벨/한글 금지, 적절한 게 없으면 생략). 보고서에서
+    블록마다 단락 색상 칩으로 표시된다.
+
+    `pages`: 여러 페이지로 만들 때. 각 항목 `{"name"?, "blocks"?, "extra_blocks"?, "block_sections"?}`
+    — 모두 같은 template 을 쓴다. `pages` 를 주면 위 `blocks`/`extra_blocks`/`block_sections` 는
+    무시되고 페이지별로 채운다. 한 장이면 `pages` 없이 위 필드만 쓴다.
+
     내용은 느슨하게 줘도 서버가 정규화·검증한다. 검증 실패 시 결과의 `error`/`warnings` 를
     보고 고쳐 다시 호출하라. 성공하면 `url` 로 사람이 검토."""
     return await _post(
@@ -131,6 +141,8 @@ async def create_report_draft(
             "title": title,
             "blocks": blocks,
             "extra_blocks": extra_blocks or [],
+            "block_sections": block_sections or {},
+            "pages": pages or [],
         },
     )
 

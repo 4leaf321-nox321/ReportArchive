@@ -104,3 +104,13 @@ create_report_draft("<빈템플릿id>", 1, "분기 리뷰", {}, extra_blocks=[
 
 **참고:** 보고서엔 **AI 가 채운 위젯만** 보인다(템플릿의 빈 블록은 자동 숨김). 레이아웃은
 서버가 자동 배치하므로 위치는 신경 쓰지 않아도 된다.
+
+## 단락 구분(block_sections) · 여러 페이지(pages)
+- **단락 구분**: `block_sections = {block_id: section_code}`. 보고서에서 블록마다 단락 색상 칩으로
+  표시된다. `section_code` 는 반드시 `describe_template` 응답의 **`section_taxonomy`** 에 있는
+  `code` 값만 쓴다(라벨/한글 금지). 단락이 분명한 블록만 태깅하고, 적절한 코드가 없으면 생략.
+  taxonomy 에 없는 코드·그 페이지에 없는 블록은 서버가 무시하고 `warnings` 로 알린다.
+- **여러 페이지**: `pages = [{name?, blocks?, extra_blocks?, block_sections?}, …]`. 주제가 길거나
+  나뉘면 페이지를 늘린다(모두 같은 template 사용). `pages` 를 주면 상단의
+  `blocks`/`extra_blocks`/`block_sections` 는 무시되고 페이지별로 채운다. 한 장이면 `pages` 없이
+  상단 필드만 쓴다.

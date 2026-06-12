@@ -24,6 +24,7 @@ from app.modules.reports.schemas import (
     ReportUpdate,
     ReportVersionMeta,
 )
+from app.modules.section_taxonomy import services as section_taxonomy_services
 from app.modules.templates import services as template_services
 from app.modules.users.models import User
 from app.widgets import authoring_rules
@@ -362,6 +363,9 @@ def report_authoring_guide(
             # 위젯별 상세 룰(있는 블록만). extra_blocks 로 다른 위젯을 만들 땐
             # describe_widgets(types) 로 그 위젯들의 룰을 받아 따른다.
             "widget_rules": authoring_rules.rules_for_types(block_types),
+            # 단락 구분(block_sections) 코드 목록 — 카테고리별. block_sections 값은
+            # 반드시 여기 있는 `code` 만 쓴다(라벨/한글 금지). 적절한 게 없으면 생략.
+            "section_taxonomy": section_taxonomy_services.taxonomy_for_ai(db),
         }
     )
 
@@ -391,45 +395,87 @@ def create_ai_draft(
             f"Template not found or not visible in this workspace: "
             f"{payload.template_id}@{payload.template_version}"
         )
-    content, warnings = ai_authoring.normalize_content(template.schema, payload.blocks)
-    # AI 가 직접 정의한 위젯(extra_blocks) — 빈 템플릿이어도 위젯을 만들며 보고서를 짓게.
-    extra_defs, extra_content, extra_warnings = ai_authoring.normalize_extra_blocks(
-        payload.extra_blocks
-    )
-    warnings = warnings + extra_warnings
-    content = {**content, **extra_content}
+    valid_codes = section_taxonomy_services.valid_codes(db)
 
-    # "AI 가 채운 위젯만 보이게" — blocks_order 에 채워진 블록만 넣어 빈 템플릿
-    # 블록은 숨긴다. 순서: 채운 템플릿 블록(템플릿 순서) → AI 추가 블록(준 순서).
-    filled_tpl_ids = [
-        b["id"]
-        for b in (template.schema.get("blocks") or [])
-        if isinstance(b, dict) and b.get("id") in content
-    ]
-    extra_ids = [d["id"] for d in extra_defs]
-    blocks_order = filled_tpl_ids + extra_ids
-
-    # 레이아웃: 실제로 보이는(채운+추가) 블록만 12칸 그리드에 매거진식 배치.
-    layout_overrides = (
-        ai_authoring.auto_layout(
-            template.schema, include_ids=filled_tpl_ids, extra_blocks=extra_defs
+    def _build_page(page_in: dict) -> tuple[ReportPage, list[str]]:
+        """한 페이지 입력({blocks?, extra_blocks?, block_sections?, name?}) → ReportPage.
+        채운 위젯만 표시(blocks_order)·자동 배치·단락 코드 검증을 한 곳에서."""
+        w: list[str] = []
+        content, cw = ai_authoring.normalize_content(
+            template.schema, page_in.get("blocks") or {}
         )
-        or None
-    )
-    report_create = ReportCreate(
-        template_id=payload.template_id,
-        template_version=payload.template_version,
-        title=payload.title,
-        pages=[
+        w += cw
+        # AI 가 직접 정의한 위젯(extra_blocks) — 빈 템플릿이어도 위젯을 만들며 짓게.
+        extra_defs, extra_content, ew = ai_authoring.normalize_extra_blocks(
+            page_in.get("extra_blocks") or []
+        )
+        w += ew
+        content = {**content, **extra_content}
+        # 채운 위젯만 보이게(빈 템플릿 블록 숨김): 채운 템플릿 블록(템플릿 순서) → 추가 블록.
+        filled_tpl_ids = [
+            b["id"]
+            for b in (template.schema.get("blocks") or [])
+            if isinstance(b, dict) and b.get("id") in content
+        ]
+        blocks_order = filled_tpl_ids + [d["id"] for d in extra_defs]
+        rendered = set(blocks_order)
+        layout_overrides = (
+            ai_authoring.auto_layout(
+                template.schema, include_ids=filled_tpl_ids, extra_blocks=extra_defs
+            )
+            or None
+        )
+        # 단락 구분 — 등록된 코드 + 그 페이지에 실제로 보이는 블록만 남긴다.
+        sections: dict = {}
+        for bid, code in (page_in.get("block_sections") or {}).items():
+            if not code:
+                continue
+            if bid not in rendered:
+                w.append(f"block_sections '{bid}': 이 페이지에 없는 블록 — 무시")
+            elif code not in valid_codes:
+                w.append(f"block_sections '{code}': 등록된 단락 코드 아님 — 무시")
+            else:
+                sections[bid] = code
+        name = page_in.get("name")
+        return (
             ReportPage(
                 template_id=payload.template_id,
                 template_version=payload.template_version,
+                name=(str(name)[:120] if name else None),
                 content=content,
                 extra_blocks=extra_defs,
                 blocks_order=blocks_order,
                 layout_overrides=layout_overrides,
-            )
-        ],
+                block_sections=sections,
+            ),
+            w,
+        )
+
+    # 멀티페이지: payload.pages 가 있으면 그걸로, 없으면 상단 단일 페이지 필드로 1쪽.
+    page_inputs = payload.pages or [
+        {
+            "blocks": payload.blocks,
+            "extra_blocks": payload.extra_blocks,
+            "block_sections": payload.block_sections,
+        }
+    ]
+    pages: list[ReportPage] = []
+    warnings: list[str] = []
+    multi = len(page_inputs) > 1
+    for idx, pin in enumerate(page_inputs, 1):
+        if not isinstance(pin, dict):
+            warnings.append(f"pages[{idx}] 형식 오류 — 건너뜀")
+            continue
+        rp, w = _build_page(pin)
+        pages.append(rp)
+        warnings += [f"p{idx}: {x}" for x in w] if multi else w
+    if not pages:
+        return error_response("생성할 페이지가 없습니다.", status_code=400)
+    report_create = ReportCreate(
+        template_id=payload.template_id,
+        template_version=payload.template_version,
+        title=payload.title,
+        pages=pages,
     )
     # 일반 create_report 와 동일 — 작성자 **개인 공간**에 초안(drafting)으로.
     # (부서 전용 템플릿을 써도, 보고서 렌더는 계정 접근권 기준으로 템플릿을

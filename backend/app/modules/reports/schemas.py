@@ -722,3 +722,9 @@ class AiDraftCreate(BaseModel):
     # 필요할 때. 각 항목: {id, type, props?, content}. (block_id→content 인 blocks 와
     # 달리 위젯 자체를 만든다.) ai_authoring.normalize_extra_blocks 가 처리.
     extra_blocks: list[dict] = Field(default_factory=list)
+    # 단락 구분 — {block_id: section_code}. code 는 describe_template 의
+    # section_taxonomy 에 있는 값만(없는 코드/그 페이지에 없는 블록은 무시).
+    block_sections: dict[str, Optional[str]] = Field(default_factory=dict)
+    # 여러 페이지로 만들 때 — 각 항목 {name?, blocks?, extra_blocks?, block_sections?}.
+    # 모두 같은 template_id/version 을 쓴다. 비어 있으면 위 단일 페이지 필드로 1쪽 생성.
+    pages: list[dict] = Field(default_factory=list)

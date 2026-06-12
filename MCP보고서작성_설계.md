@@ -102,10 +102,16 @@
 - [x] **내 MCP 토큰 발급 화면** — 개인 액세스 토큰(`rat_…`, sha256 해시 저장, 취소·만료 가능).
       마이그레이션 p39 + `PersonalAccessToken` 모델 + `users/pat.py`(발급/검증/취소) +
       auth `_resolve_user_from_token` 에 PAT 분기(접두사로 JWT 와 구분) + `/api/me/mcp-tokens`(GET/POST/DELETE) +
-      ProfilePage "MCP 토큰" 카드(1회 노출·복사·바로 쓰는 `claude mcp add` 명령·목록·취소).
+      "MCP 토큰" 카드(1회 노출·복사·바로 쓰는 `claude mcp add` 명령·목록·취소).
       통합테스트 2개 통과 + 라이브 서버 확인.
-- [ ] 위젯 타입 확대(차트/이미지 일부), `update_report_draft`(기존 보고서 수정)
-- [ ] 예시(few-shot) 자동 생성, 길이/요청 제한, 감사 로그
+      → 접근성 개선: 카드를 프로필에서 **공통 · AI 설정 → "MCP 토큰" 탭**(`ai_settings/McpTab.jsx`)으로 이전.
+        탭은 `useAuth()` 로 접속 본인 토큰만 노출(개인 단위 유지).
+- [x] **위젯 타입 확대** — chart(막대/꺾은선)·pie·progress_bar·milestone·flowchart·equation 6종 정규화 추가
+      (`ai_authoring.py`: chart 는 table 식 열매핑+숫자 강제, pie/progress 는 `{라벨:값}`·배열 둘 다, 한·영 키 별칭).
+      파일 기반(image/attachment/cad)·고급차트(scatter/heatmap 등)는 폴백 유지(작성자가 채움). 단위테스트 +5 통과.
+- [x] **예시(few-shot) 자동 생성** — `_example_for`/`build_example_input`: 템플릿의 실제 라벨·열키·옵션으로 블록별
+      `example` + 전체 `example_input` 생성 → authoring-guide 응답·describe_template 로 노출. "예시는 검증 통과" 테스트로 보증.
+- [ ] `update_report_draft`(기존 보고서 수정), image 등 파일 기반 위젯, 길이/요청 제한, 감사 로그
 
 ## 3. 주의 (정직하게)
 - **유효 content 생성**이 진짜 난관 → 정규화 + 검증 + 재시도 루프로 흡수(Phase 1·2).
@@ -124,5 +130,9 @@
 - **Phase 2.5 완료** — 운영 배포 통합(deploy.sh setup_mcp + 오프라인 휠 + systemd). `deploy.sh update` 가 MCP 까지 자동.
 - **Phase 3 완료** — 작성 스킬(SKILL.md) + 사용자 설치/등록 가이드 + 번들 동봉.
 - **E2E 확인됨** — 사용자가 프로필에서 토큰 셀프발급 → Claude Code 등록 → `list_templates`(부서 스코프 적용) 성공.
-- **Phase 4 일부 완료** — 내 MCP 토큰 발급(p39 + pat.py + auth 분기 + /api/me/mcp-tokens + 프로필 카드). 통합테스트 2 통과·라이브 확인.
-- 남은(선택): 쓰기 경로(create_report_draft) 사용자 직접 확인, `update_report_draft`(기존 보고서 수정), 위젯 확대, 감사로그.
+- **Phase 4 일부 완료** — 내 MCP 토큰 발급(p39 + pat.py + auth 분기 + /api/me/mcp-tokens + 카드). 통합테스트 2 통과·라이브 확인.
+  토큰 카드는 접근성 위해 프로필 → 공통·AI 설정의 "MCP 토큰" 탭으로 이전(개인 단위 유지).
+- **Phase 4 위젯 확대·few-shot 완료** — 차트/파이/진행률/마일스톤/순서도/수식 정규화 + 템플릿 맞춤 예시 자동생성
+  (describe_template 에 `example`·`example_input` 노출). 변환기 테스트 10개 통과.
+- 남은(선택): 쓰기 경로(create_report_draft) 사용자 직접 확인, `update_report_draft`(기존 보고서 수정),
+  image 등 파일 기반 위젯, 길이/요청 제한, 감사로그.

@@ -349,6 +349,8 @@ def report_authoring_guide(
             "template_id": template_id,
             "template_version": template_version,
             "blocks": ai_authoring.build_authoring_guide(template.schema),
+            # few-shot — 이 템플릿을 채운 ai-draft 입력 예시({title, blocks}).
+            "example_input": ai_authoring.build_example_input(template.schema),
         }
     )
 
@@ -373,6 +375,10 @@ def create_ai_draft(
             f"Template not found: {payload.template_id}@{payload.template_version}"
         )
     content, warnings = ai_authoring.normalize_content(template.schema, payload.blocks)
+    # AI/MCP 는 레이아웃을 못 주므로(내용만 전달) 위젯 타입별 휴리스틱으로 12칸
+    # 그리드에 매거진식 배치를 자동 생성한다. 템플릿이 이미 의도적 열 배치를 갖고
+    # 있으면 빈 dict 라 원본 레이아웃이 그대로 쓰인다.
+    layout_overrides = ai_authoring.auto_layout(template.schema) or None
     report_create = ReportCreate(
         template_id=payload.template_id,
         template_version=payload.template_version,
@@ -382,6 +388,7 @@ def create_ai_draft(
                 template_id=payload.template_id,
                 template_version=payload.template_version,
                 content=content,
+                layout_overrides=layout_overrides,
             )
         ],
     )

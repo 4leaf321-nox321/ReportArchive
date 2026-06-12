@@ -45,6 +45,55 @@ def _columns_maps(columns: list[dict]) -> tuple[set[str], dict[str, str]]:
     return keys, label_to_key
 
 
+def _resolve_col_key(ck, keys: set[str], label_to_key: dict[str, str]):
+    """행 셀의 키(ck)를 열키로 해석. 정의된 열이 있으면 키/라벨로만 매핑하고,
+    열 정의가 없는 표(자유 표)면 slug 로 떨어뜨린다. 매칭 실패 시 None."""
+    ck_s = str(ck).strip()
+    if ck in keys:
+        return ck
+    mapped = label_to_key.get(ck_s)
+    if mapped:
+        return mapped
+    return _slug(ck) if not keys else None
+
+
+# 숫자 위젯(차트/파이/진행률 등) 셀 별칭 — AI 가 한글/영문 키로 줘도 매핑.
+_LABEL_ALIASES = ("label", "name", "항목", "이름", "구분", "분류")
+_VALUE_ALIASES = ("value", "값", "수치", "비중", "비율", "양")
+# dict 를 {라벨:값} 매핑으로 해석할 때 데이터가 아닌 메타 키(건너뜀).
+_RESERVED_KEYS = {
+    "caption", "caption_color", "caption_html", "caption_skip_autofill",
+    "items", "rows", "unit", "chart_type", "hole", "colorscale",
+    "reverse_scale", "text_info", "text_position", "sort", "show_legend",
+    "default_max", "x_axis_title", "y_axis_title", "x_column_key",
+    "orientation", "start_date", "end_date", "display_mode", "number",
+}
+
+
+def _num(v):
+    """숫자 위젯 값 — 문자열 '70', '1,200', '60%' 도 숫자로(검증이 number 요구)."""
+    if isinstance(v, bool) or isinstance(v, (int, float)):
+        return v
+    if isinstance(v, str):
+        s = v.strip().replace(",", "")
+        if s.endswith("%"):
+            s = s[:-1].strip()
+        try:
+            f = float(s)
+            return int(f) if f.is_integer() else f
+        except ValueError:
+            return v
+    return v
+
+
+def _pick(d: dict, aliases):
+    """dict 에서 별칭 키 중 처음 매칭되는 값(없으면 None)."""
+    for a in aliases:
+        if a in d:
+            return d[a]
+    return None
+
+
 # ── 위젯별 정규화 ─────────────────────────────────────────────────────────
 def _norm_rich_items(raw) -> list[dict]:
     items: list[dict] = []
@@ -147,7 +196,7 @@ def _normalize_block(wtype: str, raw, props: dict, warnings: list[str], block_id
                 continue
             out_row = {}
             for ck, cv in row.items():
-                key = ck if ck in keys else label_to_key.get(str(ck).strip()) or (_slug(ck) if not keys else None)
+                key = _resolve_col_key(ck, keys, label_to_key)
                 if key is None:
                     warnings.append(f"{block_id}: 열 '{ck}' 매칭 실패 — 셀 무시")
                     continue
@@ -156,6 +205,103 @@ def _normalize_block(wtype: str, raw, props: dict, warnings: list[str], block_id
                 rows.append(out_row)
         out = {"rows": rows} if rows else {}
         return _with_caption(out, raw) if (rows or _has_caption(raw)) else None
+
+    if wtype == "chart":
+        # table 과 같은 열 모델(props.columns: {key,label,type}). x축 텍스트 열 +
+        # 숫자 계열 열. 숫자 열은 '120' 같은 문자열도 숫자로 강제(렌더 위해).
+        cols = [c for c in (props.get("columns") or []) if isinstance(c, dict)]
+        keys, label_to_key = _columns_maps(cols)
+        num_keys = {c["key"] for c in cols if c.get("type") == "number" and c.get("key")}
+        if isinstance(raw, dict) and isinstance(raw.get("rows"), list):
+            rows_in = raw["rows"]
+        elif isinstance(raw, list):
+            rows_in = raw
+        else:
+            warnings.append(f"{block_id}: chart 는 행 배열이거나 {{rows:[...]}} 여야 합니다 — 건너뜀")
+            return None
+        rows = []
+        for row in rows_in:
+            if not isinstance(row, dict):
+                continue
+            out_row = {}
+            for ck, cv in row.items():
+                key = _resolve_col_key(ck, keys, label_to_key)
+                if key is None:
+                    warnings.append(f"{block_id}: 열 '{ck}' 매칭 실패 — 셀 무시")
+                    continue
+                out_row[key] = _num(cv) if key in num_keys else cv
+            if out_row:
+                rows.append(out_row)
+        out: dict = {"rows": rows} if rows else {}
+        if isinstance(raw, dict):
+            for f in ("chart_type", "x_axis_title", "y_axis_title"):
+                if raw.get(f):
+                    out[f] = raw[f]
+        return _with_caption(out, raw) if (rows or _has_caption(raw)) else None
+
+    if wtype == "pie":
+        rows = _norm_value_rows(raw, warnings, block_id)
+        if rows is None:
+            return None
+        out = {"rows": rows} if rows else {}
+        if isinstance(raw, dict):
+            if isinstance(raw.get("unit"), str):
+                out["unit"] = raw["unit"]
+            # 파이/도넛 표시 옵션 — AI 가 지정하면 보존(미지정 시 위젯 기본). 이 키들은
+            # _RESERVED_KEYS 라 {라벨:값} 매핑 입력에서도 데이터 행으로 새지 않는다.
+            # 값의 enum·범위 검증은 validate_report_content 가 맡으므로, 여기선
+            # 형(型)만 가볍게 보고 통과시킨다(잘못된 값은 그쪽에서 잡아 재시도).
+            if raw.get("chart_type") in ("pie", "donut"):
+                out["chart_type"] = raw["chart_type"]
+            if raw.get("hole") is not None:
+                out["hole"] = _num(raw["hole"])
+            for k in ("text_info", "text_position", "colorscale"):
+                if isinstance(raw.get(k), str):
+                    out[k] = raw[k]
+            for k in ("reverse_scale", "sort", "show_legend"):
+                if isinstance(raw.get(k), bool):
+                    out[k] = raw[k]
+        return _with_caption(out, raw) if (rows or _has_caption(raw)) else None
+
+    if wtype == "progress_bar":
+        items = _norm_progress_items(raw, warnings, block_id)
+        if items is None:
+            return None
+        out = {"items": items} if items else {}
+        if isinstance(raw, dict):
+            if isinstance(raw.get("unit"), str):
+                out["unit"] = raw["unit"]
+            if raw.get("default_max") is not None:
+                out["default_max"] = _num(raw["default_max"])
+        return _with_caption(out, raw) if (items or _has_caption(raw)) else None
+
+    if wtype == "milestone":
+        items = _norm_milestone_items(raw, warnings, block_id)
+        if items is None:
+            return None
+        out = {"items": items} if items else {}
+        return _with_caption(out, raw) if (items or _has_caption(raw)) else None
+
+    if wtype == "flowchart":
+        items = _norm_flow_items(raw, warnings, block_id)
+        if items is None:
+            return None
+        out = {"items": items} if items else {}
+        if isinstance(raw, dict) and raw.get("orientation") in ("horizontal", "vertical"):
+            out["orientation"] = raw["orientation"]
+        return _with_caption(out, raw) if (items or _has_caption(raw)) else None
+
+    if wtype == "equation":
+        latex = raw if isinstance(raw, str) else (raw.get("latex") if isinstance(raw, dict) else None)
+        if not latex or not str(latex).strip():
+            return None
+        out = {"latex": str(latex)}
+        if isinstance(raw, dict):
+            if raw.get("number"):
+                out["number"] = str(raw["number"])
+            if raw.get("display_mode") in ("display", "inline"):
+                out["display_mode"] = raw["display_mode"]
+        return _with_caption(out, raw)
 
     # 그 외 위젯 — AI 가 정확한 content(dict)를 줬다고 보고 그대로 통과.
     if isinstance(raw, dict):
@@ -166,6 +312,231 @@ def _normalize_block(wtype: str, raw, props: dict, warnings: list[str], block_id
 
 def _has_caption(raw) -> bool:
     return isinstance(raw, dict) and isinstance(raw.get("caption"), str) and bool(raw["caption"].strip())
+
+
+def _norm_value_rows(raw, warnings: list[str], block_id: str):
+    """pie 류 — [{label, value(, color)}] 로. 허용 입력:
+    {항목:값} 매핑 / [{label,value}] 배열(한·영 키 별칭) / {rows:[...]}. 형식 못 맞추면 None."""
+    if isinstance(raw, dict) and not isinstance(raw.get("rows"), list):
+        # {라벨: 값} 매핑 — 데이터 아닌 메타 키는 건너뜀.
+        out = []
+        for k, v in raw.items():
+            if k in _RESERVED_KEYS:
+                continue
+            out.append({"label": str(k), "value": _num(v)})
+        return out
+    if isinstance(raw, dict):
+        rows_in = raw["rows"]
+    elif isinstance(raw, list):
+        rows_in = raw
+    else:
+        warnings.append(f"{block_id}: 비중 데이터는 {{항목:값}} 객체나 행 배열이어야 합니다 — 건너뜀")
+        return None
+    rows = []
+    for row in rows_in:
+        if not isinstance(row, dict):
+            continue
+        item = {}
+        label = _pick(row, _LABEL_ALIASES)
+        if label is not None:
+            item["label"] = str(label)
+        value = _pick(row, _VALUE_ALIASES)
+        if value is not None:
+            item["value"] = _num(value)
+        if isinstance(row.get("color"), str):
+            item["color"] = row["color"]
+        if item:
+            rows.append(item)
+    return rows
+
+
+def _norm_progress_items(raw, warnings: list[str], block_id: str):
+    """progress_bar — [{label, value(, max, note, status)}]. {작업:값} 매핑도 허용."""
+    if isinstance(raw, dict) and not isinstance(raw.get("items"), list):
+        return [
+            {"label": str(k), "value": _num(v)}
+            for k, v in raw.items()
+            if k not in _RESERVED_KEYS
+        ]
+    if isinstance(raw, dict):
+        items_in = raw["items"]
+    elif isinstance(raw, list):
+        items_in = raw
+    else:
+        warnings.append(f"{block_id}: 진행률은 {{작업:값}} 객체나 [{{label,value}}] 배열이어야 합니다 — 건너뜀")
+        return None
+    out = []
+    for it in items_in:
+        if not isinstance(it, dict):
+            continue
+        o = {}
+        label = _pick(it, _LABEL_ALIASES + ("작업", "task"))
+        if label is not None:
+            o["label"] = str(label)
+        value = _pick(it, _VALUE_ALIASES + ("진행률", "progress"))
+        if value is not None:
+            o["value"] = _num(value)
+        mx = _pick(it, ("max", "목표", "target"))
+        if mx is not None:
+            o["max"] = _num(mx)
+        note = _pick(it, ("note", "비고", "메모"))
+        if note is not None:
+            o["note"] = str(note)
+        if it.get("status") in ("pending", "in_progress", "done", "blocked"):
+            o["status"] = it["status"]
+        if o:
+            out.append(o)
+    return out
+
+
+def _norm_milestone_items(raw, warnings: list[str], block_id: str):
+    """milestone — [{date, label(, note, status)}]. date 는 YYYY-MM-DD(검증이 잡음)."""
+    if isinstance(raw, dict) and isinstance(raw.get("items"), list):
+        items_in = raw["items"]
+    elif isinstance(raw, list):
+        items_in = raw
+    else:
+        warnings.append(f"{block_id}: 마일스톤은 [{{date,label}}] 배열이어야 합니다 — 건너뜀")
+        return None
+    out = []
+    for it in items_in:
+        if not isinstance(it, dict):
+            continue
+        o = {}
+        date = _pick(it, ("date", "날짜", "일자", "일정"))
+        if date is not None:
+            o["date"] = str(date)
+        label = _pick(it, _LABEL_ALIASES + ("내용", "마일스톤"))
+        if label is not None:
+            o["label"] = str(label)
+        note = _pick(it, ("note", "비고", "메모"))
+        if note is not None:
+            o["note"] = str(note)
+        if it.get("status") in ("pending", "done", "delayed"):
+            o["status"] = it["status"]
+        if o:
+            out.append(o)
+    return out
+
+
+def _norm_flow_items(raw, warnings: list[str], block_id: str):
+    """flowchart — [{label(, description)}]. 단계 문자열 배열/줄바꿈 문자열도 허용."""
+    if isinstance(raw, str):
+        return [{"label": s.strip()} for s in raw.split("\n") if s.strip()]
+    if isinstance(raw, dict) and isinstance(raw.get("items"), list):
+        items_in = raw["items"]
+    elif isinstance(raw, list):
+        items_in = raw
+    else:
+        warnings.append(f"{block_id}: 순서도는 단계 문자열 배열이나 [{{label}}] 이어야 합니다 — 건너뜀")
+        return None
+    out = []
+    for it in items_in:
+        if isinstance(it, str):
+            if it.strip():
+                out.append({"label": it.strip()})
+        elif isinstance(it, dict):
+            o = {}
+            label = _pick(it, _LABEL_ALIASES + ("단계", "step", "내용"))
+            if label is not None:
+                o["label"] = str(label)
+            desc = _pick(it, ("description", "desc", "설명", "비고"))
+            if desc is not None:
+                o["description"] = str(desc)
+            if o:
+                out.append(o)
+    return out
+
+
+# ── 자동 레이아웃 ──────────────────────────────────────────────────────────
+# AI/MCP 초안은 레이아웃을 못 준다(create_report_draft 는 내용만 받음). 템플릿이
+# 열 배치를 안 해두면 모든 위젯이 전폭·세로로만 쌓여 밋밋하다. 여기서 위젯 타입별
+# 크기 휴리스틱으로 12칸 그리드에 매거진식(차트 2단, 표·비교표 전폭 등)으로 재배치한
+# layout_overrides 를 만들어 ai-draft 가 적용한다. 프런트는 같은 row 의 블록을
+# col_span 누적으로 가로 배치하고(ReportDetailPage.buildRglItems) 세로 빈칸은
+# 압축하므로(compactVerticalLayout), row 는 절대좌표가 아닌 논리 행 번호면 된다.
+_GRID_COLS = 12
+
+# (col_span, row_span). 시각 위젯(차트·다이어그램 = 프런트 WIDGETS_DEFAULT_NO_AUTOFIT)
+# 은 고정 높이라 row_span 이 실제 높이가 되고, 텍스트류는 auto-fit 이라 초기값이다.
+# row_span 단위는 프런트 REPORT_ROW_HEIGHT(8px) 기준 — 34 ≈ 270px.
+_LAYOUT_SPEC: dict[str, tuple[int, int]] = {
+    "heading": (12, 4),
+    "rich_text": (12, 12),
+    "key_value": (6, 12),
+    "bulleted_list": (6, 10),
+    "table": (12, 16),
+    "image": (6, 30),
+    "attachment": (12, 6),
+    "video": (6, 30),
+    "html_embed": (12, 40),
+    "chart": (6, 34),
+    "scatter": (6, 34),
+    "scatter3d": (6, 38),
+    "heatmap": (6, 34),
+    "contour": (6, 34),
+    "treemap": (6, 34),
+    "packing": (6, 34),
+    "tree": (6, 34),
+    "network": (6, 34),
+    "mind_map": (6, 34),
+    "pie": (6, 34),
+    "waffle": (6, 34),
+    "box": (6, 34),
+    "density": (6, 34),
+    "radar": (6, 34),
+    "equation": (6, 8),
+    "milestone": (12, 16),
+    "flowchart": (12, 14),
+    "progress_bar": (6, 12),
+    "raci_matrix": (12, 16),
+    "comparison": (12, 18),
+    "cad_3d": (12, 40),
+    "quadrant": (6, 34),
+    "sankey": (12, 40),
+}
+_LAYOUT_DEFAULT = (12, 28)
+
+
+def _is_flat_layout(blocks: list[dict]) -> bool:
+    """템플릿이 열 배치를 안 한 '밋밋한'(전부 전폭 또는 미지정) 상태인지. 디자이너가
+    의도적으로 2단 등 배치를 해둔 템플릿이면 손대지 않으려는 가드."""
+    for b in blocks:
+        cs = (b.get("layout") or {}).get("col_span")
+        if cs is not None and cs != _GRID_COLS:
+            return False
+    return True
+
+
+def auto_layout(template_schema: dict) -> dict:
+    """템플릿 블록을 위젯 타입별 크기 휴리스틱으로 12칸 그리드에 매거진식으로 재배치한
+    layout_overrides({block_id: {row, col_span, row_span}})를 만든다. 템플릿이 이미
+    열 배치를 갖고 있으면(=의도적 레이아웃) 빈 dict 를 돌려 원본을 존중한다.
+
+    모든 템플릿 블록을 한 번에 재배치해 행별 col_span 합이 12를 넘지 않게(=검증
+    통과) 보장한다. 빈(내용 없는) 블록도 같은 규칙으로 흐른다."""
+    blocks = [
+        b
+        for b in (template_schema.get("blocks") or [])
+        if isinstance(b, dict) and b.get("id")
+    ]
+    if not blocks or not _is_flat_layout(blocks):
+        return {}
+    overrides: dict = {}
+    row = 1
+    used = 0
+    for b in blocks:
+        span, height = _LAYOUT_SPEC.get(b.get("type"), _LAYOUT_DEFAULT)
+        span = max(1, min(_GRID_COLS, span))
+        if used + span > _GRID_COLS:
+            row += 1
+            used = 0
+        overrides[b["id"]] = {"row": row, "col_span": span, "row_span": height}
+        used += span
+        if used >= _GRID_COLS:
+            row += 1
+            used = 0
+    return overrides
 
 
 # ── 공개 API ─────────────────────────────────────────────────────────────
@@ -213,7 +584,7 @@ def build_authoring_guide(template_schema: dict) -> list[dict]:
         }
         if props.get("placeholder"):
             entry["placeholder"] = props["placeholder"]
-        if wtype == "table":
+        if wtype in ("table", "chart"):
             entry["columns"] = [
                 {
                     "key": c.get("key"),
@@ -224,7 +595,10 @@ def build_authoring_guide(template_schema: dict) -> list[dict]:
                 for c in (props.get("columns") or [])
                 if isinstance(c, dict)
             ]
-            entry["hint"] = "행 배열로. 각 행은 {열키: 값}. 위 columns 의 key 를 쓰세요."
+            if wtype == "table":
+                entry["hint"] = "행 배열로. 각 행은 {열키: 값}. 위 columns 의 key 를 쓰세요."
+            else:
+                entry["hint"] = "행 배열로. x축 열 + 숫자 계열 열을 columns 의 key(또는 label)로 채우세요."
         elif wtype == "key_value":
             fields = props.get("items") or []
             if fields:
@@ -240,5 +614,89 @@ def build_authoring_guide(template_schema: dict) -> list[dict]:
             entry["hint"] = "문자열 배열(각 항목 한 줄)."
         elif wtype == "heading":
             entry["hint"] = "제목 문자열."
+        elif wtype == "pie":
+            entry["hint"] = "{항목: 값} 객체 또는 [{label, value}] 배열(비중)."
+        elif wtype == "progress_bar":
+            entry["hint"] = "[{label, value, max?}] 또는 {작업: 값} 객체. 기본 목표는 100."
+        elif wtype == "milestone":
+            entry["hint"] = "[{date: 'YYYY-MM-DD', label, status?}] 배열."
+        elif wtype == "flowchart":
+            entry["hint"] = "단계 문자열 배열 ['1단계','2단계'] 또는 [{label, description}]."
+        elif wtype == "equation":
+            entry["hint"] = "LaTeX 문자열. 예: 'E = mc^2'."
+        # few-shot: 이 블록을 실제 라벨·열키·선택지로 채운 예시(있으면).
+        example = _example_for(wtype, props)
+        if example is not None:
+            entry["example"] = example
         guide.append(entry)
     return guide
+
+
+# ── few-shot 예시 생성 ────────────────────────────────────────────────────
+def _sample_value(field: dict):
+    """필드/열 정의 → 타입에 맞는 예시 값(select 는 첫 옵션, number 0, date 날짜)."""
+    t = field.get("type")
+    if t == "select" and field.get("options"):
+        return field["options"][0]
+    if t in ("number", "integer"):
+        return 0
+    if t == "date":
+        return "2026-01-01"
+    return "값"
+
+
+def _example_for(wtype: str, props: dict):
+    """이 위젯을 채운 **느슨한 입력** 예시. 템플릿의 실제 라벨/열키/옵션을 써서
+    AI 가 그대로 흉내내면 되도록(few-shot). 미지원 위젯은 None."""
+    if wtype == "heading":
+        return props.get("default_text") or "제목 텍스트"
+    if wtype == "rich_text":
+        return ["첫 번째 문단입니다.", "두 번째 문단입니다."]
+    if wtype == "bulleted_list":
+        return ["첫째 항목", "둘째 항목", "셋째 항목"]
+    if wtype == "key_value":
+        fields = [f for f in (props.get("items") or []) if isinstance(f, dict) and (f.get("label") or f.get("key"))]
+        if fields:
+            return {(f.get("label") or f.get("key")): _sample_value(f) for f in fields}
+        return {"항목": "값"}
+    if wtype == "table":
+        cols = [c for c in (props.get("columns") or []) if isinstance(c, dict) and (c.get("label") or c.get("key"))]
+        if cols:
+            return [{(c.get("label") or c.get("key")): _sample_value(c) for c in cols}]
+        return [{"열1": "값", "열2": "값"}]
+    if wtype == "chart":
+        cols = [c for c in (props.get("columns") or []) if isinstance(c, dict) and (c.get("label") or c.get("key"))]
+        if not cols:
+            return [{"항목": "1월", "값": 120}, {"항목": "2월", "값": 150}]
+        rows = []
+        for i in range(2):
+            row = {}
+            for c in cols:
+                name = c.get("label") or c.get("key")
+                row[name] = (120 + 30 * i) if c.get("type") == "number" else f"항목{i + 1}"
+            rows.append(row)
+        return rows
+    if wtype == "pie":
+        return {"항목 A": 40, "항목 B": 35, "항목 C": 25}
+    if wtype == "progress_bar":
+        return [{"label": "설계", "value": 100}, {"label": "구현", "value": 60}]
+    if wtype == "milestone":
+        return [{"date": "2026-01-15", "label": "킥오프"}, {"date": "2026-03-01", "label": "1차 완료"}]
+    if wtype == "flowchart":
+        return ["요청 접수", "검토", "승인", "완료"]
+    if wtype == "equation":
+        return "E = mc^2"
+    return None
+
+
+def build_example_input(template_schema: dict) -> dict:
+    """템플릿 전체를 채운 AI 입력 예시({title, blocks}). describe_template 가 한 번에
+    보여줘서, AI 가 ai_draft 호출 형태를 그대로 흉내내게 한다(few-shot)."""
+    blocks: dict = {}
+    for b in template_schema.get("blocks") or []:
+        if not isinstance(b, dict) or not b.get("id"):
+            continue
+        ex = _example_for(b.get("type"), b.get("props") or {})
+        if ex is not None:
+            blocks[b["id"]] = ex
+    return {"title": "<보고서 제목>", "blocks": blocks}

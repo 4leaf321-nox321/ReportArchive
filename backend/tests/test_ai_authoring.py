@@ -4,8 +4,13 @@ Run: cd backend && ./venv/bin/python -m pytest tests/test_ai_authoring.py -v
 """
 from __future__ import annotations
 
-from app.modules.reports.ai_authoring import build_authoring_guide, normalize_content
-from app.widgets import validate_report_content
+from app.modules.reports.ai_authoring import (
+    auto_layout,
+    build_authoring_guide,
+    build_example_input,
+    normalize_content,
+)
+from app.widgets import validate_layout_overrides, validate_report_content
 
 # 시드(weekly-dev) 류 템플릿 — 텍스트 위젯 5종.
 TEMPLATE = {
@@ -102,3 +107,174 @@ def test_authoring_guide_exposes_columns_and_fields():
     assert by_id["issues"]["columns"][1]["options"] == ["낮음", "보통", "높음"]
     assert by_id["meta"]["fields"][0]["key"] == "period"
     assert by_id["title_h"]["type"] == "heading"
+
+
+# ── Phase 4: 위젯 확대(차트/파이/진행률/마일스톤/순서도/수식) ──────────────
+TEMPLATE2 = {
+    "version": "widget-v1",
+    "blocks": [
+        {"id": "trend", "type": "chart", "props": {
+            "label": "추이", "chart_type": "bar", "x_column_key": "month",
+            "columns": [
+                {"key": "month", "label": "월", "type": "text"},
+                {"key": "sales", "label": "매출", "type": "number"},
+            ],
+        }},
+        {"id": "share", "type": "pie", "props": {"label": "비중"}},
+        {"id": "prog", "type": "progress_bar", "props": {"label": "진척", "default_max": 100}},
+        {"id": "mile", "type": "milestone", "props": {"label": "일정"}},
+        {"id": "flow", "type": "flowchart", "props": {"label": "절차"}},
+        {"id": "eq", "type": "equation", "props": {"label": "수식"}},
+    ],
+}
+
+
+def test_chart_rows_label_to_key_and_numeric_coercion():
+    content, warnings = normalize_content(TEMPLATE2, {
+        "trend": [
+            {"월": "1월", "매출": "1,200"},   # 라벨→키 + 문자열 숫자 강제
+            {"month": "2월", "sales": 1500},  # 이미 키 + 숫자
+        ],
+    })
+    assert content["trend"]["rows"] == [
+        {"month": "1월", "sales": 1200},
+        {"month": "2월", "sales": 1500},
+    ]
+    assert warnings == []
+    validate_report_content(TEMPLATE2, content)
+
+
+def test_pie_accepts_label_value_map_and_rows():
+    c1, _ = normalize_content(TEMPLATE2, {"share": {"항목 A": 40, "항목 B": "60%"}})
+    assert c1["share"]["rows"] == [
+        {"label": "항목 A", "value": 40},
+        {"label": "항목 B", "value": 60},
+    ]
+    c2, _ = normalize_content(TEMPLATE2, {"share": [{"label": "X", "value": 10}]})
+    assert c2["share"]["rows"] == [{"label": "X", "value": 10}]
+    validate_report_content(TEMPLATE2, c1)
+    validate_report_content(TEMPLATE2, c2)
+
+
+def test_pie_preserves_display_options():
+    """도넛/표시 옵션(chart_type·hole·text_info 등)이 정규화에서 보존돼야 한다."""
+    # rows 배열 입력 + 옵션
+    c, _ = normalize_content(TEMPLATE2, {"share": {
+        "rows": [{"label": "A", "value": 60}, {"label": "B", "value": 40}],
+        "chart_type": "donut", "hole": "0.45", "text_info": "label+percent",
+        "show_legend": True, "sort": False, "colorscale": "Blues",
+    }})
+    s = c["share"]
+    assert s["chart_type"] == "donut"
+    assert s["hole"] == 0.45  # 문자열 "0.45" 도 숫자로 강제
+    assert s["text_info"] == "label+percent"
+    assert s["show_legend"] is True and s["sort"] is False
+    assert s["colorscale"] == "Blues"
+    validate_report_content(TEMPLATE2, c)
+
+    # {라벨:값} 매핑 입력에서도 옵션 키는 데이터 행으로 새지 않고 보존된다.
+    c2, _ = normalize_content(TEMPLATE2, {"share": {
+        "전처리": 30, "솔버": 50, "후처리": 20, "chart_type": "donut", "hole": 0.5,
+    }})
+    assert c2["share"]["rows"] == [
+        {"label": "전처리", "value": 30},
+        {"label": "솔버", "value": 50},
+        {"label": "후처리", "value": 20},
+    ]
+    assert c2["share"]["chart_type"] == "donut" and c2["share"]["hole"] == 0.5
+    validate_report_content(TEMPLATE2, c2)
+
+
+def test_progress_milestone_flow_equation_normalize_and_validate():
+    content, warnings = normalize_content(TEMPLATE2, {
+        "prog": {"설계": 100, "구현": "60%"},                      # {작업:값} 매핑
+        "mile": [{"date": "2026-01-15", "label": "킥오프"}],        # date+label
+        "flow": ["접수", "검토", "승인"],                          # 문자열 배열 → label
+        "eq": "E = mc^2",                                          # 문자열 → latex
+    })
+    assert content["prog"]["items"] == [
+        {"label": "설계", "value": 100},
+        {"label": "구현", "value": 60},
+    ]
+    assert content["mile"]["items"] == [{"date": "2026-01-15", "label": "킥오프"}]
+    assert content["flow"]["items"] == [
+        {"label": "접수"}, {"label": "검토"}, {"label": "승인"},
+    ]
+    assert content["eq"] == {"latex": "E = mc^2"}
+    assert warnings == []
+    validate_report_content(TEMPLATE2, content)
+
+
+def test_example_input_is_valid_widget_v1():
+    """few-shot 예시는 실제로 정규화·검증을 통과해야 한다(잘못된 예시 = 함정)."""
+    for tmpl in (TEMPLATE, TEMPLATE2):
+        example = build_example_input(tmpl)
+        assert "blocks" in example and example["blocks"]
+        content, warnings = normalize_content(tmpl, example["blocks"])
+        assert warnings == []
+        validate_report_content(tmpl, content)
+
+
+def test_authoring_guide_includes_examples():
+    by_id = {g["id"]: g for g in build_authoring_guide(TEMPLATE2)}
+    assert by_id["eq"]["example"] == "E = mc^2"
+    assert by_id["trend"]["columns"][1]["type"] == "number"  # chart 도 columns 노출
+    assert isinstance(by_id["share"]["example"], dict)
+
+
+# ── auto_layout ────────────────────────────────────────────────────────────
+def test_auto_layout_packs_flat_template_into_grid():
+    """밋밋한(전폭) 템플릿은 위젯 타입별로 12칸 그리드에 매거진식 배치된다."""
+    ov = auto_layout(TEMPLATE2)  # eq(equation,6) + trend(chart,6) + share(pie,6) ...
+    assert ov, "flat 템플릿이면 overrides 가 생성돼야 한다"
+    # 모든 블록에 row/col_span/row_span 부여
+    for bid in (b["id"] for b in TEMPLATE2["blocks"]):
+        assert set(ov[bid]) == {"row", "col_span", "row_span"}
+    # 검증기를 통과해야 한다(행별 col_span 합 ≤ 12).
+    validate_layout_overrides(TEMPLATE2, ov)
+    # 반폭(6) 위젯들은 둘씩 같은 행을 공유한다.
+    rows = [ov[b["id"]]["row"] for b in TEMPLATE2["blocks"]]
+    assert len(set(rows)) < len(rows), "일부 위젯은 같은 행에 나란히 배치돼야 한다"
+
+
+def test_auto_layout_pairs_two_charts_side_by_side():
+    tmpl = {
+        "version": "widget-v1",
+        "blocks": [
+            {"id": "h", "type": "heading", "props": {"level": 1}},
+            {"id": "c1", "type": "chart", "props": {
+                "label": "a", "chart_type": "bar", "x_column_key": "x",
+                "columns": [{"key": "x", "label": "X", "type": "text"},
+                            {"key": "y", "label": "Y", "type": "number"}],
+            }},
+            {"id": "c2", "type": "chart", "props": {
+                "label": "b", "chart_type": "bar", "x_column_key": "x",
+                "columns": [{"key": "x", "label": "X", "type": "text"},
+                            {"key": "y", "label": "Y", "type": "number"}],
+            }},
+        ],
+    }
+    ov = auto_layout(tmpl)
+    assert ov["h"]["col_span"] == 12  # heading 은 전폭, 자기 행
+    assert ov["c1"]["col_span"] == 6 and ov["c2"]["col_span"] == 6
+    assert ov["c1"]["row"] == ov["c2"]["row"]  # 차트 2개는 한 행에 나란히
+    assert ov["h"]["row"] < ov["c1"]["row"]
+    validate_layout_overrides(tmpl, ov)
+
+
+def test_auto_layout_respects_intentional_template_layout():
+    """디자이너가 이미 열 배치(col_span<12)를 해둔 템플릿은 건드리지 않는다."""
+    tmpl = {
+        "version": "widget-v1",
+        "blocks": [
+            {"id": "a", "type": "rich_text", "props": {},
+             "layout": {"row": 1, "col_span": 6, "row_span": 4}},
+            {"id": "b", "type": "rich_text", "props": {},
+             "layout": {"row": 1, "col_span": 6, "row_span": 4}},
+        ],
+    }
+    assert auto_layout(tmpl) == {}
+
+
+def test_auto_layout_empty_template():
+    assert auto_layout({"version": "widget-v1", "blocks": []}) == {}

@@ -109,16 +109,28 @@ const ADMIN_MENU = [
 ]
 
 /**
- * Desktop sidebar — fixed width, always visible at md+.
- * On mobile, MobileSidebar wraps the same content in a slide-out Sheet.
+ * Desktop sidebar — visible at md+. `collapsed` 이면 폭을 0 으로 접어 본문이
+ * 전체 폭을 쓰게 한다(헤더의 토글 버튼으로 여닫음, 상태는 AppShell 이 보관).
+ * 접혀도 SidebarBody 는 마운트된 채라 안읽음/코멘트 폴러가 계속 돈다 —
+ * overflow-hidden 으로 내용만 가린다. 모바일은 MobileSidebar(Sheet) 로 별도.
  */
-export function Sidebar() {
+export function Sidebar({ collapsed = false }) {
   return (
     <aside
       data-app-chrome="sidebar"
-      className="hidden md:flex h-full w-60 shrink-0 flex-col border-r bg-card"
+      data-collapsed={collapsed ? 'true' : 'false'}
+      aria-hidden={collapsed}
+      className={cn(
+        'hidden md:flex h-full shrink-0 flex-col bg-card overflow-hidden',
+        'transition-[width] duration-200 ease-in-out',
+        collapsed ? 'w-0 border-r-0' : 'w-60 border-r'
+      )}
     >
-      <SidebarBody />
+      {/* 고정폭 내부 래퍼 — aside 가 w-0 으로 줄어도 내용이 찌그러지지 않고
+          그대로 잘려 깔끔하게 슬라이드되도록(폭은 바깥 overflow-hidden 이 클립). */}
+      <div className="flex h-full w-60 flex-col">
+        <SidebarBody />
+      </div>
     </aside>
   )
 }

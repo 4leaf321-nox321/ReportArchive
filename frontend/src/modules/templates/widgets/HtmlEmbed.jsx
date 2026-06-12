@@ -223,7 +223,7 @@ export function HtmlEmbedEditor({ props, content, onChange, readOnly }) {
     }
     if (!merged.file_id && !merged.bundle_id) delete merged.filename
     // 표시 모드 / 표지 필드 — 비면 기본값을 타도록 키 자체를 제거(§8.1).
-    if (merged.display !== 'inline') delete merged.display // 기본 card 는 저장 안 함
+    if (merged.display !== 'card') delete merged.display // 기본 inline 은 저장 안 함
     if (!merged.height_px) delete merged.height_px // 미설정 시 반응형 70vh
     if (!merged.title) delete merged.title
     if (!merged.description) delete merged.description
@@ -655,8 +655,8 @@ function FullscreenEmbed({ title, onClose, children }) {
 }
 
 /**
- * 임베드 표시(§8.1). 위젯을 "관문(gateway)"으로 — display="card"(기본)면
- * 표지 + 열기 버튼만 보이고, "inline"이면 박스 안 iframe 을 바로 펼친다.
+ * 임베드 표시(§8.1). display="inline"(기본)이면 박스 안 iframe 을 바로 펼치고,
+ * "card"면 위젯을 "관문(gateway)"으로 — 표지 + 열기 버튼만 보인다.
  * 전체화면·새 탭 버튼은 모드와 무관하게 항상 노출.
  */
 function HtmlEmbedView({ content, label }) {
@@ -664,7 +664,7 @@ function HtmlEmbedView({ content, label }) {
   const bundleId = content?.bundle_id ?? null
   const entryPath = content?.entry_path ?? ''
   const filename = content?.filename ?? ''
-  const display = content?.display === 'inline' ? 'inline' : 'card'
+  const display = content?.display === 'card' ? 'card' : 'inline'
   // 미설정 시 반응형 70vh, 지정 시 고정 px(§8.1 — 임의 HTML 은 자동맞춤 불가).
   const height = content?.height_px ? `${content.height_px}px` : '70vh'
   const title =
@@ -777,10 +777,10 @@ function HtmlEmbedView({ content, label }) {
 
 /**
  * 편집 중 표시 옵션 컨트롤(§8.1) — 표시 모드 / 표지 제목·설명·이미지 / inline 높이.
- * 모두 Optional, 비우면 기본값(card · 70vh)을 탄다.
+ * 모두 Optional, 비우면 기본값(inline · 70vh)을 탄다.
  */
 function HtmlEmbedDisplayControls({ content, patch }) {
-  const display = content?.display === 'inline' ? 'inline' : 'card'
+  const display = content?.display === 'card' ? 'card' : 'inline'
   const [coverUploading, setCoverUploading] = useState(false)
   const coverInputRef = useRef(null)
 

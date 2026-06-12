@@ -1,0 +1,48 @@
+name: Auto-tag on version bump
+
+# main 에 frontend/package.json 의 version 이 바뀌어 올라오면 그 버전으로
+# 태그(vX.Y.Z)를 만들어 push 한다. 그 태그 push 가 build-bundle.yml
+# (on: push tags: 'v*') 을 깨워 번들 빌드 + GitHub Release 생성까지 이어진다.
+#
+# ⚠️ 태그를 기본 GITHUB_TOKEN 으로 push 하면 다른 워크플로(build-bundle)가
+#    재트리거되지 않는다(GitHub 의 재귀 방지). 그래서 contents:write 권한의
+#    PAT 를 RELEASE_PAT 시크릿으로 넣고 그걸로 push 한다.
+#    Settings → Secrets and variables → Actions → New repository secret
+#      이름: RELEASE_PAT, 값: fine-grained PAT(이 repo, Contents: Read and write)
+#    시크릿이 없으면 경고만 남기고 안전하게 건너뛴다(빨간 실패 아님).
+on:
+  push:
+    branches: [main]
+    paths: ['frontend/package.json']
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: v
+        run: echo "version=$(node -p "require('./frontend/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Create & push tag
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q "${TAG}$"; then
+            echo "Tag ${TAG} already exists on origin — nothing to do."
+            exit 0
+          fi
+          if [ -z "${RELEASE_PAT}" ]; then
+            echo "::warning::RELEASE_PAT 시크릿이 없어 자동 태그를 건너뜁니다. 설정하면 build-bundle 까지 자동 연결됩니다."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git remote set-url origin "https://x-access-token:${RELEASE_PAT}@github.com/${{ github.repository }}.git"
+          git push origin "${TAG}"
+          echo "Pushed ${TAG} — build-bundle.yml 이 번들을 만들고 Release 를 발행합니다."

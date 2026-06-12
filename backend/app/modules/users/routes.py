@@ -756,3 +756,47 @@ def resolve_password_reset_request(
         message=f"{target.email}의 임시 비밀번호가 발급되었습니다. "
         "사용자에게 전달하면 최초 로그인 시 새 비밀번호로 변경됩니다.",
     )
+
+
+@router.post("/password-reset-requests/{request_id}/dismiss")
+def dismiss_password_reset_request(
+    request_id: int,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_admin),
+):
+    """처리 불가/무효한 분실 요청을 반려(취소)해 큐에서 정리한다.
+
+    임시 비번 발급 없이 status 만 canceled 로 바꾼다. 오타·미가입 등으로
+    매칭 계정이 없는(user_id NULL) 요청은 발급 자체가 불가능하므로 이 경로로만
+    정리한다. 권한은 발급과 동일 스코프 — 미가입 이메일이나 계정이 사라진
+    요청은 스코프 검증이 불가하므로 시스템 관리자만 반려할 수 있다.
+    """
+    req = db.get(PasswordResetRequest, request_id)
+    if not req or req.status != PasswordResetStatus.pending:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "처리할 요청을 찾을 수 없습니다."
+        )
+    if req.user_id is None:
+        # 미가입 이메일 — 시스템 관리자만(목록 노출 정책과 일치).
+        if not actor.user.is_system_admin:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "미가입 이메일 요청은 시스템 관리자만 반려할 수 있습니다.",
+            )
+    else:
+        target = db.get(User, req.user_id)
+        if target is None:
+            # 계정이 사라진 요청 — 관리 스코프를 확인할 수 없어 시스템 관리자만.
+            if not actor.user.is_system_admin:
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    "이 요청은 시스템 관리자만 반려할 수 있습니다.",
+                )
+        else:
+            _assert_can_reset_password(db, actor.user, target)
+
+    req.status = PasswordResetStatus.canceled
+    req.resolved_by_user_id = actor.user.id
+    req.resolved_at = datetime.utcnow()
+    db.commit()
+    return success_response(data=None, message="요청을 반려했습니다.")

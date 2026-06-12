@@ -185,15 +185,18 @@ export default function ReportDetailPage() {
   // 'paginated' = show one page at a time with prev/next controls
   // 'all'       = stack every page vertically (scroll through them)
   //
-  // 보기 모드는 이제 보고서별로 기억된다(draft.page_default_view_mode — 편집
-  // 모드에서 토글하면 저장). 저장값이 없는 보고서(기존·MCP·AI)는 아래 개인
-  // 전역설정(localStorage)으로 폴백. globalViewMode = 폴백 + 새 보고서/뷰모드
-  // 전환의 개인 기본값, viewMode = 실제 표시 상태.
-  const [globalViewMode, setGlobalViewMode] = usePersistedState(
-    'ra:report-view-mode:v1',
-    'paginated'
-  )
+  // 보기 모드는 보고서별로 기억된다(draft.page_default_view_mode — 편집모드
+  // 전용 토글로 저장). 저장값이 없는 보고서(기존·MCP·AI)는 아래 개인
+  // 전역설정(localStorage, 과거 전역토글의 잔존값)으로 폴백하고, 그마저 없으면
+  // 'paginated'. globalViewMode 는 이제 읽기 전용 폴백, viewMode 가 표시 상태.
+  const [globalViewMode] = usePersistedState('ra:report-view-mode:v1', 'paginated')
   const [viewMode, setViewMode] = useState(globalViewMode)
+  // 좌측 보조 사이드바(같은 폴더 보고서 목록) 토글. 보고서 간 이동해도
+  // 유지되도록 개인설정으로 기억. 상단 툴바의 옛 FolderSiblingNav 를 대체.
+  const [folderPanelOpen, setFolderPanelOpen] = usePersistedState(
+    'ra:report-folder-panel:v1',
+    false,
+  )
   const [confirmDelete, setConfirmDelete] = useState(false)
   // Right-click on the empty (block-less) area — or the floating
   // "보고서 설정" pill at the bottom-right — opens this tabbed dialog.
@@ -579,20 +582,12 @@ export default function ReportDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isNew, existingReport?.id])
 
-  // 보기 모드 전환. 편집 중이면 보고서별 설정(draft)에 써서 save 시 영속화하고,
-  // 보기 중이면 개인 전역설정만 갱신(저장값 없는 보고서의 폴백). 표시 상태는
-  // 항상 즉시 반영.
-  const handleViewModeChange = useCallback(
-    (next) => {
-      setViewMode(next)
-      if (isEditing) {
-        setDraft((d) => (d ? { ...d, page_default_view_mode: next } : d))
-      } else {
-        setGlobalViewMode(next)
-      }
-    },
-    [isEditing, setGlobalViewMode],
-  )
+  // 보기 모드 전환. 토글은 편집모드 전용이므로 항상 보고서별 설정(draft)에
+  // 써서 save 시 영속화한다. 표시 상태도 즉시 반영.
+  const handleViewModeChange = useCallback((next) => {
+    setViewMode(next)
+    setDraft((d) => (d ? { ...d, page_default_view_mode: next } : d))
+  }, [])
 
   // -------------------------------------------------------------------- //
   // Unsaved-changes guard                                                //
@@ -3206,6 +3201,32 @@ export default function ReportDetailPage() {
       navigateToBlock={navigateToCommentBlock}
     >
     <div className="flex h-full report-detail-root">
+      {/* 좌측 보조 사이드바 — 같은 폴더 보고서 목록. 제목/툴바를 어지럽히지
+          않도록 좌측 끝(앱 사이드바 옆)에 둔다. 닫혀 있으면 얇은 레일의 폴더
+          버튼만, 열리면 세로 목록 패널. 폴더 컨텍스트 있고 편집중 아닐 때만,
+          데스크톱 전용(앱 사이드바 접기와 동일 정책). */}
+      {!isEditing && siblingFolderId !== undefined &&
+        (folderPanelOpen ? (
+          <FolderReportsPanel
+            slug={slug}
+            folderId={siblingFolderId}
+            currentReportId={existingReport?.id}
+            onClose={() => setFolderPanelOpen(false)}
+          />
+        ) : (
+          <div className="hidden md:flex w-9 shrink-0 flex-col items-center border-r bg-card pt-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => setFolderPanelOpen(true)}
+              title="같은 폴더 보고서 목록"
+            >
+              <Folder className="h-4 w-4" />
+              <span className="sr-only">같은 폴더 보고서 목록</span>
+            </Button>
+          </div>
+        ))}
       <div className="relative flex-1 min-w-0 flex flex-col">
         {/* 휴지통 배너 — 소프트삭제된 보고서를 열었을 때(개인 목록엔 숨지만
             게시판엔 남아 직접 열람 가능). 소유자/시스템관리자는 여기서 복구. */}
@@ -3236,7 +3257,10 @@ export default function ReportDetailPage() {
             )}
           </div>
         )}
-        <div className="flex flex-wrap items-center gap-3 border-b bg-background px-6 py-3 report-detail-toolbar">
+        {/* 부모는 flex-wrap 없음 — 버튼 그룹이 제목 아래로 통째로 떨어지지
+            않게 한다. 대신 제목은 min-w 까지만 줄고, 남는 폭이 부족하면 오른쪽
+            버튼 그룹이 자기 안에서 두 줄로 감긴다(아래 그룹의 flex-wrap). */}
+        <div className="flex items-start gap-3 border-b bg-background px-6 py-3 report-detail-toolbar">
           <div className="flex-1 min-w-[280px]">
             {isEditing ? (
               <Input
@@ -3251,15 +3275,9 @@ export default function ReportDetailPage() {
               </div>
             )}
             <div className="mt-0.5 text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
-              <span>
-                {currentTemplate?.name ?? <span className="italic">템플릿 불러오는 중…</span>}
-              </span>
-              <span>v{currentPageData?.template_version}</span>
-              {pageCount > 1 && (
-                <Badge variant="outline" className="text-[10px]">
-                  {pageCount}개 페이지
-                </Badge>
-              )}
+              {/* 헤더 메타는 Phase·보고 기준일(+잠금/종합 chip)만 노출.
+                  템플릿 종류·버전·페이지 수·작성/수정 정보는 과다정보라
+                  아래 info(i) 버튼 팝오버로 모았다. */}
               {/* ReportPhase chip — read-only here. Transitions happen
                   via the 발행/발행취소 button and via auto-triggers
                   (first external comment / mount). */}
@@ -3285,25 +3303,71 @@ export default function ReportDetailPage() {
               {!isNew && existingReport?.id && (
                 <ContainingCompositesChip reportId={existingReport.id} />
               )}
+              {/* 작성자·작성/수정 시각 — 헤더에 직접 띄우면 과다정보라
+                  info(i) 버튼 팝오버로 접었다. 보고 기준일은 위에 그대로
+                  노출(편집 가능). */}
+              {!isNew && existingReport && (
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      title="작성·수정 정보"
+                      className="inline-flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <Info className="h-3.5 w-3.5" />
+                      <span className="sr-only">작성·수정 정보</span>
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-64 p-3 space-y-2">
+                    {/* 보고서 종류 + 사용 템플릿 + 페이지 수 — 헤더에서 옮겨온
+                        부가정보. 멀티페이지는 현재 보고 있는 페이지의 템플릿
+                        기준. 종류는 편집 중이면 draft(미저장) 값을 우선 반영. */}
+                    <div className="space-y-1 text-[11px] text-muted-foreground">
+                      <div>
+                        <span className="text-muted-foreground/70">종류</span>{' '}
+                        <span className="text-foreground/80">
+                          {(draft?.report_type ?? existingReport.report_type)
+                            ?.name ?? '미지정'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground/70">템플릿</span>{' '}
+                        <span className="text-foreground/80">
+                          {currentTemplate?.name ?? '불러오는 중…'}
+                        </span>
+                        {currentPageData?.template_version != null && (
+                          <span className="text-muted-foreground/70">
+                            {' · '}v{currentPageData.template_version}
+                          </span>
+                        )}
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground/70">페이지</span>{' '}
+                        <span className="text-foreground/80">{pageCount}개</span>
+                      </div>
+                    </div>
+                    <div className="border-t pt-2">
+                      <ReportMetaLine
+                        ownerName={existingReport.owner_name}
+                        ownerEmail={existingReport.owner_email}
+                        workspaceSlug={existingReport.workspace_slug}
+                        workspaceName={
+                          workspaces?.find((w) => w.slug === existingReport.workspace_slug)?.name
+                          ?? existingReport.workspace_slug
+                        }
+                        createdAt={existingReport.created_at}
+                        updatedByName={existingReport.updated_by_name}
+                        updatedByEmail={existingReport.updated_by_email}
+                        updatedAt={existingReport.updated_at}
+                      />
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              )}
             </div>
-            {!isNew && existingReport && (
-              <ReportMetaLine
-                ownerName={existingReport.owner_name}
-                ownerEmail={existingReport.owner_email}
-                workspaceSlug={existingReport.workspace_slug}
-                workspaceName={
-                  workspaces?.find((w) => w.slug === existingReport.workspace_slug)?.name
-                  ?? existingReport.workspace_slug
-                }
-                createdAt={existingReport.created_at}
-                updatedByName={existingReport.updated_by_name}
-                updatedByEmail={existingReport.updated_by_email}
-                updatedAt={existingReport.updated_at}
-              />
-            )}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 ml-auto">
+          <div className="flex flex-wrap items-center justify-end gap-2 ml-auto">
           {/* ─── Group 1: Navigation (왼쪽으로 빠짐) ───
               종합보고에서 진입한 경우에만 보이는 "돌아가기" 버튼. 진입 시
               location.state.fromComposite 로 어느 종합보고에서 왔는지가
@@ -3341,21 +3405,18 @@ export default function ReportDetailPage() {
             목록
           </Button>
 
-          {/* 같은 폴더 형제 보고서 — 이전/다음 이동 + 접이식 목록. "목록"
-              까지 안 가도 같은 폴더 안에서 바로 옮겨다닐 수 있게. 편집중엔
-              실수 이동을 막으려 숨김. */}
-          {!isEditing && siblingFolderId !== undefined && (
-            <FolderSiblingNav
-              slug={slug}
-              folderId={siblingFolderId}
-              currentReportId={existingReport?.id}
-            />
-          )}
+          {/* (같은 폴더 보고서 네비게이션은 좌측 보조 사이드바로 이동 —
+              툴바 왼쪽 끝의 폴더 버튼으로 토글) */}
 
           <Separator orientation="vertical" className="h-6 mx-1" />
 
           {/* ─── Group 2: View options ─── */}
-          <ViewModeToggle value={viewMode} onChange={handleViewModeChange} />
+          {/* 페이지별/전체 토글은 편집모드 전용 — 이제 보고서별로 저장되는
+              설정(저자가 정하는 기본 보기 레이아웃)이라, 보기 화면에서는
+              저장값(없으면 폴백)을 그대로 따른다. */}
+          {isEditing && (
+            <ViewModeToggle value={viewMode} onChange={handleViewModeChange} />
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -3682,50 +3743,10 @@ export default function ReportDetailPage() {
             </span>
           </div>
         )}
-        {existingReport?.phase === 'reviewing' && (
-          <div
-            data-export-exclude
-            className="border-b bg-amber-50 px-6 py-2 text-xs text-amber-900 flex items-center gap-2"
-          >
-            <span className="text-base">👀</span>
-            <span className="font-medium shrink-0">리뷰 진행 중</span>
-            <span className="flex-1 min-w-0 truncate text-amber-800/80">
-              외부 코멘트가 달렸거나 조직 게시판에 게시된 상태. 코멘트 패널을
-              우측에 펼쳐서 의견을 확인하세요.
-            </span>
-            <ReportMetaChips
-              draft={draft}
-              setDraft={setDraft}
-              isEditing={effectiveIsEditing}
-              tone="amber"
-              reportId={existingReport?.id}
-              linkedReports={linkedReports}
-              canEdit={existingReport?.can_edit}
-            />
-          </div>
-        )}
-        {existingReport?.phase === 'finalized' && (
-          <div
-            data-export-exclude
-            className="border-b bg-blue-50 px-6 py-2 text-xs text-blue-900 flex items-center gap-2"
-          >
-            <span className="text-base">✅</span>
-            <span className="font-medium shrink-0">발행됨</span>
-            <span className="flex-1 min-w-0 truncate text-blue-800/80">
-              작성자가 발행을 완료한 보고서. 편집은 차단되어 있으며,
-              수정하려면 '발행 취소' 후 작성 모드로.
-            </span>
-            <ReportMetaChips
-              draft={draft}
-              setDraft={setDraft}
-              isEditing={effectiveIsEditing}
-              tone="blue"
-              reportId={existingReport?.id}
-              linkedReports={linkedReports}
-              canEdit={existingReport?.can_edit}
-            />
-          </div>
-        )}
+        {/* reviewing("리뷰 중")·finalized("발행됨") 상태 리본은 제거됨 —
+            상태 설명은 제목 아래 PhaseChip 뱃지를 클릭하면 팝오버로 표시한다.
+            그 단계의 메타 칩(종류·관련정보·연결보고서)은 아래 MetaChipsBanner
+            가 같은 자리에 계속 띄운다(편집모드, 잠금 배너가 없을 때). */}
 
         {/* Author lock banner — sits below the toolbar so it's
             unmissable while not blocking the title. */}
@@ -3753,10 +3774,10 @@ export default function ReportDetailPage() {
             />
           </div>
         )}
-        {/* Drafting + 메타 미등록 — 다른 phase banner 가 없을 때만 자체
-            banner 를 띄워 사용자가 같은 자리에서 메타를 등록할 수 있도록.
-            메타 두 가지 모두 채워지면 자동으로 사라져 노이즈 0. */}
-        <DraftingMetaBanner
+        {/* 메타 칩(종류·관련정보·연결보고서) 배너 — 편집모드에서 잠금 배너가
+            없을 때 모든 phase(작성/리뷰/발행)에서 같은 자리에 칩을 띄운다.
+            (reviewing/finalized 의 옛 상태 리본이 품던 칩을 여기로 일원화.) */}
+        <MetaChipsBanner
           existingReport={existingReport}
           draft={draft}
           setDraft={setDraft}
@@ -6077,17 +6098,15 @@ function ReportEntitiesPanel({ entities, collabSlugs }) {
 }
 
 /**
- * 같은 폴더 형제 보고서 네비게이션 — 헤더 "목록" 옆에 붙는다. 현재
- * 워크스페이스/폴더의 보고서 목록을 listReports 로 한 번 받아:
- *   - ◀ / ▶ : 목록 순서 기준 이전·다음 보고서로 바로 이동
- *   - 가운데 토글 : 같은 폴더 목록 팝오버(현재 항목 강조, 클릭 이동)
- * 자체 데이터 로딩(useAsync)을 품어 부모(거대한 ReportDetailPage)의 hook
- * 순서에 영향을 주지 않는다. 형제가 자기 자신뿐이거나 현재 보고서를 목록
- * 에서 못 찾으면(다른 mount 진입 등) 렌더하지 않는다.
+ * 좌측 보조 사이드바 — 같은 폴더의 보고서 목록을 세로로 보여준다(상단 툴바의
+ * 폴더 버튼으로 토글). 현재 워크스페이스/폴더의 보고서 목록을 listReports 로
+ * 한 번 받아 목록 화면과 같은 정렬(번호 내림차순)로 나열하고, 현재 보고서를
+ * 강조한다. 클릭하면 그 보고서로 이동. 자체 데이터 로딩(useAsync)을 품어
+ * 부모(거대한 ReportDetailPage)의 hook 순서에 영향을 주지 않는다.
+ * (예전 헤더의 FolderSiblingNav = 이전/다음 + 팝오버를 대체.)
  */
-function FolderSiblingNav({ slug, folderId, currentReportId }) {
+function FolderReportsPanel({ slug, folderId, currentReportId, onClose }) {
   const navigate = useNavigate()
-  const [open, setOpen] = useState(false)
   const { data: siblings } = useAsync(
     () =>
       slug && folderId !== undefined
@@ -6095,98 +6114,69 @@ function FolderSiblingNav({ slug, folderId, currentReportId }) {
         : Promise.resolve([]),
     [slug, folderId],
   )
-  // 목록 페이지 기본 정렬(DataTable defaultSort = 번호 내림차순)과 동일하게
-  // 정렬해 이전/다음·목록 순서가 목록 화면과 일치하도록 한다.
+  // 목록 페이지 기본 정렬(DataTable defaultSort = 번호 내림차순)과 동일하게.
   const list = useMemo(() => {
     const arr = Array.isArray(siblings) ? [...siblings] : []
     arr.sort((a, b) => (b.id ?? 0) - (a.id ?? 0))
     return arr
   }, [siblings])
-  const idx = list.findIndex((r) => r.id === currentReportId)
-  const prev = idx > 0 ? list[idx - 1] : null
-  const next = idx >= 0 && idx < list.length - 1 ? list[idx + 1] : null
-
-  if (list.length <= 1 || idx < 0) return null
-
-  function go(r) {
-    if (!r) return
-    setOpen(false)
-    navigate(`/w/${slug}/reports/${r.id}`)
-  }
 
   return (
-    <div className="flex items-center gap-0.5">
-      <Button
-        variant="ghost"
-        size="sm"
-        className="px-1.5"
-        disabled={!prev}
-        onClick={() => go(prev)}
-        title={prev ? `이전: ${prev.title || '(제목 없음)'}` : '이전 보고서 없음'}
-      >
-        <ChevronLeft className="h-4 w-4" />
-      </Button>
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="gap-1 px-1.5 text-xs"
-            title="같은 폴더의 보고서 목록"
-          >
-            <Folder className="h-3.5 w-3.5" />
-            <span className="tabular-nums text-muted-foreground">
-              {idx + 1}/{list.length}
-            </span>
-            <ChevronDown className="h-3 w-3 opacity-60" />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-72 p-1">
-          <div className="px-2 py-1.5 text-[11px] font-medium text-muted-foreground">
-            같은 폴더 · {list.length}개
-          </div>
-          <ScrollArea className="max-h-72">
-            <ul className="flex flex-col">
-              {list.map((r, i) => (
-                <li key={r.id}>
-                  <button
-                    type="button"
-                    onClick={() => go(r)}
-                    className={cn(
-                      'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-muted',
-                      r.id === currentReportId &&
-                        'bg-muted font-semibold text-foreground',
-                    )}
-                  >
-                    <span className="w-5 shrink-0 tabular-nums text-muted-foreground">
-                      {i + 1}
+    <aside className="hidden md:flex w-60 shrink-0 flex-col border-r bg-card">
+      <div className="flex items-center gap-2 border-b px-3 py-2">
+        <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="flex-1 truncate text-sm font-medium">같은 폴더 보고서</span>
+        <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground">
+          {list.length}
+        </span>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 shrink-0"
+          onClick={onClose}
+          title="목록 닫기"
+        >
+          <X className="h-3.5 w-3.5" />
+          <span className="sr-only">목록 닫기</span>
+        </Button>
+      </div>
+      <ScrollArea className="flex-1">
+        <ul className="flex flex-col p-1">
+          {list.length === 0 ? (
+            <li className="px-2 py-3 text-xs text-muted-foreground">
+              이 폴더에 보고서가 없습니다.
+            </li>
+          ) : (
+            list.map((r, i) => (
+              <li key={r.id}>
+                <button
+                  type="button"
+                  onClick={() => navigate(`/w/${slug}/reports/${r.id}`)}
+                  className={cn(
+                    'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-muted',
+                    r.id === currentReportId &&
+                      'bg-muted font-semibold text-foreground',
+                  )}
+                  title={r.title || '(제목 없음)'}
+                >
+                  <span className="w-5 shrink-0 tabular-nums text-muted-foreground">
+                    {i + 1}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">
+                    {r.title || '(제목 없음)'}
+                  </span>
+                  {r.report_date && (
+                    <span className="shrink-0 text-[10px] text-muted-foreground">
+                      {r.report_date}
                     </span>
-                    <span className="min-w-0 flex-1 truncate">
-                      {r.title || '(제목 없음)'}
-                    </span>
-                    {r.report_date && (
-                      <span className="shrink-0 text-[10px] text-muted-foreground">
-                        {r.report_date}
-                      </span>
-                    )}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </ScrollArea>
-        </PopoverContent>
-      </Popover>
-      <Button
-        variant="ghost"
-        size="sm"
-        className="px-1.5"
-        disabled={!next}
-        onClick={() => go(next)}
-        title={next ? `다음: ${next.title || '(제목 없음)'}` : '다음 보고서 없음'}
-      >
-        <ChevronRight className="h-4 w-4" />
-      </Button>
-    </div>
+                  )}
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+      </ScrollArea>
+    </aside>
   )
 }
 
@@ -6381,12 +6371,29 @@ function UnsavedChangesDialog({
 /** ReportPhase chip — read-only display. Phase transitions happen via
  *  side effects (mount, first external comment) and the 발행/발행취소
  *  button; users never set phase via a dropdown. */
+// 제목 아래 상태 뱃지. 옛 상단 상태 리본을 대체 — 뱃지를 클릭하면 그 단계의
+// 설명이 팝오버로 뜬다(hover 로는 title 힌트도 제공).
 function PhaseChip({ phase }) {
   const meta = PHASE_META[phase] ?? PHASE_META.drafting
   return (
-    <Badge variant={meta.variant} title={meta.tooltip}>
-      {meta.label}
-    </Badge>
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          title="상태 설명 보기"
+          className="inline-flex cursor-pointer rounded-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <Badge variant={meta.variant}>{meta.label}</Badge>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-72 p-3">
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          {meta.emoji && <span>{meta.emoji}</span>}
+          <span>{meta.label}</span>
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">{meta.description}</p>
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -6463,19 +6470,23 @@ const PHASE_META = {
   drafting: {
     label: '작성 중',
     variant: 'secondary',
-    tooltip: '아직 외부 리뷰가 시작되지 않은 상태. 자유 편집.',
+    emoji: '✏️',
+    description:
+      '아직 외부 리뷰가 시작되지 않은 상태입니다. 자유롭게 편집할 수 있습니다.',
   },
   reviewing: {
     label: '리뷰 중',
     variant: 'default',
-    tooltip:
-      '게시되거나 외부 코멘트가 달려 리뷰 단계로 진입. 편집은 여전히 가능.',
+    emoji: '👀',
+    description:
+      '외부 코멘트가 달렸거나 조직 게시판에 게시된 상태입니다. 코멘트 패널을 우측에 펼쳐 의견을 확인하세요. 편집은 여전히 가능합니다.',
   },
   finalized: {
     label: '발행됨',
     variant: 'outline',
-    tooltip:
-      '작성자가 발행 액션을 한 상태. 작성자 외 편집 차단. 발행 취소로 작성 모드 복귀.',
+    emoji: '✅',
+    description:
+      "작성자가 발행을 완료한 보고서입니다. 편집은 차단되며, 수정하려면 '발행 취소' 후 작성 모드로 돌아가세요.",
   },
 }
 
@@ -7404,16 +7415,16 @@ function ReportMetaChips({
   )
 }
 
-/** Phase banner 가 없는 (drafting) 편집 상태에서, 메타 chip 을 같은 위치에
- *  호스팅하는 전용 row. chip 두 개 모두 항상 노출 정책이므로 banner 도
- *  편집모드 + drafting + no-other-banner 동안 항상 유지된다. 톤만 fill
+/** 메타 chip(보고서 종류·관련정보·연결된 보고서)을 헤더 아래 같은 위치에
+ *  호스팅하는 전용 row. 편집모드에서 항상 유지된다(phase 무관). 톤만 fill
  *  상태에 따라 토글:
  *    - 둘 중 하나라도 비어있음 → amber (등록 prompt)
  *    - 둘 다 등록 완료 → muted (chip 은 여전히 클릭 가능, 시각 부담 ↓)
  *
- *  finalized/reviewing/lock 같은 다른 banner 가 있으면 그쪽 우측에 chip
- *  이 이미 얹히므로 이 banner 는 중복 노출 안 함. */
-function DraftingMetaBanner({
+ *  잠금(author_lock) banner 만 자체 우측에 chip 을 얹으므로, 그때만 양보해
+ *  중복 노출을 피한다. (reviewing/finalized 의 옛 상태 리본은 제거됐다 —
+ *  상태 설명은 PhaseChip 팝오버로.) */
+function MetaChipsBanner({
   existingReport,
   draft,
   setDraft,
@@ -7421,11 +7432,8 @@ function DraftingMetaBanner({
   linkedReports,
 }) {
   if (!isEditing || !draft) return null
-  const hasOtherBanner =
-    existingReport?.phase === 'reviewing' ||
-    existingReport?.phase === 'finalized' ||
-    existingReport?.author_lock_enabled
-  if (hasOtherBanner) return null
+  // 잠금 배너가 떠 있을 때만 그쪽에 칩을 양보(중복 방지).
+  if (existingReport?.author_lock_enabled) return null
   const hasType = !!draft.report_type_id
   const hasEntities =
     Array.isArray(draft.entities) && draft.entities.length > 0

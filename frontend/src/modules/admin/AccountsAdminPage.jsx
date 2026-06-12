@@ -71,6 +71,7 @@ import {
   adminSetUserPassword,
   listPasswordResetRequests,
   resolvePasswordResetRequest,
+  dismissPasswordResetRequest,
 } from '@/shared/api/me'
 import { register as registerUser } from '@/shared/api/auth'
 import { setSystemAdmin } from '@/shared/api/systemAdmins'
@@ -1450,6 +1451,11 @@ function PasswordResetRequestsPanel() {
   const [requests, setRequests] = useState([])
   const [loading, setLoading] = useState(true)
   const [resolving, setResolving] = useState(null)
+  // 반려(취소) — 처리 불가/무효 요청을 큐에서 정리. 오타·미가입 등으로 가입
+  // 계정이 없는 요청은 발급이 불가능하므로 이 경로로만 닫는다. 실수 클릭을
+  // 막으려 인라인 2단계 확인.
+  const [confirmDismissId, setConfirmDismissId] = useState(null)
+  const [dismissingId, setDismissingId] = useState(null)
 
   async function load() {
     try {
@@ -1459,6 +1465,22 @@ function PasswordResetRequestsPanel() {
       setRequests([])
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleDismiss(r) {
+    setDismissingId(r.id)
+    try {
+      await dismissPasswordResetRequest(r.id)
+      toast.success('요청을 반려했습니다.')
+      setConfirmDismissId(null)
+      load()
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err.message || '반려에 실패했습니다.',
+      )
+    } finally {
+      setDismissingId(null)
     }
   }
   useEffect(() => {
@@ -1476,6 +1498,10 @@ function PasswordResetRequestsPanel() {
       <p className="mb-3 text-xs text-muted-foreground">
         사용자가 '비밀번호 찾기'로 접수한 요청입니다. 본인 확인 후 임시
         비밀번호를 발급하면, 사용자는 최초 로그인 시 새 비밀번호를 설정합니다.
+        <br />
+        <span className="text-amber-700 dark:text-amber-300">(미가입 이메일)</span>
+        은 오타나 가입 안 된 주소라 발급할 수 없습니다 — 실제 가입 이메일을
+        확인해 그 계정으로 발급하거나, 처리 불가한 요청은 <b>반려</b>로 정리하세요.
       </p>
       <ul className="divide-y divide-amber-200/60 dark:divide-amber-900/40">
         {requests.map((r) => (
@@ -1489,15 +1515,46 @@ function PasswordResetRequestsPanel() {
                 요청 {new Date(r.created_at).toLocaleString()}
               </div>
             </div>
-            <Button
-              size="sm"
-              disabled={!r.user_id}
-              onClick={() => setResolving(r)}
-              title={r.user_id ? '' : '가입된 계정이 없어 발급할 수 없습니다'}
-            >
-              <KeyRound className="mr-1.5 h-3.5 w-3.5" />
-              임시 비번 발급
-            </Button>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <Button
+                size="sm"
+                disabled={!r.user_id}
+                onClick={() => setResolving(r)}
+                title={r.user_id ? '' : '가입된 계정이 없어 발급할 수 없습니다'}
+              >
+                <KeyRound className="mr-1.5 h-3.5 w-3.5" />
+                임시 비번 발급
+              </Button>
+              {confirmDismissId === r.id ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    disabled={dismissingId === r.id}
+                    onClick={() => handleDismiss(r)}
+                  >
+                    {dismissingId === r.id ? '반려 중…' : '반려 확인'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setConfirmDismissId(null)}
+                  >
+                    취소
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-muted-foreground"
+                  onClick={() => setConfirmDismissId(r.id)}
+                  title="이 요청을 큐에서 제거(반려) — 오타·미가입 등 처리 불가한 요청 정리용"
+                >
+                  반려
+                </Button>
+              )}
+            </div>
           </li>
         ))}
       </ul>

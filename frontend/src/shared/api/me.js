@@ -69,6 +69,14 @@ export async function resolvePasswordResetRequest(requestId, { newPassword }) {
   return extractData(res)
 }
 
+/** 관리자 — 처리 불가/무효 요청 반려(취소)로 큐에서 정리. */
+export async function dismissPasswordResetRequest(requestId) {
+  const res = await apiClient.post(
+    `/api/password-reset-requests/${requestId}/dismiss`,
+  )
+  return extractData(res)
+}
+
 /** 시스템 관리자 — 모든 계정 wide view. '계정 관리' 페이지가 사용. */
 export async function listAllAccounts({ includeInactive = true } = {}) {
   const res = await apiClient.get('/api/users/all', {

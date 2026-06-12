@@ -36,7 +36,9 @@ export function SubmitToCompositeButton({ reportId }) {
         title="이 보고서를 종합보고에 안건으로 제출 (작성자 승인 후 추가)"
       >
         <Send className="mr-1 h-3 w-3" />
-        종합보고 제출
+        {/* 폭이 좁아지면(xl 미만) "종합보고 "를 숨겨 "제출"로 단축 — 툴바가
+            한 줄에 더 오래 들어가, 버튼 줄바꿈보다 먼저 일어나는 단계. */}
+        <span className="hidden xl:inline">종합보고 </span>제출
       </Button>
       {open && (
         <SubmitToCompositeDialog

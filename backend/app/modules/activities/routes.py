@@ -19,6 +19,8 @@ from app.modules.activities.schemas import (
     ActivityActorMini,
     ActivityListResponse,
     ActivityRead,
+    WorkspaceActivityListResponse,
+    WorkspaceActivityRead,
 )
 from app.modules.reports import services as report_services
 from app.modules.users.models import User
@@ -80,4 +82,57 @@ def list_report_activities(
         )
     return success_response(
         data=ActivityListResponse(items=items).model_dump(mode="json")
+    )
+
+
+@router.get("/workspace-activities")
+def list_workspace_activities(
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """부서 홈 활동 피드 — 현재 부서(헤더 X-Workspace-Slug)에 게시/소유된
+    보고서들의 최근 사건을 한데 모아 최신순으로.
+
+    스코핑은 보고서 목록과 같은 모델을 재사용한다(list_reports_in_workspace):
+    부서 게시판에 게시된 보고서(개인 공간이면 소유 보고서)만 대상이라
+    권한이 자동으로 맞는다. 가상(_global) 컨텍스트·외부 공개 열람자에겐
+    피드를 노출하지 않는다(빈 목록).
+    """
+    empty = WorkspaceActivityListResponse(items=[]).model_dump(mode="json")
+    if actor.workspace.virtual or actor.public_viewer:
+        return success_response(data=empty)
+
+    reports = report_services.list_reports_in_workspace(db, actor.workspace.slug)
+    title_by_id = {r.id: r.title for r in reports}
+    if not title_by_id:
+        return success_response(data=empty)
+
+    rows = services.list_activities_for_reports(
+        db, report_ids=list(title_by_id.keys()), limit=limit
+    )
+    actor_cache: dict[int, ActivityActorMini | None] = {}
+    items = []
+    for r in rows:
+        actor_mini = None
+        if r.actor_user_id is not None:
+            if r.actor_user_id not in actor_cache:
+                user = db.get(User, r.actor_user_id)
+                actor_cache[r.actor_user_id] = (
+                    ActivityActorMini.model_validate(user) if user else None
+                )
+            actor_mini = actor_cache[r.actor_user_id]
+        items.append(
+            WorkspaceActivityRead(
+                id=r.id,
+                report_id=r.report_id,
+                report_title=title_by_id.get(r.report_id, ""),
+                actor=actor_mini,
+                type=r.type,
+                payload=r.payload,
+                created_at=r.created_at,
+            )
+        )
+    return success_response(
+        data=WorkspaceActivityListResponse(items=items).model_dump(mode="json")
     )

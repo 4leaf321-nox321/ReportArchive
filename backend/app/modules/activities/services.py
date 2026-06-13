@@ -53,3 +53,25 @@ def list_activities_for_report(
         query = query.where(ReportActivity.id < before_id)
     query = query.order_by(desc(ReportActivity.id)).limit(min(limit, 500))
     return list(db.execute(query).scalars())
+
+
+def list_activities_for_reports(
+    db: Session,
+    *,
+    report_ids: list[int],
+    limit: int = 30,
+) -> list[ReportActivity]:
+    """Newest-first activities across a set of reports — the workspace
+    activity feed. The caller resolves which reports belong to the
+    department (same visibility model as the report list) and passes
+    their ids here; we just fan the timeline query across them. Empty
+    id set → empty (no `IN ()` query)."""
+    if not report_ids:
+        return []
+    query = (
+        select(ReportActivity)
+        .where(ReportActivity.report_id.in_(report_ids))
+        .order_by(desc(ReportActivity.id))
+        .limit(min(limit, 200))
+    )
+    return list(db.execute(query).scalars())

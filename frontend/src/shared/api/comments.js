@@ -57,3 +57,13 @@ export async function listCommentsInbox({
     openCount: data?.open_count ?? 0,
   }
 }
+
+/**
+ * 부서 건강도 — 현재 부서(X-Workspace-Slug 컨텍스트)에 게시/소유된 보고서들의
+ * 미해결(open) 코멘트 스레드 수. 반환: 정수.
+ */
+export async function getWorkspaceCommentStats() {
+  const res = await apiClient.get('/api/workspace-comment-stats')
+  const data = extractData(res)
+  return data?.open_threads ?? 0
+}

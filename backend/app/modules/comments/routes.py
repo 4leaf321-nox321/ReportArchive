@@ -156,6 +156,24 @@ def list_my_inbox(
     return success_response(data=payload.model_dump(mode="json"))
 
 
+@router.get("/workspace-comment-stats")
+def workspace_comment_stats(
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """부서 건강도용 — 현재 부서(X-Workspace-Slug)에 게시/소유된 보고서들의
+    미해결(open) 코멘트 스레드 수. 스코핑은 보고서 목록과 동일한 모델
+    (list_reports_in_workspace)을 재사용해 권한이 자동으로 맞는다. 가상
+    (_global)·외부 공개 열람자에겐 0(곁다리 숨김)."""
+    if actor.workspace.virtual or getattr(actor, "public_viewer", False):
+        return success_response(data={"open_threads": 0})
+    reports = report_services.list_reports_in_workspace(db, actor.workspace.slug)
+    open_threads = services.count_open_threads_for_reports(
+        db, report_ids=[r.id for r in reports]
+    )
+    return success_response(data={"open_threads": open_threads})
+
+
 @router.get("/reports/{report_id}/threads")
 def list_threads(
     report_id: int,

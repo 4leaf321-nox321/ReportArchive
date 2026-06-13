@@ -69,6 +69,7 @@ import { listEntityTypes } from '@/shared/api/entities'
 import { listFolders } from '@/shared/api/folders'
 import { setWorkspaceExternalView } from '@/shared/api/workspaces'
 import { EntityMultiPicker } from '@/modules/entities/EntityMultiPicker'
+import { parseUtcIso } from '@/shared/lib/period'
 import { PHASES, PHASE_LABEL, PHASE_VARIANT } from './constants'
 import {
   FolderSidebar,
@@ -106,7 +107,15 @@ export default function ReportsListPage() {
   // Phase filter — '' = 전체, otherwise a ReportPhase value. Cheap
   // client-side filter (every row already carries `phase`); the picker
   // is a small native select inside FilterBar to keep the toolbar tidy.
-  const [phaseFilter, setPhaseFilter] = useState('')
+  // 대시보드 단계별 드릴다운으로 들어오면 location.state.phase 로 초기 선택.
+  const [phaseFilter, setPhaseFilter] = useState(() => location.state?.phase ?? '')
+  // 정체(stale) 필터 — N일 이상 미수정(updated_at 기준). 대시보드 '정체 초안'
+  // 건강도 타일 드릴다운으로만 들어온다(location.state.staleDraftDays). null =
+  // 미적용. phase='drafting' 과 함께 와서 "작성 중 + N일+ 미수정" 으로 타일과
+  // 동일한 집합을 만든다(대시보드 staleDraftCount 와 같은 계산).
+  const [staleDays, setStaleDays] = useState(
+    () => location.state?.staleDraftDays ?? null,
+  )
   // 기간 필터 (보고서 활동 = updated_at). '' = 전체, 'd30'/'d90'/'d365'
   // = 최근 N일, 'y2026' = 2026년에 활동한 보고서만. 10년 누적 환경에서
   // default "전체" 가 부담스러우면 사용자가 좁힘. 클라이언트 사이드 —
@@ -151,6 +160,7 @@ export default function ReportsListPage() {
     setEntityFilter([])
     setFolderFilter(FOLDER_FILTER_ALL)
     setPhaseFilter('')
+    setStaleDays(null)
     setPeriodFilter('')
     setMountWorkspaceFilter('')
     setIncludePublic(false)
@@ -301,6 +311,14 @@ export default function ReportsListPage() {
     .filter((r) => !scopedSet || scopedSet.has(r.workspace_slug))
     .filter((r) => !phaseFilter || r.phase === phaseFilter)
     .filter((r) => {
+      // 정체(stale) — N일 이상 미수정. 대시보드 staleDraftCount 와 동일하게
+      // parseUtcIso 로 시각 비교(updated_at 의 Z 누락 보정).
+      if (!staleDays) return true
+      const t = parseUtcIso(r.updated_at)
+      if (!t) return false
+      return t.getTime() < Date.now() - staleDays * 86400000
+    })
+    .filter((r) => {
       if (!rangeStart) return true
       const t = r.updated_at
       if (!t) return false
@@ -351,6 +369,95 @@ export default function ReportsListPage() {
     }
     return [...years].sort().reverse()
   }, [reports])
+
+  // ── 활성 필터 배너 ───────────────────────────────────────────────────
+  // 대시보드 드릴다운(상태·미분류 등)으로 들어오면 필터가 걸린 채 도착하는데,
+  // 그게 눈에 안 띄어 "왜 좌측 폴더 총계와 우측 목록 수가 다르지?" 혼란이
+  // 생긴다. 현재 적용된 필터를 칩으로 명시하고 한 번에 해제할 수 있게 한다.
+  // 폴더 선택(특정 폴더)·휴지통은 좌측 사이드바가 이미 강조하므로 제외하고,
+  // 툴바 필터 + 드릴다운으로 들어오는 '미분류'만 배너에 싣는다.
+  const workspaceNameOf = useCallback(
+    (s) => (workspaces ?? []).find((w) => w.slug === s)?.name ?? s,
+    [workspaces],
+  )
+  const activeFilters = useMemo(() => {
+    const out = []
+    if (onlyMine) {
+      out.push({ key: 'mine', label: '내 보고서만', clear: () => setOnlyMine(false) })
+    }
+    if (phaseFilter) {
+      out.push({
+        key: 'phase',
+        label: `상태: ${PHASE_LABEL[phaseFilter] ?? phaseFilter}`,
+        clear: () => setPhaseFilter(''),
+      })
+    }
+    if (periodFilter) {
+      out.push({
+        key: 'period',
+        label: `기간: ${formatPeriodLabel(periodFilter)}`,
+        clear: () => setPeriodFilter(''),
+      })
+    }
+    if (mountWorkspaceFilter) {
+      out.push({
+        key: 'mount',
+        label: `게시판: ${workspaceNameOf(mountWorkspaceFilter)}`,
+        clear: () => setMountWorkspaceFilter(''),
+      })
+    }
+    if (scopeSlug) {
+      out.push({
+        key: 'scope',
+        label: `내 소속: ${workspaceNameOf(scopeSlug)}`,
+        clear: () => setScopeSlug(''),
+      })
+    }
+    if (staleDays) {
+      out.push({
+        key: 'stale',
+        label: `${staleDays}일+ 미수정`,
+        clear: () => setStaleDays(null),
+      })
+    }
+    if (folderFilter === FOLDER_FILTER_UNCATEGORIZED) {
+      out.push({
+        key: 'folder',
+        label: '미분류만',
+        clear: () => setFolderFilter(FOLDER_FILTER_ALL),
+      })
+    }
+    if (entityFilter.length > 0) {
+      out.push({
+        key: 'tags',
+        label: `태그 ${entityFilter.length}개`,
+        clear: () => setEntityFilter([]),
+      })
+    }
+    return out
+  }, [
+    onlyMine,
+    phaseFilter,
+    periodFilter,
+    mountWorkspaceFilter,
+    scopeSlug,
+    folderFilter,
+    entityFilter,
+    staleDays,
+    workspaceNameOf,
+  ])
+  const clearAllFilters = useCallback(() => {
+    setOnlyMine(false)
+    setPhaseFilter('')
+    setStaleDays(null)
+    setPeriodFilter('')
+    setMountWorkspaceFilter('')
+    setScopeSlug('')
+    setEntityFilter([])
+    setFolderFilter((cur) =>
+      cur === FOLDER_FILTER_UNCATEGORIZED ? FOLDER_FILTER_ALL : cur,
+    )
+  }, [])
 
   // Column widths are pinned so page navigation doesn't reflow them.
   // 제목 stays flexible (no explicit width) so it absorbs whatever
@@ -833,6 +940,38 @@ export default function ReportsListPage() {
           <Skeleton className="h-96" />
         ) : (
           <>
+            {activeFilters.length > 0 && !trashView && (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                <Filter className="h-3.5 w-3.5 shrink-0" />
+                <span className="font-medium">필터 적용 중</span>
+                {activeFilters.map((f) => (
+                  <span
+                    key={f.key}
+                    className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-white/70 px-2 py-0.5"
+                  >
+                    {f.label}
+                    <button
+                      type="button"
+                      onClick={f.clear}
+                      className="-mr-1 ml-0.5 rounded-full p-0.5 hover:bg-amber-200"
+                      title="이 필터 해제"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+                <button
+                  type="button"
+                  onClick={clearAllFilters}
+                  className="ml-1 underline underline-offset-2 hover:no-underline"
+                >
+                  필터 해제
+                </button>
+                <span className="ml-auto text-amber-800/80">
+                  좌측 폴더 숫자는 전체 기준 · 아래 목록은 필터 결과 {list.length}건
+                </span>
+              </div>
+            )}
             {effectiveSelected.size > 0 && trashView && (
               // 휴지통 보기 — 복구 / 완전 삭제.
               <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm">
@@ -1964,6 +2103,14 @@ function formatDate(iso) {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
   return d.toISOString().slice(0, 10)
+}
+
+/** 기간 필터 값(d30/d90/d365/y2026)을 사람이 읽는 라벨로 — 활성 필터 배너용.
+ *  FilterBar 의 select option 라벨과 같은 문구를 유지. */
+function formatPeriodLabel(v) {
+  if (!v) return ''
+  if (v.startsWith('y')) return `${v.slice(1)}년`
+  return { d30: '최근 30일', d90: '최근 90일', d365: '최근 1년' }[v] ?? v
 }
 
 /** "2026-05-18 09:10" — full datetime for tooltip. */

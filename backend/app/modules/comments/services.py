@@ -315,6 +315,23 @@ def list_inbox_for_owner(
     return items, int(open_count or 0)
 
 
+def count_open_threads_for_reports(
+    db: Session, *, report_ids: list[int]
+) -> int:
+    """미해결(open) 코멘트 스레드 수 — 주어진 보고서 집합 기준. 부서
+    건강도 카드용(부서에 게시/소유된 보고서들의 미해결 코멘트 합계).
+    SQL COUNT 로 O(index) — 행을 끌어오지 않는다. 빈 집합이면 0."""
+    if not report_ids:
+        return 0
+    open_count = db.execute(
+        select(func.count(CommentThread.id)).where(
+            CommentThread.report_id.in_(report_ids),
+            CommentThread.status == ThreadStatus.open,
+        )
+    ).scalar_one()
+    return int(open_count or 0)
+
+
 def create_thread(
     db: Session,
     *,

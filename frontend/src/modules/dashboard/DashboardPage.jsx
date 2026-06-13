@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/components/ui/card'
 import { Badge } from '@/shared/components/ui/badge'
 import { PageHeader } from '@/shared/components/PageHeader'
@@ -15,8 +16,13 @@ import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { listReports } from '@/modules/reports/api'
 import { listTemplates } from '@/shared/api/templates'
+import { listFolders } from '@/shared/api/folders'
+import { getWorkspaceCommentStats } from '@/shared/api/comments'
 import { PHASES } from '@/modules/reports/constants'
 import { cn } from '@/shared/lib/utils'
+
+// 며칠 이상 업데이트 없는 'drafting' 보고서를 정체로 본다(건강도).
+const STALE_DRAFT_DAYS = 14
 
 // Stable color slots for the three ReportPhase values on the dashboard's
 // 단계별 panel — match the PhaseChip badge tones visually (협업개선_설계.md
@@ -53,6 +59,7 @@ const PALETTE = [
 
 export default function DashboardPage() {
   const { workspace, slug, all: workspaces, getDescendantsInclusive } = useWorkspace()
+  const navigate = useNavigate()
   const period = usePeriodFilter('week')
   const unit = period.meta.unit
 
@@ -64,6 +71,19 @@ export default function DashboardPage() {
     () => (slug ? listTemplates() : Promise.resolve([])),
     [slug],
   )
+  // 미분류(폴더 없는 mount) 수 — 건강도용. org/personal 모두 listFolders 가
+  // uncategorized_count 를 돌려준다.
+  const { data: folderData } = useAsync(
+    () => (slug ? listFolders({ workspaceSlug: slug }) : Promise.resolve({ uncategorized_count: 0 })),
+    [slug],
+  )
+  const uncategorizedCount = folderData?.uncategorized_count ?? 0
+  // 미해결 코멘트 — 건강도용. 가상(_global) 컨텍스트는 호출 안 함(백엔드도 0).
+  const { data: openThreads } = useAsync(
+    () => (slug && !workspace?.virtual ? getWorkspaceCommentStats() : Promise.resolve(0)),
+    [slug, workspace?.virtual],
+  )
+  const openCommentCount = openThreads ?? 0
 
   const templateName = useMemo(() => makeTemplateNameLookup(templates), [templates])
   const workspaceName = useMemo(() => makeWorkspaceNameLookup(workspaces), [workspaces])
@@ -78,6 +98,26 @@ export default function DashboardPage() {
       return t && t >= range.from && t <= range.to
     })
   }, [reports, range])
+
+  // 직전 기간(같은 길이의 바로 앞 구간) — KPI 전기 대비 Δ 용. 전체기간(from
+  // 없음)이면 비교 대상이 없어 null.
+  const prev = useMemo(() => {
+    if (!range.from || !range.to) return null
+    const span = range.to.getTime() - range.from.getTime()
+    const prevFrom = new Date(range.from.getTime() - span)
+    const prevTo = new Date(range.from.getTime())
+    let total = 0
+    const authors = new Set()
+    const tpls = new Set()
+    for (const r of reports ?? []) {
+      const t = parseReportDate(r)
+      if (!t || t < prevFrom || t >= prevTo) continue
+      total += 1
+      if (r.owner_user_id != null) authors.add(r.owner_user_id)
+      for (const id of uniqueTemplateIds(r)) tpls.add(id)
+    }
+    return { total, authors: authors.size, templates: tpls.size }
+  }, [range, reports])
 
   // The workspace × template panel only shows the current workspace plus
   // its direct children — going one more level deep tends to drown the
@@ -169,6 +209,59 @@ export default function DashboardPage() {
   }, [inRange])
   const distinctTemplates = crosstab.orderedTemplates.length
 
+  // 건강도 — 정체 draft(현재 상태 기준이라 기간 필터와 무관, 전체 보고서에서).
+  const staleDraftCount = useMemo(() => {
+    const cutoff = Date.now() - STALE_DRAFT_DAYS * 86400000
+    let n = 0
+    for (const r of reports ?? []) {
+      if (r.phase !== 'drafting') continue
+      const t = parseUtcIso(r.updated_at)
+      if (t && t.getTime() < cutoff) n += 1
+    }
+    return n
+  }, [reports])
+
+  // 엔티티(모델) 커버리지 — 선택 기간(inRange) 기준. value 가 표시 라벨.
+  const entityCoverage = useMemo(() => {
+    const freq = new Map() // id → { label, count }
+    let noEntity = 0
+    for (const r of inRange) {
+      const ents = Array.isArray(r.entities) ? r.entities : []
+      if (ents.length === 0) {
+        noEntity += 1
+        continue
+      }
+      for (const e of ents) {
+        const cur = freq.get(e.id) ?? { label: e.value ?? String(e.id), count: 0 }
+        cur.count += 1
+        freq.set(e.id, cur)
+      }
+    }
+    const top = [...freq.values()].sort((a, b) => b.count - a.count).slice(0, 8)
+    return { top, noEntity, distinct: freq.size }
+  }, [inRange])
+
+  // 작성자 Top — 선택 기간(inRange) 기준, 작성자별 보고서 수 상위. 소유자
+  // id 로 묶고(없으면 이름으로) owner_name 을 라벨로 쓴다.
+  const authorTop = useMemo(() => {
+    const freq = new Map() // key → { label, count }
+    let unknown = 0
+    for (const r of inRange) {
+      const id = r.owner_user_id
+      const name = r.owner_name
+      if (id == null && !name) {
+        unknown += 1
+        continue
+      }
+      const key = id != null ? `u:${id}` : `n:${name}`
+      const cur = freq.get(key) ?? { label: name ?? '(알 수 없음)', count: 0 }
+      cur.count += 1
+      freq.set(key, cur)
+    }
+    const top = [...freq.values()].sort((a, b) => b.count - a.count).slice(0, 8)
+    return { top, distinct: freq.size, unknown }
+  }, [inRange])
+
   // Phase breakdown — keep a fixed enum order so the bar layout doesn't
   // reshuffle just because counts change.
   const phaseCounts = useMemo(() => {
@@ -215,9 +308,22 @@ export default function DashboardPage() {
       />
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <KPI label="총 보고서" value={totalReports} />
-        <KPI label="작성자" value={distinctAuthors} />
-        <KPI label="사용된 템플릿" value={distinctTemplates} />
+        <KPI
+          label="총 보고서"
+          value={totalReports}
+          delta={prev ? totalReports - prev.total : null}
+          onClick={() => navigate(`/w/${slug}/reports`)}
+        />
+        <KPI
+          label="작성자"
+          value={distinctAuthors}
+          delta={prev ? distinctAuthors - prev.authors : null}
+        />
+        <KPI
+          label="사용된 템플릿"
+          value={distinctTemplates}
+          delta={prev ? distinctTemplates - prev.templates : null}
+        />
       </div>
 
       <Card>
@@ -226,7 +332,100 @@ export default function DashboardPage() {
           <CardDescription>협업 단계 분포 (작성 중 / 리뷰 중 / 발행됨)</CardDescription>
         </CardHeader>
         <CardContent>
-          <PhaseBreakdown counts={phaseCounts} total={totalReports} />
+          <PhaseBreakdown
+            counts={phaseCounts}
+            total={totalReports}
+            onSelect={(phase) => navigate(`/w/${slug}/reports`, { state: { phase } })}
+          />
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">부서 건강도</CardTitle>
+            <CardDescription>현재 상태 기준 — 손볼 거리</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-3 gap-3">
+              <HealthTile
+                label={`정체 초안 (${STALE_DRAFT_DAYS}일+)`}
+                value={staleDraftCount}
+                tone={staleDraftCount > 0 ? 'warn' : 'ok'}
+                onClick={() =>
+                  navigate(`/w/${slug}/reports`, {
+                    // phase + staleDraftDays 를 함께 넘겨 목록이 '작성 중 +
+                    // N일+ 미수정' 으로 정확히 같은 집합을 보이게 한다(타일
+                    // 숫자와 일치).
+                    state: { phase: 'drafting', staleDraftDays: STALE_DRAFT_DAYS },
+                  })
+                }
+              />
+              <HealthTile
+                label="미분류"
+                value={uncategorizedCount}
+                tone={uncategorizedCount > 0 ? 'warn' : 'ok'}
+                onClick={() =>
+                  navigate(`/w/${slug}/reports`, {
+                    state: { listFolderId: 'uncategorized' },
+                  })
+                }
+              />
+              {/* 목록에 '코멘트 있음' 필터가 없어 정보 표시용(클릭 없음).
+                  개인 코멘트 인박스는 계정 스코프라 부서 건강도와 다르다. */}
+              <HealthTile
+                label="미해결 코멘트"
+                value={openCommentCount}
+                tone={openCommentCount > 0 ? 'warn' : 'ok'}
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">엔티티(모델) 커버리지</CardTitle>
+            <CardDescription>
+              기간 내 보고서가 다룬 모델 · 상위 {entityCoverage.top.length}개
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {entityCoverage.distinct === 0 ? (
+              <p className="text-sm text-muted-foreground py-2">
+                이 기간에 연결된 엔티티가 없습니다.
+              </p>
+            ) : (
+              <EntityCoverage coverage={entityCoverage} />
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">작성자 Top</CardTitle>
+          <CardDescription>
+            기간 내 작성자별 보고서 수 · 상위 {authorTop.top.length}명
+            {authorTop.distinct > authorTop.top.length
+              ? ` (전체 ${authorTop.distinct}명)`
+              : ''}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {authorTop.distinct === 0 ? (
+            <p className="text-sm text-muted-foreground py-2">
+              이 기간에 작성된 보고서가 없습니다.
+            </p>
+          ) : (
+            <BarList
+              items={authorTop.top}
+              footer={
+                authorTop.unknown > 0
+                  ? `작성자 미상 ${authorTop.unknown}건`
+                  : null
+              }
+            />
+          )}
         </CardContent>
       </Card>
 
@@ -270,6 +469,7 @@ export default function DashboardPage() {
                 workspaceName={workspaceName}
                 crosstab={crosstab}
                 templateName={templateName}
+                onSelectWorkspace={(ws) => navigate(`/w/${ws}/reports`)}
               />
             </>
           )}
@@ -280,14 +480,101 @@ export default function DashboardPage() {
 }
 
 // ───────────────────────── KPI ──────────────────────────────────────────
-function KPI({ label, value }) {
+function KPI({ label, value, delta, onClick }) {
+  const clickable = typeof onClick === 'function'
   return (
-    <Card>
+    <Card
+      className={clickable ? 'cursor-pointer transition-colors hover:bg-muted/40' : undefined}
+      onClick={onClick}
+    >
       <CardContent className="pt-6">
         <div className="text-xs text-muted-foreground">{label}</div>
-        <div className="text-3xl font-semibold mt-1">{value}</div>
+        <div className="mt-1 flex items-baseline gap-2">
+          <div className="text-3xl font-semibold">{value}</div>
+          {delta != null && delta !== 0 && (
+            <span
+              className={cn(
+                'text-xs font-medium',
+                delta > 0 ? 'text-emerald-600' : 'text-rose-600',
+              )}
+            >
+              {delta > 0 ? '▲' : '▼'}
+              {Math.abs(delta)}
+            </span>
+          )}
+          {delta === 0 && <span className="text-xs text-muted-foreground">±0</span>}
+        </div>
+        {delta != null && (
+          <div className="text-[10px] text-muted-foreground mt-0.5">직전 기간 대비</div>
+        )}
       </CardContent>
     </Card>
+  )
+}
+
+// ───────────────────────── Health tile ─────────────────────────────────
+function HealthTile({ label, value, tone, onClick }) {
+  const clickable = typeof onClick === 'function' && value > 0
+  return (
+    <div
+      className={cn(
+        'rounded-md border p-3',
+        clickable && 'cursor-pointer transition-colors hover:bg-muted/40',
+      )}
+      onClick={clickable ? onClick : undefined}
+      title={clickable ? `${label} 보고서 보기` : undefined}
+    >
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div
+        className={cn(
+          'mt-1 text-2xl font-semibold',
+          tone === 'warn' && value > 0 ? 'text-amber-600' : 'text-foreground',
+        )}
+      >
+        {value}
+      </div>
+    </div>
+  )
+}
+
+// ───────────────────────── Entity coverage ─────────────────────────────
+function EntityCoverage({ coverage }) {
+  return (
+    <BarList
+      items={coverage.top}
+      footer={
+        coverage.noEntity > 0 ? `엔티티 미연결 ${coverage.noEntity}건` : null
+      }
+    />
+  )
+}
+
+// 가로 막대 목록 — {label, count}[] 을 상대 길이 막대로. 작성자 Top·엔티티
+// 커버리지 등 "라벨별 건수 상위" 패널 공통.
+function BarList({ items, footer }) {
+  const max = Math.max(1, ...items.map((e) => e.count))
+  return (
+    <div className="space-y-1.5">
+      {items.map((e) => (
+        <div key={e.label} className="grid grid-cols-[9rem_1fr_2rem] gap-2 items-center">
+          <span className="text-xs truncate" title={e.label}>
+            {e.label}
+          </span>
+          <div className="h-2 rounded bg-muted/40 overflow-hidden">
+            <div
+              className="h-full bg-primary/70"
+              style={{ width: `${(e.count / max) * 100}%` }}
+            />
+          </div>
+          <span className="text-xs tabular-nums text-right text-muted-foreground">
+            {e.count}
+          </span>
+        </div>
+      ))}
+      {footer && (
+        <div className="pt-1 text-[11px] text-muted-foreground">{footer}</div>
+      )}
+    </div>
   )
 }
 
@@ -323,7 +610,7 @@ function TrendChart({ buckets }) {
 }
 
 // ───────────────────────── Phase breakdown ─────────────────────────────
-function PhaseBreakdown({ counts, total }) {
+function PhaseBreakdown({ counts, total, onSelect }) {
   if (total === 0) {
     return <p className="text-sm text-muted-foreground py-3">기간 내 보고서 없음</p>
   }
@@ -348,8 +635,17 @@ function PhaseBreakdown({ counts, total }) {
         {PHASES.map((p) => {
           const n = counts.get(p.value) ?? 0
           const pct = total > 0 ? Math.round((n / total) * 100) : 0
+          const clickable = typeof onSelect === 'function' && n > 0
           return (
-            <div key={p.value} className="flex items-center gap-2">
+            <div
+              key={p.value}
+              className={cn(
+                'flex items-center gap-2 rounded px-1 -mx-1',
+                clickable && 'cursor-pointer hover:bg-muted/50',
+              )}
+              onClick={clickable ? () => onSelect(p.value) : undefined}
+              title={clickable ? `${p.label} 보고서 보기` : undefined}
+            >
               <span
                 className="h-2.5 w-2.5 rounded-sm shrink-0"
                 style={{ backgroundColor: PHASE_COLORS[p.value] }}
@@ -385,7 +681,7 @@ function Legend({ templates, colorOf, templateName }) {
   )
 }
 
-function StackedBarChart({ workspaceSlugs, workspaceName, crosstab, templateName }) {
+function StackedBarChart({ workspaceSlugs, workspaceName, crosstab, templateName, onSelectWorkspace }) {
   // workspaceSlugs[0] is always the currently-selected workspace (self).
   // Keep it pinned at the top so it stays an obvious reference row; the
   // rest are direct children sorted by total desc so the busiest sub-org
@@ -407,7 +703,17 @@ function StackedBarChart({ workspaceSlugs, workspaceName, crosstab, templateName
   return (
     <div className="space-y-2">
       {rows.map(({ ws, inner, total }) => (
-        <div key={ws} className="grid grid-cols-[10rem_1fr_2.5rem] gap-3 items-center">
+        <div
+          key={ws}
+          className={cn(
+            'grid grid-cols-[10rem_1fr_2.5rem] gap-3 items-center rounded px-1 -mx-1',
+            onSelectWorkspace && total > 0 && 'cursor-pointer hover:bg-muted/50',
+          )}
+          onClick={
+            onSelectWorkspace && total > 0 ? () => onSelectWorkspace(ws) : undefined
+          }
+          title={onSelectWorkspace && total > 0 ? `${workspaceName(ws)} 보고서 보기` : undefined}
+        >
           <span
             className="text-xs truncate"
             title={`${workspaceName(ws)} · ${ws}`}

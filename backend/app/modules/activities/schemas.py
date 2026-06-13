@@ -32,3 +32,20 @@ class ActivityRead(BaseModel):
 
 class ActivityListResponse(BaseModel):
     items: list[ActivityRead]
+
+
+class WorkspaceActivityRead(BaseModel):
+    """부서 홈 활동 피드 1행. 보고서별 타임라인(ActivityRead)과 달리
+    어느 보고서의 사건인지 알아야 하므로 report_title 을 함께 싣는다."""
+
+    id: int
+    report_id: int
+    report_title: str
+    actor: Optional[ActivityActorMini] = None
+    type: ReportActivityType
+    payload: dict
+    created_at: UtcDatetime
+
+
+class WorkspaceActivityListResponse(BaseModel):
+    items: list[WorkspaceActivityRead]

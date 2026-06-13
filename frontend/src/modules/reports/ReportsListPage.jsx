@@ -94,7 +94,11 @@ export default function ReportsListPage() {
   // labels without a second lookup. Server gets just the ids. Resets on
   // workspace switch (the useAsync below is keyed by slug, but this
   // state lives on the component, so we wipe it via the effect).
-  const [entityFilter, setEntityFilter] = useState([])
+  // 대시보드 '분포' 막대 드릴다운으로 들어오면 location.state.entityFilter 로
+  // 초기 선택(예: 모델A 막대 클릭 → 모델A 로 필터된 목록).
+  const [entityFilter, setEntityFilter] = useState(
+    () => location.state?.entityFilter ?? [],
+  )
   // Folder filter — `null` = 전체, 'uncategorized' = no folder, number
   // = specific folder id. Resets on workspace switch. Applies in both
   // personal AND org workspaces (Phase 1.6 brought folders to org).

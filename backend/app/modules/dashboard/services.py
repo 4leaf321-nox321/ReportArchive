@@ -220,7 +220,7 @@ def compute_dashboard(
     total_in = len(in_range)
     distributions: list[dict] = []
 
-    # 1) 엔티티 축별 — type 단위로 묶고 value 빈도.
+    # 1) 엔티티 축별 — type 단위로 묶고 엔티티 id 빈도(드릴다운에 id 필요).
     axes: dict[int, dict] = {}
     for r in in_range:
         for e in getattr(r, "entities", None) or []:
@@ -230,17 +230,18 @@ def compute_dashboard(
                 {
                     "slug": getattr(et, "slug", None) or str(e.type_id),
                     "label": getattr(et, "label", None) or str(e.type_id),
-                    "values": {},
+                    "byid": {},
                     "reports": set(),
                 },
             )
-            a["values"][e.value] = a["values"].get(e.value, 0) + 1
+            cur = a["byid"].setdefault(
+                e.id,
+                {"entity_id": e.id, "label": e.value or str(e.id), "count": 0},
+            )
+            cur["count"] += 1
             a["reports"].add(r.id)
-    for a in sorted(axes.values(), key=lambda x: -sum(x["values"].values())):
-        items = sorted(
-            ({"label": k or "(빈값)", "count": v} for k, v in a["values"].items()),
-            key=lambda x: -x["count"],
-        )[:DIST_TOP_N]
+    for a in sorted(axes.values(), key=lambda x: -sum(c["count"] for c in x["byid"].values())):
+        items = sorted(a["byid"].values(), key=lambda x: -x["count"])[:DIST_TOP_N]
         distributions.append(
             {
                 "key": f"entity:{a['slug']}",

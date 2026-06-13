@@ -229,6 +229,26 @@ export default function DashboardPage() {
                 footer={
                   activeDist.no_value > 0 ? `미지정 ${activeDist.no_value}건` : null
                 }
+                // 엔티티 축만 드릴다운(목록의 엔티티 필터로). 종류·템플릿은
+                // 목록에 대응 필터가 없어 클릭 비활성.
+                onItemClick={
+                  activeDist.key.startsWith('entity:') && slug
+                    ? (item) => {
+                        if (item.entity_id == null) return
+                        navigate(`/w/${slug}/reports`, {
+                          state: {
+                            entityFilter: [
+                              {
+                                id: item.entity_id,
+                                type_slug: activeDist.key.slice('entity:'.length),
+                                value: item.label,
+                              },
+                            ],
+                          },
+                        })
+                      }
+                    : undefined
+                }
               />
             )}
           </CardContent>
@@ -351,28 +371,37 @@ function HealthTile({ label, value, tone, onClick }) {
   )
 }
 
-// 가로 막대 목록 — {label, count}[] 을 상대 길이 막대로. 작성자 Top·엔티티
-// 커버리지 등 "라벨별 건수 상위" 패널 공통.
-function BarList({ items, footer }) {
+// 가로 막대 목록 — {label, count}[] 을 상대 길이 막대로. 작성자 Top·분포 등
+// "라벨별 건수 상위" 패널 공통. onItemClick 주면 행이 클릭 가능(드릴다운).
+function BarList({ items, footer, onItemClick }) {
   const max = Math.max(1, ...items.map((e) => e.count))
   return (
     <div className="space-y-1.5">
-      {items.map((e) => (
-        <div key={e.label} className="grid grid-cols-[9rem_1fr_2rem] gap-2 items-center">
-          <span className="text-xs truncate" title={e.label}>
-            {e.label}
-          </span>
-          <div className="h-2 rounded bg-muted/40 overflow-hidden">
-            <div
-              className="h-full bg-primary/70"
-              style={{ width: `${(e.count / max) * 100}%` }}
-            />
+      {items.map((e) => {
+        const clickable = typeof onItemClick === 'function'
+        return (
+          <div
+            key={e.label}
+            className={cn(
+              'grid grid-cols-[9rem_1fr_2rem] gap-2 items-center rounded',
+              clickable && 'cursor-pointer hover:bg-muted/40 -mx-1 px-1',
+            )}
+            onClick={clickable ? () => onItemClick(e) : undefined}
+            title={clickable ? `${e.label} 보고서 보기` : e.label}
+          >
+            <span className="text-xs truncate">{e.label}</span>
+            <div className="h-2 rounded bg-muted/40 overflow-hidden">
+              <div
+                className="h-full bg-primary/70"
+                style={{ width: `${(e.count / max) * 100}%` }}
+              />
+            </div>
+            <span className="text-xs tabular-nums text-right text-muted-foreground">
+              {e.count}
+            </span>
           </div>
-          <span className="text-xs tabular-nums text-right text-muted-foreground">
-            {e.count}
-          </span>
-        </div>
-      ))}
+        )
+      })}
       {footer && (
         <div className="pt-1 text-[11px] text-muted-foreground">{footer}</div>
       )}

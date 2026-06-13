@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 import {
@@ -18,9 +18,35 @@ import {
  *   const period = usePeriodFilter('month')
  *   <PeriodFilterControls period={period} />
  *   reports.filter((r) => dateInPeriodRange(r.report_date, period.range))
+ *
+ * `storageKey` 를 주면 선택한 종류(kind)를 localStorage 에 저장해 재진입 시
+ * 복원한다. anchor(특정 주/월)는 의도적으로 저장하지 않는다 — 재진입 시 현재
+ * 기간으로 스냅(오래된 주차로 열리는 혼란 방지).
  */
-export function usePeriodFilter(initialKind = 'month', initialAnchor = null) {
-  const [kind, setKind] = useState(initialKind)
+export function usePeriodFilter(
+  initialKind = 'month',
+  initialAnchor = null,
+  storageKey = null,
+) {
+  const [kind, setKind] = useState(() => {
+    if (storageKey && typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem(storageKey)
+        if (raw) return JSON.parse(raw)
+      } catch {
+        /* ignore */
+      }
+    }
+    return initialKind
+  })
+  useEffect(() => {
+    if (!storageKey) return
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(kind))
+    } catch {
+      /* ignore */
+    }
+  }, [storageKey, kind])
   // initialAnchor(예: 목록으로 돌아갈 때 보던 주차의 날짜)가 있으면 그 날짜로
   // 시작 — 없으면 현재. YYYY-MM-DD 문자열/Date 모두 받는다.
   const [anchor, setAnchor] = useState(() => {

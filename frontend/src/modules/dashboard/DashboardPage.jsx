@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/components/ui/card'
 import { PageHeader } from '@/shared/components/PageHeader'
@@ -7,6 +7,7 @@ import { ErrorState } from '@/shared/components/ErrorState'
 import { PeriodFilterControls, usePeriodFilter } from '@/shared/components/PeriodFilterControls'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
+import { usePersistedState } from '@/shared/hooks/usePersistedState'
 import { getDashboard, getCrosstab } from '@/shared/api/dashboard'
 import { PHASES } from '@/modules/reports/constants'
 import { cn } from '@/shared/lib/utils'
@@ -39,7 +40,7 @@ const PHASE_COLORS = {
 export default function DashboardPage() {
   const { workspace, slug } = useWorkspace()
   const navigate = useNavigate()
-  const period = usePeriodFilter('week')
+  const period = usePeriodFilter('week', null, 'ra:dash:period:v1')
   const unit = period.meta.unit
   const range = period.range
   // 기간 → 서버 쿼리(YYYY-MM-DD). 전체기간이면 from/to 미전송.
@@ -49,7 +50,10 @@ export default function DashboardPage() {
   // 하위부서 포함 토글 — org 게시판에서만. 켜면 자손 부서 게시판까지 롤업
   // (목록의 '하위부서 포함'과 동일 동작). 부서 전환 시 자동 false 로(키 slug).
   const isOrg = workspace?.kind === 'org'
-  const [includeDescendants, setIncludeDescendants] = useState(false)
+  const [includeDescendants, setIncludeDescendants] = usePersistedState(
+    'ra:dash:incldesc:v1',
+    false,
+  )
   const inclDesc = isOrg && includeDescendants
 
   // Phase 3A — 모든 집계를 서버에서. 클라는 단일 호출로 받아 표시만 한다.
@@ -80,13 +84,15 @@ export default function DashboardPage() {
   // 메타데이터 분포 — 차원(모델·불량·종류·템플릿…) 선택 드롭다운 1개 카드.
   // 선택 차원이 현재 응답에 없으면(기간 바뀜 등) 첫 차원으로 폴백.
   const distributions = data?.distributions ?? []
-  const [dimKey, setDimKey] = useState('')
+  // 대시보드 선택값은 localStorage 에 저장(재진입 시 복원). 저장된 차원이 현재
+  // 워크스페이스 응답에 없으면 activeDist/Eff 계산에서 첫 차원으로 폴백.
+  const [dimKey, setDimKey] = usePersistedState('ra:dash:dim:v1', '')
   const activeDist =
     distributions.find((d) => d.key === dimKey) ?? distributions[0] ?? null
 
   // 교차 분석 — 두 차원(행×열). 기본은 분포의 첫 두 차원.
-  const [rowDim, setRowDim] = useState('')
-  const [colDim, setColDim] = useState('')
+  const [rowDim, setRowDim] = usePersistedState('ra:dash:row:v1', '')
+  const [colDim, setColDim] = usePersistedState('ra:dash:col:v1', '')
   const rowDimEff =
     distributions.find((d) => d.key === rowDim)?.key ?? distributions[0]?.key ?? ''
   const colDimEff =

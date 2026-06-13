@@ -138,6 +138,17 @@ export default function ReportsListPage() {
   const [templateFilter, setTemplateFilter] = useState(
     () => location.state?.templateId ?? '',
   )
+  // 대시보드 드릴다운이 넘긴 스코프 — 보고 기준일 범위(report_date)와 하위부서
+  // 포함. 대시보드 셀/막대 개수와 목록 개수를 일치시키기 위함. 드릴다운 전용
+  // (툴바 컨트롤 없음), 배너에 표시·해제.
+  const [drillDateRange, setDrillDateRange] = useState(() =>
+    location.state?.dateFrom && location.state?.dateTo
+      ? { from: location.state.dateFrom, to: location.state.dateTo }
+      : null,
+  )
+  const [drillIncludeDescendants, setDrillIncludeDescendants] = useState(
+    () => location.state?.includeDescendants === true,
+  )
   // 조직 간 공개 탐색 토글 — org 에서만. 켜면 다른 조직 공개분까지 합쳐
   // 보여준다(조직간공개_설계.md §5). 기본 off 라 자기 게시판 목록은 깨끗.
   const [includePublic, setIncludePublic] = useState(false)
@@ -178,6 +189,8 @@ export default function ReportsListPage() {
     setMountWorkspaceFilter('')
     setReportTypeFilter('')
     setTemplateFilter('')
+    setDrillDateRange(null)
+    setDrillIncludeDescendants(false)
     setIncludePublic(false)
   }, [slug])
   // Bulk-select state — a Set of report ids the user has ticked. We
@@ -246,6 +259,10 @@ export default function ReportsListPage() {
   const folderDepKey = subDeptSel
     ? `${subDeptSel.slug}:${subDeptSel.folderId ?? ''}`
     : String(folderQueryValue ?? '')
+  // 대시보드 드릴다운으로 들어올 때 '하위부서 포함' 을 전달받으면(=대시보드가
+  // 자손 부서까지 집계한 셀/막대였던 경우) 목록도 같은 스코프로 자손 게시판을
+  // 합쳐 조회해 개수를 일치시킨다. org + 자손 폴더 선택(subDeptSel) 아닐 때만.
+  const drillDescendants = drillIncludeDescendants && isOrg && !subDeptSel
   const { data: reports, loading, error, reload } = useAsync(
     () =>
       slug
@@ -255,12 +272,13 @@ export default function ReportsListPage() {
             // 자손 부서 보기일 땐 그 부서 게시판 자체를 보는 것이라
             // 조직간공개 포함/휴지통은 적용하지 않는다.
             includePublic: isOrg && includePublic && !subDeptSel,
+            includeDescendants: drillDescendants,
             // 휴지통 보기(개인 공간 한정) — 소프트삭제된 것만.
             trashed: isPersonal && trashView && !subDeptSel,
             workspaceSlug: workspaceOverride,
           })
         : Promise.resolve([]),
-    [slug, entityFilterKey, folderDepKey, workspaceOverride, isOrg, includePublic, isPersonal, trashView]
+    [slug, entityFilterKey, folderDepKey, workspaceOverride, isOrg, includePublic, isPersonal, trashView, drillDescendants]
   )
   const { data: templates } = useAsync(
     () => (slug ? listTemplates() : Promise.resolve([])),
@@ -355,6 +373,14 @@ export default function ReportsListPage() {
         !templateFilter ||
         uniqueTemplatePairs(r).some(([id]) => id === templateFilter),
     )
+    .filter((r) => {
+      // 대시보드 드릴다운 기간 — 보고 기준일(report_date, 없으면 created_at)
+      // 로 비교. 대시보드 집계와 같은 기준이라 셀/막대 개수와 일치한다.
+      if (!drillDateRange) return true
+      const d = r.report_date || (r.created_at ? r.created_at.slice(0, 10) : null)
+      if (!d) return false
+      return d >= drillDateRange.from && d <= drillDateRange.to
+    })
     .map((r) => ({
       ...r,
       // Flatten the embedded report_type ref into a sortable/searchable
@@ -490,6 +516,20 @@ export default function ReportsListPage() {
         clear: () => setTemplateFilter(''),
       })
     }
+    if (drillDateRange) {
+      out.push({
+        key: 'drillDate',
+        label: `기간: ${drillDateRange.from} ~ ${drillDateRange.to}`,
+        clear: () => setDrillDateRange(null),
+      })
+    }
+    if (drillIncludeDescendants) {
+      out.push({
+        key: 'drillDesc',
+        label: '하위부서 포함',
+        clear: () => setDrillIncludeDescendants(false),
+      })
+    }
     // 엔티티 태그 — 어떤 값이 걸렸는지 값별 칩으로(드릴다운 가시성). 각 칩 ✕ 는
     // 그 엔티티만 제거.
     for (const e of entityFilter) {
@@ -511,6 +551,8 @@ export default function ReportsListPage() {
     staleDays,
     reportTypeFilter,
     templateFilter,
+    drillDateRange,
+    drillIncludeDescendants,
     reportTypeOptions,
     templateName,
     workspaceNameOf,
@@ -523,6 +565,8 @@ export default function ReportsListPage() {
     setMountWorkspaceFilter('')
     setReportTypeFilter('')
     setTemplateFilter('')
+    setDrillDateRange(null)
+    setDrillIncludeDescendants(false)
     setScopeSlug('')
     setEntityFilter([])
     setFolderFilter((cur) =>

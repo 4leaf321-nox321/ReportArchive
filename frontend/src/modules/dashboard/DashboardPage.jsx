@@ -107,6 +107,14 @@ export default function DashboardPage() {
 
   const authorTop = data?.author_top ?? { top: [], distinct: 0, unknown: 0 }
 
+  // 드릴다운 시 현재 대시보드 스코프(기간·하위부서)를 목록에 함께 넘겨 개수를
+  // 일치시킨다. 전체기간(from/to 없음)·하위부서 제외면 아무것도 안 붙는다.
+  const withScope = (st) => ({
+    ...st,
+    ...(from && to ? { dateFrom: from, dateTo: to } : {}),
+    ...(inclDesc ? { includeDescendants: true } : {}),
+  })
+
   // Phase breakdown — 고정 enum 순서로 Map 화(레이아웃 안정).
   const phaseCounts = useMemo(() => {
     const pb = data?.phase_breakdown ?? {}
@@ -292,7 +300,7 @@ export default function DashboardPage() {
                   slug
                     ? (item) => {
                         const st = distDrilldownState(activeDist.key, item)
-                        if (st) navigate(`/w/${slug}/reports`, { state: st })
+                        if (st) navigate(`/w/${slug}/reports`, { state: withScope(st) })
                       }
                     : undefined
                 }
@@ -383,7 +391,8 @@ export default function DashboardPage() {
                 data={crosstab}
                 onCell={(rh, ch) => {
                   const st = crosstabDrilldownState(rowDimEff, rh, colDimEff, ch)
-                  if (st && slug) navigate(`/w/${slug}/reports`, { state: st })
+                  if (st && slug)
+                    navigate(`/w/${slug}/reports`, { state: withScope(st) })
                 }}
               />
             )}

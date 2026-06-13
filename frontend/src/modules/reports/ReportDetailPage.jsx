@@ -29,6 +29,7 @@ import {
   GripVertical,
   HardDrive,
   Inbox,
+  Presentation,
   Info,
   Layers,
   LayoutGrid,
@@ -243,6 +244,10 @@ export default function ReportDetailPage() {
   // browser print dialog opens. Persisted so a writer who prefers 90%
   // doesn't have to re-pick on every print this session.
   const [pdfDialogOpen, setPdfDialogOpen] = useState(false)
+  // PPT 저장 — 비율 선택 다이얼로그 + 진행률. 비율은 세션 유지(보고서 슬라이드
+  // 가이드가 있으면 다이얼로그 열 때 그 값으로 시드).
+  const [pptxDialogOpen, setPptxDialogOpen] = useState(false)
+  const [pptxRatio, setPptxRatio] = usePersistedState('ra:pptx-ratio:v1', '16:9')
   const [pdfPrintScale, setPdfPrintScale] = usePersistedState(
     'ra:pdf-print-scale:v1',
     1,
@@ -346,6 +351,9 @@ export default function ReportDetailPage() {
   // shape as docxProgress so the shared ExportOverlay component can read
   // both. Set to null when no export is running.
   const [htmlProgress, setHtmlProgress] = useState(null)
+  // PPT export progress — 같은 {phase, current, total, label} shape 으로
+  // ExportOverlay 가 공용으로 읽는다.
+  const [pptxProgress, setPptxProgress] = useState(null)
   // Abort controller for the currently-running export (HTML or DOCX —
   // they`re mutually exclusive thanks to setPrinting). Wired to the
   // overlay`s 취소 button; aborted state triggers AbortError inside the
@@ -2907,6 +2915,67 @@ export default function ReportDetailPage() {
     }
   }
 
+  // PPT export — 비율 선택 다이얼로그를 먼저 연다. 보고서에 슬라이드 가이드
+  // 비율이 있으면 그 값으로 시드(없으면 직전 선택/16:9 유지).
+  function handleExportPptx() {
+    if (!draft) return
+    const guideRatio =
+      typeof existingReport?.page_slide_guide === 'object' &&
+      existingReport.page_slide_guide?.ratio
+        ? existingReport.page_slide_guide.ratio
+        : null
+    if (guideRatio && ['16:9', '4:3', '16:10'].includes(guideRatio)) {
+      setPptxRatio(guideRatio)
+    }
+    setPptxDialogOpen(true)
+  }
+
+  // 실제 내보내기 — Word 경로와 같은 패턴(읽기전용 레이아웃 flip + 차트 안정화
+  // 대기 + AbortController). 슬라이드는 흰 배경이라 다크모드면 토큰색이 어색해서
+  // 캡처 동안만 라이트 테마를 강제하고 끝나면 원복한다.
+  async function performPptxExport(ratio) {
+    if (!draft) return
+    setPptxDialogOpen(false)
+    exportAbortRef.current?.abort()
+    const controller = new AbortController()
+    exportAbortRef.current = controller
+    const root = document.documentElement
+    const wasDark = root.classList.contains('dark')
+    setPrinting(true)
+    setPptxProgress({ phase: 'settle', label: '차트 렌더링 안정화 중...' })
+    try {
+      if (wasDark) root.classList.remove('dark')
+      // 읽기전용 레이아웃 commit + 다크→라이트 토큰 재계산 대기.
+      await new Promise((r) =>
+        requestAnimationFrame(() => requestAnimationFrame(r)),
+      )
+      if (controller.signal.aborted) throw new DOMException('Export cancelled', 'AbortError')
+      await waitForChartsToSettle(5000, controller.signal)
+      if (controller.signal.aborted) throw new DOMException('Export cancelled', 'AbortError')
+      setPptxProgress({ phase: 'load', label: '내보내기 모듈 로드 중...' })
+      const { exportReportToPptx } = await import('./exportReportToPptx')
+      await exportReportToPptx({
+        draft,
+        slide: { ratio },
+        onProgress: setPptxProgress,
+        signal: controller.signal,
+      })
+      toast.success('PPT 파일로 저장했습니다.')
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        toast.info('PPT 내보내기를 취소했습니다.')
+      } else {
+        console.error(err)
+        toast.error(`PPT 저장 실패: ${err?.message ?? err}`)
+      }
+    } finally {
+      if (wasDark) root.classList.add('dark')
+      setPrinting(false)
+      setPptxProgress(null)
+      if (exportAbortRef.current === controller) exportAbortRef.current = null
+    }
+  }
+
   // Shared import path for both the file picker and the paste-JSON dialog.
   // Throws on schema mismatch so the caller can surface its own toast.
   async function applyImportedDraft(text) {
@@ -3589,6 +3658,10 @@ export default function ReportDetailPage() {
               <DropdownMenuItem onSelect={handleExportDocx}>
                 <FileType2 className="mr-2 h-3.5 w-3.5" />
                 Word로 저장
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={handleExportPptx}>
+                <Presentation className="mr-2 h-3.5 w-3.5" />
+                PPT로 저장
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={handleExportHtml}>
                 <FileCode className="mr-2 h-3.5 w-3.5" />
@@ -4500,6 +4573,14 @@ export default function ReportDetailPage() {
         onConfirm={(s) => performPdfPrint(s)}
       />
 
+      <PptxExportDialog
+        open={pptxDialogOpen}
+        onOpenChange={setPptxDialogOpen}
+        ratio={pptxRatio}
+        onChangeRatio={setPptxRatio}
+        onConfirm={(r) => performPptxExport(r)}
+      />
+
       {/* Export progress overlay — fixed full-screen dim + center card
           with spinner + step label + (when known) bar. Blocks user
           interaction during export which is desirable: clicking around
@@ -4519,6 +4600,13 @@ export default function ReportDetailPage() {
         <ExportOverlay
           title="HTML 파일로 저장 중"
           progress={htmlProgress}
+          onCancel={() => exportAbortRef.current?.abort()}
+        />
+      )}
+      {pptxProgress && (
+        <ExportOverlay
+          title="PPT 파일로 저장 중"
+          progress={pptxProgress}
           onCancel={() => exportAbortRef.current?.abort()}
         />
       )}
@@ -5557,6 +5645,78 @@ function PdfPrintDialog({ open, onOpenChange, scale, onChangeScale, onConfirm })
               취소
             </Button>
             <Button onClick={handleConfirm}>인쇄 진행</Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+const PPTX_RATIO_PRESETS = [
+  ['16:9', '와이드 16:9', 'PowerPoint 2013+ 기본'],
+  ['4:3', '표준 4:3', '구형/문서형'],
+  ['16:10', '16:10', '일부 노트북'],
+]
+
+/** PPT 저장 — 슬라이드 비율 선택. 보고서가 세로로 길면 행 단위로 여러 슬라이드에
+ *  나눠 담는다. 위젯은 화면 모양 그대로 이미지로 들어간다(편집은 위치만 가능). */
+function PptxExportDialog({ open, onOpenChange, ratio, onChangeRatio, onConfirm }) {
+  const [local, setLocal] = useState(ratio ?? '16:9')
+  useEffect(() => {
+    if (open) setLocal(ratio ?? '16:9')
+  }, [open, ratio])
+  function handleConfirm() {
+    onChangeRatio(local)
+    onConfirm(local)
+  }
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>PPT로 저장</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <div className="text-sm font-medium">슬라이드 비율</div>
+            <div className="flex gap-1.5">
+              {PPTX_RATIO_PRESETS.map(([value, label, hint]) => {
+                const active = value === local
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setLocal(value)}
+                    className={cn(
+                      'flex-1 rounded-md border px-2 py-2 text-center transition-colors',
+                      active
+                        ? 'bg-primary text-primary-foreground border-primary'
+                        : 'bg-background hover:bg-muted',
+                    )}
+                  >
+                    <div className="text-sm font-medium">{label}</div>
+                    <div
+                      className={cn(
+                        'text-[10px]',
+                        active ? 'text-primary-foreground/80' : 'text-muted-foreground',
+                      )}
+                    >
+                      {hint}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              보고서 내용이 세로로 길면 <strong>행 단위로 여러 슬라이드</strong>에 나눠
+              담깁니다. 위젯은 화면에 보이는 모양 그대로 이미지로 들어가며, 동영상·HTML
+              임베드처럼 캡처할 수 없는 위젯은 빈 영역으로 남을 수 있습니다.
+            </p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
+              취소
+            </Button>
+            <Button onClick={handleConfirm}>저장</Button>
           </div>
         </div>
       </DialogContent>

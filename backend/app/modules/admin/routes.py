@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.modules.access_logs import services as access_log_services
 from app.modules.admin import services
 from app.modules.files import orphans as orphan_services
 from app.modules.files.orphans import OrphanVersionGuardError
@@ -80,6 +81,25 @@ def delete_orphan_files(
         return error_response(str(exc), status_code=409)
     return success_response(
         data=result, message=f"{result['deleted']}개 파일을 삭제했습니다."
+    )
+
+
+@router.get("/access-logs")
+def list_access_logs(
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    user_id: int | None = Query(default=None),
+    success: bool | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: CurrentUser = Depends(require_system_admin),
+):
+    """사용자 접속(로그인/가입) 이력 — 최신순 + 총건수. 시스템 관리자 전용
+    (클라이언트 IP·User-Agent 등 민감 정보 포함). user_id / success(성공·실패)
+    로 좁힐 수 있다."""
+    return success_response(
+        data=access_log_services.list_access_logs(
+            db, limit=limit, offset=offset, user_id=user_id, success=success
+        )
     )
 
 

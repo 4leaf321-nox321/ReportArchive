@@ -3,11 +3,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.modules.access_logs import services as access_log_services
 from app.modules.auth.services import hash_password, verify_password
 from app.modules.users import pat
 from app.modules.users.models import (
@@ -74,6 +75,7 @@ def _account_read(db: Session, user: User, *, membership_count: int) -> AccountA
 
 @router.get("/me")
 def get_me(
+    request: Request,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user_no_workspace),
     x_workspace_slug: Optional[str] = Header(default=None, alias="X-Workspace-Slug"),
@@ -83,6 +85,15 @@ def get_me(
 
     Doesn't require a workspace header so the frontend can call /api/me
     immediately after login (before workspaces have loaded)."""
+    # 세션 복원 접속 기록 — '로그인 유지'로 토큰만 들고 재방문하는 사용자도
+    # 접속 이력에 잡히게 한다(스로틀로 도배 방지). 단 PAT(rat_…, MCP 등 외부
+    # 클라이언트)는 사람의 접속이 아니므로 제외한다.
+    auth_parts = request.headers.get("authorization", "").split()
+    token = auth_parts[1] if len(auth_parts) == 2 else ""
+    if token and not token.startswith(pat.TOKEN_PREFIX):
+        access_log_services.touch_session(
+            db, user_id=user.id, email=user.email, request=request
+        )
     # Bring back the Workspace row alongside the membership so the
     # response carries display name + kind without forcing a second
     # /api/workspaces lookup on the client (and so the profile page can

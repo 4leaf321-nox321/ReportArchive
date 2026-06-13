@@ -34,6 +34,7 @@ from app.modules.editors import models as _editors_models  # noqa: F401
 from app.modules.activities import models as _activities_models  # noqa: F401
 from app.modules.grants import models as _grants_models  # noqa: F401
 from app.modules.composite_presets import models as _composite_presets_models  # noqa: F401
+from app.modules.access_logs import models as _access_logs_models  # noqa: F401
 # auth/members modules don't have their own models — they reuse users + workspace_members
 
 config = context.config

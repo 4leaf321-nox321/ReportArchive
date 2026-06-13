@@ -67,6 +67,7 @@ import { useAsync } from '@/shared/hooks/useAsync'
 import {
   getAccountDetail,
   listAllAccounts,
+  listAccessLogs,
   setUserActive,
   setUserHomeWorkspace,
   adminSetUserPassword,
@@ -533,6 +534,7 @@ export default function AccountsAdminPage() {
         <TabsList>
           <TabsTrigger value="list">계정 목록</TabsTrigger>
           <TabsTrigger value="depts">부서별 가입자 현황</TabsTrigger>
+          <TabsTrigger value="access">접속 이력</TabsTrigger>
         </TabsList>
         <TabsContent value="list" className="space-y-4 mt-4">
 
@@ -716,6 +718,9 @@ export default function AccountsAdminPage() {
             workspaces={workspaces}
             descendantsBySlug={descendantsBySlug}
           />
+        </TabsContent>
+        <TabsContent value="access" className="mt-4">
+          <AccessLogTab isSystemAdmin={isSystemAdmin} />
         </TabsContent>
       </Tabs>
 
@@ -1421,6 +1426,239 @@ function formatDate(iso) {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return ''
   return d.toISOString().slice(0, 10)
+}
+
+// 백엔드는 naive UTC(datetime.utcnow)로 저장 → 오프셋이 없으면 'Z'를 붙여
+// UTC로 해석한 뒤 사용자 로컬 시각으로 표기. (날짜+시간)
+function formatDateTime(iso) {
+  if (!iso) return ''
+  const hasTz = /[zZ]$|[+-]\d\d:?\d\d$/.test(iso)
+  const d = new Date(hasTz ? iso : `${iso}Z`)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleString('ko-KR', { hour12: false })
+}
+
+// User-Agent → "OS · 브라우저" 한 줄 요약(전체는 title 툴팁). 정확한 파싱이
+// 목적이 아니라 한눈에 알아볼 수 있게 하는 용도.
+function shortUserAgent(ua) {
+  if (!ua) return '—'
+  const os = /Windows/.test(ua)
+    ? 'Windows'
+    : /Mac OS X|Macintosh/.test(ua)
+      ? 'macOS'
+      : /Android/.test(ua)
+        ? 'Android'
+        : /iPhone|iPad|iPod/.test(ua)
+          ? 'iOS'
+          : /Linux/.test(ua)
+            ? 'Linux'
+            : ''
+  const browser = /Edg\//.test(ua)
+    ? 'Edge'
+    : /OPR\/|Opera/.test(ua)
+      ? 'Opera'
+      : /Whale/.test(ua)
+        ? 'Whale'
+        : /SamsungBrowser/.test(ua)
+          ? 'Samsung'
+          : /Chrome\//.test(ua)
+            ? 'Chrome'
+            : /Firefox\//.test(ua)
+              ? 'Firefox'
+              : /Safari\//.test(ua)
+                ? 'Safari'
+                : ''
+  const label = [os, browser].filter(Boolean).join(' · ')
+  return label || ua.slice(0, 40)
+}
+
+const ACCESS_LIMIT_OPTIONS = [100, 200, 500]
+const ACCESS_SUCCESS_FILTERS = [
+  ['all', '전체'],
+  ['success', '성공'],
+  ['fail', '실패'],
+]
+
+// 접속 이력 탭 — 로그인/가입 시도 로그(시스템 관리자 전용). 탭을 열 때만
+// 마운트되어(Radix Tabs) 그때 fetch 한다. 최근 N건 + 성공/실패 필터.
+function AccessLogTab({ isSystemAdmin }) {
+  const [limit, setLimit] = useState(200)
+  const [successFilter, setSuccessFilter] = useState('all') // 'all' | 'success' | 'fail'
+  const [reloadKey, setReloadKey] = useState(0)
+  const successParam =
+    successFilter === 'success' ? true : successFilter === 'fail' ? false : null
+
+  const { data, loading, error } = useAsync(
+    () =>
+      isSystemAdmin
+        ? listAccessLogs({ limit, success: successParam })
+        : Promise.resolve({ items: [], total: 0 }),
+    [isSystemAdmin, limit, successFilter, reloadKey],
+  )
+  const items = useMemo(() => data?.items ?? [], [data])
+  const total = data?.total ?? 0
+
+  const columns = useMemo(
+    () => [
+      {
+        key: 'created_at',
+        header: '접속 시각',
+        sortable: true,
+        headerClassName: 'w-[160px]',
+        render: (r) => (
+          <span className="tabular-nums whitespace-nowrap text-xs">
+            {formatDateTime(r.created_at)}
+          </span>
+        ),
+      },
+      {
+        key: 'name',
+        header: '사용자',
+        sortable: true,
+        render: (r) => (
+          <div className="min-w-0">
+            <div className="truncate">
+              {r.name || (
+                <span className="text-muted-foreground italic">(미가입 / 삭제)</span>
+              )}
+            </div>
+            <div className="truncate text-[11px] text-muted-foreground font-mono">
+              {r.email}
+            </div>
+          </div>
+        ),
+      },
+      {
+        key: 'event',
+        header: '구분',
+        sortable: true,
+        headerClassName: 'w-[72px]',
+        render: (r) => {
+          const label =
+            r.event === 'signup' ? '가입' : r.event === 'resume' ? '세션' : '로그인'
+          const title =
+            r.event === 'signup'
+              ? '회원가입'
+              : r.event === 'resume'
+                ? "'로그인 유지'로 토큰만 들고 재접속(자동)"
+                : '아이디·비밀번호 로그인'
+          return (
+            <span
+              title={title}
+              className={r.event === 'resume' ? 'text-muted-foreground' : ''}
+            >
+              {label}
+            </span>
+          )
+        },
+      },
+      {
+        key: 'success',
+        header: '결과',
+        sortable: true,
+        headerClassName: 'w-[72px]',
+        render: (r) =>
+          r.success ? (
+            <Badge
+              variant="outline"
+              className="border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+            >
+              성공
+            </Badge>
+          ) : (
+            <Badge variant="destructive">실패</Badge>
+          ),
+      },
+      {
+        key: 'ip_address',
+        header: 'IP',
+        sortable: true,
+        headerClassName: 'w-[130px]',
+        render: (r) => (
+          <span className="font-mono text-xs">{r.ip_address || '—'}</span>
+        ),
+      },
+      {
+        key: 'user_agent',
+        header: '기기 / 브라우저',
+        render: (r) => (
+          <span
+            className="block max-w-[240px] truncate text-xs text-muted-foreground"
+            title={r.user_agent || ''}
+          >
+            {shortUserAgent(r.user_agent)}
+          </span>
+        ),
+      },
+    ],
+    [],
+  )
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3 flex-wrap text-xs">
+        <div className="inline-flex items-center gap-1">
+          <span className="text-muted-foreground">결과</span>
+          {ACCESS_SUCCESS_FILTERS.map(([v, label]) => (
+            <Button
+              key={v}
+              size="sm"
+              variant={successFilter === v ? 'default' : 'outline'}
+              className="h-7 text-xs"
+              onClick={() => setSuccessFilter(v)}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+        <div className="inline-flex items-center gap-1">
+          <span className="text-muted-foreground">최근</span>
+          <select
+            value={limit}
+            onChange={(e) => setLimit(Number(e.target.value))}
+            className="h-7 rounded-md border border-input bg-background px-2 text-xs"
+          >
+            {ACCESS_LIMIT_OPTIONS.map((n) => (
+              <option key={n} value={n}>
+                {n}건
+              </option>
+            ))}
+          </select>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs"
+          onClick={() => setReloadKey((k) => k + 1)}
+        >
+          새로고침
+        </Button>
+        <span className="text-[11px] text-muted-foreground ml-auto">
+          {loading ? '불러오는 중…' : `표시 ${items.length} / 전체 ${total}건`}
+        </span>
+      </div>
+
+      {error ? (
+        <ErrorState
+          description={error.message}
+          onRetry={() => setReloadKey((k) => k + 1)}
+        />
+      ) : loading ? (
+        <Skeleton className="h-72" />
+      ) : (
+        <DataTable
+          columns={columns}
+          data={items}
+          fixedLayout
+          minTableWidthClass="min-w-[820px]"
+          defaultSort={{ key: 'created_at', dir: 'desc' }}
+          pageSizeStorageKey="access-logs"
+          searchableKeys={['name', 'email', 'ip_address']}
+          searchPlaceholder="이름 / 이메일 / IP 검색"
+        />
+      )}
+    </div>
+  )
 }
 
 // 비밀번호 찾기 대기 큐 — 사용자가 '비밀번호 찾기'로 접수한 요청을 보여주고,

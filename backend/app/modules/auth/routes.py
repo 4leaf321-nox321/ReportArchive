@@ -5,12 +5,13 @@ users via workspace admin without requiring a password change).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
+from app.modules.access_logs import services as access_log_services
 from app.modules.auth import services as auth_services
 from app.modules.auth.schemas import (
     LoginRequest,
@@ -37,14 +38,30 @@ router = APIRouter()
 
 
 @router.post("/login")
-def login(payload: LoginRequest, db: Session = Depends(get_db)):
+def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
     user = auth_services.authenticate(db, payload.email, payload.password)
     if not user:
+        # 실패도 남긴다(미가입 이메일 포함) — 이상 접속 확인용. user_id 없음.
+        access_log_services.record_access(
+            db,
+            email=payload.email,
+            success=False,
+            event="login",
+            request=request,
+        )
         return error_response(
             "이메일 또는 비밀번호가 올바르지 않습니다.",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
     token = auth_services.create_access_token(user.id)
+    access_log_services.record_access(
+        db,
+        email=user.email,
+        success=True,
+        event="login",
+        user_id=user.id,
+        request=request,
+    )
     return success_response(
         data=LoginResponse(
             access_token=token,
@@ -118,7 +135,7 @@ def public_workspace_list(db: Session = Depends(get_db)):
 
 
 @router.post("/signup")
-def signup(payload: SignupRequest, db: Session = Depends(get_db)):
+def signup(payload: SignupRequest, request: Request, db: Session = Depends(get_db)):
     """Open self-signup. Creates the user + assigns `user` role on the
     chosen workspace. Returns an access token so the user lands logged in.
 
@@ -169,6 +186,16 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
     ensure_personal_workspace(db, user)
     db.commit()
     db.refresh(user)
+
+    # 가입 = 첫 접속. 로그인 이력과 같은 표에 'signup' 으로 남긴다.
+    access_log_services.record_access(
+        db,
+        email=user.email,
+        success=True,
+        event="signup",
+        user_id=user.id,
+        request=request,
+    )
 
     token = auth_services.create_access_token(user.id)
     return created_response(

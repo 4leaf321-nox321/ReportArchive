@@ -100,6 +100,22 @@ export async function setUserActive(userId, { isActive }) {
   return extractData(res)
 }
 
+/** 시스템 관리자 — 사용자 접속(로그인/가입) 이력. 최신순 + 총건수.
+ *  success: true(성공)/false(실패)/null(전체), userId 로 한 사용자만.
+ *  응답: { items: [...], total }. */
+export async function listAccessLogs({
+  limit = 200,
+  offset = 0,
+  userId = null,
+  success = null,
+} = {}) {
+  const params = { limit, offset }
+  if (userId != null) params.user_id = userId
+  if (success != null) params.success = success
+  const res = await apiClient.get('/api/admin/access-logs', { params })
+  return extractData(res)
+}
+
 /** 시스템 관리자 — 사용자의 home(소속) 부서 변경. 새 home 으로 지정된
  *  부서에는 WorkspaceMember 행이 자동으로 확보된다. null/빈 값이면 home
  *  만 해제. */

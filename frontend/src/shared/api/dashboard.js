@@ -1,0 +1,18 @@
+import { apiClient, extractData } from './client'
+
+/**
+ * 부서 대시보드 집계 (Phase 3A) — 서버가 KPI·단계·추세·건강도·엔티티·작성자Top
+ * 을 한 번에 계산해 돌려준다. 부서 컨텍스트는 X-Workspace-Slug 헤더로 잡힌다.
+ *
+ * @param {{from?: string, to?: string, unit?: 'week'|'month'}} opts
+ *   from/to 는 'YYYY-MM-DD'(생략 시 전체 기간). unit 은 추세 버킷 단위.
+ * 반환: { kpis, phase_breakdown, trend, health, entity_coverage, author_top, content_metrics }
+ */
+export async function getDashboard({ from, to, unit = 'week' } = {}) {
+  const params = new URLSearchParams()
+  if (from) params.append('from', from)
+  if (to) params.append('to', to)
+  if (unit) params.append('unit', unit)
+  const res = await apiClient.get(`/api/dashboard?${params.toString()}`)
+  return extractData(res)
+}

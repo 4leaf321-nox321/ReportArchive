@@ -13,6 +13,7 @@ from app.modules.auth.routes import router as auth_router
 from app.modules.comments.routes import router as comments_router
 from app.modules.composites.routes import router as composites_router
 from app.modules.composite_presets.routes import router as composite_presets_router
+from app.modules.dashboard.routes import router as dashboard_router
 from app.modules.editors.routes import router as editors_router
 from app.modules.embed.routes import router as embed_router
 from app.modules.activities.routes import router as activities_router
@@ -82,6 +83,7 @@ def register_routers(app: FastAPI) -> None:
         tags=["composite-presets"],
     )
     app.include_router(presets_router, prefix="/api/presets", tags=["presets"])
+    app.include_router(dashboard_router, prefix="/api", tags=["dashboard"])
     app.include_router(files_router, prefix="/api/files", tags=["files"])
     app.include_router(embed_router, prefix="/api/embed", tags=["embed"])
     app.include_router(

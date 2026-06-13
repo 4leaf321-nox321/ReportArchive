@@ -36,11 +36,7 @@ GET /api/dashboard?from=<date>&to=<date>&unit=week|month
               "prev": { "total": N, "authors": N, "templates": N } },  // Δ용 직전 기간
   "phase_breakdown": { "drafting": N, "reviewing": N, "finalized": N },
   "trend":  [ { "key": "2026-W20", "label": "W20", "count": N }, ... ],
-  "crosstab": {                       // 부서 × 템플릿 (자기 + 직속 자식, 손자는 자식으로 롤업)
-    "workspaces": [ { "slug", "name" } ],
-    "templates":  [ { "template_id", "name", "count" } ],   // usage desc
-    "counts": { "<ws_slug>": { "<template_id>": N } }
-  },
+  // 부서 × 템플릿 crosstab 은 제거(아래 "제거: 부서×템플릿" 참조).
   "health": { "stale_drafts": N, "uncategorized": N, "open_comments": N },  // 현재 상태 기준(기간 무관)
   "entity_coverage": { "top": [ { "id", "label", "count" } ], "no_entity": N, "distinct": N },
   "author_top":      { "top": [ { "label", "count" } ], "distinct": N, "unknown": N },
@@ -59,15 +55,14 @@ GET /api/dashboard?from=<date>&to=<date>&unit=week|month
   (mount.folder_id IS NULL 또는 personal folder_id IS NULL), 미해결 코멘트(이미 만든
   `count_open_threads_for_reports`).
 
-### 가장 까다로운 부분 — 부서×템플릿 crosstab
-- 현재 클라가 `mount_workspaces` + 부모 walk 로 "자기 + 직속 자식(손자는 자식으로 롤업)"
-  을 만든다. 서버에선:
-  1. scope = 자기 + 직속 자식 슬러그.
-  2. `ReportMount` 조인, mount.workspace_slug 를 scope 로 롤업(자손→직속 자식). 부모 체인은
-     `ws_services.get_descendants_inclusive` 역방향 — 직속 자식별 자손 집합을 미리 만들어 매핑.
-  3. 보고서의 distinct 템플릿 × distinct 버킷으로 카운트(현 로직과 동일하게 보고서당 1).
-- 멀티페이지: 한 보고서가 여러 template_id 를 쓸 수 있음 → `uniqueTemplateIds` 와 동일하게
-  pages 의 template_id distinct.
+### 제거: 부서×템플릿 (crosstab) — **드롭 확정**
+- 현재 대시보드의 "부서 × 템플릿" 스택드 바는 **제거**한다(사용자 결정, 2026-06-14).
+- 이유: 가치 대비 복잡도가 큼 — 서버 이전 시 `mount_workspaces` + 부모 walk 로 "자기 +
+  직속 자식(손자는 자식으로 롤업)" 을 SQL 로 재현해야 했던, 3A 에서 가장 까다로운 조각.
+  제거하면 3A 가 단일 컷오버로 단순해진다.
+- 작업: 3A 컷오버 때 `DashboardPage.jsx` 의 crosstab/Legend/StackedBarChart 및 관련
+  `scopedSlugs`/`rollupSlug`/`crosstab` useMemo 를 함께 삭제. KPI 의 `distinctTemplates`
+  는 crosstab.orderedTemplates 대신 별도 distinct 카운트로 대체(서버가 내려줌).
 
 ### 결정 사항 (기본값)
 - **D1. 헤더 스코프 유지**(쿼리 ws 안 씀). 기존 권한 경로 재사용.
@@ -129,7 +124,7 @@ TemplateMetric
 - 결정: **MVP=Python 추출**, 한계 보이면 SQL JSONB 로(인터페이스 동일하게).
 
 ### 대시보드 표시
-- "콘텐츠 지표" 카드: 지표별 타일(값 + 단위 + Δ, 있으면 sparkline). 지표 0개면 카드 숨김.
+- "콘텐츠 지표" 카드: 지표별 타일(값 + 단위 + Δ + sparkline ← Q2 결정). 지표 0개면 카드 숨김.
 - 드릴다운(이 지표가 가장 큰/작은 보고서로 이동)은 후속.
 
 ### 결정 사항 (기본값)
@@ -141,14 +136,46 @@ TemplateMetric
 ---
 
 ## 진행 순서 (제안)
-1. **3A-1**: `/api/dashboard` 엔드포인트 — KPI·단계·추세·건강도·엔티티·작성자Top(crosstab 제외)
-   먼저. 프런트 대시보드를 이 응답으로 교체(crosstab 만 잠시 클라 유지).
-2. **3A-2**: crosstab 서버 이전(롤업 SQL) → 클라 집계 완전 제거.
-3. **3B-1**: `TemplateMetric` 모델 + 마이그레이션 + 관리 API/최소 UI.
-4. **3B-2**: 서버 추출·집계 → `content_metrics` 채움 + 대시보드 "콘텐츠 지표" 카드.
-5. **후속**: table/chart 지표, SQL JSONB 전환, 캐시, 지표 드릴다운.
+1. **3A ✅ (완료, v0.45.0)**: `GET /api/dashboard` 엔드포인트 — KPI(+prev Δ)·단계·추세·
+   건강도·엔티티·작성자Top. 프런트 대시보드를 단일 useAsync 로 교체, 클라 집계 7종 제거,
+   **부서×템플릿 crosstab 삭제**. 백엔드 `app/modules/dashboard/`(services/schemas/routes),
+   프런트 `shared/api/dashboard.js`. MVP=Python 추출(실DB 스모크 200 확인). content_metrics=[].
+2. **3B-1**: `TemplateMetric` 모델 + 마이그레이션 + 관리 API/최소 UI.
+3. **3B-2**: 서버 추출·집계 → `content_metrics` 채움 + 대시보드 "콘텐츠 지표" 카드.
+4. **후속**: table/chart 지표, SQL JSONB 전환, 캐시, 지표 드릴다운.
 
-## 미해결 질문 (구현 전 확인)
-- Q1. 지표를 **누가** 지정하나? 시스템 관리자만(D9) vs 부서 매니저도.
-- Q2. 추세 sparkline 을 3B-2 에 포함할지, 값+Δ 만 먼저 낼지.
-- Q3. 3A 컷오버 시 대시보드 외 다른 listReports 소비처에 영향 없는지 재확인(현재로선 없음).
+## 결정됨 (2026-06-14)
+- **Q1 → A. 전역·관리자 정의.** TemplateMetric 은 `template_id` 단위(전역), 시스템 관리자
+  (템플릿 소유자)가 편집. 그 템플릿 쓰는 모든 부서가 동일 지표를 본다. 부서별 표시 on/off 는
+  후속(전역 정의 위에 비파괴로 얹음).
+- **Q2 → sparkline 처음부터 포함.** 3B-2 에서 값 + Δ + 버킷별 추세(sparkline)를 함께 낸다.
+  서버가 metric 별 `trend`(주/월 버킷, 같은 agg) 를 채우고 프런트는 미니 차트로 렌더.
+
+---
+
+## (참고) 결정 배경 — 구현 전 확인했던 질문
+
+### Q1. 지표를 누가 지정하고, 적용 범위는?
+숨은 핵심: **TemplateMetric 은 template_id(템플릿 패밀리) 에 매달린다 → 그 템플릿을 쓰는
+모든 부서 대시보드에 동일하게 뜬다.** "누가 편집하나" 보다 "전역이냐 부서별이냐" 가 먼저.
+- **권장(A) 전역·관리자 정의**: 시스템 관리자(=템플릿 소유자)가 템플릿당 표준 지표를 소수
+  큐레이션. 모든 부서가 같은 지표를 본다. 가장 단순, 템플릿처럼 "권위 있는" 지표.
+  위험: 부서마다 관심 숫자가 다르면 일부엔 노이즈(예: 같은 해석 템플릿 — 구조팀 최대응력 vs
+  열팀 최대온도). → 후속에서 **부서별 on/off 선택** 레이어로 해소(2계층: 관리자 정의 +
+  부서 표시선택). MVP 는 전역.
+- (B) 부서 매니저도 정의: 템플릿이 공유 자산이라 부서가 건드리면 타 부서로 새거나,
+  TemplateMetric 을 (template_id, workspace_slug) 로 키잉해야 함 → 모델·복잡도 증가. 후순위.
+- 결정 필요: **MVP=A(전역·관리자)** 로 갈지.
+
+### Q2. 추세 sparkline 을 지금 낼지, 값+Δ 만 먼저 낼지
+- **값+Δ**: 현재 기간 agg + 직전 기간 agg 두 숫자. KPI Δ 로직 재사용, 희소 데이터에도 견고,
+  저비용.
+- **sparkline**: 버킷(주/월)마다 그 구간 보고서를 모아 같은 agg 적용 → N버킷 추출 + 미니
+  차트 컴포넌트. 의미는 일관(버킷별 max/sum/avg 모두 성립)하나, 보고서 희소하면 비고
+  많고 노이즈. 응답엔 이미 `trend` 필드 예약돼 있어 **나중에 채워도 비파괴**.
+- **권장: 값+Δ 먼저(3B-2), sparkline 후속.** Δ 가 "오르나/내리나" 의 80%를 저비용·견고하게
+  전달. 데이터 밀도 확인 후 폴리시로 추가.
+
+### Q3. 3A 컷오버 영향 범위
+- 대시보드 외 listReports 소비처(목록·홈)는 그대로 — 대시보드만 전용 API 로 교체.
+  부서×템플릿 제거도 DashboardPage 안에서만 끝남(현재로선 외부 영향 없음). 착수 전 재확인.

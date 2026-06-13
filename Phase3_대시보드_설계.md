@@ -140,8 +140,11 @@ TemplateMetric
    건강도·엔티티·작성자Top. 프런트 대시보드를 단일 useAsync 로 교체, 클라 집계 7종 제거,
    **부서×템플릿 crosstab 삭제**. 백엔드 `app/modules/dashboard/`(services/schemas/routes),
    프런트 `shared/api/dashboard.js`. MVP=Python 추출(실DB 스모크 200 확인). content_metrics=[].
-2. **3B-1**: `TemplateMetric` 모델 + 마이그레이션 + 관리 API/최소 UI.
-3. **3B-2**: 서버 추출·집계 → `content_metrics` 채움 + 대시보드 "콘텐츠 지표" 카드.
+2. **3B-1 ✅ (완료, v0.46.0)**: `TemplateMetric` 모델 + 마이그레이션(p42) + 관리 API
+   (`/api/admin/template-metrics` CRUD + `/candidates`, 시스템 관리자) + 관리 UI
+   (`/admin/dashboard-metrics`, 템플릿 골라 숫자 필드를 지표로 등록). 실DB CRUD 스모크 확인.
+3. **3B-2**: 서버 추출·집계 → dashboard 서비스가 TemplateMetric 질의해 `content_metrics`
+   채움(값+Δ+sparkline) + 대시보드 "콘텐츠 지표" 카드.
 4. **후속**: table/chart 지표, SQL JSONB 전환, 캐시, 지표 드릴다운.
 
 ## 결정됨 (2026-06-14)

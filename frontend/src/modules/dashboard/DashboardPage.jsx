@@ -46,10 +46,19 @@ export default function DashboardPage() {
   const from = range.from ? formatDate(range.from) : undefined
   const to = range.to ? formatDate(range.to) : undefined
 
+  // 하위부서 포함 토글 — org 게시판에서만. 켜면 자손 부서 게시판까지 롤업
+  // (목록의 '하위부서 포함'과 동일 동작). 부서 전환 시 자동 false 로(키 slug).
+  const isOrg = workspace?.kind === 'org'
+  const [includeDescendants, setIncludeDescendants] = useState(false)
+  const inclDesc = isOrg && includeDescendants
+
   // Phase 3A — 모든 집계를 서버에서. 클라는 단일 호출로 받아 표시만 한다.
   const { data, loading, error, reload } = useAsync(
-    () => (slug ? getDashboard({ from, to, unit }) : Promise.resolve(null)),
-    [slug, from, to, unit],
+    () =>
+      slug
+        ? getDashboard({ from, to, unit, includeDescendants: inclDesc })
+        : Promise.resolve(null),
+    [slug, from, to, unit, inclDesc],
   )
 
   const kpis = data?.kpis ?? { total: 0, authors: 0, templates: 0, prev: null }
@@ -85,9 +94,15 @@ export default function DashboardPage() {
   const { data: crosstab } = useAsync(
     () =>
       slug && rowDimEff && colDimEff && rowDimEff !== colDimEff
-        ? getCrosstab({ row: rowDimEff, col: colDimEff, from, to })
+        ? getCrosstab({
+            row: rowDimEff,
+            col: colDimEff,
+            from,
+            to,
+            includeDescendants: inclDesc,
+          })
         : Promise.resolve(null),
-    [slug, rowDimEff, colDimEff, from, to],
+    [slug, rowDimEff, colDimEff, from, to, inclDesc],
   )
 
   const authorTop = data?.author_top ?? { top: [], distinct: 0, unknown: 0 }
@@ -127,10 +142,37 @@ export default function DashboardPage() {
         title="대시보드"
         description={
           workspace
-            ? `${workspace.name}${workspace.virtual ? ' (횡단)' : ''} 및 하위 부서`
+            ? `${workspace.name}${
+                workspace.virtual
+                  ? ' (횡단)'
+                  : inclDesc
+                    ? ' 및 하위 부서'
+                    : ''
+              }`
             : ''
         }
-        actions={<PeriodFilterControls period={period} />}
+        actions={
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* 하위부서 포함 — org 에서만(목록 사이드바와 동일 UX). 켜면 자손
+                부서 게시판까지 롤업해 집계. */}
+            {isOrg && (
+              <button
+                type="button"
+                onClick={() => setIncludeDescendants((v) => !v)}
+                className={cn(
+                  'h-9 rounded-md border px-2.5 text-xs font-medium transition-colors',
+                  includeDescendants
+                    ? 'border-sky-300 bg-sky-50 text-sky-700'
+                    : 'border-border bg-background text-muted-foreground hover:bg-muted',
+                )}
+                title="하위 부서 게시판까지 합쳐서 집계 (권한 범위 내)"
+              >
+                하위부서 {includeDescendants ? '포함' : '제외'}
+              </button>
+            )}
+            <PeriodFilterControls period={period} />
+          </div>
+        }
       />
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">

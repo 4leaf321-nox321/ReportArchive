@@ -144,12 +144,14 @@ def compute_dashboard(
     date_from: Optional[date],
     date_to: Optional[date],
     unit: str,
+    include_descendants: bool = False,
 ) -> dict:
-    """부서 대시보드 집계 묶음. 스코프=현재 부서(헤더). 가상(_global)은 무스코프."""
+    """부서 대시보드 집계 묶음. 스코프=현재 부서(헤더). 가상(_global)은 무스코프.
+    include_descendants=True 면 하위(자손) 부서 게시판까지 롤업."""
     ws = actor.workspace
     is_global = bool(getattr(ws, "virtual", False))
     reports = report_services.list_reports_in_workspace(
-        db, ws.slug, is_global_view=is_global
+        db, ws.slug, is_global_view=is_global, include_descendants=include_descendants
     )
 
     # 기간 필터 — from/to 둘 다 있을 때만(없으면 전체).
@@ -377,13 +379,14 @@ def compute_crosstab(
     date_to: Optional[date],
     row: str,
     col: str,
+    include_descendants: bool = False,
 ) -> dict:
     """두 차원 교차표. 행/열은 차원 키(entity:slug | report_type | template).
     한 보고서가 행·열 각각 여러 값을 가지면 그 조합 셀들에 모두 +1."""
     ws = actor.workspace
     is_global = bool(getattr(ws, "virtual", False))
     reports = report_services.list_reports_in_workspace(
-        db, ws.slug, is_global_view=is_global
+        db, ws.slug, is_global_view=is_global, include_descendants=include_descendants
     )
     if date_from and date_to:
         in_range = [

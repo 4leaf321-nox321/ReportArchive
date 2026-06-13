@@ -27,10 +27,12 @@ def get_dashboard(
     from_: date | None = Query(default=None, alias="from"),
     to: date | None = Query(default=None),
     unit: str = Query(default="week"),
+    include_descendants: bool = Query(default=False),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
-    """부서 대시보드 집계. from/to 생략 시 전체 기간. unit: 추세 버킷(week|month)."""
+    """부서 대시보드 집계. from/to 생략 시 전체 기간. unit: 추세 버킷(week|month).
+    include_descendants=True 면 하위 부서 게시판까지 포함."""
     if unit not in ("week", "month", "year"):
         unit = "week"
 
@@ -47,7 +49,12 @@ def get_dashboard(
         return success_response(data=empty.model_dump(mode="json"))
 
     data = services.compute_dashboard(
-        db, actor=actor, date_from=from_, date_to=to, unit=unit
+        db,
+        actor=actor,
+        date_from=from_,
+        date_to=to,
+        unit=unit,
+        include_descendants=include_descendants,
     )
     return success_response(
         data=DashboardResponse.model_validate(data).model_dump(mode="json")
@@ -60,6 +67,7 @@ def get_dashboard_crosstab(
     col: str = Query(...),
     from_: date | None = Query(default=None, alias="from"),
     to: date | None = Query(default=None),
+    include_descendants: bool = Query(default=False),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
@@ -71,7 +79,13 @@ def get_dashboard_crosstab(
     if getattr(actor, "public_viewer", False):
         return success_response(data=empty.model_dump(mode="json"))
     data = services.compute_crosstab(
-        db, actor=actor, date_from=from_, date_to=to, row=row, col=col
+        db,
+        actor=actor,
+        date_from=from_,
+        date_to=to,
+        row=row,
+        col=col,
+        include_descendants=include_descendants,
     )
     return success_response(
         data=CrosstabResponse.model_validate(data).model_dump(mode="json")

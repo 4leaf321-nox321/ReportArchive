@@ -8,11 +8,12 @@ import { apiClient, extractData } from './client'
  *   from/to 는 'YYYY-MM-DD'(생략 시 전체 기간). unit 은 추세 버킷 단위.
  * 반환: { kpis, phase_breakdown, trend, health, entity_coverage, author_top, content_metrics }
  */
-export async function getDashboard({ from, to, unit = 'week' } = {}) {
+export async function getDashboard({ from, to, unit = 'week', includeDescendants } = {}) {
   const params = new URLSearchParams()
   if (from) params.append('from', from)
   if (to) params.append('to', to)
   if (unit) params.append('unit', unit)
+  if (includeDescendants) params.append('include_descendants', 'true')
   const res = await apiClient.get(`/api/dashboard?${params.toString()}`)
   return extractData(res)
 }
@@ -22,12 +23,13 @@ export async function getDashboard({ from, to, unit = 'week' } = {}) {
  * 반환: { row_label, col_label, rows:[header], cols:[header], cells:{rowKey:{colKey:count}} }
  * header = { key, label, entity_id?, report_type_id?, template_id? }
  */
-export async function getCrosstab({ row, col, from, to } = {}) {
+export async function getCrosstab({ row, col, from, to, includeDescendants } = {}) {
   const params = new URLSearchParams()
   params.append('row', row)
   params.append('col', col)
   if (from) params.append('from', from)
   if (to) params.append('to', to)
+  if (includeDescendants) params.append('include_descendants', 'true')
   const res = await apiClient.get(`/api/dashboard/crosstab?${params.toString()}`)
   return extractData(res)
 }

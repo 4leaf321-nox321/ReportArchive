@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/components/ui/card'
 import { PageHeader } from '@/shared/components/PageHeader'
@@ -14,6 +14,8 @@ import { cn } from '@/shared/lib/utils'
 
 // 며칠 이상 업데이트 없는 'drafting' 보고서를 정체로 본다(건강도).
 const STALE_DRAFT_DAYS = 14
+// 분포 카드 기본 표시 개수(이 이상은 '전체 보기'로 펼침).
+const DIST_COLLAPSE = 12
 
 // Stable color slots for the three ReportPhase values on the dashboard's
 // 단계별 panel — match the PhaseChip badge tones visually (협업개선_설계.md
@@ -89,6 +91,8 @@ export default function DashboardPage() {
   const [dimKey, setDimKey] = usePersistedState('ra:dash:dim:v1', '')
   const activeDist =
     distributions.find((d) => d.key === dimKey) ?? distributions[0] ?? null
+  // 분포 '전체 보기' — 기본은 상위 DIST_COLLAPSE 개만, 펼치면 받은 전체(≤100).
+  const [distExpanded, setDistExpanded] = useState(false)
 
   // 교차 분석 — 두 차원(행×열). 기본은 분포의 첫 두 차원.
   const [rowDim, setRowDim] = usePersistedState('ra:dash:row:v1', '')
@@ -97,6 +101,7 @@ export default function DashboardPage() {
     distributions.find((d) => d.key === rowDim)?.key ?? distributions[0]?.key ?? ''
   const colDimEff =
     distributions.find((d) => d.key === colDim)?.key ?? distributions[1]?.key ?? ''
+  const [crosstabFull, setCrosstabFull] = useState(false)
   const { data: crosstab } = useAsync(
     () =>
       slug && rowDimEff && colDimEff && rowDimEff !== colDimEff
@@ -106,9 +111,10 @@ export default function DashboardPage() {
             from,
             to,
             includeDescendants: inclDesc,
+            full: crosstabFull,
           })
         : Promise.resolve(null),
-    [slug, rowDimEff, colDimEff, from, to, inclDesc],
+    [slug, rowDimEff, colDimEff, from, to, inclDesc, crosstabFull],
   )
 
   const authorTop = data?.author_top ?? { top: [], distinct: 0, unknown: 0 }
@@ -298,22 +304,48 @@ export default function DashboardPage() {
                 이 기간에 표시할 분포가 없습니다.
               </p>
             ) : (
-              <BarList
-                items={activeDist.items}
-                footer={
-                  activeDist.no_value > 0 ? `미지정 ${activeDist.no_value}건` : null
-                }
-                // 막대 클릭 → 그 값으로 필터된 보고서 목록. 엔티티·종류·템플릿
-                // 모두 드릴다운(목록에 대응 필터 있음).
-                onItemClick={
-                  slug
-                    ? (item) => {
-                        const st = distDrilldownState(activeDist.key, item)
-                        if (st) navigate(`/w/${slug}/reports`, { state: withScope(st) })
-                      }
-                    : undefined
-                }
-              />
+              <>
+                <div className={distExpanded ? 'max-h-80 overflow-y-auto pr-1' : ''}>
+                  <BarList
+                    items={
+                      distExpanded
+                        ? activeDist.items
+                        : activeDist.items.slice(0, DIST_COLLAPSE)
+                    }
+                    footer={
+                      activeDist.no_value > 0
+                        ? `미지정 ${activeDist.no_value}건`
+                        : null
+                    }
+                    // 막대 클릭 → 그 값으로 필터된 보고서 목록. 엔티티·종류·템플릿·
+                    // 게시판 모두 드릴다운(목록에 대응 필터 있음).
+                    onItemClick={
+                      slug
+                        ? (item) => {
+                            const st = distDrilldownState(activeDist.key, item)
+                            if (st)
+                              navigate(`/w/${slug}/reports`, { state: withScope(st) })
+                          }
+                        : undefined
+                    }
+                  />
+                </div>
+                {activeDist.items.length > DIST_COLLAPSE && (
+                  <button
+                    type="button"
+                    onClick={() => setDistExpanded((v) => !v)}
+                    className="mt-2 text-xs text-primary hover:underline"
+                  >
+                    {distExpanded
+                      ? '접기'
+                      : `전체 보기 (${activeDist.items.length}${
+                          activeDist.total > activeDist.items.length
+                            ? `/${activeDist.total}`
+                            : ''
+                        }개)`}
+                  </button>
+                )}
+              </>
             )}
           </CardContent>
         </Card>
@@ -401,14 +433,28 @@ export default function DashboardPage() {
                 이 조합으로 교차할 데이터가 없습니다.
               </p>
             ) : (
-              <CrosstabTable
-                data={crosstab}
-                onCell={(rh, ch) => {
-                  const st = crosstabDrilldownState(rowDimEff, rh, colDimEff, ch)
-                  if (st && slug)
-                    navigate(`/w/${slug}/reports`, { state: withScope(st) })
-                }}
-              />
+              <>
+                <CrosstabTable
+                  data={crosstab}
+                  full={crosstabFull}
+                  onCell={(rh, ch) => {
+                    const st = crosstabDrilldownState(rowDimEff, rh, colDimEff, ch)
+                    if (st && slug)
+                      navigate(`/w/${slug}/reports`, { state: withScope(st) })
+                  }}
+                />
+                {(crosstabFull ||
+                  crosstab.row_total > crosstab.rows.length ||
+                  crosstab.col_total > crosstab.cols.length) && (
+                  <button
+                    type="button"
+                    onClick={() => setCrosstabFull((v) => !v)}
+                    className="mt-2 text-xs text-primary hover:underline"
+                  >
+                    {crosstabFull ? '접기' : '전체 보기'}
+                  </button>
+                )}
+              </>
             )}
           </CardContent>
         </Card>
@@ -559,22 +605,23 @@ function crosstabDrilldownState(rowKey, rh, colKey, ch) {
 }
 
 // ───────────────────────── Crosstab table ──────────────────────────────
-function CrosstabTable({ data, onCell }) {
+function CrosstabTable({ data, onCell, full }) {
   const { rows, cols, cells } = data
   const max = Math.max(
     1,
     ...rows.flatMap((r) => cols.map((c) => cells[r.key]?.[c.key] ?? 0)),
   )
+  // 전체 보기에선 행이 많아질 수 있어 세로 스크롤 + 헤더 행 고정.
   return (
-    <div className="overflow-x-auto">
+    <div className={cn('overflow-x-auto', full && 'max-h-[28rem] overflow-y-auto')}>
       <table className="text-xs border-collapse">
-        <thead>
+        <thead className={full ? 'sticky top-0 z-10' : undefined}>
           <tr>
-            <th className="p-1.5 sticky left-0 bg-background" />
+            <th className="p-1.5 sticky left-0 bg-background z-20" />
             {cols.map((c) => (
               <th
                 key={c.key}
-                className="p-1.5 font-medium text-muted-foreground whitespace-nowrap max-w-[7rem] truncate"
+                className="p-1.5 font-medium text-muted-foreground whitespace-nowrap max-w-[7rem] truncate bg-background"
                 title={c.label}
               >
                 {c.label}

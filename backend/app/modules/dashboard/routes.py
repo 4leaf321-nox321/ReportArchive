@@ -68,11 +68,12 @@ def get_dashboard_crosstab(
     from_: date | None = Query(default=None, alias="from"),
     to: date | None = Query(default=None),
     include_descendants: bool = Query(default=False),
+    full: bool = Query(default=False),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
     """두 메타데이터 차원의 교차표. row/col 은 차원 키
-    (entity:<slug> | report_type | template)."""
+    (entity:<slug> | report_type | template). full=True 면 행/열 상한 확대."""
     empty = CrosstabResponse(
         row_label="", col_label="", rows=[], cols=[], cells={}
     )
@@ -86,6 +87,7 @@ def get_dashboard_crosstab(
         row=row,
         col=col,
         include_descendants=include_descendants,
+        top=services.CROSSTAB_FULL_N if full else services.CROSSTAB_TOP_N,
     )
     return success_response(
         data=CrosstabResponse.model_validate(data).model_dump(mode="json")

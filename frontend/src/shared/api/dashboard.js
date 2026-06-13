@@ -23,13 +23,14 @@ export async function getDashboard({ from, to, unit = 'week', includeDescendants
  * 반환: { row_label, col_label, rows:[header], cols:[header], cells:{rowKey:{colKey:count}} }
  * header = { key, label, entity_id?, report_type_id?, template_id? }
  */
-export async function getCrosstab({ row, col, from, to, includeDescendants } = {}) {
+export async function getCrosstab({ row, col, from, to, includeDescendants, full } = {}) {
   const params = new URLSearchParams()
   params.append('row', row)
   params.append('col', col)
   if (from) params.append('from', from)
   if (to) params.append('to', to)
   if (includeDescendants) params.append('include_descendants', 'true')
+  if (full) params.append('full', 'true')
   const res = await apiClient.get(`/api/dashboard/crosstab?${params.toString()}`)
   return extractData(res)
 }

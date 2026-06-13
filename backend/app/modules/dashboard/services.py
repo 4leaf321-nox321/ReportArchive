@@ -28,8 +28,11 @@ from app.modules.workspaces.models import Workspace, WorkspaceKind
 # 며칠 이상 미수정 'drafting' 을 정체로 본다 — 프런트 STALE_DRAFT_DAYS 와 동일.
 STALE_DRAFT_DAYS = 14
 AUTHOR_TOP_N = 8
-DIST_TOP_N = 12  # 분포 차원당 상위 N 값
-CROSSTAB_TOP_N = 8  # 교차표 행/열 상위 N
+# 분포는 차원당 최대 N 개까지 내려주고(프런트가 기본 12개로 접고 '전체 보기'로
+# 펼침), 그 이상은 잘림(total 로 표기). 교차표는 기본 8행/열, '전체 보기' 시 확대.
+DIST_MAX = 100
+CROSSTAB_TOP_N = 8
+CROSSTAB_FULL_N = 40
 
 
 def _template_name_map(db: Session) -> dict[str, str]:
@@ -254,7 +257,7 @@ def compute_dashboard(
             cur["count"] += 1
             a["reports"].add(r.id)
     for a in sorted(axes.values(), key=lambda x: -sum(c["count"] for c in x["byid"].values())):
-        items = sorted(a["byid"].values(), key=lambda x: -x["count"])[:DIST_TOP_N]
+        items = sorted(a["byid"].values(), key=lambda x: -x["count"])[:DIST_MAX]
         distributions.append(
             {
                 "key": f"entity:{a['slug']}",
@@ -283,7 +286,7 @@ def compute_dashboard(
             {
                 "key": "report_type",
                 "label": "종류",
-                "items": sorted(rt.values(), key=lambda x: -x["count"])[:DIST_TOP_N],
+                "items": sorted(rt.values(), key=lambda x: -x["count"])[:DIST_MAX],
                 "no_value": rt_none,
                 "total": len(rt),
             }
@@ -306,7 +309,7 @@ def compute_dashboard(
                         for tid, v in tcount.items()
                     ),
                     key=lambda x: -x["count"],
-                )[:DIST_TOP_N],
+                )[:DIST_MAX],
                 "no_value": 0,
                 "total": len(tcount),
             }
@@ -336,7 +339,7 @@ def compute_dashboard(
                 "key": "mount",
                 "label": "게시판",
                 "items": sorted(bcount.values(), key=lambda x: -x["count"])[
-                    :DIST_TOP_N
+                    :DIST_MAX
                 ],
                 "no_value": 0,
                 "total": len(bcount),
@@ -438,9 +441,11 @@ def compute_crosstab(
     row: str,
     col: str,
     include_descendants: bool = False,
+    top: int = CROSSTAB_TOP_N,
 ) -> dict:
     """두 차원 교차표. 행/열은 차원 키(entity:slug | report_type | template).
-    한 보고서가 행·열 각각 여러 값을 가지면 그 조합 셀들에 모두 +1."""
+    한 보고서가 행·열 각각 여러 값을 가지면 그 조합 셀들에 모두 +1.
+    top: 행/열로 보여줄 최대 개수('전체 보기' 시 확대)."""
     ws = actor.workspace
     is_global = bool(getattr(ws, "virtual", False))
     reports = report_services.list_reports_in_workspace(
@@ -490,10 +495,10 @@ def compute_crosstab(
     # 행/열 상위 N 만(표가 너무 커지지 않게) — 건수순으로 N 개를 고른 뒤,
     # 게시판(mount) 차원은 상위부서가 왼쪽/위로 오도록 부서 트리 순서로 재정렬.
     top_rows = sorted(row_hdr.values(), key=lambda h: -row_tot.get(h["key"], 0))[
-        :CROSSTAB_TOP_N
+        :top
     ]
     top_cols = sorted(col_hdr.values(), key=lambda h: -col_tot.get(h["key"], 0))[
-        :CROSSTAB_TOP_N
+        :top
     ]
 
     def _order_by_tree(headers, dimkey):

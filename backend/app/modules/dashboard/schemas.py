@@ -53,6 +53,7 @@ class DistItem(BaseModel):
     entity_id: Optional[int] = None
     report_type_id: Optional[int] = None
     template_id: Optional[str] = None
+    mount_slug: Optional[str] = None
 
 
 class Distribution(BaseModel):
@@ -76,6 +77,7 @@ class CrosstabHeader(BaseModel):
     entity_id: Optional[int] = None
     report_type_id: Optional[int] = None
     template_id: Optional[str] = None
+    mount_slug: Optional[str] = None
 
 
 class CrosstabResponse(BaseModel):

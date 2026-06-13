@@ -22,6 +22,7 @@ from app.modules.reports import services as report_services
 from app.modules.entities.models import EntityType
 from app.modules.reports.models import ReportPhase
 from app.modules.templates.models import Template
+from app.modules.workspaces import services as ws_services
 from app.modules.workspaces.models import Workspace, WorkspaceKind
 
 # 며칠 이상 미수정 'drafting' 을 정체로 본다 — 프런트 STALE_DRAFT_DAYS 와 동일.
@@ -50,17 +51,11 @@ def _effective_date(r) -> Optional[date]:
 
 
 def _template_ids(r) -> set[str]:
-    """이 보고서가 쓰는 distinct template_id(멀티페이지는 페이지별까지)."""
-    out: set[str] = set()
-    pages = r.pages if isinstance(r.pages, list) else []
-    if not pages:
-        if r.template_id:
-            out.add(r.template_id)
-        return out
-    for p in pages:
-        if isinstance(p, dict) and p.get("template_id"):
-            out.add(p["template_id"])
-    return out
+    """이 보고서의 대표 template_id. 대시보드는 본문(pages)을 로드하지 않으므로
+    (defer_body) 멀티페이지 페이지별 템플릿이 아니라 top-level template_id 만
+    쓴다 — 대시보드 지표로는 '이 보고서의 템플릿' 이 더 자연스럽고, pages JSONB
+    를 안 건드려 성능에 유리."""
+    return {r.template_id} if r.template_id else set()
 
 
 # ── 시간 버킷 ────────────────────────────────────────────────────────────
@@ -128,6 +123,16 @@ def _kpi_for(reports) -> dict:
     return {"total": total, "authors": len(authors), "templates": len(templates)}
 
 
+def _scope_slugs(db: Session, ws, is_global: bool, include_descendants: bool):
+    """게시판(mount) 차원에서 셀/막대에 포함할 부서 슬러그 집합. None=무제한
+    (가상/_global). 하위부서 포함이면 자손까지, 아니면 자기 부서만."""
+    if is_global:
+        return None
+    if include_descendants:
+        return set(ws_services.get_descendants_inclusive(db, ws.slug))
+    return {ws.slug}
+
+
 def _uncategorized_count(db: Session, ws: Workspace) -> int:
     if ws.kind == WorkspaceKind.personal:
         uid = ws.personal_owner_user_id
@@ -151,7 +156,11 @@ def compute_dashboard(
     ws = actor.workspace
     is_global = bool(getattr(ws, "virtual", False))
     reports = report_services.list_reports_in_workspace(
-        db, ws.slug, is_global_view=is_global, include_descendants=include_descendants
+        db,
+        ws.slug,
+        is_global_view=is_global,
+        include_descendants=include_descendants,
+        defer_body=True,
     )
 
     # 기간 필터 — from/to 둘 다 있을 때만(없으면 전체).
@@ -300,6 +309,36 @@ def compute_dashboard(
             }
         )
 
+    # 4) 게시판(mount) — 스코프 내 게시판별. 하위부서 포함일 때 특히 유용
+    #    (게시판이 하나뿐이면 의미 없어 생략).
+    scope = _scope_slugs(db, ws, is_global, include_descendants)
+    bcount: dict[str, dict] = {}
+    for r in in_range:
+        seen_boards = set()
+        for m in getattr(r, "mounts", None) or []:
+            slug = m.workspace_slug
+            if scope is not None and slug not in scope:
+                continue
+            if slug in seen_boards:
+                continue
+            seen_boards.add(slug)
+            name = getattr(getattr(m, "workspace", None), "name", None) or slug
+            cur = bcount.setdefault(
+                slug, {"mount_slug": slug, "label": name, "count": 0}
+            )
+            cur["count"] += 1
+    if len(bcount) > 1:
+        distributions.append(
+            {
+                "key": "mount",
+                "label": "게시판",
+                "items": sorted(bcount.values(), key=lambda x: -x["count"])[
+                    :DIST_TOP_N
+                ],
+                "no_value": 0,
+            }
+        )
+
     # 작성자 Top — 기간 내
     auth_freq: dict[str, dict] = {}
     unknown = 0
@@ -333,9 +372,22 @@ def compute_dashboard(
 
 
 # ── 교차표(두 차원) ──────────────────────────────────────────────────────
-def _dim_values(dimkey: str, r, tmap: dict) -> list[dict]:
+def _dim_values(dimkey: str, r, tmap: dict, scope=None) -> list[dict]:
     """보고서 r 의 차원 dimkey 값 목록 — 각 {key, label, <drill id>}. 멀티값
-    (엔티티 다중태그·멀티페이지 템플릿)은 여러 개를 반환."""
+    (엔티티 다중태그·여러 게시판 게시)은 여러 개를 반환."""
+    if dimkey == "mount":
+        out = []
+        seen = set()
+        for m in getattr(r, "mounts", None) or []:
+            slug = m.workspace_slug
+            if scope is not None and slug not in scope:
+                continue
+            if slug in seen:
+                continue
+            seen.add(slug)
+            name = getattr(getattr(m, "workspace", None), "name", None) or slug
+            out.append({"key": f"m:{slug}", "label": name, "mount_slug": slug})
+        return out
     if dimkey.startswith("entity:"):
         slug = dimkey.split(":", 1)[1]
         out = []
@@ -368,6 +420,8 @@ def _dim_label(dimkey: str, axis_labels: dict) -> str:
         return "종류"
     if dimkey == "template":
         return "템플릿"
+    if dimkey == "mount":
+        return "게시판"
     return dimkey
 
 
@@ -386,7 +440,11 @@ def compute_crosstab(
     ws = actor.workspace
     is_global = bool(getattr(ws, "virtual", False))
     reports = report_services.list_reports_in_workspace(
-        db, ws.slug, is_global_view=is_global, include_descendants=include_descendants
+        db,
+        ws.slug,
+        is_global_view=is_global,
+        include_descendants=include_descendants,
+        defer_body=True,
     )
     if date_from and date_to:
         in_range = [
@@ -398,6 +456,7 @@ def compute_crosstab(
         in_range = list(reports)
 
     tmap = _template_name_map(db)
+    scope = _scope_slugs(db, ws, is_global, include_descendants)
     axis_labels = {
         slug: label
         for slug, label in db.execute(
@@ -411,8 +470,8 @@ def compute_crosstab(
     row_tot: dict[str, int] = {}
     col_tot: dict[str, int] = {}
     for r in in_range:
-        rv = _dim_values(row, r, tmap)
-        cv = _dim_values(col, r, tmap)
+        rv = _dim_values(row, r, tmap, scope)
+        cv = _dim_values(col, r, tmap, scope)
         if not rv or not cv:
             continue
         for rh in rv:

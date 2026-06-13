@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from typing import Iterable, Optional
 
 from sqlalchemy import and_, case, desc, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.modules.composites.models import CompositeReport, CompositeReportItem
 from app.modules.entities import services as entity_services
@@ -116,8 +116,13 @@ def list_reports_in_workspace(
     include_public: bool = False,
     include_descendants: bool = False,
     trashed: bool = False,
+    defer_body: bool = False,
 ) -> list[Report]:
     """Returns reports visible in the given workspace.
+
+    `defer_body=True` 면 content/pages(본문 JSONB)를 로드하지 않는다 — 대시보드
+    집계처럼 메타데이터만 필요한 경로의 메모리·전송량을 크게 줄인다. 호출부가
+    본문을 건드리면 그때 lazy 로 끌어오므로(N+1 위험) 본문을 안 쓰는 경로에서만.
 
     Two different visibility models depending on workspace kind:
 
@@ -203,6 +208,8 @@ def list_reports_in_workspace(
         if applied is None:
             return []
         query = applied
+    if defer_body:
+        query = query.options(defer(Report.content), defer(Report.pages))
     results = list(db.execute(query).scalars())
 
     # 조직 간 공개 탐색(opt-in, 조직간공개_설계.md §5). org 컨텍스트에서만

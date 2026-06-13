@@ -128,7 +128,10 @@ export default function ReportsListPage() {
   // 게시판 필터 — '' = 전체, otherwise 워크스페이스 slug. 그 보고서가
   // 해당 워크스페이스에 mount 되어 있는지로 필터. 사용자의 mount 가
   // 실제 있는 워크스페이스만 옵션으로 노출 (빈 옵션 안 생김).
-  const [mountWorkspaceFilter, setMountWorkspaceFilter] = useState('')
+  // 게시판 필터 — 대시보드 '게시판별' 분포/교차 드릴다운: location.state.mountWorkspaceSlug.
+  const [mountWorkspaceFilter, setMountWorkspaceFilter] = useState(
+    () => location.state?.mountWorkspaceSlug ?? '',
+  )
   // 종류(report_type) 필터 — '' = 전체, otherwise report_type id(문자열).
   // 대시보드 분포/교차 드릴다운으로 들어오면 location.state.reportTypeId 로 초기화.
   const [reportTypeFilter, setReportTypeFilter] = useState(() =>

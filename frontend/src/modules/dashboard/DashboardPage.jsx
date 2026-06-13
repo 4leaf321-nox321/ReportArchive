@@ -510,6 +510,9 @@ function distDrilldownState(distKey, item) {
   if (distKey === 'template' && item.template_id != null) {
     return { templateId: item.template_id }
   }
+  if (distKey === 'mount' && item.mount_slug) {
+    return { mountWorkspaceSlug: item.mount_slug }
+  }
   return null
 }
 
@@ -526,6 +529,9 @@ function headerFilterParts(dimKey, h) {
   if (dimKey === 'template' && h.template_id != null) {
     return { templateId: h.template_id }
   }
+  if (dimKey === 'mount' && h.mount_slug) {
+    return { mountWorkspaceSlug: h.mount_slug }
+  }
   return {}
 }
 
@@ -539,6 +545,8 @@ function crosstabDrilldownState(rowKey, rh, colKey, ch) {
   if (rt) state.reportTypeId = rt.reportTypeId
   const tpl = parts.find((p) => p.templateId != null)
   if (tpl) state.templateId = tpl.templateId
+  const mnt = parts.find((p) => p.mountWorkspaceSlug)
+  if (mnt) state.mountWorkspaceSlug = mnt.mountWorkspaceSlug
   return Object.keys(state).length ? state : null
 }
 

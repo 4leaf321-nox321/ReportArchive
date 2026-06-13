@@ -102,7 +102,7 @@ import {
   LockConflictError,
 } from './api'
 import { FOLDER_FILTER_UNCATEGORIZED } from './FolderSidebar'
-import { isWidgetCopyable, copyWidget, widgetCopyKind } from './widgetCopy'
+import { isWidgetCopyable, copyWidget, widgetCopyKind, downloadWidgetImage } from './widgetCopy'
 import { copyTextToClipboard } from '@/shared/lib/clipboard'
 import { useReportLock } from './useReportLock'
 import {
@@ -9328,7 +9328,8 @@ function BlockEditorCard({
   const [fullscreenOpen, setFullscreenOpen] = useState(false)
   const canFullscreen =
     readOnly && WIDGETS_FULLSCREEN_VIEWER.has(block.type)
-  // 뷰 모드 전용 위젯 복사 — 긴 글(글자)·표(TSV)·차트(PNG 다운로드).
+  // 뷰 모드 전용 위젯 복사 — 글 위젯(글자)·표 위젯(HTML 표)·시각 위젯(PNG
+  // 다운로드). 분류·지원 타입은 widgetCopy.js 의 TEXT/TABLE/IMAGE_TYPES 참조.
   const canCopyWidget = readOnly && isWidgetCopyable(block.type)
   // 표 위젯의 "전체 펼치기" 토글 상태. autoFit 측정용 mirror Editor 와
   // 본체 Editor 두 인스턴스가 같은 expanded 를 봐야 mirror 가 같이 자라고
@@ -9853,7 +9854,7 @@ function BlockEditorCard({
                 widgetCopyKind(block.type) === 'image'
                   ? '이미지로 저장 (PNG)'
                   : widgetCopyKind(block.type) === 'table'
-                    ? '표 복사 (PPT·Word·엑셀에 붙여넣기)'
+                    ? '표 복사 (엑셀 셀·Word 표로 붙여넣기)'
                     : '글 복사'
               }
             >
@@ -9862,6 +9863,26 @@ function BlockEditorCard({
               ) : (
                 <Copy className="h-3.5 w-3.5" />
               )}
+            </button>
+          )}
+          {/* 표는 두 번째 버튼 — PNG 이미지 저장. HTML 표 복사는 PPT 가 글자를
+              줄여버려 화면과 어긋날 수 있어, "화면 그대로"가 필요할 때 쓴다. */}
+          {canCopyWidget && widgetCopyKind(block.type) === 'table' && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                downloadWidgetImage({
+                  blockId: block.id,
+                  content,
+                  label: content?.caption,
+                })
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-background/95 border border-transparent text-muted-foreground opacity-0 transition-opacity hover:border-border hover:text-foreground group-hover:opacity-100 print:hidden"
+              title="표를 이미지로 저장 (PNG · PPT에 화면 그대로)"
+            >
+              <Download className="h-3.5 w-3.5" />
             </button>
           )}
           {canFullscreen && (

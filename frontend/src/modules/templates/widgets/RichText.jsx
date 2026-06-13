@@ -696,7 +696,13 @@ function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
   const classFor = bodyClassFor ?? (() => '')
   const styleFor = bodyStyleFor ?? (() => undefined)
   return (
-    <div className="space-y-0.5 text-sm" onClick={handleMentionClick}>
+    <div
+      className="space-y-0.5 text-sm"
+      onClick={handleMentionClick}
+      // 뷰 모드 위젯 복사(widgetCopy.js)가 화면에 보이는 그대로 — 글머리
+      // 기호(보고서별 글리프 포함) + 줄바꿈 — 를 읽어가는 진입점.
+      data-rt-outline
+    >
       {items.map((it, i) => {
         const hasContent = (it.text ?? '').trim().length > 0
         if (!hasContent) return null
@@ -723,12 +729,15 @@ function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
             key={i}
             className="flex items-baseline gap-1"
             style={{ paddingLeft: `${depth * INDENT_PX_PER_DEPTH}px` }}
+            data-rt-row
+            data-rt-depth={depth}
           >
             <span
               className={`select-none shrink-0 text-center ${
                 prefixFmt.colorToken ? '' : 'text-muted-foreground'
               } ${prefixFmt.className}`}
               style={prefixStyle}
+              data-rt-prefix
             >
               {depthGlyphs?.[Math.min(depth, 2)] || DEPTH_PREFIX[depth]}
             </span>
@@ -737,6 +746,7 @@ function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
               className={`flex-1 min-w-0 break-words [&_p]:leading-[1.4] ${classFor(depth)}`}
               style={styleFor(depth)}
               dangerouslySetInnerHTML={{ __html: safeHtml }}
+              data-rt-body
             />
           </div>
         )

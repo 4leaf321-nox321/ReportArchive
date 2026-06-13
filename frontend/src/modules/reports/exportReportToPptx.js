@@ -1,22 +1,35 @@
-/** 보고서 → PowerPoint(.pptx) 내보내기 (MVP, 이미지 기반).
+/** 보고서 → PowerPoint(.pptx) 내보내기.
  *
- *  보고서는 "폭 고정·세로로 흐르는 12열 그리드"이고 PPT 는 "고정 크기 슬라이드"라,
- *  화면에 렌더된 각 위젯의 *실측 사각형*(getBoundingClientRect)을 읽어:
- *    1) 세로로 겹치는 위젯을 한 '행 그룹'으로 묶고(멀티컬럼 유지),
- *    2) 행을 위→아래로 채우다 슬라이드 높이를 넘치면 다음 슬라이드로 분할,
- *    3) 슬라이드보다 큰 단일 행은 그 슬라이드에 맞춰 축소·가운데 배치.
- *  각 위젯은 html2canvas 로 PNG 캡처(캡션 포함)해 슬라이드에 그림으로 올린다.
+ *  보고서는 "폭 고정·세로로 흐르는 12열 그리드"이고 PPT 는 "고정 크기 슬라이드"라:
+ *    1) slideLayout 공용 로직으로 위젯을 '행 그룹'으로 묶고(멀티컬럼 유지) 슬라이드
+ *       단위로 나눈다 — **편집 가이드(SlideGuideOverlay)와 완전히 동일한 기준**
+ *       (각 위젯의 뷰 높이 + 전체 슬라이드 높이 예산, 여백 없음)이라 "웹 1장,
+ *       PPT 2장" 같은 어긋남이 없다.
+ *    2) 그리드 폭 → 슬라이드 폭(full-bleed)으로 매핑해 배치(페이지마다 새 슬라이드).
+ *    3) 멤버십은 뷰 높이로 정했지만 실제 배치는 렌더 rect 라, 한 슬라이드의 실제
+ *       콘텐츠가 슬라이드보다 길면 그 슬라이드만 맞춤 축소(가로 가운데)한다.
+ *
+ *  위젯 처리(Phase 2):
+ *    - 글 위젯(heading/rich_text/bulleted_list/key_value) → 편집 가능한
+ *      네이티브 PPT 텍스트박스(색·굵기·기울임·밑줄·글머리·들여쓰기 유지).
+ *    - 그 외(표·차트·다이어그램·수식·이미지 등) → html2canvas PNG.
  *
  *  호출 전 제약(호출부 ReportDetailPage 가 보장):
  *   - printing=true → 모든 페이지가 읽기전용·all 뷰로 DOM 에 렌더됨
- *   - 차트 렌더 안정화 대기 완료
- *   - (권장) 라이트 테마 강제 — 슬라이드는 흰 배경이라 다크 토큰색이면 어색함
+ *   - 차트 렌더 안정화 대기 완료 / (권장) 라이트 테마 강제
  */
 import {
   captureBlockToCanvas,
   sanitizeFileName,
   triggerDownload,
 } from './exportCapture'
+import { NATIVE_TEXT_TYPES, buildPptxText, readBasePx } from './exportPptxText'
+import { NATIVE_TABLE_TYPES, buildPptxTable } from './exportPptxTable'
+import {
+  groupRowsIntoSlides,
+  measureSlideRows,
+  slideHeightPx as slideHeightPxFor,
+} from './slideLayout'
 
 // 슬라이드 물리 크기(인치). PowerPoint 2013+ 기본은 16:9(13.333×7.5).
 const SLIDE_SIZES = {
@@ -25,68 +38,154 @@ const SLIDE_SIZES = {
   '16:10': { w: 12.5, h: 7.8125 },
 }
 const DEFAULT_RATIO = '16:9'
-// 슬라이드 가장자리 여백(인치). 콘텐츠 영역 = 슬라이드 - 여백×2.
-const MARGIN_IN = 0.3
-// 부동소수 흔들림 방지용 여유(px).
-const FIT_EPS_PX = 2
+const TEXT_FONT = '맑은 고딕' // 네이티브 텍스트 기본 글꼴(한글 대응)
 
 function throwIfAborted(signal) {
   if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError')
 }
 
-/** 같은 페이지의 위젯들을 세로 겹침 기준으로 '행 그룹'으로 묶는다. 각 그룹은
- *  좌→우로 정렬(멀티컬럼). 반환은 위→아래 순. */
-function groupRows(blocks) {
-  const sorted = [...blocks].sort((a, b) => a.y - b.y || a.x - b.x)
-  const rows = []
-  for (const b of sorted) {
-    const last = rows[rows.length - 1]
-    // 새 위젯의 top 이 현재 행의 bottom 보다 위면 같은 시각적 행으로 병합.
-    if (last && b.y < last.bottom - FIT_EPS_PX) {
-      last.blocks.push(b)
-      last.top = Math.min(last.top, b.y)
-      last.bottom = Math.max(last.bottom, b.y + b.h)
-    } else {
-      rows.push({ top: b.y, bottom: b.y + b.h, blocks: [b] })
-    }
-  }
-  for (const r of rows) r.blocks.sort((a, b) => a.x - b.x)
-  return rows
+function lookupTemplate(pageTemplateMap, page) {
+  if (!page || !pageTemplateMap) return null
+  const key = `${page.template_id}@${page.template_version}`
+  return typeof pageTemplateMap.get === 'function'
+    ? pageTemplateMap.get(key) ?? null
+    : pageTemplateMap[key] ?? null
 }
 
-/** 페이지별 그리드 컨테이너 + 위젯 실측 사각형(그리드 원점 기준)을 수집. */
-function collectPages() {
+/** 페이지의 blockId → { type, props } 맵. 템플릿 스키마 블록 + extra_blocks.
+ *  (DOCX 의 combinedBlocks 와 같은 출처지만, 여기선 docx 라이브러리를 끌어오지
+ *  않으려 최소 정보만 직접 모은다. content 는 page.content[id] 에서 따로.) */
+function buildBlockMeta(template, page) {
+  const map = new Map()
+  const tplBlocks = Array.isArray(template?.schema?.blocks)
+    ? template.schema.blocks
+    : []
+  for (const b of tplBlocks) {
+    if (b?.id) map.set(b.id, { type: b.type, props: b.props ?? {} })
+  }
+  for (const b of page?.extra_blocks ?? []) {
+    if (b?.id) map.set(b.id, { type: b.type, props: b.props ?? {} })
+  }
+  return map
+}
+
+/** 페이지별 그리드 측정 + draft.page 매핑. 행 그룹/뷰높이는 slideLayout 공용
+ *  로직(measureSlideRows)을 써서 편집 가이드와 *완전히 동일한 기준*으로 묶는다.
+ *  draft.pages 와는 section#report-page-N 의 N 으로 짝지어 누락 페이지가 있어도
+ *  어긋나지 않게 한다. */
+function gatherPages(draft) {
   const pageEls = Array.from(document.querySelectorAll('.report-detail-page'))
   return pageEls.map((pageEl) => {
+    const m = (pageEl.id || '').match(/report-page-(\d+)/)
+    const pageIdx = m ? Number(m[1]) : null
+    const page = pageIdx != null ? draft?.pages?.[pageIdx] : null
     const grid = pageEl.querySelector('.react-grid-layout') || pageEl
-    const gridRect = grid.getBoundingClientRect()
-    const blocks = Array.from(grid.querySelectorAll('[id^="block-"]'))
-      .map((el) => {
-        const r = el.getBoundingClientRect()
-        return {
-          el,
-          x: r.left - gridRect.left,
-          y: r.top - gridRect.top,
-          w: r.width,
-          h: r.height,
-        }
-      })
-      .filter((b) => b.w > 1 && b.h > 1)
-    return { gridWidthPx: gridRect.width || 1, blocks }
+    const { gridWidthPx, rows } = measureSlideRows(grid, 0)
+    return { page, gridWidthPx, rows }
   })
 }
 
-export async function exportReportToPptx({ draft, slide = {}, onProgress, signal } = {}) {
+/** 위젯의 *보이는* 캡션(제목) — 렌더된 텍스트 그대로(번호 "그림/표 N" + 라벨
+ *  자동채움 포함). 네이티브 위젯(표·글)은 캡처 이미지가 아니라서 캡션이 빠지므로,
+ *  이걸 읽어 위에 별도 텍스트박스로 얹는다. mirror 의 캡션은 제외. */
+function readVisibleCaption(blockEl) {
+  const els = blockEl.querySelectorAll('[data-export-skip="caption"]')
+  let capEl = null
+  for (const e of els) {
+    if (!e.closest('.report-autofit-mirror')) {
+      capEl = e
+      break
+    }
+  }
+  if (!capEl) return null
+  const text = (capEl.innerText ?? '').replace(/\s+/g, ' ').trim()
+  if (!text) return null
+  const r = capEl.getBoundingClientRect()
+  const fontPx = parseFloat(window.getComputedStyle(capEl).fontSize) || 14
+  return { text, heightPx: r.height || 0, fontPx }
+}
+
+/** 캡션 텍스트박스를 위젯 영역 상단에 얹고, 차지한 높이(인치)를 돌려준다.
+ *  캡션 없으면 0. */
+function addCaptionBox(slide, caption, pos, ptPerPx) {
+  if (!caption?.text) return 0
+  const capH = Math.max(0.18, Math.min(pos.h * 0.6, (caption.heightPx * ptPerPx) / 72))
+  slide.addText(
+    [{ text: caption.text, options: { bold: true, fontSize: Math.max(9, Math.round(caption.fontPx * ptPerPx)) } }],
+    { x: pos.x, y: pos.y, w: pos.w, h: capH, valign: 'top', wrap: true, fontFace: TEXT_FONT, margin: 1 },
+  )
+  return capH
+}
+
+/** 글 위젯을 네이티브 텍스트박스로 배치 시도(+ 캡션 박스). 성공/빈내용은
+ *  true(이미지 생략), 오류면 false(이미지 폴백). */
+function tryAddNativeText(slide, meta, content, el, pos, ptPerPx, caption) {
+  try {
+    const basePx = readBasePx(el) ?? 18
+    const runs = buildPptxText({ type: meta.type, props: meta.props, content }, { ptPerPx, basePx })
+    const capH = addCaptionBox(slide, caption, pos, ptPerPx)
+    if (runs && runs.length) {
+      slide.addText(runs, {
+        x: pos.x,
+        y: pos.y + capH,
+        w: pos.w,
+        h: Math.max(0.2, pos.h - capH),
+        valign: 'top',
+        wrap: true,
+        fontFace: TEXT_FONT,
+        margin: 2,
+      })
+    }
+    return true
+  } catch (e) {
+    console.warn('PPT 네이티브 텍스트 변환 실패 — 이미지로 대체합니다.', e)
+    return false
+  }
+}
+
+/** 표 위젯을 네이티브 PPT 표로 배치 시도(+ 캡션 박스). 이미지 셀이 있거나
+ *  오류면 false(이미지 폴백). 캡션 박스는 표가 네이티브로 확정된 뒤에만 얹어
+ *  이미지 폴백 시 캡션 중복을 막는다. */
+function tryAddNativeTable(slide, el, pos, ptPerPx, caption) {
+  try {
+    const built = buildPptxTable(el, { ptPerPx, tableWidthIn: pos.w })
+    if (!built || !built.rows.length) return false
+    const capH = addCaptionBox(slide, caption, pos, ptPerPx)
+    slide.addTable(built.rows, {
+      x: pos.x,
+      y: pos.y + capH,
+      w: pos.w,
+      h: Math.max(0.2, pos.h - capH),
+      colW: built.colW,
+      border: { type: 'solid', pt: 0.5, color: 'B0B0B0' },
+      valign: 'middle',
+      fontFace: TEXT_FONT,
+      autoPage: false,
+      margin: 2,
+    })
+    return true
+  } catch (e) {
+    console.warn('PPT 네이티브 표 변환 실패 — 이미지로 대체합니다.', e)
+    return false
+  }
+}
+
+export async function exportReportToPptx({
+  draft,
+  pageTemplateMap,
+  slide = {},
+  onProgress,
+  signal,
+} = {}) {
   const ratio = SLIDE_SIZES[slide.ratio] ? slide.ratio : DEFAULT_RATIO
   const dim = SLIDE_SIZES[ratio]
-  const contentW = dim.w - MARGIN_IN * 2
-  const contentH = dim.h - MARGIN_IN * 2
 
-  const pages = collectPages().filter((p) => p.blocks.length > 0)
-  const totalBlocks = pages.reduce((s, p) => s + p.blocks.length, 0)
-  if (totalBlocks === 0) {
-    throw new Error('내보낼 위젯이 없습니다.')
-  }
+  const pages = gatherPages(draft).filter((p) => p.rows.length > 0)
+  const totalBlocks = pages.reduce(
+    (s, p) => s + p.rows.reduce((n, r) => n + r.blocks.length, 0),
+    0,
+  )
+  if (totalBlocks === 0) throw new Error('내보낼 위젯이 없습니다.')
 
   onProgress?.({ phase: 'load', current: 0, total: totalBlocks, label: '내보내기 모듈 로드 중...' })
   const PptxGenJS = (await import('pptxgenjs')).default
@@ -97,70 +196,61 @@ export async function exportReportToPptx({ draft, slide = {}, onProgress, signal
   let done = 0
   onProgress?.({ phase: 'capture', current: 0, total: totalBlocks, label: '슬라이드 변환 준비 중...' })
 
-  for (const page of pages) {
+  for (const pg of pages) {
     throwIfAborted(signal)
-    // 보고서 페이지 폭 전체를 슬라이드 콘텐츠 폭에 맞춘다 → px↔인치 환산 계수.
-    const pxPerIn = page.gridWidthPx / contentW
-    const slideBudgetPx = contentH * pxPerIn
+    const template = lookupTemplate(pageTemplateMap, pg.page)
+    const blockMeta = buildBlockMeta(template, pg.page)
+    const content = pg.page?.content ?? {}
 
-    const rows = groupRows(page.blocks)
-    let curSlide = null
-    let slideOriginY = 0 // 이 px y 가 현재 슬라이드 콘텐츠 상단에 대응
-    let forceNew = true // 페이지 시작은 항상 새 슬라이드
+    // 편집 가이드와 동일 기준: 전체 슬라이드 높이(여백 없음) 예산 + mirror 뷰 높이.
+    const slideH = slideHeightPxFor(pg.gridWidthPx, ratio)
+    if (!Number.isFinite(slideH) || slideH <= 0) continue
+    const pxPerIn = pg.gridWidthPx / dim.w // full-bleed: 그리드 폭 → 슬라이드 폭
+    const slideGroups = groupRowsIntoSlides(pg.rows, slideH)
 
-    for (const row of rows) {
+    for (const slideRows of slideGroups) {
       throwIfAborted(signal)
-      const rowH = row.bottom - row.top
-      const oversized = rowH > slideBudgetPx
+      const curSlide = pptx.addSlide()
+      const originY = slideRows[0].top
+      // 멤버십은 뷰 높이로 정했지만 배치는 실제 rect 라, 한 슬라이드의 실제
+      // 콘텐츠가 슬라이드보다 길면 그 슬라이드만 맞춤 축소(겹침/넘침 방지).
+      const slabBottom = Math.max(...slideRows.map((r) => r.bottom))
+      const slabH = slabBottom - originY
+      const scale = slabH > slideH ? slideH / slabH : 1
+      const offsetXIn = (dim.w * (1 - scale)) / 2 // 축소 시 가로 가운데
 
-      if (forceNew) {
-        curSlide = pptx.addSlide()
-        slideOriginY = row.top
-        forceNew = false
-      } else if (row.top - slideOriginY + rowH > slideBudgetPx + FIT_EPS_PX) {
-        // 현재 슬라이드에 안 들어감 → 새 슬라이드, 이 행이 상단.
-        curSlide = pptx.addSlide()
-        slideOriginY = row.top
+      for (const row of slideRows) {
+        for (const b of row.blocks) {
+          throwIfAborted(signal)
+          onProgress?.({
+            phase: 'capture',
+            current: done,
+            total: totalBlocks,
+            label: `위젯 변환 중 (${done + 1}/${totalBlocks})`,
+          })
+          const pos = {
+            x: offsetXIn + (b.x * scale) / pxPerIn,
+            y: ((b.y - originY) * scale) / pxPerIn,
+            w: (b.w * scale) / pxPerIn,
+            h: (b.h * scale) / pxPerIn,
+          }
+          const meta = blockMeta.get(b.id)
+          const ptPerPx = (1 / pxPerIn) * 72 * scale
+          const caption = readVisibleCaption(b.el)
+          let placed = false
+          if (meta && NATIVE_TEXT_TYPES.has(meta.type)) {
+            placed = tryAddNativeText(curSlide, meta, content[b.id] ?? {}, b.el, pos, ptPerPx, caption)
+          } else if (meta && NATIVE_TABLE_TYPES.has(meta.type)) {
+            placed = tryAddNativeTable(curSlide, b.el, pos, ptPerPx, caption)
+          }
+          if (!placed) {
+            // 이미지 폴백 — 캡션은 캡처 이미지에 이미 포함되므로 별도 박스 없음.
+            const canvas = await captureBlockToCanvas(b.el, { scale: 2 })
+            curSlide.addImage({ data: canvas.toDataURL('image/png'), ...pos })
+          }
+          done += 1
+        }
       }
-
-      // 행 내 위젯 캡처 + 배치.
-      let scale = 1
-      let offsetXIn = MARGIN_IN
-      let rowLeft = 0
-      if (oversized) {
-        // 슬라이드보다 큰 행 → 통째로 축소해 단독 슬라이드에 가운데 배치.
-        slideOriginY = row.top
-        scale = slideBudgetPx / rowH
-        rowLeft = Math.min(...row.blocks.map((b) => b.x))
-        const rowRight = Math.max(...row.blocks.map((b) => b.x + b.w))
-        const scaledWidthIn = ((rowRight - rowLeft) * scale) / pxPerIn
-        offsetXIn = MARGIN_IN + Math.max(0, (contentW - scaledWidthIn) / 2)
-      }
-
-      for (const b of row.blocks) {
-        throwIfAborted(signal)
-        onProgress?.({
-          phase: 'capture',
-          current: done,
-          total: totalBlocks,
-          label: `위젯 변환 중 (${done + 1}/${totalBlocks})`,
-        })
-        const canvas = await captureBlockToCanvas(b.el, { scale: 2 })
-        const dataUrl = canvas.toDataURL('image/png')
-        const xIn = oversized
-          ? offsetXIn + ((b.x - rowLeft) * scale) / pxPerIn
-          : MARGIN_IN + b.x / pxPerIn
-        const yIn = oversized
-          ? MARGIN_IN + ((b.y - row.top) * scale) / pxPerIn
-          : MARGIN_IN + (b.y - slideOriginY) / pxPerIn
-        const wIn = (b.w * scale) / pxPerIn
-        const hIn = (b.h * scale) / pxPerIn
-        curSlide.addImage({ data: dataUrl, x: xIn, y: yIn, w: wIn, h: hIn })
-        done += 1
-      }
-
-      // 축소 행을 단독으로 채웠으면 다음 행은 새 슬라이드부터.
-      if (oversized) forceNew = true
     }
   }
 

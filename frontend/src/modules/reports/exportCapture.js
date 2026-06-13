@@ -78,6 +78,22 @@ function parseCssColorToRgba(str) {
   return null
 }
 
+/** CSS 색 문자열 → 'RRGGBB'(# 없음, pptxgenjs 형식). compositeWhite=true 면
+ *  반투명색을 흰 배경 위에 합성(셀 배경 틴트용). 투명/파싱 실패는 null. */
+export function cssColorToHex(str, { compositeWhite = false } = {}) {
+  const c = parseCssColorToRgba(str)
+  if (!c || c.a <= 0) return null
+  let { r, g, b } = c
+  if (compositeWhite && c.a < 1) {
+    const blend = (x) => x * c.a + 255 * (1 - c.a)
+    r = blend(r)
+    g = blend(g)
+    b = blend(b)
+  }
+  const h = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0')
+  return (h(r) + h(g) + h(b)).toUpperCase()
+}
+
 const MODERN_COLOR_FN = /(?:color|color-mix|oklch|oklab|lab|lch|hwb)\(/i
 const NEUTRALIZE_COLOR_PROPS = [
   'color',

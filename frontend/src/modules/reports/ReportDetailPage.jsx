@@ -2916,14 +2916,10 @@ export default function ReportDetailPage() {
   }
 
   // PPT export — 비율 선택 다이얼로그를 먼저 연다. 보고서에 슬라이드 가이드
-  // 비율이 있으면 그 값으로 시드(없으면 직전 선택/16:9 유지).
+  // 비율(page_slide_ratio)이 있으면 그 값으로 시드(없으면 직전 선택/16:9 유지).
   function handleExportPptx() {
     if (!draft) return
-    const guideRatio =
-      typeof existingReport?.page_slide_guide === 'object' &&
-      existingReport.page_slide_guide?.ratio
-        ? existingReport.page_slide_guide.ratio
-        : null
+    const guideRatio = draft.page_slide_ratio ?? existingReport?.page_slide_ratio
     if (guideRatio && ['16:9', '4:3', '16:10'].includes(guideRatio)) {
       setPptxRatio(guideRatio)
     }
@@ -2956,6 +2952,7 @@ export default function ReportDetailPage() {
       const { exportReportToPptx } = await import('./exportReportToPptx')
       await exportReportToPptx({
         draft,
+        pageTemplateMap,
         slide: { ratio },
         onProgress: setPptxProgress,
         signal: controller.signal,

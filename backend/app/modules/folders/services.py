@@ -244,6 +244,63 @@ def count_public_uncategorized_org(db: Session, workspace_slug: str) -> int:
     return count_uncategorized_org(db, workspace_slug)
 
 
+def list_org_folders_readonly(db: Session, workspace_slug: str) -> list[Folder]:
+    """list_org_folders 와 동일하나 기본 폴더 생성(side effect) 없음. '하위부서
+    포함' 트리에서 자손 게시판을 *읽기만* 할 때, 남의 게시판에 기본 폴더를
+    만들지 않도록 한다."""
+    rows = db.execute(
+        select(Folder, func.count(ReportMount.report_id).label("report_count"))
+        .outerjoin(ReportMount, ReportMount.folder_id == Folder.id)
+        .where(
+            Folder.kind == FolderKind.org,
+            Folder.workspace_slug == workspace_slug,
+        )
+        .group_by(Folder.id)
+        .order_by(Folder.sort_order, Folder.id)
+    ).all()
+    folders: list[Folder] = []
+    for folder, count in rows:
+        folder.report_count = int(count or 0)
+        folders.append(folder)
+    return folders
+
+
+def descendant_folder_tree(db: Session, root_slug: str, actor) -> list[tuple]:
+    """'하위부서 포함' 트리 — root 의 자손(하위) org 부서들 중 actor 가 *볼 수
+    있는* 것과 각 부서의 보이는 폴더를 (Workspace, [Folder]) 튜플 목록으로 반환.
+
+    권한: 멤버(상속 포함 — 상위 부서 멤버는 하위도 멤버) → 전체 폴더. 비멤버라도
+    공개 컨텐츠가 있으면 공개 폴더만. 그 외(접근 불가)는 제외 → 권한 밖 부서는
+    이름조차 노출되지 않는다. root 자신은 제외(호출부가 기존 목록으로 따로 그림).
+    """
+    # 지역 import — 순환참조 회피(auth → … → folders 경로).
+    from app.modules.workspaces import services as ws_services
+    from app.shared.auth import _resolve_role, _workspace_has_public_content
+
+    slugs = ws_services.get_descendants_inclusive(db, root_slug)
+    out: list[tuple] = []
+    for slug in slugs:
+        if slug == root_slug:
+            continue
+        ws = db.get(Workspace, slug)
+        if ws is None or ws.virtual or ws.kind != WorkspaceKind.org:
+            continue
+        is_member = (
+            actor.is_system_admin
+            or _resolve_role(db, actor.id, slug) is not None
+        )
+        if is_member:
+            folders = list_org_folders_readonly(db, slug)
+        elif _workspace_has_public_content(db, slug):
+            folders = list_public_org_folders(db, slug)
+            if not folders:
+                continue
+        else:
+            continue
+        out.append((ws, folders))
+    return out
+
+
 # ──────────────────────────────────────────────────────────────────
 # Mutation — permission-checked
 # ──────────────────────────────────────────────────────────────────

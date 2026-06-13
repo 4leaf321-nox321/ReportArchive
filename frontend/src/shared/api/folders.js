@@ -16,6 +16,17 @@ export async function listFolders({ workspaceSlug } = {}) {
   }
 }
 
+/** '하위부서 포함' — root 게시판의 자손 부서들 + 각 부서의 보이는 폴더.
+ *  권한 범위(멤버/공개) 안의 부서만. 반환: { workspaces: [{ slug, name,
+ *  parent_slug, folders: [...] }] } (root 자신은 미포함). */
+export async function listFolderDescendants({ workspaceSlug } = {}) {
+  const res = await apiClient.get(
+    `${BASE}/descendants?workspace_slug=${encodeURIComponent(workspaceSlug)}`,
+  )
+  const data = extractData(res)
+  return { workspaces: data?.workspaces ?? [] }
+}
+
 export async function createFolder({
   name,
   parentId = null,

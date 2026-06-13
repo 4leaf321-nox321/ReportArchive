@@ -202,26 +202,40 @@ export default function ReportsListPage() {
   // doesn't re-fire on every render — arrays of ids would be a new
   // reference each pass even when the contents match.
   const entityFilterKey = entityFilterIds.join(',')
+  // '하위부서 포함' 트리에서 자손 부서 폴더를 고르면 folderFilter 가
+  // { slug, folderId } 객체가 된다 — 그 부서 컨텍스트(workspaceSlug 오버라이드)로
+  // 보고서를 조회. folderId=null 이면 그 부서 보고서 전체.
+  const subDeptSel =
+    folderFilter && typeof folderFilter === 'object' ? folderFilter : null
   // Encode folder filter into a stable string for the dep array. null
   // is "no filter" — don't send `folder_id` at all in that case.
-  const folderQueryValue =
-    folderFilter === FOLDER_FILTER_ALL ||
-    folderFilter === FOLDER_FILTER_TRASH ||
-    !showFolderSidebar
+  const folderQueryValue = subDeptSel
+    ? subDeptSel.folderId ?? undefined
+    : folderFilter === FOLDER_FILTER_ALL ||
+        folderFilter === FOLDER_FILTER_TRASH ||
+        !showFolderSidebar
       ? undefined
       : folderFilter
+  // 자손 부서 선택 시 그 부서로 컨텍스트 오버라이드. dep 키도 안정 문자열로.
+  const workspaceOverride = subDeptSel ? subDeptSel.slug : undefined
+  const folderDepKey = subDeptSel
+    ? `${subDeptSel.slug}:${subDeptSel.folderId ?? ''}`
+    : String(folderQueryValue ?? '')
   const { data: reports, loading, error, reload } = useAsync(
     () =>
       slug
         ? listReports({
             entityIds: entityFilterIds,
             folderId: folderQueryValue,
-            includePublic: isOrg && includePublic,
+            // 자손 부서 보기일 땐 그 부서 게시판 자체를 보는 것이라
+            // 조직간공개 포함/휴지통은 적용하지 않는다.
+            includePublic: isOrg && includePublic && !subDeptSel,
             // 휴지통 보기(개인 공간 한정) — 소프트삭제된 것만.
-            trashed: isPersonal && trashView,
+            trashed: isPersonal && trashView && !subDeptSel,
+            workspaceSlug: workspaceOverride,
           })
         : Promise.resolve([]),
-    [slug, entityFilterKey, folderQueryValue, isOrg, includePublic, isPersonal, trashView]
+    [slug, entityFilterKey, folderDepKey, workspaceOverride, isOrg, includePublic, isPersonal, trashView]
   )
   const { data: templates } = useAsync(
     () => (slug ? listTemplates() : Promise.resolve([])),

@@ -12,6 +12,7 @@
  */
 import * as React from 'react'
 import {
+  Building2,
   ChevronDown,
   ChevronRight,
   Folder as FolderIcon,
@@ -30,6 +31,7 @@ import { Input } from '@/shared/components/ui/input'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import {
   listFolders,
+  listFolderDescendants,
   createFolder,
   updateFolder,
   deleteFolder,
@@ -175,6 +177,78 @@ export function FolderSidebar({
     }
     return map
   }, [folders])
+
+  // '하위부서 포함' — org 게시판에서만. 켜면 root 의 자손 부서(권한 범위 내)와
+  // 그 폴더들을 한 트리로 함께 보여준다. 자손 부서 폴더를 고르면 selected 는
+  // { slug, folderId } 객체가 되고, 부모(ReportsListPage)가 그 부서 컨텍스트로
+  // 보고서를 조회한다.
+  const [includeSubDepts, setIncludeSubDepts] = React.useState(false)
+  const [subDepts, setSubDepts] = React.useState([]) // [{slug,name,parent_slug,folders}]
+  const [subLoading, setSubLoading] = React.useState(false)
+  const [collapsedDepts, setCollapsedDepts] = React.useState(() => new Set())
+
+  React.useEffect(() => {
+    if (!includeSubDepts || !workspaceSlug || !orgScope) {
+      setSubDepts([])
+      return undefined
+    }
+    let alive = true
+    setSubLoading(true)
+    listFolderDescendants({ workspaceSlug })
+      .then((res) => {
+        if (alive) setSubDepts(res.workspaces ?? [])
+      })
+      .catch(() => {
+        if (alive) setSubDepts([])
+      })
+      .finally(() => {
+        if (alive) setSubLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [includeSubDepts, workspaceSlug, orgScope, reloadKey])
+
+  // root 의 직속 자손부터 재귀적으로 그릴 수 있게 parent_slug → [dept] 색인.
+  const subDeptChildrenOf = React.useMemo(() => {
+    const map = new Map()
+    for (const d of subDepts) {
+      const key = d.parent_slug ?? null
+      if (!map.has(key)) map.set(key, [])
+      map.get(key).push(d)
+    }
+    return map
+  }, [subDepts])
+
+  function toggleSubDepts() {
+    setIncludeSubDepts((on) => {
+      const next = !on
+      // 끌 때 자손부서 폴더를 보고 있었다면 "전체"로 되돌린다.
+      if (!next && selected && typeof selected === 'object') {
+        onSelect(FOLDER_FILTER_ALL)
+      }
+      return next
+    })
+  }
+
+  function toggleDeptCollapsed(slug) {
+    setCollapsedDepts((prev) => {
+      const next = new Set(prev)
+      if (next.has(slug)) next.delete(slug)
+      else next.add(slug)
+      return next
+    })
+  }
+
+  // 자손부서 폴더 선택 여부 — selected 가 { slug, folderId } 객체일 때 일치 검사.
+  const isSubSelected = React.useCallback(
+    (slug, folderId) =>
+      selected &&
+      typeof selected === 'object' &&
+      selected.slug === slug &&
+      (selected.folderId ?? null) === (folderId ?? null),
+    [selected],
+  )
 
   const totalReports = folders.reduce(
     (sum, f) => sum + (f.report_count || 0),
@@ -525,31 +599,143 @@ export function FolderSidebar({
     )
   }
 
+  // 자손 부서의 폴더(읽기 전용) — 그 부서의 folders 리스트를 parent_id 로
+  // 중첩 렌더. 선택 시 onSelect({ slug, folderId }) 로 부모에 그 부서 컨텍스트를
+  // 넘긴다. (남의 게시판이라 이름변경/삭제/DnD 없음.)
+  function renderSubFolders(deptSlug, deptFolders, parentId, depth) {
+    const kids = deptFolders.filter((f) => (f.parent_id ?? null) === parentId)
+    return kids.map((f) => {
+      const active = isSubSelected(deptSlug, f.id)
+      const hasKids = deptFolders.some((c) => (c.parent_id ?? null) === f.id)
+      return (
+        <div key={`${deptSlug}:${f.id}`}>
+          <div
+            className={cn(
+              'flex items-center gap-1 rounded-md px-1.5 py-1 text-sm cursor-pointer transition-colors',
+              active
+                ? 'bg-primary/10 text-primary font-medium'
+                : 'hover:bg-muted text-foreground/80',
+            )}
+            style={{ paddingLeft: 6 + depth * 10 }}
+            onClick={() => onSelect({ slug: deptSlug, folderId: f.id })}
+          >
+            <span className="w-4 shrink-0" />
+            {active ? (
+              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+            ) : (
+              <FolderIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            )}
+            <span className="flex-1 truncate" title={f.name}>
+              {f.name}
+            </span>
+            <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
+              {f.report_count || 0}
+            </span>
+          </div>
+          {hasKids && renderSubFolders(deptSlug, deptFolders, f.id, depth + 1)}
+        </div>
+      )
+    })
+  }
+
+  // 자손 부서 노드 — 부서명(클릭=그 부서 보고서 전체) + 접기, 그 안에 폴더들과
+  // 다시 하위 부서들을 재귀 렌더.
+  function renderDept(dept, depth) {
+    const childDepts = subDeptChildrenOf.get(dept.slug) ?? []
+    const isCollapsed = collapsedDepts.has(dept.slug)
+    const deptActive = isSubSelected(dept.slug, null)
+    const hasContent = (dept.folders?.length ?? 0) > 0 || childDepts.length > 0
+    return (
+      <div key={`dept:${dept.slug}`}>
+        <div
+          className={cn(
+            'flex items-center gap-1 rounded-md px-1.5 py-1 text-sm cursor-pointer transition-colors',
+            deptActive
+              ? 'bg-primary/10 text-primary font-medium'
+              : 'hover:bg-muted text-foreground/80',
+          )}
+          style={{ paddingLeft: 6 + depth * 10 }}
+          onClick={() => onSelect({ slug: dept.slug, folderId: null })}
+          title={`${dept.name} — 이 부서의 보고서`}
+        >
+          {hasContent ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                toggleDeptCollapsed(dept.slug)
+              }}
+              className="p-0.5 hover:bg-background rounded shrink-0"
+              aria-label={isCollapsed ? '펼치기' : '접기'}
+            >
+              {isCollapsed ? (
+                <ChevronRight className="h-3 w-3 opacity-60" />
+              ) : (
+                <ChevronDown className="h-3 w-3 opacity-60" />
+              )}
+            </button>
+          ) : (
+            <span className="w-4 shrink-0" />
+          )}
+          <Building2 className="h-3.5 w-3.5 shrink-0 text-sky-600/70" />
+          <span className="flex-1 truncate font-medium" title={dept.name}>
+            {dept.name}
+          </span>
+        </div>
+        {!isCollapsed && (
+          <>
+            {renderSubFolders(dept.slug, dept.folders ?? [], null, depth + 1)}
+            {childDepts.map((cd) => renderDept(cd, depth + 1))}
+          </>
+        )}
+      </div>
+    )
+  }
+
   const roots = childrenOf.get(null) ?? []
+  const rootChildDepts = subDeptChildrenOf.get(workspaceSlug) ?? []
 
   const isRootDropTarget = dropTarget === '__root__' && canDropOn('__root__')
 
   return (
     <div className="w-64 shrink-0 border-r bg-muted/30 flex flex-col h-full">
-      <div className="flex items-center justify-between px-3 py-2 border-b">
-        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+      <div className="flex items-center justify-between px-3 py-2 border-b gap-1">
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider shrink-0">
           폴더
         </span>
-        {canEdit && (
-          <button
-            type="button"
-            onClick={() => {
-              setNewName('')
-              setCreatingUnder(
-                creatingUnder === null ? undefined : null,
-              )
-            }}
-            className="p-1 hover:bg-background rounded"
-            title="새 폴더 (최상위)"
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </button>
-        )}
+        <div className="flex items-center gap-1">
+          {/* 하위부서 포함 — org 게시판에서만. 켜면 자손 부서 폴더까지 한 트리로. */}
+          {orgScope && (
+            <button
+              type="button"
+              onClick={toggleSubDepts}
+              className={cn(
+                'h-6 rounded-md border px-1.5 text-[10px] font-medium transition-colors',
+                includeSubDepts
+                  ? 'border-sky-300 bg-sky-50 text-sky-700'
+                  : 'border-border bg-background text-muted-foreground hover:bg-muted',
+              )}
+              title="하위 부서의 폴더까지 한 번에 보기 (권한 범위 내)"
+            >
+              하위부서 {includeSubDepts ? '포함' : '제외'}
+            </button>
+          )}
+          {canEdit && (
+            <button
+              type="button"
+              onClick={() => {
+                setNewName('')
+                setCreatingUnder(
+                  creatingUnder === null ? undefined : null,
+                )
+              }}
+              className="p-1 hover:bg-background rounded shrink-0"
+              title="새 폴더 (최상위)"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 게시판 통째 공유 — 부서/사용자/전체 × 열람/편집. 클릭하면 팝오버로
@@ -690,6 +876,28 @@ export function FolderSidebar({
               <div className="h-8" />
             )}
           </>
+        )}
+
+        {/* 하위부서 포함 — 자손 부서 트리(권한 범위 내). 폴더를 고르면 그 부서
+            컨텍스트로 보고서를 조회한다(onSelect 가 {slug, folderId} 객체). */}
+        {includeSubDepts && (
+          <div className="mt-1">
+            <div className="h-px bg-border my-1.5" />
+            <div className="px-2 pb-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+              하위 부서
+            </div>
+            {subLoading ? (
+              <div className="flex items-center justify-center py-3 text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              </div>
+            ) : rootChildDepts.length === 0 ? (
+              <div className="px-2 py-1 text-[11px] text-muted-foreground italic">
+                볼 수 있는 하위 부서가 없습니다.
+              </div>
+            ) : (
+              rootChildDepts.map((d) => renderDept(d, 0))
+            )}
+          </div>
         )}
       </div>
 

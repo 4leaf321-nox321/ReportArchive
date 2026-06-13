@@ -126,6 +126,40 @@ def list_folders(
     return success_response(data=payload.model_dump(mode="json"))
 
 
+@router.get("/descendants")
+def list_descendant_folders(
+    workspace_slug: str = Query(...),
+    db: Session = Depends(get_db),
+    actor: User = Depends(get_current_user_no_workspace),
+):
+    """'하위부서 포함' 폴더 트리 — root 게시판의 자손 부서들 + 각 부서의 보이는
+    폴더. 권한 범위(멤버/공개) 안의 부서만 나온다(권한 밖 부서는 이름도 안 나옴).
+    root 자신은 포함하지 않는다(프론트가 기존 목록으로 따로 그림)."""
+    tree = services.descendant_folder_tree(db, workspace_slug, actor)
+    from app.modules.grants import services as grant_services
+
+    all_ids = [f.id for (_ws, folders) in tree for f in folders]
+    share_map = (
+        grant_services.folder_share_summaries(db, all_ids) if all_ids else {}
+    )
+    workspaces = []
+    for ws, folders in tree:
+        items = []
+        for f in folders:
+            fr = FolderRead.model_validate(f)
+            fr.shares = share_map.get(f.id, [])
+            items.append(fr.model_dump(mode="json"))
+        workspaces.append(
+            {
+                "slug": ws.slug,
+                "name": ws.name,
+                "parent_slug": ws.parent_slug,
+                "folders": items,
+            }
+        )
+    return success_response(data={"workspaces": workspaces})
+
+
 @router.post("")
 def create_folder(
     payload: FolderCreate,

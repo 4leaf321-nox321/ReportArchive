@@ -13,18 +13,27 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Optional
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.modules.comments import services as comment_services
 from app.modules.folders import services as folder_services
 from app.modules.reports import services as report_services
 from app.modules.reports.models import ReportPhase
+from app.modules.templates.models import Template
 from app.modules.workspaces.models import Workspace, WorkspaceKind
 
 # 며칠 이상 미수정 'drafting' 을 정체로 본다 — 프런트 STALE_DRAFT_DAYS 와 동일.
 STALE_DRAFT_DAYS = 14
-ENTITY_TOP_N = 8
 AUTHOR_TOP_N = 8
+DIST_TOP_N = 12  # 분포 차원당 상위 N 값
+
+
+def _template_name_map(db: Session) -> dict[str, str]:
+    rows = db.execute(
+        select(Template.template_id, Template.name).where(Template.is_latest.is_(True))
+    ).all()
+    return {tid: name for tid, name in rows}
 
 
 # ── 보고서 1건에서 값 뽑기 ────────────────────────────────────────────────
@@ -205,27 +214,85 @@ def compute_dashboard(
         "open_comments": open_comments,
     }
 
-    # 엔티티(모델) 커버리지 — 기간 내
-    ent_freq: dict[int, dict] = {}
-    no_entity = 0
+    # ── 분포(메타데이터 통계) — 차원별 보고서 수, 기간 내 ──────────────────
+    # 콘텐츠 수치 대신 보고서 메타데이터로 통계. 차원 = 엔티티 축(모델·불량·
+    # 개발단계…) + 종류 + 템플릿. 프런트는 드롭다운으로 차원을 골라 본다.
+    total_in = len(in_range)
+    distributions: list[dict] = []
+
+    # 1) 엔티티 축별 — type 단위로 묶고 value 빈도.
+    axes: dict[int, dict] = {}
     for r in in_range:
-        ents = list(getattr(r, "entities", None) or [])
-        if not ents:
-            no_entity += 1
-            continue
-        for e in ents:
-            cur = ent_freq.setdefault(
-                e.id, {"id": e.id, "label": e.value or str(e.id), "count": 0}
+        for e in getattr(r, "entities", None) or []:
+            et = getattr(e, "entity_type", None)
+            a = axes.setdefault(
+                e.type_id,
+                {
+                    "slug": getattr(et, "slug", None) or str(e.type_id),
+                    "label": getattr(et, "label", None) or str(e.type_id),
+                    "values": {},
+                    "reports": set(),
+                },
             )
-            cur["count"] += 1
-    ent_top = sorted(ent_freq.values(), key=lambda x: x["count"], reverse=True)[
-        :ENTITY_TOP_N
-    ]
-    entity_coverage = {
-        "top": ent_top,
-        "no_entity": no_entity,
-        "distinct": len(ent_freq),
-    }
+            a["values"][e.value] = a["values"].get(e.value, 0) + 1
+            a["reports"].add(r.id)
+    for a in sorted(axes.values(), key=lambda x: -sum(x["values"].values())):
+        items = sorted(
+            ({"label": k or "(빈값)", "count": v} for k, v in a["values"].items()),
+            key=lambda x: -x["count"],
+        )[:DIST_TOP_N]
+        distributions.append(
+            {
+                "key": f"entity:{a['slug']}",
+                "label": a["label"],
+                "items": items,
+                "no_value": total_in - len(a["reports"]),
+            }
+        )
+
+    # 2) 종류(report_type)
+    rt: dict[str, int] = {}
+    rt_none = 0
+    for r in in_range:
+        name = getattr(getattr(r, "report_type", None), "name", None)
+        if name:
+            rt[name] = rt.get(name, 0) + 1
+        else:
+            rt_none += 1
+    if rt:
+        distributions.append(
+            {
+                "key": "report_type",
+                "label": "종류",
+                "items": sorted(
+                    ({"label": k, "count": v} for k, v in rt.items()),
+                    key=lambda x: -x["count"],
+                )[:DIST_TOP_N],
+                "no_value": rt_none,
+            }
+        )
+
+    # 3) 템플릿
+    tcount: dict[str, int] = {}
+    for r in in_range:
+        for tid in _template_ids(r):
+            tcount[tid] = tcount.get(tid, 0) + 1
+    if tcount:
+        tmap = _template_name_map(db)
+        distributions.append(
+            {
+                "key": "template",
+                "label": "템플릿",
+                "items": sorted(
+                    (
+                        {"label": tmap.get(tid, tid), "count": v}
+                        for tid, v in tcount.items()
+                    ),
+                    key=lambda x: -x["count"],
+                )[:DIST_TOP_N],
+                "no_value": 0,
+            }
+        )
 
     # 작성자 Top — 기간 내
     auth_freq: dict[str, dict] = {}
@@ -253,7 +320,7 @@ def compute_dashboard(
         "phase_breakdown": phase,
         "trend": trend,
         "health": health,
-        "entity_coverage": entity_coverage,
+        "distributions": distributions,
         "author_top": author_top,
         "content_metrics": [],
     }

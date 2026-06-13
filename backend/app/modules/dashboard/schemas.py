@@ -46,16 +46,13 @@ class LabelCount(BaseModel):
     count: int
 
 
-class EntityCount(BaseModel):
-    id: int
-    label: str
-    count: int
+class Distribution(BaseModel):
+    """한 메타데이터 차원의 분포 — 차원 선택 드롭다운 1개 카드용."""
 
-
-class EntityCoverage(BaseModel):
-    top: list[EntityCount]
-    no_entity: int
-    distinct: int
+    key: str          # 'entity:model' | 'report_type' | 'template'
+    label: str        # 드롭다운 표시명(예: '모델명', '종류', '템플릿')
+    items: list[LabelCount]
+    no_value: int     # 이 차원 값이 없는 보고서 수
 
 
 class AuthorTop(BaseModel):
@@ -69,7 +66,7 @@ class DashboardResponse(BaseModel):
     phase_breakdown: PhaseBreakdown
     trend: list[TrendBucket]
     health: HealthBlock
-    entity_coverage: EntityCoverage
+    distributions: list[Distribution]
     author_top: AuthorTop
     # 3B 에서 채움. 3A 단계에선 빈 배열.
     content_metrics: list = []

@@ -18,7 +18,6 @@ import {
   Bell,
   Inbox,
   FileQuestion,
-  Gauge,
 } from 'lucide-react'
 import * as React from 'react'
 import { getUnreadCount } from '@/shared/api/notifications'
@@ -105,7 +104,9 @@ const ADMIN_MENU = [
   },
   { to: '/admin', label: '시스템 관리', icon: Settings, requireSystemAdmin: true },
   { to: '/admin/entities', label: '엔티티 관리', icon: Tags, requireSystemAdmin: true },
-  { to: '/admin/dashboard-metrics', label: '대시보드 지표', icon: Gauge, requireSystemAdmin: true },
+  // '대시보드 지표'(콘텐츠 수치, TemplateMetric)는 메타데이터 통계로 방향을
+  // 틀면서 휴면 — 라우트/페이지/API 는 남겨두되 메뉴에서만 숨긴다(추후 재검토).
+  // { to: '/admin/dashboard-metrics', label: '대시보드 지표', icon: Gauge, requireSystemAdmin: true },
   { to: '/admin/orphan-files', label: '오펀 파일 정리', icon: FileQuestion, requireSystemAdmin: true },
   { to: '/server', label: '서버', icon: HardDrive, requireSystemAdmin: true },
 ]

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/components/ui/card'
 import { PageHeader } from '@/shared/components/PageHeader'
@@ -68,13 +68,13 @@ export default function DashboardPage() {
   const uncategorizedCount = health.uncategorized ?? 0
   const openCommentCount = health.open_comments ?? 0
 
-  // 엔티티 커버리지 — 서버는 snake_case(no_entity). 컴포넌트 prop 으로 매핑.
-  const ec = data?.entity_coverage ?? { top: [], no_entity: 0, distinct: 0 }
-  const entityCoverage = {
-    top: ec.top ?? [],
-    noEntity: ec.no_entity ?? 0,
-    distinct: ec.distinct ?? 0,
-  }
+  // 메타데이터 분포 — 차원(모델·불량·종류·템플릿…) 선택 드롭다운 1개 카드.
+  // 선택 차원이 현재 응답에 없으면(기간 바뀜 등) 첫 차원으로 폴백.
+  const distributions = data?.distributions ?? []
+  const [dimKey, setDimKey] = useState('')
+  const activeDist =
+    distributions.find((d) => d.key === dimKey) ?? distributions[0] ?? null
+
   const authorTop = data?.author_top ?? { top: [], distinct: 0, unknown: 0 }
 
   // Phase breakdown — 고정 enum 순서로 Map 화(레이아웃 안정).
@@ -195,18 +195,41 @@ export default function DashboardPage() {
 
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="text-base">엔티티(모델) 커버리지</CardTitle>
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle className="text-base">분포</CardTitle>
+              {distributions.length > 0 && (
+                <select
+                  value={activeDist?.key ?? ''}
+                  onChange={(e) => setDimKey(e.target.value)}
+                  className="h-7 rounded border border-input bg-background px-1.5 text-xs"
+                  aria-label="분포 차원"
+                >
+                  {distributions.map((d) => (
+                    <option key={d.key} value={d.key}>
+                      {d.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
             <CardDescription>
-              기간 내 보고서가 다룬 모델 · 상위 {entityCoverage.top.length}개
+              {activeDist
+                ? `기간 내 보고서를 ${activeDist.label} 기준으로`
+                : '기간 내 보고서 분포'}
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {entityCoverage.distinct === 0 ? (
+            {!activeDist || activeDist.items.length === 0 ? (
               <p className="text-sm text-muted-foreground py-2">
-                이 기간에 연결된 엔티티가 없습니다.
+                이 기간에 표시할 분포가 없습니다.
               </p>
             ) : (
-              <EntityCoverage coverage={entityCoverage} />
+              <BarList
+                items={activeDist.items}
+                footer={
+                  activeDist.no_value > 0 ? `미지정 ${activeDist.no_value}건` : null
+                }
+              />
             )}
           </CardContent>
         </Card>
@@ -325,18 +348,6 @@ function HealthTile({ label, value, tone, onClick }) {
         {value}
       </div>
     </div>
-  )
-}
-
-// ───────────────────────── Entity coverage ─────────────────────────────
-function EntityCoverage({ coverage }) {
-  return (
-    <BarList
-      items={coverage.top}
-      footer={
-        coverage.noEntity > 0 ? `엔티티 미연결 ${coverage.noEntity}건` : null
-      }
-    />
   )
 }
 

@@ -41,7 +41,7 @@ def get_dashboard(
             phase_breakdown={"drafting": 0, "reviewing": 0, "finalized": 0},
             trend=[],
             health={"stale_drafts": 0, "uncategorized": 0, "open_comments": 0},
-            entity_coverage={"top": [], "no_entity": 0, "distinct": 0},
+            distributions=[],
             author_top={"top": [], "distinct": 0, "unknown": 0},
         )
         return success_response(data=empty.model_dump(mode="json"))

@@ -261,6 +261,7 @@ def compute_dashboard(
                 "label": a["label"],
                 "items": items,
                 "no_value": total_in - len(a["reports"]),
+                "total": len(a["byid"]),
             }
         )
 
@@ -284,6 +285,7 @@ def compute_dashboard(
                 "label": "종류",
                 "items": sorted(rt.values(), key=lambda x: -x["count"])[:DIST_TOP_N],
                 "no_value": rt_none,
+                "total": len(rt),
             }
         )
 
@@ -306,6 +308,7 @@ def compute_dashboard(
                     key=lambda x: -x["count"],
                 )[:DIST_TOP_N],
                 "no_value": 0,
+                "total": len(tcount),
             }
         )
 
@@ -336,6 +339,7 @@ def compute_dashboard(
                     :DIST_TOP_N
                 ],
                 "no_value": 0,
+                "total": len(bcount),
             }
         )
 
@@ -483,13 +487,31 @@ def compute_crosstab(
                 row_tot[rh["key"]] = row_tot.get(rh["key"], 0) + 1
                 col_tot[ch["key"]] = col_tot.get(ch["key"], 0) + 1
 
-    # 행/열 상위 N 만(표가 너무 커지지 않게).
+    # 행/열 상위 N 만(표가 너무 커지지 않게) — 건수순으로 N 개를 고른 뒤,
+    # 게시판(mount) 차원은 상위부서가 왼쪽/위로 오도록 부서 트리 순서로 재정렬.
     top_rows = sorted(row_hdr.values(), key=lambda h: -row_tot.get(h["key"], 0))[
         :CROSSTAB_TOP_N
     ]
     top_cols = sorted(col_hdr.values(), key=lambda h: -col_tot.get(h["key"], 0))[
         :CROSSTAB_TOP_N
     ]
+
+    def _order_by_tree(headers, dimkey):
+        if dimkey != "mount":
+            return headers
+        # 부서 트리 순서(부모 먼저). get_descendants_inclusive 는 depth-first 라
+        # 부모가 자식보다 앞선다 — 그 index 를 정렬 키로.
+        order = {
+            slug: i
+            for i, slug in enumerate(
+                ws_services.get_descendants_inclusive(db, ws.slug)
+            )
+        }
+        return sorted(headers, key=lambda h: order.get(h.get("mount_slug"), 1 << 30))
+
+    top_rows = _order_by_tree(top_rows, row)
+    top_cols = _order_by_tree(top_cols, col)
+
     row_keys = {h["key"] for h in top_rows}
     col_keys = {h["key"] for h in top_cols}
     trimmed = {
@@ -503,4 +525,6 @@ def compute_crosstab(
         "rows": top_rows,
         "cols": top_cols,
         "cells": trimmed,
+        "row_total": len(row_hdr),
+        "col_total": len(col_hdr),
     }

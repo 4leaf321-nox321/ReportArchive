@@ -285,7 +285,10 @@ export default function DashboardPage() {
             </div>
             <CardDescription>
               {activeDist
-                ? `기간 내 보고서를 ${activeDist.label} 기준으로`
+                ? `기간 내 보고서를 ${activeDist.label} 기준으로` +
+                  (activeDist.total > activeDist.items.length
+                    ? ` · 상위 ${activeDist.items.length}/${activeDist.total}`
+                    : '')
                 : '기간 내 보고서 분포'}
             </CardDescription>
           </CardHeader>
@@ -379,6 +382,11 @@ export default function DashboardPage() {
             </div>
             <CardDescription>
               두 차원 교차 보고서 수 · 셀을 클릭하면 두 필터로 목록 이동
+              {crosstab &&
+              (crosstab.row_total > crosstab.rows.length ||
+                crosstab.col_total > crosstab.cols.length)
+                ? ` · 건수 상위만 표시 (행 ${crosstab.rows.length}/${crosstab.row_total} · 열 ${crosstab.cols.length}/${crosstab.col_total})`
+                : ''}
             </CardDescription>
           </CardHeader>
           <CardContent>

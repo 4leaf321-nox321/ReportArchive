@@ -59,10 +59,11 @@ class DistItem(BaseModel):
 class Distribution(BaseModel):
     """한 메타데이터 차원의 분포 — 차원 선택 드롭다운 1개 카드용."""
 
-    key: str          # 'entity:model' | 'report_type' | 'template'
-    label: str        # 드롭다운 표시명(예: '모델명', '종류', '템플릿')
+    key: str          # 'entity:model' | 'report_type' | 'template' | 'mount'
+    label: str        # 드롭다운 표시명(예: '모델명', '종류', '템플릿', '게시판')
     items: list[DistItem]
     no_value: int     # 이 차원 값이 없는 보고서 수
+    total: int = 0    # 전체 distinct 값 수(상위 N 으로 잘리기 전) — 잘림 표기용
 
 
 class AuthorTop(BaseModel):
@@ -89,6 +90,9 @@ class CrosstabResponse(BaseModel):
     cols: list[CrosstabHeader]
     # cells[row.key][col.key] = count (0 인 셀은 생략)
     cells: dict[str, dict[str, int]]
+    # 상위 N 으로 잘리기 전 전체 distinct 행/열 수(잘림 표기용).
+    row_total: int = 0
+    col_total: int = 0
 
 
 class DashboardResponse(BaseModel):

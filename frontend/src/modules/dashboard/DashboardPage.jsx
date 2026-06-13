@@ -351,33 +351,69 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">작성자 Top</CardTitle>
-          <CardDescription>
-            기간 내 작성자별 보고서 수 · 상위 {authorTop.top.length}명
-            {authorTop.distinct > authorTop.top.length
-              ? ` (전체 ${authorTop.distinct}명)`
-              : ''}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {authorTop.distinct === 0 ? (
-            <p className="text-sm text-muted-foreground py-2">
-              이 기간에 작성된 보고서가 없습니다.
-            </p>
-          ) : (
-            <BarList
-              items={authorTop.top}
-              footer={
-                authorTop.unknown > 0
-                  ? `작성자 미상 ${authorTop.unknown}건`
-                  : null
-              }
-            />
-          )}
-        </CardContent>
-      </Card>
+      {/* 작성자 Top + 추세 — 한 행 2열. */}
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">작성자 Top</CardTitle>
+            <CardDescription>
+              기간 내 작성자별 보고서 수 · 상위 {authorTop.top.length}명
+              {authorTop.distinct > authorTop.top.length
+                ? ` (전체 ${authorTop.distinct}명)`
+                : ''}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {authorTop.distinct === 0 ? (
+              <p className="text-sm text-muted-foreground py-2">
+                이 기간에 작성된 보고서가 없습니다.
+              </p>
+            ) : (
+              <BarList
+                items={authorTop.top}
+                footer={
+                  authorTop.unknown > 0
+                    ? `작성자 미상 ${authorTop.unknown}건`
+                    : null
+                }
+              />
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">
+              추세 ·{' '}
+              {period.kind === 'year'
+                ? '연중 월별'
+                : period.kind === 'month'
+                  ? '월중 주별'
+                  : period.kind === 'week'
+                    ? '주중 일별'
+                    : period.kind === 'by-year'
+                      ? '연도별'
+                      : unit === 'week'
+                        ? '주별'
+                        : '월별'}
+            </CardTitle>
+            <CardDescription>
+              {range.from
+                ? `${formatDate(range.from)} – ${formatDate(range.to)} 동안 생성된 보고서`
+                : '전체 기간 동안 생성된 보고서'}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {trend.length > 0 ? (
+              <TrendChart buckets={trend} />
+            ) : (
+              <p className="text-sm text-muted-foreground py-2">
+                이 기간에 표시할 추세가 없습니다.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       {distributions.length >= 2 && (
         <Card>
@@ -460,32 +496,6 @@ export default function DashboardPage() {
         </Card>
       )}
 
-      {trend.length > 1 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">
-              추세 ·{' '}
-              {period.kind === 'year'
-                ? '연중 월별'
-                : period.kind === 'month'
-                  ? '월중 주별'
-                  : period.kind === 'by-year'
-                    ? '연도별'
-                    : unit === 'week'
-                      ? '주별'
-                      : '월별'}
-            </CardTitle>
-            <CardDescription>
-              {range.from
-                ? `${formatDate(range.from)} – ${formatDate(range.to)} 동안 생성된 보고서`
-                : '전체 기간 동안 생성된 보고서'}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <TrendChart buckets={trend} />
-          </CardContent>
-        </Card>
-      )}
     </div>
   )
 }

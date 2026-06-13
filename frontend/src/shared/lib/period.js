@@ -12,8 +12,8 @@
  */
 export const PERIOD_OPTIONS = [
   // point 모드는 "그 단위 하나를 골라 보되, 한 단계 더 잘게 묶어 비교"한다:
-  //   주별 → (한 주, 비교 버킷 없음)  월별 → 주별 비교  연별 → 월별 비교
-  { value: 'week',           label: '주별',        mode: 'point', unit: 'week'  },
+  //   주별 → 일별 비교  월별 → 주별 비교  연별 → 월별 비교
+  { value: 'week',           label: '주별',        mode: 'point', unit: 'day'   },
   { value: 'month',          label: '월별',        mode: 'point', unit: 'week'  },
   { value: 'year',           label: '연별',        mode: 'point', unit: 'month' },
   { value: 'last-4-weeks',   label: '최근 4주',    mode: 'range', unit: 'week'  },

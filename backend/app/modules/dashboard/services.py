@@ -75,13 +75,22 @@ def _year_key(d: date) -> tuple[str, str]:
     return str(d.year), f"{d.year}년"
 
 
+def _day_key(d: date) -> tuple[str, str]:
+    return d.isoformat(), f"{d.month}/{d.day}"
+
+
 def _enumerate_buckets(
     start: date, end: date, unit: str
 ) -> list[tuple[str, str]]:
     """start..end 구간의 (key, label) 버킷 목록 — 빈 버킷도 채워 연속 보장."""
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
-    if unit == "week":
+    if unit == "day":
+        cur = start
+        while cur <= end:
+            out.append((cur.isoformat(), f"{cur.month}/{cur.day}"))
+            cur = cur + timedelta(days=1)
+    elif unit == "week":
         cur = start - timedelta(days=start.weekday())  # 그 주 월요일
         step = timedelta(days=7)
         while cur <= end:
@@ -106,6 +115,8 @@ def _enumerate_buckets(
 
 
 def _bucket_key(d: date, unit: str) -> str:
+    if unit == "day":
+        return _day_key(d)[0]
     if unit == "week":
         return _week_key(d)[0]
     if unit == "year":

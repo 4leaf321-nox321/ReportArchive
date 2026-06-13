@@ -253,37 +253,19 @@ export default function WorkspaceHomePage() {
             </CardDescription>
           </CardHeader>
           {pinnedReports.length > 0 && (
-            <CardContent className="divide-y">
-              {pinnedReports.map((r) => (
-                <div
-                  key={r.id}
-                  className="flex items-center gap-3 py-3 hover:bg-muted/40 -mx-6 px-6 group"
-                >
-                  <Pin className="h-4 w-4 text-primary shrink-0" />
-                  <Link
+            <CardContent>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {pinnedReports.map((r) => (
+                  <ReportMiniCard
+                    key={r.id}
+                    r={r}
                     to={`/w/${slug}/reports/${r.id}`}
-                    className="flex-1 min-w-0"
-                  >
-                    <div className="font-medium truncate">{r.title}</div>
-                    <div className="text-xs text-muted-foreground truncate">
-                      {templateName(r.template_id)} · {r.owner_name ?? r.workspace_slug} · {r.report_date ?? '—'}
-                    </div>
-                  </Link>
-                  <Badge variant={PHASE_VARIANT[r.phase] ?? 'secondary'} className="shrink-0">
-                    {PHASE_LABEL[r.phase] ?? r.phase}
-                  </Badge>
-                  {isManager && (
-                    <button
-                      type="button"
-                      onClick={() => handleUnpin(r.id)}
-                      className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
-                      title="고정 해제"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
-                  )}
-                </div>
-              ))}
+                    templateName={templateName}
+                    pinned
+                    onRemove={isManager ? () => handleUnpin(r.id) : undefined}
+                  />
+                ))}
+              </div>
             </CardContent>
           )}
         </Card>
@@ -295,30 +277,22 @@ export default function WorkspaceHomePage() {
           <CardTitle className="text-base">최근 보고서</CardTitle>
           <CardDescription>최근 업데이트 순 {recent.length}건</CardDescription>
         </CardHeader>
-        <CardContent className="divide-y">
+        <CardContent>
           {recent.length === 0 ? (
             <div className="py-6 text-sm text-muted-foreground text-center">
               아직 보고서가 없습니다.
             </div>
           ) : (
-            recent.map((r) => (
-              <Link
-                key={r.id}
-                to={`/w/${slug}/reports/${r.id}`}
-                className="flex items-center gap-3 py-3 hover:bg-muted/40 -mx-6 px-6"
-              >
-                <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium truncate">{r.title}</div>
-                  <div className="text-xs text-muted-foreground truncate">
-                    {templateName(r.template_id)} · {r.owner_name ?? r.workspace_slug} · {r.report_date ?? '—'}
-                  </div>
-                </div>
-                <Badge variant={PHASE_VARIANT[r.phase] ?? 'secondary'} className="shrink-0">
-                  {PHASE_LABEL[r.phase] ?? r.phase}
-                </Badge>
-              </Link>
-            ))
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {recent.map((r) => (
+                <ReportMiniCard
+                  key={r.id}
+                  r={r}
+                  to={`/w/${slug}/reports/${r.id}`}
+                  templateName={templateName}
+                />
+              ))}
+            </div>
           )}
         </CardContent>
       </Card>
@@ -383,6 +357,53 @@ export default function WorkspaceHomePage() {
             </div>
           </CardContent>
         </Card>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 컴팩트 보고서 카드 — 한 행에 여러 개 들어가는 그리드용(고정·최근 보고서).
+ * 제목 2줄 클램프 + 작은 메타 + 단계 뱃지. pinned=고정 아이콘, onRemove=✕(매니저).
+ */
+function ReportMiniCard({ r, to, templateName, pinned = false, onRemove }) {
+  return (
+    <div className="relative rounded-lg border bg-background p-3 transition-colors hover:bg-muted/50 group">
+      <Link to={to} className="block min-w-0">
+        <div className="flex items-start gap-1.5">
+          {pinned ? (
+            <Pin className="h-3.5 w-3.5 text-primary shrink-0 mt-0.5" />
+          ) : (
+            <FileText className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
+          )}
+          <div className="text-sm font-medium leading-snug line-clamp-2 min-w-0">
+            {r.title}
+          </div>
+        </div>
+        <div className="mt-1 text-[11px] text-muted-foreground truncate">
+          {templateName(r.template_id)} · {r.owner_name ?? r.workspace_slug}
+        </div>
+        <div className="mt-1.5 flex items-center gap-2">
+          <Badge
+            variant={PHASE_VARIANT[r.phase] ?? 'secondary'}
+            className="text-[10px] px-1.5 py-0"
+          >
+            {PHASE_LABEL[r.phase] ?? r.phase}
+          </Badge>
+          <span className="text-[10px] text-muted-foreground">
+            {r.report_date ?? '—'}
+          </span>
+        </div>
+      </Link>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="absolute top-1.5 right-1.5 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+          title="고정 해제"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
       )}
     </div>
   )

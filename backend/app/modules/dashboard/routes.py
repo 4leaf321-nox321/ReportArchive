@@ -33,7 +33,7 @@ def get_dashboard(
 ):
     """부서 대시보드 집계. from/to 생략 시 전체 기간. unit: 추세 버킷(week|month).
     include_descendants=True 면 하위 부서 게시판까지 포함."""
-    if unit not in ("week", "month", "year"):
+    if unit not in ("day", "week", "month", "year"):
         unit = "week"
 
     # 외부 공개 열람자(비멤버 읽기전용)에겐 곁다리 집계를 노출하지 않는다.

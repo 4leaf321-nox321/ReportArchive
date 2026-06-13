@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.modules.comments import services as comment_services
 from app.modules.folders import services as folder_services
 from app.modules.reports import services as report_services
+from app.modules.entities.models import EntityType
 from app.modules.reports.models import ReportPhase
 from app.modules.templates.models import Template
 from app.modules.workspaces.models import Workspace, WorkspaceKind
@@ -27,6 +28,7 @@ from app.modules.workspaces.models import Workspace, WorkspaceKind
 STALE_DRAFT_DAYS = 14
 AUTHOR_TOP_N = 8
 DIST_TOP_N = 12  # 분포 차원당 상위 N 값
+CROSSTAB_TOP_N = 8  # 교차표 행/열 상위 N
 
 
 def _template_name_map(db: Session) -> dict[str, str]:
@@ -251,13 +253,17 @@ def compute_dashboard(
             }
         )
 
-    # 2) 종류(report_type)
-    rt: dict[str, int] = {}
+    # 2) 종류(report_type) — id 기준(드릴다운에 id 사용)
+    rt: dict[int, dict] = {}
     rt_none = 0
     for r in in_range:
-        name = getattr(getattr(r, "report_type", None), "name", None)
-        if name:
-            rt[name] = rt.get(name, 0) + 1
+        rtobj = getattr(r, "report_type", None)
+        rid = getattr(rtobj, "id", None)
+        if rid is not None:
+            cur = rt.setdefault(
+                rid, {"report_type_id": rid, "label": rtobj.name, "count": 0}
+            )
+            cur["count"] += 1
         else:
             rt_none += 1
     if rt:
@@ -265,15 +271,12 @@ def compute_dashboard(
             {
                 "key": "report_type",
                 "label": "종류",
-                "items": sorted(
-                    ({"label": k, "count": v} for k, v in rt.items()),
-                    key=lambda x: -x["count"],
-                )[:DIST_TOP_N],
+                "items": sorted(rt.values(), key=lambda x: -x["count"])[:DIST_TOP_N],
                 "no_value": rt_none,
             }
         )
 
-    # 3) 템플릿
+    # 3) 템플릿 — template_id 보관(드릴다운)
     tcount: dict[str, int] = {}
     for r in in_range:
         for tid in _template_ids(r):
@@ -286,7 +289,7 @@ def compute_dashboard(
                 "label": "템플릿",
                 "items": sorted(
                     (
-                        {"label": tmap.get(tid, tid), "count": v}
+                        {"template_id": tid, "label": tmap.get(tid, tid), "count": v}
                         for tid, v in tcount.items()
                     ),
                     key=lambda x: -x["count"],
@@ -324,4 +327,118 @@ def compute_dashboard(
         "distributions": distributions,
         "author_top": author_top,
         "content_metrics": [],
+    }
+
+
+# ── 교차표(두 차원) ──────────────────────────────────────────────────────
+def _dim_values(dimkey: str, r, tmap: dict) -> list[dict]:
+    """보고서 r 의 차원 dimkey 값 목록 — 각 {key, label, <drill id>}. 멀티값
+    (엔티티 다중태그·멀티페이지 템플릿)은 여러 개를 반환."""
+    if dimkey.startswith("entity:"):
+        slug = dimkey.split(":", 1)[1]
+        out = []
+        for e in getattr(r, "entities", None) or []:
+            et = getattr(e, "entity_type", None)
+            if (getattr(et, "slug", None) or "") == slug:
+                out.append(
+                    {"key": f"e{e.id}", "label": e.value or str(e.id), "entity_id": e.id}
+                )
+        return out
+    if dimkey == "report_type":
+        rtobj = getattr(r, "report_type", None)
+        rid = getattr(rtobj, "id", None)
+        if rid is None:
+            return []
+        return [{"key": f"rt{rid}", "label": rtobj.name, "report_type_id": rid}]
+    if dimkey == "template":
+        return [
+            {"key": f"t:{tid}", "label": tmap.get(tid, tid), "template_id": tid}
+            for tid in _template_ids(r)
+        ]
+    return []
+
+
+def _dim_label(dimkey: str, axis_labels: dict) -> str:
+    if dimkey.startswith("entity:"):
+        slug = dimkey.split(":", 1)[1]
+        return axis_labels.get(slug, slug)
+    if dimkey == "report_type":
+        return "종류"
+    if dimkey == "template":
+        return "템플릿"
+    return dimkey
+
+
+def compute_crosstab(
+    db: Session,
+    *,
+    actor,
+    date_from: Optional[date],
+    date_to: Optional[date],
+    row: str,
+    col: str,
+) -> dict:
+    """두 차원 교차표. 행/열은 차원 키(entity:slug | report_type | template).
+    한 보고서가 행·열 각각 여러 값을 가지면 그 조합 셀들에 모두 +1."""
+    ws = actor.workspace
+    is_global = bool(getattr(ws, "virtual", False))
+    reports = report_services.list_reports_in_workspace(
+        db, ws.slug, is_global_view=is_global
+    )
+    if date_from and date_to:
+        in_range = [
+            r
+            for r in reports
+            if (_effective_date(r) and date_from <= _effective_date(r) <= date_to)
+        ]
+    else:
+        in_range = list(reports)
+
+    tmap = _template_name_map(db)
+    axis_labels = {
+        slug: label
+        for slug, label in db.execute(
+            select(EntityType.slug, EntityType.label)
+        ).all()
+    }
+
+    row_hdr: dict[str, dict] = {}
+    col_hdr: dict[str, dict] = {}
+    cells: dict[str, dict[str, int]] = {}
+    row_tot: dict[str, int] = {}
+    col_tot: dict[str, int] = {}
+    for r in in_range:
+        rv = _dim_values(row, r, tmap)
+        cv = _dim_values(col, r, tmap)
+        if not rv or not cv:
+            continue
+        for rh in rv:
+            row_hdr.setdefault(rh["key"], rh)
+            for ch in cv:
+                col_hdr.setdefault(ch["key"], ch)
+                cells.setdefault(rh["key"], {})
+                cells[rh["key"]][ch["key"]] = cells[rh["key"]].get(ch["key"], 0) + 1
+                row_tot[rh["key"]] = row_tot.get(rh["key"], 0) + 1
+                col_tot[ch["key"]] = col_tot.get(ch["key"], 0) + 1
+
+    # 행/열 상위 N 만(표가 너무 커지지 않게).
+    top_rows = sorted(row_hdr.values(), key=lambda h: -row_tot.get(h["key"], 0))[
+        :CROSSTAB_TOP_N
+    ]
+    top_cols = sorted(col_hdr.values(), key=lambda h: -col_tot.get(h["key"], 0))[
+        :CROSSTAB_TOP_N
+    ]
+    row_keys = {h["key"] for h in top_rows}
+    col_keys = {h["key"] for h in top_cols}
+    trimmed = {
+        rk: {ck: v for ck, v in row.items() if ck in col_keys}
+        for rk, row in cells.items()
+        if rk in row_keys
+    }
+    return {
+        "row_label": _dim_label(row, axis_labels),
+        "col_label": _dim_label(col, axis_labels),
+        "rows": top_rows,
+        "cols": top_cols,
+        "cells": trimmed,
     }

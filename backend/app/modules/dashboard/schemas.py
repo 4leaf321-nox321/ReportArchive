@@ -49,8 +49,10 @@ class LabelCount(BaseModel):
 class DistItem(BaseModel):
     label: str
     count: int
-    # 엔티티 축일 때만 — 막대 클릭 시 이 엔티티로 보고서 목록 드릴다운.
+    # 막대 클릭 드릴다운 식별자 — 차원에 맞는 것 하나만 채워진다.
     entity_id: Optional[int] = None
+    report_type_id: Optional[int] = None
+    template_id: Optional[str] = None
 
 
 class Distribution(BaseModel):
@@ -66,6 +68,25 @@ class AuthorTop(BaseModel):
     top: list[LabelCount]
     distinct: int
     unknown: int
+
+
+class CrosstabHeader(BaseModel):
+    key: str
+    label: str
+    entity_id: Optional[int] = None
+    report_type_id: Optional[int] = None
+    template_id: Optional[str] = None
+
+
+class CrosstabResponse(BaseModel):
+    """두 메타데이터 차원의 교차표(행×열 보고서 수). 셀 클릭 → 두 필터 동시 적용."""
+
+    row_label: str
+    col_label: str
+    rows: list[CrosstabHeader]
+    cols: list[CrosstabHeader]
+    # cells[row.key][col.key] = count (0 인 셀은 생략)
+    cells: dict[str, dict[str, int]]
 
 
 class DashboardResponse(BaseModel):

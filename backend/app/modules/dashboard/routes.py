@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.modules.dashboard import services
-from app.modules.dashboard.schemas import DashboardResponse
+from app.modules.dashboard.schemas import CrosstabResponse, DashboardResponse
 from app.shared.auth import CurrentUser, get_current_user
 from app.shared.responses import success_response
 
@@ -51,4 +51,28 @@ def get_dashboard(
     )
     return success_response(
         data=DashboardResponse.model_validate(data).model_dump(mode="json")
+    )
+
+
+@router.get("/dashboard/crosstab")
+def get_dashboard_crosstab(
+    row: str = Query(...),
+    col: str = Query(...),
+    from_: date | None = Query(default=None, alias="from"),
+    to: date | None = Query(default=None),
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """두 메타데이터 차원의 교차표. row/col 은 차원 키
+    (entity:<slug> | report_type | template)."""
+    empty = CrosstabResponse(
+        row_label="", col_label="", rows=[], cols=[], cells={}
+    )
+    if getattr(actor, "public_viewer", False):
+        return success_response(data=empty.model_dump(mode="json"))
+    data = services.compute_crosstab(
+        db, actor=actor, date_from=from_, date_to=to, row=row, col=col
+    )
+    return success_response(
+        data=CrosstabResponse.model_validate(data).model_dump(mode="json")
     )

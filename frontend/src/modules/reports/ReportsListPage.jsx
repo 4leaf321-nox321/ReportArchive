@@ -129,6 +129,15 @@ export default function ReportsListPage() {
   // 해당 워크스페이스에 mount 되어 있는지로 필터. 사용자의 mount 가
   // 실제 있는 워크스페이스만 옵션으로 노출 (빈 옵션 안 생김).
   const [mountWorkspaceFilter, setMountWorkspaceFilter] = useState('')
+  // 종류(report_type) 필터 — '' = 전체, otherwise report_type id(문자열).
+  // 대시보드 분포/교차 드릴다운으로 들어오면 location.state.reportTypeId 로 초기화.
+  const [reportTypeFilter, setReportTypeFilter] = useState(() =>
+    location.state?.reportTypeId != null ? String(location.state.reportTypeId) : '',
+  )
+  // 템플릿 필터 — '' = 전체, otherwise template_id. 드릴다운: location.state.templateId.
+  const [templateFilter, setTemplateFilter] = useState(
+    () => location.state?.templateId ?? '',
+  )
   // 조직 간 공개 탐색 토글 — org 에서만. 켜면 다른 조직 공개분까지 합쳐
   // 보여준다(조직간공개_설계.md §5). 기본 off 라 자기 게시판 목록은 깨끗.
   const [includePublic, setIncludePublic] = useState(false)
@@ -167,6 +176,8 @@ export default function ReportsListPage() {
     setStaleDays(null)
     setPeriodFilter('')
     setMountWorkspaceFilter('')
+    setReportTypeFilter('')
+    setTemplateFilter('')
     setIncludePublic(false)
   }, [slug])
   // Bulk-select state — a Set of report ids the user has ticked. We
@@ -336,6 +347,14 @@ export default function ReportsListPage() {
         (m) => m.slug === mountWorkspaceFilter,
       )
     })
+    .filter(
+      (r) => !reportTypeFilter || String(r.report_type?.id ?? '') === reportTypeFilter,
+    )
+    .filter(
+      (r) =>
+        !templateFilter ||
+        uniqueTemplatePairs(r).some(([id]) => id === templateFilter),
+    )
     .map((r) => ({
       ...r,
       // Flatten the embedded report_type ref into a sortable/searchable
@@ -373,6 +392,29 @@ export default function ReportsListPage() {
     }
     return [...years].sort().reverse()
   }, [reports])
+
+  // 종류 필터 옵션 — 실제 존재하는 report_type 만(중복 제거).
+  const reportTypeOptions = useMemo(() => {
+    const seen = new Map()
+    for (const r of reports ?? []) {
+      const t = r.report_type
+      if (t && t.id != null && !seen.has(t.id)) seen.set(t.id, t.name)
+    }
+    return [...seen.entries()]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [reports])
+
+  // 템플릿 필터 옵션 — 목록에 실제 쓰인 template_id 만.
+  const templateOptions = useMemo(() => {
+    const seen = new Set()
+    for (const r of reports ?? []) {
+      for (const [id] of uniqueTemplatePairs(r)) seen.add(id)
+    }
+    return [...seen]
+      .map((id) => ({ template_id: id, name: templateName(id) }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [reports, templateName])
 
   // ── 활성 필터 배너 ───────────────────────────────────────────────────
   // 대시보드 드릴다운(상태·미분류 등)으로 들어오면 필터가 걸린 채 도착하는데,
@@ -431,11 +473,30 @@ export default function ReportsListPage() {
         clear: () => setFolderFilter(FOLDER_FILTER_ALL),
       })
     }
-    if (entityFilter.length > 0) {
+    if (reportTypeFilter) {
+      const name =
+        reportTypeOptions.find((t) => String(t.id) === reportTypeFilter)?.name ??
+        reportTypeFilter
       out.push({
-        key: 'tags',
-        label: `태그 ${entityFilter.length}개`,
-        clear: () => setEntityFilter([]),
+        key: 'reportType',
+        label: `종류: ${name}`,
+        clear: () => setReportTypeFilter(''),
+      })
+    }
+    if (templateFilter) {
+      out.push({
+        key: 'template',
+        label: `템플릿: ${templateName(templateFilter)}`,
+        clear: () => setTemplateFilter(''),
+      })
+    }
+    // 엔티티 태그 — 어떤 값이 걸렸는지 값별 칩으로(드릴다운 가시성). 각 칩 ✕ 는
+    // 그 엔티티만 제거.
+    for (const e of entityFilter) {
+      out.push({
+        key: `tag:${e.id}`,
+        label: `${e.value ?? e.id}`,
+        clear: () => setEntityFilter((prev) => prev.filter((x) => x.id !== e.id)),
       })
     }
     return out
@@ -448,6 +509,10 @@ export default function ReportsListPage() {
     folderFilter,
     entityFilter,
     staleDays,
+    reportTypeFilter,
+    templateFilter,
+    reportTypeOptions,
+    templateName,
     workspaceNameOf,
   ])
   const clearAllFilters = useCallback(() => {
@@ -456,6 +521,8 @@ export default function ReportsListPage() {
     setStaleDays(null)
     setPeriodFilter('')
     setMountWorkspaceFilter('')
+    setReportTypeFilter('')
+    setTemplateFilter('')
     setScopeSlug('')
     setEntityFilter([])
     setFolderFilter((cur) =>
@@ -1083,6 +1150,12 @@ export default function ReportsListPage() {
                   mountWorkspaceFilter={mountWorkspaceFilter}
                   onMountWorkspaceFilterChange={setMountWorkspaceFilter}
                   mountWorkspaceOptions={mountWorkspaceOptions}
+                  reportTypeFilter={reportTypeFilter}
+                  onReportTypeFilterChange={setReportTypeFilter}
+                  reportTypeOptions={reportTypeOptions}
+                  templateFilter={templateFilter}
+                  onTemplateFilterChange={setTemplateFilter}
+                  templateOptions={templateOptions}
                   showPublicExplore={isOrg && !isPublicView}
                   includePublic={includePublic}
                   onToggleIncludePublic={() => setIncludePublic((v) => !v)}
@@ -1155,6 +1228,12 @@ function FilterBar({
   mountWorkspaceFilter,
   onMountWorkspaceFilterChange,
   mountWorkspaceOptions,
+  reportTypeFilter,
+  onReportTypeFilterChange,
+  reportTypeOptions,
+  templateFilter,
+  onTemplateFilterChange,
+  templateOptions,
   showPublicExplore,
   includePublic,
   onToggleIncludePublic,
@@ -1250,6 +1329,40 @@ function FilterBar({
             {mountWorkspaceOptions.map((ws) => (
               <option key={ws.slug} value={ws.slug}>
                 {ws.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      {reportTypeOptions.length > 0 && (
+        <div className="inline-flex items-center gap-1.5">
+          <span className="text-muted-foreground">종류:</span>
+          <select
+            value={reportTypeFilter}
+            onChange={(e) => onReportTypeFilterChange(e.target.value)}
+            className="h-7 rounded border border-input bg-background px-1.5 text-xs max-w-[160px]"
+          >
+            <option value="">전체</option>
+            {reportTypeOptions.map((t) => (
+              <option key={t.id} value={String(t.id)}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      {templateOptions.length > 0 && (
+        <div className="inline-flex items-center gap-1.5">
+          <span className="text-muted-foreground">템플릿:</span>
+          <select
+            value={templateFilter}
+            onChange={(e) => onTemplateFilterChange(e.target.value)}
+            className="h-7 rounded border border-input bg-background px-1.5 text-xs max-w-[160px]"
+          >
+            <option value="">전체</option>
+            {templateOptions.map((t) => (
+              <option key={t.template_id} value={t.template_id}>
+                {t.name}
               </option>
             ))}
           </select>

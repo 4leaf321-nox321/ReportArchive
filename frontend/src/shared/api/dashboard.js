@@ -16,3 +16,18 @@ export async function getDashboard({ from, to, unit = 'week' } = {}) {
   const res = await apiClient.get(`/api/dashboard?${params.toString()}`)
   return extractData(res)
 }
+
+/**
+ * 두 메타데이터 차원의 교차표. row/col 은 차원 키(entity:<slug> | report_type | template).
+ * 반환: { row_label, col_label, rows:[header], cols:[header], cells:{rowKey:{colKey:count}} }
+ * header = { key, label, entity_id?, report_type_id?, template_id? }
+ */
+export async function getCrosstab({ row, col, from, to } = {}) {
+  const params = new URLSearchParams()
+  params.append('row', row)
+  params.append('col', col)
+  if (from) params.append('from', from)
+  if (to) params.append('to', to)
+  const res = await apiClient.get(`/api/dashboard/crosstab?${params.toString()}`)
+  return extractData(res)
+}

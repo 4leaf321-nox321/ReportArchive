@@ -7,7 +7,7 @@ import { ErrorState } from '@/shared/components/ErrorState'
 import { PeriodFilterControls, usePeriodFilter } from '@/shared/components/PeriodFilterControls'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAsync } from '@/shared/hooks/useAsync'
-import { getDashboard } from '@/shared/api/dashboard'
+import { getDashboard, getCrosstab } from '@/shared/api/dashboard'
 import { PHASES } from '@/modules/reports/constants'
 import { cn } from '@/shared/lib/utils'
 
@@ -74,6 +74,21 @@ export default function DashboardPage() {
   const [dimKey, setDimKey] = useState('')
   const activeDist =
     distributions.find((d) => d.key === dimKey) ?? distributions[0] ?? null
+
+  // 교차 분석 — 두 차원(행×열). 기본은 분포의 첫 두 차원.
+  const [rowDim, setRowDim] = useState('')
+  const [colDim, setColDim] = useState('')
+  const rowDimEff =
+    distributions.find((d) => d.key === rowDim)?.key ?? distributions[0]?.key ?? ''
+  const colDimEff =
+    distributions.find((d) => d.key === colDim)?.key ?? distributions[1]?.key ?? ''
+  const { data: crosstab } = useAsync(
+    () =>
+      slug && rowDimEff && colDimEff && rowDimEff !== colDimEff
+        ? getCrosstab({ row: rowDimEff, col: colDimEff, from, to })
+        : Promise.resolve(null),
+    [slug, rowDimEff, colDimEff, from, to],
+  )
 
   const authorTop = data?.author_top ?? { top: [], distinct: 0, unknown: 0 }
 
@@ -229,23 +244,13 @@ export default function DashboardPage() {
                 footer={
                   activeDist.no_value > 0 ? `미지정 ${activeDist.no_value}건` : null
                 }
-                // 엔티티 축만 드릴다운(목록의 엔티티 필터로). 종류·템플릿은
-                // 목록에 대응 필터가 없어 클릭 비활성.
+                // 막대 클릭 → 그 값으로 필터된 보고서 목록. 엔티티·종류·템플릿
+                // 모두 드릴다운(목록에 대응 필터 있음).
                 onItemClick={
-                  activeDist.key.startsWith('entity:') && slug
+                  slug
                     ? (item) => {
-                        if (item.entity_id == null) return
-                        navigate(`/w/${slug}/reports`, {
-                          state: {
-                            entityFilter: [
-                              {
-                                id: item.entity_id,
-                                type_slug: activeDist.key.slice('entity:'.length),
-                                value: item.label,
-                              },
-                            ],
-                          },
-                        })
+                        const st = distDrilldownState(activeDist.key, item)
+                        if (st) navigate(`/w/${slug}/reports`, { state: st })
                       }
                     : undefined
                 }
@@ -282,6 +287,67 @@ export default function DashboardPage() {
           )}
         </CardContent>
       </Card>
+
+      {distributions.length >= 2 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <CardTitle className="text-base">교차 분석</CardTitle>
+              <div className="flex items-center gap-1.5 text-xs">
+                <select
+                  value={rowDimEff}
+                  onChange={(e) => setRowDim(e.target.value)}
+                  className="h-7 rounded border border-input bg-background px-1.5 text-xs"
+                  aria-label="행 차원"
+                >
+                  {distributions.map((d) => (
+                    <option key={d.key} value={d.key}>
+                      {d.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-muted-foreground">×</span>
+                <select
+                  value={colDimEff}
+                  onChange={(e) => setColDim(e.target.value)}
+                  className="h-7 rounded border border-input bg-background px-1.5 text-xs"
+                  aria-label="열 차원"
+                >
+                  {distributions.map((d) => (
+                    <option key={d.key} value={d.key}>
+                      {d.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <CardDescription>
+              두 차원 교차 보고서 수 · 셀을 클릭하면 두 필터로 목록 이동
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {rowDimEff === colDimEff ? (
+              <p className="text-sm text-muted-foreground py-2">
+                서로 다른 두 차원을 선택하세요.
+              </p>
+            ) : !crosstab ||
+              crosstab.rows.length === 0 ||
+              crosstab.cols.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-2">
+                이 조합으로 교차할 데이터가 없습니다.
+              </p>
+            ) : (
+              <CrosstabTable
+                data={crosstab}
+                onCell={(rh, ch) => {
+                  const st = crosstabDrilldownState(rowDimEff, rh, colDimEff, ch)
+                  if (st && slug) navigate(`/w/${slug}/reports`, { state: st })
+                }}
+              />
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {trend.length > 1 && (
         <Card>
@@ -367,6 +433,117 @@ function HealthTile({ label, value, tone, onClick }) {
       >
         {value}
       </div>
+    </div>
+  )
+}
+
+// ── 드릴다운 상태 빌더 ──────────────────────────────────────────────────
+// 분포 막대 클릭 → 보고서 목록 location.state. 차원 키에 맞는 필터 하나.
+function distDrilldownState(distKey, item) {
+  if (distKey.startsWith('entity:') && item.entity_id != null) {
+    return {
+      entityFilter: [
+        { id: item.entity_id, type_slug: distKey.slice('entity:'.length), value: item.label },
+      ],
+    }
+  }
+  if (distKey === 'report_type' && item.report_type_id != null) {
+    return { reportTypeId: item.report_type_id }
+  }
+  if (distKey === 'template' && item.template_id != null) {
+    return { templateId: item.template_id }
+  }
+  return null
+}
+
+// 한 차원 헤더 → 부분 필터 조각.
+function headerFilterParts(dimKey, h) {
+  if (dimKey.startsWith('entity:') && h.entity_id != null) {
+    return {
+      entity: { id: h.entity_id, type_slug: dimKey.slice('entity:'.length), value: h.label },
+    }
+  }
+  if (dimKey === 'report_type' && h.report_type_id != null) {
+    return { reportTypeId: h.report_type_id }
+  }
+  if (dimKey === 'template' && h.template_id != null) {
+    return { templateId: h.template_id }
+  }
+  return {}
+}
+
+// 교차표 셀 클릭 → 행·열 두 필터를 합친 location.state.
+function crosstabDrilldownState(rowKey, rh, colKey, ch) {
+  const parts = [headerFilterParts(rowKey, rh), headerFilterParts(colKey, ch)]
+  const state = {}
+  const ents = parts.filter((p) => p.entity).map((p) => p.entity)
+  if (ents.length) state.entityFilter = ents
+  const rt = parts.find((p) => p.reportTypeId != null)
+  if (rt) state.reportTypeId = rt.reportTypeId
+  const tpl = parts.find((p) => p.templateId != null)
+  if (tpl) state.templateId = tpl.templateId
+  return Object.keys(state).length ? state : null
+}
+
+// ───────────────────────── Crosstab table ──────────────────────────────
+function CrosstabTable({ data, onCell }) {
+  const { rows, cols, cells } = data
+  const max = Math.max(
+    1,
+    ...rows.flatMap((r) => cols.map((c) => cells[r.key]?.[c.key] ?? 0)),
+  )
+  return (
+    <div className="overflow-x-auto">
+      <table className="text-xs border-collapse">
+        <thead>
+          <tr>
+            <th className="p-1.5 sticky left-0 bg-background" />
+            {cols.map((c) => (
+              <th
+                key={c.key}
+                className="p-1.5 font-medium text-muted-foreground whitespace-nowrap max-w-[7rem] truncate"
+                title={c.label}
+              >
+                {c.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.key}>
+              <td
+                className="p-1.5 font-medium whitespace-nowrap max-w-[8rem] truncate sticky left-0 bg-background"
+                title={r.label}
+              >
+                {r.label}
+              </td>
+              {cols.map((c) => {
+                const n = cells[r.key]?.[c.key] ?? 0
+                return (
+                  <td key={c.key} className="p-0.5 text-center">
+                    {n > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => onCell(r, c)}
+                        title={`${r.label} × ${c.label}: ${n}건 — 보고서 보기`}
+                        className="w-full rounded px-2 py-1 tabular-nums hover:ring-1 hover:ring-primary"
+                        style={{
+                          backgroundColor: `rgba(59,130,246,${(0.08 + 0.5 * (n / max)).toFixed(3)})`,
+                        }}
+                      >
+                        {n}
+                      </button>
+                    ) : (
+                      <span className="text-muted-foreground/40">·</span>
+                    )}
+                  </td>
+                )
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }

@@ -41,6 +41,8 @@ import {
   MoreHorizontal,
   Network,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   Rows,
   Save,
@@ -146,6 +148,11 @@ import { ShareEditor } from '@/shared/components/ShareEditor'
 import { FolderPickerDialog } from './FolderPickerButton'
 import { listMounts, mountReport } from '@/shared/api/mounts'
 import { listFolders } from '@/shared/api/folders'
+import {
+  listWorkspacePins,
+  addWorkspacePin,
+  removeWorkspacePin,
+} from '@/shared/api/pins'
 import { listCompositesContainingReport } from '@/shared/api/composites'
 import { SubmitToCompositeButton } from '@/modules/composites/SubmitToCompositeDialog'
 import { createPreset } from '@/shared/api/presets'
@@ -223,6 +230,42 @@ export default function ReportDetailPage() {
   const [folderPickOpen, setFolderPickOpen] = useState(false)
   const [activityOpen, setActivityOpen] = useState(false)
   const [versionsOpen, setVersionsOpen] = useState(false)
+  // 부서 홈 고정(핀) — org 게시판 매니저만. 현재 부서(slug)에 이 보고서가
+  // 고정돼 있는지. 신규/개인 컨텍스트엔 없음.
+  const canPinToBoard =
+    workspace?.kind === 'org' && me?.role === 'manager' && !isNew && Boolean(reportId)
+  const [pinnedToBoard, setPinnedToBoard] = useState(false)
+  useEffect(() => {
+    if (!canPinToBoard || !slug) return
+    let cancelled = false
+    listWorkspacePins(slug)
+      .then((items) => {
+        if (!cancelled) {
+          setPinnedToBoard(
+            (items || []).some((r) => String(r.id) === String(reportId)),
+          )
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [canPinToBoard, slug, reportId])
+  async function handleToggleBoardPin() {
+    try {
+      if (pinnedToBoard) {
+        await removeWorkspacePin(slug, Number(reportId))
+        setPinnedToBoard(false)
+        toast.success('부서 홈 고정을 해제했습니다.')
+      } else {
+        await addWorkspacePin(slug, Number(reportId))
+        setPinnedToBoard(true)
+        toast.success('부서 홈에 고정했습니다.')
+      }
+    } catch (e) {
+      toast.error(e?.response?.data?.message || '고정 변경에 실패했습니다.')
+    }
+  }
   // Mounts state declared here, the fetching useEffect lives further
   // down past `existingReport`'s declaration — TDZ would fire otherwise.
   const [mountByWorkspace, setMountByWorkspace] = useState({})
@@ -3706,6 +3749,16 @@ export default function ReportDetailPage() {
                   <Network className="mr-2 h-3.5 w-3.5" />
                   관계도
                 </DropdownMenuItem>
+                {canPinToBoard && (
+                  <DropdownMenuItem onSelect={handleToggleBoardPin}>
+                    {pinnedToBoard ? (
+                      <PinOff className="mr-2 h-3.5 w-3.5" />
+                    ) : (
+                      <Pin className="mr-2 h-3.5 w-3.5" />
+                    )}
+                    {pinnedToBoard ? '부서 홈 고정 해제' : '부서 홈에 고정'}
+                  </DropdownMenuItem>
+                )}
                 {folderPickMode && (
                   <DropdownMenuItem onSelect={() => setFolderPickOpen(true)}>
                     <Folder className="mr-2 h-3.5 w-3.5" />

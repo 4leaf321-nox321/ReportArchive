@@ -12,11 +12,14 @@ import {
   Lock,
   MessageCircle,
   Network,
+  Pin,
   Plus,
   Send,
   Sparkles,
   Unlock,
+  X,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/components/ui/card'
 import { Button } from '@/shared/components/ui/button'
 import { Badge } from '@/shared/components/ui/badge'
@@ -24,10 +27,12 @@ import { PageHeader } from '@/shared/components/PageHeader'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
+import { useAuth } from '@/shared/auth/AuthContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { listReports } from '@/modules/reports/api'
 import { listTemplates } from '@/shared/api/templates'
 import { listWorkspaceActivities } from '@/shared/api/activities'
+import { listWorkspacePins, removeWorkspacePin } from '@/shared/api/pins'
 import { PHASE_LABEL, PHASE_VARIANT } from '@/modules/reports/constants'
 import { parseUtcIso } from '@/shared/lib/period'
 import { cn } from '@/shared/lib/utils'
@@ -79,10 +84,29 @@ function formatRelative(iso) {
  */
 export default function WorkspaceHomePage() {
   const { workspace, slug, all: workspaces } = useWorkspace()
+  const { me } = useAuth()
+  const isManager = me?.role === 'manager'
   const { data: reports, loading, error, reload } = useAsync(
     () => (slug ? listReports() : Promise.resolve([])),
     [slug],
   )
+  // 부서 고정 보고서(핀) — 매니저가 고정, 멤버 모두 열람. 가상 노드 제외.
+  const {
+    data: pins,
+    reload: reloadPins,
+  } = useAsync(
+    () => (slug && !workspace?.virtual ? listWorkspacePins(slug) : Promise.resolve([])),
+    [slug, workspace?.virtual],
+  )
+  const pinnedReports = useMemo(() => pins ?? [], [pins])
+  async function handleUnpin(reportId) {
+    try {
+      await removeWorkspacePin(slug, reportId)
+      reloadPins()
+    } catch (e) {
+      toast.error(e?.response?.data?.message || '고정 해제 실패')
+    }
+  }
   const { data: templates } = useAsync(
     () => (slug ? listTemplates() : Promise.resolve([])),
     [slug],
@@ -210,6 +234,58 @@ export default function WorkspaceHomePage() {
               </div>
             )}
           </CardContent>
+        </Card>
+      )}
+
+      {/* 고정 보고서(핀) — 매니저가 고정한 주요 보고서. 멤버 모두에게 보임.
+          핀이 없으면 섹션 자체를 숨긴다(매니저에겐 안내). */}
+      {!isVirtual && (pinnedReports.length > 0 || isManager) && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-1.5">
+              <Pin className="h-4 w-4 text-primary" />
+              고정 보고서
+            </CardTitle>
+            <CardDescription>
+              {pinnedReports.length > 0
+                ? `이 부서의 주요 보고서 ${pinnedReports.length}건`
+                : '보고서 상세의 «더보기 → 부서 홈에 고정»으로 추가하세요.'}
+            </CardDescription>
+          </CardHeader>
+          {pinnedReports.length > 0 && (
+            <CardContent className="divide-y">
+              {pinnedReports.map((r) => (
+                <div
+                  key={r.id}
+                  className="flex items-center gap-3 py-3 hover:bg-muted/40 -mx-6 px-6 group"
+                >
+                  <Pin className="h-4 w-4 text-primary shrink-0" />
+                  <Link
+                    to={`/w/${slug}/reports/${r.id}`}
+                    className="flex-1 min-w-0"
+                  >
+                    <div className="font-medium truncate">{r.title}</div>
+                    <div className="text-xs text-muted-foreground truncate">
+                      {templateName(r.template_id)} · {r.owner_name ?? r.workspace_slug} · {r.report_date ?? '—'}
+                    </div>
+                  </Link>
+                  <Badge variant={PHASE_VARIANT[r.phase] ?? 'secondary'} className="shrink-0">
+                    {PHASE_LABEL[r.phase] ?? r.phase}
+                  </Badge>
+                  {isManager && (
+                    <button
+                      type="button"
+                      onClick={() => handleUnpin(r.id)}
+                      className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+                      title="고정 해제"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </CardContent>
+          )}
         </Card>
       )}
 

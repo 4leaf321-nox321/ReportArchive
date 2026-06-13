@@ -14,6 +14,7 @@ from app.modules.comments.routes import router as comments_router
 from app.modules.composites.routes import router as composites_router
 from app.modules.composite_presets.routes import router as composite_presets_router
 from app.modules.dashboard.routes import router as dashboard_router
+from app.modules.pins.routes import router as pins_router
 from app.modules.template_metrics.routes import router as template_metrics_router
 from app.modules.editors.routes import router as editors_router
 from app.modules.embed.routes import router as embed_router
@@ -47,6 +48,7 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
     app.include_router(workspaces_router, prefix="/api/workspaces", tags=["workspaces"])
     app.include_router(members_router, prefix="/api/workspaces", tags=["members"])
+    app.include_router(pins_router, prefix="/api/workspaces", tags=["pins"])
     app.include_router(users_router, prefix="/api", tags=["users"])  # /api/me, /api/users
     app.include_router(
         template_categories_router,

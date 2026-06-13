@@ -244,7 +244,7 @@ export default function DashboardPage() {
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-base">
-              추세 · {unit === 'week' ? '주별' : '월별'}
+              추세 · {period.kind === 'year' ? '연중 월별' : unit === 'week' ? '주별' : '월별'}
             </CardTitle>
             <CardDescription>
               {range.from

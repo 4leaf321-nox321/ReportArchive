@@ -13,6 +13,9 @@
 export const PERIOD_OPTIONS = [
   { value: 'week',           label: '주별',        mode: 'point', unit: 'week'  },
   { value: 'month',          label: '월별',        mode: 'point', unit: 'month' },
+  // 연별 — 특정 연도를 골라 ←/→ 로 이동. 그 해를 '월 단위'로 묶어 보여준다
+  // (unit='month' → 12개 월 버킷). 그래서 추세 차트가 연중 월별 분포를 그린다.
+  { value: 'year',           label: '연별',        mode: 'point', unit: 'month' },
   { value: 'last-4-weeks',   label: '최근 4주',    mode: 'range', unit: 'week'  },
   { value: 'last-12-weeks',  label: '최근 12주',   mode: 'range', unit: 'week'  },
   { value: 'last-6-months',  label: '최근 6개월',  mode: 'range', unit: 'month' },
@@ -40,6 +43,11 @@ export function periodRange(kind, anchor) {
       const last = endOfDay(new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0))
       return { from: first, to: last }
     }
+    case 'year': {
+      const first = new Date(anchor.getFullYear(), 0, 1, 0, 0, 0, 0)
+      const last = endOfDay(new Date(anchor.getFullYear(), 11, 31))
+      return { from: first, to: last }
+    }
     case 'last-4-weeks':   return { from: startOfDay(daysAgo(now, 28)), to }
     case 'last-12-weeks':  return { from: startOfDay(daysAgo(now, 84)), to }
     case 'last-6-months':  return { from: startOfDay(monthsAgo(now, 6)), to }
@@ -59,6 +67,9 @@ export function pointLabel(kind, anchor) {
   if (kind === 'month') {
     return `${anchor.getFullYear()}년 ${anchor.getMonth() + 1}월`
   }
+  if (kind === 'year') {
+    return `${anchor.getFullYear()}년`
+  }
   return ''
 }
 
@@ -68,6 +79,7 @@ export function stepAnchor(kind, anchor, direction) {
   const next = new Date(anchor)
   if (kind === 'week') next.setDate(next.getDate() + direction * 7)
   else if (kind === 'month') next.setMonth(next.getMonth() + direction)
+  else if (kind === 'year') next.setFullYear(next.getFullYear() + direction)
   return next
 }
 

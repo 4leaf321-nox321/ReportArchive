@@ -31,7 +31,7 @@ def get_dashboard(
     actor: CurrentUser = Depends(get_current_user),
 ):
     """부서 대시보드 집계. from/to 생략 시 전체 기간. unit: 추세 버킷(week|month)."""
-    if unit not in ("week", "month"):
+    if unit not in ("week", "month", "year"):
         unit = "week"
 
     # 외부 공개 열람자(비멤버 읽기전용)에겐 곁다리 집계를 노출하지 않는다.

@@ -244,7 +244,16 @@ export default function DashboardPage() {
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-base">
-              추세 · {period.kind === 'year' ? '연중 월별' : unit === 'week' ? '주별' : '월별'}
+              추세 ·{' '}
+              {period.kind === 'year'
+                ? '연중 월별'
+                : period.kind === 'month'
+                  ? '월중 주별'
+                  : period.kind === 'by-year'
+                    ? '연도별'
+                    : unit === 'week'
+                      ? '주별'
+                      : '월별'}
             </CardTitle>
             <CardDescription>
               {range.from

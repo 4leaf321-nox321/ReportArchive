@@ -62,6 +62,10 @@ def _month_key(d: date) -> tuple[str, str]:
     return f"{d.year}-{d.month:02d}", f"{d.month}월"
 
 
+def _year_key(d: date) -> tuple[str, str]:
+    return str(d.year), f"{d.year}년"
+
+
 def _enumerate_buckets(
     start: date, end: date, unit: str
 ) -> list[tuple[str, str]]:
@@ -77,6 +81,9 @@ def _enumerate_buckets(
                 seen.add(key)
                 out.append((key, label))
             cur = cur + step
+    elif unit == "year":
+        for y in range(start.year, end.year + 1):
+            out.append((str(y), f"{y}년"))
     else:  # month
         y, m = start.year, start.month
         while (y, m) <= (end.year, end.month):
@@ -90,7 +97,11 @@ def _enumerate_buckets(
 
 
 def _bucket_key(d: date, unit: str) -> str:
-    return (_week_key(d) if unit == "week" else _month_key(d))[0]
+    if unit == "week":
+        return _week_key(d)[0]
+    if unit == "year":
+        return _year_key(d)[0]
+    return _month_key(d)[0]
 
 
 # ── KPI(총·작성자·템플릿) — 한 보고서 리스트에 대해 ──────────────────────

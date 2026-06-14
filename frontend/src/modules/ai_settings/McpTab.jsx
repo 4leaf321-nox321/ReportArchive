@@ -133,6 +133,16 @@ function McpTokensCard({ me }) {
         2,
       )}`
     : ''
+  // Codex CLI — ~/.codex/config.toml 에 추가하는 항목(TOML). HTTP 네이티브라
+  // 브리지 불필요. 헤더(토큰·부서)는 http_headers 에 직접 둔다.
+  const codexCfg = reveal
+    ? `[mcp_servers.reportarchive]
+url = "${mcpUrl}"
+
+[mcp_servers.reportarchive.http_headers]
+Authorization = "Bearer ${reveal}"
+X-Workspace-Slug = "${slug}"`
+    : ''
 
   return (
     <Card>
@@ -181,9 +191,20 @@ function McpTokensCard({ me }) {
               <span className="block mt-1"><b>Node.js 필요</b> — Desktop 설정 파일은 HTTP 서버를 직접 못 받아 <code className="font-mono">npx mcp-remote</code> 브리지로 연결합니다.</span>
             </div>
             <pre className="overflow-x-auto rounded bg-muted px-2 py-2 text-[11px] font-mono whitespace-pre">{desktopCfg}</pre>
+            <Button type="button" size="sm" variant="outline" onClick={() => copyText(desktopCfg, 'Desktop 항목')}>
+              항목 복사
+            </Button>
+            <Separator />
+            {/* Codex CLI — config.toml (HTTP 네이티브, 브리지 불필요) */}
+            <div className="text-xs font-medium">Codex CLI (설정 파일)</div>
+            <div className="text-xs text-muted-foreground">
+              <code className="font-mono">~/.codex/config.toml</code> 에 아래 항목을 추가한 뒤 Codex 재시작.
+              HTTP 를 바로 지원해 별도 브리지가 필요 없습니다(부서를 바꾸려면 <code className="font-mono">X-Workspace-Slug</code> 값만 수정).
+            </div>
+            <pre className="overflow-x-auto rounded bg-muted px-2 py-2 text-[11px] font-mono whitespace-pre">{codexCfg}</pre>
             <div className="flex gap-2">
-              <Button type="button" size="sm" variant="outline" onClick={() => copyText(desktopCfg, 'Desktop 항목')}>
-                항목 복사
+              <Button type="button" size="sm" variant="outline" onClick={() => copyText(codexCfg, 'Codex 설정')}>
+                설정 복사
               </Button>
               <Button type="button" size="sm" variant="ghost" onClick={() => setReveal(null)}>
                 확인했습니다(닫기)

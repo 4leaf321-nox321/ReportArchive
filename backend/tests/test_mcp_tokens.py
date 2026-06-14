@@ -52,11 +52,13 @@ def test_issue_authenticate_revoke():
         assert any(t["id"] == tid for t in lst)
         assert "token" not in lst[0] and "token_hash" not in lst[0]
 
-        # 4) 취소 → 즉시 무효
+        # 4) 삭제 → 즉시 무효 + 목록에서 사라짐(하드 삭제)
         d = c.delete(f"/api/me/mcp-tokens/{tid}", headers=JWT)
         assert d.status_code == 200, d.text
         me2 = c.get("/api/me", headers=pat_h)
-        assert me2.status_code == 401  # 취소된 토큰 거부
+        assert me2.status_code == 401  # 삭제된 토큰 거부
+        lst2 = c.get("/api/me/mcp-tokens", headers=JWT).json()["data"]
+        assert not any(t["id"] == tid for t in lst2)  # 목록에서 제거됨
     finally:
         _purge(created)
 

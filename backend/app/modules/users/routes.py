@@ -275,15 +275,15 @@ def create_my_mcp_token(
 
 
 @router.delete("/me/mcp-tokens/{token_id}")
-def revoke_my_mcp_token(
+def delete_my_mcp_token(
     token_id: int,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user_no_workspace),
 ):
-    """토큰 취소(즉시 무효화). 남의 토큰이거나 없으면 404."""
-    if not pat.revoke_token(db, user.id, token_id):
+    """토큰 삭제(즉시 무효화 + 목록에서 제거). 남의 토큰이거나 없으면 404."""
+    if not pat.delete_token(db, user.id, token_id):
         return not_found_response("토큰을 찾을 수 없습니다.")
-    return success_response(data=None, message="토큰을 취소했습니다.")
+    return success_response(data=None, message="토큰을 삭제했습니다.")
 
 
 @router.get("/users")

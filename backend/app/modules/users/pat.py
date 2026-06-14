@@ -46,23 +46,27 @@ def create_token(
 
 
 def list_tokens(db: Session, user_id: int) -> list[PersonalAccessToken]:
-    """취소된 것 포함 전체(최신순) — UI 가 상태 표시."""
+    """내 **유효한** 토큰만(취소분 제외), 최신순. 삭제(취소)한 토큰은 목록에서 사라진다.
+    (과거 소프트취소로 revoked_at 만 set 된 레거시 행도 여기서 함께 가려진다.)"""
     return list(
         db.execute(
             select(PersonalAccessToken)
-            .where(PersonalAccessToken.user_id == user_id)
+            .where(
+                PersonalAccessToken.user_id == user_id,
+                PersonalAccessToken.revoked_at.is_(None),
+            )
             .order_by(PersonalAccessToken.id.desc())
         ).scalars()
     )
 
 
-def revoke_token(db: Session, user_id: int, token_id: int) -> bool:
+def delete_token(db: Session, user_id: int, token_id: int) -> bool:
+    """토큰 삭제 — 즉시 무효화 + 행 제거(목록에서 사라짐). 남의 토큰/미존재면 False."""
     row = db.get(PersonalAccessToken, token_id)
     if row is None or row.user_id != user_id:
         return False
-    if row.revoked_at is None:
-        row.revoked_at = datetime.utcnow()
-        db.commit()
+    db.delete(row)
+    db.commit()
     return True
 
 

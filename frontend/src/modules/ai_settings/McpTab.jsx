@@ -87,15 +87,15 @@ function McpTokensCard({ me }) {
     }
   }
 
-  async function onRevoke(t) {
-    if (!window.confirm(`'${t.name}' 토큰을 취소할까요? 이 토큰을 쓰는 연결은 즉시 끊깁니다.`))
+  async function onDelete(t) {
+    if (!window.confirm(`'${t.name}' 토큰을 삭제할까요? 이 토큰을 쓰는 연결은 즉시 끊기고 목록에서 사라집니다.`))
       return
     try {
       await revokeMcpToken(t.id)
-      toast.success('토큰을 취소했습니다.')
+      toast.success('토큰을 삭제했습니다.')
       await load()
     } catch (err) {
-      toast.error(err.message || '취소 실패')
+      toast.error(err.message || '삭제 실패')
     }
   }
 
@@ -114,7 +114,7 @@ function McpTokensCard({ me }) {
         </div>
         <CardDescription>
           Claude(Claude Code 등)에서 보고서를 작성·검색할 때 쓰는 개인 토큰. 발급된 값은
-          <b> 한 번만</b> 보이니 바로 복사하세요. 유출되면 여기서 취소하면 됩니다.
+          <b> 한 번만</b> 보이니 바로 복사하세요. 유출되면 여기서 삭제하면 됩니다.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -205,8 +205,8 @@ function McpTokensCard({ me }) {
                         type="button"
                         size="sm"
                         variant="ghost"
-                        onClick={() => onRevoke(t)}
-                        title="취소"
+                        onClick={() => onDelete(t)}
+                        title="삭제"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>

@@ -191,7 +191,10 @@ async def update_report_draft(
     (create 의 pages 와 같은 형식). 이땐 위 병합 필드는 무시된다.
 
     내용은 느슨하게 줘도 서버가 정규화·검증한다. 실패 시 `error`/`warnings` 를 보고 고쳐
-    다시 호출하라. 성공하면 `url` 로 사람이 검토한다."""
+    다시 호출하라. 성공하면 `url` 로 사람이 검토한다.
+
+    ※ 누군가(본인 다른 탭 포함) 그 보고서를 **편집 화면에서 열어 두면**(편집 락) 수정이
+    거부된다(에러에 현재 편집자 표시) — 사용자에게 편집 화면을 닫고 다시 요청하라고 안내하라."""
     body: dict = {"page": page}
     if title is not None:
         body["title"] = title

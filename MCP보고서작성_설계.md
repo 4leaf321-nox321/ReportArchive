@@ -137,6 +137,11 @@
       create 와 페이지 빌더(`_build_ai_page`) 공유 + 병합 전용 `_merge_ai_page`. 통합테스트 `test_ai_draft_update.py` 통과.
 - [x] **`list_my_drafts`(내 초안 목록)** — `GET /api/reports/my-drafts` + MCP 도구. 내 `drafting` 보고서 최근 수정 순
       (report_id·title·template·page_count·url), 휴지통 제외. update 와 짝 — AI 가 이어 수정할 초안을 찾는 진입점.
+- [x] **동시성 — 편집 락 충돌 차단** — AI 는 비대화형이라 락 없이 저장(`require_lock=False`)하므로, **사람이 편집 화면을
+      열어 둔(활성 편집 락) 보고서는 AI 수정을 거부**(409, 현재 편집자 표시)한다. `get_active_lock` 사전 점검을
+      `update_report_draft` 앞단에 둠. 진행 중인 사람 편집을 덮어쓰는 1차 방어선(revision 증가·버전 이력이 2차 안전망).
+      MCP 도구·SKILL 에 충돌 안내 명시. 통합테스트(락 보유 시 409 → 해제 후 200) 통과.
+      ※ 남은 미세 레이스(점검~커밋 사이 새 락): revision/버전 이력으로 복구 가능 — 필요 시 `expected_revision` 노출로 강화.
 
 ### Phase 4 — 남은 항목
 - [ ] **요청/길이 제한** — ai-draft 에 본문 크기·블록 수·페이지 수 상한 + 초과 시 명확한 400.

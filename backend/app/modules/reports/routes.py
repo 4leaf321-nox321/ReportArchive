@@ -672,6 +672,19 @@ def update_ai_draft(
             status.HTTP_403_FORBIDDEN,
             f"작성 중(drafting) 보고서만 AI로 수정할 수 있습니다 (현재: {report.phase.value}).",
         )
+    # 동시성 — 누군가(본인 다른 탭 포함) 편집 화면을 열어 **편집 락을 잡고 있으면**
+    # AI 수정을 막는다. AI 는 비대화형이라 락 없이 저장하므로(require_lock=False),
+    # 이 사전 점검이 진행 중인 사람 편집을 덮어쓰는 걸 막는 1차 방어선이다.
+    # (락 해제/만료 후 재시도하면 됨. revision 증가·버전 이력이 2차 안전망.)
+    held = services.get_active_lock(db, report)
+    if held is not None:
+        return _lock_conflict_response(
+            services.LockHeldByOtherError(
+                "이 보고서를 편집 중인 세션이 있어 AI 수정을 적용할 수 없습니다. "
+                "편집 화면을 닫거나 잠금 해제 후 다시 시도하세요.",
+                holder=held,
+            )
+        )
 
     template = template_services.get_template(
         db, report.template_id, report.template_version

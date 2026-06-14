@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from app.database import SessionLocal
 from app.main import app
 from app.modules.auth.services import create_access_token
+from app.modules.reports import services
 from app.modules.reports.models import Report, ReportPhase
 from app.modules.templates.models import Template
 
@@ -186,6 +187,26 @@ def test_update_draft_merge_list_and_guards():
         )
         assert r.status_code == 200, r.text
         assert len(r.json()["data"]["report"]["pages"]) == 2
+
+        # 7.5) 동시성 — 누군가 편집 락을 잡고 있으면 AI 수정 거부(409), 풀면 다시 허용
+        db = SessionLocal()
+        rep = db.get(Report, rid)
+        services.acquire_lock(db, rep, user_id=4)  # 다른 사용자가 편집 중이라고 가정
+        db.commit()
+        db.close()
+        locked = c.patch(
+            f"/api/reports/{rid}/ai-draft", headers=H, json={"blocks": {"heading": "x"}}
+        )
+        assert locked.status_code == 409, locked.text
+        db = SessionLocal()
+        rep = db.get(Report, rid)
+        services.release_lock(db, rep, user_id=4)
+        db.commit()
+        db.close()
+        unlocked = c.patch(
+            f"/api/reports/{rid}/ai-draft", headers=H, json={"blocks": {"heading": "다시 수정"}}
+        )
+        assert unlocked.status_code == 200, unlocked.text
 
         # 8) 가드 — 없는 페이지(400)
         assert (

@@ -106,17 +106,28 @@ function McpTokensCard({ me }) {
   const addCmd = reveal
     ? `claude mcp add --transport http reportarchive ${mcpUrl} \\\n  --header "Authorization: Bearer ${reveal}" \\\n  --header "X-Workspace-Slug: ${slug}"`
     : ''
-  // Claude Desktop — claude_desktop_config.json 에 붙여넣는 설정(HTTP 사용).
+  // Claude Desktop — claude_desktop_config.json 에 붙여넣는 설정.
+  // Desktop 설정 파일은 stdio(command) 서버만 받으므로, HTTP 서버는 `mcp-remote`
+  // 브리지로 연결한다(Node.js/npx 필요). 헤더의 공백 문제를 피하려고 값은 env 로
+  // 넣고 args 에선 ${...} 치환(이건 mcp-remote 가 처리). url 도 함께 넣는다.
   const desktopCfg = reveal
     ? JSON.stringify(
         {
           mcpServers: {
             reportarchive: {
-              type: 'http',
-              url: mcpUrl,
-              headers: {
-                Authorization: `Bearer ${reveal}`,
-                'X-Workspace-Slug': slug,
+              command: 'npx',
+              args: [
+                '-y',
+                'mcp-remote',
+                mcpUrl,
+                '--header',
+                'Authorization:${AUTH}',
+                '--header',
+                'X-Workspace-Slug:${WS}',
+              ],
+              env: {
+                AUTH: `Bearer ${reveal}`,
+                WS: slug,
               },
             },
           },
@@ -164,11 +175,12 @@ function McpTokensCard({ me }) {
               명령 복사
             </Button>
             <Separator />
-            {/* Claude Desktop — 설정 파일(JSON, HTTP) */}
+            {/* Claude Desktop — 설정 파일(JSON, mcp-remote 브리지) */}
             <div className="text-xs font-medium">Claude Desktop (설정 파일)</div>
             <div className="text-xs text-muted-foreground">
               설정 → 개발자 → 「설정 편집」으로 <code className="font-mono">claude_desktop_config.json</code> 을 열고
-              아래를 <code className="font-mono">mcpServers</code> 에 추가(이미 있으면 안쪽 항목만 병합) 후 Claude Desktop 재시작:
+              아래를 <code className="font-mono">mcpServers</code> 에 추가(이미 있으면 안쪽 항목만 병합) 후 Claude Desktop 재시작.
+              <b> Node.js 필요</b> — Desktop 설정 파일은 HTTP 서버를 직접 못 받아 <code className="font-mono">npx mcp-remote</code> 브리지로 연결합니다.
             </div>
             <pre className="overflow-x-auto rounded bg-muted px-2 py-2 text-[11px] font-mono whitespace-pre">{desktopCfg}</pre>
             <div className="flex gap-2">

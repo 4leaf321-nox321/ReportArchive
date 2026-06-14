@@ -59,6 +59,11 @@ async def _post(ctx, path, json_body):
         return _unwrap(await client.post(path, json=json_body, headers=_forward_headers(ctx)))
 
 
+async def _patch(ctx, path, json_body):
+    async with httpx.AsyncClient(base_url=API_BASE, timeout=120) as client:
+        return _unwrap(await client.patch(path, json=json_body, headers=_forward_headers(ctx)))
+
+
 @mcp.tool()
 async def list_templates(ctx: Context) -> list:
     """사용 가능한 보고서 템플릿 목록(template_id, version, name, description). 어떤
@@ -90,6 +95,14 @@ async def describe_widgets(types: list, ctx: Context) -> dict:
 async def search_reports(q: str, ctx: Context, limit: int = 20) -> dict:
     """보고서 제목·본문 전문검색(내가 볼 수 있는 범위 내). 기존 내용을 참고할 때."""
     return await _get(ctx, "/api/reports/search", {"q": q, "limit": limit})
+
+
+@mcp.tool()
+async def list_my_drafts(ctx: Context, limit: int = 20) -> dict:
+    """내가 만든 **작성 중(drafting)** 보고서 목록(최근 수정 순). 방금/예전에 만든
+    초안을 **이어서 수정**(update_report_draft)하려고 report_id 를 찾을 때 먼저 호출한다.
+    각 항목에 report_id·title·template_id/version·page_count·url 이 있다."""
+    return await _get(ctx, "/api/reports/my-drafts", {"limit": limit})
 
 
 @mcp.tool()
@@ -145,6 +158,51 @@ async def create_report_draft(
             "pages": pages or [],
         },
     )
+
+
+@mcp.tool()
+async def update_report_draft(
+    report_id: int,
+    ctx: Context,
+    title: str | None = None,
+    blocks: dict | None = None,
+    extra_blocks: list | None = None,
+    block_sections: dict | None = None,
+    remove_blocks: list | None = None,
+    page: int = 1,
+    pages: list | None = None,
+) -> dict:
+    """**기존 초안을 이어서 수정**한다. `report_id` 는 내가 만든 **작성 중(drafting)**
+    보고서여야 한다(아니면 거부). report_id 를 모르면 `list_my_drafts` 로 찾는다.
+
+    기본은 **병합(merge)** — 준 것만 바꾸고 나머지는 그대로 둔다:
+      - `blocks`: 덮어쓸 block_id→내용(create 와 같은 느슨한 형식). 안 준 블록은 유지.
+      - `extra_blocks`: 같은 id 면 교체, 새 id 면 추가([{id,type,props?,content}]).
+      - `remove_blocks`: 제거할 block_id 목록.
+      - `block_sections`: 단락 갱신({block_id: section_code}); 빈/null 이면 단락 해제.
+      - `title`: 주면 제목 변경.
+      - `page`: 멀티페이지에서 병합 대상 페이지(1-base, 기본 1).
+        **`page`=마지막+1 이면 새 페이지를 추가**한다(기존 페이지·레이아웃은 그대로 두고
+        `blocks`/`extra_blocks` 로 채운 새 쪽을 뒤에 붙임).
+    안 건드린 블록과 사람이 화면에서 맞춘 레이아웃은 유지된다(블록 구성이 바뀐 경우에만
+    자동 재배치).
+
+    `pages` 를 주면 **전체 교체** — 보고서를 그 페이지 목록으로 통째 다시 만든다
+    (create 의 pages 와 같은 형식). 이땐 위 병합 필드는 무시된다.
+
+    내용은 느슨하게 줘도 서버가 정규화·검증한다. 실패 시 `error`/`warnings` 를 보고 고쳐
+    다시 호출하라. 성공하면 `url` 로 사람이 검토한다."""
+    body: dict = {"page": page}
+    if title is not None:
+        body["title"] = title
+    if pages is not None:
+        body["pages"] = pages
+    else:
+        body["blocks"] = blocks or {}
+        body["extra_blocks"] = extra_blocks or []
+        body["block_sections"] = block_sections or {}
+        body["remove_blocks"] = remove_blocks or []
+    return await _patch(ctx, f"/api/reports/{report_id}/ai-draft", body)
 
 
 if __name__ == "__main__":

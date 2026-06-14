@@ -735,3 +735,27 @@ class AiDraftCreate(BaseModel):
     # 여러 페이지로 만들 때 — 각 항목 {name?, blocks?, extra_blocks?, block_sections?}.
     # 모두 같은 template_id/version 을 쓴다. 비어 있으면 위 단일 페이지 필드로 1쪽 생성.
     pages: list[dict] = Field(default_factory=list)
+
+
+class AiDraftUpdate(BaseModel):
+    """AI(Claude)가 **기존 초안**을 이어서 수정할 때의 입력. 본인이 만든 `drafting`
+    상태의 보고서만 대상. 기본은 **병합(merge)** — 준 블록만 덮어쓰고 나머지는 둔다.
+
+    - 병합 모드(`pages` 미지정): `blocks`/`extra_blocks`/`block_sections` 를 `page`(1-base)
+      페이지에 병합. `remove_blocks` 로 블록 제거. 안 건드린 블록·수동 레이아웃은 유지
+      (블록 구성이 바뀐 경우에만 자동 재배치).
+    - 전체 교체 모드(`pages` 지정): 보고서를 그 페이지 목록으로 통째 다시 만든다(생성과 동일).
+    """
+
+    # None 이면 제목 유지. 빈 문자열은 거부(min_length=1).
+    title: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    blocks: dict = Field(default_factory=dict)
+    extra_blocks: list[dict] = Field(default_factory=list)
+    block_sections: dict[str, Optional[str]] = Field(default_factory=dict)
+    # 제거할 block_id 목록(템플릿 블록·extra_blocks 둘 다). content/order/단락에서 뺀다.
+    remove_blocks: list[str] = Field(default_factory=list)
+    # 병합 대상 페이지(1-base). 멀티페이지 보고서에서 특정 페이지를 고칠 때.
+    page: int = Field(default=1, ge=1)
+    # 전체 교체 — 주면 위 병합 필드는 무시되고 보고서를 이 페이지들로 다시 만든다.
+    # 각 항목 {name?, blocks?, extra_blocks?, block_sections?}.
+    pages: Optional[list[dict]] = None

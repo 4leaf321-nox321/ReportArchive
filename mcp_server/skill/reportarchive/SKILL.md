@@ -12,9 +12,12 @@ allowed-tools: mcp__reportarchive__*
 ## 도구
 - `mcp__reportarchive__list_templates` — 템플릿 목록(template_id, version, name)
 - `mcp__reportarchive__describe_template` — 템플릿의 블록(채울 항목)과 형식 안내
+- `mcp__reportarchive__describe_widgets` — 위젯 타입별 상세 작성 룰(특히 `extra_blocks` 로 위젯 직접 만들 때)
 - `mcp__reportarchive__search_reports` — 기존 보고서 전문검색(참고용)
+- `mcp__reportarchive__list_my_drafts` — 내가 만든 작성 중 초안 목록(이어서 수정할 때)
 - `mcp__reportarchive__get_report` — 보고서 1건 조회
 - `mcp__reportarchive__create_report_draft` — 초안 생성
+- `mcp__reportarchive__update_report_draft` — 기존 초안 이어서 수정(병합/추가/제거/전체교체)
 
 ## 워크플로
 1. 템플릿이 안 정해졌으면 `list_templates` 로 보여주고 고르게 한다.
@@ -114,3 +117,32 @@ create_report_draft("<빈템플릿id>", 1, "분기 리뷰", {}, extra_blocks=[
   나뉘면 페이지를 늘린다(모두 같은 template 사용). `pages` 를 주면 상단의
   `blocks`/`extra_blocks`/`block_sections` 는 무시되고 페이지별로 채운다. 한 장이면 `pages` 없이
   상단 필드만 쓴다.
+
+## 기존 초안 이어서 수정 (update_report_draft)
+방금/예전에 만든 **내 작성 중(drafting) 초안**을 고칠 때 새로 만들지 말고 `update_report_draft`
+로 이어서 수정한다. **본인이 만든 drafting 상태만** 대상(리뷰/발행 단계·남의 보고서는 거부).
+
+- `report_id` 를 모르면 먼저 `list_my_drafts` 로 찾는다(최근 수정 순, report_id·title·url 포함).
+- **기본은 병합(merge)** — 준 것만 바꾸고 나머지는 둔다:
+  | 인자 | 동작 |
+  |---|---|
+  | `blocks` | 그 block_id 내용만 덮어쓰기(안 준 블록은 유지) |
+  | `extra_blocks` | 같은 id 는 교체, 새 id 는 추가 |
+  | `remove_blocks` | 그 block_id 들을 보고서에서 제거 |
+  | `block_sections` | 단락 갱신. `null`/빈값이면 그 블록 단락 **해제** |
+  | `title` | 주면 제목 변경 |
+  | `page` | 수정할 페이지(1-base, 기본 1). **`마지막+1` 이면 새 페이지 추가**(기존 쪽 보존, `blocks`/`extra_blocks` 로 채움) |
+- 안 건드린 블록과 **사람이 화면에서 맞춘 레이아웃은 유지**된다(블록 구성이 바뀐 경우에만 자동 재배치).
+- **페이지 추가**는 `page=<현재 페이지수+1>` + 그 페이지 내용(`blocks`/`extra_blocks`)으로 호출하면 된다(전체 교체보다 안전 — 기존 페이지 레이아웃 보존).
+- `pages` 를 주면 **전체 교체**(보고서를 그 페이지 목록으로 다시 만듦) — 이땐 병합 인자는 무시된다.
+- 검증 실패 시 `error`/`warnings` 를 읽고 고쳐 재호출. 끝나면 `url` 안내.
+
+예: "방금 만든 초안에 리스크 표 한 줄 추가하고 요약 고쳐줘"
+```
+1. list_my_drafts() → 해당 초안 report_id 확인
+2. update_report_draft(report_id, blocks={"summary":"수정된 요약"},
+     extra_blocks=[{"id":"risk","type":"table",
+       "props":{"columns":[{"key":"item","label":"항목","type":"text"}]},
+       "content":[{"item":"일정 지연"}]}])
+3. 응답 url 안내
+```

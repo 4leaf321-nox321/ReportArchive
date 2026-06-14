@@ -10,6 +10,7 @@ from app.database import get_db
 from app.modules.reports import ai_authoring, services, versioning
 from app.modules.reports.schemas import (
     AiDraftCreate,
+    AiDraftUpdate,
     LinkGraphResponse,
     LockInfo,
     ReportCopy,
@@ -370,6 +371,165 @@ def report_authoring_guide(
     )
 
 
+def _build_ai_page(
+    template,
+    valid_codes: set,
+    page_in: dict,
+    template_id: str,
+    template_version: int,
+) -> tuple[ReportPage, list[str]]:
+    """한 페이지 입력({blocks?, extra_blocks?, block_sections?, name?}) → ReportPage.
+    채운 위젯만 표시(blocks_order)·자동 배치·단락 코드 검증을 한 곳에서.
+    create(전체 생성)·update 의 전체 교체 경로가 공유한다."""
+    w: list[str] = []
+    content, cw = ai_authoring.normalize_content(
+        template.schema, page_in.get("blocks") or {}
+    )
+    w += cw
+    # AI 가 직접 정의한 위젯(extra_blocks) — 빈 템플릿이어도 위젯을 만들며 짓게.
+    extra_defs, extra_content, ew = ai_authoring.normalize_extra_blocks(
+        page_in.get("extra_blocks") or []
+    )
+    w += ew
+    content = {**content, **extra_content}
+    # 채운 위젯만 보이게(빈 템플릿 블록 숨김): 채운 템플릿 블록(템플릿 순서) → 추가 블록.
+    filled_tpl_ids = [
+        b["id"]
+        for b in (template.schema.get("blocks") or [])
+        if isinstance(b, dict) and b.get("id") in content
+    ]
+    blocks_order = filled_tpl_ids + [d["id"] for d in extra_defs]
+    rendered = set(blocks_order)
+    layout_overrides = (
+        ai_authoring.auto_layout(
+            template.schema, include_ids=filled_tpl_ids, extra_blocks=extra_defs
+        )
+        or None
+    )
+    sections, sw = _resolve_block_sections(
+        page_in.get("block_sections") or {}, rendered, valid_codes
+    )
+    w += sw
+    name = page_in.get("name")
+    return (
+        ReportPage(
+            template_id=template_id,
+            template_version=template_version,
+            name=(str(name)[:120] if name else None),
+            content=content,
+            extra_blocks=extra_defs,
+            blocks_order=blocks_order,
+            layout_overrides=layout_overrides,
+            block_sections=sections,
+        ),
+        w,
+    )
+
+
+def _resolve_block_sections(
+    raw: dict, rendered: set, valid_codes: set
+) -> tuple[dict, list[str]]:
+    """{block_id: section_code} → 그 페이지에 실제로 있는 블록 + 등록된 코드만 남김.
+    빈/None 코드는 '단락 없음'으로 보고 무시한다(병합 경로에서 제거에 쓰임)."""
+    out: dict = {}
+    w: list[str] = []
+    for bid, code in (raw or {}).items():
+        if not code:
+            continue
+        if bid not in rendered:
+            w.append(f"block_sections '{bid}': 이 페이지에 없는 블록 — 무시")
+        elif code not in valid_codes:
+            w.append(f"block_sections '{code}': 등록된 단락 코드 아님 — 무시")
+        else:
+            out[bid] = code
+    return out, w
+
+
+def _merge_ai_page(
+    template,
+    valid_codes: set,
+    page_dict: dict,
+    payload: AiDraftUpdate,
+) -> tuple[ReportPage, list[str]]:
+    """기존 페이지(dict) 위에 AI 입력을 **병합**해 새 ReportPage 를 만든다.
+    준 블록만 덮어쓰고, 안 건드린 블록·수동 레이아웃은 유지한다(블록 구성이
+    바뀐 경우에만 auto_layout 으로 재배치)."""
+    w: list[str] = []
+    content = dict(page_dict.get("content") or {})
+    extra_defs = [d for d in (page_dict.get("extra_blocks") or []) if isinstance(d, dict)]
+    sections = dict(page_dict.get("block_sections") or {})
+    orig_order = list(page_dict.get("blocks_order") or [])
+
+    # 1) 템플릿 블록 병합(덮어쓰기).
+    new_content, cw = ai_authoring.normalize_content(template.schema, payload.blocks or {})
+    w += cw
+    content.update(new_content)
+    # 2) extra_blocks 병합 — 같은 id 는 교체, 새 id 는 추가.
+    new_defs, new_extra_content, ew = ai_authoring.normalize_extra_blocks(
+        payload.extra_blocks or []
+    )
+    w += ew
+    by_id = {d["id"]: d for d in extra_defs}
+    for d in new_defs:
+        by_id[d["id"]] = d
+    extra_defs = list(by_id.values())
+    content.update(new_extra_content)
+    # 3) 제거.
+    for bid in payload.remove_blocks or []:
+        content.pop(bid, None)
+        sections.pop(bid, None)
+    extra_defs = [d for d in extra_defs if d["id"] in content]
+
+    # 4) 순서·레이아웃 재계산. 블록 구성(집합)이 그대로면 수동 순서·레이아웃을
+    #    보존하고, 추가/제거가 있을 때만 auto_layout 으로 다시 배치한다.
+    filled_tpl_ids = [
+        b["id"]
+        for b in (template.schema.get("blocks") or [])
+        if isinstance(b, dict) and b.get("id") in content
+    ]
+    extra_ids = [d["id"] for d in extra_defs]
+    new_order = filled_tpl_ids + extra_ids
+    if set(new_order) == set(orig_order):
+        blocks_order = orig_order
+        layout_overrides = page_dict.get("layout_overrides")
+    else:
+        blocks_order = new_order
+        layout_overrides = (
+            ai_authoring.auto_layout(
+                template.schema, include_ids=filled_tpl_ids, extra_blocks=extra_defs
+            )
+            or None
+        )
+    rendered = set(blocks_order)
+
+    # 5) 단락 — 준 값으로 갱신(빈/None 은 해제), 없는 블록 태그는 정리.
+    for bid, code in (payload.block_sections or {}).items():
+        if not code:
+            sections.pop(bid, None)
+        elif bid not in rendered:
+            w.append(f"block_sections '{bid}': 이 페이지에 없는 블록 — 무시")
+        elif code not in valid_codes:
+            w.append(f"block_sections '{code}': 등록된 단락 코드 아님 — 무시")
+        else:
+            sections[bid] = code
+    sections = {k: v for k, v in sections.items() if k in rendered}
+
+    return (
+        ReportPage(
+            template_id=page_dict.get("template_id") or template.template_id,
+            template_version=page_dict.get("template_version") or template.version,
+            name=page_dict.get("name"),
+            content=content,
+            extra_blocks=extra_defs,
+            blocks_order=blocks_order,
+            layout_overrides=layout_overrides,
+            props_overrides=page_dict.get("props_overrides"),
+            block_sections=sections,
+        ),
+        w,
+    )
+
+
 @router.post("/ai-draft")
 def create_ai_draft(
     payload: AiDraftCreate,
@@ -397,60 +557,6 @@ def create_ai_draft(
         )
     valid_codes = section_taxonomy_services.valid_codes(db)
 
-    def _build_page(page_in: dict) -> tuple[ReportPage, list[str]]:
-        """한 페이지 입력({blocks?, extra_blocks?, block_sections?, name?}) → ReportPage.
-        채운 위젯만 표시(blocks_order)·자동 배치·단락 코드 검증을 한 곳에서."""
-        w: list[str] = []
-        content, cw = ai_authoring.normalize_content(
-            template.schema, page_in.get("blocks") or {}
-        )
-        w += cw
-        # AI 가 직접 정의한 위젯(extra_blocks) — 빈 템플릿이어도 위젯을 만들며 짓게.
-        extra_defs, extra_content, ew = ai_authoring.normalize_extra_blocks(
-            page_in.get("extra_blocks") or []
-        )
-        w += ew
-        content = {**content, **extra_content}
-        # 채운 위젯만 보이게(빈 템플릿 블록 숨김): 채운 템플릿 블록(템플릿 순서) → 추가 블록.
-        filled_tpl_ids = [
-            b["id"]
-            for b in (template.schema.get("blocks") or [])
-            if isinstance(b, dict) and b.get("id") in content
-        ]
-        blocks_order = filled_tpl_ids + [d["id"] for d in extra_defs]
-        rendered = set(blocks_order)
-        layout_overrides = (
-            ai_authoring.auto_layout(
-                template.schema, include_ids=filled_tpl_ids, extra_blocks=extra_defs
-            )
-            or None
-        )
-        # 단락 구분 — 등록된 코드 + 그 페이지에 실제로 보이는 블록만 남긴다.
-        sections: dict = {}
-        for bid, code in (page_in.get("block_sections") or {}).items():
-            if not code:
-                continue
-            if bid not in rendered:
-                w.append(f"block_sections '{bid}': 이 페이지에 없는 블록 — 무시")
-            elif code not in valid_codes:
-                w.append(f"block_sections '{code}': 등록된 단락 코드 아님 — 무시")
-            else:
-                sections[bid] = code
-        name = page_in.get("name")
-        return (
-            ReportPage(
-                template_id=payload.template_id,
-                template_version=payload.template_version,
-                name=(str(name)[:120] if name else None),
-                content=content,
-                extra_blocks=extra_defs,
-                blocks_order=blocks_order,
-                layout_overrides=layout_overrides,
-                block_sections=sections,
-            ),
-            w,
-        )
-
     # 멀티페이지: payload.pages 가 있으면 그걸로, 없으면 상단 단일 페이지 필드로 1쪽.
     page_inputs = payload.pages or [
         {
@@ -466,7 +572,9 @@ def create_ai_draft(
         if not isinstance(pin, dict):
             warnings.append(f"pages[{idx}] 형식 오류 — 건너뜀")
             continue
-        rp, w = _build_page(pin)
+        rp, w = _build_ai_page(
+            template, valid_codes, pin, payload.template_id, payload.template_version
+        )
         pages.append(rp)
         warnings += [f"p{idx}: {x}" for x in w] if multi else w
     if not pages:
@@ -489,6 +597,172 @@ def create_ai_draft(
         # 정규화로도 못 맞춘 부분 — 블록별 검증 에러를 그대로 전달(AI 재시도용).
         return error_response(str(exc), status_code=400)
     return created_response(
+        data={
+            "report": _read_with_perms(db, actor, report),
+            "warnings": warnings,
+            "url": f"/w/{report.workspace_slug}/reports/{report.id}",
+        }
+    )
+
+
+# 정적 path — 동적 `/{report_id}` 보다 *위*에 등록(그래야 "my-drafts" 를 reportId 로
+# 잡으려다 422 가 나지 않는다).
+@router.get("/my-drafts")
+def list_my_drafts(
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """내가 만든 **작성 중(drafting)** 보고서 목록(최근 수정 순). AI 가 이어서
+    수정(update_report_draft)할 초안을 찾을 때. 휴지통(소프트삭제)은 제외."""
+    from app.modules.reports.models import Report, ReportPhase
+
+    rows = (
+        db.execute(
+            select(Report)
+            .where(
+                Report.owner_user_id == actor.user.id,
+                Report.phase == ReportPhase.drafting,
+                Report.deleted_at.is_(None),
+            )
+            .order_by(Report.updated_at.desc())
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+    drafts = [
+        {
+            "report_id": r.id,
+            "title": r.title,
+            "template_id": r.template_id,
+            "template_version": r.template_version,
+            "page_count": len(r.pages or []) or 1,
+            "updated_at": r.updated_at,
+            "url": f"/w/{r.workspace_slug}/reports/{r.id}",
+        }
+        for r in rows
+    ]
+    return success_response(data={"drafts": drafts, "count": len(drafts)})
+
+
+@router.patch("/{report_id}/ai-draft")
+def update_ai_draft(
+    report_id: int,
+    payload: AiDraftUpdate,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_writer),
+):
+    """AI(Claude)가 **기존 초안**을 이어서 수정. 본인이 만든 `drafting` 상태만
+    대상이며, 편집 락 없이(비대화형) 저장한다. 기본은 병합 — 준 블록만 덮어쓰고
+    나머지는 둔다. 검증 실패 시 블록별 에러를 400 으로 돌려 AI 가 고쳐 재호출."""
+    from app.modules.reports.models import ReportPhase
+
+    report = services.get_report(db, report_id)
+    if not report:
+        return not_found_response(f"Report not found: {report_id}")
+    # 안전장치 — 본인이 만든 보고서만, 그리고 작성 중(drafting)일 때만 AI 수정.
+    # (리뷰/발행 단계는 사람이 화면에서. 발행본은 발행취소 후 수정.)
+    if report.owner_user_id != actor.user.id:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "본인이 만든 보고서만 AI로 수정할 수 있습니다."
+        )
+    if report.phase != ReportPhase.drafting:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"작성 중(drafting) 보고서만 AI로 수정할 수 있습니다 (현재: {report.phase.value}).",
+        )
+
+    template = template_services.get_template(
+        db, report.template_id, report.template_version
+    )
+    if not template:
+        return not_found_response(
+            f"Template not found: {report.template_id}@{report.template_version}"
+        )
+    valid_codes = section_taxonomy_services.valid_codes(db)
+    warnings: list[str] = []
+
+    if payload.pages is not None:
+        # 전체 교체 — 보고서를 이 페이지 목록으로 다시 만든다(생성과 동일 규칙).
+        if not payload.pages:
+            return error_response("`pages` 가 비어 있습니다.", status_code=400)
+        new_pages: list[ReportPage] = []
+        multi = len(payload.pages) > 1
+        for idx, pin in enumerate(payload.pages, 1):
+            if not isinstance(pin, dict):
+                warnings.append(f"pages[{idx}] 형식 오류 — 건너뜀")
+                continue
+            rp, w = _build_ai_page(
+                template, valid_codes, pin, report.template_id, report.template_version
+            )
+            new_pages.append(rp)
+            warnings += [f"p{idx}: {x}" for x in w] if multi else w
+        if not new_pages:
+            return error_response("생성할 페이지가 없습니다.", status_code=400)
+    else:
+        # 병합 — 대상 페이지(1-base) 위에 준 블록만 덮어쓴다.
+        existing = [p for p in (report.pages or []) if isinstance(p, dict)]
+        if not existing:
+            existing = [
+                {
+                    "template_id": report.template_id,
+                    "template_version": report.template_version,
+                    "content": report.content or {},
+                    "layout_overrides": report.layout_overrides,
+                    "props_overrides": report.props_overrides,
+                }
+            ]
+        idx0 = payload.page - 1
+        if idx0 > len(existing):
+            return error_response(
+                f"page {payload.page}: 이 보고서엔 {len(existing)}쪽뿐입니다 "
+                f"(이어서 추가하려면 page={len(existing) + 1}).",
+                status_code=400,
+            )
+        # 기존 페이지는 저장된 그대로 보존(레이아웃 포함) — dict→ReportPage 변환만.
+        kept = [
+            ReportPage(**{k: v for k, v in p.items() if k in ReportPage.model_fields})
+            for p in existing
+        ]
+        if idx0 == len(existing):
+            # 끝 다음 페이지 = **새 페이지 추가**(기존 페이지 그대로 두고 뒤에 붙임).
+            if not (payload.blocks or payload.extra_blocks):
+                return error_response(
+                    "추가할 페이지 내용이 없습니다(blocks/extra_blocks 중 하나 필요).",
+                    status_code=400,
+                )
+            page_in = {
+                "blocks": payload.blocks or {},
+                "extra_blocks": payload.extra_blocks or [],
+                "block_sections": payload.block_sections or {},
+            }
+            appended, w = _build_ai_page(
+                template, valid_codes, page_in, report.template_id, report.template_version
+            )
+            warnings += w
+            new_pages = kept + [appended]
+        else:
+            merged, w = _merge_ai_page(template, valid_codes, existing[idx0], payload)
+            warnings += w
+            kept[idx0] = merged
+            new_pages = kept
+
+    upd_kwargs: dict = {"pages": new_pages}
+    if payload.title:
+        upd_kwargs["title"] = payload.title
+    try:
+        report = services.update_report(
+            db,
+            report,
+            ReportUpdate(**upd_kwargs),
+            updated_by_user_id=actor.user.id,
+            require_lock=False,
+        )
+    except ValueError as exc:
+        # 정규화로도 못 맞춘 부분 — 블록별 검증 에러를 그대로 전달(AI 재시도용).
+        return error_response(str(exc), status_code=400)
+    return success_response(
         data={
             "report": _read_with_perms(db, actor, report),
             "warnings": warnings,

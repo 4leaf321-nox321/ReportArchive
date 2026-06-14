@@ -143,6 +143,16 @@
       MCP 도구·SKILL 에 충돌 안내 명시. 통합테스트(락 보유 시 409 → 해제 후 200) 통과.
       ※ 남은 미세 레이스(점검~커밋 사이 새 락): revision/버전 이력으로 복구 가능 — 필요 시 `expected_revision` 노출로 강화.
 
+### Phase 4 — 고급 위젯 느슨 정규화 ✅
+- [x] **통과(passthrough) 위젯 17종 느슨 보정** — 기존엔 scatter·heatmap·radar·network·sankey·box·density·tree·
+      mind_map·treemap·packing·waffle·quadrant·comparison·raci_matrix·contour·scatter3d 가 *정확한 widget-v1* 만 받아
+      AI 가 형식 틀리면 검증 탈락했음. `ai_authoring.py` 에 **설정 기반 보정 엔진**(`_PASSTHROUGH`/`_normalize_passthrough`)
+      추가: describe_widgets 가 경고하는 흔한 실수를 자동 교정 —
+      배열만 줌→주 리스트 키로 래핑, `name→label`·`links↔edges`·`points/dots/data→rows`·`categories→axis_labels`·
+      `type→kind`·`task→label`·`show_points→show_dots`·`z/values→matrix`, 숫자 문자열→숫자, 2D 행렬 강제, 노드 id 보정.
+      단위테스트 +5(17종 실제 검증 통과) + 라이브 MCP(network·radar 느슨입력 warnings 0) 확인.
+      ※ 파일/임베드(image·attachment·cad_3d·video·html_embed)는 여전히 폴백(업로드 경로 없음 — 작성자가 채움).
+
 ### Phase 4 — 남은 항목
 - [ ] **요청/길이 제한** — ai-draft 에 본문 크기·블록 수·페이지 수 상한 + 초과 시 명확한 400.
 - [ ] **감사 표식/로그** — MCP 경유 생성·수정 식별(예: `created_via='mcp'`).

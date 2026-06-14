@@ -134,6 +134,175 @@ def _with_caption(out: dict, raw) -> dict:
     return out
 
 
+def _coerce_scalar_or_list(v):
+    """숫자 강제 — 값이 리스트면 각 원소를(예: density groups[].values), 아니면 스칼라를."""
+    if isinstance(v, list):
+        return [_num(x) for x in v]
+    return _num(v)
+
+
+def _coerce_matrix(v):
+    """중첩(2D+) 숫자 배열의 모든 원소를 숫자로 강제(heatmap/contour matrix, radar values)."""
+    if isinstance(v, list):
+        return [_coerce_matrix(x) for x in v]
+    return _num(v)
+
+
+def _loose_item(item, lspec: dict):
+    """리스트 항목 1개를 느슨 보정 — 키 별칭·제거·숫자강제, 문자열 항목은 from_string 으로 감쌈."""
+    if not isinstance(item, dict):
+        fs = lspec.get("from_string")
+        if fs is not None and isinstance(item, (str, int, float)) and not isinstance(item, bool):
+            return {fs: str(item)}
+        return item
+    out = dict(item)
+    for wrong, right in (lspec.get("aliases") or {}).items():
+        if wrong in out and right not in out:
+            out[right] = out.pop(wrong)
+    for k in lspec.get("drop") or []:
+        out.pop(k, None)
+    num = lspec.get("num")
+    if num == "all":
+        out = {
+            k: (_num(v) if not isinstance(v, (dict, list)) else v) for k, v in out.items()
+        }
+    elif isinstance(num, (list, tuple)):
+        for k in num:
+            if k in out:
+                out[k] = _coerce_scalar_or_list(out[k])
+    return out
+
+
+# 통과(passthrough) 위젯의 **느슨 입력 보정** 규칙. describe_widgets 가 경고하는
+# 흔한 환각/형식 실수를 widget-v1 로 맞춰 검증 통과율을 높인다:
+#   - 배열만 줌 → 위젯의 주(主) 리스트 키로 감싸기(array_to)
+#   - 키 별칭: name→label, links↔edges, points/dots/data→rows, categories→axis_labels,
+#     type→kind, task→label, show_points→show_dots, z/values/data→matrix 등
+#   - 숫자 문자열 → 숫자(num), 2D 행렬 원소 강제(matrix), 노드 id 보정(node_id)
+# (heading…equation 11종은 위에서 전용 정규화. 파일/임베드 위젯은 여기 없음 = 그대로 통과.)
+_PASSTHROUGH: dict[str, dict] = {
+    "scatter": {
+        "array_to": "rows",
+        "key_aliases": {"points": "rows", "dots": "rows", "data": "rows", "items": "rows"},
+        "lists": {"rows": {"num": "all"}, "series": {"aliases": {"name": "label"}}},
+    },
+    "scatter3d": {
+        "array_to": "rows",
+        "key_aliases": {"points": "rows", "dots": "rows", "data": "rows", "items": "rows"},
+        "lists": {"rows": {"num": "all"}, "series": {"aliases": {"name": "label"}}},
+    },
+    "heatmap": {
+        "key_aliases": {"z": "matrix", "values": "matrix", "data": "matrix"},
+        "matrix": ["matrix"],
+    },
+    "contour": {
+        "key_aliases": {"z": "matrix", "values": "matrix", "data": "matrix"},
+        "matrix": ["matrix"],
+        "lists": {"rows": {"num": "all"}},
+    },
+    "radar": {
+        "key_aliases": {"categories": "axis_labels"},
+        "matrix": ["values"],
+        "lists": {"series": {"aliases": {"name": "label"}}},
+    },
+    "box": {
+        "array_to": "rows",
+        "lists": {"rows": {"num": ["value"], "aliases": {"name": "group"}}},
+    },
+    "density": {
+        "array_to": "groups",
+        "key_aliases": {"show_points": "show_dots"},
+        "lists": {"groups": {"num": ["values"]}},
+    },
+    "tree": {
+        "array_to": "rows",
+        "lists": {"rows": {"aliases": {"name": "label", "title": "label"}}},
+    },
+    "mind_map": {
+        "array_to": "rows",
+        "lists": {"rows": {"aliases": {"name": "label", "title": "label"}}},
+    },
+    "treemap": {
+        "array_to": "rows",
+        "lists": {"rows": {"num": ["value"], "aliases": {"name": "label"}}},
+    },
+    "packing": {
+        "array_to": "rows",
+        "lists": {"rows": {"num": ["value"], "aliases": {"name": "label"}}},
+    },
+    "waffle": {
+        "array_to": "rows",
+        "key_aliases": {"items": "rows", "data": "rows"},
+        "lists": {"rows": {"num": ["value"], "aliases": {"name": "label"}}},
+    },
+    "network": {
+        "key_aliases": {"links": "edges"},
+        "lists": {
+            "nodes": {"from_string": "id", "node_id": True, "num": ["value"]},
+            "edges": {"num": ["weight", "value"]},
+        },
+    },
+    "sankey": {
+        "key_aliases": {"edges": "links"},
+        "lists": {
+            "nodes": {"from_string": "label", "drop": ["id"]},
+            "links": {"num": ["value"]},
+        },
+    },
+    "quadrant": {
+        "lists": {"plot_items": {"num": ["x", "y", "size", "weight"]}},
+    },
+    "comparison": {
+        "lists": {"rows": {"aliases": {"type": "kind"}}},
+    },
+    "raci_matrix": {
+        "lists": {"rows": {"aliases": {"task": "label"}}},
+    },
+}
+
+
+def _normalize_passthrough(wtype: str, raw, warnings: list[str], block_id: str):
+    """11종 전용 정규화 밖의 위젯 — 설정(_PASSTHROUGH)이 있으면 느슨 보정,
+    없으면(파일/임베드 등) dict 만 그대로 통과."""
+    spec = _PASSTHROUGH.get(wtype)
+    if spec is None:
+        if isinstance(raw, dict):
+            return raw
+        warnings.append(f"{block_id}: '{wtype}' 위젯은 자동 변환 미지원 — dict content 만 허용, 건너뜀")
+        return None
+    if isinstance(raw, list):
+        if spec.get("array_to"):
+            raw = {spec["array_to"]: raw}
+        else:
+            warnings.append(f"{block_id}: '{wtype}' 는 배열만으론 부족 — 객체 content 필요, 건너뜀")
+            return None
+    if not isinstance(raw, dict):
+        warnings.append(f"{block_id}: '{wtype}' content 형식 불일치 — 건너뜀")
+        return None
+    out = dict(raw)
+    for wrong, right in (spec.get("key_aliases") or {}).items():
+        if wrong in out and right not in out:
+            out[right] = out.pop(wrong)
+    for k in spec.get("matrix") or []:
+        if k in out and isinstance(out[k], list):
+            out[k] = _coerce_matrix(out[k])
+    for lk, lspec in (spec.get("lists") or {}).items():
+        if lk in out and isinstance(out[lk], list):
+            items = []
+            for it in out[lk]:
+                ni = _loose_item(it, lspec)
+                if (
+                    lspec.get("node_id")
+                    and isinstance(ni, dict)
+                    and "id" not in ni
+                    and ni.get("label")
+                ):
+                    ni["id"] = ni["label"]
+                items.append(ni)
+            out[lk] = items
+    return out or None
+
+
 def _normalize_block(wtype: str, raw, props: dict, warnings: list[str], block_id: str):
     if wtype == "heading":
         text = raw if isinstance(raw, str) else (raw.get("text") if isinstance(raw, dict) else None)
@@ -323,11 +492,9 @@ def _normalize_block(wtype: str, raw, props: dict, warnings: list[str], block_id
                 out["display_mode"] = raw["display_mode"]
         return _with_caption(out, raw)
 
-    # 그 외 위젯 — AI 가 정확한 content(dict)를 줬다고 보고 그대로 통과.
-    if isinstance(raw, dict):
-        return raw
-    warnings.append(f"{block_id}: '{wtype}' 위젯은 자동 변환 미지원 — dict content 만 허용, 건너뜀")
-    return None
+    # 그 외 위젯 — 설정이 있으면 느슨 보정(배열 래핑·키 별칭·숫자강제 등),
+    # 없으면(파일/임베드) dict 만 그대로 통과.
+    return _normalize_passthrough(wtype, raw, warnings, block_id)
 
 
 def _has_caption(raw) -> bool:

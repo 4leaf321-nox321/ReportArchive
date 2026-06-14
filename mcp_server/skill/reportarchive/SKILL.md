@@ -62,7 +62,12 @@ allowed-tools: mcp__reportarchive__*
 (예: box 는 `rows:[{group,value}]`·density 는 `groups:[{name,values}]`; radar 의 `values` 는
 series 안이 아니라 root 의 2D 배열; network 는 `edges`·sankey 는 `links` 등 — 룰에 다 있다.)
 
-그 외 타입(이미지·첨부·CAD 등 파일 기반)은 **비워 둔다**(작성자가 채움).
+scatter·heatmap·radar·network·sankey·box·density·tree·mind_map·treemap·comparison·raci_matrix 등
+**고급 위젯도 채울 수 있다** — `describe_widgets` 룰을 따르되, 형식이 조금 어긋나도 서버가 흔한 실수를
+자동 교정한다(배열만 줘도 래핑, 숫자 문자열→숫자, `name→label`·`links↔edges`·`categories→axis_labels`·
+`type→kind`·`task→label` 등). 그래도 **룰대로 주는 게 가장 안전**하다.
+
+이미지·첨부·CAD·동영상 등 **파일 기반** 위젯은 MCP 로 못 채우므로 **비워 둔다**(작성자가 화면에서 채움).
 
 ## 원칙
 - **항상 초안.** 게시·발행은 사람이 한다.

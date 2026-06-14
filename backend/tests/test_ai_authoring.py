@@ -339,3 +339,87 @@ def test_auto_layout_include_ids_filters():
     ]}
     ov = auto_layout(tmpl, include_ids=["a", "c"])  # b 제외
     assert set(ov) == {"a", "c"}
+
+
+# ── 고급 위젯 느슨 정규화(passthrough 보정) ──────────────────────────────────
+# AI 가 흔히 틀리는 형식(배열만·name/label·links↔edges·points→rows·
+# categories→axis_labels·type→kind·task→label·숫자 문자열)을 보정해 검증 통과시킨다.
+_EMPTY_TPL = {"version": "widget-v1", "blocks": []}
+
+
+def _norm_validate(type_, props, content):
+    """extra_blocks 경로로 정규화 후 실제 검증 — 통과하면 정규화된 content 반환."""
+    defs, c, _w = normalize_extra_blocks(
+        [{"id": "b", "type": type_, "props": props, "content": content}]
+    )
+    validate_report_content(_EMPTY_TPL, c, extra_blocks=defs)
+    return c.get("b")
+
+
+def test_loose_scatter_array_strnum_and_series_name():
+    cols = [
+        {"key": "x", "label": "X", "type": "number"},
+        {"key": "y", "label": "Y", "type": "number"},
+    ]
+    props = {"label": "s", "mode": "scatter", "x_column_key": "x", "columns": cols}
+    # 배열만 + 숫자 문자열 → {rows:[...]} + 숫자 강제
+    out = _norm_validate("scatter", props, [{"x": "0.1", "y": "5"}])
+    assert out["rows"][0] == {"x": 0.1, "y": 5}
+    # points 별칭 → rows, series name → label
+    out = _norm_validate(
+        "scatter", props, {"points": [{"x": 1, "y": 2}], "series": [{"name": "A", "x_key": "x", "y_key": "y"}]}
+    )
+    assert "rows" in out and out["series"][0]["label"] == "A"
+
+
+def test_loose_box_and_tree_and_waffle():
+    out = _norm_validate("box", {"label": "b"}, [{"name": "A", "value": "10"}])
+    assert out["rows"][0] == {"group": "A", "value": 10}  # name→group, 숫자화
+    out = _norm_validate("tree", {"label": "t"}, [{"name": "루트"}, {"name": "자식", "parent": "루트"}])
+    assert out["rows"][0]["label"] == "루트"  # name→label
+    out = _norm_validate("waffle", {"label": "w"}, {"items": [{"label": "A", "value": "30"}]})
+    assert out["rows"][0]["value"] == 30  # items→rows, 숫자화
+
+
+def test_loose_network_and_sankey_node_edge():
+    # network: links→edges, 문자열 노드→{id}, weight 숫자화
+    out = _norm_validate(
+        "network", {"label": "n"}, {"nodes": ["A", "B"], "links": [{"source": "A", "target": "B", "weight": "2"}]}
+    )
+    assert out["nodes"][0]["id"] == "A" and out["edges"][0]["weight"] == 2
+    # network dict 노드 label만 → id 보정
+    out = _norm_validate(
+        "network", {"label": "n"}, {"nodes": [{"label": "A"}], "edges": [{"source": "A", "target": "A"}]}
+    )
+    assert out["nodes"][0]["id"] == "A"
+    # sankey: edges→links, 문자열 노드→{label}, id 제거, value 숫자화
+    out = _norm_validate(
+        "sankey", {"label": "s"}, {"nodes": ["A", "B"], "edges": [{"source": "A", "target": "B", "value": "5"}]}
+    )
+    assert out["nodes"][0] == {"label": "A"} and out["links"][0]["value"] == 5
+
+
+def test_loose_heatmap_radar_matrix():
+    out = _norm_validate("heatmap", {"label": "h"}, {"x_labels": ["a", "b"], "y_labels": ["r"], "z": [["1", "2"]]})
+    assert out["matrix"] == [[1, 2]]  # z→matrix, 원소 숫자화
+    out = _norm_validate(
+        "radar", {"label": "r"}, {"categories": ["속도", "품질"], "series": [{"name": "A"}], "values": [["1", "2"]]}
+    )
+    assert out["axis_labels"] == ["속도", "품질"]  # categories→axis_labels
+    assert out["values"] == [[1, 2]] and out["series"][0]["label"] == "A"
+
+
+def test_loose_comparison_and_raci_aliases():
+    out = _norm_validate(
+        "comparison",
+        {"label": "c", "cases": [{"key": "a", "label": "A"}, {"key": "b", "label": "B"}]},
+        {"cases": [{"key": "a", "label": "A"}, {"key": "b", "label": "B"}],
+         "rows": [{"key": "r1", "label": "행", "type": "text", "values": {"a": "x", "b": "y"}}]},
+    )
+    assert out["rows"][0]["kind"] == "text"  # type→kind
+    out = _norm_validate(
+        "raci_matrix",
+        {"label": "r", "default_roles": [{"key": "pm", "label": "PM"}]},
+        {"roles": [{"key": "pm", "label": "PM"}], "rows": [{"task": "작업1", "assignments": {"pm": "R"}}]},
+    )
+    assert out["rows"][0]["label"] == "작업1"  # task→label

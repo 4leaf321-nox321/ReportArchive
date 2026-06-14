@@ -101,8 +101,29 @@ function McpTokensCard({ me }) {
 
   const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost'
   const slug = me?.workspace_slug || '<부서slug>'
+  const mcpUrl = `http://${host}:3002/mcp`
+  // Claude Code — 터미널 등록 명령(HTTP transport).
   const addCmd = reveal
-    ? `claude mcp add --transport http reportarchive http://${host}:3002/mcp \\\n  --header "Authorization: Bearer ${reveal}" \\\n  --header "X-Workspace-Slug: ${slug}"`
+    ? `claude mcp add --transport http reportarchive ${mcpUrl} \\\n  --header "Authorization: Bearer ${reveal}" \\\n  --header "X-Workspace-Slug: ${slug}"`
+    : ''
+  // Claude Desktop — claude_desktop_config.json 에 붙여넣는 설정(HTTP 사용).
+  const desktopCfg = reveal
+    ? JSON.stringify(
+        {
+          mcpServers: {
+            reportarchive: {
+              type: 'http',
+              url: mcpUrl,
+              headers: {
+                Authorization: `Bearer ${reveal}`,
+                'X-Workspace-Slug': slug,
+              },
+            },
+          },
+        },
+        null,
+        2,
+      )
     : ''
 
   return (
@@ -133,13 +154,26 @@ function McpTokensCard({ me }) {
               </Button>
             </div>
             <Separator />
+            {/* Claude Code — 터미널 명령 */}
+            <div className="text-xs font-medium">Claude Code (터미널)</div>
             <div className="text-xs text-muted-foreground">
-              아래 명령을 터미널에 붙여 Claude Code 에 등록(주소·부서는 확인 후 수정):
+              아래 명령을 터미널에 붙여 등록(주소·부서는 확인 후 수정):
             </div>
             <pre className="overflow-x-auto rounded bg-muted px-2 py-2 text-[11px] font-mono whitespace-pre">{addCmd}</pre>
+            <Button type="button" size="sm" variant="outline" onClick={() => copyText(addCmd, '등록 명령')}>
+              명령 복사
+            </Button>
+            <Separator />
+            {/* Claude Desktop — 설정 파일(JSON, HTTP) */}
+            <div className="text-xs font-medium">Claude Desktop (설정 파일)</div>
+            <div className="text-xs text-muted-foreground">
+              설정 → 개발자 → 「설정 편집」으로 <code className="font-mono">claude_desktop_config.json</code> 을 열고
+              아래를 <code className="font-mono">mcpServers</code> 에 추가(이미 있으면 안쪽 항목만 병합) 후 Claude Desktop 재시작:
+            </div>
+            <pre className="overflow-x-auto rounded bg-muted px-2 py-2 text-[11px] font-mono whitespace-pre">{desktopCfg}</pre>
             <div className="flex gap-2">
-              <Button type="button" size="sm" variant="outline" onClick={() => copyText(addCmd, '등록 명령')}>
-                명령 복사
+              <Button type="button" size="sm" variant="outline" onClick={() => copyText(desktopCfg, 'Desktop 설정')}>
+                설정 복사
               </Button>
               <Button type="button" size="sm" variant="ghost" onClick={() => setReveal(null)}>
                 확인했습니다(닫기)

@@ -106,35 +106,32 @@ function McpTokensCard({ me }) {
   const addCmd = reveal
     ? `claude mcp add --transport http reportarchive ${mcpUrl} \\\n  --header "Authorization: Bearer ${reveal}" \\\n  --header "X-Workspace-Slug: ${slug}"`
     : ''
-  // Claude Desktop — claude_desktop_config.json 에 붙여넣는 설정.
-  // Desktop 설정 파일은 stdio(command) 서버만 받으므로, HTTP 서버는 `mcp-remote`
-  // 브리지로 연결한다(Node.js/npx 필요). 헤더의 공백 문제를 피하려고 값은 env 로
-  // 넣고 args 에선 ${...} 치환(이건 mcp-remote 가 처리). url 도 함께 넣는다.
+  // Claude Desktop — claude_desktop_config.json 의 `mcpServers` 안에 붙여넣는 **항목만**.
+  // (바깥 {mcpServers:{...}} 래퍼는 빼서, 기존 설정에 그대로 끼워넣기 쉽게 한다.)
+  // Desktop 설정 파일은 stdio(command) 서버만 받으므로 HTTP 서버는 `mcp-remote`
+  // 브리지로 연결(Node.js/npx 필요). 헤더 공백 문제를 피하려 값은 env 로 넣고
+  // args 에선 ${...} 치환(mcp-remote 가 처리).
   const desktopCfg = reveal
-    ? JSON.stringify(
+    ? `"reportarchive": ${JSON.stringify(
         {
-          mcpServers: {
-            reportarchive: {
-              command: 'npx',
-              args: [
-                '-y',
-                'mcp-remote',
-                mcpUrl,
-                '--header',
-                'Authorization:${AUTH}',
-                '--header',
-                'X-Workspace-Slug:${WS}',
-              ],
-              env: {
-                AUTH: `Bearer ${reveal}`,
-                WS: slug,
-              },
-            },
+          command: 'npx',
+          args: [
+            '-y',
+            'mcp-remote',
+            mcpUrl,
+            '--header',
+            'Authorization:${AUTH}',
+            '--header',
+            'X-Workspace-Slug:${WS}',
+          ],
+          env: {
+            AUTH: `Bearer ${reveal}`,
+            WS: slug,
           },
         },
         null,
         2,
-      )
+      )}`
     : ''
 
   return (
@@ -178,14 +175,15 @@ function McpTokensCard({ me }) {
             {/* Claude Desktop — 설정 파일(JSON, mcp-remote 브리지) */}
             <div className="text-xs font-medium">Claude Desktop (설정 파일)</div>
             <div className="text-xs text-muted-foreground">
-              설정 → 개발자 → 「설정 편집」으로 <code className="font-mono">claude_desktop_config.json</code> 을 열고
-              아래를 <code className="font-mono">mcpServers</code> 에 추가(이미 있으면 안쪽 항목만 병합) 후 Claude Desktop 재시작.
-              <b> Node.js 필요</b> — Desktop 설정 파일은 HTTP 서버를 직접 못 받아 <code className="font-mono">npx mcp-remote</code> 브리지로 연결합니다.
+              설정 → 개발자 → 「설정 편집」으로 <code className="font-mono">claude_desktop_config.json</code> 을 열고,
+              아래 <b>항목을 <code className="font-mono">"mcpServers": {'{ }'}</code> 중괄호 안에</b> 붙여넣은 뒤 Claude Desktop 재시작.
+              <span className="block mt-1">파일에 <code className="font-mono">mcpServers</code> 가 없으면 <code className="font-mono">{'{ "mcpServers": { 여기 } }'}</code> 형태로 감싸고, 다른 항목이 이미 있으면 사이에 쉼표(<code className="font-mono">,</code>)를 넣으세요.</span>
+              <span className="block mt-1"><b>Node.js 필요</b> — Desktop 설정 파일은 HTTP 서버를 직접 못 받아 <code className="font-mono">npx mcp-remote</code> 브리지로 연결합니다.</span>
             </div>
             <pre className="overflow-x-auto rounded bg-muted px-2 py-2 text-[11px] font-mono whitespace-pre">{desktopCfg}</pre>
             <div className="flex gap-2">
-              <Button type="button" size="sm" variant="outline" onClick={() => copyText(desktopCfg, 'Desktop 설정')}>
-                설정 복사
+              <Button type="button" size="sm" variant="outline" onClick={() => copyText(desktopCfg, 'Desktop 항목')}>
+                항목 복사
               </Button>
               <Button type="button" size="sm" variant="ghost" onClick={() => setReveal(null)}>
                 확인했습니다(닫기)

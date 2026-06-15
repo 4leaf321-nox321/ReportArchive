@@ -2,8 +2,17 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class FileFromUrlRequest(BaseModel):
+    """링크 방식(URL 인제스트) 요청 — 서버가 이 URL 에서 파일을 받아 저장한다."""
+
+    url: str = Field(..., min_length=1, max_length=2048)
+    # 저장할 파일명(선택). 없으면 URL/Content-Type 에서 유추.
+    filename: Optional[str] = Field(default=None, max_length=255)
 
 
 class FileMeta(BaseModel):

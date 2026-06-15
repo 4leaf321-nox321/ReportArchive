@@ -112,6 +112,25 @@ async def get_report(report_id: int, ctx: Context) -> dict:
 
 
 @mcp.tool()
+async def upload_from_url(ctx: Context, url: str, filename: str | None = None) -> dict:
+    """웹 URL 의 파일을 **ReportArchive 서버가 직접 받아** 저장하고 **file_id** 를 돌려준다
+    (바이트가 모델/클라이언트를 안 거쳐 크기·화질 제약 없음). 공개 http/https URL 만
+    되고 사설·내부 주소는 차단된다. 받은 file_id 를 image / attachment / video / cad_3d
+    위젯 content 에 넣어 파일 위젯을 만든다.
+
+    반환: `{ id(=file_id), filename, mime_type, size, ... }`. 실패 시 `{error}`.
+    예) 이미지 위젯: extra_blocks=[{"id":"img","type":"image","props":{"max_count":1},
+        "content":{"files":[{"file_id":"<반환된 id>"}]}}]
+
+    ※ **웹 URL 전용**입니다. 사용자 PC 에만 있는 로컬 파일/채팅 첨부는 URL 이 없어
+    이 도구로 못 올립니다(그 경우 사용자가 웹 UI 에서 직접 추가)."""
+    body: dict = {"url": url}
+    if filename:
+        body["filename"] = filename
+    return await _post(ctx, "/api/files/from-url", body)
+
+
+@mcp.tool()
 async def create_report_draft(
     template_id: str,
     template_version: int,

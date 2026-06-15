@@ -20,11 +20,12 @@ from pathlib import Path
 from app.config import settings
 from app.database import get_db
 from app.modules.files import services
-from app.modules.files.schemas import FileMeta
+from app.modules.files.schemas import FileFromUrlRequest, FileMeta
 from app.modules.users.models import Role
 from app.shared.auth import CurrentUser, get_current_user
 from app.shared.responses import created_response, not_found_response, success_response
 from app.shared.storage import assert_space_for
+from app.shared.url_fetch import UrlFetchError, basename_from_url, fetch_file_from_url
 
 
 # Extensions that route through the CAD upload limit instead of the
@@ -125,6 +126,40 @@ async def upload_file(
         mime_type=mime_type,
         size=total,
         storage_path=str(rel_path).replace(_os.sep, "/"),
+        owner_user_id=actor.user.id,
+        workspace_slug=actor.workspace.slug,
+    )
+    return created_response(data=FileMeta.model_validate(record))
+
+
+@router.post("/from-url")
+def upload_from_url(
+    payload: FileFromUrlRequest,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """링크 방식(URL 인제스트) — 서버가 주어진 URL 에서 파일을 **직접 다운로드**해
+    저장하고 file_id 를 돌려준다. 바이트가 모델/클라이언트를 거치지 않아 크기·화질
+    제약이 없다. SSRF 가드(공인 URL 만, 사설망 차단)는 `url_fetch` 가 담당.
+
+    멀티파트 업로드와 동일하게 확장자별 상한(`_upload_limit_for`)·디스크 여유
+    (`assert_space_for`)를 적용하고, 같은 File 메타 행을 만든다."""
+    # 확장자별 상한 선택 — filename 우선, 없으면 URL 의 마지막 세그먼트.
+    name_for_limit = payload.filename or basename_from_url(payload.url)
+    limit = _upload_limit_for(name_for_limit or "")
+    try:
+        filename, mime_type, content = fetch_file_from_url(payload.url, max_bytes=limit)
+    except UrlFetchError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    # 사용자가 파일명을 지정했으면 그걸로 덮어쓴다(다운로드 추정명 대신).
+    if payload.filename:
+        filename = payload.filename
+    assert_space_for(len(content))
+    record = services.save_upload(
+        db,
+        filename=filename,
+        mime_type=mime_type,
+        contents=content,
         owner_user_id=actor.user.id,
         workspace_slug=actor.workspace.slug,
     )

@@ -317,6 +317,7 @@ def create(
         description=payload.description or "",
         two_col_view=payload.two_col_view,
         view_mode=payload.view_mode or "single",
+        default_expanded=payload.default_expanded,
         summary_widgets=payload.summary_widgets or [],
         groups=_groups_with_item_names(payload.groups, payload.items),
         owner_user_id=owner_user_id,
@@ -403,6 +404,7 @@ def update(
         "description",
         "two_col_view",
         "view_mode",
+        "default_expanded",
         "summary_widgets",
     ):
         if key in data:

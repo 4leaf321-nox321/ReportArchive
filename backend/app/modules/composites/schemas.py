@@ -36,8 +36,8 @@ def _flatten_user_refs(obj: Any) -> Any:
         key: getattr(obj, key)
         for key in (
             "id", "workspace_slug", "title", "kind", "period_date",
-            "description", "two_col_view", "view_mode", "summary_widgets",
-            "groups", "revision", "owner_user_id", "external_view",
+            "description", "two_col_view", "view_mode", "default_expanded",
+            "summary_widgets", "groups", "revision", "owner_user_id", "external_view",
             "updated_by_user_id", "published_at", "published_by_user_id",
             "items", "created_at", "updated_at",
         )
@@ -207,6 +207,8 @@ class CompositeReportRead(BaseModel):
     two_col_view: bool = False
     # 화면 보기 모드 — 'single' | 'two_col' | 'list'.
     view_mode: str = "single"
+    # 단일 보기에서 안건 기본 펼침 여부("모두 펼치기/접기" 영속).
+    default_expanded: bool = False
     # 낙관적 동시성 토큰 — 구조 편집 시 expected_revision 으로 echo.
     revision: int = 1
     # 요약 페이지 위젯 — [{ id, type, props, content, layout }, ...].
@@ -355,6 +357,7 @@ class CompositeReportCreate(BaseModel):
     description: str = ""
     two_col_view: bool = False
     view_mode: str = "single"
+    default_expanded: bool = False
     summary_widgets: list[dict] = []
     # 그룹 골격(빈 그룹 포함). 양식에서 시작할 때 빈 그룹을 바로 영속하기 위함.
     groups: list[str] = []
@@ -369,6 +372,7 @@ class CompositeReportUpdate(BaseModel):
     description: Optional[str] = None
     two_col_view: Optional[bool] = None
     view_mode: Optional[str] = None
+    default_expanded: Optional[bool] = None
     summary_widgets: Optional[list[dict]] = None
     # 그룹 골격(빈 그룹 포함). 보내면 통째로 교체. 빈 그룹도 여기 담아 보내야
     # 저장·복원된다. None(omit)이면 그룹 목록은 손대지 않음.

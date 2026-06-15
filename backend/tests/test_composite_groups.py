@@ -149,3 +149,31 @@ def test_instantiate_from_preset_persists_empty_groups():
     assert fetched["groups"] == ["영업", "개발"]
 
     client.delete(f"/api/composite-presets/{preset_id}", headers=_h())
+
+
+def test_default_expanded_persists():
+    """모두 펼치기/접기 — default_expanded 가 PATCH 로 저장되고 GET 으로 복원."""
+    client = TestClient(app)
+    report_id = _make_report(client)
+    created = client.post(
+        "/api/composites",
+        headers=_h(),
+        json={
+            "workspace_slug": WS,
+            "title": "펼침 상태 저장",
+            "kind": "theme",
+            "items": [{"ref_report_id": report_id}],
+        },
+    ).json()["data"]
+    assert created["default_expanded"] is False  # 기본 접힘
+
+    upd = client.patch(
+        f"/api/composites/{created['id']}",
+        headers=_h(),
+        json={"default_expanded": True},
+    )
+    assert upd.status_code == 200, upd.text
+    assert upd.json()["data"]["default_expanded"] is True
+
+    fetched = client.get(f"/api/composites/{created['id']}", headers=_h()).json()["data"]
+    assert fetched["default_expanded"] is True

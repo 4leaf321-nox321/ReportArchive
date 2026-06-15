@@ -157,10 +157,18 @@ export default function CompositeDetailPage() {
     if (composite) {
       // 보기 모드는 저장값으로 복원 — view_mode 우선, 없으면 레거시
       // two_col_view 로 폴백(true → 2단). 새로고침해도 유지.
-      setViewMode(
+      const restoredViewMode =
         composite.view_mode ??
-          (composite.two_col_view ? 'two_col' : 'single'),
-      )
+        (composite.two_col_view ? 'two_col' : 'single')
+      setViewMode(restoredViewMode)
+      // "모두 펼치기/접기" 상태 복원 — default_expanded 가 true 면 모든 안건을
+      // 펼친 상태로 시작. 인라인 펼침은 단일·2단 보기에서 쓰이고(리스트는
+      // 좌목록+우상세라 해당 없음). 새로고침 후에도 유지.
+      if (composite.default_expanded && restoredViewMode !== 'list') {
+        setExpanded(new Set(composite.items.map((_, i) => i)))
+      } else {
+        setExpanded(new Set())
+      }
       // 저장된 그룹 골격(빈 그룹 포함)을 pendingGroups 로 복원한다. 빈 그룹은
       // 어떤 안건도 참조하지 않아 items 만으로는 못 살리므로 여기서 시딩.
       // 현재 로컬 pendingGroups(미저장 추가분)와 합집합으로 둬 로드 중에도
@@ -292,6 +300,8 @@ export default function CompositeDetailPage() {
             : null,
         description: composite.description ?? '',
         summary_widgets: composite.summary_widgets ?? [],
+        // 보기 설정도 복사본에 그대로 — 모두 펼치기/접기 기본값 유지.
+        default_expanded: composite.default_expanded ?? false,
         // 빈 그룹 골격도 복사본에 그대로 — 안건 없는 그룹이 사라지지 않게.
         groups: composite.groups ?? [],
         items: composite.items.map((it) => ({
@@ -509,17 +519,40 @@ export default function CompositeDetailPage() {
     }
   }
 
-  // 보기 모드 전환 — 즉시 저장(새로고침 후 유지). 단일이 아니면 인라인 펼침은
-  // 의미가 옅으니 모두 접는다(리스트/2단은 자체적으로 본문을 보여줌).
+  // 보기 모드 전환 — 즉시 저장(새로고침 후 유지). 리스트 보기는 좌목록+우상세라
+  // 인라인 펼침이 없어 모두 접는다. 단일·2단은 인라인 펼침을 쓰므로 저장된
+  // 펼침 기본값(default_expanded)을 적용한다.
   async function changeViewMode(mode) {
     if (mode === viewMode) return
     setViewMode(mode)
-    if (mode !== 'single') setExpanded(new Set())
+    if (mode === 'list') {
+      setExpanded(new Set())
+    } else {
+      setExpanded(
+        composite.default_expanded
+          ? new Set(draft.items.map((_, i) => i))
+          : new Set(),
+      )
+    }
     try {
       await updateComposite(composite.id, {
         view_mode: mode,
         two_col_view: mode === 'two_col',
       })
+    } catch {
+      /* 화면 상태는 유지 */
+    }
+  }
+
+  // "모두 펼치기/접기" — 즉시 저장(새로고침 후 유지). 현재 전부 펼쳐져 있으면
+  // 접고, 아니면 모두 편다. 저장 실패(열람 전용 등)해도 화면 상태는 바뀐다.
+  async function toggleExpandAll() {
+    const willExpand = expanded.size !== draft.items.length
+    setExpanded(
+      willExpand ? new Set(draft.items.map((_, i) => i)) : new Set(),
+    )
+    try {
+      await updateComposite(composite.id, { default_expanded: willExpand })
     } catch {
       /* 화면 상태는 유지 */
     }
@@ -1087,13 +1120,7 @@ export default function CompositeDetailPage() {
                   <Button
                     size="sm"
                     variant="ghost"
-                    onClick={() => {
-                      setExpanded((prev) =>
-                        prev.size === draft.items.length
-                          ? new Set()
-                          : new Set(draft.items.map((_, i) => i)),
-                      )
-                    }}
+                    onClick={toggleExpandAll}
                   >
                     {expanded.size === draft.items.length ? (
                       <>

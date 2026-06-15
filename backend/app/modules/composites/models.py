@@ -82,6 +82,13 @@ class CompositeReport(Base):
         String(16), default="single", server_default="single", nullable=False
     )
 
+    # 단일 보기에서 각 안건을 기본으로 펼친 상태로 보일지("모두 펼치기/접기"
+    # 영속). 화면 로컬 state(expanded Set)는 휘발하므로 이 기본값을 저장해
+    # 새로고침 후에도 펼침/접힘이 유지되게 한다. 안건별 개별 토글은 비영속.
+    default_expanded: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
     # 낙관적 동시성 토큰 — 구조 편집(안건 순서·그룹·삭제 등 전량 교체)마다
     # 1 증가. 클라이언트가 expected_revision 으로 echo 하면 서버가 비교해
     # 어긋나면 거절(다른 사람이 먼저 저장). 안건 "추가"는 제출 큐 승인 →

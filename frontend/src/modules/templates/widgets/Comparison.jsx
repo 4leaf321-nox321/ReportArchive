@@ -35,6 +35,7 @@ import {
   AutoGrowTextarea,
   CaptionInput,
   computeMergeMap,
+  DataTableActions,
   DEFAULT_BODY_FONT_PX,
   EditorOptionBar,
   EditorOptionNumber,
@@ -53,6 +54,7 @@ import {
   textStyleToClassName,
   useCellSelection,
   textStyleToInlineStyle,
+  toTsv,
   useGridNavigation,
   _richIsEmpty,
   _richSeed,
@@ -1749,6 +1751,23 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           // 못하게 면역 영역으로 표시.
           data-cell-selection-allow
         >
+          {/* 데이터 복사(TSV) / 비우기 — 표 위젯과 동일. 헤더는 CASE 라벨,
+              본문은 행 라벨 + 각 CASE 값. 이미지 행은 텍스트가 없어 빈 칸.
+              복사는 HTTP-safe(copyTextToClipboard)라 평문 운영서버에서도 동작. */}
+          <DataTableActions
+            label="비교표 데이터"
+            onCopy={() => {
+              const header = ['', ...cases.map((c) => c.label || c.key)]
+              const body = rows.map((row) => [
+                row.label || '',
+                ...cases.map((c) =>
+                  row.kind === 'image' ? '' : row.values?.[c.key] ?? '',
+                ),
+              ])
+              return toTsv([header, ...body])
+            }}
+            onClear={() => patch({ rows: [] })}
+          />
           {/* 헤더(제목) 행 수 — + 로 맨 위에 그룹 헤더 행을 얹고, 헤더 셀을
               드래그 선택해 '셀 합치기'·'셀 색'으로 병합·색 지정. */}
           <div

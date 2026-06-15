@@ -94,6 +94,26 @@ def _pick(d: dict, aliases):
     return None
 
 
+# ── 마크다운 표식 제거 ────────────────────────────────────────────────────
+# 위젯 텍스트는 **평문**으로 렌더된다(마크다운 파서 없음). AI 가 습관적으로
+# 섞어 보내는 마크다운 표식이 그대로 별표/우물정자로 보이므로 보수적으로 벗긴다.
+# 보수적 = 오탐이 적은 것만: 굵게 `**x**`, 인라인코드 `` `x` ``, 줄머리 표식
+# (#, >, -, *, +). 밑줄(_) 기반은 file_id·__init__ 등과 충돌해 건드리지 않는다.
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_MD_CODE_RE = re.compile(r"`([^`\n]+)`")
+_MD_LEAD_RE = re.compile(r"^[ \t]{0,3}(?:#{1,6}|>|[-*+])[ \t]+")
+
+
+def _strip_md(s):
+    """한 줄 텍스트에서 마크다운 표식 제거(평문화). 문자열이 아니면 그대로."""
+    if not isinstance(s, str) or not s:
+        return s
+    out = _MD_BOLD_RE.sub(r"\1", s)
+    out = _MD_CODE_RE.sub(r"\1", out)
+    out = _MD_LEAD_RE.sub("", out)
+    return out
+
+
 # ── 위젯별 정규화 ─────────────────────────────────────────────────────────
 def _norm_rich_items(raw) -> list[dict]:
     items: list[dict] = []
@@ -102,7 +122,9 @@ def _norm_rich_items(raw) -> list[dict]:
         t = "" if text is None else str(text)
         if not t.strip():
             return
-        it = {"depth": max(0, min(5, int(depth or 0))), "text": t}
+        # 평문 텍스트는 마크다운 표식 제거. html(에디터 rich 마크업)이 따로
+        # 오면 그건 HTML 이라 건드리지 않는다.
+        it = {"depth": max(0, min(5, int(depth or 0))), "text": _strip_md(t)}
         if html:
             it["html"] = str(html)
         items.append(it)
@@ -329,7 +351,7 @@ def _normalize_block(wtype: str, raw, props: dict, warnings: list[str], block_id
         text = raw if isinstance(raw, str) else (raw.get("text") if isinstance(raw, dict) else None)
         if not text or not str(text).strip():
             return None
-        out = {"text": str(text)}
+        out = {"text": _strip_md(str(text))}
         if isinstance(raw, dict) and raw.get("text_html"):
             out["text_html"] = str(raw["text_html"])
         return out
@@ -350,6 +372,8 @@ def _normalize_block(wtype: str, raw, props: dict, warnings: list[str], block_id
             items = [str(x).strip() for x in raw["items"] if str(x).strip()]
         else:
             items = []
+        # 평문 렌더 — 마크다운 표식 제거(특히 AI 가 붙이는 줄머리 "- " 와 **굵게**).
+        items = [_strip_md(x) for x in items]
         if not items:
             return None
         return _with_caption({"items": items}, raw)

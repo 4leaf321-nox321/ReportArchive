@@ -457,3 +457,27 @@ def test_caption_and_skip_are_mutually_exclusive():
     assert content["summary"]["caption"] == "내 제목"
     assert "caption_skip_autofill" not in content["summary"]
     _validate(content)
+
+
+def test_strips_markdown_from_plain_text_widgets():
+    """위젯은 평문 렌더 — AI 가 섞어 보낸 마크다운 표식(**굵게**, 백틱, 줄머리
+    #/>/-)은 제거하되, file_id·__init__·C#·-5% 같은 정상 텍스트는 보존."""
+    rt, _ = normalize_content(
+        TEMPLATE, {"summary": "## 개요\n본문 **굵게** 와 `코드`\n- 목록 항목"}
+    )
+    texts = [it["text"] for it in rt["summary"]["items"]]
+    assert texts == ["개요", "본문 굵게 와 코드", "목록 항목"]
+
+    bl, _ = normalize_content(TEMPLATE, {"progress": ["- 첫째 **강조**", "둘째"]})
+    assert bl["progress"]["items"] == ["첫째 강조", "둘째"]
+
+    h, _ = normalize_content(TEMPLATE, {"title_h": "# 제목"})
+    assert h["title_h"] == {"text": "제목"}
+
+    # 오탐 방지 — 마크다운이 아닌 정상 토큰은 그대로.
+    keep, _ = normalize_content(
+        TEMPLATE, {"summary": "C# 과 __init__ 와 file_id, -5% 감소"}
+    )
+    assert keep["summary"]["items"][0]["text"] == "C# 과 __init__ 와 file_id, -5% 감소"
+    _validate(rt)
+    _validate(bl)

@@ -423,3 +423,37 @@ def test_loose_comparison_and_raci_aliases():
         {"roles": [{"key": "pm", "label": "PM"}], "rows": [{"task": "작업1", "assignments": {"pm": "R"}}]},
     )
     assert out["rows"][0]["label"] == "작업1"  # task→label
+
+
+def test_caption_skip_autofill_passthrough():
+    """제목 생략(caption_skip_autofill) — 캡션 쓰는 위젯 전반에서 통과·검증.
+    AI 가 true 면 제목 행을 비우고, skip 이면 caption 은 버린다(편집 UI 와 일치)."""
+    content, warnings = normalize_content(
+        TEMPLATE,
+        {
+            "summary": {"markdown": "본문 한 줄", "caption_skip_autofill": True},
+            "progress": {"items": ["a", "b"], "caption_skip_autofill": "true"},  # 느슨 truthy
+            # skip 과 caption 을 함께 줘도 skip 이 이기고 caption 은 버려진다.
+            "issues": {
+                "rows": [{"issue": "i1", "severity": "높음"}],
+                "caption": "무시될 제목",
+                "caption_skip_autofill": True,
+            },
+        },
+    )
+    assert content["summary"]["caption_skip_autofill"] is True
+    assert content["progress"]["caption_skip_autofill"] is True  # "true" → True 정규화
+    assert content["issues"]["caption_skip_autofill"] is True
+    assert "caption" not in content["issues"]  # skip 이면 caption 버림
+    assert warnings == []
+    _validate(content)  # 스키마 통과
+
+
+def test_caption_and_skip_are_mutually_exclusive():
+    """skip 이 false/미지정이면 caption 은 정상 통과(기존 동작 유지)."""
+    content, _ = normalize_content(
+        TEMPLATE, {"summary": {"markdown": "본문", "caption": "내 제목"}}
+    )
+    assert content["summary"]["caption"] == "내 제목"
+    assert "caption_skip_autofill" not in content["summary"]
+    _validate(content)

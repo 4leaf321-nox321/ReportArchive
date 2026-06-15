@@ -127,9 +127,30 @@ def _norm_rich_items(raw) -> list[dict]:
     return items
 
 
+def _truthy(v) -> bool:
+    """느슨한 boolean 해석 — AI 가 true/"true"/1/"yes" 등으로 줘도 받아들인다."""
+    if v is True:
+        return True
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "1", "yes", "y", "on")
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return v != 0
+    return False
+
+
 def _with_caption(out: dict, raw) -> dict:
-    """AI 가 블록에 caption 을 같이 주면 통과(스키마 허용 위젯에 한해 호출)."""
-    if isinstance(raw, dict) and isinstance(raw.get("caption"), str) and raw["caption"].strip():
+    """AI 가 블록에 caption / 제목 생략 플래그를 같이 주면 통과(스키마 허용 위젯에
+    한해 호출). 캡션을 쓰는 모든 위젯이 이 헬퍼를 거치므로 한 곳에서 처리한다."""
+    if not isinstance(raw, dict):
+        return out
+    # 제목 생략 — caption_skip_autofill: true 면 제목 행을 비워둔다(템플릿 라벨
+    # 자동 채움을 끔). 화면의 "제목 생략" 토글과 동일. skip 일 땐 caption 이
+    # 의미가 없어(편집 UI 도 켜면 caption 을 지움) 함께 비운다.
+    if _truthy(raw.get("caption_skip_autofill")):
+        out["caption_skip_autofill"] = True
+        out.pop("caption", None)
+        return out
+    if isinstance(raw.get("caption"), str) and raw["caption"].strip():
         out["caption"] = raw["caption"]
     return out
 

@@ -37,7 +37,7 @@ def _flatten_user_refs(obj: Any) -> Any:
         for key in (
             "id", "workspace_slug", "title", "kind", "period_date",
             "description", "two_col_view", "view_mode", "summary_widgets",
-            "revision", "owner_user_id", "external_view",
+            "groups", "revision", "owner_user_id", "external_view",
             "updated_by_user_id", "published_at", "published_by_user_id",
             "items", "created_at", "updated_at",
         )
@@ -211,6 +211,9 @@ class CompositeReportRead(BaseModel):
     revision: int = 1
     # 요약 페이지 위젯 — [{ id, type, props, content, layout }, ...].
     summary_widgets: list[dict] = []
+    # 그룹 골격(빈 그룹 포함) — 이름의 순서 있는 리스트. 안건 없는 빈 그룹도
+    # 여기에 담겨 저장·복원된다. 비어 있으면 프론트가 item group_name 으로 폴백.
+    groups: list[str] = []
     owner_user_id: Optional[int] = None
     owner_name: Optional[str] = None
     owner_email: Optional[str] = None
@@ -353,6 +356,8 @@ class CompositeReportCreate(BaseModel):
     two_col_view: bool = False
     view_mode: str = "single"
     summary_widgets: list[dict] = []
+    # 그룹 골격(빈 그룹 포함). 양식에서 시작할 때 빈 그룹을 바로 영속하기 위함.
+    groups: list[str] = []
     # Optional initial items — equivalent to creating then PATCHing.
     items: list[CompositeItemPayload] = []
 
@@ -365,6 +370,9 @@ class CompositeReportUpdate(BaseModel):
     two_col_view: Optional[bool] = None
     view_mode: Optional[str] = None
     summary_widgets: Optional[list[dict]] = None
+    # 그룹 골격(빈 그룹 포함). 보내면 통째로 교체. 빈 그룹도 여기 담아 보내야
+    # 저장·복원된다. None(omit)이면 그룹 목록은 손대지 않음.
+    groups: Optional[list[str]] = None
     # When set, replaces the entire items list (matching position order).
     # Omit to leave items untouched.
     items: Optional[list[CompositeItemPayload]] = None

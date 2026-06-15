@@ -248,6 +248,39 @@ def _fire_added_item_notifications(
                 )
 
 
+def _normalize_groups(groups: Optional[Iterable[str]]) -> list[str]:
+    """그룹 이름 리스트 정규화 — 트림·빈값 제거·순서 보존 중복 제거. 길이는
+    group_name 컬럼(128)과 맞춰 잘라낸다. None 이면 빈 리스트."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for g in groups or []:
+        if not isinstance(g, str):
+            continue
+        name = g.strip()[:128]
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def _groups_with_item_names(
+    groups: Optional[Iterable[str]],
+    items: Optional[Iterable[CompositeItemPayload]],
+) -> list[str]:
+    """클라이언트가 보낸 그룹 골격(빈 그룹 포함)에, 안건이 참조하는
+    group_name 중 빠진 것을 뒤에 보충해 일관성을 보장한다. 그룹 골격을
+    안 보낸(레거시) 호출도 item group_name 으로 자동 복원된다."""
+    normalized = _normalize_groups(groups)
+    seen = set(normalized)
+    for it in items or []:
+        name = (getattr(it, "group_name", None) or "").strip()[:128]
+        if name and name not in seen:
+            seen.add(name)
+            normalized.append(name)
+    return normalized
+
+
 def _replace_items(
     db: Session, composite: CompositeReport, items: list[CompositeItemPayload]
 ) -> None:
@@ -285,6 +318,7 @@ def create(
         two_col_view=payload.two_col_view,
         view_mode=payload.view_mode or "single",
         summary_widgets=payload.summary_widgets or [],
+        groups=_groups_with_item_names(payload.groups, payload.items),
         owner_user_id=owner_user_id,
         updated_by_user_id=owner_user_id,
     )
@@ -352,6 +386,16 @@ def update(
         added_refs = list(new_refs - old_refs)
         # 구조가 바뀌었으니 동시성 토큰 증가(보기 설정만 바꾸는 PATCH 는 안 올림).
         composite.revision = (composite.revision or 1) + 1
+    # 그룹 골격(빈 그룹 포함) — 보냈으면 통째로 교체. 안건이 참조하는
+    # group_name 중 빠진 건 보충해 일관성 유지. items 도 함께 보낸 저장이면
+    # 그 items 기준으로, 아니면 현재 저장된 items 기준으로 보충한다.
+    if "groups" in data and payload.groups is not None:
+        ref_items = (
+            payload.items
+            if ("items" in data and payload.items is not None)
+            else composite.items
+        )
+        composite.groups = _groups_with_item_names(payload.groups, ref_items)
     for key in (
         "title",
         "kind",

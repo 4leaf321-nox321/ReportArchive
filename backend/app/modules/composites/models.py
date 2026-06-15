@@ -98,6 +98,15 @@ class CompositeReport(Base):
         JSONB, default=list, server_default="[]", nullable=False
     )
 
+    # 그룹 골격 — 그룹 이름의 순서 있는 리스트(빈 그룹 포함). 그룹은 원래
+    # `CompositeReportItem.group_name` 으로만 존재해 안건 없는 빈 그룹은
+    # 저장될 곳이 없었다(저장/새로고침 시 소멸). 이 컬럼이 빈 그룹까지
+    # 영속하는 진실의 원천. 안건이 든 그룹도 함께 담아 순서를 보존한다.
+    # 비어 있으면 [] — 그땐 item 들의 distinct group_name 으로 폴백(하위호환).
+    groups: Mapped[list[str]] = mapped_column(
+        JSONB, default=list, server_default="[]", nullable=False
+    )
+
     # Optional series identifier — groups successive recurring composites
     # of the same (workspace, owner, kind) into a chain so the frontend
     # can offer "이전 회차 복제" + auto-carry-over of ongoing items

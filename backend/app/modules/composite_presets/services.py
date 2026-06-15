@@ -166,6 +166,7 @@ def instantiate(
     in the DB (no item carries them yet), so the caller seeds them into
     the frontend's `pendingGroups` separately."""
     seed = preset.seed or {}
+    groups = _normalize_groups(seed.get("groups"))
     create_payload = CompositeReportCreate(
         workspace_slug=payload.workspace_slug,
         title=payload.title,
@@ -177,10 +178,13 @@ def instantiate(
         view_mode=seed.get("view_mode") or "single",
         two_col_view=(seed.get("view_mode") == "two_col"),
         summary_widgets=list(seed.get("summary_widgets") or []),
+        # 빈 그룹 골격을 새 종합보고에 바로 영속 — 안건 배치/저장 전이나
+        # 하드 새로고침에도 그룹이 사라지지 않게(예전엔 프론트 pendingGroups
+        # 로만 존재해 휘발). seed_groups 반환은 즉시 표시용으로 유지.
+        groups=groups,
         items=[],
     )
     composite = composite_services.create(
         db, create_payload, owner_user_id=owner_user_id
     )
-    groups = _normalize_groups(seed.get("groups"))
     return composite, groups

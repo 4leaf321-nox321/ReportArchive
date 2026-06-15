@@ -161,6 +161,16 @@ export default function CompositeDetailPage() {
         composite.view_mode ??
           (composite.two_col_view ? 'two_col' : 'single'),
       )
+      // 저장된 그룹 골격(빈 그룹 포함)을 pendingGroups 로 복원한다. 빈 그룹은
+      // 어떤 안건도 참조하지 않아 items 만으로는 못 살리므로 여기서 시딩.
+      // 현재 로컬 pendingGroups(미저장 추가분)와 합집합으로 둬 로드 중에도
+      // 안 잃게 한다. knownGroups 가 다시 distinct 처리하므로 중복은 무해.
+      if (Array.isArray(composite.groups)) {
+        setPendingGroups((prev) => {
+          const merged = new Set([...composite.groups, ...prev])
+          return [...merged]
+        })
+      }
       setDraft({
         title: composite.title,
         kind: composite.kind,
@@ -219,6 +229,10 @@ export default function CompositeDetailPage() {
         // 레거시 boolean 도 함께 동기화(혹시 모를 구버전 리더 대비).
         two_col_view: viewMode === 'two_col',
         summary_widgets: draft.summary_widgets ?? [],
+        // 그룹 골격(빈 그룹 포함) — knownGroups 는 안건의 group_name +
+        // 사용자가 만든 빈 그룹(pendingGroups). 이걸 보내야 안건 없는 빈
+        // 그룹도 저장·복원된다(예전엔 item group_name 으로만 존재해 휘발).
+        groups: knownGroups,
         items: draft.items.map((it) => ({
           note: it.note,
           ref_report_id: it.ref_report_id,
@@ -278,6 +292,8 @@ export default function CompositeDetailPage() {
             : null,
         description: composite.description ?? '',
         summary_widgets: composite.summary_widgets ?? [],
+        // 빈 그룹 골격도 복사본에 그대로 — 안건 없는 그룹이 사라지지 않게.
+        groups: composite.groups ?? [],
         items: composite.items.map((it) => ({
           note: it.note ?? '',
           ref_report_id:

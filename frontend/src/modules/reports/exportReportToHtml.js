@@ -72,6 +72,19 @@ export async function exportReportToHtml({ draft, onProgress, signal }) {
   const pageThumbnails = await capturePageThumbnails(sourceRoot, report, signal)
   throwIfAborted()
 
+  // Measure each live RGL grid's rendered width BEFORE cloning. RGL does
+  // NOT always write the container width to inline `style.width` (here it
+  // only sets `height`), so the cloned grid has no width and stretches to
+  // the full viewport in the saved file — while its position:absolute
+  // cells stay at their authored left offsets, leaving the right side
+  // empty (the "내용이 좌측에 붙고 우측이 빔" symptom). We bake this
+  // measured width onto the clone below so the grid keeps its authored
+  // size and can be centered. Indexed by document order (clone preserves
+  // order).
+  const liveGridWidths = Array.from(
+    sourceRoot.querySelectorAll('.react-grid-layout'),
+  ).map((g) => Math.round(g.getBoundingClientRect().width))
+
   // Work on a clone so we can strip chrome / inline images without
   // affecting the live DOM the user is still looking at.
   const clone = sourceRoot.cloneNode(true)
@@ -96,15 +109,13 @@ export async function exportReportToHtml({ draft, onProgress, signal }) {
   prepareClonedPlotlyPlaceholders(clone, plotlySpecs)
   const hasPlotly = plotlySpecs.some((s) => s != null)
 
-  // RGL bakes the grid container's measured width into inline style at
-  // render time. The grid items inside are position:absolute so they
-  // don't contribute to the parent page section's intrinsic size — the
-  // section ends up at viewport width while the grid extends past its
-  // right edge (the original "report-page-0 escapes container" symptom).
-  // Force the section's min-width to match the grid so the card border
-  // grows with the content; the stage's overflow:auto then scrolls the
-  // whole thing as one unit.
-  propagateGridWidthToPages(clone)
+  // Pin each cloned grid to its live-measured width and center it. The
+  // grid items are position:absolute (no intrinsic width), so without a
+  // fixed width the grid stretches to the viewport and the content hugs
+  // the left. Inline width+maxWidth freeze the authored size; inline
+  // `margin: 0 auto` centers the grid within its full-width page card.
+  // All inline so it holds regardless of CSS cascade / build state.
+  bakeGridWidths(clone, liveGridWidths)
 
   // The editor's `.report-detail-content` carries an inline
   // `maxWidth: page_width_px` (the user's saved width preference)
@@ -270,6 +281,17 @@ export async function exportReportToHtml({ draft, onProgress, signal }) {
     '  height: auto !important;',
     '  max-height: none !important;',
     '  overflow: visible !important;',
+    '  width: 100% !important;',
+    '}',
+    // Radix Viewport wraps its content in an inner div styled
+    // `display:table; min-width:100%` (for scroll-size measurement). That
+    // table formatting context swallows the page cards' margin:auto, so
+    // centering breaks (cards drift to one side). Flatten it to a plain
+    // full-width block so the centered .report-detail-page cards below
+    // lay out predictably.
+    '.report-detail-root [data-radix-scroll-area-viewport] > * {',
+    '  display: block !important;',
+    '  min-width: 0 !important;',
     '  width: 100% !important;',
     '}',
     // Drop centering / max-width wrappers so the saved document reads
@@ -442,14 +464,17 @@ async function readSheet(sheet) {
 // contain the grid. Stage's overflow:auto then handles horizontal
 // scroll cleanly with no visual leakage.
 
-function propagateGridWidthToPages(rootEl) {
-  rootEl.querySelectorAll('.react-grid-layout').forEach((grid) => {
-    const w = grid.style.width
-    if (!w) return
-    const section = grid.closest('.report-detail-page')
-    if (section && !section.style.minWidth) {
-      section.style.minWidth = w
-    }
+function bakeGridWidths(cloneEl, widths) {
+  const grids = cloneEl.querySelectorAll('.react-grid-layout')
+  grids.forEach((grid, i) => {
+    const w = widths[i]
+    if (!w || w <= 0) return
+    // Freeze the authored width so the grid doesn't stretch to viewport.
+    grid.style.width = w + 'px'
+    grid.style.maxWidth = w + 'px'
+    // Center within the full-width page card.
+    grid.style.marginLeft = 'auto'
+    grid.style.marginRight = 'auto'
   })
 }
 
@@ -1075,17 +1100,16 @@ const VIEWER_CSS = [
   '',
   '/* ───── Layout preservation strategy ─────',
   '   Goal: the saved HTML should display widgets in the same arrangement',
-  '   the author sees in the editor. We do NOT force width: max-content',
-  '   on the root/page sections — RGL grid items are position:absolute',
-  '   and do not contribute to the parent`s max-content size, so that',
-  '   would collapse the box to a narrow strip. Instead each page',
-  '   section gets an explicit min-width matching its RGL grid`s baked',
-  '   inline width (set by JS in propagateGridWidthToPages), and the',
-  '   stage`s overflow:auto handles wide content with horizontal scroll. */',
+  '   the author sees in the editor. RGL grid items are position:absolute',
+  '   and do not contribute to the grid container`s intrinsic width, and',
+  '   RGL does not always write the container width to inline style — so',
+  '   bakeGridWidths() measures each grid live and pins width+maxWidth on',
+  '   the clone (then `margin:0 auto` centers it within the full-width',
+  '   page card). The page section itself stays width:auto. */',
   '',
-  '/* page section uses content-box so the JS-propagated min-width',
-  '   (= the grid`s baked inline width) applies to the *content area*,',
-  '   not the border-box. With Tailwind`s default border-box, padding',
+  '/* page section uses content-box so any min-width applies to the',
+  '   *content area*, not the border-box. With Tailwind`s default',
+  '   border-box, padding',
   '   would eat into the min-width budget and the grid`s right edge',
   '   would still overflow the card padding. Content-box adds padding',
   '   outside the min-width, so the card always fully contains the */',
@@ -1094,7 +1118,23 @@ const VIEWER_CSS = [
   '  box-sizing: content-box !important;',
   '}',
   '',
+  '/* Center the RGL grid within its (full-width) page card. The grid has',
+  '   a fixed inline px width and position:absolute cells, so left by',
+  '   default; auto side-margins center it → the visible content sits in',
+  '   the middle of the page instead of hugging the left with empty space',
+  '   on the right. This is the actual content-centering lever. */',
+  '.rv-shell .report-detail-page .react-grid-layout {',
+  '  margin-left: auto !important;',
+  '  margin-right: auto !important;',
+  '}',
+  '',
   '/* ───── Mode: all (default) — pages stacked, each as a card ───── */',
+  '/* The page card fills the stage width (block, width:auto) with a',
+  '   min-width floor = its RGL grid px. The grid inside (fixed width,',
+  '   position:absolute cells) is centered within the card by the',
+  '   `.react-grid-layout { margin: 0 auto }` rule below — that is what',
+  '   actually centers the visible content. scale-to-fit then shrinks the',
+  '   card when the window is narrower than the grid. */',
   '.rv-shell[data-view="all"] .report-detail-page {',
   '  margin: 0 0 24px 0;',
   '  padding: 24px 28px;',
@@ -1273,6 +1313,7 @@ const VIEWER_SCRIPT = [
   '    }',
   '    if (slideNav) slideNav.hidden = mode !== "slide";',
   '    if (mode === "slide") updateActive();',
+  '    fitPages();',
   '  }',
   '',
   '  function updateActive() {',
@@ -1290,6 +1331,27 @@ const VIEWER_SCRIPT = [
   '    // one page is rendered, so 0 is always the right offset.',
   '    var stage = shell.querySelector(".rv-stage");',
   '    if (stage) stage.scrollTop = 0;',
+  '    fitPages();',
+  '  }',
+  '',
+  '  // scale-to-fit — the grid carries the (fixed) content width. When it',
+  '  // is wider than the visible stage, shrink it with CSS zoom so it fits',
+  '  // and stays centered (zoom reflows layout, unlike transform, so the',
+  '  // grid`s `margin:0 auto` keeps centering it). Grids narrower than the',
+  '  // stage stay at 1:1 and just center with side margins. Recomputed on',
+  '  // load, resize, and mode/page changes.',
+  '  function fitPages() {',
+  '    var stage = shell.querySelector(".rv-stage");',
+  '    if (!stage) return;',
+  '    var avail = stage.clientWidth - 72;', // rv-stage 16px*2 + page card ~28px*2 padding
+  '    if (avail <= 0) return;',
+  '    var grids = shell.querySelectorAll(".report-detail-page .react-grid-layout");',
+  '    for (var fi = 0; fi < grids.length; fi++) {',
+  '      var g = grids[fi];',
+  '      g.style.zoom = "";',
+  '      var natural = g.offsetWidth;',
+  '      if (natural > 0 && natural > avail) g.style.zoom = String(avail / natural);',
+  '    }',
   '  }',
   '',
   '  function goTo(idx) {',
@@ -1456,7 +1518,9 @@ const VIEWER_SCRIPT = [
   '    }',
   '  });',
   '',
+  '  window.addEventListener("resize", fitPages);',
   '  setMode("all");',
+  '  fitPages();',
   '  // Seed the chip / browse-card highlight to currentIdx (= 0). The',
   '  // CSS reset above neutralizes any inherited React active styling,',
   '  // and this paints the first chip as the initial "current page".',

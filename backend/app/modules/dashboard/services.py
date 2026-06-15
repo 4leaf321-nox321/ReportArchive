@@ -147,11 +147,18 @@ def _scope_slugs(db: Session, ws, is_global: bool, include_descendants: bool):
     return {ws.slug}
 
 
-def _uncategorized_count(db: Session, ws: Workspace) -> int:
+def _uncategorized_count(
+    db: Session, ws: Workspace, include_descendants: bool = False
+) -> int:
     if ws.kind == WorkspaceKind.personal:
         uid = ws.personal_owner_user_id
         return folder_services.count_uncategorized_personal(db, uid) if uid else 0
     if ws.kind == WorkspaceKind.org:
+        # 하위부서 포함이면 자손 부서 게시판의 미분류까지 합산(다른 건강도
+        # 지표와 스코프 일치). 아니면 현재 부서만.
+        if include_descendants:
+            slugs = ws_services.get_descendants_inclusive(db, ws.slug)
+            return folder_services.count_uncategorized_org_multi(db, slugs)
         return folder_services.count_uncategorized_org(db, ws.slug)
     return 0
 
@@ -237,7 +244,9 @@ def compute_dashboard(
         )
     health = {
         "stale_drafts": stale,
-        "uncategorized": 0 if is_global else _uncategorized_count(db, ws),
+        "uncategorized": 0
+        if is_global
+        else _uncategorized_count(db, ws, include_descendants),
         "open_comments": open_comments,
     }
 

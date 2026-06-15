@@ -197,9 +197,18 @@ def count_uncategorized_personal(db: Session, user_id: int) -> int:
 
 def count_uncategorized_org(db: Session, workspace_slug: str) -> int:
     """Mounts in this workspace with no folder assignment."""
+    return count_uncategorized_org_multi(db, [workspace_slug])
+
+
+def count_uncategorized_org_multi(db: Session, workspace_slugs) -> int:
+    """폴더 미지정 mount 수 — 여러 부서 게시판을 한 번에 합산(하위부서 포함용).
+    빈 입력이면 0."""
+    slugs = list(workspace_slugs or [])
+    if not slugs:
+        return 0
     n = db.execute(
         select(func.count(ReportMount.report_id)).where(
-            ReportMount.workspace_slug == workspace_slug,
+            ReportMount.workspace_slug.in_(slugs),
             ReportMount.folder_id.is_(None),
         )
     ).scalar()

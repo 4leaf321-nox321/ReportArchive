@@ -656,6 +656,12 @@ def _table_content(props: dict) -> dict:
             # 읽기 모드 기본 펼침 — true 면 셀이 줄바꿈으로 다 펼쳐진 채 시작
             # (Enter 줄바꿈·긴 글 그대로). 미설정/false=compact(요약+호버).
             "expanded": {"type": "boolean"},
+            # 격자 테두리 — true 면 행·열 전체에 균일 격자선. 미설정/false=
+            # 기존 형태(행 구분선만). border_width(1~3px)·border_color(색 토큰)
+            # 로 굵기·색 지정(미설정=1px·테마색).
+            "bordered": {"type": "boolean"},
+            "border_width": {"type": "integer", "minimum": 1, "maximum": 3},
+            "border_color": _COLOR_TOKEN_FIELD,
         },
         "additionalProperties": False,
     }
@@ -2989,6 +2995,11 @@ def _comparison_content(props: dict) -> dict:  # noqa: ARG001
             # 읽기 모드 기본 펼침 — true 면 셀이 줄바꿈으로 다 펼쳐진 채 시작
             # (Enter 줄바꿈·긴 글 그대로). 미설정/false=compact(요약+호버).
             "expanded": {"type": "boolean"},
+            # 격자 테두리 — true 면 행·열 전체에 균일 격자선. 미설정/false=
+            # 기존 형태. border_width(1~3px)·border_color(색 토큰)로 굵기·색 지정.
+            "bordered": {"type": "boolean"},
+            "border_width": {"type": "integer", "minimum": 1, "maximum": 3},
+            "border_color": _COLOR_TOKEN_FIELD,
         },
         "additionalProperties": False,
     }

@@ -25,6 +25,23 @@ import {
 } from './exportCapture'
 import { NATIVE_TEXT_TYPES, buildPptxText, readBasePx } from './exportPptxText'
 import { NATIVE_TABLE_TYPES, buildPptxTable } from './exportPptxTable'
+import { COLOR_TOKENS } from '@/shared/text-color'
+
+// 색 토큰 → 라이트 swatch hex(# 제외). PPT 는 다크모드가 없어 라이트 hex 를 쓴다.
+const _TOKEN_HEX = Object.fromEntries(
+  COLOR_TOKENS.filter((c) => c.token && c.swatch).map((c) => [
+    c.token,
+    c.swatch.replace('#', ''),
+  ]),
+)
+
+/** content.bordered/border_width/border_color → pptxgenjs 표 border 옵션. */
+function pptxTableBorder(content) {
+  if (!content || content.bordered !== true) return { type: 'none' }
+  const pt = { 1: 0.75, 2: 1.5, 3: 2.25 }[content.border_width] || 0.75
+  const color = _TOKEN_HEX[content.border_color] || 'B0B0B0'
+  return { type: 'solid', pt, color }
+}
 import {
   groupRowsIntoSlides,
   measureSlideRows,
@@ -146,7 +163,7 @@ function tryAddNativeText(slide, meta, content, el, pos, ptPerPx, caption) {
 /** 표 위젯을 네이티브 PPT 표로 배치 시도(+ 캡션 박스). 이미지 셀이 있거나
  *  오류면 false(이미지 폴백). 캡션 박스는 표가 네이티브로 확정된 뒤에만 얹어
  *  이미지 폴백 시 캡션 중복을 막는다. */
-function tryAddNativeTable(slide, el, pos, ptPerPx, caption) {
+function tryAddNativeTable(slide, el, pos, ptPerPx, caption, border = { type: 'none' }) {
   try {
     const built = buildPptxTable(el, { ptPerPx, tableWidthIn: pos.w })
     if (!built || !built.rows.length) return false
@@ -157,7 +174,9 @@ function tryAddNativeTable(slide, el, pos, ptPerPx, caption) {
       w: pos.w,
       h: Math.max(0.2, pos.h - capH),
       colW: built.colW,
-      border: { type: 'solid', pt: 0.5, color: 'B0B0B0' },
+      // 격자 테두리 옵션(content.bordered/border_width/border_color)에 맞춤 —
+      // 켜면 굵기·색 격자선, 끄면 무테두리(화면 기본 형태에 더 가깝게).
+      border,
       valign: 'middle',
       fontFace: TEXT_FONT,
       autoPage: false,
@@ -241,7 +260,14 @@ export async function exportReportToPptx({
           if (meta && NATIVE_TEXT_TYPES.has(meta.type)) {
             placed = tryAddNativeText(curSlide, meta, content[b.id] ?? {}, b.el, pos, ptPerPx, caption)
           } else if (meta && NATIVE_TABLE_TYPES.has(meta.type)) {
-            placed = tryAddNativeTable(curSlide, b.el, pos, ptPerPx, caption)
+            placed = tryAddNativeTable(
+              curSlide,
+              b.el,
+              pos,
+              ptPerPx,
+              caption,
+              pptxTableBorder(content[b.id]),
+            )
           }
           if (!placed) {
             // 이미지 폴백 — 캡션은 캡처 이미지에 이미 포함되므로 별도 박스 없음.

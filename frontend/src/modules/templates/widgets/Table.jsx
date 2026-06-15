@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useRef, useCallback } from 'react'
-import { Maximize2, Minimize2, Palette, Type } from 'lucide-react'
+import { Grid3x3, Maximize2, Minimize2, Palette, Type } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import {
@@ -9,7 +9,7 @@ import {
 } from '@/shared/components/ui/popover'
 import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, NoteInput, PreviewLabel, TextStyleField, captionSkipProps, computeMergeMap, normalizeMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation, _richIsEmpty, _richSeed, sanitizeCaptionHtml } from './_shared'
 import { RichTextRowEditor, RichTextFormatToolbarBody } from './RichTextRowEditor'
-import { ColorSwatchPicker, bgTokenClass, colorTokenClass } from '@/shared/text-color'
+import { ColorSwatchPicker, bgTokenClass, colorTokenClass, normalizeToken } from '@/shared/text-color'
 
 // 셀 색상 사이드테이블 키 — `${rowIndex}::${colKey}`. (열 key 는 안정적이라
 // 열 reorder 영향 없음; 행 인덱스는 삭제/이동 시 아래 헬퍼로 시프트.)
@@ -330,6 +330,22 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   const tableWidthPx = Number.isFinite(content?.table_width_px)
     ? content.table_width_px
     : null
+  // 격자 테두리 옵션 — 켜면 표 <table> 에 .rt-grid 클래스 + CSS 변수를 주입해
+  // 모든 셀에 균일 격자선(행·열)을 그린다. 굵기(1/2/3px)·색(토큰)도 함께.
+  const bordered = content?.bordered === true
+  const borderWidth = [1, 2, 3].includes(content?.border_width)
+    ? content.border_width
+    : 1
+  const borderColorTok = normalizeToken(content?.border_color)
+  const gridClass = bordered ? 'rt-grid' : ''
+  const gridVars = bordered
+    ? {
+        '--rt-gw': `${borderWidth}px`,
+        ...(borderColorTok
+          ? { '--rt-gc': `var(--rt-c-${borderColorTok})` }
+          : {}),
+      }
+    : undefined
   // 마지막 열 핸들 드래그 중 표 전체 폭 프리뷰 — mouseup 에 commit.
   const [tableResizePreview, setTableResizePreview] = useState(null) // px | null
   const effTableWidthPx = tableResizePreview ?? tableWidthPx
@@ -365,6 +381,18 @@ export function TableEditor({ props, content, onChange, readOnly }) {
       delete merged.column_widths
     }
     if (!Number.isFinite(merged.table_width_px)) delete merged.table_width_px
+    // 격자 옵션 정리 — 꺼져 있으면 굵기·색까지 제거, 켜져 있어도 기본값
+    // (1px·테마색)은 저장 안 함.
+    if (!merged.bordered) {
+      delete merged.bordered
+      delete merged.border_width
+      delete merged.border_color
+    } else {
+      if (merged.border_width === 1 || ![1, 2, 3].includes(merged.border_width)) {
+        delete merged.border_width
+      }
+      if (!merged.border_color) delete merged.border_color
+    }
     if (!merged.note || !merged.note.trim()) delete merged.note
     onChange(merged)
   }
@@ -468,7 +496,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                   blank ~80px gap on the right. Data columns fill the full
                   width instead; widths differ slightly between modes by the
                   action column's size. */}
-              <table className="w-full text-sm table-fixed">
+              <table className={`w-full text-sm table-fixed ${gridClass}`} style={gridVars}>
                 <colgroup>
                   {cols.map((c, i) => (
                     <col key={i} style={colStyle(c.key)} />
@@ -1423,6 +1451,56 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           )}
           기본 펼침
         </button>
+        {/* 격자 테두리 — 켜면 행·열 전체에 격자선. 켜진 동안 굵기(얇게/보통/
+            굵게)·색을 함께 고른다. 끄면 기존 형태(행 구분선만). */}
+        <div
+          className="flex items-center gap-1 rounded-md border bg-muted/40 px-1.5 py-0.5 text-[11px]"
+          data-cell-selection-allow
+        >
+          <button
+            type="button"
+            onClick={() => patch({ bordered: !bordered })}
+            className={`flex items-center gap-1 rounded px-1 py-0.5 ${
+              bordered
+                ? 'bg-primary/10 text-foreground'
+                : 'text-muted-foreground'
+            }`}
+            title="셀 격자 테두리(행·열). 끄면 기존 형태(행 구분선만)."
+          >
+            <Grid3x3 className="h-3 w-3" />
+            테두리
+          </button>
+          {bordered && (
+            <>
+              {/* 굵기 — 얇게(1)/보통(2)/굵게(3) px */}
+              {[
+                { px: 1, label: '얇게' },
+                { px: 2, label: '보통' },
+                { px: 3, label: '굵게' },
+              ].map((opt) => (
+                <button
+                  key={opt.px}
+                  type="button"
+                  onClick={() => patch({ border_width: opt.px })}
+                  className={`rounded px-1 py-0.5 ${
+                    borderWidth === opt.px
+                      ? 'bg-primary/10 text-foreground'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                  title={`테두리 굵기 ${opt.px}px`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+              {/* 색 — 토큰 팔레트(기본=테마색) */}
+              <ColorSwatchPicker
+                value={borderColorTok}
+                onChange={(t) => patch({ border_color: t || undefined })}
+                size={16}
+              />
+            </>
+          )}
+        </div>
         <label
           className="flex items-center gap-1 rounded-md border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"
           title="표 전체 폭(px). 비우면 전체 폭. 좌측 정렬이라 절반 폭 등으로 만들 수 있습니다."
@@ -1494,7 +1572,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
             hover overlays inside the existing cells, so neither view nor
             edit mode reserves space for them — both modes have identical
             data column widths. */}
-        <table className="w-full text-sm table-fixed">
+        <table className={`w-full text-sm table-fixed ${gridClass}`} style={gridVars}>
           <colgroup>
             {cols.map((c, i) => (
               <col key={i} style={colStyle(c.key)} />

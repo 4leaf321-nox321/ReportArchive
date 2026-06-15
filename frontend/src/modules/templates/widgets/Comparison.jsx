@@ -20,7 +20,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/shared/components/ui/popover'
-import { ColorSwatchPicker, bgTokenClass, colorTokenClass } from '@/shared/text-color'
+import { ColorSwatchPicker, bgTokenClass, colorTokenClass, normalizeToken } from '@/shared/text-color'
 import { AuthedImage } from '@/shared/components/AuthedImage'
 import { uploadFile } from '@/shared/api/files'
 import { toast } from 'sonner'
@@ -541,6 +541,22 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
   const tableWidthPx = Number.isFinite(content?.table_width_px)
     ? content.table_width_px
     : null
+  // 격자 테두리 옵션 — 켜면 비교표 <table> 에 .rt-grid + CSS 변수를 주입해
+  // 행·열 전체에 균일 격자선. 굵기(1/2/3px)·색(토큰) 함께. 기본(false)=기존.
+  const bordered = content?.bordered === true
+  const borderWidth = [1, 2, 3].includes(content?.border_width)
+    ? content.border_width
+    : 1
+  const borderColorTok = normalizeToken(content?.border_color)
+  const gridClass = bordered ? 'rt-grid' : ''
+  const gridVars = bordered
+    ? {
+        '--rt-gw': `${borderWidth}px`,
+        ...(borderColorTok
+          ? { '--rt-gc': `var(--rt-c-${borderColorTok})` }
+          : {}),
+      }
+    : undefined
   // 마지막 CASE 핸들 드래그 중 표 전체 폭 프리뷰 — mouseup 에 commit.
   const [tableResizePreview, setTableResizePreview] = useState(null) // px | null
   const effTableWidthPx = tableResizePreview ?? tableWidthPx
@@ -592,6 +608,16 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       delete merged.row_label_width
     }
     if (!Number.isFinite(merged.table_width_px)) delete merged.table_width_px
+    if (!merged.bordered) {
+      delete merged.bordered
+      delete merged.border_width
+      delete merged.border_color
+    } else {
+      if (merged.border_width === 1 || ![1, 2, 3].includes(merged.border_width)) {
+        delete merged.border_width
+      }
+      if (!merged.border_color) delete merged.border_color
+    }
     // Layout overrides — strip when undefined or when matching the
     // template default, so per-report content stays small and a
     // template default change still reaches reports that never
@@ -1555,7 +1581,9 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
               className={cn(
                 'text-sm w-full table-fixed',
                 horizontalScroll && 'w-max min-w-full',
+                gridClass,
               )}
+              style={gridVars}
             >
               <colgroup>
                 {/* 편집 모드와 동일한 7rem 으로 row-label 폭을 잡아 두 모드
@@ -1707,6 +1735,39 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
             suffix={`(현재 ${cases.length}개)`}
             width="w-14"
           />
+        )}
+        <EditorOptionToggle
+          label="테두리"
+          value={bordered}
+          onChange={(v) => patch({ bordered: v || undefined })}
+        />
+        {bordered && (
+          <div className="flex items-center gap-1 text-[11px]">
+            {[
+              { px: 1, label: '얇게' },
+              { px: 2, label: '보통' },
+              { px: 3, label: '굵게' },
+            ].map((opt) => (
+              <button
+                key={opt.px}
+                type="button"
+                onClick={() => patch({ border_width: opt.px })}
+                className={`rounded border px-1.5 py-0.5 ${
+                  borderWidth === opt.px
+                    ? 'border-primary/40 bg-primary/10 text-foreground'
+                    : 'bg-muted/40 text-muted-foreground hover:text-foreground'
+                }`}
+                title={`테두리 굵기 ${opt.px}px`}
+              >
+                {opt.label}
+              </button>
+            ))}
+            <ColorSwatchPicker
+              value={borderColorTok}
+              onChange={(t) => patch({ border_color: t || undefined })}
+              size={16}
+            />
+          </div>
         )}
         <EditorOptionNumber
           label="이미지 행 높이"
@@ -1936,7 +1997,9 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
             className={cn(
               'text-sm w-full table-fixed',
               horizontalScroll && 'w-max min-w-full',
+              gridClass,
             )}
+            style={gridVars}
           >
             <colgroup>
               <col style={rowLabelColStyle()} />

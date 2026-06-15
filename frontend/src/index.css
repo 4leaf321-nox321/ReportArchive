@@ -142,6 +142,18 @@
 .rt-bg-pink { background-color: color-mix(in srgb, var(--rt-c-pink) 16%, transparent); }
 .rt-bg-rose { background-color: color-mix(in srgb, var(--rt-c-rose) 16%, transparent); }
 
+/* 표·비교표 격자 테두리 옵션(content.bordered). 표 <table> 에 .rt-grid 를 달면
+   모든 셀에 균일한 격자선이 그려진다. 굵기·색은 인라인 CSS 변수로 주입:
+   --rt-gw(예: 2px), --rt-gc(예: var(--rt-c-blue)). 미지정이면 1px·테마 테두리색.
+   border-collapse 로 인접 셀 선이 겹치지 않게 하나로 합쳐진다. !important 는
+   셀에 이미 붙은 Tailwind border-* (last:border-r-0 등)를 확실히 덮기 위함.
+   동적 클래스라 @layer 밖(=purge 제외)에 둔다(rt-c / rt-bg 클래스와 동일 규칙). */
+.rt-grid { border-collapse: collapse !important; }
+.rt-grid th,
+.rt-grid td {
+  border: var(--rt-gw, 1px) solid var(--rt-gc, hsl(var(--border))) !important;
+}
+
 @layer base {
   * {
     @apply border-border;

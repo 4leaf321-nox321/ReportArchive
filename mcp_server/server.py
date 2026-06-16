@@ -92,6 +92,47 @@ async def describe_widgets(types: list, ctx: Context) -> dict:
 
 
 @mcp.tool()
+async def describe_metadata(ctx: Context) -> dict:
+    """보고서 메타데이터에 쓸 수 있는 값들을 조회한다 — create_report_draft /
+    update_report_draft 의 `report_type_id` · `entity_ids` 에 넣을 **유효한 id** 를
+    여기서 골라 쓴다(이름을 임의로 만들어 넣지 말 것). 날짜(report_date)·자유
+    태그(tags)는 조회 없이 바로 넣어도 된다.
+
+    반환:
+      - report_types: [{id, name, status}] — 보고서 유형(report_type_id 후보).
+      - entity_axes:  [{type_id, slug, label, values: [{id, value, status}]}]
+                      — 모델/단계/부품 등 '축'과 그 값들(entity_ids 후보)."""
+    rt = await _get(ctx, "/api/report-types")
+    if isinstance(rt, dict) and rt.get("error"):
+        return rt
+    et = await _get(ctx, "/api/entity-types")
+    if isinstance(et, dict) and et.get("error"):
+        return et
+    ents = await _get(ctx, "/api/entities", {"limit": 500})
+    if isinstance(ents, dict) and ents.get("error"):
+        return ents
+    report_types = [
+        {"id": r.get("id"), "name": r.get("name"), "status": r.get("status")}
+        for r in (rt.get("items") or [])
+    ]
+    by_type: dict = {}
+    for e in ents.get("items") or []:
+        by_type.setdefault(e.get("type_id"), []).append(
+            {"id": e.get("id"), "value": e.get("value"), "status": e.get("status")}
+        )
+    entity_axes = [
+        {
+            "type_id": t.get("id"),
+            "slug": t.get("slug"),
+            "label": t.get("label"),
+            "values": by_type.get(t.get("id"), []),
+        }
+        for t in (et.get("items") or [])
+    ]
+    return {"report_types": report_types, "entity_axes": entity_axes}
+
+
+@mcp.tool()
 async def search_reports(q: str, ctx: Context, limit: int = 20) -> dict:
     """보고서 제목·본문 전문검색(내가 볼 수 있는 범위 내). 기존 내용을 참고할 때."""
     return await _get(ctx, "/api/reports/search", {"q": q, "limit": limit})
@@ -140,6 +181,10 @@ async def create_report_draft(
     extra_blocks: list | None = None,
     block_sections: dict | None = None,
     pages: list | None = None,
+    report_date: str | None = None,
+    tags: list | None = None,
+    report_type_id: int | None = None,
+    entity_ids: list | None = None,
 ) -> dict:
     """보고서를 **초안(draft)** 으로 생성. `blocks` 는 block_id→내용(describe_template 참고).
     **AI 가 채운 위젯만** 보이고(빈 템플릿 블록은 자동 숨김), 레이아웃은 서버가 자동 배치한다.
@@ -162,21 +207,31 @@ async def create_report_draft(
     — 모두 같은 template 을 쓴다. `pages` 를 주면 위 `blocks`/`extra_blocks`/`block_sections` 는
     무시되고 페이지별로 채운다. 한 장이면 `pages` 없이 위 필드만 쓴다.
 
+    메타데이터(선택): `report_date`(YYYY-MM-DD, 보고 일자 — 생략 시 오늘),
+    `tags`(자유 문자열 태그 목록), `report_type_id`(보고서 유형 id), `entity_ids`(모델/
+    단계/부품 등 축 태그 id 목록). 유효한 report_type_id / entity_ids 는
+    `describe_metadata` 로 먼저 조회해 고른다(이름을 임의로 넣지 말 것).
+
     내용은 느슨하게 줘도 서버가 정규화·검증한다. 검증 실패 시 결과의 `error`/`warnings` 를
     보고 고쳐 다시 호출하라. 성공하면 `url` 로 사람이 검토."""
-    return await _post(
-        ctx,
-        "/api/reports/ai-draft",
-        {
-            "template_id": template_id,
-            "template_version": template_version,
-            "title": title,
-            "blocks": blocks,
-            "extra_blocks": extra_blocks or [],
-            "block_sections": block_sections or {},
-            "pages": pages or [],
-        },
-    )
+    body: dict = {
+        "template_id": template_id,
+        "template_version": template_version,
+        "title": title,
+        "blocks": blocks,
+        "extra_blocks": extra_blocks or [],
+        "block_sections": block_sections or {},
+        "pages": pages or [],
+    }
+    if report_date is not None:
+        body["report_date"] = report_date
+    if tags is not None:
+        body["tags"] = tags
+    if report_type_id is not None:
+        body["report_type_id"] = report_type_id
+    if entity_ids is not None:
+        body["entity_ids"] = entity_ids
+    return await _post(ctx, "/api/reports/ai-draft", body)
 
 
 @mcp.tool()
@@ -190,6 +245,10 @@ async def update_report_draft(
     remove_blocks: list | None = None,
     page: int = 1,
     pages: list | None = None,
+    report_date: str | None = None,
+    tags: list | None = None,
+    report_type_id: int | None = None,
+    entity_ids: list | None = None,
 ) -> dict:
     """**기존 초안을 이어서 수정**한다. `report_id` 는 내가 만든 **작성 중(drafting)**
     보고서여야 한다(아니면 거부). report_id 를 모르면 `list_my_drafts` 로 찾는다.
@@ -213,7 +272,11 @@ async def update_report_draft(
     다시 호출하라. 성공하면 `url` 로 사람이 검토한다.
 
     ※ 누군가(본인 다른 탭 포함) 그 보고서를 **편집 화면에서 열어 두면**(편집 락) 수정이
-    거부된다(에러에 현재 편집자 표시) — 사용자에게 편집 화면을 닫고 다시 요청하라고 안내하라."""
+    거부된다(에러에 현재 편집자 표시) — 사용자에게 편집 화면을 닫고 다시 요청하라고 안내하라.
+
+    메타데이터(선택, 준 것만 변경): `report_date`(YYYY-MM-DD), `tags`(전체 교체),
+    `report_type_id`, `entity_ids`(전체 교체 — `[]` 면 모든 축 태그 제거). 유효한 id 는
+    `describe_metadata` 로 조회. 내용 없이 메타만 줘도 메타만 수정된다."""
     body: dict = {"page": page}
     if title is not None:
         body["title"] = title
@@ -224,6 +287,14 @@ async def update_report_draft(
         body["extra_blocks"] = extra_blocks or []
         body["block_sections"] = block_sections or {}
         body["remove_blocks"] = remove_blocks or []
+    if report_date is not None:
+        body["report_date"] = report_date
+    if tags is not None:
+        body["tags"] = tags
+    if report_type_id is not None:
+        body["report_type_id"] = report_type_id
+    if entity_ids is not None:
+        body["entity_ids"] = entity_ids
     return await _patch(ctx, f"/api/reports/{report_id}/ai-draft", body)
 
 

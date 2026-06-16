@@ -735,6 +735,12 @@ class AiDraftCreate(BaseModel):
     # 여러 페이지로 만들 때 — 각 항목 {name?, blocks?, extra_blocks?, block_sections?}.
     # 모두 같은 template_id/version 을 쓴다. 비어 있으면 위 단일 페이지 필드로 1쪽 생성.
     pages: list[dict] = Field(default_factory=list)
+    # ── 메타데이터(선택) — 일반 생성과 동일하게 적용된다. describe_metadata 로
+    #    유효한 report_type_id / entity_ids 를 조회해 쓴다. ───────────────────
+    report_date: Optional[date] = None  # 보고 일자. 미지정 시 서버 기본(오늘).
+    tags: Optional[list[str]] = None  # 자유 태그.
+    report_type_id: Optional[int] = None  # 보고서 유형 id.
+    entity_ids: Optional[list[int]] = None  # 모델/단계/부품 등 축 태그 id 목록.
 
 
 class AiDraftUpdate(BaseModel):
@@ -759,3 +765,10 @@ class AiDraftUpdate(BaseModel):
     # 전체 교체 — 주면 위 병합 필드는 무시되고 보고서를 이 페이지들로 다시 만든다.
     # 각 항목 {name?, blocks?, extra_blocks?, block_sections?}.
     pages: Optional[list[dict]] = None
+    # ── 메타데이터(선택) — None 이면 해당 항목 유지. 내용 병합/교체와 독립적으로
+    #    적용된다(메타만 바꾸려면 blocks 없이 메타 필드만 줘도 됨). ───────────────
+    report_date: Optional[date] = None
+    tags: Optional[list[str]] = None
+    report_type_id: Optional[int] = None
+    # 빈 리스트([])면 모든 엔티티 태그 제거, None 이면 유지.
+    entity_ids: Optional[list[int]] = None

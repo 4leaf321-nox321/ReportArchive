@@ -538,7 +538,11 @@ def _merge_ai_page(
 def create_ai_draft(
     payload: AiDraftCreate,
     db: Session = Depends(get_db),
-    actor: CurrentUser = Depends(require_writer),
+    # 초안은 작성자 **개인 공간**에 생성되므로 활성 보드 쓰기 권한과 무관 —
+    # 공유/공개로 읽기만 가능한 보드를 보고 있어도 AI 작성이 가능해야 한다.
+    # (require_writer 는 활성 보드를 게이트해 public_viewer 를 막아 버렸음.)
+    # 가상 워크스페이스(_global)는 아래 본문에서 별도로 거절한다.
+    actor: CurrentUser = Depends(get_current_user),
 ):
     """AI(Claude)가 만든 느슨한 블록을 받아 정규화·검증 후 **초안**으로 생성. 검증
     실패 시 블록별 에러를 400 으로 돌려 AI 가 고쳐 재호출하게 한다."""
@@ -588,6 +592,11 @@ def create_ai_draft(
         template_version=payload.template_version,
         title=payload.title,
         pages=pages,
+        # 메타데이터(선택) — 일반 생성과 동일 경로로 적용. None 은 기본/미설정.
+        report_date=payload.report_date,
+        tags=payload.tags if payload.tags is not None else [],
+        report_type_id=payload.report_type_id,
+        entity_ids=payload.entity_ids,
     )
     # 일반 create_report 와 동일 — 작성자 **개인 공간**에 초안(drafting)으로.
     # (부서 전용 템플릿을 써도, 보고서 렌더는 계정 접근권 기준으로 템플릿을
@@ -655,7 +664,9 @@ def update_ai_draft(
     report_id: int,
     payload: AiDraftUpdate,
     db: Session = Depends(get_db),
-    actor: CurrentUser = Depends(require_writer),
+    # 본인 소유 + drafting 검사는 아래 본문에 있어 활성 보드 쓰기 권한은 불필요 —
+    # 읽기전용 보드를 보고 있어도 본인 초안은 이어서 수정할 수 있어야 한다.
+    actor: CurrentUser = Depends(get_current_user),
 ):
     """AI(Claude)가 **기존 초안**을 이어서 수정. 본인이 만든 `drafting` 상태만
     대상이며, 편집 락 없이(비대화형) 저장한다. 기본은 병합 — 준 블록만 덮어쓰고
@@ -768,6 +779,15 @@ def update_ai_draft(
     upd_kwargs: dict = {"pages": new_pages}
     if payload.title:
         upd_kwargs["title"] = payload.title
+    # 메타데이터(선택) — 준 것만 적용(None 은 유지). entity_ids=[] 는 전체 해제.
+    if payload.report_date is not None:
+        upd_kwargs["report_date"] = payload.report_date
+    if payload.tags is not None:
+        upd_kwargs["tags"] = payload.tags
+    if payload.report_type_id is not None:
+        upd_kwargs["report_type_id"] = payload.report_type_id
+    if payload.entity_ids is not None:
+        upd_kwargs["entity_ids"] = payload.entity_ids
     try:
         report = services.update_report(
             db,

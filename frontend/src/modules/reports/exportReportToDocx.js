@@ -38,8 +38,15 @@ import { apiClient } from '@/shared/api/client'
 import { COLOR_TOKENS } from '@/shared/text-color'
 // rt-c-{token} 클래스(현재 색 저장 형식) → 라이트모드 hex(swatch). DOCX 는
 // 문서(밝은 배경)라 라이트 hex 가 적절. walkInline 이 클래스 색을 이걸로 매핑.
+// `기본`(no-color) 토큰은 token=null·swatch=null 이라 매핑에서 제외해야 한다 —
+// 안 그러면 swatch.replace(...) 가 모듈 로드 시 throw 해서 dynamic import 자체가
+// 실패한다(증상: "Word 저장 실패: Cannot read properties of null"). PPTX
+// 익스포터와 동일한 필터.
 const _TOKEN_HEX = Object.fromEntries(
-  COLOR_TOKENS.map((t) => [t.token, t.swatch.replace('#', '').toUpperCase()]),
+  COLOR_TOKENS.filter((t) => t.token && t.swatch).map((t) => [
+    t.token,
+    t.swatch.replace('#', '').toUpperCase(),
+  ]),
 )
 // Post-process docx-js`s output to remove the always-empty `comments`
 // part that triggers Word`s "복구하겠습니까?" recovery dialog on every

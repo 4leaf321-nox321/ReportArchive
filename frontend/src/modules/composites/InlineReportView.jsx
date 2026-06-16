@@ -348,10 +348,17 @@ function combinedBlocks(schema, page) {
       seen.add(id)
     }
   }
-  // Fall back to anything not listed in `order` (defensive — keeps
-  // newly-added blocks visible even if blocks_order wasn't updated
-  // alongside an extra-block addition).
-  for (const b of [...tplBlocks, ...extras]) {
+  // Fall back to EXTRA blocks not listed in `order` (defensive — keeps
+  // newly-added widgets visible even if blocks_order wasn't updated
+  // alongside an extra-block addition). Template blocks are intentionally
+  // NOT resurrected here: when `order` is present it is the source of
+  // truth for which template blocks render, and AI authoring deliberately
+  // omits unfilled template blocks from it (routes._build_ai_page →
+  // blocks_order = filled_tpl_ids + extras). Re-adding them would surface
+  // empty rich_text blocks whose caption auto-fills to the template label
+  // ("내용") as a stray title row — a divergence from ReportDetailPage,
+  // which renders only `order` blocks. So mirror that exactly.
+  for (const b of extras) {
     if (!seen.has(b.id)) {
       out.push(b)
       seen.add(b.id)

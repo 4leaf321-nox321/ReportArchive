@@ -13,6 +13,7 @@ Phase 1 endpoints:
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -55,12 +56,39 @@ def list_mounts(
     metadata anyone with the report id already saw to ask the question.
     """
     rows = services.list_mounts_for_report(db, report_id)
+    # 표시용 이름 일괄 조회 — 게시판(Workspace) + 폴더(Folder).
+    from app.modules.folders.models import Folder
+    from app.modules.workspaces.models import Workspace
+
+    ws_names = {
+        slug: name
+        for slug, name in db.execute(
+            select(Workspace.slug, Workspace.name).where(
+                Workspace.slug.in_([r.workspace_slug for r in rows] or [""])
+            )
+        ).all()
+    }
+    folder_ids = [r.folder_id for r in rows if r.folder_id is not None]
+    folder_names = (
+        {
+            fid: name
+            for fid, name in db.execute(
+                select(Folder.id, Folder.name).where(Folder.id.in_(folder_ids))
+            ).all()
+        }
+        if folder_ids
+        else {}
+    )
     items = []
     for r in rows:
         mr = MountRead.model_validate(r)
         # 현재 사용자가 이 게시판에서 직접 게시취소 가능한지(매니저/시스템관리자).
         mr.can_unmount = services._can_unmount_board(
             db, actor.user.id, r.workspace_slug
+        )
+        mr.workspace_name = ws_names.get(r.workspace_slug)
+        mr.folder_name = (
+            folder_names.get(r.folder_id) if r.folder_id is not None else None
         )
         items.append(mr)
     payload = MountListResponse(items=items)

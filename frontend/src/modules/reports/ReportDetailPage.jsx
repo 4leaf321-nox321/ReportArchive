@@ -230,6 +230,8 @@ export default function ReportDetailPage() {
   const [folderPickOpen, setFolderPickOpen] = useState(false)
   const [activityOpen, setActivityOpen] = useState(false)
   const [versionsOpen, setVersionsOpen] = useState(false)
+  // "더보기 > 게시 위치" — 이 보고서가 게시된 게시판·폴더 목록 보기.
+  const [mountsInfoOpen, setMountsInfoOpen] = useState(false)
   // 부서 홈 고정(핀) — org 게시판 매니저만. 현재 부서(slug)에 이 보고서가
   // 고정돼 있는지. 신규/개인 컨텍스트엔 없음.
   const canPinToBoard =
@@ -3753,6 +3755,10 @@ export default function ReportDetailPage() {
                   <Network className="mr-2 h-3.5 w-3.5" />
                   관계도
                 </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setMountsInfoOpen(true)}>
+                  <Layers className="mr-2 h-3.5 w-3.5" />
+                  게시 위치 (게시판 · 폴더)
+                </DropdownMenuItem>
                 {canPinToBoard && (
                   <DropdownMenuItem onSelect={handleToggleBoardPin}>
                     {pinnedToBoard ? (
@@ -4348,6 +4354,63 @@ export default function ReportDetailPage() {
           canEdit={existingReport.can_edit !== false}
           onRestored={reloadReport}
         />
+      )}
+      {/* 게시 위치 — 이 보고서가 게시(mount)된 게시판·폴더 목록(읽기 전용). */}
+      {existingReport?.id && (
+        <Dialog open={mountsInfoOpen} onOpenChange={setMountsInfoOpen}>
+          <DialogContent className="max-w-md max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>게시 위치</DialogTitle>
+              <DialogDescription>
+                이 보고서가 게시된 게시판과 그 게시판에서의 폴더입니다.
+              </DialogDescription>
+            </DialogHeader>
+            {(() => {
+              const list = Object.values(mountByWorkspace ?? {})
+              if (list.length === 0) {
+                return (
+                  <p className="py-6 text-center text-sm text-muted-foreground">
+                    아직 어느 게시판에도 게시되지 않았습니다.
+                  </p>
+                )
+              }
+              return (
+                <ul className="divide-y rounded-md border text-sm">
+                  {list.map((m) => (
+                    <li key={m.workspace_slug}>
+                      <button
+                        type="button"
+                        title="이 게시판 · 폴더로 이동"
+                        onClick={() => {
+                          setMountsInfoOpen(false)
+                          navigate(`/w/${m.workspace_slug}/reports`, {
+                            state: {
+                              listFolderId:
+                                m.folder_id != null
+                                  ? m.folder_id
+                                  : FOLDER_FILTER_UNCATEGORIZED,
+                            },
+                          })
+                        }}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted"
+                      >
+                        <Layers className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="truncate font-medium">
+                          {m.workspace_name || m.workspace_slug}
+                        </span>
+                        <span className="shrink-0 text-muted-foreground">/</span>
+                        <span className="truncate text-muted-foreground">
+                          {m.folder_name || '미분류'}
+                        </span>
+                        <ChevronRight className="ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )
+            })()}
+          </DialogContent>
+        </Dialog>
       )}
       {/* 공유 — "더보기 > 공유"로 여는 controlled Dialog. ShareEditor 는
           Dialog/Popover 양쪽 재사용용 알맹이. active 가 true 일 때 로드. */}

@@ -391,19 +391,41 @@ function MilestoneTimeline({ items, startDate, endDate, fontSizePx = 12 }) {
     // Avoid 0-width axes when every item is on the same date — give
     // each item its own evenly-spaced slot.
     const sameDay = min === max
-    const points = dated.map((it, i) => ({
-      ...it,
-      pct: sameDay
-        ? dated.length === 1
-          ? 50
-          : (i / (dated.length - 1)) * 100
-        : ((it._t - min) / (max - min)) * 100,
-      // Alternate above/below to avoid label collisions when timestamps
-      // crowd together.
-      above: i % 2 === 0,
-    }))
+    // 같은 날짜(동일 pct) 묶음은 위/아래로 번갈아 두고, 같은 쪽이 둘 이상이면
+    // 레인(lane)을 올려 세로로 쌓는다 — 안 그러면 글자가 한 점에 겹친다.
+    const clusterSize = new Map()
+    for (const it of dated) {
+      clusterSize.set(it._t, (clusterSize.get(it._t) || 0) + 1)
+    }
+    const clusterPos = new Map()
+    let maxLane = 0
+    const points = dated.map((it, i) => {
+      let pct
+      let above
+      let lane = 0
+      if (sameDay) {
+        // 모두 같은 날짜면 가로로 고르게 펼쳐 겹침이 없다.
+        pct = dated.length === 1 ? 50 : (i / (dated.length - 1)) * 100
+        above = i % 2 === 0
+      } else {
+        pct = ((it._t - min) / (max - min)) * 100
+        const size = clusterSize.get(it._t)
+        const pos = clusterPos.get(it._t) ?? 0
+        clusterPos.set(it._t, pos + 1)
+        if (size > 1) {
+          // 같은 날짜 묶음: 짝수=위/홀수=아래, 같은 쪽 N번째는 lane N.
+          above = pos % 2 === 0
+          lane = Math.floor(pos / 2)
+        } else {
+          above = i % 2 === 0
+        }
+      }
+      if (lane > maxLane) maxLane = lane
+      return { ...it, pct, above, lane }
+    })
     return {
       points,
+      maxLane,
       spanLabel: sameDay
         ? formatDate(min)
         : `${formatDate(min)} → ${formatDate(max)}`,
@@ -440,9 +462,15 @@ function MilestoneTimeline({ items, startDate, endDate, fontSizePx = 12 }) {
     const lines = Math.max(1, Math.ceil(longest / 10))
     return 16 * lines + 14 + (hasAnyNote ? 14 : 0)
   }, [layout.points])
+  // 같은 날짜 스택용 레인 간격. 각 레인은 라벨 한 블록만큼 더 띄운다.
+  const LANE_GAP = 6
+  const laneStep = labelBlockHeight + LANE_GAP
+  const maxLane = layout.maxLane ?? 0
+  // 라벨 기본 오프셋(축~첫 라벨, bottom-6 = 24px)과 레인 단계.
+  const LABEL_BASE_OFFSET = 24
   // Total component height = label band above + axis line + label band
-  // below + a little padding for connectors.
-  const trackHeight = labelBlockHeight * 2 + 24
+  // below + a little padding for connectors. 레인이 있으면 그만큼 양쪽으로 더.
+  const trackHeight = labelBlockHeight * 2 + 24 + 2 * maxLane * laneStep
 
   return (
     <div className="select-none">
@@ -480,6 +508,8 @@ function MilestoneTimeline({ items, startDate, endDate, fontSizePx = 12 }) {
           {layout.points.map((p) => {
             const st = statusOf(p)
             const StatusIcon = st.Icon
+            // 축~라벨 거리(레인만큼 더 띄움). 연결선은 마커 바로 밖에서 라벨까지.
+            const labelOffset = LABEL_BASE_OFFSET + p.lane * laneStep
             return (
               <div
                 key={p._idx}
@@ -488,12 +518,11 @@ function MilestoneTimeline({ items, startDate, endDate, fontSizePx = 12 }) {
               >
                 {/* Connector line from marker to its label */}
                 <div
-                  className={`absolute left-1/2 -translate-x-1/2 w-px ${
-                    p.above ? 'bottom-3' : 'top-3'
-                  }`}
+                  className="absolute left-1/2 -translate-x-1/2 w-px"
                   style={{
                     backgroundColor: `${st.color}66`,
-                    height: '1.25rem',
+                    height: Math.max(8, labelOffset - 9),
+                    ...(p.above ? { bottom: 9 } : { top: 9 }),
                   }}
                 />
                 {/* Marker — solid color fill. */}
@@ -521,10 +550,13 @@ function MilestoneTimeline({ items, startDate, endDate, fontSizePx = 12 }) {
                     capped so adjacent markers don't fight for the same
                     horizontal space. */}
                 <div
-                  className={`absolute left-1/2 -translate-x-1/2 text-center leading-tight ${
-                    p.above ? 'bottom-6' : 'top-6'
-                  }`}
-                  style={{ width: 120 }}
+                  className="absolute left-1/2 -translate-x-1/2 text-center leading-tight"
+                  style={{
+                    width: 120,
+                    ...(p.above
+                      ? { bottom: labelOffset }
+                      : { top: labelOffset }),
+                  }}
                 >
                   <div
                     className="font-medium"

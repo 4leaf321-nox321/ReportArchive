@@ -183,6 +183,30 @@ export function useAnnotationInteractions({ store, adapter, readOnly }) {
     [readOnly],
   )
 
+  // 라벨 위치 드래그 — annotation 본체가 아니라 라벨만 옮긴다(label.offset).
+  const onLabelPointerDown = useCallback(
+    (annotation, e) => {
+      if (readOnly || annotation.locked) return
+      if (!annotation.label?.text) return // 라벨 없으면 드래그 대상 아님
+      e.stopPropagation()
+      const svg = e.currentTarget?.ownerSVGElement
+      if (!svg) return
+      const pt = pointerToSvg(e, svg)
+      if (!pt) return
+      dragRef.current = {
+        mode: 'label',
+        id: annotation.id,
+        startOffset: annotation.label?.offset ?? { dx: 0, dy: 0 },
+        startPx: pt,
+        svg,
+        moved: false,
+        additive: e.shiftKey,
+      }
+      e.currentTarget.setPointerCapture?.(e.pointerId)
+    },
+    [readOnly],
+  )
+
   useEffect(() => {
     function move(e) {
       const d = dragRef.current
@@ -193,9 +217,19 @@ export function useAnnotationInteractions({ store, adapter, readOnly }) {
       const dy = pt.y - d.startPx.y
       if (!d.moved && Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD_PX) return
       d.moved = true
-      const adapt = adapterRef.current
       const s = storeRef.current
-      if (!adapt || !s) return
+      if (!s) return
+      // 라벨 드래그 — geometry 가 아니라 offset 만 갱신(adapter 불필요).
+      if (d.mode === 'label') {
+        s.moveLabelOffset(
+          d.id,
+          { dx: d.startOffset.dx + dx, dy: d.startOffset.dy + dy },
+          { coalesce: true },
+        )
+        return
+      }
+      const adapt = adapterRef.current
+      if (!adapt) return
       // Shift suspends snap-to-nearest so the user can place at the
       // exact pixel — same convention used in most graphics editors.
       const useSnap = !e.shiftKey
@@ -215,8 +249,10 @@ export function useAnnotationInteractions({ store, adapter, readOnly }) {
       const s = storeRef.current
       if (s) {
         if (d.moved) {
-          s.commitNormalized(d.id)
-        } else if (d.mode === 'body') {
+          // 라벨 드래그는 정규화할 geometry 가 없다 — coalesce 시간갭이 history
+          // 를 봉인하므로 별도 commit 불필요. geometry 드래그만 normalize.
+          if (d.mode !== 'label') s.commitNormalized(d.id)
+        } else if (d.mode === 'body' || d.mode === 'label') {
           s.setSelected(d.id, { additive: d.additive })
         }
       }
@@ -263,6 +299,7 @@ export function useAnnotationInteractions({ store, adapter, readOnly }) {
   return {
     onBodyPointerDown,
     onHandlePointerDown,
+    onLabelPointerDown,
     onLabelDoubleClick,
     editingId,
     editingText,

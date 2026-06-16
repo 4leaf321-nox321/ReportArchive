@@ -28,6 +28,10 @@ class MountRead(BaseModel):
     # listing. Same Report can be in different folders on different
     # boards (folder is mount-level, not report-level).
     folder_id: Optional[int] = None
+    # 표시용 이름 — 라우트가 Workspace/Folder 에서 채운다. folder_name 은 미분류면
+    # None. "게시 위치" 보기에서 "게시판명 · 폴더명"으로 렌더.
+    workspace_name: Optional[str] = None
+    folder_name: Optional[str] = None
 
 
 class MountListResponse(BaseModel):

@@ -77,6 +77,15 @@ ANNOTATION_SCHEMA = {
                     "type": "string",
                     "enum": list(_ANNOTATION_LABEL_POSITIONS),
                 },
+                # 라벨 위치 미세조정(드래그) — annotation 기준 픽셀 오프셋.
+                "offset": {
+                    "type": "object",
+                    "properties": {
+                        "dx": {"type": "number"},
+                        "dy": {"type": "number"},
+                    },
+                    "additionalProperties": False,
+                },
             },
             "required": ["text"],
             "additionalProperties": False,
@@ -88,6 +97,8 @@ ANNOTATION_SCHEMA = {
                 "opacity": {"type": "number", "minimum": 0, "maximum": 1},
                 "border": {"type": "string", "enum": list(_ANNOTATION_BORDER_STYLES)},
                 "z": {"type": "string", "enum": list(_ANNOTATION_Z_ORDERS)},
+                # 설명선(leader) — 라벨을 anchor 에서 떨어뜨렸을 때 잇는 연결선.
+                "leader": {"type": "boolean"},
             },
             "additionalProperties": False,
         },

@@ -166,6 +166,30 @@ export function useAnnotationStore({ annotations, onChange }) {
     [update],
   )
 
+  /** 라벨 위치 미세조정(드래그) — annotation 기준 픽셀 오프셋을 설정한다.
+   *  `offset` 은 {dx,dy} 또는 (prev)=>{dx,dy}. 0,0 이면 키를 지운다. 라벨이
+   *  없으면 무시. 드래그 중엔 coalesce 로 한 undo 스텝에 묶인다. */
+  const moveLabelOffset = useCallback(
+    (id, offset, options) => {
+      update(
+        id,
+        (a) => {
+          if (!a.label) return a
+          const cur = a.label.offset ?? { dx: 0, dy: 0 }
+          const nextOff = typeof offset === 'function' ? offset(cur) : offset
+          const dx = Math.round(nextOff?.dx ?? 0)
+          const dy = Math.round(nextOff?.dy ?? 0)
+          const label = { ...a.label }
+          if (dx === 0 && dy === 0) delete label.offset
+          else label.offset = { dx, dy }
+          return { ...a, label }
+        },
+        options,
+      )
+    },
+    [update],
+  )
+
   /** Run normalizeGeometry on a range/rect after a drag finishes so
    *  the inverted "drag from right to left" case lands with from<=to. */
   const commitNormalized = useCallback(
@@ -293,6 +317,7 @@ export function useAnnotationStore({ annotations, onChange }) {
     add,
     update,
     moveGeometry,
+    moveLabelOffset,
     commitNormalized,
     remove,
     removeMany,

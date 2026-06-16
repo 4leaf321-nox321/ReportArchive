@@ -482,6 +482,8 @@ const DRAWERS = {
           anchor="middle"
           selected={selected}
           interactions={interactions}
+          anchorX={px.x}
+          anchorY={px.y}
         />
       </g>
     )
@@ -731,10 +733,43 @@ function AnnotationLabel({
   onClick,
   selected,
   interactions,
+  // 설명선(leader) 시작점 — 도형의 실제 기준점(px). 없으면 라벨 기본 위치에서
+  // 시작. point 처럼 라벨이 도형에서 떨어져 그려지는 타입은 이걸 넘겨 연결선이
+  // 도형(점)에서 바로 나오게 한다.
+  anchorX,
+  anchorY,
 }) {
   const text = annotation.label?.text
   const isEditing = interactions?.editingId === annotation.id
+  // 라벨 위치 미세조정(드래그) — 기본 위치(x/y)에 오프셋을 더해 모든 하위 렌더에
+  // 일괄 반영. labelPositionFor 도 같은 오프셋을 적용해 편집기 오버레이가 일치.
+  const _off = annotation.label?.offset
+  const baseX = x
+  const baseLabelY = y + dy - 8 // 오프셋 적용 전 라벨 위치(설명선 시작점)
+  if (_off) {
+    x += _off.dx || 0
+    y += _off.dy || 0
+  }
   const labelY = y + dy - 8
+  // 설명선(leader) — 라벨을 anchor 에서 떨어뜨렸을 때, 원래 자리와 라벨을 잇는
+  // 가는 점선. style.leader 가 켜지고 오프셋이 있을 때만 그린다.
+  const showLeader =
+    annotation.style?.leader === true &&
+    _off &&
+    ((_off.dx || 0) !== 0 || (_off.dy || 0) !== 0)
+  const leaderLine = showLeader ? (
+    <line
+      x1={Number.isFinite(anchorX) ? anchorX : baseX}
+      y1={Number.isFinite(anchorY) ? anchorY : baseLabelY}
+      x2={x}
+      y2={labelY}
+      stroke={color}
+      strokeWidth={1}
+      strokeDasharray="3,3"
+      opacity={0.75}
+      style={{ pointerEvents: 'none' }}
+    />
+  ) : null
   // While editing, hide the static label entirely. The host renders
   // a DOM-overlay <AnnotationLabelEditor> at this same position
   // (using `labelPositionFor`) — SVG foreignObject editing inside
@@ -821,13 +856,27 @@ function AnnotationLabel({
     if (!interactions?.onLabelDoubleClick) return
     interactions.onLabelDoubleClick(annotation, e)
   }
-  const labelStyle = onClick
-    ? { pointerEvents: 'auto', cursor: 'pointer' }
-    : interactions?.onLabelDoubleClick
-      ? { pointerEvents: 'auto', cursor: 'text' }
-      : undefined
+  // 라벨 드래그로 위치 이동(label.offset). 드래그 가능하면 move 커서.
+  const labelDraggable = !!interactions?.onLabelPointerDown
+  const labelStyle = labelDraggable
+    ? { pointerEvents: 'auto', cursor: 'move' }
+    : onClick
+      ? { pointerEvents: 'auto', cursor: 'pointer' }
+      : interactions?.onLabelDoubleClick
+        ? { pointerEvents: 'auto', cursor: 'text' }
+        : undefined
   return (
-    <g style={labelStyle} onClick={onClick} onDoubleClick={handleDoubleClick}>
+    <g
+      style={labelStyle}
+      onClick={onClick}
+      onDoubleClick={handleDoubleClick}
+      onPointerDown={
+        labelDraggable
+          ? (e) => interactions.onLabelPointerDown(annotation, e)
+          : undefined
+      }
+    >
+      {leaderLine}
       <rect
         x={anchor === 'middle' ? x - approxWidth / 2 : anchor === 'end' ? x - approxWidth : x}
         y={labelY - LABEL_HEIGHT / 2}

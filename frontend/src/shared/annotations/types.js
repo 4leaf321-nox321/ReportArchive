@@ -144,6 +144,10 @@ export function createAnnotation({
   }
   if (label && typeof label.text === 'string' && label.text.length > 0) {
     out.label = { text: label.text, position: label.position ?? 'auto' }
+    // 라벨 위치 미세조정(드래그) — annotation 기준 픽셀 오프셋. 0,0 이면 생략.
+    const dx = Math.round(Number(label.offset?.dx) || 0)
+    const dy = Math.round(Number(label.offset?.dy) || 0)
+    if (dx !== 0 || dy !== 0) out.label.offset = { dx, dy }
   }
   if (style) {
     const pruned = pruneStyle(style)
@@ -165,6 +169,8 @@ function pruneStyle(style) {
   }
   if (BORDER_STYLES.includes(style.border)) out.border = style.border
   if (Z_ORDERS.includes(style.z)) out.z = style.z
+  // 설명선(leader) — 라벨을 떨어뜨렸을 때 anchor 와 잇는 연결선. true 일 때만 보존.
+  if (style.leader === true) out.leader = true
   return out
 }
 

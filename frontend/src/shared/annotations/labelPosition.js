@@ -17,6 +17,17 @@ export function labelPositionFor(annotation, adapter) {
   const px = adapter.toPx(annotation.geometry)
   const bounds = adapter.bounds ?? { x: 0, y: 0, width: 0, height: 0 }
   if (!px) return null
+  // 라벨 위치 미세조정(드래그) — 기본 위치에 픽셀 오프셋을 더한다. 라벨 렌더
+  // (AnnotationLabel)와 동일하게 적용돼 편집기 오버레이·스타일바가 같은 곳에 뜬다.
+  const off = annotation.label?.offset
+  const withOffset = (base) =>
+    base && off
+      ? { ...base, x: base.x + (off.dx || 0), y: base.y + (off.dy || 0) }
+      : base
+  return withOffset(_basePositionFor(annotation, px, bounds))
+}
+
+function _basePositionFor(annotation, px, bounds) {
   switch (annotation.type) {
     case 'vline':
       if (!Number.isFinite(px.x)) return null

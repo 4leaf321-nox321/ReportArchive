@@ -1,4 +1,4 @@
-import { Check, Eye, EyeOff, Trash2 } from 'lucide-react'
+import { Check, Eye, EyeOff, Spline, Trash2 } from 'lucide-react'
 import { labelPositionFor } from './labelPosition'
 
 /**
@@ -46,6 +46,9 @@ export function AnnotationStyleBar({ store, adapter, editingId, onDone }) {
     !isMulti && typeof sampleStyle.opacity === 'number'
       ? sampleStyle.opacity
       : null
+  // 설명선(leader) — 라벨을 anchor 에서 떨어뜨렸을 때 잇는 연결선. 다중선택은
+  // aggregate 반영 없이 false 로 시작(클릭하면 전체 켜짐).
+  const currentLeader = isMulti ? false : sampleStyle.leader === true
   // Visibility toggle reflects the AGGREGATE — only show "hidden"
   // when EVERY selected annotation is hidden. Mixed shows the eye
   // (treated as "make all visible" / "next click hides them all").
@@ -85,6 +88,28 @@ export function AnnotationStyleBar({ store, adapter, editingId, onDone }) {
       })
     }
   }
+  // 설명선(leader) 토글. 켤 때 라벨이 anchor 에 붙어(offset 0) 있으면 살짝 띄워
+  // 연결선이 바로 보이게 한다(callout 기대). 끄면 style.leader 만 제거(offset 유지).
+  function toggleLeader() {
+    const enabling = !currentLeader
+    for (const a of annotations) {
+      store.update(a.id, (cur) => {
+        const style = { ...(cur.style ?? {}) }
+        if (enabling) style.leader = true
+        else delete style.leader
+        const next = { ...cur }
+        if (Object.keys(style).length === 0) delete next.style
+        else next.style = style
+        if (enabling && cur.label?.text) {
+          const off = cur.label.offset
+          const zero = !off || ((off.dx || 0) === 0 && (off.dy || 0) === 0)
+          if (zero) next.label = { ...cur.label, offset: { dx: 36, dy: -28 } }
+        }
+        return next
+      })
+    }
+  }
+
   function toggleHidden() {
     // Aggregate behavior: if any are visible, hide all; otherwise
     // unhide all. Keeps the bar's eye icon meaningful as a toggle.
@@ -244,6 +269,28 @@ export function AnnotationStyleBar({ store, adapter, editingId, onDone }) {
           </button>
         )
       })}
+      <div style={{ width: 1, height: 18, background: '#e5e7eb' }} />
+      {/* ── 설명선(leader): 라벨을 끌어 옮겼을 때 anchor 와 잇는 연결선 ── */}
+      <button
+        type="button"
+        title="설명선 — 켜면 라벨이 떨어져 연결선이 생깁니다(라벨을 끌어 위치 조정)"
+        onClick={toggleLeader}
+        style={{
+          width: 22,
+          height: 18,
+          padding: 0,
+          background: currentLeader ? '#eef2ff' : '#fff',
+          border: currentLeader ? '1px solid #4f46e5' : '1px solid #d1d5db',
+          borderRadius: 3,
+          cursor: 'pointer',
+          color: currentLeader ? '#4f46e5' : '#374151',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <Spline size={12} />
+      </button>
       <div style={{ width: 1, height: 18, background: '#e5e7eb' }} />
       {/* ── Visibility (C5) ─────────────────────────────────────── */}
       <button

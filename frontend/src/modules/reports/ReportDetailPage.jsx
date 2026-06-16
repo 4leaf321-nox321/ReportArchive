@@ -532,10 +532,14 @@ export default function ReportDetailPage() {
         page_slide_ratio: null,
         page_slide_ratio_custom_w: null,
         page_slide_ratio_custom_h: null,
-        // 긴 글 머리 기호 — depth-별 null 이면 프런트 기본 글리프 사용.
-        page_rich_text_prefix_d0: null,
-        page_rich_text_prefix_d1: null,
-        page_rich_text_prefix_d2: null,
+        // 긴 글 머리 기호 — 템플릿 보고서 설정(report_defaults)에서 상속.
+        // depth-별 null 이면 프런트 기본 글리프 사용.
+        page_rich_text_prefix_d0:
+          tplDefaults?.page_rich_text_prefix_d0 ?? null,
+        page_rich_text_prefix_d1:
+          tplDefaults?.page_rich_text_prefix_d1 ?? null,
+        page_rich_text_prefix_d2:
+          tplDefaults?.page_rich_text_prefix_d2 ?? null,
         // 새 보고서는 저장된 보기 모드 없음 → null(개인 전역설정 폴백).
         page_default_view_mode: null,
         report_type_id: null,

@@ -513,7 +513,10 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
   const max = props.max_length
 
   function patchItems(nextItems) {
-    const merged = { caption, items: nextItems }
+    // ...content 보존 — 안 그러면 본문만 바꿔도 caption_skip_autofill(제목 생략),
+    // caption_html/color, note 등 다른 content 필드가 통째로 날아가 제목 생략이
+    // 풀리고 자동 채움이 다시 켜진다(버그).
+    const merged = { ...(content ?? {}), caption, items: nextItems }
     if (!merged.caption) delete merged.caption
     if (!merged.items || merged.items.length === 0) delete merged.items
     onChange(merged)

@@ -477,6 +477,11 @@ export default function TemplateEditorPage() {
         defaultWidthPx={DEFAULT_REPORT_WIDTH_PX}
         currentGapPx={draft.report_defaults?.page_gap_px ?? null}
         defaultGapPx={DEFAULT_REPORT_GAP_PX}
+        currentRichTextPrefixes={[
+          draft.report_defaults?.page_rich_text_prefix_d0 ?? null,
+          draft.report_defaults?.page_rich_text_prefix_d1 ?? null,
+          draft.report_defaults?.page_rich_text_prefix_d2 ?? null,
+        ]}
         onClose={() => setSettingsDialogOpen(false)}
         onApplyWidth={(px) => {
           setDraft((d) => {
@@ -498,6 +503,28 @@ export default function TemplateEditorPage() {
             const next = { ...(d.report_defaults ?? {}) }
             if (px == null) delete next.page_gap_px
             else next.page_gap_px = px
+            return {
+              ...d,
+              report_defaults: Object.keys(next).length === 0 ? null : next,
+            }
+          })
+        }}
+        onApplyRichTextPrefixes={(arr) => {
+          // arr = [d0, d1, d2]. 빈/널은 그 depth 키를 지워 스키마를 최소로 유지
+          // (다이얼로그를 안 연 옛 템플릿이 노이즈를 얻지 않게). 새 보고서가 이
+          // 템플릿으로 생성될 때 page_rich_text_prefix_d0..2 로 상속된다.
+          const safe = Array.isArray(arr) ? arr : [null, null, null]
+          setDraft((d) => {
+            const next = { ...(d.report_defaults ?? {}) }
+            ;[0, 1, 2].forEach((i) => {
+              const key = `page_rich_text_prefix_d${i}`
+              const v =
+                typeof safe[i] === 'string' && safe[i].trim()
+                  ? safe[i].trim()
+                  : null
+              if (v == null) delete next[key]
+              else next[key] = v
+            })
             return {
               ...d,
               report_defaults: Object.keys(next).length === 0 ? null : next,

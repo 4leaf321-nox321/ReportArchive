@@ -267,6 +267,9 @@ const PREFIX_TO_DEPTH = {
   '·': 2,
   '◦': 2,
   '▪': 2,
+  '→': 2, // 화살표 머리표 — 붙여넣기 시 depth 2 로 인식(예: □ > - > →)
+  '▸': 2,
+  '➔': 2,
 }
 
 // --------------------------------------------------------------------------- //
@@ -830,6 +833,10 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
   // it sees current `items` / `onChange`; the keydown listener invokes
   // it through this ref.
   const crossRowDeleteRef = useRef(null)
+  // 크로스-행 선택 중 붙여넣기. 행들이 non-editable 라 native paste 이벤트가
+  // 안 떠서, 문서 keydown 의 Ctrl/Cmd+V 가 clipboard.readText() 로 읽어 이 ref 로
+  // 넘긴다(선택 범위를 지우고 그 자리에 붙여넣은 줄들을 삽입).
+  const crossRowPasteRef = useRef(null)
 
   // ── Outline-level undo/redo ───────────────────────────────────────────
   // Per-row TipTap history is disabled (RichTextRowEditor passes
@@ -1082,6 +1089,28 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
           return
         }
       }
+      // 크로스-행 선택 중 붙여넣기(Ctrl/Cmd+V). 행이 non-editable 라 native
+      // paste 이벤트가 안 뜨므로 keydown 에서 clipboard 를 직접 읽어 처리한다.
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        !e.altKey &&
+        (e.key === 'v' || e.key === 'V' || e.key === 'ㅍ') &&
+        crossRowSelectionRef.current
+      ) {
+        e.preventDefault()
+        e.stopPropagation()
+        if (navigator.clipboard?.readText) {
+          navigator.clipboard
+            .readText()
+            .then((text) => {
+              if (typeof text === 'string' && text.length > 0) {
+                crossRowPasteRef.current?.(text)
+              }
+            })
+            .catch(() => {})
+        }
+        return
+      }
       if (!((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A'))) return
       if (e.shiftKey || e.altKey) return
       const active = document.activeElement
@@ -1311,6 +1340,26 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
     replace(next, { index: idx + 1, caret: 0 })
   }
 
+  /** 여러 줄 텍스트 붙여넣기 → 줄마다 행으로 펼침. 머리표/들여쓰기는 depth 로
+   *  변환(parseMarkdownToItems). 현재 행이 비어 있으면 그 자리를 펼친 행들로
+   *  치환하고, 내용이 있으면 그 다음에 삽입한다. */
+  function pasteRowsAt(idx, text) {
+    const parsed = parseMarkdownToItems(text)
+    if (parsed.length === 0) return
+    const rows = parsed.map((p) => normalizeItem({ depth: p.depth, text: p.text }))
+    const cur = items[idx]
+    const curEmpty = !(cur?.text ?? '').trim()
+    const at = curEmpty ? idx : idx + 1
+    const next = curEmpty
+      ? [...items.slice(0, idx), ...rows, ...items.slice(idx + 1)]
+      : [...items.slice(0, idx + 1), ...rows, ...items.slice(idx + 1)]
+    const lastIdx = at + rows.length - 1
+    replace(next, {
+      index: lastIdx,
+      caret: rows[rows.length - 1]?.text?.length ?? 0,
+    })
+  }
+
   // Cross-row Delete: collapse a captured cross-row selection down to a
   // single row holding (first row before fromOffset) + (last row after
   // toOffset). Used for Ctrl+A → Delete and for selecting across rows by
@@ -1359,6 +1408,65 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
     }
     restoreEditable()
     pendingFocus.current = { index: fromRow, caret: beforeText.length }
+    commitChange(next)
+  }
+
+  // 크로스-행 선택 위에 붙여넣기 — 선택 범위(첫 행 fromOffset ~ 끝 행 toOffset)를
+  // 지우고 그 자리에 붙여넣은 텍스트를 줄별 행으로 넣는다. 선택 앞/뒤에 남는
+  // 잔여 텍스트는 각각 별도 행으로 보존(전체선택이면 잔여가 없어 = 통째 치환).
+  crossRowPasteRef.current = (text) => {
+    const sel = crossRowSelectionRef.current
+    if (!sel) return
+    const { fromRow, fromOffset, toRow, toOffset } = sel
+    if (fromRow < 0 || toRow >= items.length || fromRow > toRow) return
+
+    const firstSplit = inputRefs.current.get(fromRow)?.splitAt?.(fromOffset)
+    const lastSplit = inputRefs.current.get(toRow)?.splitAt?.(toOffset)
+    const beforeHtml = firstSplit?.beforeHtml ?? '<p></p>'
+    const beforeText = firstSplit?.beforeText ?? ''
+    const afterHtml = lastSplit?.afterHtml ?? '<p></p>'
+    const afterText = lastSplit?.afterText ?? ''
+
+    const pasted = parseMarkdownToItems(text).map((p) =>
+      normalizeItem({ depth: p.depth, text: p.text }),
+    )
+    const head =
+      beforeText.trim().length > 0
+        ? [{ ...items[fromRow], html: beforeHtml, text: beforeText }]
+        : []
+    const tail =
+      afterText.trim().length > 0
+        ? [
+            normalizeItem({
+              depth: clamp(items[toRow]?.depth ?? 0, 0, MAX_DEPTH),
+              text: afterText,
+              html: afterHtml,
+            }),
+          ]
+        : []
+
+    let next = [
+      ...items.slice(0, fromRow),
+      ...head,
+      ...pasted,
+      ...tail,
+      ...items.slice(toRow + 1),
+    ]
+    if (next.length === 0) next = [normalizeItem({ depth: 0, text: '' })]
+
+    setCrossRowSelection(null)
+    if (typeof window !== 'undefined') {
+      window.getSelection()?.removeAllRanges?.()
+    }
+    restoreEditable()
+    const focusIdx = Math.max(
+      0,
+      fromRow + head.length + pasted.length - 1,
+    )
+    pendingFocus.current = {
+      index: focusIdx,
+      caret: pasted[pasted.length - 1]?.text?.length ?? 0,
+    }
     commitChange(next)
   }
 
@@ -1455,6 +1563,9 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
           onPatch={(p) => patchRow(i, p)}
           onNewLine={() => insertAfter(i, it.depth)}
           onSplitLine={(split) => splitRowAt(i, split)}
+          // 여러 줄(또는 탭) 텍스트 붙여넣기 → 줄마다 별도 행으로 펼친다.
+          // 머리표(□/-/· 등)·들여쓰기는 depth 로 매핑(parseMarkdownToItems).
+          onPastePlain={(text) => pasteRowsAt(i, text)}
           onDeleteEmpty={() => removeAt(i)}
           onMergeWithPrev={() => mergeWithPrevious(i)}
           // Delete(앞으로 삭제)로 행 끝에서 다음 행을 끌어올림 = 다음 행을 이
@@ -1567,6 +1678,7 @@ function OutlineRow({
   onPatch,
   onNewLine,
   onSplitLine,
+  onPastePlain,
   onDeleteEmpty,
   onMergeWithPrev,
   onMergeWithNext,
@@ -1868,6 +1980,7 @@ function OutlineRow({
             placeholder={placeholder}
             onChange={handleContent}
             onKeyDown={handleKeyDown}
+            onPastePlain={onPastePlain}
             onFocus={onFocus}
             onBlur={onBlur}
             className={`min-w-0 text-sm py-1 [&_p]:leading-[1.4] focus:outline-none ${

@@ -93,10 +93,11 @@ def list_composites(
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
-    # 외부 공개 열람자(비멤버, 읽기전용 진입) — 이 게시판의 공개분만 본다.
-    # 멤버용 트리 스코프를 타면 비공개까지 새므로 별도 경로(보고서와 동형).
+    # 비멤버(읽기전용 진입) — 보고서 목록과 동일하게 grant 로 볼 수 있는 분만.
+    # 전체공개분은 is_public 뱃지, 부서/게시판 공유분은 일반 표시. 멤버용 트리
+    # 스코프를 타면 비공개까지 새므로 별도 경로(보고서와 동형).
     if actor.public_viewer:
-        items = services.list_public_composites_on_board(db, actor.workspace.slug)
+        items = services.list_visible_composites_on_board(db, actor)
     else:
         items = services.list_in_workspace_tree(
             db, actor.workspace.slug, is_global_view=actor.workspace.virtual

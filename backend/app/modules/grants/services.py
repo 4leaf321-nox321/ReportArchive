@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.modules.grants.models import (
     BoardGrant,
+    CompositeDefaultGrant,
     ContentGrant,
     FolderGrant,
     GrantContentType,
@@ -469,11 +470,34 @@ def user_has_container_grant_on_board(
             FolderGrant.principal_ref.in_(reach),
         ),
     )
-    return (
+    if (
         db.execute(
             select(FolderGrant.id)
             .join(Folder, Folder.id == FolderGrant.folder_id)
             .where(Folder.workspace_slug == workspace_slug, folder_match)
+            .limit(1)
+        ).first()
+        is not None
+    ):
+        return True
+    # 종합보고 워크스페이스 기본 공유가 이 사용자에게 도달 → 종합보고 브라우즈 진입.
+    default_match = or_(
+        and_(
+            CompositeDefaultGrant.principal_type == GrantPrincipalType.user,
+            CompositeDefaultGrant.principal_ref == uid,
+        ),
+        and_(
+            CompositeDefaultGrant.principal_type == GrantPrincipalType.workspace,
+            CompositeDefaultGrant.principal_ref.in_(reach),
+        ),
+    )
+    return (
+        db.execute(
+            select(CompositeDefaultGrant.id)
+            .where(
+                CompositeDefaultGrant.workspace_slug == workspace_slug,
+                default_match,
+            )
             .limit(1)
         ).first()
         is not None
@@ -542,7 +566,12 @@ def can_view(
             return True
         if has_user_grant(db, content_type, content_id, actor.user.id):
             return True
-        return _container_view_reaches(
+        if _container_view_reaches(
+            db, content_type, content_id, actor, include_all_org=True
+        ):
+            return True
+        # 종합보고 워크스페이스 기본 공유(home 부서에 건 default) 경유.
+        return _composite_default_view_reaches(
             db, content_type, content_id, actor, include_all_org=True
         )
     if owner_user_id is not None and owner_user_id == actor.user.id:
@@ -560,7 +589,12 @@ def can_view(
     ):
         return True
     # 게시판/폴더 통째 공유 경유.
-    return _container_view_reaches(
+    if _container_view_reaches(
+        db, content_type, content_id, actor, include_all_org=True
+    ):
+        return True
+    # 종합보고 워크스페이스 기본 공유 경유.
+    return _composite_default_view_reaches(
         db, content_type, content_id, actor, include_all_org=True
     )
 
@@ -629,6 +663,9 @@ def can_edit_grant(
         return True
     # 게시판/폴더 통째 공유의 편집 권한.
     if _container_edit_reaches(db, content_type, content_id, user.id):
+        return True
+    # 종합보고 워크스페이스 기본 공유의 편집 권한.
+    if _composite_default_edit_reaches(db, content_type, content_id, user.id):
         return True
     # 게시판 매니저 편집(작성자+게시판 매니저 정책).
     return _manager_edit_reaches(db, content_type, content_id, user.id)
@@ -877,6 +914,197 @@ def delete_board_grant(db: Session, grant: BoardGrant) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 종합보고 워크스페이스 기본 공유(CompositeDefaultGrant) CRUD + 도달성              #
+#   /api/workspaces/{slug}/composite-default-shares                            #
+#   BoardGrant 와 동형이되 *종합보고(home=이 워크스페이스)에만* 적용.              #
+# --------------------------------------------------------------------------- #
+def list_composite_default_grants(
+    db: Session, workspace_slug: str
+) -> list[CompositeDefaultGrant]:
+    return list(
+        db.execute(
+            select(CompositeDefaultGrant)
+            .where(CompositeDefaultGrant.workspace_slug == workspace_slug)
+            .order_by(CompositeDefaultGrant.id)
+        ).scalars()
+    )
+
+
+def _find_composite_default_grant(
+    db: Session,
+    workspace_slug: str,
+    principal_type: GrantPrincipalType,
+    principal_ref: Optional[str],
+) -> Optional[CompositeDefaultGrant]:
+    q = select(CompositeDefaultGrant).where(
+        CompositeDefaultGrant.workspace_slug == workspace_slug,
+        CompositeDefaultGrant.principal_type == principal_type,
+    )
+    if principal_type == GrantPrincipalType.all_org:
+        q = q.where(CompositeDefaultGrant.principal_ref.is_(None))
+    else:
+        q = q.where(CompositeDefaultGrant.principal_ref == principal_ref)
+    return db.execute(q.limit(1)).scalar_one_or_none()
+
+
+def upsert_composite_default_grant(
+    db: Session,
+    workspace_slug: str,
+    principal_type: GrantPrincipalType,
+    principal_ref: Optional[str],
+    level: GrantLevel,
+    *,
+    created_by_user_id: Optional[int] = None,
+) -> CompositeDefaultGrant:
+    if principal_type == GrantPrincipalType.all_org:
+        principal_ref = None
+        level = GrantLevel.view
+    existing = _find_composite_default_grant(
+        db, workspace_slug, principal_type, principal_ref
+    )
+    if existing is not None:
+        existing.level = level
+        db.flush()
+        return existing
+    grant = CompositeDefaultGrant(
+        workspace_slug=workspace_slug,
+        principal_type=principal_type,
+        principal_ref=principal_ref,
+        level=level,
+        created_by_user_id=created_by_user_id,
+    )
+    db.add(grant)
+    db.flush()
+    return grant
+
+
+def delete_composite_default_grant(
+    db: Session, grant: CompositeDefaultGrant
+) -> None:
+    db.delete(grant)
+    db.flush()
+
+
+def _composite_default_view_reaches(
+    db: Session,
+    content_type: GrantContentType,
+    content_id: int,
+    actor,
+    *,
+    include_all_org: bool,
+) -> bool:
+    """이 종합보고의 home 워크스페이스에 걸린 기본 공유(CompositeDefaultGrant)가
+    actor 에게 (열람) 도달하나. 종합보고 외 타입은 항상 False. 부서 grant 하위
+    상속(BoardGrant 와 동일 규칙: _actor_view_reach)."""
+    if content_type != GrantContentType.composite:
+        return False
+    slugs = _content_board_slugs(db, content_type, content_id)  # [home_slug]
+    if not slugs:
+        return False
+    reach = _actor_view_reach(db, actor)
+    clauses = [
+        and_(
+            CompositeDefaultGrant.principal_type == GrantPrincipalType.user,
+            CompositeDefaultGrant.principal_ref == str(actor.user.id),
+        ),
+        and_(
+            CompositeDefaultGrant.principal_type == GrantPrincipalType.workspace,
+            CompositeDefaultGrant.principal_ref.in_(reach or {""}),
+        ),
+    ]
+    if include_all_org:
+        clauses.append(
+            CompositeDefaultGrant.principal_type == GrantPrincipalType.all_org
+        )
+    return (
+        db.execute(
+            select(CompositeDefaultGrant.id)
+            .where(
+                CompositeDefaultGrant.workspace_slug.in_(slugs), or_(*clauses)
+            )
+            .limit(1)
+        ).first()
+        is not None
+    )
+
+
+def _composite_default_edit_reaches(
+    db: Session, content_type: GrantContentType, content_id: int, user_id: int
+) -> bool:
+    """기본 공유 edit grant 가 user 에게 도달하나(부서 하위 멤버십 기반)."""
+    if content_type != GrantContentType.composite:
+        return False
+    slugs = _content_board_slugs(db, content_type, content_id)
+    if not slugs:
+        return False
+    rows = db.execute(
+        select(
+            CompositeDefaultGrant.principal_type, CompositeDefaultGrant.principal_ref
+        ).where(
+            CompositeDefaultGrant.workspace_slug.in_(slugs),
+            CompositeDefaultGrant.level == GrantLevel.edit,
+        )
+    ).all()
+    if not rows:
+        return False
+    member_slugs = None
+    from app.modules.workspaces import services as ws_services
+
+    for ptype, pref in rows:
+        if ptype == GrantPrincipalType.user and pref == str(user_id):
+            return True
+        if ptype == GrantPrincipalType.workspace and pref:
+            if member_slugs is None:
+                member_slugs = _user_membership_slugs(db, user_id)
+            if member_slugs & set(ws_services.get_descendants_inclusive(db, pref)):
+                return True
+    return False
+
+
+def _composite_default_reachable_slugs(
+    db: Session, reach: set[str], user_id: int
+) -> set[str]:
+    """기본 공유가 (열람) 도달하는 워크스페이스 slug 집합 — 그 워크스페이스가 home
+    인 종합보고가 보인다. visible_ids 대량 판정용."""
+    return set(
+        db.execute(
+            select(CompositeDefaultGrant.workspace_slug).where(
+                or_(
+                    CompositeDefaultGrant.principal_type
+                    == GrantPrincipalType.all_org,
+                    and_(
+                        CompositeDefaultGrant.principal_type
+                        == GrantPrincipalType.user,
+                        CompositeDefaultGrant.principal_ref == str(user_id),
+                    ),
+                    and_(
+                        CompositeDefaultGrant.principal_type
+                        == GrantPrincipalType.workspace,
+                        CompositeDefaultGrant.principal_ref.in_(reach or {""}),
+                    ),
+                )
+            )
+        ).scalars()
+    )
+
+
+def composite_default_has_all_org(db: Session, workspace_slug: str) -> bool:
+    """이 워크스페이스에 종합보고 기본 전체공개(all_org) 가 걸려 있나 — 비멤버
+    읽기전용 진입 판정(auth)·공개분 판정에 쓴다."""
+    return (
+        db.execute(
+            select(CompositeDefaultGrant.id)
+            .where(
+                CompositeDefaultGrant.workspace_slug == workspace_slug,
+                CompositeDefaultGrant.principal_type == GrantPrincipalType.all_org,
+            )
+            .limit(1)
+        ).first()
+        is not None
+    )
+
+
+# --------------------------------------------------------------------------- #
 # 폴더(folder) grant CRUD — /api/folders/{id}/shares
 # --------------------------------------------------------------------------- #
 def list_folder_grants(db: Session, folder_id: int) -> list[FolderGrant]:
@@ -1119,6 +1347,13 @@ def visible_ids(
     if content_type == GrantContentType.report:
         ids |= _report_ids_in_folders(
             db, _folders_view_reachable_ids(db, anc, actor.user.id)
+        )
+    # 종합보고 워크스페이스 기본 공유 → 그 워크스페이스가 home 인 종합보고.
+    if content_type == GrantContentType.composite:
+        ids |= _content_ids_on_boards(
+            db,
+            content_type,
+            _composite_default_reachable_slugs(db, anc, actor.user.id),
         )
     return ids
 

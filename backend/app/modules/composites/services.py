@@ -147,6 +147,26 @@ def list_public_composites_on_board(
     return list(db.execute(q).scalars())
 
 
+def list_visible_composites_on_board(
+    db: Session, actor
+) -> list[CompositeReport]:
+    """비멤버(public_viewer)용 — 이 게시판(home board)의 종합보고 중 actor 가 볼
+    수 있는 것. 보고서 list_visible_reports_on_board 와 동형: grant 기반(전체공개
+    ∪ 사용자/게시판/폴더 grant, 멤버십 기반)으로 좁힌 visible_ids 와 home board
+    교집합. list_public_composites_on_board(공개분만)의 일반화 — 공유받은 부서가
+    종합보고를 브라우즈할 수 있게 한다(소유·자동 grant 제외, can_view 와 일치)."""
+    visible = grant_services.visible_ids(db, actor, GrantContentType.composite)
+    if visible is not None and not visible:
+        return []
+    q = select(CompositeReport).where(
+        CompositeReport.workspace_slug == actor.workspace.slug
+    )
+    if visible is not None:
+        q = q.where(CompositeReport.id.in_(visible))
+    q = q.order_by(desc(CompositeReport.updated_at))
+    return list(db.execute(q).scalars())
+
+
 def _validate_refs(
     db: Session,
     items: Iterable[CompositeItemPayload],

@@ -104,6 +104,31 @@ def test_mount_grant_alone_does_not_leak_to_nonmember():
         db.close()
 
 
+def test_composite_auto_workspace_grant_does_not_leak_to_nonmember():
+    """종합보고 생성 시 붙는 자동 workspace(home) view grant 만으론 하위부서 비멤버가
+    그 종합보고를 보면 안 된다(보고서 mount grant 와 동일 규칙). 명시적 게시판/폴더/
+    사용자/전체공개 공유라야 비멤버에게 보인다."""
+    db = SessionLocal()
+    CCT = GrantContentType.composite
+    CID = 999_700_001
+    try:
+        part_uid = _ensure_user("cleak-part@test.local", PART_WS)
+        db.query(ContentGrant).filter_by(content_type=CCT, content_id=CID).delete()
+        db.commit()
+        # 생성 자동 grant 와 동일: home(dev) workspace view content grant.
+        gs.upsert_grant(
+            db, CCT, CID, GrantPrincipalType.workspace, GROUP_WS, GrantLevel.view
+        )
+        db.commit()
+        part = _Actor(part_uid)  # dev-hw 멤버가 dev 를 비멤버로 열람
+        assert not gs.can_view(db, part, CCT, CID, None)
+        assert CID not in gs.visible_ids(db, part, CCT)
+    finally:
+        db.query(ContentGrant).filter_by(content_type=CCT, content_id=CID).delete()
+        db.commit()
+        db.close()
+
+
 def test_board_grant_admits_subdept_browse_but_not_outsider():
     """게시판/부서 단위 공유가 있어야 비멤버가 그 게시판을 *브라우즈* 진입.
     하위부서 멤버는 진입 허용, 무소속 외부인은 불가(버그1 수정)."""

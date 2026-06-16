@@ -66,14 +66,58 @@ export async function removeFolderShare(folderId, grantId) {
   return extractData(res)
 }
 
-/** 모드(folderId > boardSlug > contentType/contentId)에 맞는 list/add/remove 를
- *  묶어 돌려준다. ShareEditor·SharePopover 가 공통으로 쓴다. */
-export function shareApi({ contentType, contentId, boardSlug, folderId }) {
+/** 종합보고 워크스페이스 기본 공유 — 이 부서가 home 인 종합보고가 대상에게
+ *  기본으로 보임(라이브 상속). 추가/삭제는 게시판 매니저 + 시스템관리자. */
+export async function listCompositeDefaultShares(slug) {
+  const res = await apiClient.get(
+    `/api/workspaces/${slug}/composite-default-shares`,
+  )
+  return extractData(res) ?? []
+}
+
+export async function addCompositeDefaultShare(
+  slug,
+  { principalType, principalRef, level },
+) {
+  const res = await apiClient.post(
+    `/api/workspaces/${slug}/composite-default-shares`,
+    {
+      principal_type: principalType,
+      principal_ref: principalRef ?? null,
+      level: level ?? 'view',
+    },
+  )
+  return extractData(res)
+}
+
+export async function removeCompositeDefaultShare(slug, grantId) {
+  const res = await apiClient.delete(
+    `/api/workspaces/${slug}/composite-default-shares/${grantId}`,
+  )
+  return extractData(res)
+}
+
+/** 모드(folderId > compositeDefaultSlug > boardSlug > contentType/contentId)에
+ *  맞는 list/add/remove 를 묶어 돌려준다. ShareEditor·SharePopover 가 공통으로 쓴다. */
+export function shareApi({
+  contentType,
+  contentId,
+  boardSlug,
+  folderId,
+  compositeDefaultSlug,
+}) {
   if (folderId) {
     return {
       list: () => listFolderShares(folderId),
       add: (p) => addFolderShare(folderId, p),
       remove: (g) => removeFolderShare(folderId, g),
+    }
+  }
+  if (compositeDefaultSlug) {
+    return {
+      list: () => listCompositeDefaultShares(compositeDefaultSlug),
+      add: (p) => addCompositeDefaultShare(compositeDefaultSlug, p),
+      remove: (g) => removeCompositeDefaultShare(compositeDefaultSlug, g),
     }
   }
   if (boardSlug) {

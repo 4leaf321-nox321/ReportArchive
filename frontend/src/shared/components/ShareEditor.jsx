@@ -61,6 +61,7 @@ export function ShareEditor({
   ownerUserId,
   boardSlug,
   folderId,
+  compositeDefaultSlug,
   canManage: canManageProp,
   active = true,
   onChanged,
@@ -76,8 +77,15 @@ export function ShareEditor({
         me?.is_system_admin === true
 
   const api = React.useMemo(
-    () => shareApi({ contentType, contentId, boardSlug, folderId }),
-    [contentType, contentId, boardSlug, folderId],
+    () =>
+      shareApi({
+        contentType,
+        contentId,
+        boardSlug,
+        folderId,
+        compositeDefaultSlug,
+      }),
+    [contentType, contentId, boardSlug, folderId, compositeDefaultSlug],
   )
 
   const [grants, setGrantsRaw] = React.useState([])

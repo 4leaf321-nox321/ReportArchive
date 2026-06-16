@@ -16,6 +16,7 @@ import {
 } from '@/shared/components/PeriodFilterControls'
 import { dateInPeriodRange, formatRangeLabel } from '@/shared/lib/period'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
+import { useAuth } from '@/shared/auth/AuthContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { listComposites } from '@/shared/api/composites'
 import { NewCompositeDialog } from './NewCompositeDialog'
@@ -30,6 +31,11 @@ import { NewCompositeDialog } from './NewCompositeDialog'
  */
 export default function CompositesListPage() {
   const { slug, workspace, all: workspaces } = useWorkspace()
+  const { me } = useAuth()
+  // 부서 종합보고 기본 공유 — 게시판 매니저 + 시스템관리자만 설정(백엔드와 동일).
+  const canManageDefaults =
+    !workspace?.virtual &&
+    (me?.role === 'manager' || me?.is_system_admin === true)
   const navigate = useNavigate()
   const location = useLocation()
   const [newOpen, setNewOpen] = useState(false)
@@ -103,6 +109,15 @@ export default function CompositesListPage() {
                 year={themeYear}
                 onPrev={() => setThemeYear((y) => y - 1)}
                 onNext={() => setThemeYear((y) => y + 1)}
+              />
+            )}
+            {canManageDefaults && (
+              <SharePopover
+                compositeDefaultSlug={slug}
+                canManage
+                label="부서 기본 공유"
+                onChanged={reload}
+                triggerClassName="rounded-md border px-3 py-2 hover:bg-muted"
               />
             )}
             {!workspace?.virtual && (

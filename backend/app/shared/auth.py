@@ -272,6 +272,10 @@ def _workspace_has_public_content(db: Session, workspace_slug: str) -> bool:
     if folder_public is not None:
         return True
 
+    # 종합보고 기본 전체공개(이 워크스페이스가 home) — 비멤버 입장 허용.
+    if _grant_services().composite_default_has_all_org(db, workspace_slug):
+        return True
+
     has_public_report = db.execute(
         select(ReportMount.report_id)
         .join(

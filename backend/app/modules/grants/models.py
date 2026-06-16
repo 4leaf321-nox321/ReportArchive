@@ -171,3 +171,50 @@ class BoardGrant(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )
+
+
+class CompositeDefaultGrant(Base):
+    """워크스페이스(부서) 단위 *종합보고 기본 공유*. 워크스페이스 W 에 이 grant 를
+    걸면, W 가 home 인 모든 종합보고(기존·신규)가 그 대상에게 보인다 — 라이브 상속
+    (복사 없음, 읽기 시점 합산). 개별 종합보고 공유 위에 '부서 기본값' 한 겹.
+
+    BoardGrant 와 의미·상속 규칙은 같지만(부서는 하위 상속, all_org 는 view 전용),
+    *종합보고에만* 적용된다(보고서 가시성엔 무영향). 그래서 게시판 통째 공유처럼
+    보고서까지 묶지 않고 '종합보고만' 부서에 기본 공개할 수 있다.
+    """
+
+    __tablename__ = "composite_default_grants"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_slug",
+            "principal_type",
+            "principal_ref",
+            name="uq_composite_default_grant_target",
+        ),
+        Index("ix_composite_default_grants_ws", "workspace_slug"),
+        Index(
+            "ix_composite_default_grants_principal",
+            "principal_type",
+            "principal_ref",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_slug: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("workspaces.slug", ondelete="CASCADE"),
+        nullable=False,
+    )
+    principal_type: Mapped[GrantPrincipalType] = mapped_column(
+        Enum(GrantPrincipalType, name="grant_principal_type_enum"), nullable=False
+    )
+    principal_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    level: Mapped[GrantLevel] = mapped_column(
+        Enum(GrantLevel, name="grant_level_enum"), nullable=False
+    )
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )

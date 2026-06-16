@@ -19,6 +19,7 @@ from app.modules.folders.models import Folder, FolderKind
 from app.modules.grants import services as services
 from app.modules.grants.models import (
     BoardGrant,
+    CompositeDefaultGrant,
     ContentGrant,
     FolderGrant,
     GrantContentType,
@@ -334,5 +335,74 @@ def remove_board_share(
     if grant is None or grant.board_slug != slug:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "공유 항목을 찾을 수 없습니다.")
     services.delete_board_grant(db, grant)
+    db.commit()
+    return success_response(data=None, message="Deleted")
+
+
+# --------------------------------------------------------------------------- #
+# 종합보고 워크스페이스 기본 공유 — /api/workspaces/{slug}/composite-default-shares
+#   게시판 공유와 동형(매니저+시스템관리자)이되 *종합보고에만* 적용.
+# --------------------------------------------------------------------------- #
+@router.get("/workspaces/{slug}/composite-default-shares")
+def list_composite_default_shares(
+    slug: str,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_writer),
+):
+    _resolve_board(db, slug)
+    grants = services.list_composite_default_grants(db, slug)
+    return success_response(
+        data=[_to_read(db, g).model_dump(mode="json") for g in grants]
+    )
+
+
+@router.post("/workspaces/{slug}/composite-default-shares")
+def add_composite_default_share(
+    slug: str,
+    payload: GrantCreate,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_writer),
+):
+    _resolve_board(db, slug)
+    _ensure_board_manager(db, actor, slug)
+    if payload.principal_type == GrantPrincipalType.workspace:
+        ws = db.get(Workspace, payload.principal_ref)
+        if ws is None or ws.kind != WorkspaceKind.org:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "조직 부서만 공유 대상이 될 수 있습니다."
+            )
+    elif payload.principal_type == GrantPrincipalType.user:
+        try:
+            uid = int(payload.principal_ref)
+        except (TypeError, ValueError):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "잘못된 사용자 id")
+        if db.get(User, uid) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "사용자를 찾을 수 없습니다.")
+    grant = services.upsert_composite_default_grant(
+        db,
+        slug,
+        payload.principal_type,
+        payload.principal_ref,
+        payload.level,
+        created_by_user_id=actor.user.id,
+    )
+    db.commit()
+    db.refresh(grant)
+    return created_response(data=_to_read(db, grant).model_dump(mode="json"))
+
+
+@router.delete("/workspaces/{slug}/composite-default-shares/{grant_id}")
+def remove_composite_default_share(
+    slug: str,
+    grant_id: int,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_writer),
+):
+    _resolve_board(db, slug)
+    _ensure_board_manager(db, actor, slug)
+    grant = db.get(CompositeDefaultGrant, grant_id)
+    if grant is None or grant.workspace_slug != slug:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "공유 항목을 찾을 수 없습니다.")
+    services.delete_composite_default_grant(db, grant)
     db.commit()
     return success_response(data=None, message="Deleted")

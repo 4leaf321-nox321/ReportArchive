@@ -25,6 +25,7 @@ export function SharePopover({
   ownerUserId,
   boardSlug,
   folderId,
+  compositeDefaultSlug,
   canManage,
   label = '공유',
   compact = false,
@@ -42,8 +43,14 @@ export function SharePopover({
   // initialGrants 가 없으면(상세 등) 뱃지용으로 한 번 조회.
   React.useEffect(() => {
     if (initialGrants !== undefined) return
-    if (!contentId && !boardSlug && !folderId) return
-    const api = shareApi({ contentType, contentId, boardSlug, folderId })
+    if (!contentId && !boardSlug && !folderId && !compositeDefaultSlug) return
+    const api = shareApi({
+      contentType,
+      contentId,
+      boardSlug,
+      folderId,
+      compositeDefaultSlug,
+    })
     let cancelled = false
     api
       .list()
@@ -53,7 +60,7 @@ export function SharePopover({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentType, contentId, boardSlug, folderId])
+  }, [contentType, contentId, boardSlug, folderId, compositeDefaultSlug])
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -95,6 +102,7 @@ export function SharePopover({
           ownerUserId={ownerUserId}
           boardSlug={boardSlug}
           folderId={folderId}
+          compositeDefaultSlug={compositeDefaultSlug}
           canManage={canManage}
           active={open}
           onGrantsChange={setGrants}

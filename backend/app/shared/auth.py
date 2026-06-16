@@ -190,11 +190,18 @@ def get_current_user(
         # 편집/삭제 권한' 정책의 구현 지점.
         if user.is_system_admin:
             role = Role.manager
-        elif _workspace_has_public_content(db, workspace.slug):
-            # 조직 간 공개(Phase 5) — 멤버는 아니지만 이 게시판에 공개 컨텐츠가
-            # 있으면 *읽기전용* 외부 열람자로 진입을 허용한다. role 은 합성
-            # user 지만 public_viewer 플래그가 모든 쓰기·곁다리를 막고 가시성을
-            # 공개분으로 좁힌다. 공개 컨텐츠가 없으면 기존대로 403.
+        elif _workspace_has_public_content(
+            db, workspace.slug
+        ) or _grant_services().user_has_container_grant_on_board(
+            db, user.id, workspace.slug
+        ):
+            # 멤버는 아니지만 *읽기전용* 으로 진입을 허용하는 두 경우:
+            #   1) 이 게시판에 전체공개(all_org) 컨텐츠가 있음(조직 간 공개, Phase 5)
+            #   2) 이 게시판/폴더가 이 사용자(소속 부서 포함)에게 공유됨
+            #      (게시판/폴더 단위 grant) — 공유받은 부서가 목록을 브라우즈.
+            # role 은 합성 user 지만 public_viewer 플래그가 모든 쓰기·곁다리를
+            # 막는다. 가시성은 grant 기반(멤버십)으로 계산돼 공유분만 보인다.
+            # 둘 다 아니면 기존대로 403.
             return CurrentUser(
                 user=user, workspace=workspace, role=Role.user, public_viewer=True
             )
@@ -204,6 +211,14 @@ def get_current_user(
                 f"{user.email}는 부서 {workspace.slug}에 접근 권한이 없습니다.",
             )
     return CurrentUser(user=user, workspace=workspace, role=role)
+
+
+def _grant_services():
+    # 지연 import — auth 는 저수준 모듈이라 grants 서비스를 top-level 에서 끌면
+    # 순환 import 위험이 있다.
+    from app.modules.grants import services as grant_services
+
+    return grant_services
 
 
 def _workspace_has_public_content(db: Session, workspace_slug: str) -> bool:

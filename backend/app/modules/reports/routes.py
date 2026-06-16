@@ -158,16 +158,20 @@ def list_reports(
     # 외부 공개 열람자(비멤버, 읽기전용 진입) — 이 게시판의 공개분만 본다.
     # 멤버용 스코프 목록을 타면 비공개까지 새므로 별도 경로(조직간공개 §7.3).
     if actor.public_viewer:
-        reports = services.list_public_reports_on_board(
+        # 비멤버 읽기전용 진입(전체공개 컨텐츠가 있거나, 이 게시판/폴더가 내
+        # 부서에 공유됨). grant 로 볼 수 있는 게시분만 보여준다 — 전체공개분은
+        # 외부공개 뱃지, 부서/폴더 공유분은 일반 표시.
+        reports = services.list_visible_reports_on_board(
             db,
-            actor.workspace.slug,
+            actor,
             entity_ids=entity_ids,
             folder_filter=folder_filter,
         )
+        pub = services.public_report_ids(db)
         payload = []
         for r in reports:
             summary = ReportSummary.model_validate(r)
-            summary.is_external_public = True
+            summary.is_external_public = r.id in pub
             payload.append(summary)
         return success_response(data=payload)
 

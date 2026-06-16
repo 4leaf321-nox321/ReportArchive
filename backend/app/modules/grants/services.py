@@ -50,6 +50,34 @@ def _user_membership_slugs(db: Session, user_id: int) -> set[str]:
     )
 
 
+def membership_reach_slugs(db: Session, user_id: int) -> set[str]:
+    """비멤버(public_viewer)의 *view* 가시성 판정용 — 이 사용자에게 **실제 소속
+    (멤버십) 기준**으로 도달하는 부서 grant 대상 slug 집합.
+
+    멤버 경로는 active workspace(X-Workspace-Slug)의 조상으로 도달을 판정하지만,
+    비멤버는 헤더를 위조해 임의 게시판을 active 로 둘 수 있으므로 헤더를 신뢰하면
+    안 된다. 대신 멤버십 M 마다:
+      - ancestor_slugs_inclusive(M) : 상위 부서가 공유하면 하위(나)가 본다(하향 공유)
+      - get_descendants_inclusive(M): 역할 하향상속으로 내가 접근 가능한 게시판들
+    을 합쳐, member 의 active-ws 경로가 어느 게시판에 있든 닿을 수 있던 집합과
+    동치이되 신원에 기반한다."""
+    from app.modules.workspaces import services as ws_services
+
+    reach: set[str] = set()
+    for m in _user_membership_slugs(db, user_id):
+        reach |= ancestor_slugs_inclusive(db, m)
+        reach |= set(ws_services.get_descendants_inclusive(db, m))
+    return reach
+
+
+def _actor_view_reach(db: Session, actor) -> set[str]:
+    """view 도달 판정에 쓸 부서 slug 집합. 멤버는 active workspace 의 조상(기존
+    동작 그대로 — 무회귀), 비멤버(public_viewer)는 멤버십 기반(헤더 위조 차단)."""
+    if getattr(actor, "public_viewer", False):
+        return membership_reach_slugs(db, actor.user.id)
+    return ancestor_slugs_inclusive(db, actor.workspace.slug)
+
+
 # --------------------------------------------------------------------------- #
 # grant 존재 판정 (단건)
 # --------------------------------------------------------------------------- #
@@ -184,7 +212,7 @@ def _board_view_reaches(db: Session, board_slugs, actor, *, include_all_org: boo
     경로만(all_org 제외) — is_member_view 판정용."""
     if not board_slugs:
         return False
-    anc = ancestor_slugs_inclusive(db, actor.workspace.slug)
+    anc = _actor_view_reach(db, actor)
     clauses = [
         and_(
             BoardGrant.principal_type == GrantPrincipalType.user,
@@ -234,9 +262,11 @@ def _board_edit_reaches(db: Session, board_slugs, user_id: int) -> bool:
     return False
 
 
-def _boards_view_reachable_slugs(db: Session, actor) -> set[str]:
-    """actor 가 (열람) 도달하는 board slug 집합 — 목록/그래프 대량 판정용."""
-    anc = ancestor_slugs_inclusive(db, actor.workspace.slug)
+def _boards_view_reachable_slugs(
+    db: Session, reach: set[str], user_id: int
+) -> set[str]:
+    """(열람) 도달하는 board slug 집합 — 목록/그래프 대량 판정용. `reach` 는 부서
+    grant 도달 slug(멤버는 active-ws 조상, 비멤버는 멤버십 기반)."""
     return set(
         db.execute(
             select(BoardGrant.board_slug).where(
@@ -244,11 +274,11 @@ def _boards_view_reachable_slugs(db: Session, actor) -> set[str]:
                     BoardGrant.principal_type == GrantPrincipalType.all_org,
                     and_(
                         BoardGrant.principal_type == GrantPrincipalType.user,
-                        BoardGrant.principal_ref == str(actor.user.id),
+                        BoardGrant.principal_ref == str(user_id),
                     ),
                     and_(
                         BoardGrant.principal_type == GrantPrincipalType.workspace,
-                        BoardGrant.principal_ref.in_(anc),
+                        BoardGrant.principal_ref.in_(reach or {""}),
                     ),
                 )
             )
@@ -301,7 +331,7 @@ def _folder_view_reaches(db: Session, folder_ids, actor, *, include_all_org: boo
     folder_ids = list(folder_ids)
     if not folder_ids:
         return False
-    anc = ancestor_slugs_inclusive(db, actor.workspace.slug)
+    anc = _actor_view_reach(db, actor)
     clauses = [
         and_(
             FolderGrant.principal_type == GrantPrincipalType.user,
@@ -360,8 +390,9 @@ def _all_org_folder_ids(db: Session) -> set[int]:
     )
 
 
-def _folders_view_reachable_ids(db: Session, actor) -> set[int]:
-    anc = ancestor_slugs_inclusive(db, actor.workspace.slug)
+def _folders_view_reachable_ids(
+    db: Session, reach: set[str], user_id: int
+) -> set[int]:
     return set(
         db.execute(
             select(FolderGrant.folder_id).where(
@@ -369,11 +400,11 @@ def _folders_view_reachable_ids(db: Session, actor) -> set[int]:
                     FolderGrant.principal_type == GrantPrincipalType.all_org,
                     and_(
                         FolderGrant.principal_type == GrantPrincipalType.user,
-                        FolderGrant.principal_ref == str(actor.user.id),
+                        FolderGrant.principal_ref == str(user_id),
                     ),
                     and_(
                         FolderGrant.principal_type == GrantPrincipalType.workspace,
-                        FolderGrant.principal_ref.in_(anc),
+                        FolderGrant.principal_ref.in_(reach or {""}),
                     ),
                 )
             )
@@ -393,6 +424,59 @@ def _report_ids_in_folders(db: Session, folder_ids) -> set[int]:
                 ReportMount.folder_id.in_(folder_ids)
             )
         ).scalars()
+    )
+
+
+def user_has_container_grant_on_board(
+    db: Session, user_id: int, workspace_slug: str
+) -> bool:
+    """비멤버가 이 게시판을 *브라우즈* 할 자격이 있나(진입 허용 판정).
+
+    게시판 통째 공유(BoardGrant) 또는 이 게시판 폴더의 폴더 공유(FolderGrant)가
+    이 사용자에게 멤버십/개인 기준으로 도달하면 True. 개별 콘텐츠 grant 만으로는
+    게시판 전체 브라우즈를 열지 않는다(그건 직접 링크/검색 경로). all_org 공개는
+    _workspace_has_public_content 에서 이미 처리하므로 여기선 제외한다."""
+    from app.modules.folders.models import Folder
+
+    reach = membership_reach_slugs(db, user_id) or {""}
+    uid = str(user_id)
+    board_match = or_(
+        and_(
+            BoardGrant.principal_type == GrantPrincipalType.user,
+            BoardGrant.principal_ref == uid,
+        ),
+        and_(
+            BoardGrant.principal_type == GrantPrincipalType.workspace,
+            BoardGrant.principal_ref.in_(reach),
+        ),
+    )
+    if (
+        db.execute(
+            select(BoardGrant.id)
+            .where(BoardGrant.board_slug == workspace_slug, board_match)
+            .limit(1)
+        ).first()
+        is not None
+    ):
+        return True
+    folder_match = or_(
+        and_(
+            FolderGrant.principal_type == GrantPrincipalType.user,
+            FolderGrant.principal_ref == uid,
+        ),
+        and_(
+            FolderGrant.principal_type == GrantPrincipalType.workspace,
+            FolderGrant.principal_ref.in_(reach),
+        ),
+    )
+    return (
+        db.execute(
+            select(FolderGrant.id)
+            .join(Folder, Folder.id == FolderGrant.folder_id)
+            .where(Folder.workspace_slug == workspace_slug, folder_match)
+            .limit(1)
+        ).first()
+        is not None
     )
 
 
@@ -446,11 +530,21 @@ def can_view(
     """actor 가 이 콘텐츠를 읽을 수 있나. actor 는 CurrentUser 덕타이핑
     (.user.id / .user.is_system_admin / .workspace.virtual / .public_viewer /
     .workspace.slug)."""
-    # 외부 공개 열람자(비멤버): 공개분(콘텐츠/게시판/폴더 all_org)만.
+    # 비멤버(public_viewer) — 소유·역할이 아니라 *명시적 공유로만* 본다:
+    #   전체공개(all_org) ∪ 사용자 grant ∪ 게시판/폴더 단위 공유(부서 하향 도달).
+    # ⚠ 게시(mount) 가 자동 생성하는 부서 content grant(workspace=게시판)는 비멤버
+    #   가시성에 *넣지 않는다*. 안 그러면 상위 게시판에 게시된 글이 그 부서 트리의
+    #   하위 계정에게 통째로 새어, 공유 안 한 글까지 보이게 된다(실제 발생 버그).
+    #   게시판/폴더를 명시적으로 공유(BoardGrant/FolderGrant)했을 때만 그 게시판
+    #   콘텐츠가 비멤버에게 열린다. 멤버 경로(아래)는 기존대로 부서 grant 포함.
     if getattr(actor, "public_viewer", False):
-        return has_all_org_grant(
-            db, content_type, content_id
-        ) or _container_has_all_org(db, content_type, content_id)
+        if has_all_org_grant(db, content_type, content_id):
+            return True
+        if has_user_grant(db, content_type, content_id, actor.user.id):
+            return True
+        return _container_view_reaches(
+            db, content_type, content_id, actor, include_all_org=True
+        )
     if owner_user_id is not None and owner_user_id == actor.user.id:
         return True
     if getattr(actor.user, "is_system_admin", False):
@@ -461,8 +555,8 @@ def can_view(
         return True
     if has_user_grant(db, content_type, content_id, actor.user.id):
         return True
-    if reachable_workspace_view(
-        db, content_type, content_id, actor.workspace.slug
+    if _workspace_grant_slugs(db, content_type, content_id) & _actor_view_reach(
+        db, actor
     ):
         return True
     # 게시판/폴더 통째 공유 경유.
@@ -990,10 +1084,9 @@ def visible_ids(
     owner 분은 호출부에서 합친다(여기선 grant 분만)."""
     if getattr(actor.workspace, "virtual", False):
         return None
-    if getattr(actor, "public_viewer", False):
-        # 콘텐츠/게시판/폴더 all_org 에 속한 콘텐츠.
-        return public_ids(db, content_type)
-    anc = ancestor_slugs_inclusive(db, actor.workspace.slug)
+    is_nonmember = getattr(actor, "public_viewer", False)
+    # 멤버는 active-ws 조상, 비멤버는 멤버십 기반(헤더 위조 차단).
+    anc = _actor_view_reach(db, actor)
     ids: set[int] = set(all_org_ids(db, content_type))
     # user grant
     ids |= set(
@@ -1005,21 +1098,54 @@ def visible_ids(
             )
         ).scalars()
     )
-    # workspace grant 도달(하위 상속)
+    # workspace content grant 도달(하위 상속) — 게시(mount) 자동 grant 포함이라
+    # *멤버 전용*. 비멤버는 이 경로를 빼서 상위 게시판 게시글이 하위 계정에
+    # 통째로 새는 것을 막는다(비멤버는 명시적 게시판/폴더 공유로만 본다).
+    if not is_nonmember:
+        ids |= set(
+            db.execute(
+                select(ContentGrant.content_id).where(
+                    ContentGrant.content_type == content_type,
+                    ContentGrant.principal_type == GrantPrincipalType.workspace,
+                    ContentGrant.principal_ref.in_(anc),
+                )
+            ).scalars()
+        )
+    # 게시판 통째 공유로 도달하는 게시판의 콘텐츠.
+    ids |= _content_ids_on_boards(
+        db, content_type, _boards_view_reachable_slugs(db, anc, actor.user.id)
+    )
+    # 폴더 통째 공유로 도달하는 폴더의 보고서(종합보고는 폴더 없음).
+    if content_type == GrantContentType.report:
+        ids |= _report_ids_in_folders(
+            db, _folders_view_reachable_ids(db, anc, actor.user.id)
+        )
+    return ids
+
+
+def visible_ids_for_user(
+    db: Session, user_id: int, content_type: GrantContentType
+) -> set[int]:
+    """actor(CurrentUser) 없이 user_id 만으로 계산한 *비멤버* 가시 content_id 집합
+    — active workspace 와 무관(폴더 카운트 등). visible_ids 의 비멤버 분기와 동치:
+    전체공개 ∪ 사용자 grant ∪ 게시판/폴더 단위 공유만. 게시(mount) 자동 부서 grant
+    는 제외(상위 게시판 게시글이 하위 계정에 새는 것 방지)."""
+    reach = membership_reach_slugs(db, user_id)
+    ids: set[int] = set(all_org_ids(db, content_type))
     ids |= set(
         db.execute(
             select(ContentGrant.content_id).where(
                 ContentGrant.content_type == content_type,
-                ContentGrant.principal_type == GrantPrincipalType.workspace,
-                ContentGrant.principal_ref.in_(anc),
+                ContentGrant.principal_type == GrantPrincipalType.user,
+                ContentGrant.principal_ref == str(user_id),
             )
         ).scalars()
     )
-    # 게시판 통째 공유로 도달하는 게시판의 콘텐츠.
     ids |= _content_ids_on_boards(
-        db, content_type, _boards_view_reachable_slugs(db, actor)
+        db, content_type, _boards_view_reachable_slugs(db, reach, user_id)
     )
-    # 폴더 통째 공유로 도달하는 폴더의 보고서(종합보고는 폴더 없음).
     if content_type == GrantContentType.report:
-        ids |= _report_ids_in_folders(db, _folders_view_reachable_ids(db, actor))
+        ids |= _report_ids_in_folders(
+            db, _folders_view_reachable_ids(db, reach, user_id)
+        )
     return ids

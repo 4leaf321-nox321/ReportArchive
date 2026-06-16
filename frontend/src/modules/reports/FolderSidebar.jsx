@@ -112,6 +112,9 @@ export function FolderSidebar({
 }) {
   const [folders, setFolders] = React.useState([])
   const [uncategorizedCount, setUncategorizedCount] = React.useState(0)
+  // 비멤버가 공유받은 게시판을 브라우즈할 때만 채워짐(전체 수). 열람 가능 수보다
+  // 크면 "총 N개 중 M개 열람"으로 표기. null=멤버/일반(전체=열람).
+  const [uncategorizedTotal, setUncategorizedTotal] = React.useState(null)
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState(null)
   // Inline-create state. `creatingUnder = null` means root-level
@@ -148,11 +151,13 @@ export function FolderSidebar({
     setLoading(true)
     setError(null)
     try {
-      const { items, uncategorized_count } = await listFolders({
-        workspaceSlug,
-      })
+      const { items, uncategorized_count, uncategorized_total } =
+        await listFolders({
+          workspaceSlug,
+        })
       setFolders(items)
       setUncategorizedCount(uncategorized_count)
+      setUncategorizedTotal(uncategorized_total ?? null)
     } catch (e) {
       setError(e?.message || String(e))
     } finally {
@@ -254,6 +259,13 @@ export function FolderSidebar({
     (sum, f) => sum + (f.report_count || 0),
     0,
   )
+  // 전체(열람가능 vs 전체) — 폴더 total_count 가 있을 때만 의미. 미분류 포함.
+  const anyTotals =
+    uncategorizedTotal != null || folders.some((f) => f.total_count != null)
+  const grandTotal = anyTotals
+    ? folders.reduce((sum, f) => sum + (f.total_count ?? f.report_count ?? 0), 0) +
+      (uncategorizedTotal ?? uncategorizedCount)
+    : null
 
   async function handleCreate() {
     const name = newName.trim()
@@ -529,9 +541,10 @@ export function FolderSidebar({
                   triggerClassName="text-muted-foreground hover:text-foreground shrink-0"
                 />
               )}
-              <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
-                {folder.report_count || 0}
-              </span>
+              <CountBadge
+                count={folder.report_count}
+                total={folder.total_count}
+              />
               {canEdit && (
                 <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5">
                   <button
@@ -628,9 +641,7 @@ export function FolderSidebar({
             <span className="flex-1 truncate" title={f.name}>
               {f.name}
             </span>
-            <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
-              {f.report_count || 0}
-            </span>
+            <CountBadge count={f.report_count} total={f.total_count} />
           </div>
           {hasKids && renderSubFolders(deptSlug, deptFolders, f.id, depth + 1)}
         </div>
@@ -784,6 +795,7 @@ export function FolderSidebar({
           icon={Layers3}
           label="전체"
           count={totalReports + uncategorizedCount}
+          total={grandTotal}
           active={selected === FOLDER_FILTER_ALL}
           onClick={() => onSelect(FOLDER_FILTER_ALL)}
         />
@@ -794,6 +806,7 @@ export function FolderSidebar({
           icon={Inbox}
           label="미분류"
           count={uncategorizedCount}
+          total={uncategorizedTotal}
           active={selected === FOLDER_FILTER_UNCATEGORIZED}
           onClick={() => onSelect(FOLDER_FILTER_UNCATEGORIZED)}
           isDropHere={dropTarget === '__uncategorized__'}
@@ -947,10 +960,34 @@ function InlineCreateRow({ depth, value, onChange, onSubmit, onCancel }) {
   )
 }
 
+/** 폴더/행의 보고서 수 배지. total 이 count 보다 크면(=비멤버가 공유받은
+ *  게시판에서 못 여는 게 더 있음) "M/N" 으로 보이고, 호버 시 "총 N개 중 M개
+ *  열람" 툴팁을 단다. 그 외엔 단일 숫자. */
+function CountBadge({ count, total }) {
+  const c = count || 0
+  const hasMore = Number.isFinite(total) && total > c
+  if (hasMore) {
+    return (
+      <span
+        className="text-[10px] text-muted-foreground tabular-nums shrink-0"
+        title={`총 ${total}개 중 ${c}개 열람`}
+      >
+        {c}/{total}
+      </span>
+    )
+  }
+  return (
+    <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
+      {c}
+    </span>
+  )
+}
+
 function FixedRow({
   icon: Icon,
   label,
   count,
+  total,
   active,
   onClick,
   isDropHere,
@@ -975,11 +1012,7 @@ function FixedRow({
       <span className="w-3 shrink-0" />
       <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <span className="flex-1 truncate">{label}</span>
-      {count !== undefined && (
-        <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
-          {count}
-        </span>
-      )}
+      {count !== undefined && <CountBadge count={count} total={total} />}
     </div>
   )
 }

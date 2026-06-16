@@ -13,6 +13,8 @@ export async function listFolders({ workspaceSlug } = {}) {
   return {
     items: data?.items ?? [],
     uncategorized_count: data?.uncategorized_count ?? 0,
+    // 비멤버가 공유받은 게시판을 브라우즈할 때만 채워짐(전체 수). null=일반.
+    uncategorized_total: data?.uncategorized_total ?? null,
   }
 }
 

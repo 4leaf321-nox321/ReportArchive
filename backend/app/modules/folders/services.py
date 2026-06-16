@@ -253,6 +253,111 @@ def count_public_uncategorized_org(db: Session, workspace_slug: str) -> int:
     return count_uncategorized_org(db, workspace_slug)
 
 
+def list_org_folders_visible(
+    db: Session, workspace_slug: str, visible_ids: set[int]
+) -> list[Folder]:
+    """비멤버(grant/public 뷰어)용 — 이 게시판 폴더 중 *가시 보고서가 든 폴더만*
+    (report_count = 가시 보고서 수). 멤버용 list_org_folders 와 달리 mount 전체가
+    아니라 visible_ids 로 카운트해 보고서 목록과 숫자가 일치한다(폴더 18·목록 3
+    불일치 해소). 가시 보고서가 0인 폴더는 빈 폴더라 노이즈 방지차 숨긴다."""
+    if not visible_ids:
+        return []
+    rows = db.execute(
+        select(Folder, func.count(ReportMount.report_id).label("report_count"))
+        .join(
+            ReportMount,
+            and_(
+                ReportMount.folder_id == Folder.id,
+                ReportMount.report_id.in_(visible_ids),
+            ),
+        )
+        .where(
+            Folder.kind == FolderKind.org,
+            Folder.workspace_slug == workspace_slug,
+        )
+        .group_by(Folder.id)
+        .order_by(Folder.sort_order, Folder.id)
+    ).all()
+    out: list[Folder] = []
+    for folder, count in rows:
+        folder.report_count = int(count or 0)
+        out.append(folder)
+    return out
+
+
+def count_uncategorized_org_visible(
+    db: Session, workspace_slug: str, visible_ids: set[int]
+) -> int:
+    """비멤버 뷰어용 — 이 게시판의 미분류(folder 없음) mount 중 가시 보고서 수."""
+    if not visible_ids:
+        return 0
+    return int(
+        db.execute(
+            select(func.count(ReportMount.report_id)).where(
+                ReportMount.workspace_slug == workspace_slug,
+                ReportMount.folder_id.is_(None),
+                ReportMount.report_id.in_(visible_ids),
+            )
+        ).scalar()
+        or 0
+    )
+
+
+def list_org_folders_with_counts(
+    db: Session, workspace_slug: str, visible_ids: set[int]
+) -> list[Folder]:
+    """게시판/폴더를 공유받아 브라우즈하는 *비멤버*용 — 보고서가 든 폴더(전체)에
+    대해 report_count=열람 가능 수, total_count=전체 수 를 채운다. 프론트가
+    '총 N개 중 M개 열람'으로 표시해, 못 여는 게 더 있음을 알린다(열람 0개 폴더도
+    포함). 빈 폴더(전체 0)는 제외."""
+    folders = list(
+        db.execute(
+            select(Folder)
+            .where(
+                Folder.kind == FolderKind.org,
+                Folder.workspace_slug == workspace_slug,
+            )
+            .order_by(Folder.sort_order, Folder.id)
+        ).scalars()
+    )
+    if not folders:
+        return []
+    total_by = {
+        fid: int(c or 0)
+        for fid, c in db.execute(
+            select(ReportMount.folder_id, func.count(ReportMount.report_id))
+            .where(
+                ReportMount.workspace_slug == workspace_slug,
+                ReportMount.folder_id.is_not(None),
+            )
+            .group_by(ReportMount.folder_id)
+        ).all()
+    }
+    view_by: dict[int, int] = {}
+    if visible_ids:
+        view_by = {
+            fid: int(c or 0)
+            for fid, c in db.execute(
+                select(ReportMount.folder_id, func.count(ReportMount.report_id))
+                .where(
+                    ReportMount.workspace_slug == workspace_slug,
+                    ReportMount.folder_id.is_not(None),
+                    ReportMount.report_id.in_(visible_ids),
+                )
+                .group_by(ReportMount.folder_id)
+            ).all()
+        }
+    out: list[Folder] = []
+    for f in folders:
+        total = total_by.get(f.id, 0)
+        if total == 0:
+            continue  # 빈 폴더 제외
+        f.report_count = view_by.get(f.id, 0)
+        f.total_count = total
+        out.append(f)
+    return out
+
+
 def list_org_folders_readonly(db: Session, workspace_slug: str) -> list[Folder]:
     """list_org_folders 와 동일하나 기본 폴더 생성(side effect) 없음. '하위부서
     포함' 트리에서 자손 게시판을 *읽기만* 할 때, 남의 게시판에 기본 폴더를

@@ -401,6 +401,45 @@ def list_public_reports_on_board(
     return list(db.execute(query).scalars())
 
 
+def list_visible_reports_on_board(
+    db: Session,
+    actor,
+    *,
+    entity_ids: Optional[list[int]] = None,
+    folder_filter: Optional[int | str] = None,
+) -> list[Report]:
+    """비멤버(public_viewer)용 — 이 게시판에 배치(mount)된 보고서 중 actor 가 볼
+    수 있는 것. grant 기반(전체공개 ∪ 부서/사용자/게시판/폴더 grant)으로, 멤버십
+    기준으로 좁힌 visible_ids 와 이 게시판 mount 의 교집합. 공유받은 부서가
+    게시판을 브라우즈할 때 공유분이 다 보이게 한다(list_public_reports_on_board
+    의 일반화 — 공개분만 → 공유분 포함). 폴더 카운트와 같은 가시 집합을 쓴다."""
+    # 비멤버 외부/공유 열람자의 가시 집합은 grant 기반(소유권 제외) — can_view 의
+    # public_viewer 분기·폴더 카운트와 동일 기준이라 목록/숫자가 일치한다.
+    visible = grant_services.visible_ids(db, actor, GrantContentType.report)
+    if visible is not None and not visible:
+        return []
+    mount_q = select(ReportMount.report_id).where(
+        ReportMount.workspace_slug == actor.workspace.slug,
+    )
+    if visible is not None:
+        mount_q = mount_q.where(ReportMount.report_id.in_(visible))
+    if folder_filter == "uncategorized":
+        mount_q = mount_q.where(ReportMount.folder_id.is_(None))
+    elif isinstance(folder_filter, int):
+        mount_q = mount_q.where(ReportMount.folder_id == folder_filter)
+    ids = set(db.execute(mount_q).scalars())
+    if not ids:
+        return []
+    query = (
+        select(Report).where(Report.id.in_(ids)).order_by(desc(Report.updated_at))
+    )
+    if entity_ids:
+        query = _apply_entity_filter(db, query, entity_ids)
+        if query is None:
+            return []
+    return list(db.execute(query).scalars())
+
+
 def is_public_only_viewer(db: Session, actor, report: Report) -> bool:
     """이 사용자가 이 보고서를 *공개(all_org) 경로로만* 보고 있는가 — 읽기전용
     배너·곁다리(댓글·이력) 차단용. 멤버 경로(소유·user·부서 grant)로 보이면 False."""

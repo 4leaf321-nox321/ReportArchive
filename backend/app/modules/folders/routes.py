@@ -74,6 +74,9 @@ def list_folders(
     even before they have any reports mounted.
     """
     personal_target = _parse_personal_user_id(workspace_slug) if workspace_slug else None
+    # 비멤버가 공유받은 게시판을 브라우즈할 때만 채워진다("총 N 중 M 열람"). 그 외엔
+    # None → 프론트는 단일 수(report_count/uncategorized_count)만 표시.
+    uncategorized_total: int | None = None
     if personal_target is not None:
         # personal-{N} 슬러그 — N 의 개인 폴더. 본인이거나 시스템 관리자만.
         if personal_target != actor.id and not actor.is_system_admin:
@@ -84,10 +87,13 @@ def list_folders(
         folders = services.list_personal_folders(db, personal_target)
         uncategorized = services.count_uncategorized_personal(db, personal_target)
     elif workspace_slug:
-        # 비멤버 외부 열람자(조직간공개_설계 Phase 5)는 공개 폴더만 본다 —
-        # 멤버/시스템관리자는 전체 트리. (default-create 부작용도 비멤버 경로는
-        # 타지 않는다 — 남의 게시판에 기본 폴더를 만들면 안 되므로.)
-        from app.shared.auth import _resolve_role
+        # 멤버/시스템관리자 = 전체 트리(전체 카운트). 비멤버는 둘로 나뉜다:
+        #   - 게시판/폴더를 공유받음 → 전체 폴더 + "총 N개 중 M개 열람"(전체·열람수)
+        #   - 공개분만 peek(공유 없음, 공개 컨텐츠만 있음) → 공개 폴더만(기존 동작)
+        # (default-create 부작용은 비멤버 경로엔 없음 — 남의 게시판에 기본 폴더 X.)
+        from app.shared.auth import _resolve_role, _workspace_has_public_content
+        from app.modules.grants import services as grant_services
+        from app.modules.grants.models import GrantContentType
 
         is_member = (
             actor.is_system_admin
@@ -96,11 +102,28 @@ def list_folders(
         if is_member:
             folders = services.list_org_folders(db, workspace_slug)
             uncategorized = services.count_uncategorized_org(db, workspace_slug)
-        else:
-            folders = services.list_public_org_folders(db, workspace_slug)
-            uncategorized = services.count_public_uncategorized_org(
+        elif grant_services.user_has_container_grant_on_board(
+            db, actor.id, workspace_slug
+        ) or _workspace_has_public_content(db, workspace_slug):
+            # 비멤버지만 이 게시판을 브라우즈 가능(게시판/폴더를 공유받았거나,
+            # 전체공개 컨텐츠가 있음). 보고서 목록과 *동일한 가시 집합*으로 폴더·
+            # 카운트를 계산하고(목록과 숫자 일치), 폴더/미분류마다 전체 수도 함께
+            # 줘서 프론트가 "총 N개 중 M개 열람"으로 못 여는 게 더 있음을 알린다.
+            visible = grant_services.visible_ids_for_user(
+                db, actor.id, GrantContentType.report
+            )
+            folders = services.list_org_folders_with_counts(
+                db, workspace_slug, visible
+            )
+            uncategorized = services.count_uncategorized_org_visible(
+                db, workspace_slug, visible
+            )
+            uncategorized_total = services.count_uncategorized_org(
                 db, workspace_slug
             )
+        else:
+            folders = []
+            uncategorized = 0
     else:
         folders = services.list_personal_folders(db, actor.id)
         uncategorized = services.count_uncategorized_personal(db, actor.id)
@@ -122,7 +145,11 @@ def list_folders(
         fr = FolderRead.model_validate(f)
         fr.shares = share_map.get(f.id, [])
         items.append(fr)
-    payload = FolderListResponse(items=items, uncategorized_count=uncategorized)
+    payload = FolderListResponse(
+        items=items,
+        uncategorized_count=uncategorized,
+        uncategorized_total=uncategorized_total,
+    )
     return success_response(data=payload.model_dump(mode="json"))
 
 

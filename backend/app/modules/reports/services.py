@@ -1659,6 +1659,62 @@ def _scoped_report_ids(db: Session, actor) -> Optional[set[int]]:
     return visible_report_ids(db, actor)
 
 
+def _metadata_hub_report_ids(
+    db: Session,
+    pool: Optional[set[int]],
+    *,
+    include_tags: bool,
+    include_composites: bool,
+    tag_axes: Optional[list[str]] = None,
+    tag_min_degree: int = 1,
+) -> set[int]:
+    """pool(스코프) 안에서 *공유 메타 허브* 로 이어진 보고서 id 들.
+
+    허브 = pool 내 보고서 2개 이상이 공유하는 entity(관련정보) 또는 같은
+    종합보고. 그런 허브에 달린 모든 보고서를 돌려준다 — explicit link 가 없어도
+    "메타로 연결됨" 으로 보고 관계도에 끌어오기 위한 후보. pool 이 None 이면
+    (글로벌 뷰) 전체 보고서가 대상. entity 는 ``_entity_layer`` 와 같은 기준으로
+    축(axes)·최소 공유수(min_degree, 단 연결이려면 최소 2)를 적용한다.
+    """
+    out: set[int] = set()
+    threshold = max(2, tag_min_degree)
+    axes = set(tag_axes) if tag_axes else None
+
+    if include_tags:
+        q = select(ReportEntity.report_id, ReportEntity.entity_id)
+        if pool is not None:
+            q = q.where(ReportEntity.report_id.in_(pool))
+        by_ent: dict[int, set[int]] = {}
+        for rid, eid in db.execute(q).all():
+            by_ent.setdefault(eid, set()).add(rid)
+        hub_ents = {eid for eid, rids in by_ent.items() if len(rids) >= threshold}
+        if hub_ents:
+            entities = db.execute(
+                select(Entity).where(Entity.id.in_(hub_ents))
+            ).scalars()
+            for e in entities:
+                if axes is not None:
+                    slug = e.entity_type.slug if e.entity_type else None
+                    if slug not in axes:
+                        continue
+                out |= by_ent[e.id]
+
+    if include_composites:
+        q = select(
+            CompositeReportItem.composite_id, CompositeReportItem.ref_report_id
+        )
+        if pool is not None:
+            q = q.where(CompositeReportItem.ref_report_id.in_(pool))
+        by_comp: dict[int, set[int]] = {}
+        for cid, rid in db.execute(q).all():
+            by_comp.setdefault(cid, set()).add(rid)
+        for rids in by_comp.values():
+            if len(rids) >= 2:
+                out |= rids
+
+    return out
+
+
 def build_global_link_graph(
     db: Session,
     *,
@@ -1765,6 +1821,19 @@ def build_global_link_graph(
         if primary_ids is not None:
             iso_q = iso_q.where(Report.id.in_(primary_ids))
         candidate_ids |= set(db.execute(iso_q).scalars())
+    elif include_tags or include_composites:
+        # 고립 토글이 꺼져 있어도, 공유 메타 허브(보고서 2개 이상이 공유하는
+        # entity)나 같은 종합보고로 *다른 보고서와 이어진* 보고서는 link 가
+        # 없어도 후보에 넣는다 — 화면상 연결돼 있으니 고립이 아니다. pool 은
+        # 스코프(primary/external) 안으로 제한(글로벌 뷰면 전체).
+        candidate_ids |= _metadata_hub_report_ids(
+            db,
+            scope_ids,
+            include_tags=include_tags,
+            include_composites=include_composites,
+            tag_axes=tag_axes,
+            tag_min_degree=tag_min_degree,
+        )
     if not candidate_ids:
         return {"nodes": [], "edges": [], "truncated": False, "center_id": None}
 
@@ -1795,16 +1864,13 @@ def build_global_link_graph(
         db.execute(select(Report).where(Report.id.in_(candidate_ids))).scalars()
     )
 
-    def _eligible(r: Report) -> bool:
+    # 기간(date)은 *보고서 노드 표시* 에만 적용하고, 관련정보(entity)·종합보고
+    # 같은 메타 연결 구조 계산에는 쓰지 않는다 — 기간을 좁혀도 메타 허브가 녹지
+    # 않게(메타데이터는 기간 필터 대상 아님). 그래서 두 단계로 거른다:
+    #   _eligible_meta : 스코프/종류/관련정보 필터 (기간 제외) → 메타 계산용
+    #   _in_date       : report_date 범위 → 표시용 추가 제약
+    def _eligible_meta(r: Report) -> bool:
         if scope_ids is not None and r.id not in scope_ids:
-            return False
-        if date_from is not None and (
-            r.report_date is None or r.report_date < date_from
-        ):
-            return False
-        if date_to is not None and (
-            r.report_date is None or r.report_date > date_to
-        ):
             return False
         if type_set is not None and r.report_type_id not in type_set:
             return False
@@ -1814,7 +1880,24 @@ def build_global_link_graph(
                 return False
         return True
 
-    eligible: dict[int, Report] = {r.id: r for r in reports if _eligible(r)}
+    def _in_date(r: Report) -> bool:
+        if date_from is not None and (
+            r.report_date is None or r.report_date < date_from
+        ):
+            return False
+        if date_to is not None and (
+            r.report_date is None or r.report_date > date_to
+        ):
+            return False
+        return True
+
+    # 메타 계산용(기간 무관) ⊇ 표시용(기간 적용).
+    eligible_meta: dict[int, Report] = {
+        r.id: r for r in reports if _eligible_meta(r)
+    }
+    eligible: dict[int, Report] = {
+        rid: r for rid, r in eligible_meta.items() if _in_date(r)
+    }
 
     kept_links = [
         lk
@@ -1829,23 +1912,93 @@ def build_global_link_graph(
         )
     ]
 
-    def _degree(links: list[ReportLink], ids: set[int]) -> dict[int, int]:
+    # ── 레이어 헬퍼: entity 엣지는 report→entity, composite 엣지는
+    # composite→report. 어느 쪽이든 report 끝과 hub 끝을 구분해 돌려준다. ──
+    def _edge_report_hub(e: dict) -> tuple[int, str]:
+        s, t = e["source"], e["target"]
+        if s.startswith("report:"):
+            return int(s.split(":", 1)[1]), t
+        return int(t.split(":", 1)[1]), s
+
+    def _layers_for(ids: set[int]) -> tuple[list[dict], list[dict]]:
+        """주어진 보고서 집합에 매달릴 (entity+composite) 레이어 노드/엣지."""
+        l_nodes: list[dict] = []
+        l_edges: list[dict] = []
+        if include_tags:
+            en, ee = _entity_layer(
+                db,
+                ids,
+                axes=set(tag_axes) if tag_axes else None,
+                min_degree=tag_min_degree,
+            )
+            l_nodes += en
+            l_edges += ee
+        if include_composites:
+            cn, ce = _composite_layer(db, ids)
+            l_nodes += cn
+            l_edges += ce
+        return l_nodes, l_edges
+
+    def _degree(
+        ids: set[int], links: list[ReportLink], layer_edges: list[dict]
+    ) -> dict[int, int]:
+        # 보고서 차수 = explicit link + 그려지는 레이어 엣지(메타/종합보고).
+        # → 메타 허브로만 이어진 보고서도 degree>0 이라 점(고립)으로 안 그려진다.
         deg = {i: 0 for i in ids}
         for lk in links:
-            deg[lk.from_report_id] += 1
-            deg[lk.to_report_id] += 1
+            deg[lk.from_report_id] = deg.get(lk.from_report_id, 0) + 1
+            deg[lk.to_report_id] = deg.get(lk.to_report_id, 0) + 1
+        for e in layer_edges:
+            rid, _ = _edge_report_hub(e)
+            if rid in deg:
+                deg[rid] += 1
         return deg
 
-    # 고립 표시면 적격 보고서 전체가 노드(연결 안 된 것은 점으로), 아니면
-    # 살아남은 엣지의 양 끝만.
+    # 고립 정의: explicit link 도, 공유 메타 허브(보고서 2개 이상을 잇는 entity/
+    # 종합보고)도 없는 보고서. 토글이 켜져 *그려지는* 연결만 연결로 친다(레이어를
+    # 끄면 화면상 정말 고립이므로). 잎(보고서 1개만 달린 태그)은 다른 보고서로
+    # 잇지 못하므로 연결로 치지 않는다 → hub 는 degree>=2 인 레이어 노드만.
+    # 메타 레이어/허브 연결성은 기간 무관 집합(eligible_meta)으로 계산 — 기간을
+    # 좁혀도 메타 허브 구조(노드·크기)가 유지된다.
+    all_layer_nodes, all_layer_edges = _layers_for(set(eligible_meta.keys()))
+    connector_hub_ids = {
+        n["id"] for n in all_layer_nodes if (n.get("degree") or 0) >= 2
+    }
+    meta_connected: set[int] = set()
+    for e in all_layer_edges:
+        rid, hub = _edge_report_hub(e)
+        if hub in connector_hub_ids:
+            meta_connected.add(rid)
+
+    link_connected: set[int] = set()
+    for lk in kept_links:
+        link_connected.add(lk.from_report_id)
+        link_connected.add(lk.to_report_id)
+
+    # 표시 보고서 노드는 항상 기간 안(eligible)으로 제한. 고립 표시면 기간 안
+    # 전체, 아니면 (링크 ∪ 메타허브)로 연결된 기간 안 보고서만. 메타로만 이어진
+    # 기간 안 보고서도 — 짝이 기간 밖이라 가려져도 — 허브에 붙어 보인다.
+    in_date_ids = set(eligible.keys())
     if include_isolated:
-        node_ids: set[int] = set(eligible.keys())
+        node_ids: set[int] = in_date_ids
     else:
-        node_ids = set()
-        for lk in kept_links:
-            node_ids.add(lk.from_report_id)
-            node_ids.add(lk.to_report_id)
-    degree = _degree(kept_links, node_ids)
+        node_ids = (link_connected | meta_connected) & in_date_ids
+
+    def _emit_layers(report_ids: set[int]) -> tuple[list[dict], list[dict]]:
+        # 표시되는 보고서로 가는 메타 엣지만 남기고, 그런 엣지가 있는 허브만 띄운다.
+        # 허브 degree(노드 크기)는 기간 무관 전체 기준(all_layer_nodes) 유지.
+        ed = [e for e in all_layer_edges if _edge_report_hub(e)[0] in report_ids]
+        live = {_edge_report_hub(e)[1] for e in ed}
+        nd = [n for n in all_layer_nodes if n["id"] in live]
+        return nd, ed
+
+    kept_links = [
+        lk
+        for lk in kept_links
+        if lk.from_report_id in node_ids and lk.to_report_id in node_ids
+    ]
+    layer_nodes, layer_edges = _emit_layers(node_ids)
+    degree = _degree(node_ids, kept_links, layer_edges)
 
     truncated = False
     if len(node_ids) > limit:
@@ -1858,7 +2011,8 @@ def build_global_link_graph(
             for lk in kept_links
             if lk.from_report_id in node_ids and lk.to_report_id in node_ids
         ]
-        degree = _degree(kept_links, node_ids)
+        layer_nodes, layer_edges = _emit_layers(node_ids)
+        degree = _degree(node_ids, kept_links, layer_edges)
         truncated = True
 
     nodes = [
@@ -1877,23 +2031,8 @@ def build_global_link_graph(
         for rid in node_ids
     ]
     edges = [_link_edge(lk) for lk in kept_links]
-
-    # 관련정보 레이어 (Phase 2) — 살아남은 보고서 노드에만 entity 를 매단다.
-    if include_tags:
-        ent_nodes, ent_edges = _entity_layer(
-            db,
-            node_ids,
-            axes=set(tag_axes) if tag_axes else None,
-            min_degree=tag_min_degree,
-        )
-        nodes.extend(ent_nodes)
-        edges.extend(ent_edges)
-
-    # 종합보고 레이어 (Phase 4) — 살아남은 보고서를 묶는 hub 노드.
-    if include_composites:
-        comp_nodes, comp_edges = _composite_layer(db, node_ids)
-        nodes.extend(comp_nodes)
-        edges.extend(comp_edges)
+    nodes.extend(layer_nodes)
+    edges.extend(layer_edges)
 
     return {
         "nodes": nodes,

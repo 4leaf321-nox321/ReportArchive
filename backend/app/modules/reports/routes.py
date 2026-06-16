@@ -553,14 +553,15 @@ def create_ai_draft(
     template = template_services.get_template(
         db, payload.template_id, payload.template_version
     )
-    # 존재 + **현재 워크스페이스에서 보이는지(scope)** 둘 다 확인. 보고서를 이
-    # 워크스페이스에 만들 거라, 여기서 안 보이는 부서 전용 템플릿이면 만들어도
-    # 상세 화면이 템플릿을 못 불러와(404) "불러오는 중"에서 멈춘다 → 미리 막는다.
-    if not template or not template_services.is_visible(
-        db, template, actor.workspace.slug
+    # 존재 + **이 계정이 볼 수 있는지** 확인. 초안은 작성자 개인 공간에 생성되고
+    # 렌더도 계정 접근권 기준이라, '현재(활성) 워크스페이스'가 아니라 '이 계정이
+    # 그 템플릿을 볼 수 있나'(is_visible_to_user)로 판정한다 — 읽기전용 공유 보드를
+    # 보고 있어도, 자신이 멤버인 부서 전용 템플릿으로 AI 작성이 가능해야 한다.
+    if not template or not template_services.is_visible_to_user(
+        db, template, actor.user.id
     ):
         return not_found_response(
-            f"Template not found or not visible in this workspace: "
+            f"Template not found or not visible to this account: "
             f"{payload.template_id}@{payload.template_version}"
         )
     valid_codes = section_taxonomy_services.valid_codes(db)

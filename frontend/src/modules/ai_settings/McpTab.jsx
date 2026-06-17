@@ -102,9 +102,11 @@ function McpTokensCard({ me }) {
   const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost'
   const slug = me?.workspace_slug || '<부서slug>'
   const mcpUrl = `http://${host}:3002/mcp`
-  // Claude Code — 터미널 등록 명령(HTTP transport).
+  // Claude Code — 터미널 등록 명령(mcp-remote 브리지, stdio). Desktop·Codex 와
+  // 같은 브리지로 통일해 HTTP URL(--allow-http)·시스템 CA(NODE_OPTIONS) 문제를 동일하게 처리.
+  // 토큰·부서는 env(-e)로 넣고, args 의 ${...} 는 mcp-remote 가 치환(셸 확장 방지용 작은따옴표).
   const addCmd = reveal
-    ? `claude mcp add --transport http reportarchive ${mcpUrl} \\\n  --header "Authorization: Bearer ${reveal}" \\\n  --header "X-Workspace-Slug: ${slug}"`
+    ? `claude mcp add reportarchive \\\n  -e AUTH='Bearer ${reveal}' \\\n  -e WS='${slug}' \\\n  -e NODE_OPTIONS=--use-system-ca \\\n  -- npx -y mcp-remote ${mcpUrl} --allow-http \\\n  --header 'Authorization:\${AUTH}' \\\n  --header 'X-Workspace-Slug:\${WS}'`
     : ''
   // Claude Desktop — claude_desktop_config.json 의 `mcpServers` 안에 붙여넣는 **항목만**.
   // (바깥 {mcpServers:{...}} 래퍼는 빼서, 기존 설정에 그대로 끼워넣기 쉽게 한다.)
@@ -119,6 +121,7 @@ function McpTokensCard({ me }) {
             '-y',
             'mcp-remote',
             mcpUrl,
+            '--allow-http',
             '--header',
             'Authorization:${AUTH}',
             '--header',
@@ -127,21 +130,25 @@ function McpTokensCard({ me }) {
           env: {
             AUTH: `Bearer ${reveal}`,
             WS: slug,
+            NODE_OPTIONS: '--use-system-ca',
           },
         },
         null,
         2,
       )}`
     : ''
-  // Codex CLI — ~/.codex/config.toml 에 추가하는 항목(TOML). HTTP 네이티브라
-  // 브리지 불필요. 헤더(토큰·부서)는 http_headers 에 직접 둔다.
+  // Codex CLI — ~/.codex/config.toml 의 stdio 서버 항목(TOML). Desktop·Claude Code 와
+  // 같은 mcp-remote 브리지로 통일해 HTTP URL(--allow-http)·시스템 CA(NODE_OPTIONS) 문제를
+  // 동일하게 처리. 토큰·부서는 env 로 넣고 args 의 ${...} 는 mcp-remote 가 치환.
   const codexCfg = reveal
     ? `[mcp_servers.reportarchive]
-url = "${mcpUrl}"
+command = "npx"
+args = ["-y", "mcp-remote", "${mcpUrl}", "--allow-http", "--header", "Authorization:\${AUTH}", "--header", "X-Workspace-Slug:\${WS}"]
 
-[mcp_servers.reportarchive.http_headers]
-Authorization = "Bearer ${reveal}"
-X-Workspace-Slug = "${slug}"`
+[mcp_servers.reportarchive.env]
+AUTH = "Bearer ${reveal}"
+WS = "${slug}"
+NODE_OPTIONS = "--use-system-ca"`
     : ''
 
   return (
@@ -176,6 +183,7 @@ X-Workspace-Slug = "${slug}"`
             <div className="text-xs font-medium">Claude Code (터미널)</div>
             <div className="text-xs text-muted-foreground">
               아래 명령을 터미널에 붙여 등록(주소·부서는 확인 후 수정):
+              <span className="block mt-1"><b>Node.js 필요</b> — HTTP 주소·사내 인증서 문제를 안정적으로 처리하려 <code className="font-mono">npx mcp-remote</code> 브리지로 연결합니다.</span>
             </div>
             <pre className="overflow-x-auto rounded bg-muted px-2 py-2 text-[11px] font-mono whitespace-pre">{addCmd}</pre>
             <Button type="button" size="sm" variant="outline" onClick={() => copyText(addCmd, '등록 명령')}>
@@ -195,11 +203,11 @@ X-Workspace-Slug = "${slug}"`
               항목 복사
             </Button>
             <Separator />
-            {/* Codex CLI — config.toml (HTTP 네이티브, 브리지 불필요) */}
+            {/* Codex CLI — config.toml (mcp-remote 브리지, stdio) */}
             <div className="text-xs font-medium">Codex CLI (설정 파일)</div>
             <div className="text-xs text-muted-foreground">
-              <code className="font-mono">~/.codex/config.toml</code> 에 아래 항목을 추가한 뒤 Codex 재시작.
-              HTTP 를 바로 지원해 별도 브리지가 필요 없습니다(부서를 바꾸려면 <code className="font-mono">X-Workspace-Slug</code> 값만 수정).
+              <code className="font-mono">~/.codex/config.toml</code> 에 아래 항목을 추가한 뒤 Codex 재시작(부서를 바꾸려면 <code className="font-mono">WS</code> 값만 수정).
+              <span className="block mt-1"><b>Node.js 필요</b> — HTTP 주소·사내 인증서 문제를 안정적으로 처리하려 <code className="font-mono">npx mcp-remote</code> 브리지로 연결합니다.</span>
             </div>
             <pre className="overflow-x-auto rounded bg-muted px-2 py-2 text-[11px] font-mono whitespace-pre">{codexCfg}</pre>
             <div className="flex gap-2">

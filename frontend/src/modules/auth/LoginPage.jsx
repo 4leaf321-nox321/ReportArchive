@@ -81,7 +81,7 @@ export default function LoginPage() {
                 type="text"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin"
+                placeholder="example@samsung.com"
                 autoComplete="username"
                 required
                 autoFocus

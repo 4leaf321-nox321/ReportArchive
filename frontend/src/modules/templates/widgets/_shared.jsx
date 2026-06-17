@@ -1,12 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronUp, Copy, Eraser, Plus, X } from 'lucide-react'
+import {
+  AlignCenter,
+  AlignCenterHorizontal,
+  AlignEndHorizontal,
+  AlignLeft,
+  AlignRight,
+  AlignStartHorizontal,
+  ChevronDown,
+  ChevronUp,
+  ClipboardPaste,
+  Copy,
+  Eraser,
+  Plus,
+  X,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import DOMPurify from 'dompurify'
 import { cn } from '@/shared/lib/utils'
-import { copyTextToClipboard } from '@/shared/lib/clipboard'
+import { copyTextToClipboard, readTableFromClipboard } from '@/shared/lib/clipboard'
 import { ColorSwatchPicker, colorTokenClass } from '@/shared/text-color'
 import { useCurrentBlockRef } from '@/shared/reports/CurrentBlockRefContext'
 import { RichTextRowEditor } from './RichTextRowEditor'
@@ -29,6 +43,7 @@ import { RichTextRowEditor } from './RichTextRowEditor'
  */
 export function DataTableActions({
   onCopy,
+  onPaste,
   onClear,
   label = '데이터',
   disabled,
@@ -45,6 +60,23 @@ export function DataTableActions({
       toast.success(`${label}를 클립보드에 복사했습니다.`)
     } catch (e) {
       toast.error('클립보드 복사 실패', {
+        description: String(e?.message ?? e),
+      })
+    }
+  }
+  async function handlePaste() {
+    try {
+      // text/html 까지 읽어서(보안 컨텍스트 한정) 엑셀 셀 병합도 재현.
+      const { text, html } = await readTableFromClipboard()
+      if ((text == null || text === '') && !html) {
+        toast.info('클립보드가 비어 있습니다.')
+        return
+      }
+      onPaste?.(text, html)
+      toast.success(`클립보드 내용을 ${label}에 붙여넣었습니다.`)
+    } catch (e) {
+      // 비보안(HTTP) 컨텍스트 등 readText 불가 — 셀 직접 붙여넣기로 안내.
+      toast.error('붙여넣기 실패', {
         description: String(e?.message ?? e),
       })
     }
@@ -68,6 +100,20 @@ export function DataTableActions({
         <Copy className="h-3 w-3" />
         복사
       </Button>
+      {onPaste && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 gap-1 px-2 text-xs"
+          onClick={handlePaste}
+          disabled={disabled}
+          title={`클립보드의 TSV(엑셀·시트에서 복사한 표) 를 ${label} 좌상단부터 붙여넣기`}
+        >
+          <ClipboardPaste className="h-3 w-3" />
+          붙여넣기
+        </Button>
+      )}
       <Button
         type="button"
         variant="ghost"
@@ -103,6 +149,142 @@ export function toTsv(rows2d) {
         .join('\t'),
     )
     .join('\n')
+}
+
+/**
+ * 엑셀·구글시트에서 복사한 클립보드의 `text/html` 폼에서 표의 셀 병합
+ * (rowspan/colspan)만 뽑아낸다. 평문(TSV)에는 병합 정보가 없고 HTML 에만
+ * 남으므로, 붙여넣기 때 값은 기존대로 TSV 로 채우고 "병합 모양"만 이걸로
+ * 재현한다. 반환 좌표는 붙여넣는 블록의 좌상단(0,0) 기준 상대좌표 —
+ * 호출부가 실제 붙이는 위치만큼 오프셋해서 쓴다. 표가 없거나 병합이 하나도
+ * 없으면 빈 배열.
+ *
+ * occupancy(점유) 집합으로 위/왼쪽 셀의 span 에 이미 먹힌 칸을 추적하며 각
+ * 행에서 다음 빈 열로 커서를 옮긴다 — 그래야 TSV(빈 칸까지 자리 차지)와
+ * 좌표계가 일치한다.
+ */
+export function parseHtmlTableMerges(html) {
+  if (typeof html !== 'string' || !html || typeof DOMParser === 'undefined') {
+    return []
+  }
+  let doc
+  try {
+    doc = new DOMParser().parseFromString(html, 'text/html')
+  } catch {
+    return []
+  }
+  const table = doc.querySelector('table')
+  if (!table) return []
+  const trs = Array.from(table.querySelectorAll('tr'))
+  if (trs.length === 0) return []
+  const merges = []
+  const occupied = new Set() // "r,c" — span 으로 가려진 칸
+  for (let r = 0; r < trs.length; r += 1) {
+    const cells = Array.from(trs[r].children).filter(
+      (el) => el.tagName === 'TD' || el.tagName === 'TH',
+    )
+    let c = 0
+    for (const cell of cells) {
+      while (occupied.has(`${r},${c}`)) c += 1
+      // rowSpan/colSpan IDL 프로퍼티(기본 1)를 우선 — 대소문자/따옴표 차이에
+      // 안전. 일부 환경 폴백으로 attribute 도 본다.
+      const rs = Math.max(
+        1,
+        Number(cell.rowSpan) || parseInt(cell.getAttribute('rowspan'), 10) || 1,
+      )
+      const cs = Math.max(
+        1,
+        Number(cell.colSpan) || parseInt(cell.getAttribute('colspan'), 10) || 1,
+      )
+      if (rs > 1 || cs > 1) {
+        merges.push({ r, c, rs, cs })
+        for (let dr = 0; dr < rs; dr += 1) {
+          for (let dc = 0; dc < cs; dc += 1) {
+            occupied.add(`${r + dr},${c + dc}`)
+          }
+        }
+      }
+      c += cs
+    }
+  }
+  return merges
+}
+
+// --------------------------------------------------------------------------- //
+// 셀 정렬 (가로 text-align / 세로 vertical-align)                               //
+//                                                                              //
+// 표 / 비교표 셀의 cell_styles 항목에 `align`('left'|'center'|'right') ·         //
+// `valign`('top'|'middle'|'bottom') 로 저장. 미설정이면 호출부의 기본값으로     //
+// 폴백한다(가로 기본=가운데, 세로 기본은 모드별). Tailwind purge 함정:          //
+// 클래스 리터럴이 아래 맵 소스에 그대로 있어야 살아남는다(보간 금지).          //
+// --------------------------------------------------------------------------- //
+const _H_ALIGN_CLASS = { left: 'text-left', center: 'text-center', right: 'text-right' }
+const _V_ALIGN_CLASS = { top: 'align-top', middle: 'align-middle', bottom: 'align-bottom' }
+
+/** 가로 정렬 토큰 → Tailwind text-align 클래스. 미설정이면 fallback. */
+export function hAlignClass(align, fallback = 'text-center') {
+  return _H_ALIGN_CLASS[align] || fallback
+}
+/** 세로 정렬 토큰 → Tailwind vertical-align 클래스. 미설정이면 fallback. */
+export function vAlignClass(valign, fallback = '') {
+  return _V_ALIGN_CLASS[valign] || fallback
+}
+
+/**
+ * 선택한 셀들의 가로·세로 정렬을 지정하는 팝오버 본문. 색(셀 배경/글자
+ * 서식)과 동일하게 `onApply(field, token)` 으로 선택 영역에 일괄 적용한다 —
+ * field 는 'align' | 'valign', token 은 값 또는 null(기본값으로 되돌림).
+ * 헤더 셀 선택도 같은 경로(applyCellColor)라 함께 적용된다.
+ */
+export function CellAlignControl({ onApply }) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-1">
+        <span className="w-7 text-[10px] uppercase text-muted-foreground">가로</span>
+        <_AlignBtn onClick={() => onApply('align', 'left')} title="왼쪽 정렬">
+          <AlignLeft className="h-3.5 w-3.5" />
+        </_AlignBtn>
+        <_AlignBtn onClick={() => onApply('align', 'center')} title="가운데 정렬">
+          <AlignCenter className="h-3.5 w-3.5" />
+        </_AlignBtn>
+        <_AlignBtn onClick={() => onApply('align', 'right')} title="오른쪽 정렬">
+          <AlignRight className="h-3.5 w-3.5" />
+        </_AlignBtn>
+        <_AlignBtn onClick={() => onApply('align', null)} title="가로 정렬 기본값">
+          <span className="text-[10px] px-0.5">기본</span>
+        </_AlignBtn>
+      </div>
+      <div className="flex items-center gap-1">
+        <span className="w-7 text-[10px] uppercase text-muted-foreground">세로</span>
+        <_AlignBtn onClick={() => onApply('valign', 'top')} title="위 정렬">
+          <AlignStartHorizontal className="h-3.5 w-3.5" />
+        </_AlignBtn>
+        <_AlignBtn onClick={() => onApply('valign', 'middle')} title="가운데 정렬">
+          <AlignCenterHorizontal className="h-3.5 w-3.5" />
+        </_AlignBtn>
+        <_AlignBtn onClick={() => onApply('valign', 'bottom')} title="아래 정렬">
+          <AlignEndHorizontal className="h-3.5 w-3.5" />
+        </_AlignBtn>
+        <_AlignBtn onClick={() => onApply('valign', null)} title="세로 정렬 기본값">
+          <span className="text-[10px] px-0.5">기본</span>
+        </_AlignBtn>
+      </div>
+    </div>
+  )
+}
+function _AlignBtn({ onClick, title, children }) {
+  return (
+    <button
+      type="button"
+      // mousedown 기본동작 막아 셀 선택(selection)이 풀리지 않게.
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onClick}
+      title={title}
+      className="flex h-7 min-w-7 items-center justify-center rounded border bg-background px-1 hover:bg-muted"
+    >
+      {children}
+    </button>
+  )
 }
 
 /**

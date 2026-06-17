@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useRef, useCallback } from 'react'
-import { Grid3x3, Maximize2, Minimize2, Palette, Type } from 'lucide-react'
+import { AlignCenter, Grid3x3, Maximize2, Minimize2, Palette, Type } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import {
@@ -7,7 +7,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/shared/components/ui/popover'
-import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, NoteInput, PreviewLabel, TextStyleField, captionSkipProps, computeMergeMap, normalizeMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation, _richIsEmpty, _richSeed, sanitizeCaptionHtml } from './_shared'
+import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, NoteInput, PreviewLabel, TextStyleField, captionSkipProps, CellAlignControl, computeMergeMap, hAlignClass, normalizeMerges, parseHtmlTableMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation, vAlignClass, _richIsEmpty, _richSeed, sanitizeCaptionHtml } from './_shared'
 import { RichTextRowEditor, RichTextFormatToolbarBody } from './RichTextRowEditor'
 import { ColorSwatchPicker, bgTokenClass, colorTokenClass, normalizeToken } from '@/shared/text-color'
 
@@ -243,7 +243,12 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   const cols = Array.isArray(overrideCols) ? overrideCols : templateCols
   const caption = content?.caption ?? ''
   const note = content?.note ?? ''
-  const rows = content?.rows ?? []
+  const rawRows = content?.rows ?? []
+  // 편집 모드에서 행이 하나도 없으면 빈 행 한 줄을 기본으로 보여준다 — 어디에
+  // 입력/붙여넣기 해야 할지 바로 알 수 있게. 저장값(content.rows)은 그대로 비어
+  // 있고, 첫 입력·붙여넣기 때 실제 행이 생긴다. 읽기 모드는 영향 없음(빈 표는
+  // 그대로 숨김 — readOnly 분기의 rows.length===0 가 유지됨).
+  const rows = !readOnly && rawRows.length === 0 ? [{}] : rawRows
   // 셀 병합 side-table. `merges = [{r,c,rs,cs}]` 형태. 빈 배열/없음이면
   // 기존 렌더와 100% 동일하게 동작. anchor 가 아닌 covered 셀은 출력 단계
   // 에서 건너뛰고, anchor 에만 rowSpan/colSpan attr 가 붙는다.
@@ -517,7 +522,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                               key={ci}
                               rowSpan={span?.rs}
                               colSpan={span?.cs}
-                              className={`px-2 py-1.5 text-center font-medium text-xs text-muted-foreground border-b border-r last:border-r-0 ${headerCellClass(hr, c.key)}`.trim()}
+                              className={`px-2 py-1.5 ${hAlignClass(cell?.align)} ${vAlignClass(cell?.valign)} font-medium text-xs text-muted-foreground border-b border-r last:border-r-0 ${headerCellClass(hr, c.key)}`.trim()}
                             >
                               {hasRich ? (
                                 <span
@@ -555,6 +560,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                         // 영역에 흡수되었으므로 출력 자체를 건너뜀.
                         if (mergeMap.covered.has(`${ri},${ci}`)) return null
                         const span = mergeMap.anchors.get(`${ri},${ci}`)
+                        const cs = cellStyles[_cellKey(ri, c.key)]
                         return (
                           <ReadOnlyCell
                             key={ci}
@@ -563,6 +569,8 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                             expanded={expanded}
                             rowSpan={span?.rs}
                             colSpan={span?.cs}
+                            alignH={cs?.align}
+                            alignV={cs?.valign}
                             cellClass={cellStyleClass(ri, c.key)}
                             cellSize={cellSizePx(ri, c.key)}
                           />
@@ -759,9 +767,12 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   // 변경되지 않는 한 unmerge 시 같은 자리에 같은 값이 복원됨.
   // ── 통일 selection (헤더 band + 데이터) ──────────────────────────────
   // 헤더 행(0..headerOffset-1)을 데이터 위에 얹어 *하나의* selection 좌표로
-  // 다룬다. 데이터 행은 headerOffset 만큼 아래로(offset 0=헤더없음=기존과 동일).
-  // 핸들러는 rect 가 어느 band 인지로 header.* / cell_* 로 라우팅.
-  const headerOffset = headerRowCount
+  // 다룬다. 데이터 행은 headerOffset 만큼 아래로.
+  // 헤더가 명시적 band 가 아니어도(=content.header 없는 기본 1줄 라벨 헤더)
+  // 그 라벨 행을 헤더 행 0 으로 쳐서 드래그·선택이 되게 한다(min 1). 선택만
+  // 으론 아무 것도 안 생기고, 색/정렬/병합을 *적용*하는 순간 ensureHeader 가
+  // 라벨을 header.cells 로 승격(1줄 헤더 band 로 전환)한다.
+  const headerOffset = Math.max(1, headerRowCount)
   const selection = useCellSelection({
     rowCount: headerOffset + rows.length,
     colCount: cols.length,
@@ -858,7 +869,8 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           const cur = { ...(hCells[k] || {}) }
           if (token) cur[field] = token
           else delete cur[field]
-          if (cur.text || cur.html || cur.bg || cur.fg) hCells[k] = cur
+          if (cur.text || cur.html || cur.bg || cur.fg || cur.align || cur.valign)
+            hCells[k] = cur
           else delete hCells[k]
           hTouched = true
         } else {
@@ -866,7 +878,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           const cur = { ...(nextStyles[k] || {}) }
           if (token) cur[field] = token
           else delete cur[field]
-          if (cur.bg || cur.fg) nextStyles[k] = cur
+          if (cur.bg || cur.fg || cur.align || cur.valign) nextStyles[k] = cur
           else delete nextStyles[k]
         }
       }
@@ -926,7 +938,8 @@ export function TableEditor({ props, content, onChange, readOnly }) {
             // 숫자/날짜/선택 셀 — 인라인 서식은 없지만 셀 단위 색/크기는 가능.
             const k = _cellKey(rowIdx, col.key)
             const next = cellStyleFn({ ...(nextStyles[k] || {}) }) || {}
-            if (next.bg || next.fg || next.size) nextStyles[k] = next
+            if (next.bg || next.fg || next.size || next.align || next.valign)
+              nextStyles[k] = next
             else delete nextStyles[k]
             stylesTouched = true
           }
@@ -1208,7 +1221,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
    * target column's type best-effort; non-numeric values pasted into a
    * number column are kept as strings (validation will surface that).
    */
-  function pasteGrid(startRow, startCol, text) {
+  function pasteGrid(startRow, startCol, text, pasteMerges) {
     const grid = parseTsv(text)
     if (grid.length === 0) return
     const incomingWidth = Math.max(...grid.map((r) => r.length))
@@ -1250,7 +1263,137 @@ export function TableEditor({ props, content, onChange, readOnly }) {
       nextRows[startRow + r] = target
     }
 
-    patch({ columns: nextCols, rows: nextRows, cell_html: nextHtml })
+    // 엑셀 셀 병합(rowspan/colspan) 재현 — 붙인 위치(startRow/startCol)만큼
+    // 오프셋해 데이터 merges 에 더하고 정규화(범위 클램프·겹침 last-wins).
+    const next = { columns: nextCols, rows: nextRows, cell_html: nextHtml }
+    if (pasteMerges?.length) {
+      const shifted = pasteMerges.map((m) => ({
+        r: startRow + m.r,
+        c: startCol + m.c,
+        rs: m.rs,
+        cs: m.cs,
+      }))
+      next.merges = normalizeMerges(
+        [...merges, ...shifted],
+        nextRows.length,
+        nextCols.length,
+      )
+    }
+    patch(next)
+  }
+
+  /**
+   * 다중행 헤더 셀에 붙여넣기. 헤더 band(절대행 0..headerRowCount-1)와 데이터
+   * band 를 하나의 좌표계로 보고 (startHeaderRow, startCol) 부터 TSV 를
+   * 흩뿌린다 — 헤더 줄 수를 넘는 행은 그대로 아래 데이터 행으로 이어 붙어서,
+   * 엑셀에서 "머리글 + 본문" 을 통째로 복사해 헤더 셀에 붙여도 셀별로 나뉜다.
+   * 평문 붙여넣기라 덮어쓴 헤더 셀의 rich(html)·데이터 셀의 cell_html 은
+   * 평문으로 대체된다. (한 줄 헤더=columns[].label `<input>` 경로는
+   * pasteOntoHeader 가 따로 담당.)
+   */
+  function pasteIntoHeader(startHeaderRow, startCol, text, pasteMerges) {
+    const grid = parseTsv(text)
+    if (grid.length === 0) return
+    const incomingWidth = Math.max(...grid.map((r) => r.length))
+    const neededCols = startCol + incomingWidth
+
+    // 열 확장 — 데이터 셀 붙여넣기(pasteGrid)와 동일 규칙.
+    let nextCols = cols
+    if (neededCols > cols.length) {
+      const existing = new Set(cols.map((c) => c.key))
+      nextCols = [...cols]
+      while (nextCols.length < neededCols) {
+        let n = nextCols.length + 1
+        let key = `col_${n}`
+        while (existing.has(key)) {
+          n += 1
+          key = `col_${n}`
+        }
+        existing.add(key)
+        nextCols.push({ key, label: `열 ${n}`, type: 'text' })
+      }
+    }
+
+    const h = ensureHeader()
+    const headerCellsNext = { ...(h.cells || {}) }
+    const nextRows = [...rows]
+    const nextHtml = { ...cellHtml }
+
+    for (let r = 0; r < grid.length; r += 1) {
+      const absRow = startHeaderRow + r
+      if (absRow < headerRowCount) {
+        // 헤더 band — 헤더 셀 text 로 채우고 기존 색(bg/fg)은 보존.
+        for (let c = 0; c < grid[r].length; c += 1) {
+          const col = nextCols[startCol + c]
+          if (!col) continue
+          const k = _cellKey(absRow, col.key)
+          const cur = { ...(headerCellsNext[k] || {}) }
+          const v = grid[r][c]
+          if (v) cur.text = v
+          else delete cur.text
+          delete cur.html // 평문 덮어쓰기 → rich 버림
+          if (cur.text || cur.bg || cur.fg || cur.align || cur.valign)
+            headerCellsNext[k] = cur
+          else delete headerCellsNext[k]
+        }
+      } else {
+        // 데이터 band — 헤더 줄 수를 넘긴 행은 데이터 행으로 이어 붙임.
+        const dataRow = absRow - headerRowCount
+        while (nextRows.length <= dataRow) nextRows.push({})
+        const target = { ...nextRows[dataRow] }
+        for (let c = 0; c < grid[r].length; c += 1) {
+          const col = nextCols[startCol + c]
+          if (!col) continue
+          target[col.key] = coerceCellValue(col, grid[r][c])
+          delete nextHtml[_cellKey(dataRow, col.key)]
+        }
+        nextRows[dataRow] = target
+      }
+    }
+
+    const next = {
+      columns: nextCols,
+      header: { ...h, cells: headerCellsNext },
+      rows: nextRows,
+      cell_html: nextHtml,
+    }
+    // 엑셀 셀 병합 재현 — 헤더/데이터는 별도 merges 배열·좌표원점이라, 한
+    // band 안에 온전히 들어가는 병합만 각자 배열에 넣는다(밴드를 가로지르는
+    // 병합은 우리 모델로 표현 불가 → 버림). 헤더 band 의 r 원점은 절대
+    // 헤더행, 데이터 band 는 -headerRowCount.
+    if (pasteMerges?.length) {
+      const headerAdds = []
+      const dataAdds = []
+      for (const m of pasteMerges) {
+        const top = startHeaderRow + m.r
+        const bottom = top + m.rs - 1
+        const c = startCol + m.c
+        if (bottom < headerRowCount) {
+          headerAdds.push({ r: top, c, rs: m.rs, cs: m.cs })
+        } else if (top >= headerRowCount) {
+          dataAdds.push({ r: top - headerRowCount, c, rs: m.rs, cs: m.cs })
+        }
+        // straddler(헤더↔데이터 경계 가로지름) → skip
+      }
+      if (headerAdds.length) {
+        next.header = {
+          ...next.header,
+          merges: normalizeMerges(
+            [...headerMerges, ...headerAdds],
+            headerRowCount,
+            nextCols.length,
+          ),
+        }
+      }
+      if (dataAdds.length) {
+        next.merges = normalizeMerges(
+          [...merges, ...dataAdds],
+          nextRows.length,
+          nextCols.length,
+        )
+      }
+    }
+    patch(next)
   }
 
   if (cols.length === 0) {
@@ -1309,6 +1452,29 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                 onChange={(t) => applyCellColor('bg', t)}
                 size={18}
               />
+            </PopoverContent>
+          </Popover>
+        )}
+        {/* 정렬 — 선택한 셀들의 가로(왼쪽/가운데/오른쪽)·세로(위/가운데/아래)
+            정렬을 일괄 지정. 색과 동일하게 applyCellColor 로 cell_styles 에 저장. */}
+        {selection.rect && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-[11px] rounded-md border bg-muted/40"
+                title="선택한 셀의 가로·세로 정렬"
+              >
+                <AlignCenter className="mr-1 h-3 w-3" />정렬
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              className="w-auto p-2"
+              data-cell-selection-allow
+            >
+              <CellAlignControl onApply={applyCellColor} />
             </PopoverContent>
           </Popover>
         )}
@@ -1548,6 +1714,9 @@ export function TableEditor({ props, content, onChange, readOnly }) {
             const body = rows.map((row) => cols.map((c) => row[c.key]))
             return toTsv([header, ...body])
           }}
+          onPaste={(text, html) =>
+            pasteGrid(0, 0, text, parseHtmlTableMerges(html))
+          }
           onClear={() => patch({ rows: [] })}
         />
       </div>
@@ -1601,7 +1770,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                           onMouseLeave={() => selection.handleMouseLeave(hr, ci)}
                           {...(span?.rs > 1 ? { rowSpan: span.rs } : {})}
                           {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
-                          className={`px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b border-r last:border-r-0 group relative ${headerCellClass(hr, c.key)} ${selH ? 'bg-primary/10 ring-1 ring-primary/40' : ''}`.trim()}
+                          className={`px-1 py-1 ${hAlignClass(hcell?.align)} ${vAlignClass(hcell?.valign)} font-medium text-xs text-muted-foreground border-b border-r last:border-r-0 group relative ${headerCellClass(hr, c.key)} ${selH ? 'bg-primary/10 ring-1 ring-primary/40' : ''}`.trim()}
                         >
                           <div className="outline-rich-row">
                             <RichTextRowEditor
@@ -1610,9 +1779,14 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                               onChange={(html, text) =>
                                 updateHeaderCellRich(hr, c.key, html, text)
                               }
+                              onPastePlain={(text, html) =>
+                                pasteIntoHeader(hr, ci, text, parseHtmlTableMerges(html))
+                              }
                               gridCellKey={`h-${hr}-${ci}`}
                               defaultSizePx={cellDefaultSizePx}
-                              className="w-full min-h-[1.5rem] rounded px-1 py-0.5 text-xs text-center whitespace-pre-wrap break-words"
+                              // 가로 정렬은 th 의 text-align 을 상속(여기서 text-center
+                              // 를 박지 않음 — 셀 정렬 지정이 먹히도록).
+                              className="w-full min-h-[1.5rem] rounded px-1 py-0.5 text-xs whitespace-pre-wrap break-words"
                             />
                           </div>
                           {/* 열 입력 형식(텍스트/숫자) — 맨 아래 헤더 행(열과
@@ -1666,13 +1840,21 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                     })}
                   </tr>
                 ))
-              : // 헤더 없음 — 기존 1줄 라벨 입력 행(하위호환).
+              : // 헤더 없음 — 기존 1줄 라벨 입력 행(하위호환). 단, 셀 선택
+                // 좌표상 헤더 행 0 으로 취급해 드래그·선택이 되게 한다(색/정렬/
+                // 병합 적용 시 ensureHeader 로 header band 승격).
                 <tr>
-                  {cols.map((c, i) => (
+                  {cols.map((c, i) => {
+                    const selH = selection.isCellSelected(0, i)
+                    return (
                     <th
                       key={i}
                       data-col-idx={i}
-                      className="px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b group relative"
+                      data-cell-coord={`0,${i}`}
+                      onMouseDown={(e) => selection.handleMouseDown(e, 0, i)}
+                      onMouseEnter={() => selection.handleMouseEnter(0, i)}
+                      onMouseLeave={() => selection.handleMouseLeave(0, i)}
+                      className={`px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b group relative ${selH ? 'bg-primary/10 ring-1 ring-primary/40' : ''}`}
                     >
                       <div className="flex items-center gap-1">
                         <input
@@ -1733,7 +1915,8 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                         </div>
                       )}
                     </th>
-                  ))}
+                    )
+                  })}
                 </tr>}
           </thead>
           <tbody>
@@ -1749,6 +1932,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                   // 통일 selection 좌표 — 데이터 행은 headerOffset 만큼 아래.
                   const sr = headerOffset + rowIdx
                   const selected = selection.isCellSelected(sr, ci)
+                  const cstyle = cellStyles[_cellKey(rowIdx, c.key)]
                   return (
                     <td
                       key={ci}
@@ -1761,7 +1945,8 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                       onMouseLeave={() => selection.handleMouseLeave(sr, ci)}
                       {...(span?.rs > 1 ? { rowSpan: span.rs } : {})}
                       {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
-                      className={`px-1 py-1 ${cellStyleClass(rowIdx, c.key)} ${
+                      // 세로 정렬은 td 가 담당(셀 지정 우선, 없으면 병합 시 가운데).
+                      className={`px-1 py-1 ${vAlignClass(cstyle?.valign, span?.rs > 1 ? 'align-middle' : '')} ${cellStyleClass(rowIdx, c.key)} ${
                         isLast ? 'relative' : ''
                       } ${selected ? 'bg-primary/10 ring-1 ring-primary/40' : ''}`}
                     >
@@ -1773,7 +1958,10 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                         onChangeRich={(html, text) =>
                           updateCellRich(rowIdx, c.key, html, text)
                         }
-                        onMultiPaste={(text) => pasteGrid(rowIdx, ci, text)}
+                        onMultiPaste={(text, html) =>
+                          pasteGrid(rowIdx, ci, text, parseHtmlTableMerges(html))
+                        }
+                        alignClass={hAlignClass(cstyle?.align)}
                         rowIdx={rowIdx}
                         colIdx={ci}
                         onKeyDown={(e) => grid.handleKey(e, rowIdx, ci)}
@@ -1886,7 +2074,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   )
 }
 
-function CellInput({ column, value, html, onChange, onChangeRich, onMultiPaste, rowIdx, colIdx, onKeyDown, registerEditor, defaultSizePx, cellSize }) {
+function CellInput({ column, value, html, onChange, onChangeRich, onMultiPaste, alignClass = 'text-center', rowIdx, colIdx, onKeyDown, registerEditor, defaultSizePx, cellSize }) {
   const t = column.type
   // 네이티브 입력칸은 text-xs 가 크기를 고정하므로, 셀 단위 크기는 인라인
   // style 로 덮어써야 먹는다(인라인 > 클래스). 없으면 undefined → text-xs 유지.
@@ -1903,7 +2091,8 @@ function CellInput({ column, value, html, onChange, onChangeRich, onMultiPaste, 
     if (!text) return
     if (text.indexOf('\t') === -1 && text.indexOf('\n') === -1) return
     e.preventDefault()
-    onMultiPaste(text)
+    // text/html 도 함께 넘긴다 — 엑셀 셀 병합 재현용.
+    onMultiPaste(text, e.clipboardData?.getData('text/html') || '')
   }
 
   if (t === 'select') {
@@ -1916,7 +2105,7 @@ function CellInput({ column, value, html, onChange, onChangeRich, onMultiPaste, 
         onChange={(e) => onChange(e.target.value || undefined)}
         data-grid-cell={gridCellKey}
         style={sizeStyle}
-        className="flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs text-center"
+        className={`flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs ${alignClass}`}
       >
         <option value="">—</option>
         {(column.options ?? []).map((o) => (
@@ -1937,7 +2126,7 @@ function CellInput({ column, value, html, onChange, onChangeRich, onMultiPaste, 
         onKeyDown={onKeyDown}
         data-grid-cell={gridCellKey}
         style={sizeStyle}
-        className="h-8 text-xs text-center"
+        className={`h-8 text-xs ${alignClass}`}
       />
     )
   }
@@ -1954,7 +2143,7 @@ function CellInput({ column, value, html, onChange, onChangeRich, onMultiPaste, 
         onKeyDown={onKeyDown}
         data-grid-cell={gridCellKey}
         style={sizeStyle}
-        className="h-8 text-xs text-center"
+        className={`h-8 text-xs ${alignClass}`}
       />
     )
   }
@@ -1972,7 +2161,7 @@ function CellInput({ column, value, html, onChange, onChangeRich, onMultiPaste, 
         onPastePlain={onMultiPaste}
         gridCellKey={gridCellKey}
         defaultSizePx={defaultSizePx}
-        className="w-full min-h-[2rem] rounded-md border border-input bg-background px-2 py-1 text-xs leading-snug text-center whitespace-pre-wrap break-words"
+        className={`w-full min-h-[2rem] rounded-md border border-input bg-background px-2 py-1 text-xs leading-snug ${alignClass} whitespace-pre-wrap break-words`}
       />
     </div>
   )
@@ -2020,7 +2209,7 @@ function coerceCellValue(column, raw) {
  *
  *  Expanded 모드: 전체 펼치기 토글이 켜진 상태 — 셀이 줄바꿈 되어 자연
  *  스럽게 늘어남. 이미 다 보이므로 hover popover 는 띄우지 않는다. */
-function ReadOnlyCell({ value, html, expanded, rowSpan, colSpan, cellClass = '', cellSize }) {
+function ReadOnlyCell({ value, html, expanded, rowSpan, colSpan, alignH, alignV, cellClass = '', cellSize }) {
   const hasRich = !_richIsEmpty(html)
   // 셀 단위 글자 크기(숫자/날짜/선택 셀) — 읽기 모드 td 에 인라인으로.
   const sizeStyle = cellSize ? { fontSize: cellSize } : undefined
@@ -2041,12 +2230,17 @@ function ReadOnlyCell({ value, html, expanded, rowSpan, colSpan, cellClass = '',
     ...(rowSpan && rowSpan > 1 ? { rowSpan } : {}),
     ...(colSpan && colSpan > 1 ? { colSpan } : {}),
   }
+  // 가로 정렬: 셀 지정(alignH) 우선, 없으면 기본 가운데. 세로 정렬: 셀
+  // 지정(alignV) 우선, 없으면 세로 병합이면 가운데, 아니면 모드별 기본
+  // (compact/empty=브라우저 기본 middle, expanded=align-top).
+  const tall = rowSpan && rowSpan > 1
+  const hCls = hAlignClass(alignH)
   if (isEmpty) {
     return (
       <td
         {...spanAttrs}
         style={sizeStyle}
-        className={`px-2 py-1.5 text-center text-muted-foreground ${cellClass}`}
+        className={`px-2 py-1.5 text-muted-foreground ${hCls} ${vAlignClass(alignV, tall ? 'align-middle' : '')} ${cellClass}`}
       >
         —
       </td>
@@ -2057,7 +2251,7 @@ function ReadOnlyCell({ value, html, expanded, rowSpan, colSpan, cellClass = '',
       <td
         {...spanAttrs}
         style={sizeStyle}
-        className={`px-2 py-1.5 text-center whitespace-pre-wrap break-words align-top ${cellClass}`}
+        className={`px-2 py-1.5 whitespace-pre-wrap break-words ${hCls} ${vAlignClass(alignV, tall ? 'align-middle' : 'align-top')} ${cellClass}`}
       >
         {richNode ?? text}
       </td>
@@ -2067,7 +2261,7 @@ function ReadOnlyCell({ value, html, expanded, rowSpan, colSpan, cellClass = '',
     <td
       {...spanAttrs}
       style={sizeStyle}
-      className={`px-2 py-1.5 text-center truncate relative group ${cellClass}`}
+      className={`px-2 py-1.5 truncate relative group ${hCls} ${vAlignClass(alignV, tall ? 'align-middle' : '')} ${cellClass}`}
     >
       <span title={text} className="block truncate">
         {richNode ?? text}

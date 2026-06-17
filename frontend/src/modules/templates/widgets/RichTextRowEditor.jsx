@@ -244,7 +244,9 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
           return false
         }
         event.preventDefault()
-        cb(text)
+        // text/html 도 함께 넘긴다 — 부모(표/비교표)가 엑셀 셀 병합
+        // (rowspan/colspan)을 재현하는 데 쓴다. 평문엔 병합 정보가 없음.
+        cb(text, event.clipboardData?.getData('text/html') || '')
         return true
       },
       // Normalize pasted color before ProseMirror parses it: external sources

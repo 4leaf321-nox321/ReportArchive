@@ -1,5 +1,6 @@
 import { useRef, useState, useCallback } from 'react'
 import {
+  AlignCenter,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -34,14 +35,18 @@ import {
 import {
   AutoGrowTextarea,
   CaptionInput,
+  CellAlignControl,
   computeMergeMap,
   DataTableActions,
+  hAlignClass,
+  vAlignClass,
   DEFAULT_BODY_FONT_PX,
   EditorOptionBar,
   EditorOptionNumber,
   EditorOptionToggle,
   LabelField,
   normalizeMerges,
+  parseHtmlTableMerges,
   NoteInput,
   PreviewLabel,
   shiftMergesForCol,
@@ -438,7 +443,14 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     : Array.isArray(props.cases)
       ? props.cases
       : []
-  const rows = Array.isArray(content?.rows) ? content.rows : []
+  const rawRows = Array.isArray(content?.rows) ? content.rows : []
+  // 편집 모드에서 행이 하나도 없으면 빈 행 한 줄을 기본으로 보여준다 — 어디에
+  // 입력/붙여넣기 해야 할지 바로 알 수 있게. 저장값(content.rows)은 그대로 비어
+  // 있고, 첫 입력·붙여넣기 때 실제 행이 생긴다. 읽기 모드는 영향 없음.
+  const rows =
+    !readOnly && rawRows.length === 0
+      ? [{ key: 'row_1', kind: 'text', label: '', values: {} }]
+      : rawRows
   // 셀 병합 side-table. 비교표 좌표계:
   //   c = 0      → 행 라벨 컬럼
   //   c = 1..M   → case 컬럼 (cases[c-1])
@@ -1011,7 +1023,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
   }
   /** CASE 셀(c=startCaseIdx) 에 붙여넣기 — TSV 행→비교 행, TSV 열→CASE.
    *  표 위젯 pasteGrid 와 동일한 느낌. 이미지 행은 값을 건드리지 않는다. */
-  function pasteGrid(startRowIdx, startCaseIdx, text) {
+  function pasteGrid(startRowIdx, startCaseIdx, text, pasteMerges) {
     const tsv = parseTsv(text)
     if (tsv.length === 0) return
     const width = Math.max(...tsv.map((r) => r.length))
@@ -1034,12 +1046,29 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       }
       nextRows[startRowIdx + r] = { ...row, values }
     }
-    patch({ cases: nextCases, rows: nextRows, cell_html: nextHtml })
+    const next = { cases: nextCases, rows: nextRows, cell_html: nextHtml }
+    // 엑셀 셀 병합 재현. 좌표계: 열 0 = 행 라벨, 열 1.. = CASE. CASE 셀
+    // 붙여넣기라 unified 열 = (startCaseIdx + 블록열) + 1 → 항상 ≥1(행 라벨
+    // 열과 안 겹침). 데이터 행 r 은 startRowIdx 기준.
+    if (pasteMerges?.length) {
+      const shifted = pasteMerges.map((m) => ({
+        r: startRowIdx + m.r,
+        c: startCaseIdx + m.c + 1,
+        rs: m.rs,
+        cs: m.cs,
+      }))
+      next.merges = normalizeMerges(
+        [...merges, ...shifted],
+        nextRows.length,
+        nextCases.length + 1,
+      )
+    }
+    patch(next)
     maybeWarnMaxCases(nextCases.length)
   }
   /** 행 라벨 칸에 붙여넣기 — 엑셀에서 "라벨 + CASE 값" 표를 통째로 붙일 때.
    *  TSV col0 → 행 라벨, col1.. → CASE0.. 값. 좌상단부터 표 전체 붙이기. */
-  function pasteFromRowLabel(startRowIdx, text) {
+  function pasteFromRowLabel(startRowIdx, text, pasteMerges) {
     const tsv = parseTsv(text)
     if (tsv.length === 0) return
     const width = Math.max(...tsv.map((r) => r.length))
@@ -1066,7 +1095,28 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       }
       nextRows[startRowIdx + r] = next
     }
-    patch({ cases: nextCases, rows: nextRows, cell_html: nextHtml })
+    const result = { cases: nextCases, rows: nextRows, cell_html: nextHtml }
+    // 엑셀 셀 병합 재현. 블록 col0 = 행 라벨(unified 열 0), col1.. = CASE.
+    // 행 라벨 열(0)과 CASE 구역(≥1)을 가로지르는 병합(c=0 && cs>1)은 우리
+    // 모델에서 의미가 모호해 버린다(기존 UI 규칙과 동일).
+    if (pasteMerges?.length) {
+      const shifted = pasteMerges
+        .filter((m) => !(m.c === 0 && m.cs > 1))
+        .map((m) => ({
+          r: startRowIdx + m.r,
+          c: m.c,
+          rs: m.rs,
+          cs: m.cs,
+        }))
+      if (shifted.length) {
+        result.merges = normalizeMerges(
+          [...merges, ...shifted],
+          nextRows.length,
+          nextCases.length + 1,
+        )
+      }
+    }
+    patch(result)
     maybeWarnMaxCases(nextCases.length)
   }
   /** CASE 라벨 칸에 붙여넣기(표 위젯 pasteOntoHeader 대응): TSV 첫 행 → CASE
@@ -1103,6 +1153,118 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     patch({ cases: nextCases, rows: nextRows, cell_html: nextHtml })
     maybeWarnMaxCases(nextCases.length)
   }
+  /**
+   * 다중행 헤더 셀에 붙여넣기. 헤더 band(절대행 0..headerRowCount-1)와 데이터
+   * band 를 하나의 좌표계로 보고 (startHeaderRow, startColIdx) 부터 TSV 를
+   * 흩뿌린다 — 헤더 줄 수를 넘는 행은 그대로 아래 데이터 행으로 이어 붙는다.
+   * 좌표계: 열 0 = 행 라벨, 열 1.. = CASE. 즉 데이터 band 에서 열 0 은 행 라벨,
+   * 그 외는 CASE 값. 평문 붙여넣기라 덮어쓴 셀의 rich(html)는 평문으로 대체된다.
+   */
+  function pasteIntoHeader(startHeaderRow, startColIdx, text, pasteMerges) {
+    const tsv = parseTsv(text)
+    if (tsv.length === 0) return
+    const width = Math.max(...tsv.map((r) => r.length))
+    // 열 0(행 라벨)은 CASE 가 아니므로 needed CASE 수는 (가장 오른쪽 unified 열
+    // 인덱스) = startColIdx + width - 1. 데이터 band 로 넘치는 행 수도 함께 확보.
+    const neededCases = startColIdx + width - 1
+    const neededRows = Math.max(
+      0,
+      startHeaderRow + tsv.length - headerRowCount,
+    )
+    const { nextCases, nextRows } = ensureSize(neededCases, neededRows)
+    const h = ensureHeader()
+    const headerCellsNext = { ...(h.cells || {}) }
+    const nextHtml = { ...cellHtml }
+
+    const colKeyOf = (u) => (u === 0 ? ROW_LABEL_KEY : nextCases[u - 1]?.key)
+
+    for (let r = 0; r < tsv.length; r += 1) {
+      const absRow = startHeaderRow + r
+      if (absRow < headerRowCount) {
+        // 헤더 band — 헤더 셀 text 로 채우고 기존 색(bg/fg)은 보존.
+        for (let c = 0; c < tsv[r].length; c += 1) {
+          const colKey = colKeyOf(startColIdx + c)
+          if (!colKey) continue
+          const k = `${absRow}::${colKey}`
+          const cur = { ...(headerCellsNext[k] || {}) }
+          const v = tsv[r][c]
+          if (v) cur.text = v
+          else delete cur.text
+          delete cur.html // 평문 덮어쓰기 → rich 버림
+          if (cur.text || cur.bg || cur.fg || cur.align || cur.valign)
+            headerCellsNext[k] = cur
+          else delete headerCellsNext[k]
+        }
+      } else {
+        // 데이터 band — 헤더 줄 수를 넘긴 행은 데이터 행으로 이어 붙임.
+        const dataRow = absRow - headerRowCount
+        const row = nextRows[dataRow]
+        if (!row) continue
+        const next = { ...row, values: { ...(row.values ?? {}) } }
+        for (let c = 0; c < tsv[r].length; c += 1) {
+          const u = startColIdx + c
+          const v = tsv[r][c]
+          if (u === 0) {
+            if (v != null) next.label = v
+            continue
+          }
+          if (row.kind === 'image') continue // 이미지 행엔 CASE 값 없음
+          const cs = nextCases[u - 1]
+          if (!cs) continue
+          if (v === '' || v == null) delete next.values[cs.key]
+          else next.values[cs.key] = v
+          delete nextHtml[`${row.key}::${cs.key}`]
+        }
+        nextRows[dataRow] = next
+      }
+    }
+
+    const result = {
+      cases: nextCases,
+      rows: nextRows,
+      header: { ...h, cells: headerCellsNext },
+      cell_html: nextHtml,
+    }
+    // 엑셀 셀 병합 재현 — 헤더/데이터는 별도 merges 배열. 한 band 안에 온전히
+    // 들어가는 병합만 각 배열에 넣고, 밴드를 가로지르거나 행 라벨 열(0)을
+    // 넘는(c=0 && cs>1) 병합은 버린다. unified 열 = startColIdx + 블록열.
+    if (pasteMerges?.length) {
+      const totalCols = nextCases.length + 1
+      const headerAdds = []
+      const dataAdds = []
+      for (const m of pasteMerges) {
+        const c = startColIdx + m.c
+        if (c === 0 && m.cs > 1) continue // 행 라벨↔CASE 가로지름 → 버림
+        const top = startHeaderRow + m.r
+        const bottom = top + m.rs - 1
+        if (bottom < headerRowCount) {
+          headerAdds.push({ r: top, c, rs: m.rs, cs: m.cs })
+        } else if (top >= headerRowCount) {
+          dataAdds.push({ r: top - headerRowCount, c, rs: m.rs, cs: m.cs })
+        }
+        // straddler(헤더↔데이터 경계) → skip
+      }
+      if (headerAdds.length) {
+        result.header = {
+          ...result.header,
+          merges: normalizeMerges(
+            [...headerMerges, ...headerAdds],
+            headerRowCount,
+            totalCols,
+          ),
+        }
+      }
+      if (dataAdds.length) {
+        result.merges = normalizeMerges(
+          [...merges, ...dataAdds],
+          nextRows.length,
+          totalCols,
+        )
+      }
+    }
+    patch(result)
+    maybeWarnMaxCases(nextCases.length)
+  }
 
   // ─── 셀 병합 / 분할 ──────────────────────────────────────────────
   // 비교표 좌표계: c=0 → 행 라벨 컬럼, c=1..M → cases[c-1]. 행 라벨
@@ -1112,8 +1274,10 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
   // grid clamp / overlap dissolve / 1×1 drop 까지 보정.
   // ── 통일 selection (헤더 band + 데이터) ──────────────────────────────
   // 헤더 행(0..headerOffset-1)을 데이터 위에 얹어 하나의 selection 으로. 데이터
-  // 행은 headerOffset 만큼 아래(offset 0=헤더없음=기존과 동일). band 로 라우팅.
-  const headerOffset = headerRowCount
+  // 행은 headerOffset 만큼 아래. content.header 가 없는 기본 1줄(행/CASE 라벨)
+  // 헤더도 헤더 행 0 으로 쳐서 드래그·선택이 되게 한다(min 1). 색/정렬/병합을
+  // 적용하는 순간 ensureHeader 가 라벨을 header.cells 로 승격(band 전환).
+  const headerOffset = Math.max(1, headerRowCount)
   const selection = useCellSelection({
     rowCount: headerOffset + rows.length,
     colCount: totalColCount,
@@ -1256,7 +1420,8 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           const cur = { ...(hCells[k] || {}) }
           if (token) cur[field] = token
           else delete cur[field]
-          if (cur.text || cur.html || cur.bg || cur.fg) hCells[k] = cur
+          if (cur.text || cur.html || cur.bg || cur.fg || cur.align || cur.valign)
+            hCells[k] = cur
           else delete hCells[k]
           hTouched = true
         } else {
@@ -1266,7 +1431,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           const cur = { ...(nextStyles[k] || {}) }
           if (token) cur[field] = token
           else delete cur[field]
-          if (cur.bg || cur.fg) nextStyles[k] = cur
+          if (cur.bg || cur.fg || cur.align || cur.valign) nextStyles[k] = cur
           else delete nextStyles[k]
         }
       }
@@ -1334,7 +1499,8 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
             // 행 라벨/이미지 셀 — 인라인 서식은 없지만 셀 단위 색/크기는 가능.
             const k = `${rowKey}::${colKey}`
             const nx = cellStyleFn({ ...(nextStyles[k] || {}) }) || {}
-            if (nx.bg || nx.fg || nx.size) nextStyles[k] = nx
+            if (nx.bg || nx.fg || nx.size || nx.align || nx.valign)
+              nextStyles[k] = nx
             else delete nextStyles[k]
             stylesTouched = true
           }
@@ -1466,7 +1632,10 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
               {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
               style={{ fontSize: bodyFontPx }}
               className={cn(
-                'px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b border-r last:border-r-0 group relative',
+                'px-1 py-1 font-medium text-xs text-muted-foreground border-b border-r last:border-r-0 group relative',
+                // 셀 지정 정렬 우선(가로 기본=가운데, 세로 기본=th 기본 middle).
+                hAlignClass(hcell?.align),
+                vAlignClass(hcell?.valign),
                 headerCellClass(hr, colKey),
                 selH && 'bg-primary/10 ring-1 ring-primary/40',
               )}
@@ -1478,9 +1647,13 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                   onChange={(html, text) =>
                     updateHeaderCellRich(hr, colKey, html, text)
                   }
+                  onPastePlain={(text, html) =>
+                    pasteIntoHeader(hr, ci, text, parseHtmlTableMerges(html))
+                  }
                   gridCellKey={`h-${hr}-${ci}`}
                   defaultSizePx={bodyFontPx}
-                  className="w-full min-h-[1.5rem] rounded px-1 py-0.5 text-center whitespace-pre-wrap break-words"
+                  // 가로 정렬은 th 의 text-align 상속(text-center 박지 않음).
+                  className="w-full min-h-[1.5rem] rounded px-1 py-0.5 whitespace-pre-wrap break-words"
                 />
               </div>
               {isBottom && isCorner && (
@@ -1612,7 +1785,9 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                             colSpan={span?.cs > 1 ? span.cs : undefined}
                             style={{ fontSize: bodyFontPx }}
                             className={cn(
-                              'px-2 py-1.5 text-center font-medium text-muted-foreground border-b border-r last:border-r-0 whitespace-pre-wrap break-words',
+                              'px-2 py-1.5 font-medium text-muted-foreground border-b border-r last:border-r-0 whitespace-pre-wrap break-words',
+                              hAlignClass(cell?.align),
+                              vAlignClass(cell?.valign),
                               headerCellClass(hr, colKey),
                             )}
                           >
@@ -1653,6 +1828,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                   const labelKey = `${ri},0`
                   const labelCovered = mergeMap.covered.has(labelKey)
                   const labelSpan = mergeMap.anchors.get(labelKey)
+                  const lstyle = cellStyles[`${row.key}::${ROW_LABEL_KEY}`]
                   return (
                     <tr key={ri} className="border-b last:border-b-0">
                       {!labelCovered && (
@@ -1663,7 +1839,11 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                             fontSize: cellSizePx(row.key, ROW_LABEL_KEY) ?? bodyFontPx,
                           }}
                           className={cn(
-                            'px-2 py-1.5 font-medium border-r bg-muted/20 align-top whitespace-pre-wrap break-words',
+                            // 기본 정렬은 "표" 위젯과 동일하게 가로 중앙(셀 지정 우선).
+                            'px-2 py-1.5 font-medium border-r bg-muted/20 whitespace-pre-wrap break-words',
+                            hAlignClass(lstyle?.align),
+                            // 세로: 셀 지정 우선, 없으면 병합 시 가운데·아니면 위.
+                            vAlignClass(lstyle?.valign, labelSpan?.rs > 1 ? 'align-middle' : 'align-top'),
                             cellStyleClass(row.key, ROW_LABEL_KEY),
                           )}
                         >
@@ -1678,13 +1858,18 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                         const coord = `${ri},${ci + 1}`
                         if (mergeMap.covered.has(coord)) return null
                         const span = mergeMap.anchors.get(coord)
+                        const dstyle = cellStyles[`${row.key}::${c.key}`]
                         return (
                           <td
                             key={ci}
                             {...(span?.rs > 1 ? { rowSpan: span.rs } : {})}
                             {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
                             className={cn(
-                              'px-2 py-1.5 align-top',
+                              // 기본 정렬은 "표" 위젯과 동일하게 가로 중앙(셀 지정 우선).
+                              'px-2 py-1.5',
+                              hAlignClass(dstyle?.align),
+                              // 세로: 셀 지정 우선, 없으면 병합 시 가운데·아니면 위.
+                              vAlignClass(dstyle?.valign, span?.rs > 1 ? 'align-middle' : 'align-top'),
                               cellStyleClass(row.key, c.key),
                             )}
                           >
@@ -1827,6 +2012,9 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
               ])
               return toTsv([header, ...body])
             }}
+            onPaste={(text, html) =>
+              pasteFromRowLabel(0, text, parseHtmlTableMerges(html))
+            }
             onClear={() => patch({ rows: [] })}
           />
           {/* 헤더(제목) 행 수 — + 로 맨 위에 그룹 헤더 행을 얹고, 헤더 셀을
@@ -1881,6 +2069,28 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                   onChange={(t) => applyCellColor('bg', t)}
                   size={18}
                 />
+              </PopoverContent>
+            </Popover>
+          )}
+          {/* 정렬 — 선택한 셀들의 가로·세로 정렬을 일괄 지정(cell_styles 에 저장). */}
+          {selection.rect && (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-[11px] rounded-md border bg-muted/40"
+                  title="선택한 셀의 가로·세로 정렬"
+                >
+                  <AlignCenter className="mr-1 h-3 w-3" />정렬
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="end"
+                className="w-auto p-2"
+                data-cell-selection-allow
+              >
+                <CellAlignControl onApply={applyCellColor} />
               </PopoverContent>
             </Popover>
           )}
@@ -2012,7 +2222,17 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                 renderHeaderEditRows()
               ) : (
               <tr>
-                <th className="px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b border-r relative">
+                <th
+                  data-cell-coord="0,0"
+                  onMouseDown={(e) => selection.handleMouseDown(e, 0, 0)}
+                  onMouseEnter={() => selection.handleMouseEnter(0, 0)}
+                  onMouseLeave={() => selection.handleMouseLeave(0, 0)}
+                  className={cn(
+                    'px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b border-r relative',
+                    selection.isCellSelected(0, 0) &&
+                      'bg-primary/10 ring-1 ring-primary/40',
+                  )}
+                >
                   <span className="text-[10px]">행 / CASE</span>
                   {/* 행 라벨 컬럼도 case 컬럼과 동일한 핸들 패턴으로 폭 조절.
                       더블클릭 시 기본 폭으로 리셋. */}
@@ -2040,7 +2260,15 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                 {cases.map((c, ci) => (
                   <th
                     key={ci}
-                    className="px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b group relative"
+                    data-cell-coord={`0,${ci + 1}`}
+                    onMouseDown={(e) => selection.handleMouseDown(e, 0, ci + 1)}
+                    onMouseEnter={() => selection.handleMouseEnter(0, ci + 1)}
+                    onMouseLeave={() => selection.handleMouseLeave(0, ci + 1)}
+                    className={cn(
+                      'px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b group relative',
+                      selection.isCellSelected(0, ci + 1) &&
+                        'bg-primary/10 ring-1 ring-primary/40',
+                    )}
                   >
                     <div className="flex items-start gap-0.5">
                       <Button
@@ -2128,6 +2356,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                 const labelKey = `${ri},0`
                 const labelCovered = mergeMap.covered.has(labelKey)
                 const labelSpan = mergeMap.anchors.get(labelKey)
+                const lstyle = cellStyles[`${row.key}::${ROW_LABEL_KEY}`]
                 return (
                   <tr key={row.key ?? ri} className="border-b last:border-b-0 group">
                     {!labelCovered && (
@@ -2147,7 +2376,11 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                         {...(labelSpan?.rs > 1 ? { rowSpan: labelSpan.rs } : {})}
                         {...(labelSpan?.cs > 1 ? { colSpan: labelSpan.cs } : {})}
                         className={cn(
-                          'px-1 py-1 align-top border-r bg-muted/10',
+                          // 기본 정렬은 "표" 위젯과 동일하게 가로 중앙(셀 지정 우선).
+                          'px-1 py-1 border-r bg-muted/10',
+                          hAlignClass(lstyle?.align),
+                          // 세로: 셀 지정 우선, 없으면 병합 시 가운데·아니면 위.
+                          vAlignClass(lstyle?.valign, labelSpan?.rs > 1 ? 'align-middle' : 'align-top'),
                           cellStyleClass(row.key, ROW_LABEL_KEY),
                           selection.isCellSelected(headerOffset + ri, 0) &&
                             'bg-primary/10 ring-1 ring-primary/40',
@@ -2174,7 +2407,13 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                               const text = e.clipboardData?.getData('text/plain')
                               if (!isMultiCellPaste(text)) return
                               e.preventDefault()
-                              pasteFromRowLabel(ri, text)
+                              pasteFromRowLabel(
+                                ri,
+                                text,
+                                parseHtmlTableMerges(
+                                  e.clipboardData?.getData('text/html') || '',
+                                ),
+                              )
                             }}
                             data-grid-cell={`${ri}:0`}
                             placeholder="행 이름"
@@ -2223,6 +2462,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                         headerOffset + ri,
                         ci + 1,
                       )
+                      const dstyle = cellStyles[`${row.key}::${c.key}`]
                       return (
                         <td
                           key={ci}
@@ -2239,7 +2479,11 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                           {...(span?.rs > 1 ? { rowSpan: span.rs } : {})}
                           {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
                           className={cn(
-                            'px-1 py-1 align-top',
+                            // 기본 정렬은 "표" 위젯과 동일하게 가로 중앙(셀 지정 우선).
+                            'px-1 py-1',
+                            hAlignClass(dstyle?.align),
+                            // 세로: 셀 지정 우선, 없으면 병합 시 가운데·아니면 위.
+                            vAlignClass(dstyle?.valign, span?.rs > 1 ? 'align-middle' : 'align-top'),
                             cellStyleClass(row.key, c.key),
                             selected && 'bg-primary/10 ring-1 ring-primary/40',
                           )}
@@ -2258,7 +2502,9 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                                 setCellRich(ri, row.key, c.key, html, text)
                               }
                               onKeyDown={(e) => grid.handleKey(e, ri, ci + 1)}
-                              onMultiPaste={(text) => pasteGrid(ri, ci, text)}
+                              onMultiPaste={(text, html) =>
+                                pasteGrid(ri, ci, text, parseHtmlTableMerges(html))
+                              }
                               gridCellKey={`${ri}:${ci + 1}`}
                               fontSizePx={bodyFontPx}
                               registerEditor={registerEditor}

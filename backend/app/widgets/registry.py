@@ -158,8 +158,12 @@ _COLOR_TOKEN_FIELD = {"type": "string", "enum": _COLOR_TOKENS}
 _CAPTION_HTML_FIELD = {"type": "string", "maxLength": 2000}
 _NOTE_HTML_FIELD = {"type": "string", "maxLength": 4000}
 
-# 표/비교표 셀별 색상 사이드테이블. 키 = "행::열key"(표) / "행key::케이스key"
-# (비교표), 값 = {bg?, fg?} 토큰. 값 모델과 분리돼 셀 데이터는 안 건드린다.
+# 셀 가로/세로 정렬 토큰. 미존재면 위젯 기본값(가로=가운데, 세로=모드별)으로 렌더.
+_CELL_ALIGN_FIELD = {"type": "string", "enum": ["left", "center", "right"]}
+_CELL_VALIGN_FIELD = {"type": "string", "enum": ["top", "middle", "bottom"]}
+
+# 표/비교표 셀별 색상·정렬 사이드테이블. 키 = "행::열key"(표) / "행key::케이스key"
+# (비교표), 값 = {bg?, fg?, align?, valign?}. 값 모델과 분리돼 셀 데이터는 안 건드린다.
 _CELL_STYLES_SCHEMA = {
     "type": "object",
     "additionalProperties": {
@@ -167,6 +171,8 @@ _CELL_STYLES_SCHEMA = {
         "properties": {
             "bg": _COLOR_TOKEN_FIELD,
             "fg": _COLOR_TOKEN_FIELD,
+            "align": _CELL_ALIGN_FIELD,
+            "valign": _CELL_VALIGN_FIELD,
         },
         "additionalProperties": False,
     },
@@ -205,6 +211,8 @@ _HEADER_CELL_SCHEMA = {
         "html": {"type": "string", "maxLength": 4000},
         "bg": _COLOR_TOKEN_FIELD,
         "fg": _COLOR_TOKEN_FIELD,
+        "align": _CELL_ALIGN_FIELD,
+        "valign": _CELL_VALIGN_FIELD,
     },
     "additionalProperties": False,
 }

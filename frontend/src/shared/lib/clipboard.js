@@ -29,6 +29,57 @@ export async function copyTextToClipboard(text) {
   legacyCopy(s)
 }
 
+/** 클립보드 텍스트 읽기 — "붙여넣기" 버튼용.
+ *
+ *  navigator.clipboard.readText() 는 *보안 컨텍스트*(HTTPS·localhost)에서만
+ *  동작하고, 비보안(평문 HTTP) 에서는 아예 막혀 있다(execCommand('paste') 도
+ *  대부분 브라우저에서 동작 안 함). 그래서 읽기는 폴백 없이 보안 컨텍스트에서만
+ *  지원하고, 안 되는 환경에선 호출부가 "셀을 클릭한 뒤 Ctrl+V" 안내를 띄우도록
+ *  메시지와 함께 reject 한다.
+ */
+export async function readTextFromClipboard() {
+  if (window.isSecureContext && navigator.clipboard?.readText) {
+    return await navigator.clipboard.readText()
+  }
+  throw new Error(
+    '이 환경에서는 붙여넣기 버튼을 쓸 수 없습니다. 셀을 클릭한 뒤 Ctrl+V 로 붙여넣어 주세요.',
+  )
+}
+
+/** 클립보드에서 표(평문 TSV + HTML)를 함께 읽기 — "붙여넣기" 버튼용.
+ *
+ *  엑셀 셀 병합(rowspan/colspan)은 `text/html` 폼에만 남으므로, 버튼
+ *  붙여넣기로도 병합을 재현하려면 HTML 까지 읽어야 한다. navigator.clipboard
+ *  .read()(ClipboardItem)는 보안 컨텍스트(HTTPS·localhost)에서만 동작하니,
+ *  되면 text/html + text/plain 을 둘 다 가져오고, 안 되면(평문 HTTP 등)
+ *  readText() 로 평문만 폴백한다(이 경우 병합 정보는 없음).
+ *
+ *  반환: `{ text, html }` — html 은 못 읽으면 빈 문자열.
+ */
+export async function readTableFromClipboard() {
+  if (window.isSecureContext && navigator.clipboard?.read) {
+    try {
+      const items = await navigator.clipboard.read()
+      let text = ''
+      let html = ''
+      for (const item of items) {
+        if (!html && item.types?.includes('text/html')) {
+          html = await (await item.getType('text/html')).text()
+        }
+        if (!text && item.types?.includes('text/plain')) {
+          text = await (await item.getType('text/plain')).text()
+        }
+      }
+      if (text || html) return { text, html }
+    } catch {
+      /* 권한 거부·미지원 — readText 폴백으로 */
+    }
+  }
+  // 폴백: 평문만 (병합 정보 없음)
+  const text = await readTextFromClipboard()
+  return { text, html: '' }
+}
+
 /** execCommand('copy') 기반 레거시 복사 — 평문 HTTP 등 비보안 컨텍스트용.
  *  화면 밖 textarea 를 선택해 복사하되, 기존 사용자 선택영역은 보존·복원한다. */
 function legacyCopy(s) {

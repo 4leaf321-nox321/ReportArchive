@@ -7,6 +7,7 @@ import {
 } from '@/shared/components/ui/tabs'
 import { PromptsTab } from './PromptsTab'
 import { McpTab } from './McpTab'
+import { SkillTab } from './SkillTab'
 
 /**
  * "공통 → AI 설정" — system-wide page for managing AI-related catalogs
@@ -27,14 +28,16 @@ export default function AiSettingsPage() {
       </div>
       <p className="text-sm text-muted-foreground -mt-2">
         AI 보고서 작성에 사용할 프롬프트를 관리하고, Claude 연동용 개인 MCP
-        토큰을 발급합니다. 등록된 프롬프트는 보고서 편집기의 "AI 프롬프트"
-        메뉴에서 선택해 사용할 수 있어요.
+        토큰을 발급합니다. 등록된 프롬프트는 보고서 편집기의 “AI 프롬프트”
+        메뉴에서 선택해 사용할 수 있어요. 작성 규칙을 Claude 스킬로 내보내려면
+        “스킬 생성” 탭을 사용하세요.
       </p>
 
       <Tabs defaultValue="prompts" className="flex flex-1 min-h-0 flex-col">
         <TabsList className="w-fit">
           <TabsTrigger value="prompts">프롬프트</TabsTrigger>
           <TabsTrigger value="mcp">MCP 토큰</TabsTrigger>
+          <TabsTrigger value="skill">스킬 생성</TabsTrigger>
           <TabsTrigger value="api" disabled>
             모델·API <span className="ml-1 text-[10px]">(준비 중)</span>
           </TabsTrigger>
@@ -44,6 +47,9 @@ export default function AiSettingsPage() {
         </TabsContent>
         <TabsContent value="mcp" className="flex-1 min-h-0 mt-4 overflow-y-auto">
           <McpTab />
+        </TabsContent>
+        <TabsContent value="skill" className="flex-1 min-h-0 mt-4 overflow-y-auto">
+          <SkillTab />
         </TabsContent>
         <TabsContent value="api" className="flex-1 mt-4">
           <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">

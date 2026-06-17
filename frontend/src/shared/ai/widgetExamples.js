@@ -25,7 +25,7 @@ const _RULES = __WIDGET_AUTHORING_RULES__
 export const WIDGET_PROMPT_EXAMPLES = _RULES.examples
 
 // 위젯 무관 전역 주의사항 (스키마 규칙 · 환각 키 · 혼동 위젯 쌍 · 값 타입).
-const WIDGET_RULES_PREAMBLE = _RULES.preamble
+export const WIDGET_RULES_PREAMBLE = _RULES.preamble
 
 export const WIDGET_EXAMPLES_TEXT = [
   WIDGET_RULES_PREAMBLE,

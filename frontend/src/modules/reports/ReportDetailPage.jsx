@@ -49,6 +49,7 @@ import {
   Scissors,
   Send,
   Settings2,
+  LayoutTemplate,
   Share2,
   Sparkles,
   Tag,
@@ -133,6 +134,7 @@ import {
   getTemplateVersion,
   createTemplate,
   getLatestTemplate,
+  listTemplates,
 } from '@/shared/api/templates'
 import { listTemplateCategories } from '@/shared/api/templateCategories'
 import { getRenderer } from '@/modules/templates/widgets'
@@ -285,6 +287,15 @@ export default function ReportDetailPage() {
   // the dialog read the latest info directly.
   const [takeoverPrompt, setTakeoverPrompt] = useState(null)
   const [pasteJsonOpen, setPasteJsonOpen] = useState(false)
+  // Import template picker — when an imported draft carries a template_id
+  // we can't resolve (the AI/skill placeholder "TEMPLATE_ID_HERE", or a
+  // template that doesn't exist in this workspace), we can't render its
+  // pages. Instead of failing, we prompt the user to pick a real template
+  // and rewrite the unresolved pages to it. State is non-null while the
+  // modal is open; the resolver ref carries the Promise the import flow
+  // awaits (pick → {template_id, version}, cancel → null).
+  const [templatePicker, setTemplatePicker] = useState(null)
+  const templatePickerResolveRef = useRef(null)
   // PDF print dialog — lets the writer pick a font scale before the
   // browser print dialog opens. Persisted so a writer who prefers 90%
   // doesn't have to re-pick on every print this session.
@@ -3022,10 +3033,70 @@ export default function ReportDetailPage() {
     }
   }
 
+  // Open the template-picker modal and resolve once the user picks one
+  // (→ { template_id, version }) or cancels (→ null). Promise-based so the
+  // import flow can `await` a user choice inline.
+  function pickTemplateForImport(unresolvedPageCount) {
+    return new Promise((resolve) => {
+      templatePickerResolveRef.current = resolve
+      setTemplatePicker({ unresolvedPageCount })
+    })
+  }
+
+  function resolveTemplatePicker(value) {
+    const resolve = templatePickerResolveRef.current
+    templatePickerResolveRef.current = null
+    setTemplatePicker(null)
+    if (resolve) resolve(value)
+  }
+
+  // Imported pages may reference a template_id we can't resolve — the
+  // AI/skill placeholder ("TEMPLATE_ID_HERE"), a blank id, or a template
+  // that doesn't exist in this workspace. Those pages can't render. So we
+  // detect them and prompt the user to pick a real template, then rewrite
+  // the unresolved pages to that template_id + its latest version. Mutates
+  // `pages` in place. Throws an `importCancelled` error if the user backs
+  // out (callers treat it as a soft cancel, not a failure).
+  async function ensureResolvableTemplates(pages) {
+    const ids = [...new Set(pages.map((p) => p?.template_id).filter(Boolean))]
+    const unresolved = new Set()
+    for (const id of ids) {
+      if (id === PLACEHOLDER_TEMPLATE_ID) {
+        unresolved.add(id)
+        continue
+      }
+      try {
+        await getLatestTemplate(id)
+      } catch {
+        unresolved.add(id)
+      }
+    }
+    const isUnresolvedPage = (p) => !p?.template_id || unresolved.has(p.template_id)
+    const unresolvedPageCount = pages.filter(isUnresolvedPage).length
+    if (unresolvedPageCount === 0) return
+
+    const picked = await pickTemplateForImport(unresolvedPageCount)
+    if (!picked) {
+      const err = new Error('템플릿을 선택하지 않아 불러오기를 취소했습니다.')
+      err.importCancelled = true
+      throw err
+    }
+    for (const p of pages) {
+      if (isUnresolvedPage(p)) {
+        p.template_id = picked.template_id
+        p.template_version = picked.version
+      }
+    }
+  }
+
   // Shared import path for both the file picker and the paste-JSON dialog.
   // Throws on schema mismatch so the caller can surface its own toast.
   async function applyImportedDraft(text) {
     const obj = parseImportPayload(text)
+    // Resolve any placeholder/unknown template_id by asking the user to
+    // pick a real template (rewrites those pages in place) before we try
+    // to fetch versions or render.
+    await ensureResolvableTemplates(obj.pages)
     // Bump each page's template_version to the current latest before
     // pushing into the draft — see remapPagesToLatestVersions comment
     // for the rationale.
@@ -3058,6 +3129,7 @@ export default function ReportDetailPage() {
    *  the end" semantics stay intact. */
   async function appendImportedAsNewPages(text) {
     const obj = parseImportPayload(text)
+    await ensureResolvableTemplates(obj.pages)
     await remapPagesToLatestVersions(obj.pages)
     let nextPageCount = 0
     let firstImportedIndex = 0
@@ -3253,7 +3325,8 @@ export default function ReportDetailPage() {
       await applyImportedDraft(text)
       toast.success('JSON 파일을 불러왔습니다. 저장하려면 “저장” 버튼을 눌러주세요.')
     } catch (err) {
-      toast.error(err.message || '불러오기 실패')
+      if (err?.importCancelled) toast.info(err.message)
+      else toast.error(err.message || '불러오기 실패')
     }
   }
 
@@ -4293,6 +4366,13 @@ export default function ReportDetailPage() {
         onApplyPatch={(text) => {
           applyPatchToCurrentPage(text)
         }}
+      />
+
+      <ImportTemplatePickerDialog
+        open={templatePicker != null}
+        unresolvedPageCount={templatePicker?.unresolvedPageCount ?? 0}
+        onPick={(t) => resolveTemplatePicker(t)}
+        onCancel={() => resolveTemplatePicker(null)}
       />
 
       {pageContextMenu && (
@@ -5836,6 +5916,95 @@ function PptxExportDialog({ open, onOpenChange, ratio, onChangeRatio, onConfirm 
             <Button onClick={handleConfirm}>저장</Button>
           </div>
         </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Modal shown during import when one or more pages reference a
+ *  template_id we can't resolve (the AI/skill placeholder, or a template
+ *  missing from this workspace). The user picks a real template and the
+ *  import flow rewrites those pages to it. `onPick({template_id, version})`
+ *  on choose, `onCancel()` on dismiss. Loads the workspace template list
+ *  (latest versions only) when opened. */
+function ImportTemplatePickerDialog({ open, unresolvedPageCount, onPick, onCancel }) {
+  const [items, setItems] = useState([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    let alive = true
+    setLoading(true)
+    listTemplates({ onlyLatest: true })
+      .then((res) => {
+        if (alive) setItems(Array.isArray(res) ? res : (res?.items ?? []))
+      })
+      .catch(() => {
+        if (alive) setItems([])
+      })
+      .finally(() => {
+        if (alive) setLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [open])
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onCancel()}>
+      <DialogContent className="max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <LayoutTemplate className="h-4 w-4" />
+            템플릿 선택
+          </DialogTitle>
+          <DialogDescription>
+            가져온 JSON 에 이 워크스페이스에서 찾을 수 없는 템플릿이 있어요
+            {unresolvedPageCount > 0 ? ` (페이지 ${unresolvedPageCount}개)` : ''}. AI·스킬로
+            만든 보고서는 템플릿을 모르고 만들어지므로, 적용할 템플릿을 골라 주세요.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex-1 min-h-0 overflow-y-auto rounded-md border bg-background p-2">
+          {loading && (
+            <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+              불러오는 중...
+            </div>
+          )}
+          {!loading && items.length === 0 && (
+            <div className="px-3 py-8 text-center text-sm text-muted-foreground">
+              사용할 수 있는 템플릿이 없습니다.
+            </div>
+          )}
+          {!loading && items.length > 0 && (
+            <ul className="space-y-1">
+              {items.map((t) => (
+                <li key={t.template_id}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onPick({ template_id: t.template_id, version: t.version })
+                    }
+                    className="flex w-full flex-col items-start gap-0.5 rounded-md border bg-card p-2.5 text-left transition-colors hover:bg-accent"
+                  >
+                    <span className="font-medium text-sm">
+                      {t.name || t.template_id}
+                    </span>
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      {t.template_id} · v{t.version}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={onCancel}>
+            취소
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   )
@@ -8477,6 +8646,12 @@ async function remapPagesToLatestVersions(pages) {
  *  backslash LaTeX commands like `"\sigma"` / `"\frac"` that JSON.parse
  *  rejects (`Bad escaped character`). See parseJsonWithLatexFix below
  *  for the exact heuristic. */
+// Placeholder template_id the AI-prompt skeletons / exported skill emit
+// when no real template is known (frontend/src/shared/ai/promptRenderer.js
+// and promptSkeletons.js use the same string). Treated as "unresolved" on
+// import so the user is asked to pick a real template.
+const PLACEHOLDER_TEMPLATE_ID = 'TEMPLATE_ID_HERE'
+
 function parseImportPayload(text) {
   const obj = parseJsonWithLatexFix(text)
   if (obj?._type !== 'report_archive_draft_v1') {

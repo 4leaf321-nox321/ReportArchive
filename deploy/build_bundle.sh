@@ -53,6 +53,10 @@ cp deploy/README_OPERATOR.md                 "$STAGE/README.md"
 echo "$VERSION" > "$STAGE/VERSION"
 chmod +x "$STAGE"/*.sh
 
+# nginx HTTPS 리버스 프록시 설정 예시 (배포방법최종.md A-5 에서 참조)
+mkdir -p "$STAGE/nginx"
+cp nginx/reportarchive-ssl.conf.example "$STAGE/nginx/"
+
 # --- 3b. MCP server (별도 venv 로 운영서버에서 돌아감) ---
 # 백엔드 SIF 와 의존성이 충돌해 컨테이너에 못 넣는다. 소스 + 오프라인 설치용 휠을
 # 동봉 → deploy.sh 가 운영 호스트에서 venv 만들고 `pip install --no-index` 로 설치.

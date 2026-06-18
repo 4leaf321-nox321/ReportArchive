@@ -1,0 +1,57 @@
+# ReportArchive — nginx HTTPS 리버스 프록시 (폐쇄망 / 사설 인증서)
+#
+# 이 배포는 백엔드(uvicorn, 127.0.0.1:3000)가 프론트엔드 dist까지 같이 서빙하는
+# 통합 배포다. 따라서 nginx는 정적 파일을 직접 서빙하지 않고, "모든 요청"을
+# 127.0.0.1:3000 으로 프록시하면서 TLS(HTTPS)만 종료한다.
+#
+# 설치:
+#   sudo cp reportarchive-ssl.conf.example /etc/nginx/sites-available/reportarchive
+#   sudo ln -s /etc/nginx/sites-available/reportarchive /etc/nginx/sites-enabled/
+#   sudo rm -f /etc/nginx/sites-enabled/default      # 기본 사이트 제거
+#   sudo nginx -t && sudo systemctl reload nginx
+#
+# 아래 <서버IP> 두 군데를 실제 서버 IP(또는 사내 도메인)로 바꿀 것.
+
+upstream reportarchive_backend {
+    server 127.0.0.1:3000;
+    keepalive 32;
+}
+
+# 80(HTTP) → 443(HTTPS) 강제 리다이렉트
+server {
+    listen 80;
+    server_name <서버IP>;
+    return 301 https://$host$request_uri;
+}
+
+# 443(HTTPS)
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name <서버IP>;
+
+    # --- 사설 인증서 (openssl 로 생성한 파일 경로) ---
+    ssl_certificate     /etc/nginx/ssl/reportarchive.crt;
+    ssl_certificate_key /etc/nginx/ssl/reportarchive.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    # 업로드 용량 — .env 의 EMBED_MAX_BYTES(기본 1GB) 이상으로 잡아야 함
+    client_max_body_size 1024m;
+
+    location / {
+        proxy_pass http://reportarchive_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 대용량 다운로드 / SSE 스트리밍 대비
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_buffering off;
+        proxy_cache off;
+    }
+}

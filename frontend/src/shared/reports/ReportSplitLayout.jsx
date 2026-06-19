@@ -95,12 +95,14 @@ function SplitCompanionPane({ tab, onClose }) {
           </div>
         </div>
         <div className="flex items-center gap-2 ml-auto shrink-0">
+          {/* 좌측 툴바의 <Button size="sm">(h-9)과 같은 높이로 맞춰 좌/우 헤더
+              높이를 일치시킨다(예전엔 h-7 라 8px 차이). */}
           <button
             type="button"
             disabled
             title="분할 보기는 읽기 전용입니다 — 편집은 왼쪽 화면에서"
             className={cn(
-              'inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs',
+              'inline-flex items-center gap-1 rounded-md border h-9 px-3 text-xs',
               'cursor-not-allowed text-muted-foreground opacity-60',
             )}
           >
@@ -112,7 +114,7 @@ function SplitCompanionPane({ tab, onClose }) {
             aria-label="분할 닫기"
             title="분할 닫기"
             onClick={onClose}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             <X className="h-4 w-4" />
           </button>

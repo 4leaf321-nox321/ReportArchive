@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { X } from 'lucide-react'
+import { X, Columns2 } from 'lucide-react'
 import { cn } from '@/shared/lib/utils'
 import { useReportTabs, routeForTab } from './ReportTabsContext'
 
@@ -10,7 +10,7 @@ import { useReportTabs, routeForTab } from './ReportTabsContext'
 // data-app-chrome: 발표/전체화면 모드에서 index.css 의
 // `body.report-fullscreen [data-app-chrome]` 셀렉터가 자동으로 숨긴다.
 export function ReportTabBar() {
-  const { tabs, activeKey, closeTab } = useReportTabs()
+  const { tabs, activeKey, splitKey, closeTab, setSplit } = useReportTabs()
   const navigate = useNavigate()
 
   if (tabs.length === 0) return null
@@ -22,6 +22,9 @@ export function ReportTabBar() {
     >
       {tabs.map((tab) => {
         const active = tab.key === activeKey
+        // 분할 우측에 띄울 수 있는 탭 = 활성 탭이 아니고 저장된(r:) 보고서.
+        const canSplit = !active && Boolean(tab.reportId)
+        const isSplit = tab.key === splitKey
         return (
           <div
             key={tab.key}
@@ -43,6 +46,27 @@ export function ReportTabBar() {
             )}
           >
             <span className="truncate">{tab.title || '불러오는 중…'}</span>
+            {canSplit && (
+              <button
+                type="button"
+                aria-label={isSplit ? '분할 닫기' : '오른쪽에 분할로 보기'}
+                title={isSplit ? '분할 닫기' : '오른쪽에 분할로 보기'}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setSplit(isSplit ? null : tab.key)
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+                className={cn(
+                  'inline-flex h-4 w-4 items-center justify-center rounded shrink-0',
+                  'hover:bg-muted hover:text-foreground',
+                  isSplit
+                    ? 'text-primary opacity-100'
+                    : 'text-muted-foreground opacity-0 group-hover:opacity-70',
+                )}
+              >
+                <Columns2 className="h-3 w-3" />
+              </button>
+            )}
             <button
               type="button"
               aria-label="탭 닫기"

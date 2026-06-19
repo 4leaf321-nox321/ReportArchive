@@ -31,7 +31,7 @@ import {
  * that frozen content instead, so the composite always reflects the
  * as-of-publish state even if the source report has been edited since.
  */
-export function InlineReportView({ reportId, snapshot }) {
+export function InlineReportView({ reportId, snapshot, exposeBlockIds = true }) {
   // Live fetch only when no snapshot is supplied. Snapshot-rendered
   // items don't need a network roundtrip — the frozen blob already has
   // everything the renderer needs.
@@ -78,6 +78,7 @@ export function InlineReportView({ reportId, snapshot }) {
             index={idx}
             totalPages={pages.length}
             rowGapPx={pageGapPx}
+            exposeBlockIds={exposeBlockIds}
           />
         ))}
       </div>
@@ -85,7 +86,7 @@ export function InlineReportView({ reportId, snapshot }) {
   )
 }
 
-function InlinePage({ page, index, totalPages, rowGapPx }) {
+function InlinePage({ page, index, totalPages, rowGapPx, exposeBlockIds = true }) {
   const { data: template, loading } = useAsync(
     () => getTemplateVersion(page.template_id, page.template_version),
     [page.template_id, page.template_version],
@@ -145,7 +146,11 @@ function InlinePage({ page, index, totalPages, rowGapPx }) {
                 // principle collide. The composite exporter scopes its
                 // lookup to a per-item offscreen container so that's
                 // OK; single-report path already had the same shape.
-                id={`block-${it.block.id}`}
+                // 분할 보기 우측 패널(exposeBlockIds=false)은 좌측 에디터와
+                // 동시 마운트라, 같은 block id 가 있으면 에디터의 getElementById
+                // ('block-…')가 우측 노드를 잡을 수 있다. 그 패널은 export 를 안
+                // 하므로 id 를 떼서 충돌을 막는다.
+                id={exposeBlockIds ? `block-${it.block.id}` : undefined}
                 style={{ gridColumn: `span ${it.colSpan} / span ${it.colSpan}` }}
                 className="min-w-0"
               >

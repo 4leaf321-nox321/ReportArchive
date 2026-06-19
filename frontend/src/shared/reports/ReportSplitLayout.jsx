@@ -1,6 +1,14 @@
 import { X, Pencil } from 'lucide-react'
 import { cn } from '@/shared/lib/utils'
+import { useAsync } from '@/shared/hooks/useAsync'
+import { Skeleton } from '@/shared/components/ui/skeleton'
+import { getReport } from '@/modules/reports/api'
 import { InlineReportView } from '@/modules/composites/InlineReportView'
+import {
+  PhaseChip,
+  ReportDateField,
+  ReportEntitiesPanel,
+} from '@/modules/reports/ReportDetailPage'
 import { useReportTabs } from './ReportTabsContext'
 import { ReportTabBar } from './ReportTabBar'
 
@@ -10,8 +18,7 @@ import { ReportTabBar } from './ReportTabBar'
 //    의 shell 배치가 담당.
 //  - 보고서 라우트: 좌(편집 가능, 라우트 에디터)·우(읽기전용 InlineReportView)
 //    2-pane. 각 패널이 자기 탭바를 갖는다. 좌측 컬럼은 분할 on/off 와 무관하게
-//    항상 존재하므로, 우측을 켜고 꺼도 좌측 에디터가 remount 되지 않는다(편집
-//    상태·락 보존).
+//    항상 존재하므로, 우측을 켜고 꺼도 좌측 에디터가 remount 되지 않는다.
 //
 // ⚠ 우측은 항상 읽기전용(편집은 좌측 1개씩). InlineReportView 에 exposeBlockIds
 // =false 를 줘서 `id="block-…"` 충돌(좌측 에디터의 getElementById)을 막는다.
@@ -37,10 +44,10 @@ export function ReportSplitLayout({ children }) {
             data-app-chrome="report-split"
           >
             <ReportTabBar pane="right" placement="pane" />
-            <SplitToolbarHeader tab={rightTab} onClose={() => closeRight(rightTab.key)} />
-            <div className="flex-1 min-h-0 overflow-auto px-6 py-4">
-              <InlineReportView reportId={rightTab.reportId} exposeBlockIds={false} />
-            </div>
+            <SplitCompanionPane
+              tab={rightTab}
+              onClose={() => closeRight(rightTab.key)}
+            />
           </div>
         </>
       )}
@@ -48,40 +55,78 @@ export function ReportSplitLayout({ children }) {
   )
 }
 
-// 우측 패널 상단 바 — 원래 보고서 화면의 툴바와 같은 구성(제목 + 우측 버튼
-// 그룹)을 흉내낸다. 다만 분할 우측은 읽기전용이라 '편집'은 비활성(편집은 좌측
-// 에서). 보고서 본문 폭/메타는 InlineReportView 가 그린다.
-function SplitToolbarHeader({ tab, onClose }) {
+// 우측 패널 본체 — 보고서를 1회 fetch 해서 (1) 좌측과 같은 높이의 툴바 헤더,
+// (2) "관련 정보" 줄(ReportEntitiesPanel), (3) 본문(InlineReportView)을 그린다.
+// 같은 fetch 결과를 InlineReportView 에 snapshot 으로 넘겨 중복 요청을 피한다.
+function SplitCompanionPane({ tab, onClose }) {
+  const { data: report, loading, error } = useAsync(
+    () => (tab.reportId ? getReport(tab.reportId) : Promise.resolve(null)),
+    [tab.reportId],
+  )
+
   return (
-    <div className="flex items-center gap-3 border-b bg-background px-6 py-3 shrink-0">
-      <div className="flex-1 min-w-0">
-        <div className="text-lg font-semibold truncate">
-          {tab.title || <span className="text-muted-foreground">(제목 없음)</span>}
+    <>
+      {/* 툴바 헤더 — 좌측(ReportDetailPage)의 report-detail-toolbar 와 동일한
+          구성(px-6 py-3, 제목 text-lg + 메타 줄 PhaseChip·보고기준일)으로 높이를
+          맞춘다. 우측은 읽기전용이라 '편집'은 비활성. */}
+      <div className="flex items-start gap-3 border-b bg-background px-6 py-3 shrink-0">
+        <div className="flex-1 min-w-0">
+          <div className="text-lg font-semibold truncate">
+            {report?.title || tab.title || (
+              <span className="text-muted-foreground">(제목 없음)</span>
+            )}
+          </div>
+          <div className="mt-0.5 text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
+            <PhaseChip phase={report?.phase ?? 'drafting'} />
+            <ReportDateField
+              editing={false}
+              value={report?.report_date ?? ''}
+              onChange={() => {}}
+            />
+            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              보기 전용
+            </span>
+          </div>
         </div>
-        <div className="mt-0.5 text-xs text-muted-foreground">보기 전용 (분할)</div>
+        <button
+          type="button"
+          disabled
+          title="분할 보기는 읽기 전용입니다 — 편집은 왼쪽 화면에서"
+          className={cn(
+            'inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs',
+            'cursor-not-allowed text-muted-foreground opacity-60',
+          )}
+        >
+          <Pencil className="h-3.5 w-3.5" />
+          편집
+        </button>
+        <button
+          type="button"
+          aria-label="분할 닫기"
+          title="분할 닫기"
+          onClick={onClose}
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <X className="h-4 w-4" />
+        </button>
       </div>
-      {/* 원래 화면의 버튼 구조를 맞추되, 우측 패널은 읽기전용이라 편집은 비활성. */}
-      <button
-        type="button"
-        disabled
-        title="분할 보기는 읽기 전용입니다 — 편집은 왼쪽 화면에서"
-        className={cn(
-          'inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs',
-          'cursor-not-allowed text-muted-foreground opacity-60',
-        )}
-      >
-        <Pencil className="h-3.5 w-3.5" />
-        편집
-      </button>
-      <button
-        type="button"
-        aria-label="분할 닫기"
-        title="분할 닫기"
-        onClick={onClose}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-      >
-        <X className="h-4 w-4" />
-      </button>
-    </div>
+
+      {/* "관련 정보" 줄 — 좌측과 동일. 태깅된 엔티티가 없으면 렌더 안 됨. */}
+      <ReportEntitiesPanel
+        entities={report?.entities ?? []}
+        collabSlugs={report?.collab_workspace_slugs ?? []}
+      />
+
+      {/* 본문 — 읽기전용 렌더. snapshot 으로 위 fetch 결과 재사용(중복 요청 방지). */}
+      <div className="flex-1 min-h-0 overflow-auto px-6 py-4">
+        {loading ? (
+          <Skeleton className="h-40" />
+        ) : error ? (
+          <div className="text-xs text-destructive">{error.message}</div>
+        ) : report ? (
+          <InlineReportView snapshot={report} exposeBlockIds={false} />
+        ) : null}
+      </div>
+    </>
   )
 }

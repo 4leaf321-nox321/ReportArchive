@@ -6574,7 +6574,7 @@ function loadEntityTypesCached() {
  * 확인할 수 있다. 실제 태그 추가·삭제는 편집모드 칩(ReportMetaChips)에서
  * 하고, 이 패널은 읽기 전용 요약이다. 태그가 없으면 렌더하지 않는다.
  */
-function ReportEntitiesPanel({ entities, collabSlugs }) {
+export function ReportEntitiesPanel({ entities, collabSlugs }) {
   const [open, setOpen] = useState(false)
   const [types, setTypes] = useState(null) // 축 catalog (label·순서) — null=미로딩
   const { all: workspaces } = useWorkspace()
@@ -7011,7 +7011,7 @@ function UnsavedChangesDialog({
  *  button; users never set phase via a dropdown. */
 // 제목 아래 상태 뱃지. 옛 상단 상태 리본을 대체 — 뱃지를 클릭하면 그 단계의
 // 설명이 팝오버로 뜬다(hover 로는 title 힌트도 제공).
-function PhaseChip({ phase }) {
+export function PhaseChip({ phase }) {
   const meta = PHASE_META[phase] ?? PHASE_META.drafting
   return (
     <Popover>
@@ -7132,7 +7132,7 @@ const PHASE_META = {
  *  native date input in edit mode so the user can back-date or schedule the
  *  report. Used by the dashboard's period filters instead of created_at,
  *  so changing it moves the report between weeks/months in the trend chart. */
-function ReportDateField({ editing, value, onChange }) {
+export function ReportDateField({ editing, value, onChange }) {
   return (
     <span className="inline-flex items-center gap-1 text-[11px]">
       <span className="text-muted-foreground">보고 기준일</span>

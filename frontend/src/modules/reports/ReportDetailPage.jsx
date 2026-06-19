@@ -109,6 +109,7 @@ import { FOLDER_FILTER_UNCATEGORIZED } from './FolderSidebar'
 import { isWidgetCopyable, copyWidget, widgetCopyKind, downloadWidgetImage } from './widgetCopy'
 import { copyTextToClipboard } from '@/shared/lib/clipboard'
 import { useReportLock } from './useReportLock'
+import { useReportTabs } from '@/shared/reports/ReportTabsContext'
 import { useLocalDraftBackup } from './useLocalDraftBackup'
 import { buildBackupKey, getLocalDraft, delLocalDraft } from './localDraftBackup'
 import {
@@ -844,6 +845,49 @@ export default function ReportDetailPage() {
     delLocalDraft(backupKey)
     setRecovery(null)
   }
+
+  // -------------------------------------------------------------------- //
+  // 열린 보고서 탭 동기화                                                  //
+  //                                                                      //
+  // 이 보고서를 (목록·검색·그래프·딥링크 등 어떤 경로로든) 열면 탭 바에      //
+  // upsert 한다. 모든 진입이 이 페이지 마운트로 수렴하므로 navigate 호출부를  //
+  // 일일이 패치하지 않아도 된다. 2단계: reportId 를 아는 즉시 placeholder    //
+  // title 로 탭을 띄우고, 보고서 title 이 로드되면 라벨을 갱신.              //
+  // -------------------------------------------------------------------- //
+  const { upsertTab: upsertReportTab, promoteNewTab, dropTab: dropReportTab } =
+    useReportTabs()
+  useEffect(() => {
+    if (!slug) return
+    if (isNew) {
+      if (!templateId) return
+      upsertReportTab({
+        key: `new:${templateId}:${version}`,
+        slug,
+        reportId: null,
+        templateId,
+        version: String(version),
+        title: draft?.title || '새 보고서',
+      })
+    } else if (reportId) {
+      upsertReportTab({
+        key: `r:${reportId}`,
+        slug,
+        reportId: String(reportId),
+        templateId: null,
+        version: null,
+        title: existingReport?.title || '불러오는 중…',
+      })
+    }
+  }, [
+    isNew,
+    reportId,
+    templateId,
+    version,
+    slug,
+    existingReport?.title,
+    draft?.title,
+    upsertReportTab,
+  ])
 
   // Fetch the template version for every page in the draft (deduped by
   // template_id+version). Cached in a map keyed by `${id}@${version}` so
@@ -2442,6 +2486,15 @@ export default function ReportDetailPage() {
         // guard reads synchronously when the navigate fires.
         isEditingRef.current = false
         setIsEditing(false)
+        // 새 보고서(new:) 탭을 저장된 보고서(r:) 탭으로 같은 자리에서 승격 —
+        // replace 내비게이션 직전에 바꿔 깜빡임/중복을 막는다.
+        if (templateId) {
+          promoteNewTab(`new:${templateId}:${version}`, {
+            reportId: created.id,
+            slug: landingSlug,
+            title: payload.title || draft.title,
+          })
+        }
         // `landingSlug` was set above based on whether we mounted: org
         // slug if we did (user stays where they were), personal slug if
         // not (the only workspace that can see the report at this
@@ -2527,6 +2580,9 @@ export default function ReportDetailPage() {
     localBackup.clear()
     setRecovery(null)
     if (isNew) {
+      // 저장 없이 떠나는 새 보고서 — 방치된 "새 보고서" 탭을 정리(직접
+      // 목록으로 이동하므로 closeTab 의 내비게이션 로직은 불필요).
+      if (templateId) dropReportTab(`new:${templateId}:${version}`)
       navigate(`/w/${slug}/reports`)
       return
     }

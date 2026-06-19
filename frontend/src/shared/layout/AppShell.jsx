@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Header } from './Header'
 import { Sidebar, MobileSidebar } from './Sidebar'
 import { MentionReturnBar } from './MentionReturnBar'
+import { ReportTabBar } from '@/shared/reports/ReportTabBar'
 import { useScrollRestoration } from './useScrollRestoration'
 import { ErrorBoundary } from '@/shared/components/ErrorBoundary'
 import { cn } from '@/shared/lib/utils'
@@ -44,6 +45,9 @@ export function AppShell() {
   return (
     <div className="flex h-full flex-col">
       <Header onOpenMobileSidebar={() => setMobileOpen(true)} />
+      {/* 열린 보고서 탭 스트립 — Header 아래, 본문 행 위에 전체폭으로. 열린
+          탭이 없으면 null 을 반환하므로 비-보고서 화면에선 보이지 않는다. */}
+      <ReportTabBar />
       <div className="relative flex flex-1 min-h-0">
         <Sidebar collapsed={collapsed} />
         <MobileSidebar open={mobileOpen} onOpenChange={setMobileOpen} />

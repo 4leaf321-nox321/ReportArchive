@@ -12,6 +12,7 @@ import { AuthProvider, useAuth } from '@/shared/auth/AuthContext'
 import { ProtectedRoute } from '@/shared/auth/ProtectedRoute'
 import { ThemeProvider } from '@/shared/theme/ThemeContext'
 import { CommandPaletteProvider } from '@/shared/components/CommandPalette'
+import { ReportTabsProvider } from '@/shared/reports/ReportTabsContext'
 import { NotFoundPage } from '@/shared/components/NotFoundPage'
 import { Toaster } from '@/shared/components/ui/toaster'
 import { DEFAULT_WORKSPACE } from '@/shared/workspace/workspaces'
@@ -58,7 +59,9 @@ function AuthedShell() {
     <ProtectedRoute>
       <WorkspaceProvider>
         <CommandPaletteProvider>
-          <AppShell />
+          <ReportTabsProvider>
+            <AppShell />
+          </ReportTabsProvider>
         </CommandPaletteProvider>
       </WorkspaceProvider>
     </ProtectedRoute>

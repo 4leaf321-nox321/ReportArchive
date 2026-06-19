@@ -109,6 +109,8 @@ import { FOLDER_FILTER_UNCATEGORIZED } from './FolderSidebar'
 import { isWidgetCopyable, copyWidget, widgetCopyKind, downloadWidgetImage } from './widgetCopy'
 import { copyTextToClipboard } from '@/shared/lib/clipboard'
 import { useReportLock } from './useReportLock'
+import { useLocalDraftBackup } from './useLocalDraftBackup'
+import { buildBackupKey, getLocalDraft, delLocalDraft } from './localDraftBackup'
 import {
   DEFAULT_REPORT_WIDTH_PX,
   DEFAULT_REPORT_GAP_PX,
@@ -167,6 +169,17 @@ import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
 import { cn } from '@/shared/lib/utils'
 import { toast } from 'sonner'
 import { renderPrompt, buildPromptContext } from '@/shared/ai/promptRenderer'
+
+/** 로컬 백업 시각을 "방금 전 / N분 전 / N시간 전 / N일 전"으로 표기. */
+function formatBackupAge(savedAt) {
+  const sec = Math.max(0, Math.floor((Date.now() - savedAt) / 1000))
+  if (sec < 60) return '방금 전'
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}분 전`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}시간 전`
+  return `${Math.floor(hr / 24)}일 전`
+}
 
 /**
  * Two entry modes:
@@ -676,6 +689,10 @@ export default function ReportDetailPage() {
   const draftRef = useRef(null)
   const isEditingRef = useRef(false)
   const editingSnapshotRef = useRef(null)
+  // 로컬 백업 복구로 편집 모드에 진입할 때 true — 진입 스냅샷을 서버본과 절대
+  // 같지 않은 sentinel 로 둬서, 복구된 내용이 항상 'unsaved(dirty)' 로 잡히게
+  // 한다(이탈 경고·beforeunload·자동백업이 정상 작동).
+  const pendingRecoveryRef = useRef(false)
   const [unsavedNavPrompt, setUnsavedNavPrompt] = useState(null) // { proceed, reset, saving } | null
 
   useEffect(() => {
@@ -689,9 +706,13 @@ export default function ReportDetailPage() {
   useEffect(() => {
     isEditingRef.current = isEditing
     if (isEditing && draftRef.current) {
-      editingSnapshotRef.current = JSON.stringify(draftRef.current)
+      editingSnapshotRef.current = pendingRecoveryRef.current
+        ? '__recovered__'
+        : JSON.stringify(draftRef.current)
+      pendingRecoveryRef.current = false
     } else {
       editingSnapshotRef.current = null
+      pendingRecoveryRef.current = false
     }
   }, [isEditing])
 
@@ -733,6 +754,96 @@ export default function ReportDetailPage() {
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
   }, [isEditing])
+
+  // -------------------------------------------------------------------- //
+  // Local crash-recovery backup (IndexedDB)                              //
+  //                                                                      //
+  // beforeunload 만으로는 "의도적 닫기"만 막을 수 있고, 탭/브라우저 크래시·    //
+  // 전원차단처럼 경고 띄울 틈도 없이 죽는 경우엔 메모리(draft)가 통째로        //
+  // 날아간다. 그래서 편집 중 draft 를 주기적으로 브라우저 로컬(IndexedDB)에    //
+  // 백업하고, 다음 진입 시 서버본과 다르면 복구를 제안한다. 서버엔 아무것도     //
+  // 보내지 않아 게시본/락/revision 과 독립적이다.                            //
+  // -------------------------------------------------------------------- //
+  const backupKey = buildBackupKey({
+    userId: currentUserId,
+    reportId: isNew ? null : reportId,
+    templateId,
+    version,
+  })
+  const localBackup = useLocalDraftBackup({
+    enabled: isEditing,
+    backupKey,
+    draft,
+    getIsDirty: isDraftDirty,
+    reportId: isNew ? null : reportId,
+  })
+
+  // 복구 제안 상태 — { record, staleRevision } | null. 보고서당 한 번만 검사.
+  const [recovery, setRecovery] = useState(null)
+  const recoveryCheckedKeyRef = useRef(null)
+  useEffect(() => {
+    if (!backupKey || !draft) return undefined
+    if (recoveryCheckedKeyRef.current === backupKey) return undefined
+    recoveryCheckedKeyRef.current = backupKey
+    let cancelled = false
+    const serverJson = JSON.stringify(draft)
+    const serverRevision = draft.revision ?? null
+    getLocalDraft(backupKey).then((rec) => {
+      if (cancelled || !rec?.draft) return
+      // 서버에서 막 불러온 내용과 같으면 복구할 게 없다 → stale 백업 정리.
+      if (JSON.stringify(rec.draft) === serverJson) {
+        delLocalDraft(backupKey)
+        return
+      }
+      // 백업을 만든 뒤 (다른 기기/사람이) 서버를 더 바꿨는지 — revision 비교.
+      const staleRevision =
+        rec.revision != null &&
+        serverRevision != null &&
+        rec.revision !== serverRevision
+      setRecovery({ record: rec, staleRevision })
+    })
+    return () => {
+      cancelled = true
+    }
+    // draft 는 로드 완료 신호로만 쓰고, 검사는 키당 1회(ref 가드).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backupKey, draft])
+
+  // 복구 적용 — 편집 모드(락 획득) 진입 후 백업 내용을 draft 에 주입한다.
+  // 진입 스냅샷이 복구본으로 덮여 'clean' 으로 오인되지 않도록 pendingRecovery
+  // Ref 로 dirty 를 강제한다(위 isEditing 스냅샷 effect 참조).
+  async function applyRecovery() {
+    const rec = recovery?.record
+    if (!rec?.draft) return
+    if (!isEditing) {
+      pendingRecoveryRef.current = true
+      if (isNew) {
+        setIsEditing(true)
+      } else {
+        try {
+          await lock.acquire({ force: false })
+          setTakeoverPrompt(null)
+          setIsEditing(true)
+        } catch (err) {
+          pendingRecoveryRef.current = false
+          if (err instanceof LockConflictError && err.code === 'lock_held_by_other') {
+            setTakeoverPrompt(err.holder)
+            return
+          }
+          toast.error(err.message || '편집 모드 진입 실패')
+          return
+        }
+      }
+    }
+    setDraft(rec.draft)
+    setRecovery(null)
+    toast.success('작성 중이던 내용을 복구했습니다. 확인 후 저장하세요.')
+  }
+
+  function dismissRecovery() {
+    delLocalDraft(backupKey)
+    setRecovery(null)
+  }
 
   // Fetch the template version for every page in the draft (deduped by
   // template_id+version). Cached in a map keyed by `${id}@${version}` so
@@ -2293,6 +2404,8 @@ export default function ReportDetailPage() {
           template_id: first.template_id,
           template_version: first.template_version,
         })
+        // 생성 성공 — 새 보고서(템플릿 키)로 남겨둔 로컬 백업 정리.
+        localBackup.clear()
         // Auto-mount path: when the create dialog was launched from an
         // org workspace and the user kept the "같이 게시" checkbox on,
         // its config rides in via router state. Mount happens AFTER
@@ -2345,6 +2458,8 @@ export default function ReportDetailPage() {
           expected_revision: draft.revision,
         })
         toast.success('저장되었습니다.')
+        // 서버에 안전히 저장됐으니 로컬 크래시-백업은 더 필요 없다.
+        localBackup.clear()
         await lock.release()
         reloadReport()
         setIsEditing(false)
@@ -2407,6 +2522,10 @@ export default function ReportDetailPage() {
     // useBlocker callback sees us as out-of-edit-mode before the route
     // change actually fires.
     isEditingRef.current = false
+    // 사용자가 의식적으로 편집을 버린 것 — 로컬 백업도 지워서 다음 진입 때
+    // 버린 내용으로 복구를 권하지 않게 한다.
+    localBackup.clear()
+    setRecovery(null)
     if (isNew) {
       navigate(`/w/${slug}/reports`)
       return
@@ -3434,6 +3553,32 @@ export default function ReportDetailPage() {
                 완전 삭제
               </Button>
             )}
+          </div>
+        )}
+        {/* 크래시 복구 배너 — 이전에 작성하다 저장 못한 로컬 백업이 서버본과
+            다를 때 제안. "복구"=백업 내용으로 편집 진입, "무시"=백업 삭제. */}
+        {recovery && (
+          <div className="flex items-center gap-3 border-b bg-blue-50 px-6 py-2 text-xs text-blue-900 dark:bg-blue-950/40 dark:text-blue-200 print:hidden">
+            <History className="h-3.5 w-3.5 shrink-0" />
+            <span className="flex-1">
+              저장하지 못한 작성 내용이 있습니다
+              {recovery.record?.savedAt && (
+                <> ({formatBackupAge(recovery.record.savedAt)})</>
+              )}
+              . 복구하시겠어요?
+              {recovery.staleRevision && (
+                <span className="block text-amber-700 dark:text-amber-300">
+                  ⚠ 그 사이 다른 사람이 이 보고서를 저장했을 수 있습니다. 복구 후
+                  저장 시 충돌이 나면 내용을 따로 보관한 뒤 새로고침하세요.
+                </span>
+              )}
+            </span>
+            <Button size="sm" variant="default" className="h-7" onClick={applyRecovery}>
+              복구
+            </Button>
+            <Button size="sm" variant="outline" className="h-7" onClick={dismissRecovery}>
+              무시
+            </Button>
           </div>
         )}
         {/* 부모는 flex-wrap 없음 — 버튼 그룹이 제목 아래로 통째로 떨어지지
@@ -10620,6 +10765,7 @@ const WIDGETS_SQUARE_AUTOFIT = new Set([
 const WIDGETS_FULLSCREEN_VIEWER = new Set([
   'html_embed',
   'video',
+  'image',
   'chart',
   'scatter',
   'scatter3d',

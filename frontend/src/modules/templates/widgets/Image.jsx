@@ -4,6 +4,7 @@ import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { AuthedImage } from '@/shared/components/AuthedImage'
+import { Dialog, DialogContent, DialogTitle } from '@/shared/components/ui/dialog'
 import { uploadFile } from '@/shared/api/files'
 import { cn } from '@/shared/lib/utils'
 import {
@@ -118,6 +119,8 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
   const fileInputRef = useRef(null)
+  // 뷰(읽기전용) 모드에서 이미지를 클릭하면 확대 팝업으로 보여줄 대상 파일.
+  const [zoomFile, setZoomFile] = useState(null)
   // Cell-fill mode: when the widget cell has an explicit height
   // (autoFit=false) and there's a single image with no user-set aspect
   // ratio, let the image grow to fill the available space instead of
@@ -280,11 +283,23 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
                     fillCell={fillCell}
                     annotations={content?.annotations}
                     readOnly
+                    onZoom={() => setZoomFile(file)}
                   />
                 ) : (
                   <div
+                    role="button"
+                    tabIndex={0}
+                    aria-label="이미지 확대 보기"
+                    onClick={() => setZoomFile(file)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        setZoomFile(file)
+                      }
+                    }}
                     className={cn(
-                      'relative bg-muted/30 rounded-md overflow-hidden',
+                      'relative bg-muted/30 rounded-md overflow-hidden cursor-zoom-in',
+                      'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                       fillCell ? 'flex-1 min-h-0' : aspectClass,
                     )}
                   >
@@ -305,6 +320,18 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
           </div>
         )}
         <NoteInput value={note} readOnly color={content?.note_color} html={content?.note_html} />
+        <Dialog open={!!zoomFile} onOpenChange={(o) => !o && setZoomFile(null)}>
+          <DialogContent className="w-[80vw] max-w-[80vw] h-[80vh] max-h-[80vh] flex items-center justify-center p-2">
+            <DialogTitle className="sr-only">{zoomFile?.caption || props.label || '이미지 확대 보기'}</DialogTitle>
+            {zoomFile && (
+              <AuthedImage
+                fileId={zoomFile.file_id}
+                alt={zoomFile.alt}
+                className="max-w-full max-h-full object-contain"
+              />
+            )}
+          </DialogContent>
+        </Dialog>
       </div>
     )
   }
@@ -548,6 +575,9 @@ function AnnotatableImageBox({
   onChangeAnnotations,
   readOnly = false,
   topRightSlot = null,
+  // 뷰(읽기전용) 모드에서 이미지를 클릭하면 호출 — 확대 팝업을 연다.
+  // 편집 모드에서는 클릭이 어노테이션 도구용이라 무시한다.
+  onZoom = null,
 }) {
   const containerRef = useRef(null)
   const imgRef = useRef(null)
@@ -669,8 +699,23 @@ function AnnotatableImageBox({
       )}
       <div
         ref={containerRef}
+        role={readOnly && onZoom ? 'button' : undefined}
+        tabIndex={readOnly && onZoom ? 0 : undefined}
+        aria-label={readOnly && onZoom ? '이미지 확대 보기' : undefined}
+        onClick={readOnly && onZoom ? () => onZoom() : undefined}
+        onKeyDown={
+          readOnly && onZoom
+            ? (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  onZoom()
+                }
+              }
+            : undefined
+        }
         className={cn(
           'relative bg-muted/30 rounded-md overflow-hidden',
+          readOnly && onZoom && 'cursor-zoom-in focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           fillCell ? 'flex-1 min-h-0' : aspectClass,
         )}
         style={cellStyle}

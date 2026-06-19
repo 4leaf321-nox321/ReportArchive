@@ -69,8 +69,10 @@ function SplitCompanionPane({ tab, onClose }) {
       {/* 툴바 헤더 — 좌측(ReportDetailPage)의 report-detail-toolbar 와 동일한
           구성(px-6 py-3, 제목 text-lg + 메타 줄 PhaseChip·보고기준일)으로 높이를
           맞춘다. 우측은 읽기전용이라 '편집'은 비활성. */}
-      <div className="flex items-start gap-3 border-b bg-background px-6 py-3 shrink-0">
-        <div className="flex-1 min-w-0">
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-2 border-b bg-background px-6 py-3 shrink-0">
+        {/* 좌측(분할 시) 툴바와 동일하게 제목을 한 줄 전체로 깔고(basis-full)
+            버튼은 아래 행으로 — 좌/우 툴바 높이를 맞춘다. */}
+        <div className="basis-full min-w-0">
           <div className="text-lg font-semibold truncate">
             {report?.title || tab.title || (
               <span className="text-muted-foreground">(제목 없음)</span>
@@ -88,27 +90,29 @@ function SplitCompanionPane({ tab, onClose }) {
             </span>
           </div>
         </div>
-        <button
-          type="button"
-          disabled
-          title="분할 보기는 읽기 전용입니다 — 편집은 왼쪽 화면에서"
-          className={cn(
-            'inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs',
-            'cursor-not-allowed text-muted-foreground opacity-60',
-          )}
-        >
-          <Pencil className="h-3.5 w-3.5" />
-          편집
-        </button>
-        <button
-          type="button"
-          aria-label="분할 닫기"
-          title="분할 닫기"
-          onClick={onClose}
-          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          <X className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-2 ml-auto shrink-0">
+          <button
+            type="button"
+            disabled
+            title="분할 보기는 읽기 전용입니다 — 편집은 왼쪽 화면에서"
+            className={cn(
+              'inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs',
+              'cursor-not-allowed text-muted-foreground opacity-60',
+            )}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+            편집
+          </button>
+          <button
+            type="button"
+            aria-label="분할 닫기"
+            title="분할 닫기"
+            onClick={onClose}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       {/* "관련 정보" 줄 — 좌측과 동일. 태깅된 엔티티가 없으면 렌더 안 됨. */}

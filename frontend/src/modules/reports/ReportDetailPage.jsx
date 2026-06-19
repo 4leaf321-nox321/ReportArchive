@@ -854,8 +854,12 @@ export default function ReportDetailPage() {
   // 일일이 패치하지 않아도 된다. 2단계: reportId 를 아는 즉시 placeholder    //
   // title 로 탭을 띄우고, 보고서 title 이 로드되면 라벨을 갱신.              //
   // -------------------------------------------------------------------- //
-  const { upsertTab: upsertReportTab, promoteNewTab, dropTab: dropReportTab } =
-    useReportTabs()
+  const {
+    upsertTab: upsertReportTab,
+    promoteNewTab,
+    dropTab: dropReportTab,
+    splitOpen,
+  } = useReportTabs()
   useEffect(() => {
     if (!slug) return
     if (isNew) {
@@ -3637,11 +3641,16 @@ export default function ReportDetailPage() {
             </Button>
           </div>
         )}
-        {/* 부모는 flex-wrap 없음 — 버튼 그룹이 제목 아래로 통째로 떨어지지
-            않게 한다. 대신 제목은 min-w 까지만 줄고, 남는 폭이 부족하면 오른쪽
-            버튼 그룹이 자기 안에서 두 줄로 감긴다(아래 그룹의 flex-wrap). */}
-        <div className="flex items-start gap-3 border-b bg-background px-6 py-3 report-detail-toolbar">
-          <div className="flex-1 min-w-[280px]">
+        {/* 폭이 좁아지면(분할 보기 등) 버튼 그룹을 제목 행 아래로 통째로
+            내린다 — 부모 flex-wrap + 버튼 그룹 shrink-0 조합. 그래야 제목이
+            말줄임 없이 그 줄을 다 쓰고, 버튼이 좁아진 제목 옆에서 어정쩡하게
+            두 줄로 감기지 않는다. 아주 좁으면 버튼 그룹은 둘째 줄 안에서 다시
+            감긴다(그룹 자체 flex-wrap). */}
+        <div className="flex flex-wrap items-start gap-x-3 gap-y-2 border-b bg-background px-6 py-3 report-detail-toolbar">
+          {/* 분할 보기에선 제목을 한 줄 전체로 깔아(basis-full) 버튼 그룹을
+              무조건 아래 행으로 내린다 — 우측 패널 툴바와 행 구성·높이를 맞추기
+              위함. 비-분할에선 flex-1 로 폭이 좁아질 때만(threshold) 버튼이 아래로. */}
+          <div className={cn('min-w-[240px]', splitOpen ? 'basis-full' : 'flex-1')}>
             {isEditing ? (
               <Input
                 value={draft.title}
@@ -3747,7 +3756,7 @@ export default function ReportDetailPage() {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-end gap-2 ml-auto">
+          <div className="flex flex-wrap items-center justify-end gap-2 ml-auto shrink-0">
           {/* ─── Group 1: Navigation (왼쪽으로 빠짐) ───
               종합보고에서 진입한 경우에만 보이는 "돌아가기" 버튼. 진입 시
               location.state.fromComposite 로 어느 종합보고에서 왔는지가

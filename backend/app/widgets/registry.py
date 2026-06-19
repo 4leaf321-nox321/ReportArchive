@@ -162,8 +162,15 @@ _NOTE_HTML_FIELD = {"type": "string", "maxLength": 4000}
 _CELL_ALIGN_FIELD = {"type": "string", "enum": ["left", "center", "right"]}
 _CELL_VALIGN_FIELD = {"type": "string", "enum": ["top", "middle", "bottom"]}
 
+# 셀 단위 글자 크기 — 인라인 CSS px 문자열(예: "20px"). 숫자/날짜/선택 셀은
+# per-char rich 마크업(cell_html)이 없어, 일괄 글자크기를 이 값으로 셀 전체에
+# 준다(렌더 시 style="font-size:...")로 적용). 텍스트 셀은 rich 마크업으로
+# 처리하므로 여기엔 들어오지 않는다.
+_CELL_SIZE_FIELD = {"type": "string", "pattern": r"^\d{1,3}px$"}
+
 # 표/비교표 셀별 색상·정렬 사이드테이블. 키 = "행::열key"(표) / "행key::케이스key"
-# (비교표), 값 = {bg?, fg?, align?, valign?}. 값 모델과 분리돼 셀 데이터는 안 건드린다.
+# (비교표), 값 = {bg?, fg?, size?, align?, valign?}. 값 모델과 분리돼 셀 데이터는
+# 안 건드린다.
 _CELL_STYLES_SCHEMA = {
     "type": "object",
     "additionalProperties": {
@@ -171,6 +178,7 @@ _CELL_STYLES_SCHEMA = {
         "properties": {
             "bg": _COLOR_TOKEN_FIELD,
             "fg": _COLOR_TOKEN_FIELD,
+            "size": _CELL_SIZE_FIELD,
             "align": _CELL_ALIGN_FIELD,
             "valign": _CELL_VALIGN_FIELD,
         },

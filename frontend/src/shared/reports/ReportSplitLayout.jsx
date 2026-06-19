@@ -1,39 +1,46 @@
-import { X } from 'lucide-react'
+import { X, Pencil } from 'lucide-react'
 import { cn } from '@/shared/lib/utils'
 import { InlineReportView } from '@/modules/composites/InlineReportView'
 import { useReportTabs } from './ReportTabsContext'
+import { ReportTabBar } from './ReportTabBar'
 
-// 분할 보기 레이아웃. AppShell 의 <Outlet/>(=라우트 페이지)을 감싼다.
+// 보고서 화면의 분할 레이아웃. AppShell 의 <Outlet/>(=라우트 페이지)을 감싼다.
 //
-// ⚠ 핵심: 분할 on/off 토글이 에디터(ReportDetailPage)를 remount 시키면 안 된다
-// (편집락·미저장 편집 소실). 그래서 감싸는 <div> 구조를 항상 동일하게 유지하고,
-// 분할이 꺼져 있을 땐 `display:contents`(Tailwind `contents`)로 래퍼를
-// 레이아웃에서 투명하게 만든다 — DOM 노드 동일, className 만 바뀌므로 React 가
-// children 을 재마운트하지 않고 in-place 로 유지한다. 분할이 켜지면 같은
-// 노드가 flex 컨테이너가 되고 우측에 읽기전용 companion 패널이 붙는다.
+//  - 비-보고서 라우트: children 을 그대로(스크롤은 main). 좌측 탭바는 AppShell
+//    의 shell 배치가 담당.
+//  - 보고서 라우트: 좌(편집 가능, 라우트 에디터)·우(읽기전용 InlineReportView)
+//    2-pane. 각 패널이 자기 탭바를 갖는다. 좌측 컬럼은 분할 on/off 와 무관하게
+//    항상 존재하므로, 우측을 켜고 꺼도 좌측 에디터가 remount 되지 않는다(편집
+//    상태·락 보존).
+//
+// ⚠ 우측은 항상 읽기전용(편집은 좌측 1개씩). InlineReportView 에 exposeBlockIds
+// =false 를 줘서 `id="block-…"` 충돌(좌측 에디터의 getElementById)을 막는다.
 export function ReportSplitLayout({ children }) {
-  const { splitTab, activeKey } = useReportTabs()
-  // 분할은 "보고서 라우트(activeKey 있음)"에서만, 활성과 다른 저장된 보고서를
-  // 우측에 띄울 때만 보인다. 비-보고서 화면에선 companion 을 숨긴다.
-  const showSplit =
-    Boolean(splitTab) &&
-    Boolean(activeKey) &&
-    Boolean(splitTab.reportId) &&
-    splitTab.key !== activeKey
+  const { onReportRoute, splitOpen, rightTab, closeRight } = useReportTabs()
+
+  if (!onReportRoute) return children
 
   return (
-    <div className={cn(showSplit ? 'flex h-full min-h-0' : 'contents')}>
-      <div className={cn(showSplit ? 'flex-1 min-w-0 overflow-auto' : 'contents')}>
-        {children}
+    <div className="flex h-full min-h-0">
+      {/* 좌측(primary) — 라우트 에디터. 항상 존재. */}
+      <div className="flex flex-1 min-w-0 min-h-0 flex-col">
+        <ReportTabBar pane="left" placement="pane" />
+        <div className="flex-1 min-h-0">{children}</div>
       </div>
-      {showSplit && (
+
+      {/* 우측(secondary) — 읽기전용 분할 패널. */}
+      {splitOpen && rightTab && (
         <>
           <div className="w-px shrink-0 bg-border" aria-hidden="true" />
           <div
-            className="flex-1 min-w-0 overflow-hidden"
+            className="flex flex-1 min-w-0 min-h-0 flex-col bg-muted/20"
             data-app-chrome="report-split"
           >
-            <SplitCompanionPane tab={splitTab} />
+            <ReportTabBar pane="right" placement="pane" />
+            <SplitToolbarHeader tab={rightTab} onClose={() => closeRight(rightTab.key)} />
+            <div className="flex-1 min-h-0 overflow-auto px-6 py-4">
+              <InlineReportView reportId={rightTab.reportId} exposeBlockIds={false} />
+            </div>
           </div>
         </>
       )}
@@ -41,43 +48,40 @@ export function ReportSplitLayout({ children }) {
   )
 }
 
-// 우측 읽기전용 패널 — 상단에 다른 열린 탭 선택 드롭다운 + 닫기, 본문은
-// InlineReportView(읽기전용). exposeBlockIds=false 로 `id="block-…"` 를 떼
-// 좌측 에디터의 document.getElementById('block-…') 조회와 충돌하지 않게 한다.
-function SplitCompanionPane({ tab }) {
-  const { tabs, activeKey, setSplit } = useReportTabs()
-  // 우측 후보 = 활성 탭이 아니고 저장된(r:) 보고서인 탭들.
-  const candidates = tabs.filter((t) => t.key !== activeKey && t.reportId)
-
+// 우측 패널 상단 바 — 원래 보고서 화면의 툴바와 같은 구성(제목 + 우측 버튼
+// 그룹)을 흉내낸다. 다만 분할 우측은 읽기전용이라 '편집'은 비활성(편집은 좌측
+// 에서). 보고서 본문 폭/메타는 InlineReportView 가 그린다.
+function SplitToolbarHeader({ tab, onClose }) {
   return (
-    <div className="flex h-full flex-col bg-muted/20">
-      <div className="flex items-center gap-2 border-b bg-muted/40 px-3 py-1.5 shrink-0">
-        <span className="text-[11px] text-muted-foreground shrink-0">분할</span>
-        <select
-          value={tab.key}
-          onChange={(e) => setSplit(e.target.value)}
-          className="h-7 min-w-0 flex-1 rounded border border-input bg-background px-1 text-xs"
-          title="우측에 표시할 보고서"
-        >
-          {candidates.map((t) => (
-            <option key={t.key} value={t.key}>
-              {t.title || '제목 없음'}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          aria-label="분할 닫기"
-          title="분할 닫기"
-          onClick={() => setSplit(null)}
-          className="inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground shrink-0"
-        >
-          <X className="h-4 w-4" />
-        </button>
+    <div className="flex items-center gap-3 border-b bg-background px-6 py-3 shrink-0">
+      <div className="flex-1 min-w-0">
+        <div className="text-lg font-semibold truncate">
+          {tab.title || <span className="text-muted-foreground">(제목 없음)</span>}
+        </div>
+        <div className="mt-0.5 text-xs text-muted-foreground">보기 전용 (분할)</div>
       </div>
-      <div className="flex-1 min-h-0 overflow-auto p-4">
-        <InlineReportView reportId={tab.reportId} exposeBlockIds={false} />
-      </div>
+      {/* 원래 화면의 버튼 구조를 맞추되, 우측 패널은 읽기전용이라 편집은 비활성. */}
+      <button
+        type="button"
+        disabled
+        title="분할 보기는 읽기 전용입니다 — 편집은 왼쪽 화면에서"
+        className={cn(
+          'inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs',
+          'cursor-not-allowed text-muted-foreground opacity-60',
+        )}
+      >
+        <Pencil className="h-3.5 w-3.5" />
+        편집
+      </button>
+      <button
+        type="button"
+        aria-label="분할 닫기"
+        title="분할 닫기"
+        onClick={onClose}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+      >
+        <X className="h-4 w-4" />
+      </button>
     </div>
   )
 }

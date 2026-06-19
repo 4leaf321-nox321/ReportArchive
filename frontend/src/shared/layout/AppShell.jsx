@@ -76,9 +76,10 @@ export function AppShell() {
         {/* 콘텐츠 컬럼 — 사이드바 오른쪽. 보고서 탭 스트립을 여기 두어 탭
             구간이 좌측 사이드바를 덮지 않고 콘텐츠 영역 안에서만 깔리게 한다. */}
         <div className="flex flex-1 min-w-0 flex-col">
-          {/* 열린 보고서 탭 스트립 — 콘텐츠 상단. 열린 탭이 없으면 null 을
-              반환하므로 비-보고서 화면에선 보이지 않는다. */}
-          <ReportTabBar />
+          {/* 비-보고서 화면용 좌측 탭 스트립(목록·대시보드 등에서 열린 보고서로
+              빠르게 복귀). 보고서 라우트에선 null 을 반환하고, 대신 각 패널
+              상단의 탭바(ReportSplitLayout)가 보인다. */}
+          <ReportTabBar pane="left" placement="shell" />
           <main ref={mainRef} className="flex-1 min-w-0 overflow-y-auto bg-muted/30">
             <MentionReturnBar />
             {/* ReportSplitLayout 은 분할이 꺼져 있으면 display:contents 로 투명해

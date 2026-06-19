@@ -32,7 +32,11 @@ export function ReportSplitLayout({ children }) {
       {/* 좌측(primary) — 라우트 에디터. 항상 존재. */}
       <div className="flex flex-1 min-w-0 min-h-0 flex-col">
         <ReportTabBar pane="left" placement="pane" />
-        <div className="flex-1 min-h-0">{children}</div>
+        {/* min-w-0 + overflow-hidden 필수: 안 주면 보고서의 min-content 폭
+            (예: 1024px 페이지)이 좁은 분할 패널을 넘어 늘어나, 보고서 컬럼과
+            그에 절대배치된 편집 플로팅 버튼(absolute right-6)이 우측 패널을
+            침범한다. 패널 경계에서 클립해 bleed 를 막는다. */}
+        <div className="flex-1 min-w-0 min-h-0 overflow-hidden">{children}</div>
       </div>
 
       {/* 우측(secondary) — 읽기전용 분할 패널. */}

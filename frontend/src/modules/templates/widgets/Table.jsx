@@ -8,7 +8,7 @@ import {
   PopoverTrigger,
 } from '@/shared/components/ui/popover'
 import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, NoteInput, PreviewLabel, TextStyleField, captionSkipProps, CellAlignControl, computeMergeMap, hAlignClass, normalizeMerges, parseHtmlTableMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation, vAlignClass, _richIsEmpty, _richSeed, sanitizeCaptionHtml } from './_shared'
-import { RichTextRowEditor, RichTextFormatToolbarBody } from './RichTextRowEditor'
+import { RichTextRowEditor, RichTextFormatToolbarBody, MIXED_FONT_SIZE } from './RichTextRowEditor'
 import { ColorSwatchPicker, bgTokenClass, colorTokenClass, normalizeToken } from '@/shared/text-color'
 
 // 셀 색상 사이드테이블 키 — `${rowIndex}::${colKey}`. (열 key 는 안정적이라
@@ -1023,6 +1023,38 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     )
   }
 
+  // 선택 영역(드래그)의 현재 글자 크기 — '글자 서식' 팝오버의 크기 드롭다운에
+  // 표시한다. 선택한 셀이 전부 같은 크기면 그 값, 제각각이면 MIXED_FONT_SIZE
+  // (공란), 전부 기본(서식 없음)이면 ''(기본 라벨). 텍스트 셀은 에디터의
+  // per-char 서식을, 숫자/날짜/선택 셀은 cell_styles.size 를 본다. selection
+  // HasMerge 처럼 매 렌더 계산(IIFE) — 선택/내용이 바뀌면 자동으로 갱신.
+  const selectionFontSize = (() => {
+    const r = selection.rect
+    if (!r) return ''
+    const reg = cellEditorsRef.current
+    const sizes = new Set()
+    for (let rr = r.r1; rr <= r.r2 && sizes.size <= 1; rr++) {
+      for (let ci = r.c1; ci <= r.c2 && sizes.size <= 1; ci++) {
+        const col = cols[ci]
+        if (!col) continue
+        if (rr < headerOffset) {
+          // 헤더 band — 헤더 셀은 항상 에디터(있을 때만 읽는다).
+          const api = reg.get(`h-${rr}-${ci}`)
+          if (api?.getFontSizeSet) api.getFontSizeSet().forEach((s) => sizes.add(s))
+        } else {
+          const rowIdx = rr - headerOffset
+          const api = reg.get(`${rowIdx}:${ci}`)
+          if (api?.getFontSizeSet) api.getFontSizeSet().forEach((s) => sizes.add(s))
+          // 숫자/날짜/선택 셀 — 셀 단위 글자 크기(없으면 기본=null).
+          else sizes.add(cellStyles[_cellKey(rowIdx, col.key)]?.size || null)
+        }
+      }
+    }
+    if (sizes.size === 0) return ''
+    if (sizes.size > 1) return MIXED_FONT_SIZE
+    return [...sizes][0] || ''
+  })()
+
   function mergeSelection() {
     const r = selection.rect
     if (!r) return
@@ -1500,7 +1532,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
             >
               <div className="flex items-center gap-1 flex-wrap">
                 <RichTextFormatToolbarBody
-                  state={_BULK_TOOLBAR_STATE}
+                  state={{ ..._BULK_TOOLBAR_STATE, fontSize: selectionFontSize }}
                   actions={bulkFormatActions}
                   defaultSizePx={cellDefaultSizePx}
                 />

@@ -56,6 +56,10 @@ export const FONT_FAMILY_OPTIONS = [
   { label: 'Courier New', value: "'Courier New', Courier, monospace" },
 ]
 
+// 다중 셀 일괄 툴바에서 선택 셀들의 글자크기가 제각각일 때 FontSizeSelect 에
+// 넘기는 sentinel — 어떤 옵션 value 와도 안 맞아 드롭다운이 공란으로 표시된다.
+export const MIXED_FONT_SIZE = 'mixed'
+
 export const FONT_SIZE_OPTIONS = [
   { label: '10', value: '10px' },
   { label: '11', value: '11px' },
@@ -371,6 +375,20 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
       },
       getHTML: () => editor?.getHTML() ?? '',
       getText: () => editor?.getText() ?? '',
+      // 이 셀(에디터) 안 텍스트 런들의 글자크기 집합. 서식 없는(=기본) 런은
+      // null 로 표기하고, 빈 셀도 {null}(=기본) 을 돌려준다. 표의 일괄 서식
+      // 툴바가 선택한 여러 셀의 집합을 합쳐 '균일/혼합/기본'을 판단한다.
+      getFontSizeSet() {
+        const out = new Set()
+        if (!editor) return out
+        editor.state.doc.descendants((node) => {
+          if (!node.isText) return
+          const ts = node.marks.find((m) => m.type.name === 'textStyle')
+          out.add(ts?.attrs?.fontSize || null)
+        })
+        if (out.size === 0) out.add(null)
+        return out
+      },
       // ProseMirror positions: 0 = before doc, 1 = inside <p> at start.
       // We report a 0-based caret across plain text so the parent's
       // "caret === 0" / "caret === length" checks keep semantic meaning.
@@ -680,9 +698,12 @@ function FontSizeSelect({ value, onChange, defaultSizePx }) {
   const defaultLabel = Number.isFinite(defaultSizePx)
     ? `기본 (${defaultSizePx}px)`
     : '기본'
+  // 선택 셀들의 크기가 제각각이면(MIXED) 어떤 옵션과도 안 맞는 숨은 항목을
+  // 골라 둬서 드롭다운이 공란으로 보이게 한다.
+  const isMixed = value === MIXED_FONT_SIZE
   return (
     <select
-      value={value ?? ''}
+      value={isMixed ? MIXED_FONT_SIZE : (value ?? '')}
       onMouseDown={(e) => e.stopPropagation()}
       onChange={(e) => {
         const v = e.target.value
@@ -691,6 +712,7 @@ function FontSizeSelect({ value, onChange, defaultSizePx }) {
       className="h-7 rounded border border-input bg-background px-1 text-[11px]"
       title="글자 크기 (px)"
     >
+      {isMixed && <option value={MIXED_FONT_SIZE} hidden />}
       <option value="">{defaultLabel}</option>
       {FONT_SIZE_OPTIONS.map((o) => (
         <option key={o.value} value={o.value}>

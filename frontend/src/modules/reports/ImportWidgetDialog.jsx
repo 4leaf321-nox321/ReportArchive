@@ -96,6 +96,8 @@ export function ImportWidgetDialog({ open, onClose, onImport }) {
       content: page.content?.[block.id] ?? null,
       layout: page.layout_overrides?.[block.id] ?? block.layout ?? null,
       section: resolveBlockSection(page, block),
+      // 가져온 원본 보고서 — 붙여넣은 보고서와 "참고" 관계로 연결한다.
+      sourceReportId: report?.id ?? null,
     })
     onClose()
   }

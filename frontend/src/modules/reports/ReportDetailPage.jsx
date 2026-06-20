@@ -1682,7 +1682,7 @@ export default function ReportDetailPage() {
   }
 
   /** ImportWidgetDialog 가 위젯을 고르면 호출. anchorId 가 있으면(화살표 진입)
-   *  그 블록 기준 방향에 삽입, 없으면 페이지 끝에 추가. */
+   *  그 블록 기준 방향에 삽입, 없으면 페이지 끝에 추가. 원본 보고서는 "참고"로 연결. */
   function handleImportPicked(picked) {
     const t = importTarget
     if (!t) return
@@ -1695,6 +1695,29 @@ export default function ReportDetailPage() {
     } else {
       importExtraBlock(t.pageIdx, picked)
     }
+    linkSourceAsReference(picked.sourceReportId)
+  }
+
+  /** 가져온/붙여넣은 위젯의 원본 보고서를 현재 보고서의 "참고(reference)"
+   *  관계로 연결한다. 현재 보고서가 저장돼 있고(self 아님), 같은 참고 링크가
+   *  아직 없을 때만. 링크는 즉시 백엔드에 생성된다(draft 저장과 별개). 새(미저장)
+   *  보고서는 id 가 없어 건너뛴다 — 저장 후 위젯을 다시 가져오면 연결된다. */
+  function linkSourceAsReference(sourceReportId) {
+    const myId = existingReport?.id
+    if (!sourceReportId || !myId) return
+    if (String(sourceReportId) === String(myId)) return
+    const dup = (linkedReports.links ?? []).some(
+      (l) =>
+        l.kind === 'reference' &&
+        l.direction === 'outgoing' &&
+        String(l.counterpart?.id) === String(sourceReportId),
+    )
+    if (dup) return
+    linkedReports.addLink({
+      toReportId: sourceReportId,
+      kind: 'reference',
+      direction: 'outgoing',
+    })
   }
 
   /** Insert a new ad-hoc widget relative to an existing block. `direction`
@@ -1953,7 +1976,12 @@ export default function ReportDetailPage() {
   function copyBlockToClipboard(pageIdx, blockId, { cut = false } = {}) {
     const snap = snapshotBlock(pageIdx, blockId)
     if (!snap) return
-    setBlockClipboard({ ...snap, cutSource: cut ? { pageIdx, blockId } : null })
+    setBlockClipboard({
+      ...snap,
+      cutSource: cut ? { pageIdx, blockId } : null,
+      // 출처 보고서 — 다른 보고서에 붙여넣으면 "참고" 관계로 연결하는 데 쓴다.
+      sourceReportId: existingReport?.id ?? null,
+    })
     if (cut) {
       removeBlockFromPage(pageIdx, blockId)
       // 활성 선택이 잘려나간 블록이었으면 같이 비워줘야 다른 단축키
@@ -2096,6 +2124,8 @@ export default function ReportDetailPage() {
       setActiveBlock({ pageIdx, blockId: pastedId })
     }
     toast.success('위젯을 붙여 넣었습니다')
+    // 다른 보고서에서 복사해 온 위젯이면 그 원본을 "참고" 관계로 연결.
+    linkSourceAsReference(clip.sourceReportId)
   }
 
   /** Move a single block from one page to another in one atomic

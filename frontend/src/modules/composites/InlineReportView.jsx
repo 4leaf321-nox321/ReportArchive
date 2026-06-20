@@ -102,6 +102,7 @@ export function InlineReportView({
             rowGapPx={pageGapPx}
             exposeBlockIds={exposeBlockIds}
             onCopyWidget={onCopyWidget}
+            sourceReportId={report?.id ?? null}
           />
         ))}
       </div>
@@ -116,6 +117,7 @@ function InlinePage({
   rowGapPx,
   exposeBlockIds = true,
   onCopyWidget = null,
+  sourceReportId = null,
 }) {
   const { data: template, loading } = useAsync(
     () => getTemplateVersion(page.template_id, page.template_version),
@@ -189,7 +191,12 @@ function InlinePage({
                 {onCopyWidget && getRenderer(it.block.type)?.Editor && (
                   <button
                     type="button"
-                    onClick={() => onCopyWidget(widgetSnapshot(page, it.block))}
+                    onClick={() =>
+                      onCopyWidget({
+                        ...widgetSnapshot(page, it.block),
+                        sourceReportId,
+                      })
+                    }
                     title="이 위젯을 복사 (편집 창에 붙여넣기)"
                     className="absolute right-1 top-1 z-10 inline-flex items-center gap-1 rounded-md border bg-background/95 px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-foreground group-hover:opacity-100"
                   >

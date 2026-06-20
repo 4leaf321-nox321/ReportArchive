@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Search, FileText, Loader2, Plus, Building2 } from 'lucide-react'
+import { Search, FileText, Loader2, Plus } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -13,8 +13,8 @@ import { cn } from '@/shared/lib/utils'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
 import { searchReports, getReport } from '@/modules/reports/api'
-import { listLinkableFacets } from '@/shared/api/reportLinks'
-import { FilterCombo } from './ReportPicker'
+import { WorkspaceCombobox } from '@/shared/components/WorkspaceCombobox'
+import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { getTemplateVersion } from '@/shared/api/templates'
 import { getRenderer } from '@/modules/templates/widgets'
 import {
@@ -56,17 +56,11 @@ export function ImportWidgetDialog({ open, onClose, onImport }) {
     }
   }, [open])
 
-  // 부서(게시판) 선택용 facet — 시스템에서 보고서가 게시된 게시판 목록(+건수).
-  // 링크 picker 의 "게시조직" 필터와 같은 소스.
-  const { data: facets } = useAsync(
-    () => (open ? listLinkableFacets() : Promise.resolve(null)),
-    [open],
-  )
-  const boardOptions = (facets?.mounts ?? []).map((m) => ({
-    value: m.slug,
-    label: m.name,
-    count: m.count,
-  }))
+  // 부서(게시판) 트리 — 메인 화면 조직 선택과 같은 계층형 picker. useWorkspace
+  // 의 전체 워크스페이스에서 org(부서) 만 추려 트리/검색으로 고른다(조직이 많아도
+  // 찾기 쉽게). 개인공간·virtual 은 제외.
+  const { all: allWorkspaces } = useWorkspace()
+  const boardChoices = (allWorkspaces ?? []).filter((w) => w.kind === 'org')
 
   // 검색어가 비면 접근 가능한 보고서를 최신순으로 브라우즈. board(특정 부서)가
   // 있으면 그 게시판으로, 없으면 location(전체/내공간/부서게시판) 필터.
@@ -150,18 +144,19 @@ export function ImportWidgetDialog({ open, onClose, onImport }) {
               </div>
               {/* 특정 부서(게시판) 선택 — 다른 부서 게시판도 검색해서 고를 수
                   있다(권한 범위 내). 링크 picker 의 게시조직 필터와 동일 UI. */}
-              <FilterCombo
-                icon={Building2}
-                label="부서"
+              <WorkspaceCombobox
+                workspaces={boardChoices}
                 value={board}
                 onChange={(slug) => {
                   setBoard(slug)
                   if (slug) setLocation('all')
                 }}
-                options={boardOptions}
-                allLabel="전체 부서"
-                searchPlaceholder="부서·게시판 검색..."
-                mruKey="ra:importWidget:recentBoards"
+                allowNone
+                noneLabel="전체 부서"
+                placeholder="전체 부서"
+                searchPlaceholder="부서명·경로로 검색"
+                compact
+                className="w-full"
               />
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1">

@@ -28,6 +28,9 @@ _TUNABLES: Dict[str, tuple[str, int]] = {
     "uvicorn_workers": ("UVICORN_WORKERS", 4),
     "db_pool_size": ("DB_POOL_SIZE", 5),
     "db_max_overflow": ("DB_MAX_OVERFLOW", 10),
+    # 백그라운드 워커(worker.py) — 별도 프로세스라 웹 워커 수와 무관.
+    "worker_concurrency": ("WORKER_CONCURRENCY", 2),
+    "worker_poll_ms": ("WORKER_POLL_MS", 1000),
 }
 
 # 안전 상한 — UI 가 슬라이더 max 로 쓰고 백엔드도 PUT 단계에서 clamp.
@@ -35,6 +38,8 @@ LIMITS: Dict[str, tuple[int, int]] = {
     "uvicorn_workers": (1, 32),
     "db_pool_size": (1, 50),
     "db_max_overflow": (0, 50),
+    "worker_concurrency": (1, 16),
+    "worker_poll_ms": (100, 60000),
 }
 
 _cache: Optional[Dict[str, str]] = None
@@ -57,9 +62,10 @@ def _load_from_db() -> Dict[str, str]:
             connect_timeout=3,
         ) as conn:
             with conn.cursor() as cur:
+                # 키 목록은 _TUNABLES 에서 파생 — 새 튜닝 키 추가 시 자동 포함.
                 cur.execute(
-                    "SELECT key, value FROM runtime_settings "
-                    "WHERE key IN ('uvicorn_workers', 'db_pool_size', 'db_max_overflow')"
+                    "SELECT key, value FROM runtime_settings WHERE key = ANY(%s)",
+                    (list(_TUNABLES.keys()),),
                 )
                 for key, value in cur.fetchall():
                     if value is not None:

@@ -1384,3 +1384,4 @@ def visible_ids_for_user(
             db, _folders_view_reachable_ids(db, reach, user_id)
         )
     return ids
+

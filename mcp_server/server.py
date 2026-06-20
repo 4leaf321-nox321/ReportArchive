@@ -134,8 +134,15 @@ async def describe_metadata(ctx: Context) -> dict:
 
 @mcp.tool()
 async def search_reports(q: str, ctx: Context, limit: int = 20) -> dict:
-    """보고서 제목·본문 전문검색(내가 볼 수 있는 범위 내). 기존 내용을 참고할 때."""
-    return await _get(ctx, "/api/reports/search", {"q": q, "limit": limit})
+    """보고서 검색(내가 볼 수 있는 범위 내) — 기존 내용을 참고할 때.
+
+    **하이브리드 검색**: 정확한 단어(키워드)뿐 아니라 *의미가 비슷한* 보고서도 찾는다
+    (임베딩 기반). 예: "브래킷 응력"으로 검색하면 "브라켓 강도 검토"처럼 표현이 달라도
+    뜻이 가까운 보고서가 함께 잡힌다. 각 결과에 report_id·title·snippet 이 있으니,
+    필요하면 report_id 로 get_report 를 호출해 상세를 본다."""
+    return await _get(
+        ctx, "/api/reports/search/semantic", {"q": q, "mode": "hybrid", "limit": limit}
+    )
 
 
 @mcp.tool()

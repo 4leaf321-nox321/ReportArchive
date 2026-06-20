@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from app.jobs.routes import router as jobs_router
 from app.modules.admin.routes import router as admin_router
 from app.modules.auth.routes import router as auth_router
 from app.modules.comments.routes import router as comments_router
@@ -123,3 +124,5 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(activities_router, prefix="/api", tags=["activities"])
     # 통합 공유(grant) — /api/{reports|composites}/{id}/shares.
     app.include_router(grants_router, prefix="/api", tags=["grants"])
+    # 백그라운드 작업 큐 — 상태 폴링(읽기 전용). 적재는 각 도메인 라우트가 직접.
+    app.include_router(jobs_router, prefix="/api/jobs", tags=["jobs"])

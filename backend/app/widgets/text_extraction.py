@@ -307,3 +307,14 @@ def extract_searchable_text_for_report(report: Any) -> str:
         title=getattr(report, "title", "") or "",
         report_id=getattr(report, "id", None),
     )
+
+
+def extract_chunks_for_report(report: Any) -> list[TextChunk]:
+    """ORM `Report` 한 건에서 바로 청크 리스트 뽑기 — 임베딩(RAG) 경로용 편의
+    래퍼. extract_searchable_text_for_report 와 대칭."""
+    return extract_chunks(
+        content=getattr(report, "content", None),
+        pages=getattr(report, "pages", None),
+        title=getattr(report, "title", "") or "",
+        report_id=getattr(report, "id", None),
+    )

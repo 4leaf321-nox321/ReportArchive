@@ -199,7 +199,7 @@ def main() -> int:
             db.execute(
                 select(WorkspaceMember.user_id).where(
                     WorkspaceMember.workspace_slug == mount.workspace_slug,
-                    WorkspaceMember.role == Role.admin,
+                    WorkspaceMember.role == Role.manager,
                 )
             ).scalars()
         )

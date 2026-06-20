@@ -81,6 +81,29 @@ class Settings(BaseSettings):
     # 번들 1개 파일 수 상한 — 폴더 통째 업로드 시 폭주 방지.
     embed_max_files: int = Field(default=2000)
 
+    # --- AI / 임베딩 (RAG 발판) ---
+    # 임베딩 백엔드: "ollama"(운영 — 호스트 Ollama 호출) | "mock"(개발/테스트 —
+    # Ollama 없이 텍스트 해시로 결정적 벡터). 폐쇄망 운영서버엔 Ollama+E5 가 이미
+    # 설치돼 있다는 전제. 백엔드 추상화로 같은 코드가 양쪽에서 돈다.
+    embedding_backend: str = Field(default="mock")
+    ollama_base_url: str = Field(default="http://localhost:11434")
+    # Ollama 임베딩 모델 태그(운영 설치본에 맞춰 .env 로 지정). 예: bge-m3,
+    # multilingual-e5-large 계열.
+    embedding_model: str = Field(default="bge-m3")
+    # 벡터 차원 — report_chunks.embedding 컬럼 크기와 *반드시* 일치해야 한다.
+    # E5-large/bge-m3 = 1024. 모델 바꾸면 마이그레이션도 같이 바꿔야 함.
+    embedding_dim: int = Field(default=1024)
+    # 임베딩 호출 타임아웃(초).
+    embedding_timeout_s: float = Field(default=30.0)
+    # 하이브리드 검색에서 벡터 결과를 받아들일 최소 코사인 유사도(0~1). 약한
+    # 매치·mock(미설정 운영)·미임베딩 상태가 키워드 결과를 오염시키지 않도록 한다.
+    # 실제 E5/bge-m3 의 "관련 있음"은 보통 0.3+ 라 0.2 면 노이즈만 걸러진다.
+    embedding_hybrid_min_score: float = Field(default=0.2)
+    # 보고서 저장/수정 시 자동으로 embed_report 잡을 적재할지. **기본 OFF** — pgvector
+    # 확장·report_chunks·워커가 모두 준비된 환경에서만 켠다(.env 로 true). 안 그러면
+    # 임베딩 미배포(p47만 배포 등) 상태에서 실패 잡이 쌓인다.
+    embedding_auto_on_save: bool = Field(default=False)
+
     @property
     def is_development(self) -> bool:
         return self.app_env.lower() == "development"

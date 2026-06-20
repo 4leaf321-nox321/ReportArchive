@@ -231,6 +231,31 @@ def search_reports(
     )
 
 
+@router.get("/search/semantic")
+def semantic_search_reports(
+    q: str = Query(..., min_length=1, max_length=400, description="의미 검색어"),
+    mode: str = Query(default="hybrid", description="hybrid|semantic"),
+    limit: int = Query(default=20, ge=1, le=50),
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """시맨틱/하이브리드 검색 — 임베딩(report_chunks) 기반 의미 검색.
+
+    mode=semantic: 벡터 유사도만. mode=hybrid(기본): 벡터+키워드(pg_trgm)를 RRF 융합.
+    가시성은 키워드 검색과 동일 규칙(권한 밖 보고서 미노출). 결과 항목:
+    {report_id, title, snippet, score|rrf_score, block_id, page_idx, ...}.
+    """
+    # 지연 import — ai 패키지(pgvector)를 reports 라우터 import 시점에 끌지 않게.
+    from app.ai import search as ai_search
+
+    if mode == "semantic":
+        results = ai_search.semantic_search(db, q, actor, limit=limit)
+    else:
+        mode = "hybrid"
+        results = ai_search.hybrid_search(db, q, actor, limit=limit)
+    return success_response(data={"results": results, "mode": mode, "limit": limit})
+
+
 # /{report_id} 동적 path 보다 *위* 에 등록해야 한다 — 그래야 FastAPI 가
 # `link-kinds` 문자열을 reportId 로 잡으려고 시도(422)하지 않고 이 정적
 # path 와 먼저 매칭한다.

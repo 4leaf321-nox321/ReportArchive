@@ -84,6 +84,64 @@ def delete_orphan_files(
     )
 
 
+class OrphanCleanupEnqueuePayload(BaseModel):
+    grace_hours: int = Field(default=48, ge=0, le=8760)
+    delete: bool = False  # False=스캔만(dry-run)
+    limit: int | None = Field(default=None, ge=1, le=100000)
+
+
+@router.post("/orphan-files/cleanup-job")
+def enqueue_orphan_cleanup(
+    payload: OrphanCleanupEnqueuePayload,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_system_admin),
+):
+    """고아 파일 스캔/정리를 백그라운드 워커로 적재한다(동기 대기 없음).
+
+    스캔은 모든 보고서·종합보고·버전 본문을 훑어 무거우므로, 관리자가 응답을
+    기다리지 않게 큐에 넣고 job_id 만 돌려준다. 진행/결과는 GET /api/jobs/{id}
+    로 폴링. 같은 작업이 이미 대기/처리 중이면 중복 적재하지 않는다(dedup).
+    """
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
+
+    from app.jobs import queue
+    from app.jobs.models import Job
+
+    try:
+        job_id = queue.enqueue(
+            db,
+            "orphan_cleanup",
+            {
+                "grace_hours": payload.grace_hours,
+                "delete": payload.delete,
+                "limit": payload.limit,
+            },
+            dedup_key="admin",
+            created_by=actor.user.id,
+        )
+    except IntegrityError:
+        # 이미 대기/처리 중인 정리 작업이 있음(uq_jobs_dedup). 그걸 그대로 반환.
+        db.rollback()
+        existing = db.scalar(
+            select(Job.id)
+            .where(
+                Job.type == "orphan_cleanup",
+                Job.dedup_key == "admin",
+                Job.status.in_(("pending", "running")),
+            )
+            .order_by(Job.id.desc())
+        )
+        return success_response(
+            data={"job_id": existing, "already_running": True},
+            message="이미 진행 중인 고아 파일 정리 작업이 있습니다.",
+        )
+    return created_response(
+        data={"job_id": job_id},
+        message="고아 파일 정리를 백그라운드에 적재했습니다.",
+    )
+
+
 @router.get("/access-logs")
 def list_access_logs(
     limit: int = Query(default=50, ge=1, le=500),

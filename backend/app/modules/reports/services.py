@@ -256,10 +256,21 @@ def report_has_public_mount(db: Session, report_id: int) -> bool:
 
 def can_read_report(db: Session, actor, report: Report) -> bool:
     """단일 보고서 읽기 가시성 — grant 기반 통합 판정(소유·sys_admin·virtual·
-    all_org·user grant·부서 grant 하위상속). public_viewer 는 공개분만."""
-    return grant_services.can_view(
+    all_org·user grant·부서 grant 하위상속). public_viewer 는 공개분만.
+
+    활성 ws 기준 can_view 를 먼저 보고(소유·sys_admin·all_org·user/부서/게시판/폴더
+    grant 등), 멤버가 활성 ws 밖이라 거부되면 **사용자 중심 가시집합**
+    (all_visible_report_ids — 멤버십 기반·게시 누수 제외)으로 한 번 더 본다. 이러면
+    MCP 가 어떤 X-Workspace-Slug 를 보내든 "내가 실제 entitle 된 보고서"는 읽히되,
+    상위 부문 게시판에 *게시만* 된 글(권한 없음)은 여전히 거부된다. 비멤버
+    (public_viewer)는 헤더 위조 방지를 위해 이 확장을 적용하지 않는다."""
+    if grant_services.can_view(
         db, actor, GrantContentType.report, report.id, report.owner_user_id
-    )
+    ):
+        return True
+    if getattr(actor, "public_viewer", False):
+        return False
+    return report.id in all_visible_report_ids(db, actor.user.id)
 
 
 def is_report_board_manager(db: Session, user_id: int, report: Report) -> bool:
@@ -458,11 +469,26 @@ def _owned_report_ids(db: Session, user_id: int) -> set[int]:
 
 def visible_report_ids(db: Session, actor) -> Optional[set[int]]:
     """actor 가 볼 수 있는 report_id 집합(grant ∪ 본인 소유). None=virtual 무스코프.
-    목록 공개탐색·관계도 스코핑에 쓴다."""
+    목록 공개탐색·관계도 스코핑에 쓴다 — **활성 워크스페이스 기준**."""
     base = grant_services.visible_ids(db, actor, GrantContentType.report)
     if base is None:
         return None
     return base | _owned_report_ids(db, actor.user.id)
+
+
+def all_visible_report_ids(db: Session, user_id: int) -> set[int]:
+    """MCP/검색·읽기용 **사용자 중심** 가시성 — 활성 워크스페이스와 무관, 멤버십 기반.
+
+    "내 공간·내가 올린 것·내가 속한 부서·각 부서의 공개 설정에 내가 포함됐는지"
+    원칙 그대로: 소유 ∪ 전사공개(all_org) ∪ 사용자 grant ∪ (내가 도달하는 게시판/
+    폴더의 명시적 공유분). **게시(mount) 자동 부서 grant 의 상위→하위 누수는 제외**
+    — visible_ids_for_user 규칙(상위 게시판 게시글이 깊은 하위팀에 새지 않게). 그래서
+    dx 부문 게시판에 *게시만* 된 글(예: 184)은 dx 비멤버인 하위팀원에게 안 보인다.
+
+    (활성 ws 기준 visible_report_ids 는 웹 브라우징 목록 전용으로 그대로 유지.)"""
+    return grant_services.visible_ids_for_user(
+        db, user_id, GrantContentType.report
+    ) | _owned_report_ids(db, user_id)
 
 
 def search_snippet(text: Optional[str], query: str, radius: int = 60) -> Optional[str]:

@@ -55,6 +55,8 @@ backend/data/
 release/
 deploy/app.sif
 deploy/*.sif
+# AI 오프라인 설치물(ollama 런타임/모델·NVIDIA 드라이버 .deb·번들 스크립트) — 환경 종속 일회성, 레포 미포함
+deploy/ai_offline/
 
 # ==============================================================================
 # Misc / accidental

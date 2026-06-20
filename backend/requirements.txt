@@ -12,6 +12,9 @@ email-validator==2.2.0
 SQLAlchemy==2.0.36
 psycopg[binary]==3.2.3
 alembic==1.14.0
+# 벡터 검색(RAG 발판) — report_chunks.embedding(vector) ORM 타입 + 쿼리 연산자.
+# Postgres 측 pgvector 확장(OS 패키지)도 별도 설치 필요. config.embedding_dim 참조.
+pgvector==0.3.6
 
 # Authentication
 passlib==1.7.4

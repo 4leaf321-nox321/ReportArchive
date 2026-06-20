@@ -17,6 +17,9 @@ from app.widgets import (
 # Registry self-checks
 # --------------------------------------------------------------------------- #
 def test_registry_has_all_widgets():
+    # 이 핵심(Phase 0) 위젯들은 항상 존재해야 한다. 레지스트리는 이후로 계속
+    # 늘었으므로 정확히 일치(==)가 아니라 *부분집합(존재)* 으로 검사한다 —
+    # 위젯이 사라지면 잡되, 새 위젯이 추가됐다고 깨지지 않게.
     expected = {
         "heading",
         "rich_text",
@@ -27,7 +30,7 @@ def test_registry_has_all_widgets():
         "attachment",
         "chart",
     }
-    assert set(WIDGET_REGISTRY) == expected
+    assert expected <= set(WIDGET_REGISTRY)
 
 
 def test_every_widget_default_props_pass_their_props_schema():
@@ -155,9 +158,10 @@ def test_validate_template_rejects_wrong_version():
         validate_template_schema({"version": "v2", "blocks": []})
 
 
-def test_validate_template_rejects_empty_blocks():
-    with pytest.raises(ValueError, match="at least one block"):
-        validate_template_schema({"version": "widget-v1", "blocks": []})
+def test_validate_template_allows_empty_blocks():
+    # 빈 blocks 는 이제 합법 — "빈 템플릿"(본문이 JSON 붙여넣기/AI 임포트로 나중에
+    # 도착) 패턴 지원. app/widgets/validation.py 의 의도된 동작. (과거엔 거부했음)
+    validate_template_schema({"version": "widget-v1", "blocks": []})  # should not raise
 
 
 # --------------------------------------------------------------------------- #

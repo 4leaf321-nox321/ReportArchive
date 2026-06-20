@@ -28,15 +28,15 @@ def test_widgets_endpoint_returns_full_catalog() -> None:
     assert body["success"] is True
     data = body["data"]
     assert data["schema_version"] == "widget-v1"
-    types = sorted(w["type"] for w in data["widgets"])
-    assert types == sorted(
-        [
-            "heading", "rich_text", "key_value", "bulleted_list",
-            "table", "image", "attachment", "chart", "scatter", "scatter3d",
-            "heatmap", "radar", "equation",
-            "milestone", "flowchart", "progress_bar", "raci_matrix",
-        ]
-    )
+    types = set(w["type"] for w in data["widgets"])
+    # 카탈로그는 계속 늘어나므로 정확히 일치가 아니라 *부분집합(존재)* 으로 검사.
+    expected = {
+        "heading", "rich_text", "key_value", "bulleted_list",
+        "table", "image", "attachment", "chart", "scatter", "scatter3d",
+        "heatmap", "radar", "equation",
+        "milestone", "flowchart", "progress_bar", "raci_matrix",
+    }
+    assert expected <= types
     # Each entry must include the fields the frontend needs to build a
     # palette + props panel.
     for w in data["widgets"]:

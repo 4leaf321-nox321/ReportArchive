@@ -20,6 +20,20 @@ def _h():
 def test_preferences_roundtrip_and_deep_merge():
     client = TestClient(app)
 
+    # 결정적 기준선: 이 테스트는 깊은 병합 결과를 정확히 단정하므로, dev DB 의
+    # admin(id=1)에 남아 있을 수 있는 기존 preferences 를 먼저 비운다. PATCH 깊은
+    # 병합은 키를 못 지우므로 DB 에서 직접 초기화.
+    from app.database import SessionLocal
+    from app.modules.users.models import User
+
+    _db = SessionLocal()
+    try:
+        _u = _db.get(User, 1)
+        _u.preferences = {}
+        _db.commit()
+    finally:
+        _db.close()
+
     # /api/me 에 preferences 필드가 있다(빈 객체일 수 있음).
     me = client.get("/api/me", headers=_h()).json()["data"]
     assert "preferences" in me

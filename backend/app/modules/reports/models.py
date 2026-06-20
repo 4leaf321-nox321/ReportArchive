@@ -31,7 +31,7 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.orm import Mapped, attributes, mapped_column, relationship
+from sqlalchemy.orm import Mapped, Session, attributes, mapped_column, relationship
 
 from app.database import Base
 from app.modules.users.models import User
@@ -420,6 +420,72 @@ def _report_reindex_search_text(mapper, connection, target: "Report") -> None:
     from app.widgets.text_extraction import extract_searchable_text_for_report
 
     target.search_text = extract_searchable_text_for_report(target) or None
+
+
+# --------------------------------------------------------------------------- #
+# 온-세이브 임베딩 트리거 (RAG) — 본문이 바뀐 보고서를 커밋 후 임베딩 큐에 적재.
+# search_text 처럼 모든 저장 경로를 한 곳(세션 이벤트)에서 잡는다. 임베딩은 느리고
+# 외부 모델(Ollama) 호출이라 인라인으로 하지 않고 embed_report 워커 잡으로 위임한다.
+# 적재는 *커밋 이후* (별도 세션) — id 가 확정되고, 보고서 저장 트랜잭션을 막지 않게.
+# settings.embedding_auto_on_save 로 게이트(미배포 환경 보호). embed_report 가
+# content_hash 로 변화 없는 건 스킵하므로, 본문 무관 저장이 잡혀도 비용은 무시 수준.
+# --------------------------------------------------------------------------- #
+def _report_content_changed(target: "Report") -> bool:
+    return any(
+        attributes.get_history(target, name).has_changes()
+        for name in ("title", "content", "pages")
+    )
+
+
+@event.listens_for(Session, "before_flush")
+def _collect_reports_for_embedding(session, flush_context, instances) -> None:
+    # 새 보고서 + 본문 바뀐 보고서를 세션 버킷에 모은다(id 는 커밋 후 읽음).
+    bucket = session.info.setdefault("_reports_to_embed", set())
+    for obj in session.new:
+        if isinstance(obj, Report):
+            bucket.add(obj)
+    for obj in session.dirty:
+        if isinstance(obj, Report) and _report_content_changed(obj):
+            bucket.add(obj)
+
+
+@event.listens_for(Session, "after_rollback")
+def _clear_embedding_bucket(session) -> None:
+    session.info.pop("_reports_to_embed", None)
+
+
+@event.listens_for(Session, "after_commit")
+def _enqueue_report_embeddings(session) -> None:
+    bucket = session.info.pop("_reports_to_embed", None)
+    if not bucket:
+        return
+    from app.config import settings
+
+    if not settings.embedding_auto_on_save:
+        return
+    report_ids = {o.id for o in bucket if getattr(o, "id", None) is not None}
+    if not report_ids:
+        return
+    # 별도 세션에서 적재 — 원 트랜잭션은 이미 끝났다. dedup_key 로 같은 보고서가
+    # 대기/처리 중이면 중복 적재 안 함(빠른 연속 저장 흡수). 실패 시 다음 저장/배치
+    # 스윕이 보강.
+    from sqlalchemy.exc import IntegrityError
+
+    from app.database import SessionLocal
+    from app.jobs.queue import enqueue
+
+    s2 = SessionLocal()
+    try:
+        for rid in report_ids:
+            try:
+                enqueue(
+                    s2, "embed_report", {"report_id": rid}, dedup_key=f"embed:{rid}"
+                )
+                s2.commit()
+            except IntegrityError:
+                s2.rollback()  # 이미 같은 보고서 임베딩 잡이 대기/처리 중
+    finally:
+        s2.close()
 
 
 class ReportEditLock(Base):

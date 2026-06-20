@@ -1,0 +1,12 @@
+[Unit]
+Description=Report Archive — nightly orphan-file cleanup (timer)
+
+[Timer]
+# 매일 03:30 에 정리 작업을 큐에 적재. Persistent=true 면 서버가 꺼져 있어
+# 지난 실행을 놓쳤을 때 부팅 직후 한 번 따라잡는다.
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

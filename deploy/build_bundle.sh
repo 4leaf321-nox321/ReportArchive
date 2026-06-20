@@ -45,10 +45,11 @@ fi
 # --- 3. Stage scripts + docs ---
 echo
 echo "==> [3/4] Staging install scripts"
-cp deploy/deploy.sh                          "$STAGE/"
-cp deploy/reportarchive.service.template     "$STAGE/"
-cp deploy/reportarchive-mcp.service.template "$STAGE/"
-cp deploy/.env.production.example            "$STAGE/.env.example"
+cp deploy/deploy.sh                             "$STAGE/"
+cp deploy/reportarchive.service.template        "$STAGE/"
+cp deploy/reportarchive-worker.service.template "$STAGE/"
+cp deploy/reportarchive-mcp.service.template    "$STAGE/"
+cp deploy/.env.production.example               "$STAGE/.env.example"
 cp deploy/README_OPERATOR.md                 "$STAGE/README.md"
 echo "$VERSION" > "$STAGE/VERSION"
 chmod +x "$STAGE"/*.sh

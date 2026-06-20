@@ -65,7 +65,7 @@ SEED_USERS = [
         "email": "admin",
         "name": "관리자",
         "password": "32167",
-        "memberships": [("dx", Role.admin)],
+        "memberships": [("dx", Role.manager)],  # admin 은 p8 에서 manager 로 통합됨
         "is_system_admin": True,
     },
 ]

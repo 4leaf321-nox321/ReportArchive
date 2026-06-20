@@ -1,0 +1,25 @@
+[Unit]
+Description=Report Archive — enqueue nightly orphan-file cleanup
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=@@USER@@
+Group=@@USER@@
+WorkingDirectory=@@INSTALL_DIR@@
+
+# 작업을 *직접 실행*하지 않고 큐에 적재만 한다 — 실제 정리는 워커
+# (reportarchive-worker.service)가 처리. --dedup 으로 이전 작업이 아직
+# 안 끝났으면 중복 적재하지 않는다. delete=true(실삭제), grace 48h.
+ExecStart=/usr/bin/apptainer exec \
+    --bind @@INSTALL_DIR@@/.env:/opt/app/backend/.env:ro \
+    --bind @@INSTALL_DIR@@/uploads:/data/uploads \
+    @@INSTALL_DIR@@/app.sif /opt/app/venv/bin/python \
+    /opt/app/backend/scripts/enqueue_job.py orphan_cleanup \
+    '{"delete": true, "grace_hours": 48}' --dedup nightly
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=false
+PrivateTmp=true

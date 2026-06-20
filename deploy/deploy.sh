@@ -41,6 +41,12 @@ DB_USER="${DB_USER:-reportarchive}"
 SERVICE_NAME="reportarchive"
 SERVICE_UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 
+# Background worker (작업 큐 — 오펀 정리·AI 임베딩 등). 같은 app.sif 를 apptainer
+# exec 로 실행하므로 별도 venv/의존성 없음. 0 으로 두면 워커 건너뜀.
+WORKER_SERVICE_NAME="reportarchive-worker"
+WORKER_SERVICE_UNIT="/etc/systemd/system/${WORKER_SERVICE_NAME}.service"
+WORKER_ENABLED="${WORKER_ENABLED:-1}"
+
 # MCP server (Claude 연동) — 선택. 별도 venv + 별도 systemd 유닛.
 MCP_SERVICE_NAME="reportarchive-mcp"
 MCP_SERVICE_UNIT="/etc/systemd/system/${MCP_SERVICE_NAME}.service"
@@ -197,6 +203,27 @@ setup_mcp() {
     info "MCP server: http://$MCP_HOST:$MCP_PORT/mcp  → backend $MCP_API_BASE"
 }
 
+# ── Background worker (작업 큐) — 같은 app.sif 재사용, 별도 venv 없음. 비치명적. ──
+render_worker_service_unit() {
+    [[ -f "$HERE/reportarchive-worker.service.template" ]] \
+        || { warn "reportarchive-worker.service.template 없음 — 워커 유닛 건너뜀"; return 1; }
+    info "Rendering worker systemd unit → $WORKER_SERVICE_UNIT"
+    sed -e "s|@@USER@@|$OPERATOR|g" \
+        -e "s|@@INSTALL_DIR@@|$INSTALL_DIR|g" \
+        "$HERE/reportarchive-worker.service.template" > "$WORKER_SERVICE_UNIT"
+    chmod 644 "$WORKER_SERVICE_UNIT"
+    systemctl daemon-reload
+}
+
+setup_worker() {
+    [[ "$WORKER_ENABLED" == "1" ]] || { info "워커 비활성(WORKER_ENABLED=0) — 건너뜀"; return 0; }
+    render_worker_service_unit || return 0
+    systemctl enable "$WORKER_SERVICE_NAME" >/dev/null 2>&1 || true
+    systemctl restart "$WORKER_SERVICE_NAME" \
+        || warn "워커 서비스 기동 실패 — 'journalctl -u $WORKER_SERVICE_NAME' 확인"
+    info "Worker: $WORKER_SERVICE_NAME (백그라운드 잡 처리 — 오펀 정리·AI 임베딩 등)"
+}
+
 # ───────────────────────── subcommands ──────────────────────
 cmd_prepare() {
     info "Installing OS packages (apptainer, postgresql)"
@@ -252,6 +279,7 @@ cmd_install() {
     sleep 2
     systemctl --no-pager --lines=5 status "$SERVICE_NAME" || true
 
+    setup_worker || warn "워커 설정 건너뜀(비치명적)"
     setup_mcp || warn "MCP 설정 건너뜀(비치명적)"
 
     cat <<MSG
@@ -260,6 +288,7 @@ cmd_install() {
   Logs:    sudo journalctl -u $SERVICE_NAME -f
   Health:  curl http://localhost:3000/api/health
   Seed login: admin / 32167  (change immediately)
+  Worker:  sudo systemctl status $WORKER_SERVICE_NAME   (백그라운드 잡)
   MCP:     sudo systemctl status $MCP_SERVICE_NAME   (Claude 연동, 선택)
 MSG
 }
@@ -270,6 +299,8 @@ cmd_update() {
 
     info "Stopping $SERVICE_NAME"
     systemctl stop "$SERVICE_NAME" || true
+    # 워커도 같은 app.sif 를 쓰고 마이그레이션 중 잡을 돌리면 안 되므로 함께 중지.
+    systemctl stop "$WORKER_SERVICE_NAME" 2>/dev/null || true
 
     if [[ -f "$INSTALL_DIR/app.sif" ]]; then
         info "Backing up previous SIF → app.sif.prev"
@@ -283,7 +314,8 @@ cmd_update() {
     sleep 2
     systemctl --no-pager --lines=5 status "$SERVICE_NAME" || true
 
-    # MCP 서버도 함께 갱신(venv 생성/의존성 설치/유닛 재기동까지). 비치명적.
+    # 워커 + MCP 도 함께 갱신(유닛 재렌더 + 새 SIF 로 재기동). 비치명적.
+    setup_worker || warn "워커 설정 건너뜀(비치명적)"
     setup_mcp || warn "MCP 설정 건너뜀(비치명적)"
 
     cat <<MSG
@@ -309,6 +341,7 @@ MSG
 
     info "Stopping service"
     systemctl stop "$SERVICE_NAME" || true
+    systemctl stop "$WORKER_SERVICE_NAME" 2>/dev/null || true
 
     info "Dropping + recreating database '$DB_NAME'"
     sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL
@@ -337,6 +370,8 @@ SQL
     sleep 2
     systemctl --no-pager --lines=5 status "$SERVICE_NAME" || true
 
+    setup_worker || warn "워커 설정 건너뜀(비치명적)"
+
     cat <<MSG
 
 [OK] Factory reset complete.
@@ -346,6 +381,9 @@ MSG
 
 cmd_status() {
     systemctl --no-pager --lines=10 status "$SERVICE_NAME" || true
+    echo
+    echo "--- worker (백그라운드 잡) ---"
+    systemctl --no-pager --lines=5 status "$WORKER_SERVICE_NAME" 2>/dev/null || echo "(워커 유닛 없음 — WORKER_ENABLED=0 또는 미설치)"
     echo
     echo "--- /api/health ---"
     curl -fsS http://localhost:3000/api/health 2>/dev/null || echo "(no response)"

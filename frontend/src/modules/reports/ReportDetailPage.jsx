@@ -859,6 +859,7 @@ export default function ReportDetailPage() {
     promoteNewTab,
     dropTab: dropReportTab,
     splitOpen,
+    clearPendingMove,
   } = useReportTabs()
   useEffect(() => {
     if (!slug) return
@@ -4968,6 +4969,8 @@ export default function ReportDetailPage() {
         }}
         onStay={() => {
           unsavedNavPrompt?.reset()
+          // 활성 탭을 우측으로 보내려던 보류가 있었다면 취소(머무름 선택).
+          clearPendingMove()
           setUnsavedNavPrompt(null)
         }}
       />

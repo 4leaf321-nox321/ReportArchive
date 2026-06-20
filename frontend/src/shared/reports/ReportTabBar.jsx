@@ -14,8 +14,9 @@ const DND_MIME = 'application/x-report-tab'
 //  - 'right' : 우측(secondary, 읽기전용 분할) 탭. 클릭=우측 활성 전환. 닫기=
 //              closeRight. 분할 버튼 없음.
 //
-// 드래그드롭: 탭을 반대편 패널의 탭바로 끌어다 놓으면 그 패널로 이동한다.
-// 한 보고서는 한 패널에만 존재(중복 없음).
+// 드래그드롭:
+//  - 같은 패널 안: 드롭 위치로 순서 변경(reorder).
+//  - 반대편 패널로: 그 패널로 이동. 한 보고서는 한 패널에만 존재.
 //
 // placement:
 //  - 'shell' : AppShell 콘텐츠 상단. 보고서 라우트가 아닐 때만 보인다.
@@ -23,6 +24,12 @@ const DND_MIME = 'application/x-report-tab'
 export function ReportTabBar({ pane = 'left', placement = 'shell' }) {
   const ctx = useReportTabs()
   const navigate = useNavigate()
+
+  // 같은 패널이면 순서 변경, 반대편이면 패널 이동.
+  function handleDrop(key, srcPane, toIndex) {
+    if (srcPane === pane) ctx.reorderTab(pane, key, toIndex)
+    else ctx.moveTab(key, pane, toIndex)
+  }
 
   if (pane === 'right') {
     return (
@@ -32,7 +39,7 @@ export function ReportTabBar({ pane = 'left', placement = 'shell' }) {
         activeKey={ctx.rightActiveKey}
         onSelect={(t) => ctx.setRightActive(t.key)}
         onClose={(t) => ctx.closeRight(t.key)}
-        onDropKey={(key) => ctx.moveTab(key, 'right')}
+        onDropTab={handleDrop}
       />
     )
   }
@@ -48,10 +55,13 @@ export function ReportTabBar({ pane = 'left', placement = 'shell' }) {
       activeKey={ctx.activeKey}
       onSelect={(t) => navigate(routeForTab(t))}
       onClose={(t) => ctx.closeTab(t.key)}
-      onDropKey={(key) => ctx.moveTab(key, 'left')}
-      // 분할: 활성(편집중) 탭이 아닌 저장된 보고서만 우측으로 보낼 수 있다.
+      onDropTab={handleDrop}
       onSplit={(t) => ctx.moveTab(t.key, 'right')}
-      canSplit={(t) => t.key !== ctx.activeKey && Boolean(t.reportId)}
+      // 저장된 보고서만 우측으로. 활성(편집중) 탭은 다른 열린 탭이 있을 때만
+      // (옮긴 뒤 편집 창에 그 보고서를 열어야 하므로).
+      canSplit={(t) =>
+        Boolean(t.reportId) && (t.key !== ctx.activeKey || ctx.tabs.length > 1)
+      }
     />
   )
 }
@@ -62,22 +72,32 @@ function TabStrip({
   activeKey,
   onSelect,
   onClose,
-  onDropKey,
+  onDropTab,
   onSplit = null,
   canSplit = null,
 }) {
-  // 드래그가 스트립 위에 있는지(자식 enter/leave 플리커 방지용 카운터).
-  const [dragOver, setDragOver] = useState(false)
+  // 드롭 삽입 위치(0..tabs.length). null = 드래그 중 아님.
+  const [dropHint, setDropHint] = useState(null)
   const dragDepth = useRef(0)
 
-  if (!tabs || tabs.length === 0) {
-    // 우측 패널은 항상 탭이 ≥1(없으면 패널 자체가 안 보임). 좌측 shell/pane 은
-    // 빈 경우 숨긴다.
-    return null
-  }
+  if (!tabs || tabs.length === 0) return null
 
   function hasTabData(e) {
     return Array.from(e.dataTransfer?.types ?? []).includes(DND_MIME)
+  }
+  function clearHint() {
+    dragDepth.current = 0
+    setDropHint(null)
+  }
+  function readDrop(e) {
+    const raw = e.dataTransfer.getData(DND_MIME)
+    if (!raw) return null
+    try {
+      const { key, pane: srcPane } = JSON.parse(raw)
+      return key ? { key, srcPane } : null
+    } catch {
+      return null
+    }
   }
 
   return (
@@ -86,39 +106,41 @@ function TabStrip({
       onDragEnter={(e) => {
         if (!hasTabData(e)) return
         dragDepth.current += 1
-        setDragOver(true)
       }}
       onDragOver={(e) => {
+        // 빈 영역 위 — 맨 끝에 삽입(탭 위에선 탭의 핸들러가 stopPropagation).
         if (!hasTabData(e)) return
         e.preventDefault()
         e.dataTransfer.dropEffect = 'move'
+        setDropHint(tabs.length)
       }}
       onDragLeave={(e) => {
         if (!hasTabData(e)) return
         dragDepth.current = Math.max(0, dragDepth.current - 1)
-        if (dragDepth.current === 0) setDragOver(false)
+        if (dragDepth.current === 0) setDropHint(null)
       }}
       onDrop={(e) => {
-        dragDepth.current = 0
-        setDragOver(false)
-        const raw = e.dataTransfer.getData(DND_MIME)
-        if (!raw) return
         e.preventDefault()
-        try {
-          const { key } = JSON.parse(raw)
-          if (key) onDropKey(key)
-        } catch {
-          /* malformed payload — ignore */
-        }
+        const d = readDrop(e)
+        clearHint()
+        if (d) onDropTab(d.key, d.srcPane, tabs.length)
       }}
       className={cn(
         'flex items-stretch gap-1 overflow-x-auto border-b bg-muted/40 px-2 py-1 shrink-0 print:hidden',
-        dragOver && 'ring-2 ring-inset ring-primary/50',
+        dropHint != null && 'bg-primary/5',
       )}
     >
-      {tabs.map((tab) => {
+      {tabs.map((tab, index) => {
         const active = tab.key === activeKey
         const splittable = onSplit && canSplit?.(tab)
+        // 삽입선 — 이 탭 왼쪽(dropHint===index) 또는 맨끝 탭 오른쪽.
+        const barLeft = dropHint === index
+        const barRight = dropHint === tabs.length && index === tabs.length - 1
+        const hintStyle = barLeft
+          ? { boxShadow: 'inset 2px 0 0 0 hsl(var(--primary))' }
+          : barRight
+            ? { boxShadow: 'inset -2px 0 0 0 hsl(var(--primary))' }
+            : undefined
         return (
           <div
             key={tab.key}
@@ -130,6 +152,25 @@ function TabStrip({
               e.dataTransfer.effectAllowed = 'move'
               e.dataTransfer.setData(DND_MIME, JSON.stringify({ key: tab.key, pane }))
             }}
+            onDragOver={(e) => {
+              if (!hasTabData(e)) return
+              e.preventDefault()
+              e.stopPropagation()
+              e.dataTransfer.dropEffect = 'move'
+              const rect = e.currentTarget.getBoundingClientRect()
+              const after = e.clientX > rect.left + rect.width / 2
+              setDropHint(index + (after ? 1 : 0))
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              const rect = e.currentTarget.getBoundingClientRect()
+              const after = e.clientX > rect.left + rect.width / 2
+              const toIndex = index + (after ? 1 : 0)
+              const d = readDrop(e)
+              clearHint()
+              if (d) onDropTab(d.key, d.srcPane, toIndex)
+            }}
             onClick={() => onSelect(tab)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
@@ -137,6 +178,7 @@ function TabStrip({
                 onSelect(tab)
               }
             }}
+            style={hintStyle}
             className={cn(
               'group flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs cursor-grab active:cursor-grabbing select-none shrink-0 max-w-[200px]',
               active

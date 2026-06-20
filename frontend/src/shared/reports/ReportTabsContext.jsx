@@ -95,6 +95,10 @@ export function ReportTabsProvider({ children }) {
   const [rightTabs, setRightTabs] = useState([])
   const [rightActiveKey, setRightActiveKey] = useState(null)
   const pendingCloseRef = useRef(null)
+  // 활성(편집중) 좌측 탭을 우측으로 보낼 때, 이웃으로의 라우트 이동이 성공한
+  // 뒤에만 실제 이동을 커밋하기 위한 보류 키. 미저장 가드에서 "머무름"을 고르면
+  // ReportDetailPage 가 clearPendingMove() 로 취소한다(유실/오작동 방지).
+  const pendingMoveRightRef = useRef(null)
 
   const activeKey = useMemo(
     () => deriveActiveKey(location.pathname),
@@ -136,6 +140,24 @@ export function ReportTabsProvider({ children }) {
     if (pending && activeKey !== pending) {
       pendingCloseRef.current = null
       setTabs((prev) => prev.filter((t) => t.key !== pending))
+    }
+  }, [activeKey])
+
+  // 활성 탭 우측 이동 보류 처리 — 라우트가 실제로 바뀌면(미저장 가드 통과) 그
+  // 보고서를 좌측에서 빼서 우측에 추가·활성화한다. 가드에서 머무르면 activeKey
+  // 가 그대로라 이 effect 가 동작하지 않고, clearPendingMove 로 보류가 풀린다.
+  useEffect(() => {
+    const pending = pendingMoveRightRef.current
+    if (pending && activeKey !== pending) {
+      pendingMoveRightRef.current = null
+      const tab = tabsRef.current.find((t) => t.key === pending)
+      setTabs((prev) => prev.filter((t) => t.key !== pending))
+      if (tab && tab.reportId) {
+        setRightTabs((prev) =>
+          prev.some((t) => t.key === pending) ? prev : [...prev, toRightEntry(tab)],
+        )
+        setRightActiveKey(pending)
+      }
     }
   }, [activeKey])
 
@@ -236,18 +258,41 @@ export function ReportTabsProvider({ children }) {
   )
 
   // ── 좌 ↔ 우 이동(분할 버튼 + 드래그드롭) ─────────────────────────────
-  // 우측으로: 좌측에서 제거 + 우측에 추가/활성화. 저장된 보고서만, 활성(편집중)
-  // 탭은 제외(좌측이 비어버리지 않게).
-  const moveToRight = useCallback((key) => {
-    const tab = tabsRef.current.find((t) => t.key === key)
-    if (!tab || !tab.reportId) return
-    if (key === activeKeyRef.current) return
-    setTabs((prev) => prev.filter((t) => t.key !== key))
-    setRightTabs((prev) =>
-      prev.some((t) => t.key === key) ? prev : [...prev, toRightEntry(tab)],
-    )
-    setRightActiveKey(key)
-  }, [])
+  // 우측으로: 좌측에서 제거 + 우측 toIndex 위치에 추가/활성화(저장된 보고서만).
+  // 활성(편집중) 탭이면 좌측을 이웃으로 비운 뒤 옮긴다(라우트 이동 성공 시 커밋).
+  const moveToRight = useCallback(
+    (key, toIndex) => {
+      const tab = tabsRef.current.find((t) => t.key === key)
+      if (!tab || !tab.reportId) return
+      if (key === activeKeyRef.current) {
+        const cur = tabsRef.current
+        const idx = cur.findIndex((t) => t.key === key)
+        const neighbor = cur[idx + 1] ?? cur[idx - 1] ?? null
+        if (!neighbor) {
+          toast.info('편집 창에 열어둘 다른 보고서가 없어 이동할 수 없습니다.')
+          return
+        }
+        // 이웃으로 이동(미저장이면 가드가 저장 여부를 묻는다). 실제 이동은 위
+        // effect 가 라우트 변경 성공 후 커밋.
+        pendingMoveRightRef.current = key
+        navigate(routeForTab(neighbor))
+        return
+      }
+      setTabs((prev) => prev.filter((t) => t.key !== key))
+      setRightTabs((prev) => {
+        if (prev.some((t) => t.key === key)) return prev
+        const next = prev.slice()
+        const at =
+          typeof toIndex === 'number'
+            ? Math.max(0, Math.min(toIndex, next.length))
+            : next.length
+        next.splice(at, 0, toRightEntry(tab))
+        return next
+      })
+      setRightActiveKey(key)
+    },
+    [navigate],
+  )
 
   // 좌측으로: 그 보고서로 URL 이동(편집 화면). 이동 성공 시 upsertTab 이 좌측에
   // 넣고 우측에서 제거(dedup) — 미저장 가드로 취소되면 우측 그대로라 유실 없음.
@@ -262,14 +307,35 @@ export function ReportTabsProvider({ children }) {
   )
 
   // 드래그드롭/분할버튼 공용 진입점. targetPane 쪽으로 옮긴다. 대상이 그 패널의
-  // "반대편"에 있을 때만 실제로 동작(같은 패널 내 드롭은 무해한 no-op).
+  // "반대편"에 있을 때만 실제로 동작(같은 패널 내 드롭은 reorderTab 이 담당).
   const moveTab = useCallback(
-    (key, targetPane) => {
-      if (targetPane === 'right') moveToRight(key)
+    (key, targetPane, toIndex) => {
+      if (targetPane === 'right') moveToRight(key, toIndex)
       else moveToLeft(key)
     },
     [moveToRight, moveToLeft],
   )
+
+  // 같은 패널 내 순서 변경 — key 를 toIndex(삽입 위치)로 이동.
+  const reorderTab = useCallback((pane, key, toIndex) => {
+    const setter = pane === 'right' ? setRightTabs : setTabs
+    setter((prev) => {
+      const fromIdx = prev.findIndex((t) => t.key === key)
+      if (fromIdx < 0) return prev
+      const next = prev.slice()
+      const [item] = next.splice(fromIdx, 1)
+      let at = typeof toIndex === 'number' ? toIndex : next.length
+      if (fromIdx < at) at -= 1
+      at = Math.max(0, Math.min(at, next.length))
+      next.splice(at, 0, item)
+      return next
+    })
+  }, [])
+
+  // 활성 탭 우측 이동 보류 취소 — 미저장 가드에서 "머무름"을 골랐을 때 호출.
+  const clearPendingMove = useCallback(() => {
+    pendingMoveRightRef.current = null
+  }, [])
 
   const rightTab = useMemo(
     () => (rightActiveKey ? rightTabs.find((t) => t.key === rightActiveKey) ?? null : null),
@@ -294,8 +360,10 @@ export function ReportTabsProvider({ children }) {
       splitOpen,
       setRightActive,
       closeRight,
-      // 이동(분할버튼 + 드래그드롭)
+      // 이동(분할버튼 + 드래그드롭) + 순서 변경
       moveTab,
+      reorderTab,
+      clearPendingMove,
     }),
     [
       tabs,
@@ -312,6 +380,8 @@ export function ReportTabsProvider({ children }) {
       setRightActive,
       closeRight,
       moveTab,
+      reorderTab,
+      clearPendingMove,
     ],
   )
 

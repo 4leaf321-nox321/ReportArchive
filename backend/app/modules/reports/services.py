@@ -498,6 +498,7 @@ def search_reports(
     limit: int = 30,
     offset: int = 0,
     location: str = "all",
+    board: str = "",
 ) -> tuple[list[Report], int]:
     """본문(search_text) + 제목 부분일치(pg_trgm ILIKE) 검색. 가시성 스코프 적용.
 
@@ -528,9 +529,20 @@ def search_reports(
         if scope_ids is not None and not scope_ids:
             return [], 0
 
-    # 위치 필터(내공간/부서게시판) — 가시 스코프에 교집합으로 얹는다.
-    if location == "personal":
-        loc_ids: Optional[set[int]] = _owned_report_ids(db, actor.user.id)
+    # 위치 필터 — board(특정 게시판 slug)가 있으면 그 게시판에 게시된 보고서로,
+    # 없으면 location(personal=내공간 / boards=내 부서게시판)으로 가시 스코프에
+    # 교집합을 얹는다. 어느 쪽이든 가시 스코프(∩)라 권한 있는 보고서만 — 즉 다른
+    # 부서 게시판도 접근 가능한 범위에서 탐색된다.
+    if board:
+        loc_ids: Optional[set[int]] = set(
+            db.execute(
+                select(ReportMount.report_id).where(
+                    ReportMount.workspace_slug == board
+                )
+            ).scalars()
+        )
+    elif location == "personal":
+        loc_ids = _owned_report_ids(db, actor.user.id)
     elif location == "boards":
         loc_ids = grant_services.visible_ids(db, actor, GrantContentType.report)
     else:

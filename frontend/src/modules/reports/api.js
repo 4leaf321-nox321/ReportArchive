@@ -76,13 +76,14 @@ export async function restoreReportVersion(id, versionId) {
 // 내에서만 결과가 온다. 반환: { results: [{report, snippet}], total, limit, offset }.
 export async function searchReports(
   q,
-  { limit = 30, offset = 0, location = 'all' } = {},
+  { limit = 30, offset = 0, location = 'all', board = '' } = {},
 ) {
   const params = new URLSearchParams({
     q: q ?? '',
     limit: String(limit),
     offset: String(offset),
     location,
+    board: board ?? '',
   })
   const res = await apiClient.get(`${BASE}/search?${params.toString()}`)
   return extractData(res)

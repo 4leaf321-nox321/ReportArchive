@@ -88,7 +88,7 @@ function _saveMru(storageKey, value) {
  * popover 안에 cmdk Command 를 띄움. mruKey 가 주어지면 최근 선택값을
  * localStorage 에 저장하고 드롭다운 상단에 「최근」 그룹으로 분리해 보여줌.
  */
-function FilterCombo({
+export function FilterCombo({
   icon: Icon,
   label,
   value,

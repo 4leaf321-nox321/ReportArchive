@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Search, FileText, Loader2, Plus } from 'lucide-react'
+import { Search, FileText, Loader2, Plus, Building2 } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -13,6 +13,8 @@ import { cn } from '@/shared/lib/utils'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
 import { searchReports, getReport } from '@/modules/reports/api'
+import { listLinkableFacets } from '@/shared/api/reportLinks'
+import { FilterCombo } from './ReportPicker'
 import { getTemplateVersion } from '@/shared/api/templates'
 import { getRenderer } from '@/modules/templates/widgets'
 import {
@@ -34,6 +36,7 @@ export function ImportWidgetDialog({ open, onClose, onImport }) {
   const [q, setQ] = useState('')
   const [debounced, setDebounced] = useState('')
   const [location, setLocation] = useState('all') // 'all' | 'personal' | 'boards'
+  const [board, setBoard] = useState('') // 특정 게시판 slug('' = 미지정)
   const [selectedId, setSelectedId] = useState(null)
 
   // 입력 디바운스(250ms).
@@ -48,14 +51,31 @@ export function ImportWidgetDialog({ open, onClose, onImport }) {
       setQ('')
       setDebounced('')
       setLocation('all')
+      setBoard('')
       setSelectedId(null)
     }
   }, [open])
 
-  // 검색어가 비면 접근 가능한 보고서를 최신순으로 브라우즈(location 필터 적용).
+  // 부서(게시판) 선택용 facet — 시스템에서 보고서가 게시된 게시판 목록(+건수).
+  // 링크 picker 의 "게시조직" 필터와 같은 소스.
+  const { data: facets } = useAsync(
+    () => (open ? listLinkableFacets() : Promise.resolve(null)),
+    [open],
+  )
+  const boardOptions = (facets?.mounts ?? []).map((m) => ({
+    value: m.slug,
+    label: m.name,
+    count: m.count,
+  }))
+
+  // 검색어가 비면 접근 가능한 보고서를 최신순으로 브라우즈. board(특정 부서)가
+  // 있으면 그 게시판으로, 없으면 location(전체/내공간/부서게시판) 필터.
   const { data: search, loading: searching } = useAsync(
-    () => (open ? searchReports(debounced, { limit: 50, location }) : Promise.resolve(null)),
-    [open, debounced, location],
+    () =>
+      open
+        ? searchReports(debounced, { limit: 50, location, board })
+        : Promise.resolve(null),
+    [open, debounced, location, board],
   )
   const results = search?.results ?? []
 
@@ -100,20 +120,24 @@ export function ImportWidgetDialog({ open, onClose, onImport }) {
                   className="pl-8"
                 />
               </div>
-              {/* 위치 필터 — 전체 / 내공간(소유) / 부서게시판(공유) */}
+              {/* 위치 필터 — 전체 / 내공간(소유) / 내 부서게시판(공유). 빠른
+                  토글이라 특정 부서를 고르면(board) 무시되고, 클릭하면 board 해제. */}
               <div className="flex rounded-md border p-0.5 text-[11px]">
                 {[
                   { key: 'all', label: '전체' },
                   { key: 'personal', label: '내 공간' },
-                  { key: 'boards', label: '부서 게시판' },
+                  { key: 'boards', label: '내 부서' },
                 ].map((opt) => (
                   <button
                     key={opt.key}
                     type="button"
-                    onClick={() => setLocation(opt.key)}
+                    onClick={() => {
+                      setLocation(opt.key)
+                      setBoard('')
+                    }}
                     className={cn(
                       'flex-1 rounded px-2 py-1 transition-colors',
-                      location === opt.key
+                      !board && location === opt.key
                         ? 'bg-primary text-primary-foreground'
                         : 'text-muted-foreground hover:bg-muted',
                     )}
@@ -122,6 +146,21 @@ export function ImportWidgetDialog({ open, onClose, onImport }) {
                   </button>
                 ))}
               </div>
+              {/* 특정 부서(게시판) 선택 — 다른 부서 게시판도 검색해서 고를 수
+                  있다(권한 범위 내). 링크 picker 의 게시조직 필터와 동일 UI. */}
+              <FilterCombo
+                icon={Building2}
+                label="부서"
+                value={board}
+                onChange={(slug) => {
+                  setBoard(slug)
+                  if (slug) setLocation('all')
+                }}
+                options={boardOptions}
+                allLabel="전체 부서"
+                searchPlaceholder="부서·게시판 검색..."
+                mruKey="ra:importWidget:recentBoards"
+              />
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1">
               {searching && results.length === 0 && (

@@ -1645,17 +1645,14 @@ def create_report_link(
         return not_found_response(
             f"Target report not found: {payload.to_report_id}"
         )
-    # 대상 적격성: 조직/게시된 보고서(다른 사용자도 볼 수 있음)이거나, 아니면
-    # 적어도 actor 본인이 읽을 수 있는 보고서여야 한다. 후자를 허용하는 이유는
-    # "다른 보고서 위젯을 가져와 참고 연결" 처럼 actor 가 이미 접근한 개인 보고서
-    # (예: 자기 사본)를 명시적으로 연결하는 흐름을 지원하기 위함. (picker 는 여전히
-    # linkable 풀만 보여주므로 일반 수동 연결 동작은 그대로다.)
-    if not services.is_linkable_target(db, target) and not services.can_read_report(
-        db, actor, target
-    ):
+    # 대상 적격성: "거는 사람이 읽을 수 있는 보고서"만 — 조직/개인 구분 없이 일관.
+    # (이전엔 is_linkable_target 으로 조직 보고서면 읽기권한이 없어도 허용했지만,
+    #  내가 못 보는 보고서를 연결하는 건 의미가 없고, 어차피 죽은 링크는 조직
+    #  보고서에서도 생기므로 읽기권한 기준으로 통일.)
+    if not services.can_read_report(db, actor, target):
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "이 보고서는 link 대상으로 부적합합니다 — 접근 권한이 없는 보고서입니다.",
+            status.HTTP_403_FORBIDDEN,
+            "연결할 수 없습니다 — 대상 보고서를 볼 권한이 없습니다.",
         )
     # direction 에 따라 from/to 결정. 데이터는 항상 단방향 한 row.
     if payload.direction == "incoming":

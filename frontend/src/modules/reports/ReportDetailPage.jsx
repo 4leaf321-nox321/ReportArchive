@@ -166,6 +166,7 @@ import { CommentPanel } from '@/modules/comments/CommentPanel'
 import { CommentPin } from '@/modules/comments/CommentPin'
 import { ActivityTimelineDialog } from './ActivityTimeline'
 import { ReportVersionHistoryDialog } from './ReportVersionHistoryDialog'
+import { ImportWidgetDialog } from './ImportWidgetDialog'
 import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
 import { cn } from '@/shared/lib/utils'
 import { toast } from 'sonner'
@@ -301,6 +302,8 @@ export default function ReportDetailPage() {
   // the dialog read the latest info directly.
   const [takeoverPrompt, setTakeoverPrompt] = useState(null)
   const [pasteJsonOpen, setPasteJsonOpen] = useState(false)
+  // 다른 보고서 위젯 가져오기 모달 — 값 = 가져올 대상 페이지 index | null(닫힘).
+  const [importWidgetPage, setImportWidgetPage] = useState(null)
   // Import template picker — when an imported draft carries a template_id
   // we can't resolve (the AI/skill placeholder "TEMPLATE_ID_HERE", or a
   // template that doesn't exist in this workspace), we can't render its
@@ -1626,6 +1629,50 @@ export default function ReportDetailPage() {
       )
       return { ...d, pages: nextPages }
     })
+  }
+
+  /** 다른 보고서에서 가져온 위젯(picked = {type, props, content, layout,
+   *  section})을 현재 페이지에 ad-hoc 블록으로 추가. 새 id 를 발급하고 content·
+   *  단락구분·레이아웃을 함께 복사한다(moveBlockToPage 의 목적지 로직과 동형). */
+  function importExtraBlock(pageIdx, picked) {
+    if (!picked?.type) return
+    setDraft((d) => {
+      if (!d) return d
+      const page = d.pages[pageIdx]
+      if (!page) return d
+      const tpl = getCachedTemplate(pageTemplateMap, page)
+      const existingIds = collectPageBlockIds(page, tpl)
+      const id = freshExtraId(picked.type, existingIds)
+      const newBlock = {
+        id,
+        type: picked.type,
+        props: { ...(picked.props ?? {}) },
+        layout: picked.layout ? { ...picked.layout } : null,
+      }
+      const nextOrder = page.blocks_order?.length
+        ? [...page.blocks_order, id]
+        : page.blocks_order ?? []
+      const nextContent =
+        picked.content != null
+          ? { ...(page.content ?? {}), [id]: picked.content }
+          : page.content
+      const nextSections = picked.section
+        ? { ...(page.block_sections ?? {}), [id]: picked.section }
+        : page.block_sections
+      const nextPages = d.pages.map((p, i) =>
+        i === pageIdx
+          ? {
+              ...p,
+              extra_blocks: [...(p.extra_blocks ?? []), newBlock],
+              blocks_order: nextOrder,
+              ...(picked.content != null ? { content: nextContent } : {}),
+              ...(picked.section ? { block_sections: nextSections } : {}),
+            }
+          : p,
+      )
+      return { ...d, pages: nextPages }
+    })
+    toast.success('위젯을 가져왔습니다.')
   }
 
   /** Insert a new ad-hoc widget relative to an existing block. `direction`
@@ -4316,6 +4363,7 @@ export default function ReportDetailPage() {
                       addExtraBlockAt(idx, type, defaults, anchorId, direction)
                     }
                     onAddBlock={(type, defaults) => addExtraBlock(idx, type, defaults)}
+                    onImportFromReport={() => setImportWidgetPage(idx)}
                     onRemoveBlock={(blockId) => removeBlockFromPage(idx, blockId)}
                     onChangeExtraBlockProps={(blockId, newProps) =>
                       setExtraBlockProps(idx, blockId, newProps)
@@ -4369,6 +4417,7 @@ export default function ReportDetailPage() {
                       addExtraBlockAt(safeCurrent, type, defaults, anchorId, direction)
                     }
                     onAddBlock={(type, defaults) => addExtraBlock(safeCurrent, type, defaults)}
+                    onImportFromReport={() => setImportWidgetPage(safeCurrent)}
                     onRemoveBlock={(blockId) =>
                       removeBlockFromPage(safeCurrent, blockId)
                     }
@@ -4448,6 +4497,7 @@ export default function ReportDetailPage() {
               onAdd={(type, defaults) =>
                 addExtraBlock(safeCurrent, type, defaults)
               }
+              onImportFromReport={() => setImportWidgetPage(safeCurrent)}
             />
           </div>
         )}
@@ -4646,6 +4696,13 @@ export default function ReportDetailPage() {
           onRestored={reloadReport}
         />
       )}
+      {/* 다른 보고서의 작성 위젯 가져오기 — 검색 + 위젯 선택 모달. 선택 시
+          현재(importWidgetPage) 페이지에 ad-hoc 블록으로 복사. */}
+      <ImportWidgetDialog
+        open={importWidgetPage != null}
+        onClose={() => setImportWidgetPage(null)}
+        onImport={(picked) => importExtraBlock(importWidgetPage, picked)}
+      />
       {/* 게시 위치 — 이 보고서가 게시(mount)된 게시판·폴더 목록(읽기 전용). */}
       {existingReport?.id && (
         <Dialog open={mountsInfoOpen} onOpenChange={setMountsInfoOpen}>
@@ -8194,6 +8251,8 @@ function PageSection({
   // 자리)에 새 위젯을 추가한다. 부모(ReportDetailPage) 의 addExtraBlock
   // 을 그대로 wrap 해 전달.
   onAddBlock,
+  // 빈 페이지 상태 "위젯 추가" 팝오버의 "다른 보고서 위젯 가져오기" 진입.
+  onImportFromReport,
   onRemoveBlock,
   onChangeExtraBlockProps,
   onChangeSection,
@@ -8401,7 +8460,10 @@ function PageSection({
           <CardContent className="py-12 flex flex-col items-center gap-3 text-sm text-muted-foreground">
             <span>템플릿에 블록이 없습니다.</span>
             {isEditing && onAddBlock && (
-              <EmptyStateAddWidget onAdd={onAddBlock} />
+              <EmptyStateAddWidget
+                onAdd={onAddBlock}
+                onImportFromReport={onImportFromReport}
+              />
             )}
           </CardContent>
         </Card>
@@ -9646,7 +9708,7 @@ function DirectionalAddArrows({ canInsertHorizontally, onAdd }) {
  *  cluster (which owns the fixed positioning + the
  *  `report-detail-floating` class that exporters strip), so this
  *  component is just the Popover/Button — no positioning of its own. */
-function FloatingAddWidget({ onAdd }) {
+function FloatingAddWidget({ onAdd, onImportFromReport }) {
   const { catalog, loading } = useWidgetCatalog()
   const [open, setOpen] = useState(false)
   if (loading) return null
@@ -9671,6 +9733,12 @@ function FloatingAddWidget({ onAdd }) {
         // shifts the popover into view if a narrow viewport can't fit it.
         className="w-[760px] max-w-[92vw] p-2 max-h-[70vh] overflow-y-auto"
       >
+        <ImportFromReportButton
+          onClick={() => {
+            onImportFromReport?.()
+            setOpen(false)
+          }}
+        />
         <WidgetPicker
           widgets={widgets}
           onSelect={(w) => {
@@ -9683,12 +9751,32 @@ function FloatingAddWidget({ onAdd }) {
   )
 }
 
+/** 위젯 추가 팝오버 맨 위 — "다른 보고서의 작성 위젯 가져오기" 진입 버튼. */
+function ImportFromReportButton({ onClick }) {
+  if (!onClick) return null
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="mb-2 w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-left text-sm hover:bg-muted"
+    >
+      <FileText className="h-4 w-4 text-muted-foreground" />
+      <span>
+        다른 보고서의 작성 위젯 가져오기
+        <span className="block text-[11px] text-muted-foreground">
+          이미 작성된 표·차트·글 등을 검색해서 그대로 가져옵니다.
+        </span>
+      </span>
+    </button>
+  )
+}
+
 /** Sibling of FloatingAddWidget — sized for inline use inside the empty
  *  state Card (no widget on the page yet). Same popover + WidgetPicker
  *  pattern as the floating button, but a normal-sized outline button so
  *  it fits naturally inside the centered "empty" placeholder instead of
  *  reading like a misplaced floating action. */
-function EmptyStateAddWidget({ onAdd }) {
+function EmptyStateAddWidget({ onAdd, onImportFromReport }) {
   const { catalog, loading } = useWidgetCatalog()
   const [open, setOpen] = useState(false)
   if (loading) return null
@@ -9707,6 +9795,12 @@ function EmptyStateAddWidget({ onAdd }) {
         sideOffset={8}
         className="w-[760px] max-w-[92vw] p-2 max-h-[70vh] overflow-y-auto"
       >
+        <ImportFromReportButton
+          onClick={() => {
+            onImportFromReport?.()
+            setOpen(false)
+          }}
+        />
         <WidgetPicker
           widgets={widgets}
           onSelect={(w) => {

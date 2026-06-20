@@ -176,7 +176,7 @@ function InlinePage({ page, index, totalPages, rowGapPx, exposeBlockIds = true }
  *  When the block carries a 단락 구분 (section marker), prepends the
  *  same colored header strip the report detail page draws so the
  *  composite view matches the source visually. */
-function BlockBody({ block, content, propsOverride, sectionCode, sectionItemByCode }) {
+export function BlockBody({ block, content, propsOverride, sectionCode, sectionItemByCode }) {
   const renderer = getRenderer(block.type)
   if (!renderer?.Editor) return null
   const mergedProps = propsOverride
@@ -243,7 +243,7 @@ function BlockBody({ block, content, propsOverride, sectionCode, sectionItemByCo
  *  template default. Same logic as ReportDetailPage's helper of the
  *  same name; duplicated here to keep InlineReportView self-contained
  *  (the helper isn't exported). */
-function resolveBlockSection(page, block) {
+export function resolveBlockSection(page, block) {
   if (!block) return null
   const overrides = page?.block_sections
   if (overrides && Object.prototype.hasOwnProperty.call(overrides, block.id)) {
@@ -327,7 +327,7 @@ function extractBlocks(schema) {
  *  honoring `blocks_order` when present. Without this, anything the
  *  user added via "위젯 추가" on the report side (not in the template)
  *  would silently disappear from the composite's inline view. */
-function combinedBlocks(schema, page) {
+export function combinedBlocks(schema, page) {
   const tplBlocks = extractBlocks(schema)
   const extras = (page?.extra_blocks ?? []).map((b) => ({
     id: b.id,

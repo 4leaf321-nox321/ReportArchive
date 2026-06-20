@@ -201,20 +201,26 @@ def list_reports(
 
 @router.get("/search")
 def search_reports(
-    q: str = Query(..., min_length=1, max_length=200, description="검색어"),
+    q: str = Query(default="", max_length=200, description="검색어(빈 값이면 전체 탐색)"),
+    location: str = Query(default="all", description="위치 필터: all|personal|boards"),
     limit: int = Query(default=30, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
-    """보고서 본문 전문검색 — 제목 + 모든 위젯 텍스트(search_text, pg_trgm 부분일치).
-    가시 범위(소유·공유·게시) 안에서만, 휴지통 제외. 결과에 매치 스니펫 포함."""
-    rows, total = services.search_reports(db, actor, q, limit=limit, offset=offset)
+    """보고서 전문검색/탐색 — 제목 + 모든 위젯 텍스트(search_text, pg_trgm 부분일치).
+    q 가 비면 가시 범위 전체를 최신순으로(브라우즈). location 으로 내공간/부서게시판
+    필터. 가시 범위(소유·공유·게시) 안에서만, 휴지통 제외. 검색 시 스니펫 포함."""
+    if location not in ("all", "personal", "boards"):
+        location = "all"
+    rows, total = services.search_reports(
+        db, actor, q, limit=limit, offset=offset, location=location
+    )
     needle = q.strip()
     results = [
         {
             "report": ReportSummary.model_validate(r),
-            "snippet": services.search_snippet(r.search_text, needle),
+            "snippet": services.search_snippet(r.search_text, needle) if needle else None,
         }
         for r in rows
     ]

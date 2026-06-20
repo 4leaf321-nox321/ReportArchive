@@ -33,6 +33,7 @@ import {
 export function ImportWidgetDialog({ open, onClose, onImport }) {
   const [q, setQ] = useState('')
   const [debounced, setDebounced] = useState('')
+  const [location, setLocation] = useState('all') // 'all' | 'personal' | 'boards'
   const [selectedId, setSelectedId] = useState(null)
 
   // 입력 디바운스(250ms).
@@ -46,16 +47,15 @@ export function ImportWidgetDialog({ open, onClose, onImport }) {
     if (!open) {
       setQ('')
       setDebounced('')
+      setLocation('all')
       setSelectedId(null)
     }
   }, [open])
 
+  // 검색어가 비면 접근 가능한 보고서를 최신순으로 브라우즈(location 필터 적용).
   const { data: search, loading: searching } = useAsync(
-    () =>
-      debounced.length >= 2
-        ? searchReports(debounced, { limit: 30 })
-        : Promise.resolve(null),
-    [debounced],
+    () => (open ? searchReports(debounced, { limit: 50, location }) : Promise.resolve(null)),
+    [open, debounced, location],
   )
   const results = search?.results ?? []
 
@@ -88,60 +88,82 @@ export function ImportWidgetDialog({ open, onClose, onImport }) {
         </DialogHeader>
         <div className="flex flex-1 min-h-0">
           {/* 좌측 — 보고서 검색 */}
-          <div className="w-72 shrink-0 border-r flex flex-col min-h-0">
-            <div className="p-3 border-b shrink-0">
+          <div className="w-80 shrink-0 border-r flex flex-col min-h-0">
+            <div className="p-3 border-b shrink-0 space-y-2">
               <div className="relative">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   autoFocus
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
-                  placeholder="보고서 검색 (제목·내용)"
+                  placeholder="보고서 검색 (비우면 전체)"
                   className="pl-8"
                 />
               </div>
+              {/* 위치 필터 — 전체 / 내공간(소유) / 부서게시판(공유) */}
+              <div className="flex rounded-md border p-0.5 text-[11px]">
+                {[
+                  { key: 'all', label: '전체' },
+                  { key: 'personal', label: '내 공간' },
+                  { key: 'boards', label: '부서 게시판' },
+                ].map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setLocation(opt.key)}
+                    className={cn(
+                      'flex-1 rounded px-2 py-1 transition-colors',
+                      location === opt.key
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:bg-muted',
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1">
-              {searching && (
+              {searching && results.length === 0 && (
                 <div className="p-2 text-xs text-muted-foreground flex items-center gap-1">
-                  <Loader2 className="h-3 w-3 animate-spin" /> 검색 중…
+                  <Loader2 className="h-3 w-3 animate-spin" /> 불러오는 중…
                 </div>
               )}
-              {!searching && debounced.length >= 2 && results.length === 0 && (
+              {!searching && results.length === 0 && (
                 <div className="p-2 text-xs text-muted-foreground">
-                  검색 결과가 없습니다.
+                  {debounced
+                    ? '검색 결과가 없습니다.'
+                    : '접근 가능한 보고서가 없습니다.'}
                 </div>
               )}
-              {debounced.length < 2 && (
-                <div className="p-2 text-xs text-muted-foreground">
-                  두 글자 이상 입력하세요.
-                </div>
-              )}
-              {results.map((r) => (
-                <button
-                  key={r.id}
-                  type="button"
-                  onClick={() => setSelectedId(r.id)}
-                  className={cn(
-                    'w-full text-left rounded-md px-2.5 py-2 text-xs flex items-start gap-2',
-                    String(r.id) === String(selectedId)
-                      ? 'bg-primary/10 text-foreground'
-                      : 'hover:bg-muted text-muted-foreground',
-                  )}
-                >
-                  <FileText className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                  <span className="min-w-0">
-                    <span className="block truncate font-medium text-foreground">
-                      {r.title || '(제목 없음)'}
-                    </span>
-                    {r.report_date && (
-                      <span className="block text-[10px] text-muted-foreground">
-                        {r.report_date}
-                      </span>
+              {results.map((hit) => {
+                const r = hit.report ?? hit
+                return (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => setSelectedId(r.id)}
+                    className={cn(
+                      'w-full text-left rounded-md px-2.5 py-2 text-xs flex items-start gap-2',
+                      String(r.id) === String(selectedId)
+                        ? 'bg-primary/10 text-foreground'
+                        : 'hover:bg-muted text-muted-foreground',
                     )}
-                  </span>
-                </button>
-              ))}
+                  >
+                    <FileText className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium text-foreground">
+                        {r.title || '(제목 없음)'}
+                      </span>
+                      <span className="block truncate text-[10px] text-muted-foreground">
+                        {[r.report_date, r.owner_name, r.workspace_slug]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </span>
+                    </span>
+                  </button>
+                )
+              })}
             </div>
           </div>
 

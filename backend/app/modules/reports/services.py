@@ -497,18 +497,20 @@ def search_reports(
     *,
     limit: int = 30,
     offset: int = 0,
+    location: str = "all",
 ) -> tuple[list[Report], int]:
     """본문(search_text) + 제목 부분일치(pg_trgm ILIKE) 검색. 가시성 스코프 적용.
 
+    query 가 비면(공백 포함) 가시 범위 전체를 최신순으로 탐색(브라우즈).
+    location: 'personal'=내 소유(내공간) / 'boards'=게시판 공유(부서게시판) /
+    'all'=전체. 가시 스코프에 교집합으로 얹는다.
+
     스코프: public_viewer=이 게시판 공개분, virtual=무스코프(전체), 그 외=
-    visible_report_ids(grant ∪ 소유). 정렬은 제목 매치 우선 → 최신순.
-    Returns (rows, total).
+    visible_report_ids(grant ∪ 소유). 정렬은 (검색 시) 제목 매치 우선 → 최신순,
+    (브라우즈 시) 최신순. Returns (rows, total).
     """
     needle = (query or "").strip()
-    if not needle:
-        return [], 0
-    # 공백으로 단어 분리 → 각 단어를 AND(어디든 다 포함). "리스크 보고" 가 붙어
-    # 있어야만 잡히던(문자열 통째 부분일치) 문제를 없앤다.
+    # 공백으로 단어 분리 → 각 단어를 AND(어디든 다 포함). 비면 빈 리스트(=브라우즈).
     tokens = [t for t in needle.split() if t]
 
     # 가시 스코프 — None=무스코프, set=허용 id. 빈 스코프면 즉시 0.
@@ -526,13 +528,24 @@ def search_reports(
         if scope_ids is not None and not scope_ids:
             return [], 0
 
-    conditions = [
-        Report.deleted_at.is_(None),
-        Report.search_text.isnot(None),
-    ]
-    # 단어마다 ILIKE 조건 → AND.
-    for tok in tokens:
-        conditions.append(Report.search_text.ilike(f"%{tok}%"))
+    # 위치 필터(내공간/부서게시판) — 가시 스코프에 교집합으로 얹는다.
+    if location == "personal":
+        loc_ids: Optional[set[int]] = _owned_report_ids(db, actor.user.id)
+    elif location == "boards":
+        loc_ids = grant_services.visible_ids(db, actor, GrantContentType.report)
+    else:
+        loc_ids = None
+    if loc_ids is not None:
+        scope_ids = loc_ids if scope_ids is None else (scope_ids & loc_ids)
+        if not scope_ids:
+            return [], 0
+
+    conditions = [Report.deleted_at.is_(None)]
+    if tokens:
+        # 단어마다 ILIKE 조건 → AND.
+        conditions.append(Report.search_text.isnot(None))
+        for tok in tokens:
+            conditions.append(Report.search_text.ilike(f"%{tok}%"))
     if scope_ids is not None:
         conditions.append(Report.id.in_(scope_ids))
 
@@ -540,16 +553,20 @@ def search_reports(
     if total == 0:
         return [], 0
 
-    # 제목에 모든 단어가 들어간 보고서를 위로.
-    title_rank = case(
-        (and_(*[Report.title.ilike(f"%{tok}%") for tok in tokens]), 0),
-        else_=1,
-    )
+    if tokens:
+        # 제목에 모든 단어가 들어간 보고서를 위로.
+        title_rank = case(
+            (and_(*[Report.title.ilike(f"%{tok}%") for tok in tokens]), 0),
+            else_=1,
+        )
+        order_by = (title_rank, desc(Report.updated_at))
+    else:
+        order_by = (desc(Report.updated_at),)
     rows = (
         db.execute(
             select(Report)
             .where(*conditions)
-            .order_by(title_rank, desc(Report.updated_at))
+            .order_by(*order_by)
             .offset(offset)
             .limit(limit)
         )

@@ -302,8 +302,9 @@ export default function ReportDetailPage() {
   // the dialog read the latest info directly.
   const [takeoverPrompt, setTakeoverPrompt] = useState(null)
   const [pasteJsonOpen, setPasteJsonOpen] = useState(false)
-  // 다른 보고서 위젯 가져오기 모달 — 값 = 가져올 대상 페이지 index | null(닫힘).
-  const [importWidgetPage, setImportWidgetPage] = useState(null)
+  // 다른 보고서 위젯 가져오기 모달 — 값 = { pageIdx, anchorId?, direction? } |
+  // null(닫힘). anchorId 가 있으면 그 블록 기준 방향에 삽입(화살표), 없으면 끝에 추가.
+  const [importTarget, setImportTarget] = useState(null)
   // Import template picker — when an imported draft carries a template_id
   // we can't resolve (the AI/skill placeholder "TEMPLATE_ID_HERE", or a
   // template that doesn't exist in this workspace), we can't render its
@@ -1675,6 +1676,22 @@ export default function ReportDetailPage() {
     toast.success('위젯을 가져왔습니다.')
   }
 
+  /** ImportWidgetDialog 가 위젯을 고르면 호출. anchorId 가 있으면(화살표 진입)
+   *  그 블록 기준 방향에 삽입, 없으면 페이지 끝에 추가. */
+  function handleImportPicked(picked) {
+    const t = importTarget
+    if (!t) return
+    if (t.anchorId) {
+      addExtraBlockAt(t.pageIdx, picked.type, picked.props, t.anchorId, t.direction, {
+        content: picked.content,
+        section: picked.section,
+      })
+      toast.success('위젯을 가져왔습니다.')
+    } else {
+      importExtraBlock(t.pageIdx, picked)
+    }
+  }
+
   /** Insert a new ad-hoc widget relative to an existing block. `direction`
    *  is one of 'up' / 'down' / 'left' / 'right' (against the anchor block).
    *
@@ -1689,7 +1706,7 @@ export default function ReportDetailPage() {
    *  shrunk or its row changed) and the new block — extras don't have a
    *  template layout to fall back on, so without an override the new
    *  block would render at default size/position. */
-  function addExtraBlockAt(pageIdx, widgetType, defaultProps, anchorId, direction) {
+  function addExtraBlockAt(pageIdx, widgetType, defaultProps, anchorId, direction, importExtra = null) {
     setDraft((d) => {
       if (!d) return d
       const page = d.pages[pageIdx]
@@ -1716,6 +1733,25 @@ export default function ReportDetailPage() {
       const id = freshExtraId(widgetType, existingIds)
       const newBlock = { id, type: widgetType, props: { ...defaultProps } }
 
+      // 가져오기(importExtra)면 원본 content·단락구분을 그대로 복사하고, 아니면
+      // 새 위젯 기본값(단락 기본 chip·"제목 생략")을 시드한다. 위치는 어느 쪽이든
+      // anchor + direction 으로 결정(아래 override). 두 return 경로에서 공용.
+      const sectionCode = importExtra
+        ? importExtra.section ?? null
+        : WIDGET_DEFAULT_SECTION_CODE[widgetType]
+      const seededContent = importExtra
+        ? importExtra.content ?? undefined
+        : getCaptionSkip(widgetType)
+          ? { caption_skip_autofill: true }
+          : undefined
+      const sectionPatch = sectionCode
+        ? { block_sections: { ...(page.block_sections ?? {}), [id]: sectionCode } }
+        : {}
+      const contentPatch =
+        seededContent !== undefined
+          ? { content: { ...(page.content ?? {}), [id]: seededContent } }
+          : {}
+
       // Materialize the order so subsequent renders use ours.
       const baseOrder = page.blocks_order?.length
         ? [...page.blocks_order]
@@ -1730,6 +1766,8 @@ export default function ReportDetailPage() {
                 ...p,
                 extra_blocks: [...(p.extra_blocks ?? []), newBlock],
                 blocks_order: [...baseOrder, id],
+                ...sectionPatch,
+                ...contentPatch,
               }
             : p,
         )
@@ -1796,15 +1834,6 @@ export default function ReportDetailPage() {
             : [...baseOrder.slice(0, anchorIdx + 1), id, ...baseOrder.slice(anchorIdx + 1)]
       }
 
-      // Seed the section tag if the widget type has a default — same
-      // behavior as addExtraBlock so writers get a useful starting chip.
-      const defaultSection = WIDGET_DEFAULT_SECTION_CODE[widgetType]
-      const nextSections = defaultSection
-        ? { ...(page.block_sections ?? {}), [id]: defaultSection }
-        : page.block_sections
-
-      // 새 위젯 "제목 생략" 기본값 시드 — addExtraBlock 과 동일.
-      const skipSeed = getCaptionSkip(widgetType)
       const nextPages = d.pages.map((p, i) =>
         i === pageIdx
           ? {
@@ -1812,15 +1841,8 @@ export default function ReportDetailPage() {
               extra_blocks: [...(p.extra_blocks ?? []), newBlock],
               blocks_order: nextOrder,
               layout_overrides: nextOverrides,
-              ...(defaultSection ? { block_sections: nextSections } : {}),
-              ...(skipSeed
-                ? {
-                    content: {
-                      ...(p.content ?? {}),
-                      [id]: { caption_skip_autofill: true },
-                    },
-                  }
-                : {}),
+              ...sectionPatch,
+              ...contentPatch,
             }
           : p,
       )
@@ -4363,7 +4385,10 @@ export default function ReportDetailPage() {
                       addExtraBlockAt(idx, type, defaults, anchorId, direction)
                     }
                     onAddBlock={(type, defaults) => addExtraBlock(idx, type, defaults)}
-                    onImportFromReport={() => setImportWidgetPage(idx)}
+                    onImportFromReport={() => setImportTarget({ pageIdx: idx })}
+                    onImportFromReportAt={(anchorId, direction) =>
+                      setImportTarget({ pageIdx: idx, anchorId, direction })
+                    }
                     onRemoveBlock={(blockId) => removeBlockFromPage(idx, blockId)}
                     onChangeExtraBlockProps={(blockId, newProps) =>
                       setExtraBlockProps(idx, blockId, newProps)
@@ -4417,7 +4442,10 @@ export default function ReportDetailPage() {
                       addExtraBlockAt(safeCurrent, type, defaults, anchorId, direction)
                     }
                     onAddBlock={(type, defaults) => addExtraBlock(safeCurrent, type, defaults)}
-                    onImportFromReport={() => setImportWidgetPage(safeCurrent)}
+                    onImportFromReport={() => setImportTarget({ pageIdx: safeCurrent })}
+                    onImportFromReportAt={(anchorId, direction) =>
+                      setImportTarget({ pageIdx: safeCurrent, anchorId, direction })
+                    }
                     onRemoveBlock={(blockId) =>
                       removeBlockFromPage(safeCurrent, blockId)
                     }
@@ -4497,7 +4525,7 @@ export default function ReportDetailPage() {
               onAdd={(type, defaults) =>
                 addExtraBlock(safeCurrent, type, defaults)
               }
-              onImportFromReport={() => setImportWidgetPage(safeCurrent)}
+              onImportFromReport={() => setImportTarget({ pageIdx: safeCurrent })}
             />
           </div>
         )}
@@ -4697,11 +4725,11 @@ export default function ReportDetailPage() {
         />
       )}
       {/* 다른 보고서의 작성 위젯 가져오기 — 검색 + 위젯 선택 모달. 선택 시
-          현재(importWidgetPage) 페이지에 ad-hoc 블록으로 복사. */}
+          importTarget(페이지/앵커/방향)에 따라 ad-hoc 블록으로 추가·삽입. */}
       <ImportWidgetDialog
-        open={importWidgetPage != null}
-        onClose={() => setImportWidgetPage(null)}
-        onImport={(picked) => importExtraBlock(importWidgetPage, picked)}
+        open={importTarget != null}
+        onClose={() => setImportTarget(null)}
+        onImport={handleImportPicked}
       />
       {/* 게시 위치 — 이 보고서가 게시(mount)된 게시판·폴더 목록(읽기 전용). */}
       {existingReport?.id && (
@@ -8253,6 +8281,9 @@ function PageSection({
   onAddBlock,
   // 빈 페이지 상태 "위젯 추가" 팝오버의 "다른 보고서 위젯 가져오기" 진입.
   onImportFromReport,
+  // 블록 사이 화살표(방향 삽입) 팝오버의 "다른 보고서 위젯 가져오기" 진입
+  // — (anchorId, direction) 을 받아 그 위치에 가져온 위젯을 삽입한다.
+  onImportFromReportAt,
   onRemoveBlock,
   onChangeExtraBlockProps,
   onChangeSection,
@@ -8645,6 +8676,9 @@ function PageSection({
                     canInsertHorizontally={canInsertHorizontally}
                     onAdd={(type, defaults, direction) =>
                       onAddExtraBlockAt(type, defaults, block.id, direction)
+                    }
+                    onImportFromReport={(direction) =>
+                      onImportFromReportAt?.(block.id, direction)
                     }
                   />
                 )}
@@ -9610,7 +9644,7 @@ function WidgetContentEditDialog({
  *  Left/right arrows hide only when there's truly no horizontal room —
  *  the row is full AND the anchor can't be split. Up/down are always
  *  available. */
-function DirectionalAddArrows({ canInsertHorizontally, onAdd }) {
+function DirectionalAddArrows({ canInsertHorizontally, onAdd, onImportFromReport }) {
   const { catalog, loading } = useWidgetCatalog()
   const [open, setOpen] = useState(null) // 'up' | 'down' | 'left' | 'right' | null
   if (loading) return null
@@ -9658,6 +9692,12 @@ function DirectionalAddArrows({ canInsertHorizontally, onAdd }) {
           // shifts the popover into view if a narrow viewport can't fit it.
           className="w-[760px] max-w-[92vw] p-2 max-h-[70vh] overflow-y-auto"
         >
+          <ImportFromReportButton
+            onClick={() => {
+              onImportFromReport?.(direction)
+              setOpen(null)
+            }}
+          />
           <WidgetPicker
             widgets={widgets}
             onSelect={(w) => pick(direction, w.type, w.default_props ?? {})}

@@ -16,7 +16,14 @@ const WidgetClipboardContext = createContext(null)
 
 export function WidgetClipboardProvider({ children }) {
   const [clip, setClip] = useState(null)
-  const value = useMemo(() => ({ clip, setClip }), [clip])
+  // 위젯 통째 클립보드(clip)와 분리된 "서식만" 클립보드 — 같은 종류 위젯끼리
+  // 서식(스타일)만 복사/붙여넣기. 통째 복사/붙이기와 혼동되지 않게 별도 슬롯.
+  // formatClip = { type, propsPatch, contentPatch } | null.
+  const [formatClip, setFormatClip] = useState(null)
+  const value = useMemo(
+    () => ({ clip, setClip, formatClip, setFormatClip }),
+    [clip, formatClip],
+  )
   return (
     <WidgetClipboardContext.Provider value={value}>
       {children}

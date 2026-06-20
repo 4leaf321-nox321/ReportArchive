@@ -17,6 +17,7 @@ import {
   ChevronRight,
   ChevronUp,
   ClipboardPaste,
+  Paintbrush,
   Copy,
   Activity,
   History,
@@ -111,6 +112,7 @@ import { copyTextToClipboard } from '@/shared/lib/clipboard'
 import { useReportLock } from './useReportLock'
 import { useReportTabs } from '@/shared/reports/ReportTabsContext'
 import { useWidgetClipboard } from '@/shared/reports/WidgetClipboardContext'
+import { extractWidgetFormat, hasAnyFormat } from './widgetFormat'
 import { useLocalDraftBackup } from './useLocalDraftBackup'
 import { buildBackupKey, getLocalDraft, delLocalDraft } from './localDraftBackup'
 import {
@@ -965,7 +967,12 @@ export default function ReportDetailPage() {
   // 공유 컨텍스트로 끌어올렸다 — 분할 보기 우측(읽기전용) 패널에서 복사한 위젯을
   // 좌측 편집창에서 붙여넣으려면 두 패널이 같은 슬롯을 봐야 하기 때문(서로 다른
   // 컴포넌트 트리라 로컬 state 로는 공유 불가). API 는 동일(state/setter).
-  const { clip: blockClipboard, setClip: setBlockClipboard } = useWidgetClipboard()
+  const {
+    clip: blockClipboard,
+    setClip: setBlockClipboard,
+    formatClip,
+    setFormatClip,
+  } = useWidgetClipboard()
 
   // File input for "로컬 불러오기" — declared up here so the hook order
   // stays stable across the loading → ready transition (the button itself
@@ -1045,6 +1052,20 @@ export default function ReportDetailPage() {
 
       // Ctrl/Cmd 조합
       const key = e.key.toLowerCase()
+      // Shift 분기 먼저 — Ctrl+Shift+C/V = "서식만" 복사/붙여넣기(서식 페인터).
+      // 일반 Ctrl+C/V(통째 복사)로 새지 않게 여기서 가로채고 return.
+      if (e.shiftKey) {
+        if (key === 'c') {
+          if (!activeBlock) return
+          e.preventDefault()
+          copyFormatToClipboard(activeBlock.pageIdx, activeBlock.blockId)
+        } else if (key === 'v') {
+          if (!formatClip || !activeBlock) return
+          e.preventDefault()
+          pasteFormatOnBlock(activeBlock.pageIdx, activeBlock.blockId)
+        }
+        return
+      }
       if (key === 'c') {
         if (!activeBlock) return
         // 사용자가 위젯 안의 텍스트를 선택해 둔 상태면 그쪽 복사가
@@ -1074,7 +1095,7 @@ export default function ReportDetailPage() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isEditing, activeBlock, blockClipboard])
+  }, [isEditing, activeBlock, blockClipboard, formatClip])
 
   // Context-builder that the AiPromptDialog uses to render the prompt.
   // Returns a function instead of a fully-baked context because the
@@ -2126,6 +2147,77 @@ export default function ReportDetailPage() {
     toast.success('위젯을 붙여 넣었습니다')
     // 다른 보고서에서 복사해 온 위젯이면 그 원본을 "참고" 관계로 연결.
     linkSourceAsReference(clip.sourceReportId)
+  }
+
+  /** 위젯의 "서식(스타일)만" 클립보드에 복사 — content/data 는 제외. 통째 복사
+   *  (copyBlockToClipboard)와 분리된 formatClip 슬롯에 담아 혼동을 막는다. */
+  function copyFormatToClipboard(pageIdx, blockId) {
+    const page = draft?.pages?.[pageIdx]
+    if (!page) return
+    const tpl = getCachedTemplate(pageTemplateMap, page)
+    const block = combinedBlocks(tpl, page).find((b) => b.id === blockId)
+    if (!block) return
+    const effProps = {
+      ...(block.props ?? {}),
+      ...(page.props_overrides?.[blockId] ?? {}),
+    }
+    const { propsPatch, contentPatch } = extractWidgetFormat(
+      block.type,
+      effProps,
+      page.content?.[blockId] ?? {},
+    )
+    if (!hasAnyFormat({ propsPatch, contentPatch })) {
+      toast.info('이 위젯에는 복사할 서식이 없습니다.')
+      return
+    }
+    setFormatClip({ type: block.type, propsPatch, contentPatch })
+    toast.success('위젯 서식을 복사했습니다 (같은 종류에 붙여넣기).')
+  }
+
+  /** 복사된 서식을 대상 위젯에 적용 — 같은 종류일 때만. data 는 그대로 두고
+   *  props_override 병합 + content 얕은 병합. 표 column_widths 는 대상 열 key
+   *  로 교집합 필터(없는 열 폭이 새지 않게). */
+  function pasteFormatOnBlock(pageIdx, blockId) {
+    if (!formatClip) return
+    const page = draft?.pages?.[pageIdx]
+    if (!page) return
+    const tpl = getCachedTemplate(pageTemplateMap, page)
+    const block = combinedBlocks(tpl, page).find((b) => b.id === blockId)
+    if (!block) return
+    if (block.type !== formatClip.type) {
+      toast.error('같은 종류의 위젯에만 서식을 붙일 수 있습니다.')
+      return
+    }
+    const propsPatch = formatClip.propsPatch ?? {}
+    let contentPatch = formatClip.contentPatch ?? {}
+    // column_widths: 대상에 존재하는 열 key 로만 필터(표/비교표).
+    if (contentPatch.column_widths && typeof contentPatch.column_widths === 'object') {
+      const dstKeys = new Set(
+        Object.keys(page.content?.[blockId]?.column_widths ?? {}),
+      )
+      // 대상 content 에 열폭이 아직 없으면 columns 정의에서 key 를 모은다.
+      if (dstKeys.size === 0) {
+        const cols = page.content?.[blockId]?.columns ?? block.props?.columns ?? []
+        for (const c of cols) if (c?.key) dstKeys.add(c.key)
+        const cases = page.content?.[blockId]?.cases ?? block.props?.cases ?? []
+        for (const c of cases) if (c?.key) dstKeys.add(c.key)
+      }
+      const filtered = {}
+      for (const [k, v] of Object.entries(contentPatch.column_widths)) {
+        if (dstKeys.size === 0 || dstKeys.has(k)) filtered[k] = v
+      }
+      contentPatch = { ...contentPatch, column_widths: filtered }
+    }
+    if (Object.keys(propsPatch).length > 0) {
+      updateBlockPropsOverride(pageIdx, blockId, propsPatch)
+    }
+    if (Object.keys(contentPatch).length > 0) {
+      updateBlockContent(pageIdx, blockId, {
+        ...(page.content?.[blockId] ?? {}),
+        ...contentPatch,
+      })
+    }
+    toast.success('서식을 붙여 넣었습니다.')
   }
 
   /** Move a single block from one page to another in one atomic
@@ -4435,6 +4527,9 @@ export default function ReportDetailPage() {
                     }
                     onPasteBlock={(anchorId) => pasteBlockOnPage(idx, anchorId)}
                     canPaste={!!blockClipboard}
+                    onCopyFormat={(blockId) => copyFormatToClipboard(idx, blockId)}
+                    onPasteFormat={(blockId) => pasteFormatOnBlock(idx, blockId)}
+                    canPasteFormat={(type) => !!formatClip && formatClip.type === type}
                     pagesMeta={pagesMeta}
                     onMoveToPage={(blockId, dstIdx) =>
                       moveBlockToPage(idx, blockId, dstIdx)
@@ -4500,6 +4595,9 @@ export default function ReportDetailPage() {
                       pasteBlockOnPage(safeCurrent, anchorId)
                     }
                     canPaste={!!blockClipboard}
+                    onCopyFormat={(blockId) => copyFormatToClipboard(safeCurrent, blockId)}
+                    onPasteFormat={(blockId) => pasteFormatOnBlock(safeCurrent, blockId)}
+                    canPasteFormat={(type) => !!formatClip && formatClip.type === type}
                     pagesMeta={pagesMeta}
                     onMoveToPage={(blockId, dstIdx) =>
                       moveBlockToPage(safeCurrent, blockId, dstIdx)
@@ -8330,6 +8428,10 @@ function PageSection({
   onCutBlock,
   onPasteBlock,
   canPaste,
+  // 서식만 복사/붙여넣기(서식 페인터).
+  onCopyFormat,
+  onPasteFormat,
+  canPasteFormat,
   // 다른 페이지로 옮기기 — `pagesMeta` 는 컨텍스트 메뉴의 페이지 선택
   // 단계가 보여줄 (idx, label) 목록. onMoveToPage(blockId, dstPageIdx)
   // 가 실제 이동을 수행. 현재 페이지 자신은 메뉴 측에서 자동으로 제외.
@@ -8623,7 +8725,12 @@ function PageSection({
                   showContextMenu
                     ? (e) => {
                         e.preventDefault()
-                        setContextMenu({ x: e.clientX, y: e.clientY, blockId: block.id })
+                        setContextMenu({
+                          x: e.clientX,
+                          y: e.clientY,
+                          blockId: block.id,
+                          blockType: block.type,
+                        })
                       }
                     : undefined
                 }
@@ -8772,6 +8879,23 @@ function PageSection({
               : undefined
           }
           canPaste={!!canPaste}
+          onCopyFormat={
+            onCopyFormat
+              ? () => {
+                  onCopyFormat(contextMenu.blockId)
+                  setContextMenu(null)
+                }
+              : undefined
+          }
+          onPasteFormat={
+            onPasteFormat
+              ? () => {
+                  onPasteFormat(contextMenu.blockId)
+                  setContextMenu(null)
+                }
+              : undefined
+          }
+          canPasteFormat={!!canPasteFormat?.(contextMenu.blockType)}
           movePages={
             onMoveToPage
               ? (pagesMeta ?? []).filter((p) => p.idx !== pageIdx)
@@ -9298,6 +9422,11 @@ function BlockContextMenu({
   onCut,
   onPaste,
   canPaste,
+  // 서식만 복사/붙여넣기(서식 페인터) — 통째 복사/붙이기와 별도. canPasteFormat
+  // 은 클립보드에 서식이 있고 그 종류가 이 위젯과 같을 때만 true.
+  onCopyFormat,
+  onPasteFormat,
+  canPasteFormat,
   // 다른 페이지로 옮기기 — `movePages` 가 비어있거나 null 이면 메뉴 항목
   // 자체를 숨김 (페이지가 한 개뿐인 보고서, 또는 prop 미주입). 클릭 시
   // 메뉴 내부 stage 가 picker 로 전환되고, 페이지를 고르면 onMoveToPage
@@ -9416,6 +9545,38 @@ function BlockContextMenu({
           <span className="flex-1">붙여넣기</span>
           <span className="text-[10px] text-muted-foreground">Ctrl+V</span>
         </button>
+      )}
+      {/* 서식만 복사/붙여넣기 — 같은 종류 위젯끼리 스타일만 옮긴다(데이터는 유지). */}
+      {onCopyFormat && (
+        <>
+          <div className="my-1 h-px bg-border" aria-hidden="true" />
+          <button
+            type="button"
+            onClick={onCopyFormat}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-muted text-left"
+          >
+            <Paintbrush className="h-3.5 w-3.5" />
+            <span className="flex-1">서식 복사</span>
+            <span className="text-[10px] text-muted-foreground">Ctrl+Shift+C</span>
+          </button>
+          {onPasteFormat && (
+            <button
+              type="button"
+              onClick={canPasteFormat ? onPasteFormat : undefined}
+              disabled={!canPasteFormat}
+              className={cn(
+                'flex w-full items-center gap-2 px-3 py-1.5 text-sm text-left',
+                canPasteFormat ? 'hover:bg-muted' : 'opacity-40 cursor-not-allowed',
+              )}
+            >
+              <Paintbrush className="h-3.5 w-3.5" />
+              <span className="flex-1">
+                서식 붙여넣기{!canPasteFormat ? ' (같은 종류만)' : ''}
+              </span>
+              <span className="text-[10px] text-muted-foreground">Ctrl+Shift+V</span>
+            </button>
+          )}
+        </>
       )}
       {canMove && (
         <button

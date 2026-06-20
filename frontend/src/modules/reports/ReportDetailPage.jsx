@@ -111,6 +111,7 @@ import { isWidgetCopyable, copyWidget, widgetCopyKind, downloadWidgetImage } fro
 import { copyTextToClipboard } from '@/shared/lib/clipboard'
 import { useReportLock } from './useReportLock'
 import { useReportTabs } from '@/shared/reports/ReportTabsContext'
+import { ReportTabBar } from '@/shared/reports/ReportTabBar'
 import { useWidgetClipboard } from '@/shared/reports/WidgetClipboardContext'
 import { extractWidgetFormat, hasAnyFormat } from './widgetFormat'
 import { useLocalDraftBackup } from './useLocalDraftBackup'
@@ -3783,6 +3784,10 @@ export default function ReportDetailPage() {
           </div>
         ))}
       <div className="relative flex-1 min-w-0 flex flex-col">
+        {/* 열린 보고서 탭 스트립 — 편집 컬럼 위에만 깐다(폴더 사이드바는 덮지
+            않음). 좌측 사이드바와 폴더 사이드바가 같은 높이로 맞도록 탭바를
+            패널 전체가 아니라 이 컬럼 안에 둔다. 탭이 없으면 렌더 안 됨. */}
+        <ReportTabBar pane="left" placement="pane" />
         {/* 휴지통 배너 — 소프트삭제된 보고서를 열었을 때(개인 목록엔 숨지만
             게시판엔 남아 직접 열람 가능). 소유자/시스템관리자는 여기서 복구. */}
         {existingReport?.deleted_at && (

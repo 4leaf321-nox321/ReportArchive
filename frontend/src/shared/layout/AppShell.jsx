@@ -77,8 +77,9 @@ export function AppShell() {
             구간이 좌측 사이드바를 덮지 않고 콘텐츠 영역 안에서만 깔리게 한다. */}
         <div className="flex flex-1 min-w-0 flex-col">
           {/* 비-보고서 화면용 좌측 탭 스트립(목록·대시보드 등에서 열린 보고서로
-              빠르게 복귀). 보고서 라우트에선 null 을 반환하고, 대신 각 패널
-              상단의 탭바(ReportSplitLayout)가 보인다. */}
+              빠르게 복귀). 보고서 라우트에선 null 을 반환하고, 대신 좌측 탭바는
+              ReportDetailPage 의 편집 컬럼 안(폴더 사이드바 오른쪽), 우측 탭바는
+              ReportSplitLayout 의 우측 패널 상단에서 보인다. */}
           <ReportTabBar pane="left" placement="shell" />
           <main ref={mainRef} className="flex-1 min-w-0 overflow-y-auto bg-muted/30">
             <MentionReturnBar />

@@ -31,9 +31,10 @@ export function ReportSplitLayout({ children }) {
 
   return (
     <div className="flex h-full min-h-0">
-      {/* 좌측(primary) — 라우트 에디터. 항상 존재. */}
+      {/* 좌측(primary) — 라우트 에디터. 항상 존재. 좌측 탭바는 폴더 사이드바를
+          덮지 않도록 ReportDetailPage 의 편집 컬럼 안(폴더 사이드바 오른쪽)에서
+          렌더한다 — 여기서 깔면 폴더 사이드바까지 덮인다. */}
       <div className="flex flex-1 min-w-0 min-h-0 flex-col">
-        <ReportTabBar pane="left" placement="pane" />
         {/* min-w-0 + overflow-hidden 필수: 안 주면 보고서의 min-content 폭
             (예: 1024px 페이지)이 좁은 분할 패널을 넘어 늘어나, 보고서 컬럼과
             그에 절대배치된 편집 플로팅 버튼(absolute right-6)이 우측 패널을

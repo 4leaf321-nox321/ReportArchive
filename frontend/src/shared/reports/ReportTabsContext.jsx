@@ -13,11 +13,12 @@ import { toast } from 'sonner'
 
 // 여러 보고서를 "탭"으로 열어두고 전환 + 좌/우 분할 보기 상태 저장소.
 //
-// 두 개의 독립된 탭 세트:
-//  - 좌측(primary): URL 에 걸린 편집 가능한 보고서. activeKey 는 저장하지 않고
-//    현재 URL 에서 파생(matchPath) — back/forward·딥링크에도 항상 정합.
-//  - 우측(secondary): 분할 보기의 읽기전용 패널이 보여주는 보고서들. URL 과
-//    무관하게 rightActiveKey 로 추적·sessionStorage 에 저장.
+// 두 개의 탭 세트(좌=URL 편집 보고서, 우=읽기전용 분할). **한 보고서는 한
+// 패널에만** 존재한다(좌 또는 우, 동시 불가). URL/활성 보고서는 항상 좌측이다.
+//  - 좌측의 탭을 "우측에 분할로 보기" 하거나 우측 탭바로 드래그하면 좌측에서
+//    사라지고 우측으로 옮겨간다.
+//  - 우측 탭을 좌측 탭바로 드래그하면 그 보고서로 이동(편집 화면)하고 우측에서
+//    사라진다. activeKey 는 저장하지 않고 URL 에서 파생한다.
 //
 // 무거운 ReportDetailPage(에디터)는 좌측(라우트) 1개만 마운트하고, 우측은
 // 읽기전용 InlineReportView 라 싱글톤(편집락·useBlocker·전역리스너) 충돌이 없다.
@@ -72,6 +73,18 @@ function loadStored(userId) {
   }
 }
 
+/** 우측 탭 엔트리 정규화(저장된 보고서만). */
+function toRightEntry(tab) {
+  return {
+    key: tab.key,
+    slug: tab.slug,
+    reportId: String(tab.reportId),
+    templateId: null,
+    version: null,
+    title: tab.title || '제목 없음',
+  }
+}
+
 export function ReportTabsProvider({ children }) {
   const location = useLocation()
   const navigate = useNavigate()
@@ -81,16 +94,23 @@ export function ReportTabsProvider({ children }) {
   const [tabs, setTabs] = useState([])
   const [rightTabs, setRightTabs] = useState([])
   const [rightActiveKey, setRightActiveKey] = useState(null)
-  // 활성 탭 닫기 → navigate 후 라우트가 실제로 바뀌었을 때만 제거(미저장 가드
-  // 가 이동을 막고 사용자가 머무르면 탭 유지).
   const pendingCloseRef = useRef(null)
 
   const activeKey = useMemo(
     () => deriveActiveKey(location.pathname),
     [location.pathname],
   )
-  // 보고서 상세 라우트 위에 있는지 — 분할/패널 탭바 표시 여부 판정용.
   const onReportRoute = Boolean(activeKey)
+
+  // 콜백에서 deps 없이 최신값을 읽기 위한 ref — 콜백 identity 를 안정적으로 유지.
+  const tabsRef = useRef(tabs)
+  tabsRef.current = tabs
+  const rightTabsRef = useRef(rightTabs)
+  rightTabsRef.current = rightTabs
+  const activeKeyRef = useRef(activeKey)
+  activeKeyRef.current = activeKey
+  const rightActiveKeyRef = useRef(rightActiveKey)
+  rightActiveKeyRef.current = rightActiveKey
 
   useEffect(() => {
     const s = loadStored(userId)
@@ -111,7 +131,6 @@ export function ReportTabsProvider({ children }) {
     }
   }, [userId, tabs, rightTabs, rightActiveKey])
 
-  // 활성 탭 닫기 보류 처리.
   useEffect(() => {
     const pending = pendingCloseRef.current
     if (pending && activeKey !== pending) {
@@ -120,27 +139,44 @@ export function ReportTabsProvider({ children }) {
     }
   }, [activeKey])
 
-  // ── 좌측(primary) 탭 ─────────────────────────────────────────────────
-  const upsertTab = useCallback((tab) => {
-    if (!tab?.key) return
-    setTabs((prev) => {
-      const idx = prev.findIndex((t) => t.key === tab.key)
-      if (idx >= 0) {
-        const next = prev.slice()
-        next[idx] = { ...next[idx], ...tab, title: tab.title || next[idx].title }
-        return next
-      }
-      let base = prev
-      if (prev.length >= MAX_TABS) {
-        const evictIdx = prev.findIndex((t) => t.key !== tab.key)
-        if (evictIdx >= 0) {
-          base = prev.slice(0, evictIdx).concat(prev.slice(evictIdx + 1))
-          toast.info('열린 보고서 탭이 많아 가장 오래된 탭을 닫았습니다.')
-        }
-      }
-      return [...base, tab]
-    })
+  // 우측에서 제거 + 활성 보정(refs 사용, 안정 콜백).
+  const removeFromRight = useCallback((key) => {
+    const cur = rightTabsRef.current
+    const idx = cur.findIndex((t) => t.key === key)
+    if (idx < 0) return
+    setRightTabs(cur.filter((t) => t.key !== key))
+    if (rightActiveKeyRef.current === key) {
+      const neighbor = cur[idx + 1] ?? cur[idx - 1] ?? null
+      setRightActiveKey(neighbor ? neighbor.key : null)
+    }
   }, [])
+
+  // ── 좌측(primary) 탭 ─────────────────────────────────────────────────
+  const upsertTab = useCallback(
+    (tab) => {
+      if (!tab?.key) return
+      setTabs((prev) => {
+        const idx = prev.findIndex((t) => t.key === tab.key)
+        if (idx >= 0) {
+          const next = prev.slice()
+          next[idx] = { ...next[idx], ...tab, title: tab.title || next[idx].title }
+          return next
+        }
+        let base = prev
+        if (prev.length >= MAX_TABS) {
+          const evictIdx = prev.findIndex((t) => t.key !== tab.key)
+          if (evictIdx >= 0) {
+            base = prev.slice(0, evictIdx).concat(prev.slice(evictIdx + 1))
+            toast.info('열린 보고서 탭이 많아 가장 오래된 탭을 닫았습니다.')
+          }
+        }
+        return [...base, tab]
+      })
+      // 한 보고서는 한 패널만 — URL/활성 보고서는 항상 좌측이므로 우측 중복 제거.
+      removeFromRight(tab.key)
+    },
+    [removeFromRight],
+  )
 
   const promoteNewTab = useCallback((oldKey, { reportId, slug, title }) => {
     const newKey = `r:${reportId}`
@@ -188,52 +224,57 @@ export function ReportTabsProvider({ children }) {
   }, [])
 
   // ── 우측(secondary, 읽기전용 분할) 탭 ────────────────────────────────
-  /** 좌측 탭의 "분할" 버튼 → 그 보고서를 우측 패널에 추가하고 활성화. */
-  const openRight = useCallback((tab) => {
-    if (!tab?.reportId) return // 저장된 보고서만(읽기전용 fetch 에 id 필요)
-    const entry = {
-      key: tab.key,
-      slug: tab.slug,
-      reportId: String(tab.reportId),
-      templateId: null,
-      version: null,
-      title: tab.title || '제목 없음',
-    }
-    setRightTabs((prev) => {
-      const idx = prev.findIndex((t) => t.key === entry.key)
-      if (idx >= 0) {
-        const next = prev.slice()
-        next[idx] = { ...next[idx], ...entry, title: entry.title || next[idx].title }
-        return next
-      }
-      return [...prev, entry]
-    })
-    setRightActiveKey(entry.key)
-  }, [])
-
   const setRightActive = useCallback((key) => {
     setRightActiveKey(key)
   }, [])
 
-  const closeRight = useCallback((key) => {
-    setRightTabs((prev) => {
-      const idx = prev.findIndex((t) => t.key === key)
-      const next = prev.filter((t) => t.key !== key)
-      setRightActiveKey((cur) => {
-        if (cur !== key) return cur
-        const neighbor = next[idx] ?? next[idx - 1] ?? null
-        return neighbor ? neighbor.key : null
-      })
-      return next
-    })
+  const closeRight = useCallback(
+    (key) => {
+      removeFromRight(key)
+    },
+    [removeFromRight],
+  )
+
+  // ── 좌 ↔ 우 이동(분할 버튼 + 드래그드롭) ─────────────────────────────
+  // 우측으로: 좌측에서 제거 + 우측에 추가/활성화. 저장된 보고서만, 활성(편집중)
+  // 탭은 제외(좌측이 비어버리지 않게).
+  const moveToRight = useCallback((key) => {
+    const tab = tabsRef.current.find((t) => t.key === key)
+    if (!tab || !tab.reportId) return
+    if (key === activeKeyRef.current) return
+    setTabs((prev) => prev.filter((t) => t.key !== key))
+    setRightTabs((prev) =>
+      prev.some((t) => t.key === key) ? prev : [...prev, toRightEntry(tab)],
+    )
+    setRightActiveKey(key)
   }, [])
 
+  // 좌측으로: 그 보고서로 URL 이동(편집 화면). 이동 성공 시 upsertTab 이 좌측에
+  // 넣고 우측에서 제거(dedup) — 미저장 가드로 취소되면 우측 그대로라 유실 없음.
+  const moveToLeft = useCallback(
+    (key) => {
+      const tab = rightTabsRef.current.find((t) => t.key === key)
+      if (!tab) return
+      const route = routeForTab(tab)
+      if (route) navigate(route)
+    },
+    [navigate],
+  )
+
+  // 드래그드롭/분할버튼 공용 진입점. targetPane 쪽으로 옮긴다. 대상이 그 패널의
+  // "반대편"에 있을 때만 실제로 동작(같은 패널 내 드롭은 무해한 no-op).
+  const moveTab = useCallback(
+    (key, targetPane) => {
+      if (targetPane === 'right') moveToRight(key)
+      else moveToLeft(key)
+    },
+    [moveToRight, moveToLeft],
+  )
+
   const rightTab = useMemo(
-    () =>
-      rightActiveKey ? rightTabs.find((t) => t.key === rightActiveKey) ?? null : null,
+    () => (rightActiveKey ? rightTabs.find((t) => t.key === rightActiveKey) ?? null : null),
     [rightActiveKey, rightTabs],
   )
-  // 분할이 실제로 보이는 조건: 보고서 라우트 + 우측에 보여줄 탭 존재.
   const splitOpen = onReportRoute && Boolean(rightTab)
 
   const value = useMemo(
@@ -251,9 +292,10 @@ export function ReportTabsProvider({ children }) {
       rightActiveKey,
       rightTab,
       splitOpen,
-      openRight,
       setRightActive,
       closeRight,
+      // 이동(분할버튼 + 드래그드롭)
+      moveTab,
     }),
     [
       tabs,
@@ -267,9 +309,9 @@ export function ReportTabsProvider({ children }) {
       rightActiveKey,
       rightTab,
       splitOpen,
-      openRight,
       setRightActive,
       closeRight,
+      moveTab,
     ],
   )
 

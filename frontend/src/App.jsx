@@ -13,6 +13,7 @@ import { ProtectedRoute } from '@/shared/auth/ProtectedRoute'
 import { ThemeProvider } from '@/shared/theme/ThemeContext'
 import { CommandPaletteProvider } from '@/shared/components/CommandPalette'
 import { ReportTabsProvider } from '@/shared/reports/ReportTabsContext'
+import { WidgetClipboardProvider } from '@/shared/reports/WidgetClipboardContext'
 import { NotFoundPage } from '@/shared/components/NotFoundPage'
 import { Toaster } from '@/shared/components/ui/toaster'
 import { DEFAULT_WORKSPACE } from '@/shared/workspace/workspaces'
@@ -60,7 +61,9 @@ function AuthedShell() {
       <WorkspaceProvider>
         <CommandPaletteProvider>
           <ReportTabsProvider>
-            <AppShell />
+            <WidgetClipboardProvider>
+              <AppShell />
+            </WidgetClipboardProvider>
           </ReportTabsProvider>
         </CommandPaletteProvider>
       </WorkspaceProvider>

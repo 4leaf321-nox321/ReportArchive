@@ -110,6 +110,7 @@ import { isWidgetCopyable, copyWidget, widgetCopyKind, downloadWidgetImage } fro
 import { copyTextToClipboard } from '@/shared/lib/clipboard'
 import { useReportLock } from './useReportLock'
 import { useReportTabs } from '@/shared/reports/ReportTabsContext'
+import { useWidgetClipboard } from '@/shared/reports/WidgetClipboardContext'
 import { useLocalDraftBackup } from './useLocalDraftBackup'
 import { buildBackupKey, getLocalDraft, delLocalDraft } from './localDraftBackup'
 import {
@@ -960,7 +961,11 @@ export default function ReportDetailPage() {
   // clipboard after the FIRST paste (cut should be a true move, not
   // a duplicate). Copy leaves cutSource null → user can paste many
   // times.
-  const [blockClipboard, setBlockClipboard] = useState(null)
+  //
+  // 공유 컨텍스트로 끌어올렸다 — 분할 보기 우측(읽기전용) 패널에서 복사한 위젯을
+  // 좌측 편집창에서 붙여넣으려면 두 패널이 같은 슬롯을 봐야 하기 때문(서로 다른
+  // 컴포넌트 트리라 로컬 state 로는 공유 불가). API 는 동일(state/setter).
+  const { clip: blockClipboard, setClip: setBlockClipboard } = useWidgetClipboard()
 
   // File input for "로컬 불러오기" — declared up here so the hook order
   // stays stable across the loading → ready transition (the button itself

@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { Copy } from 'lucide-react'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { getReport } from '@/modules/reports/api'
@@ -31,7 +32,28 @@ import {
  * that frozen content instead, so the composite always reflects the
  * as-of-publish state even if the source report has been edited since.
  */
-export function InlineReportView({ reportId, snapshot, exposeBlockIds = true }) {
+/** 블록 + 페이지에서 "효과 스냅샷"({type, props, content, layout, section})을
+ *  만든다 — 위젯 복사/가져오기가 self-contained extra block 으로 붙일 수 있게.
+ *  ReportDetailPage 의 클립보드 paste · ImportWidgetDialog 와 같은 shape. */
+export function widgetSnapshot(page, block) {
+  const propsOverride = page?.props_overrides?.[block.id] ?? null
+  return {
+    type: block.type,
+    props: propsOverride
+      ? { ...(block.props ?? {}), ...propsOverride }
+      : { ...(block.props ?? {}) },
+    content: page?.content?.[block.id] ?? null,
+    layout: page?.layout_overrides?.[block.id] ?? block.layout ?? null,
+    section: resolveBlockSection(page, block),
+  }
+}
+
+export function InlineReportView({
+  reportId,
+  snapshot,
+  exposeBlockIds = true,
+  onCopyWidget = null,
+}) {
   // Live fetch only when no snapshot is supplied. Snapshot-rendered
   // items don't need a network roundtrip — the frozen blob already has
   // everything the renderer needs.
@@ -79,6 +101,7 @@ export function InlineReportView({ reportId, snapshot, exposeBlockIds = true }) 
             totalPages={pages.length}
             rowGapPx={pageGapPx}
             exposeBlockIds={exposeBlockIds}
+            onCopyWidget={onCopyWidget}
           />
         ))}
       </div>
@@ -86,7 +109,14 @@ export function InlineReportView({ reportId, snapshot, exposeBlockIds = true }) 
   )
 }
 
-function InlinePage({ page, index, totalPages, rowGapPx, exposeBlockIds = true }) {
+function InlinePage({
+  page,
+  index,
+  totalPages,
+  rowGapPx,
+  exposeBlockIds = true,
+  onCopyWidget = null,
+}) {
   const { data: template, loading } = useAsync(
     () => getTemplateVersion(page.template_id, page.template_version),
     [page.template_id, page.template_version],
@@ -152,8 +182,21 @@ function InlinePage({ page, index, totalPages, rowGapPx, exposeBlockIds = true }
                 // 하므로 id 를 떼서 충돌을 막는다.
                 id={exposeBlockIds ? `block-${it.block.id}` : undefined}
                 style={{ gridColumn: `span ${it.colSpan} / span ${it.colSpan}` }}
-                className="min-w-0"
+                className="min-w-0 relative group"
               >
+                {/* 위젯 복사 — 분할 보기 우측(읽기전용) 패널에서 위젯을 복사해
+                    좌측 편집창에 붙여넣기. onCopyWidget 이 있을 때만 노출. */}
+                {onCopyWidget && getRenderer(it.block.type)?.Editor && (
+                  <button
+                    type="button"
+                    onClick={() => onCopyWidget(widgetSnapshot(page, it.block))}
+                    title="이 위젯을 복사 (편집 창에 붙여넣기)"
+                    className="absolute right-1 top-1 z-10 inline-flex items-center gap-1 rounded-md border bg-background/95 px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-foreground group-hover:opacity-100"
+                  >
+                    <Copy className="h-3 w-3" />
+                    복사
+                  </button>
+                )}
                 <BlockBody
                   block={it.block}
                   content={page.content?.[it.block.id]}

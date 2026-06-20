@@ -1,6 +1,8 @@
 import { X, Pencil } from 'lucide-react'
+import { toast } from 'sonner'
 import { cn } from '@/shared/lib/utils'
 import { useAsync } from '@/shared/hooks/useAsync'
+import { useWidgetClipboard } from './WidgetClipboardContext'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { getReport } from '@/modules/reports/api'
 import { InlineReportView } from '@/modules/composites/InlineReportView'
@@ -63,10 +65,18 @@ export function ReportSplitLayout({ children }) {
 // (2) "관련 정보" 줄(ReportEntitiesPanel), (3) 본문(InlineReportView)을 그린다.
 // 같은 fetch 결과를 InlineReportView 에 snapshot 으로 넘겨 중복 요청을 피한다.
 function SplitCompanionPane({ tab, onClose }) {
+  const { setClip } = useWidgetClipboard()
   const { data: report, loading, error } = useAsync(
     () => (tab.reportId ? getReport(tab.reportId) : Promise.resolve(null)),
     [tab.reportId],
   )
+
+  // 우측(읽기전용) 위젯을 복사 → 공유 클립보드에. 좌측 편집창에서 Ctrl+V /
+  // 우클릭 붙여넣기로 가져온다(복사이므로 cutSource=null).
+  function handleCopyWidget(snap) {
+    setClip({ ...snap, cutSource: null })
+    toast.success('위젯을 복사했습니다 — 편집 창에서 붙여넣기(Ctrl+V)')
+  }
 
   return (
     <>
@@ -134,7 +144,11 @@ function SplitCompanionPane({ tab, onClose }) {
         ) : error ? (
           <div className="text-xs text-destructive">{error.message}</div>
         ) : report ? (
-          <InlineReportView snapshot={report} exposeBlockIds={false} />
+          <InlineReportView
+            snapshot={report}
+            exposeBlockIds={false}
+            onCopyWidget={handleCopyWidget}
+          />
         ) : null}
       </div>
     </>

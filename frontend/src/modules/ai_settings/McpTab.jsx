@@ -150,16 +150,20 @@ AUTH = "Bearer ${reveal}"
 WS = "${slug}"
 NODE_OPTIONS = "--use-system-ca"`
     : ''
+  // Gemini CLI — ~/.gemini/settings.json 의 `mcpServers` 안에 붙여넣는 항목.
+  // Gemini CLI 의 stdio MCP 서버 항목은 Claude Desktop 과 같은 shape
+  // (command/args/env)라 desktopCfg 를 그대로 재사용한다(같은 mcp-remote 브리지).
+  const geminiCfg = desktopCfg
 
   return (
     <Card>
       <CardHeader>
         <div className="flex items-center gap-2">
           <Plug className="h-4 w-4 text-muted-foreground" />
-          <CardTitle className="text-base">MCP 토큰 (Claude 연동)</CardTitle>
+          <CardTitle className="text-base">MCP 토큰 (Claude·Codex·Gemini 연동)</CardTitle>
         </div>
         <CardDescription>
-          Claude(Claude Code 등)에서 보고서를 작성·검색할 때 쓰는 개인 토큰. 발급된 값은
+          AI CLI(Claude Code·Codex·Gemini CLI 등)에서 보고서를 작성·검색할 때 쓰는 개인 토큰. 발급된 값은
           <b> 한 번만</b> 보이니 바로 복사하세요. 유출되면 여기서 삭제하면 됩니다.
         </CardDescription>
       </CardHeader>
@@ -194,7 +198,7 @@ NODE_OPTIONS = "--use-system-ca"`
             <div className="text-xs font-medium">Claude Desktop (설정 파일)</div>
             <div className="text-xs text-muted-foreground">
               설정 → 개발자 → 「설정 편집」으로 <code className="font-mono">claude_desktop_config.json</code> 을 열고,
-              아래 <b>항목을 <code className="font-mono">"mcpServers": {'{ }'}</code> 중괄호 안에</b> 붙여넣은 뒤 Claude Desktop 재시작.
+              아래 <b>항목을 <code className="font-mono">{'"mcpServers": { }'}</code> 중괄호 안에</b> 붙여넣은 뒤 Claude Desktop 재시작.
               <span className="block mt-1">파일에 <code className="font-mono">mcpServers</code> 가 없으면 <code className="font-mono">{'{ "mcpServers": { 여기 } }'}</code> 형태로 감싸고, 다른 항목이 이미 있으면 사이에 쉼표(<code className="font-mono">,</code>)를 넣으세요.</span>
               <span className="block mt-1"><b>Node.js 필요</b> — Desktop 설정 파일은 HTTP 서버를 직접 못 받아 <code className="font-mono">npx mcp-remote</code> 브리지로 연결합니다.</span>
             </div>
@@ -210,9 +214,22 @@ NODE_OPTIONS = "--use-system-ca"`
               <span className="block mt-1"><b>Node.js 필요</b> — HTTP 주소·사내 인증서 문제를 안정적으로 처리하려 <code className="font-mono">npx mcp-remote</code> 브리지로 연결합니다.</span>
             </div>
             <pre className="overflow-x-auto rounded bg-muted px-2 py-2 text-[11px] font-mono whitespace-pre">{codexCfg}</pre>
+            <Button type="button" size="sm" variant="outline" onClick={() => copyText(codexCfg, 'Codex 설정')}>
+              설정 복사
+            </Button>
+            <Separator />
+            {/* Gemini CLI — ~/.gemini/settings.json (mcp-remote 브리지, stdio) */}
+            <div className="text-xs font-medium">Gemini CLI (설정 파일)</div>
+            <div className="text-xs text-muted-foreground">
+              <code className="font-mono">~/.gemini/settings.json</code> 을 열고,
+              아래 <b>항목을 <code className="font-mono">{'"mcpServers": { }'}</code> 중괄호 안에</b> 붙여넣은 뒤 Gemini CLI 재시작(부서를 바꾸려면 <code className="font-mono">WS</code> 값만 수정).
+              <span className="block mt-1">파일이나 <code className="font-mono">mcpServers</code> 가 없으면 <code className="font-mono">{'{ "mcpServers": { 여기 } }'}</code> 형태로 감싸고, 다른 항목이 이미 있으면 사이에 쉼표(<code className="font-mono">,</code>)를 넣으세요.</span>
+              <span className="block mt-1"><b>Node.js 필요</b> — HTTP 주소·사내 인증서 문제를 안정적으로 처리하려 <code className="font-mono">npx mcp-remote</code> 브리지로 연결합니다.</span>
+            </div>
+            <pre className="overflow-x-auto rounded bg-muted px-2 py-2 text-[11px] font-mono whitespace-pre">{geminiCfg}</pre>
             <div className="flex gap-2">
-              <Button type="button" size="sm" variant="outline" onClick={() => copyText(codexCfg, 'Codex 설정')}>
-                설정 복사
+              <Button type="button" size="sm" variant="outline" onClick={() => copyText(geminiCfg, 'Gemini 항목')}>
+                항목 복사
               </Button>
               <Button type="button" size="sm" variant="ghost" onClick={() => setReveal(null)}>
                 확인했습니다(닫기)

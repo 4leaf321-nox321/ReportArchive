@@ -1,11 +1,23 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { Search, FileText, Loader2 } from 'lucide-react'
+import { Search, FileText, Loader2, Sparkles, Type } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Button } from '@/shared/components/ui/button'
-import { searchReports } from '@/modules/reports/api'
+import { searchReports, semanticSearchReports } from '@/modules/reports/api'
 
 const LIMIT = 30
+
+// 검색 모드. 'keyword' = 기존 pg_trgm 부분일치. 'semantic' = 임베딩 기반 의미 검색
+// (서버 mode=hybrid 로 호출 — 벡터+키워드 RRF 융합). 의미 모드는 페이지네이션 없음.
+const MODES = [
+  { key: 'keyword', label: '키워드', icon: Type, hint: '제목·본문 단어 일치' },
+  {
+    key: 'semantic',
+    label: '의미',
+    icon: Sparkles,
+    hint: '뜻이 비슷한 보고서까지 (의미 + 키워드 융합)',
+  },
+]
 
 /** 검색어의 각 단어(공백 분리)를 <mark> 로 강조. 대소문자 무시, 모든 일치. */
 function Highlighted({ text, query }) {
@@ -42,6 +54,7 @@ export default function SearchPage() {
   const [data, setData] = useState(null) // { results, total }
   const [loading, setLoading] = useState(false)
   const [offset, setOffset] = useState(0)
+  const [mode, setMode] = useState('keyword')
   // 우리가 마지막으로 URL(?q)에 써넣은 값. 외부(헤더 재검색)로 ?q 가 바뀐 것과
   // 우리 디바운스가 쓴 변경을 구분해, 외부 변경일 때만 입력을 리셋한다(루프 방지).
   const lastPushedRef = useRef(urlQ.trim())
@@ -80,7 +93,11 @@ export default function SearchPage() {
     }
     let cancelled = false
     setLoading(true)
-    searchReports(debounced, { limit: LIMIT, offset: 0 })
+    const run =
+      mode === 'semantic'
+        ? semanticSearchReports(debounced, { mode: 'hybrid', limit: LIMIT })
+        : searchReports(debounced, { limit: LIMIT, offset: 0 })
+    run
       .then((d) => !cancelled && setData(d))
       .catch(() => !cancelled && setData({ results: [], total: 0 }))
       .finally(() => !cancelled && setLoading(false))
@@ -88,7 +105,7 @@ export default function SearchPage() {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debounced])
+  }, [debounced, mode])
 
   const loadMore = useCallback(() => {
     const next = offset + LIMIT
@@ -108,8 +125,10 @@ export default function SearchPage() {
 
   const results = data?.results ?? []
   const total = data?.total ?? 0
-  const hasMore = results.length < total
+  // 의미 검색은 오프셋 페이지네이션이 없다(서버가 상위 N개만 RRF로 반환).
+  const hasMore = mode === 'keyword' && results.length < total
   const showEmpty = !loading && debounced.length >= 2 && total === 0
+  const activeHint = MODES.find((m) => m.key === mode)?.hint
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-6">
@@ -118,7 +137,7 @@ export default function SearchPage() {
         보고서 검색
       </h1>
 
-      <div className="relative mb-4">
+      <div className="relative mb-3">
         <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           ref={inputRef}
@@ -127,6 +146,32 @@ export default function SearchPage() {
           placeholder="제목·본문에서 검색 (표·긴 글 등 위젯 내용 포함)"
           className="h-11 pl-9 text-base"
         />
+      </div>
+
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <div className="inline-flex rounded-md border p-0.5">
+          {MODES.map((m) => {
+            const Icon = m.icon
+            const active = mode === m.key
+            return (
+              <button
+                key={m.key}
+                type="button"
+                onClick={() => setMode(m.key)}
+                aria-pressed={active}
+                className={`flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                  active
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                {m.label}
+              </button>
+            )
+          })}
+        </div>
+        <span className="text-xs text-muted-foreground">{activeHint}</span>
       </div>
 
       {debounced.length >= 2 && (
@@ -173,6 +218,20 @@ export default function SearchPage() {
                   .filter(Boolean)
                   .join(' · ')}
               </span>
+              {mode === 'semantic' && (hit.inSemantic || hit.inKeyword) && (
+                <span className="mt-0.5 flex gap-1">
+                  {hit.inSemantic && (
+                    <span className="rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400">
+                      의미
+                    </span>
+                  )}
+                  {hit.inKeyword && (
+                    <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-600 dark:text-sky-400">
+                      키워드
+                    </span>
+                  )}
+                </span>
+              )}
             </button>
           )
         })}

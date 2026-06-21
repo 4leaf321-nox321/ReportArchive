@@ -41,13 +41,21 @@ def _visible_scope_ids(db: Session, actor) -> Optional[set[int]]:
     return all_visible_report_ids(db, actor.user.id)
 
 
-def _hydrate_titles(db: Session, report_ids: list[int]) -> dict[int, str]:
+def _hydrate_meta(db: Session, report_ids: list[int]) -> dict[int, dict]:
+    """결과로 내보낼 보고서별 표시 메타(제목 + 워크스페이스 slug).
+
+    workspace_slug 는 프론트가 결과 클릭 시 `/w/{slug}/reports/{id}` 로 이동하는 데
+    필요하다(키워드 검색의 ReportSummary 와 동일 역할). 추가 필드이므로 MCP 등
+    기존 소비자에 무해.
+    """
     if not report_ids:
         return {}
     rows = db.execute(
-        select(Report.id, Report.title).where(Report.id.in_(report_ids))
+        select(Report.id, Report.title, Report.workspace_slug).where(
+            Report.id.in_(report_ids)
+        )
     ).all()
-    return {rid: title for rid, title in rows}
+    return {rid: {"title": title, "workspace_slug": slug} for rid, title, slug in rows}
 
 
 def semantic_search(
@@ -109,9 +117,11 @@ def semantic_search(
             break
 
     results = list(best.values())[:limit]
-    titles = _hydrate_titles(db, [r["report_id"] for r in results])
+    meta = _hydrate_meta(db, [r["report_id"] for r in results])
     for r in results:
-        r["title"] = titles.get(r["report_id"])
+        m = meta.get(r["report_id"], {})
+        r["title"] = m.get("title")
+        r["workspace_slug"] = m.get("workspace_slug")
     return results
 
 
@@ -179,13 +189,18 @@ def hybrid_search(
         meta.setdefault(rid, {"report_id": rid, "title": title, "snippet": None})
 
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    # 키워드 전용 히트는 workspace_slug 가 없으므로(=_keyword_search 가 id,title 만 반환)
+    # 최종 랭킹 id 에 대해 표시 메타를 한 번에 보강한다.
+    hydrated = _hydrate_meta(db, [rid for rid, _ in ranked])
     out = []
     for rid, sc in ranked:
         m = meta.get(rid, {"report_id": rid})
+        h = hydrated.get(rid, {})
         out.append(
             {
                 "report_id": rid,
-                "title": m.get("title"),
+                "title": h.get("title") or m.get("title"),
+                "workspace_slug": h.get("workspace_slug"),
                 "snippet": m.get("snippet"),
                 "block_id": m.get("block_id"),
                 "page_idx": m.get("page_idx"),

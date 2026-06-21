@@ -89,6 +89,34 @@ export async function searchReports(
   return extractData(res)
 }
 
+// 의미(시맨틱) 검색 — 임베딩(report_chunks) 기반. mode=hybrid(기본)는 벡터+키워드를
+// RRF 로 융합, mode=semantic 은 벡터 유사도만. 운영 Ollama 가 없으면 하이브리드가
+// 키워드로 자연 degrade 한다(임계값 게이트). 서버 응답은 flat({report_id,title,...})
+// 이므로 키워드 검색과 동일한 { results:[{report, snippet}], total } 형태로 정규화해
+// SearchPage 가 두 모드를 같은 렌더 경로로 다루게 한다. 페이지네이션 없음(total=길이).
+export async function semanticSearchReports(q, { mode = 'hybrid', limit = 30 } = {}) {
+  const params = new URLSearchParams({
+    q: q ?? '',
+    mode,
+    limit: String(limit),
+  })
+  const res = await apiClient.get(`${BASE}/search/semantic?${params.toString()}`)
+  const data = extractData(res)
+  const results = (data.results ?? []).map((r) => ({
+    report: {
+      id: r.report_id,
+      title: r.title,
+      workspace_slug: r.workspace_slug,
+    },
+    snippet: r.snippet,
+    // 왜 이 결과가 떴는지 표시용(하이브리드에서 의미/키워드 매칭 배지).
+    score: r.rrf_score ?? r.score,
+    inSemantic: r.in_semantic ?? true,
+    inKeyword: r.in_keyword ?? false,
+  }))
+  return { results, total: results.length, mode: data.mode ?? mode }
+}
+
 /** Metadata-only folder placement — no lock required. Owner-only. */
 export async function moveReportToFolder(id, folderId) {
   const res = await apiClient.put(`${BASE}/${id}/folder`, {

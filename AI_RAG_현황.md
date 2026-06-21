@@ -1,8 +1,8 @@
 # AI / RAG · 백그라운드 워커 — 현황
 
 폐쇄망 local LLM 기반 AI(아카이브 시맨틱 검색 → RAG Q&A → 에이전트)와 그 토대인
-백그라운드 워커의 진행 상황 정리. 작성 시점 기준 **dev에서 구현·검증 완료, 운영
-미반영**.
+백그라운드 워커의 진행 상황 정리. **dev 구현·검증 완료 + 운영 반영 완료(2026-06-21)** —
+폐쇄망 운영서버에 pgvector·Ollama(bge-m3)·p47/p48·워커까지 가동.
 
 관련 설계: `백그라운드워커_설계.md` · `부족한부분.md` · `약점보강_로드맵.md`.
 
@@ -15,7 +15,7 @@
 | 백그라운드 워커 레일 (p47) | ✅ dev 완료 | 별도 프로세스, Postgres 큐 |
 | 오펀 파일 정리 핸들러 | ✅ dev 완료 | 첫 도메인 핸들러 |
 | RAG Phase 1 (시맨틱 검색) | ✅ dev 완료 | pgvector·임베딩·하이브리드 검색·API |
-| 운영 배포 | ⛔ 미반영 | pgvector 설치·`.env`·reindex 선결 |
+| 운영 배포 | ✅ 완료 (2026-06-21) | pgvector·Ollama(**:11435**)·p48·`.env`·reindex 반영 |
 | **Phase 2 (MCP search_reports 하이브리드화)** | ✅ dev 완료 | get_report 변경 불필요. 프론트 검색 UI는 선택 |
 | Phase 3 (B300 RAG Q&A) | ⬜ 미착수 | 운영 생성 GPU = B300 |
 | Phase 4 (에이전트) | ⬜ 미착수 | 요약·비교·작성보조·FMEA 추천 |
@@ -36,8 +36,11 @@ Redis/Celery 없이 Postgres `jobs` 테이블 + `SELECT … FOR UPDATE SKIP LOCK
   shutdown), `routes.py`(`GET /api/jobs/{id}` 폴링), `handlers/`.
 - `worker.py` — 워커 진입점(run.py 대칭). `app.all_models` import 후 핸들러 로드.
 - `deploy/reportarchive-worker.service.template` — systemd 유닛(MCP 서버와 동일 패턴,
-  `apptainer exec … worker.py`). **deploy.sh wiring 미연결(inert)** — 배포해도 안 뜸.
-- `deploy/reportarchive-orphan-cleanup.{service,timer}.template` — 야간 스케줄(미연결).
+  `apptainer exec … worker.py`). ✅ **deploy.sh `setup_worker` 가 자동 렌더·enable·restart**
+  (install/update/reset). 운영 가동 중.
+- `deploy/reportarchive-orphan-cleanup.{service,timer}.template` — 야간 스케줄.
+  ⚠️ **deploy.sh 미연결(남은 작업)** — 핸들러·템플릿은 있으나 타이머를 렌더/enable 하는
+  코드가 없어 운영에서 자동 실행 안 됨. `setup_worker` 패턴 복제 필요(수동 enqueue 로는 가능).
 - `scripts/enqueue_job.py` — 범용 적재 CLI(타이머/수동용).
 
 **핸들러 현황**
@@ -81,14 +84,15 @@ Redis/Celery 없이 Postgres `jobs` 테이블 + `SELECT … FOR UPDATE SKIP LOCK
 
 **임베딩 백엔드 토글 (핵심 안전장치)**
 - `mock` — 텍스트 해시로 결정적 벡터. Ollama 없이 dev에서 전 파이프라인 테스트. (현재 기본)
-- `ollama` — 호스트 Ollama(`localhost:11434`) 호출. 운영용. `.env` 한 줄로 전환.
+- `ollama` — 호스트 Ollama 호출. 운영용. `.env` 한 줄로 전환. **운영 포트=11435**
+  (기존 다른 사용자 ollama가 11434 점유 → 충돌 회피로 우리 systemd 인스턴스를 11435 에 별도 기동).
 - `content_hash`에 모델 지문 포함 → mock→ollama 전환/모델 교체 시 자동 재임베딩.
 
 **설정(.env)**
 | 키 | 기본 | 설명 |
 |---|---|---|
 | `EMBEDDING_BACKEND` | `mock` | 운영은 `ollama` |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` (dev) | **운영=`http://localhost:11435`** (포트 충돌 회피) |
 | `EMBEDDING_MODEL` | `bge-m3` | 운영 설치본 태그에 맞춤 |
 | `EMBEDDING_DIM` | `1024` | **report_chunks 벡터 차원과 반드시 일치** |
 
@@ -100,9 +104,10 @@ Redis/Celery 없이 Postgres `jobs` 테이블 + `SELECT … FOR UPDATE SKIP LOCK
 
 ---
 
-## 3. 운영 배포 선결 (지금은 dev만)
+## 3. 운영 배포 — ✅ 완료 (2026-06-21)
 
-> ⚠️ pgvector를 설치한 곳은 **개발 PC**다. 운영서버는 별개(폐쇄망) — 아직 미설치.
+> 폐쇄망 운영서버에 반영 완료. 아래는 수행한 절차 기록(재배포·타 서버 참고용).
+> pgvector 확장은 운영 DB 포트 **5433**, Ollama 는 **11435**(기존 ollama 11434 충돌 회피).
 
 1. **운영 pgvector 설치** (폐쇄망 → .deb 반입)
    - 인터넷 PC: `apt-get download postgresql-16-pgvector` (버전·arch 운영과 일치)
@@ -114,7 +119,8 @@ Redis/Celery 없이 Postgres `jobs` 테이블 + `SELECT … FOR UPDATE SKIP LOCK
 3. **`.env`** — `EMBEDDING_BACKEND=ollama` + `EMBEDDING_MODEL`/`EMBEDDING_DIM`을 운영
    Ollama 설치본에 맞춤(태그·차원 확인 필요. 현재 1024 가정).
 4. **`reindex_embeddings` 1회 실행** → live 792개 임베딩.
-5. (선택) worker/orphan-cleanup systemd 유닛을 `deploy.sh`에 연동 + enable.
+5. worker systemd 유닛 — ✅ `deploy.sh setup_worker` 로 자동 연동·enable(완료).
+   orphan-cleanup 타이머 — ⚠️ **아직 deploy.sh 미연결**(남은 작업, §2 핸들러 표 참조).
 
 ---
 

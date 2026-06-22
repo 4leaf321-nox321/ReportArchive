@@ -64,25 +64,60 @@ class MountTargetInvalidError(MountError):
     status_code = 400
 
 
+def _role_on_workspace(
+    db: Session, user_id: int, workspace_slug: str
+) -> Optional[Role]:
+    """user 가 workspace 에서 갖는 역할(조상 멤버십 상속). 멤버십이 없으면 None.
+    auth._resolve_role 과 같은 ancestor-walk 의미."""
+    visited: set[str] = set()
+    cur: Optional[str] = workspace_slug
+    while cur and cur not in visited:
+        visited.add(cur)
+        m = db.execute(
+            select(WorkspaceMember).where(
+                WorkspaceMember.user_id == user_id,
+                WorkspaceMember.workspace_slug == cur,
+            )
+        ).scalar_one_or_none()
+        if m is not None:
+            return m.role
+        anc = db.get(Workspace, cur)
+        if anc is None:
+            break
+        cur = anc.parent_slug
+    return None
+
+
 def _ensure_can_mount(
     db: Session, report: Report, actor_user_id: int
 ) -> None:
-    """Phase 1 rule: only the report owner can mount their own reports.
+    """게시(mount) 권한:
 
-    Phase 3 will extend this to allow workspace admins to mount on
-    behalf of users (the "팀장이 부하 보고서를 게시판에 올림" flow),
-    but for now we keep it tight — the simplest defensible model.
+      1) **작성자 본인**은 항상 게시 가능.
+      2) **이미 게시된 게시판의 매니저**는 그 문서를 다른 게시판에도 게시
+         가능 — "A 게시판에 올라간 문서를 A 매니저가 B 게시판으로 확산"
+         (협업개선 설계의 Phase 3 흐름). 게시판은 조상 상속을 따르므로 상위
+         부서 매니저도 포함된다. 단 대상 게시판 접근권은 별도로
+         _ensure_target_is_org_workspace 가 확인한다(자기가 속한 게시판에만
+         게시 가능 — 임의 게시판에 밀어넣기 방지).
+
+    소유자도 아니고 게시된 어느 게시판의 매니저도 아니면 거절.
     """
+    if report.owner_user_id is not None and report.owner_user_id == actor_user_id:
+        return
+    # 이미 게시된 게시판 중 actor 가 매니저인 곳이 하나라도 있으면 허용.
+    for m in list_mounts_for_report(db, report.id):
+        if _role_on_workspace(db, actor_user_id, m.workspace_slug) == Role.manager:
+            return
     if report.owner_user_id is None:
-        # Orphan reports have no owner to authorize — admin-only flow
-        # will land in Phase 3.
+        # Orphan reports + 매니저도 아님 — admin-only flow 는 별도(미구현).
         raise MountForbiddenError(
             "owner가 없는 보고서는 현재 게시할 수 없습니다 (관리자 도구 필요)."
         )
-    if report.owner_user_id != actor_user_id:
-        raise MountForbiddenError(
-            "본인이 작성한 보고서만 조직 게시판에 게시할 수 있습니다."
-        )
+    raise MountForbiddenError(
+        "본인이 작성했거나 이미 게시된 게시판의 매니저인 보고서만 "
+        "다른 게시판에 게시할 수 있습니다."
+    )
 
 
 def _ensure_target_is_org_workspace(

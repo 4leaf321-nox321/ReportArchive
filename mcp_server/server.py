@@ -15,12 +15,25 @@ Claude Code 등록(사용자별 토큰):
     claude mcp add --transport http reportarchive http://<host>:3002/mcp \
       --header "Authorization: Bearer <내 토큰>" --header "X-Workspace-Slug: <부서slug>"
 """
+import base64
+import binascii
 import os
 
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
 API_BASE = os.environ.get("REPORTARCHIVE_API_BASE", "http://localhost:3000").rstrip("/")
+
+# base64 로 받은 바이트를 도구 인자로 나르는 건 모델 출력 토큰을 그대로 먹는다
+# (1MB ≈ 1.3MB base64 ≈ 수십만 토큰). 그래서 upload_file 은 작은 이미지 전용으로
+# 막아두고, 큰 파일/PPT 는 upload_from_url(서버가 직접 받음)로 유도한다.
+_UPLOAD_BASE64_MAX_BYTES = 256 * 1024
+
+# 아웃오브밴드 업로드 라우트 — 일부러 streamable 엔드포인트(/mcp)와 같은 prefix
+# 아래 둔다. FastMCP 가 /mcp 를 정확매칭 Route 로 달기 때문에 /mcp/files/upload 는
+# 충돌 없이 공존하고, 리버스프록시가 이미 잡고 있는 `location /mcp` 가 그대로
+# 커버한다(별도 location·MCP_PUBLIC_BASE 불필요).
+_UPLOAD_ROUTE = "/mcp/files/upload"
 
 mcp = FastMCP("reportarchive")
 
@@ -36,6 +49,22 @@ def _forward_headers(ctx: Context) -> dict:
                 # 백엔드가 기대하는 표기로.
                 headers["Authorization" if h == "authorization" else "X-Workspace-Slug"] = v
     return headers
+
+
+def _public_base(ctx: Context) -> str:
+    """이 MCP 서버에 클라이언트가 도달하는 외부 base URL — 아웃오브밴드 업로드
+    URL(/files/upload)을 만들 때 쓴다. 리버스프록시 뒤면 MCP_PUBLIC_BASE 로 명시,
+    아니면 들어온 요청의 Host(+X-Forwarded-*)에서 유추한다."""
+    env = os.environ.get("MCP_PUBLIC_BASE")
+    if env:
+        return env.rstrip("/")
+    req = getattr(getattr(ctx, "request_context", None), "request", None)
+    if req is not None:
+        proto = req.headers.get("x-forwarded-proto") or req.url.scheme or "http"
+        host = req.headers.get("x-forwarded-host") or req.headers.get("host")
+        if host:
+            return f"{proto}://{host}"
+    return f"http://127.0.0.1:{os.environ.get('MCP_PORT', '3002')}"
 
 
 def _unwrap(r: httpx.Response):
@@ -62,6 +91,19 @@ async def _post(ctx, path, json_body):
 async def _patch(ctx, path, json_body):
     async with httpx.AsyncClient(base_url=API_BASE, timeout=120) as client:
         return _unwrap(await client.patch(path, json=json_body, headers=_forward_headers(ctx)))
+
+
+async def _post_multipart(ctx, path, *, filename, content, mime_type):
+    """멀티파트로 바이너리를 백엔드 /api/files 에 그대로 흘려보낸다(기존 업로드
+    경로·용량제한·소유권 재사용)."""
+    async with httpx.AsyncClient(base_url=API_BASE, timeout=120) as client:
+        return _unwrap(
+            await client.post(
+                path,
+                files={"file": (filename, content, mime_type)},
+                headers=_forward_headers(ctx),
+            )
+        )
 
 
 @mcp.tool()
@@ -170,12 +212,112 @@ async def upload_from_url(ctx: Context, url: str, filename: str | None = None) -
     예) 이미지 위젯: extra_blocks=[{"id":"img","type":"image","props":{"max_count":1},
         "content":{"files":[{"file_id":"<반환된 id>"}]}}]
 
-    ※ **웹 URL 전용**입니다. 사용자 PC 에만 있는 로컬 파일/채팅 첨부는 URL 이 없어
-    이 도구로 못 올립니다(그 경우 사용자가 웹 UI 에서 직접 추가)."""
+    ※ **웹 URL 전용**입니다. 사용자 PC 의 로컬 파일은 이 도구로 못 올립니다 — 셸을
+    쓸 수 있는 CLI(Claude Code 등)면 `prepare_upload` 로 직접 올리고, PPT 속 그림은
+    올린 뒤 `extract_pptx_images` 로 분해하세요. 둘 다 안 되는 환경이면 사용자가 웹
+    UI 에서 직접 추가."""
     body: dict = {"url": url}
     if filename:
         body["filename"] = filename
     return await _post(ctx, "/api/files/from-url", body)
+
+
+@mcp.tool()
+async def upload_file(
+    ctx: Context, filename: str, data_base64: str, mime_type: str | None = None
+) -> dict:
+    """**로컬 파일(작은 이미지)** 을 base64 로 받아 저장하고 **file_id** 를 돌려준다.
+    Claude Code 처럼 로컬 폴더에 접근 가능한 클라이언트가 PC 의 이미지를 바로 올릴 때
+    쓴다. 받은 file_id 를 image/attachment 위젯 content 에 넣는다.
+
+    ⚠️ **작은 이미지 전용** (≈256KB 이하). base64 바이트가 모델 출력 토큰을 그대로
+    소모하므로 큰 파일은 거부된다. 큰 파일·PPT·다수 이미지는 base64 로 올리지 말고:
+      - 웹에 있으면 `upload_from_url`(서버가 직접 다운로드, 크기 제약 없음),
+      - PPT 안의 그림들은 PPT 를 먼저 올린 뒤 `extract_pptx_images` 로 서버에서 분해.
+
+    인자: filename(확장자 포함), data_base64(파일 바이트의 base64), mime_type(선택,
+    미지정 시 서버가 확장자로 추정). 반환: `{ id(=file_id), filename, mime_type, size, ... }`.
+    예) 이미지 위젯: extra_blocks=[{"id":"img","type":"image","props":{"max_count":1},
+        "content":{"files":[{"file_id":"<반환된 id>"}]}}]"""
+    try:
+        raw = base64.b64decode(data_base64, validate=True)
+    except (binascii.Error, ValueError):
+        return {"error": "data_base64 가 올바른 base64 가 아닙니다."}
+    if not raw:
+        return {"error": "빈 파일입니다."}
+    if len(raw) > _UPLOAD_BASE64_MAX_BYTES:
+        return {
+            "error": (
+                f"파일이 너무 큽니다({len(raw) // 1024}KB). base64 업로드는 "
+                f"{_UPLOAD_BASE64_MAX_BYTES // 1024}KB 이하만 됩니다 — 큰 파일은 "
+                "upload_from_url(웹 URL) 을 쓰거나, PPT 면 먼저 올린 뒤 "
+                "extract_pptx_images 로 분해하세요."
+            )
+        }
+    import mimetypes as _mt
+
+    mime = mime_type or _mt.guess_type(filename)[0] or "application/octet-stream"
+    return await _post_multipart(
+        ctx, "/api/files", filename=filename, content=raw, mime_type=mime
+    )
+
+
+@mcp.tool()
+async def extract_pptx_images(ctx: Context, file_id: str) -> dict:
+    """이미 올린 **.pptx** 에서 슬라이드 속 그림들을 **각각 별도 이미지로 추출**해
+    새 file_id 목록을 돌려준다. PPT 한 장을 통째 올린 뒤(예: `upload_from_url` 로
+    웹의 pptx 를 받거나, 사용자가 올려둔 pptx 의 file_id) 그 안의 그림을 image
+    위젯으로 붙일 때 쓴다. 서버가 zip 으로 풀어 처리하므로 바이트가 모델을 안 거친다.
+
+    인자: file_id(올려둔 .pptx 의 id). 반환: `{ source_file_id, images:[{id,filename,
+    mime_type,size,...}], extracted, skipped_oversize, skipped_over_limit }`.
+    images 의 각 id 를 image 위젯 files 에 차례로 넣으면 된다."""
+    return await _post(ctx, f"/api/files/{file_id}/extract-images", {})
+
+
+@mcp.tool()
+async def prepare_upload(ctx: Context, local_path: str | None = None) -> dict:
+    """**로컬 파일을 셸에서 직접 업로드**할 준비물(업로드 URL + 단기 티켓)을 발급한다.
+    Claude Code 처럼 셸(Bash)을 쓰는 CLI 에서 **PC 의 큰 파일·PPT** 를 올릴 때 쓴다 —
+    base64 와 달리 **바이트가 모델을 안 거치므로** 크기 제약이 사실상 없다.
+
+    흐름:
+      1) 이 도구를 호출 → `{upload_url, ticket, curl, ...}` 를 받는다.
+      2) 반환된 `curl` 명령(또는 아래 형식)을 **셸에서 실행**해 파일을 올린다:
+         `curl -X POST '<upload_url>?filename=<파일명>' -H 'X-Upload-Ticket:<ticket>' --data-binary @<로컬경로>`
+         → 성공 시 `{ id(=file_id), ... }` 가 출력된다.
+      3) 그 file_id 를 image/attachment 위젯에 넣거나, .pptx 면 `extract_pptx_images`
+         로 슬라이드 그림들을 분해한다.
+
+    `local_path` 를 주면 그 경로를 채운 **바로 실행 가능한** curl 을 만들어 준다.
+    티켓은 약 5분 후 만료된다(만료되면 다시 호출). 작은 이미지 한 장이면 이 절차
+    없이 `upload_file`(base64)로 더 간단히 올릴 수도 있다."""
+    res = await _post(ctx, "/api/files/upload-ticket", {})
+    if isinstance(res, dict) and res.get("error"):
+        return res
+    ticket = res.get("ticket")
+    base = _public_base(ctx)
+    upload_url = f"{base}{_UPLOAD_ROUTE}"
+    if local_path:
+        from pathlib import PurePath
+
+        fn = PurePath(local_path).name or "upload.bin"
+        curl = (
+            f"curl -sS -X POST '{upload_url}?filename={fn}' "
+            f"-H 'X-Upload-Ticket: {ticket}' --data-binary @{local_path}"
+        )
+    else:
+        curl = (
+            f"curl -sS -X POST '{upload_url}?filename=<파일명>' "
+            f"-H 'X-Upload-Ticket: {ticket}' --data-binary @<로컬경로>"
+        )
+    return {
+        "upload_url": upload_url,
+        "ticket": ticket,
+        "expires_in_seconds": res.get("expires_in_seconds", 300),
+        "curl": curl,
+        "next": "위 curl 을 실행해 받은 file_id 를 위젯에 넣거나, .pptx 면 extract_pptx_images 에 전달.",
+    }
 
 
 @mcp.tool()
@@ -303,6 +445,62 @@ async def update_report_draft(
     if entity_ids is not None:
         body["entity_ids"] = entity_ids
     return await _patch(ctx, f"/api/reports/{report_id}/ai-draft", body)
+
+
+# 아웃오브밴드 업로드 프록시 — CLI 가 curl 로 보낸 바이트를 메모리에서 한 번에
+# 들고 백엔드로 넘기므로(스트리밍 아님) 메모리 보호용 상한을 둔다. PPT·이미지엔
+# 충분하고, 더 큰 파일(영상 등)은 웹 UI 로 유도한다.
+_PROXY_MAX_BYTES = 100 * 1024 * 1024  # 100 MB
+
+
+@mcp.custom_route(_UPLOAD_ROUTE, methods=["POST"])
+async def _files_upload(request):
+    """클라이언트(CLI 셸)가 로컬 파일을 raw 바디로 올리는 무인증 라우트 — 인증은
+    헤더의 단기 **업로드 티켓**으로만 한다(prepare_upload 가 발급). 받은 바이트를
+    백엔드 /api/files/upload-with-ticket 로 멀티파트로 넘기고 결과(file_id)를 그대로
+    돌려준다. 바이트가 MCP 프로토콜/모델을 거치지 않는다."""
+    from starlette.responses import JSONResponse
+
+    ticket = request.headers.get("x-upload-ticket")
+    if not ticket:
+        return JSONResponse(
+            {"error": "X-Upload-Ticket 헤더가 필요합니다(prepare_upload 로 발급)."},
+            status_code=401,
+        )
+    filename = request.query_params.get("filename") or "upload.bin"
+    clen = request.headers.get("content-length")
+    if clen and clen.isdigit() and int(clen) > _PROXY_MAX_BYTES:
+        return JSONResponse(
+            {"error": f"파일이 너무 큽니다(최대 {_PROXY_MAX_BYTES // (1024 * 1024)}MB). 웹 UI 를 쓰세요."},
+            status_code=413,
+        )
+    body = await request.body()
+    if not body:
+        return JSONResponse(
+            {"error": "빈 본문입니다. --data-binary @<파일> 로 보내세요."},
+            status_code=400,
+        )
+    if len(body) > _PROXY_MAX_BYTES:
+        return JSONResponse({"error": "파일이 너무 큽니다."}, status_code=413)
+
+    import mimetypes as _mt
+
+    mime = _mt.guess_type(filename)[0] or "application/octet-stream"
+    async with httpx.AsyncClient(base_url=API_BASE, timeout=300) as client:
+        r = await client.post(
+            "/api/files/upload-with-ticket",
+            files={"file": (filename, body, mime)},
+            data={"ticket": ticket},
+        )
+    try:
+        payload = r.json()
+    except Exception:
+        return JSONResponse(
+            {"error": f"백엔드 응답 오류 HTTP {r.status_code}"}, status_code=502
+        )
+    # 백엔드 표준 envelope({success,data,message})에서 data 만 꺼내 평평하게 돌려준다.
+    out = payload.get("data", payload) if isinstance(payload, dict) else payload
+    return JSONResponse(out, status_code=r.status_code)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 """Authentication primitives — password hashing + JWT issue/verify."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import jwt
@@ -54,6 +54,52 @@ def decode_access_token(token: str) -> dict:
     if payload.get("type") != "access":
         raise jwt.InvalidTokenError("not an access token")
     return payload
+
+
+# --------------------------------------------------------------------------- #
+# Upload ticket — short-lived, single-purpose JWT for out-of-band file upload
+# --------------------------------------------------------------------------- #
+# A CLI agent (Claude Code) uploads a local file by curl-ing the MCP server's
+# /files/upload route directly (bytes never pass through the model). That curl
+# can't carry the user's PAT, so an MCP tool mints this ticket through the
+# normal authenticated path and hands it to the agent. The backend upload
+# route trusts the ticket's signed claims (user + workspace) instead of
+# re-authenticating. Kept deliberately short (default 5 min) and typed so it
+# can't be used as an access token.
+UPLOAD_TICKET_TTL_MINUTES = 5
+
+
+def create_upload_ticket(
+    user_id: int, workspace_slug: str, *, minutes: int = UPLOAD_TICKET_TTL_MINUTES
+) -> str:
+    now = datetime.now(tz=timezone.utc)
+    payload = {
+        "sub": str(user_id),
+        "ws": workspace_slug,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(minutes=minutes)).timestamp()),
+        "type": "upload",
+    }
+    return jwt.encode(payload, settings.jwt_secret_key, algorithm=JWT_ALGORITHM)
+
+
+def decode_upload_ticket(token: str) -> Optional[dict]:
+    """Returns `{user_id, workspace_slug}` for a valid upload ticket, else
+    None (expired / bad signature / wrong type / malformed)."""
+    try:
+        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[JWT_ALGORITHM])
+    except jwt.PyJWTError:
+        return None
+    if payload.get("type") != "upload":
+        return None
+    sub = payload.get("sub")
+    ws = payload.get("ws")
+    if sub is None or not ws:
+        return None
+    try:
+        return {"user_id": int(sub), "workspace_slug": str(ws)}
+    except (TypeError, ValueError):
+        return None
 
 
 # --------------------------------------------------------------------------- #

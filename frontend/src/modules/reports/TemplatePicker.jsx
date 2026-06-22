@@ -7,24 +7,36 @@ import { Badge } from '@/shared/components/ui/badge'
 import { EmptyState } from '@/shared/components/EmptyState'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { Skeleton } from '@/shared/components/ui/skeleton'
+import {
+  ScopeCategorySidebar,
+  useScopeCategories,
+} from '@/shared/components/ScopeCategories'
 import { useAsync } from '@/shared/hooks/useAsync'
+import { useAuth } from '@/shared/auth/AuthContext'
+import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { listTemplates } from '@/shared/api/templates'
 import { listTemplateCategories } from '@/shared/api/templateCategories'
 import { cn } from '@/shared/lib/utils'
 
-const ALL = '_all'
-
 /**
- * Reusable template picker (category list + search + cards). Drives both
+ * Reusable template picker (scope list + search + cards). Drives both
  * the new-report flow (full-page) and the "+ 페이지 추가" modal in the
  * report detail page.
+ *
+ * 좌측은 "어디 템플릿인지"(전체/개인/전사/조직별) — 템플릿 관리 화면과 같은
+ * 공용 훅(useScopeCategories)으로 분류한다. 범위를 먼저 고르고, 그 안에서
+ * (문제 분류 섹션으로 묶인) 템플릿을 고른다.
  *
  * Caller controls layout via `compact` (modal vs page) and gets a callback
  * when a template is chosen.
  */
 export function TemplatePicker({ onPick, compact = false, reloadKey, presetCounts }) {
   const [query, setQuery] = useState('')
-  const [activeCategory, setActiveCategory] = useState(ALL)
+  const { me } = useAuth()
+  const { all: workspaces } = useWorkspace()
+  const workspaceName = (s) =>
+    (workspaces ?? []).find((w) => w.slug === s)?.name ?? s
+
   const { data: templates, loading, error, reload } = useAsync(
     () => listTemplates(),
     [reloadKey]
@@ -35,31 +47,42 @@ export function TemplatePicker({ onPick, compact = false, reloadKey, presetCount
   const trimmed = query.trim().toLowerCase()
   const searching = trimmed.length > 0
 
+  // "어디 템플릿인지"(전체/개인/전사/조직별) 분류 — 템플릿 관리와 동일한 공용 훅.
+  const scope = useScopeCategories(list, {
+    currentUserId: me?.user?.id,
+    getName: workspaceName,
+  })
+
+  // 선택한 범위로 먼저 거른 뒤, 그 안에서만 문제 분류(카테고리)로 묶는다.
+  const scoped = useMemo(
+    () => list.filter(scope.filter),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [list, scope.cat]
+  )
+
   const grouped = useMemo(() => {
     const cats = categories ?? []
     const map = new Map(cats.map((c) => [c.slug, { ...c, templates: [] }]))
     if (!map.has('misc')) {
       map.set('misc', { slug: 'misc', name: '기타', templates: [] })
     }
-    for (const t of list) {
+    for (const t of scoped) {
       const bucket = map.get(t.category) ?? map.get('misc')
       bucket.templates.push(t)
     }
     return Array.from(map.values()).filter((g) => g.templates.length > 0)
-  }, [list, categories])
+  }, [scoped, categories])
 
+  // 검색은 선택한 범위 안에서만 한다(좌측 분류를 좁혀둔 의도를 존중).
   const searchHits = useMemo(() => {
     if (!searching) return null
-    return list.filter(
+    return scoped.filter(
       (t) =>
         t.name.toLowerCase().includes(trimmed) ||
         (t.description || '').toLowerCase().includes(trimmed) ||
         t.template_id.toLowerCase().includes(trimmed)
     )
-  }, [list, trimmed, searching])
-
-  const visibleGroups =
-    activeCategory === ALL ? grouped : grouped.filter((g) => g.slug === activeCategory)
+  }, [scoped, trimmed, searching])
 
   if (error) {
     return <ErrorState description={error.message} onRetry={reload} />
@@ -71,35 +94,15 @@ export function TemplatePicker({ onPick, compact = false, reloadKey, presetCount
 
   return (
     <div className="flex gap-6 min-h-0">
-      <aside className="w-44 shrink-0">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 px-2">
-          카테고리
-        </div>
-        <ul className="space-y-1">
-          <li>
-            <CategoryButton
-              active={activeCategory === ALL}
-              onClick={() => setActiveCategory(ALL)}
-            >
-              전체
-              <span className="ml-auto text-xs text-muted-foreground">{list.length}</span>
-            </CategoryButton>
-          </li>
-          {grouped.map((g) => (
-            <li key={g.slug}>
-              <CategoryButton
-                active={activeCategory === g.slug}
-                onClick={() => setActiveCategory(g.slug)}
-              >
-                {g.name}
-                <span className="ml-auto text-xs text-muted-foreground">
-                  {g.templates.length}
-                </span>
-              </CategoryButton>
-            </li>
-          ))}
-        </ul>
-      </aside>
+      <ScopeCategorySidebar
+        counts={scope.counts}
+        orgGroups={scope.orgGroups}
+        cat={scope.cat}
+        onChange={scope.setCat}
+        mineLabel="개인 (내 템플릿)"
+        emptyOrgText="조직 템플릿이 없습니다."
+        className="w-44 shrink-0 self-start border-r pr-2"
+      />
 
       <div className="flex-1 min-w-0 space-y-6">
         <div className="relative max-w-md">
@@ -124,22 +127,24 @@ export function TemplatePicker({ onPick, compact = false, reloadKey, presetCount
             onPick={onPick}
             gridCols={gridCols}
             presetCounts={presetCounts}
+            workspaceName={workspaceName}
           />
         ) : (
           <div className="space-y-8">
-            {visibleGroups.length === 0 ? (
+            {grouped.length === 0 ? (
               <EmptyState
-                title="이 부서에서 사용 가능한 템플릿이 없습니다"
-                description="관리자가 새 템플릿을 만들거나, 글로벌 템플릿이 추가되면 여기에 표시됩니다."
+                title="이 범위에서 사용 가능한 템플릿이 없습니다"
+                description="좌측에서 다른 범위(전체·전사·조직별)를 선택하거나, 관리자가 템플릿을 추가하면 여기에 표시됩니다."
               />
             ) : (
-              visibleGroups.map((g) => (
+              grouped.map((g) => (
                 <CategorySection
                   key={g.slug}
                   group={g}
                   onPick={onPick}
                   gridCols={gridCols}
                   presetCounts={presetCounts}
+                  workspaceName={workspaceName}
                 />
               ))
             )}
@@ -150,24 +155,7 @@ export function TemplatePicker({ onPick, compact = false, reloadKey, presetCount
   )
 }
 
-function CategoryButton({ active, onClick, children }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors',
-        active
-          ? 'bg-primary/10 text-primary font-medium'
-          : 'text-foreground/80 hover:bg-muted hover:text-foreground'
-      )}
-    >
-      {children}
-    </button>
-  )
-}
-
-function CategorySection({ group, onPick, gridCols, presetCounts }) {
+function CategorySection({ group, onPick, gridCols, presetCounts, workspaceName }) {
   return (
     <section>
       <div className="flex items-center gap-2 mb-3">
@@ -183,6 +171,7 @@ function CategorySection({ group, onPick, gridCols, presetCounts }) {
             template={t}
             onPick={onPick}
             presetCount={presetCounts?.[t.template_id] ?? 0}
+            workspaceName={workspaceName}
           />
         ))}
       </div>
@@ -190,13 +179,13 @@ function CategorySection({ group, onPick, gridCols, presetCounts }) {
   )
 }
 
-function SearchResults({ hits, onPick, gridCols, presetCounts }) {
+function SearchResults({ hits, onPick, gridCols, presetCounts, workspaceName }) {
   if (!hits || hits.length === 0) {
     return (
       <EmptyState
         icon={Search}
         title="일치하는 템플릿이 없습니다"
-        description="검색어를 다르게 시도하거나 좌측 카테고리에서 둘러보세요."
+        description="검색어를 다르게 시도하거나 좌측 범위에서 둘러보세요."
       />
     )
   }
@@ -210,6 +199,7 @@ function SearchResults({ hits, onPick, gridCols, presetCounts }) {
             template={t}
             onPick={onPick}
             presetCount={presetCounts?.[t.template_id] ?? 0}
+            workspaceName={workspaceName}
           />
         ))}
       </div>
@@ -217,10 +207,16 @@ function SearchResults({ hits, onPick, gridCols, presetCounts }) {
   )
 }
 
-function TemplateCard({ template, onPick, presetCount = 0 }) {
+function TemplateCard({ template, onPick, presetCount = 0, workspaceName }) {
   const sectionTitles = Object.values(template.schema?.properties ?? {})
     .map((p) => p?.title)
     .filter(Boolean)
+
+  // 범위 배지 — 빈 owner_workspace_slugs = 전사, 아니면 소속 조직(들).
+  const orgSlugs = Array.isArray(template.owner_workspace_slugs)
+    ? template.owner_workspace_slugs
+    : []
+  const isGlobal = orgSlugs.length === 0
 
   return (
     <Card className="flex flex-col">
@@ -237,15 +233,21 @@ function TemplateCard({ template, onPick, presetCount = 0 }) {
         <CardDescription className="line-clamp-2">{template.description}</CardDescription>
       </CardHeader>
       <CardContent className="flex-1 flex flex-col">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
-          섹션 {sectionTitles.length}개
-          {template.owner_workspace_slug == null && (
-            <Badge variant="secondary" className="ml-2 text-[9px]">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1 flex flex-wrap items-center gap-1">
+          <span>섹션 {sectionTitles.length}개</span>
+          {isGlobal ? (
+            <Badge variant="secondary" className="text-[9px]">
               전사
             </Badge>
+          ) : (
+            orgSlugs.map((s) => (
+              <Badge key={s} variant="secondary" className="text-[9px]">
+                {workspaceName ? workspaceName(s) : s}
+              </Badge>
+            ))
           )}
           {presetCount > 0 && (
-            <Badge className="ml-2 text-[9px]">
+            <Badge className="text-[9px]">
               <Sparkles className="mr-0.5 h-2.5 w-2.5" />
               프리셋 {presetCount}개
             </Badge>

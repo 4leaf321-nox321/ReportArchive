@@ -1111,6 +1111,66 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
         }
         return
       }
+      // Ctrl/Cmd+Shift+Home / End: extend the selection from the current caret
+      // to the very start / end of the WHOLE outline. Native handling only
+      // reaches the focused row's TipTap editor, so it stops at that single
+      // paragraph. Same takeover dance as Ctrl+A — suspend per-row editability
+      // and drive the cross-editor DOM range ourselves. Single-row (caret
+      // already in the boundary row) is left to native, which covers it.
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        e.shiftKey &&
+        !e.altKey &&
+        (e.key === 'Home' || e.key === 'End')
+      ) {
+        const active = document.activeElement
+        if (!active || !container.contains(active)) return
+        const activeRow = elementOf(active)?.closest?.('[data-row-index]')
+        if (!activeRow) return
+        const rowEls = Array.from(container.querySelectorAll('[data-row-index]'))
+        if (rowEls.length < 2) return
+        rowEls.sort(
+          (a, b) =>
+            Number(a.getAttribute('data-row-index')) -
+            Number(b.getAttribute('data-row-index')),
+        )
+        const toEnd = e.key === 'End'
+        const targetRowEl = toEnd ? rowEls[rowEls.length - 1] : rowEls[0]
+        const curIdx = Number(activeRow.getAttribute('data-row-index'))
+        const targetIdx = Number(targetRowEl.getAttribute('data-row-index'))
+        // Caret already in the boundary row → native Ctrl+Shift+Home/End
+        // selects within that paragraph, which is what we'd want anyway.
+        if (curIdx === targetIdx) return
+        // Anchor stays at the current selection's fixed end (the caret for a
+        // collapsed selection); the focus jumps to the outline boundary.
+        const sel = typeof window !== 'undefined' ? window.getSelection() : null
+        if (!sel || sel.rangeCount === 0 || !sel.anchorNode) return
+        const anchorNode = sel.anchorNode
+        const anchorOffset = sel.anchorOffset
+        if (!container.contains(elementOf(anchorNode))) return
+        const target = toEnd
+          ? lastSelectableInside(targetRowEl)
+          : firstSelectableInside(targetRowEl)
+        if (!target) return
+        e.preventDefault()
+        e.stopPropagation()
+        if (!tookOverRef.current) {
+          tookOverRef.current = true
+          setRowsEditable(false)
+        }
+        try {
+          const targetOffset = toEnd
+            ? target.nodeType === 3
+              ? target.nodeValue.length
+              : target.childNodes.length
+            : 0
+          sel.setBaseAndExtent(anchorNode, anchorOffset, target, targetOffset)
+        } catch (_err) {
+          return
+        }
+        captureCrossRowSelection()
+        return
+      }
       if (!((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A'))) return
       if (e.shiftKey || e.altKey) return
       const active = document.activeElement

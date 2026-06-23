@@ -201,7 +201,8 @@ export default function ReportDetailPage() {
   const { reportId, templateId, version } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
-  const { slug, workspace, all: workspaces } = useWorkspace()
+  const { slug, workspace, all: workspaces, getDescendantsInclusive } =
+    useWorkspace()
   const { me } = useAuth()
   const currentUserId = me?.user?.id ?? null
   // 새 위젯 "제목 생략" 기본값 기억(위젯 type별 user preference).
@@ -505,6 +506,26 @@ export default function ReportDetailPage() {
       cancelled = true
     }
   }, [isNew, existingReport?.id])
+
+  // 게시 버튼 노출 조건 — 백엔드 `_ensure_can_mount` 와 동일하게:
+  //   1) 작성자 본인, 또는
+  //   2) 이 보고서가 게시된 게시판 중 하나라도 내가 매니저(조상 상속 포함).
+  // 매니저 멤버십은 그 게시판 + 하위 전부에 적용되므로, 내 manager 멤버십의
+  // descendants-inclusive 집합에 mount 된 게시판이 들어 있으면 매니저다.
+  const canMount = useMemo(() => {
+    if (isNew || !existingReport) return false
+    if (existingReport.owner_user_id === me?.user?.id) return true
+    const managerReach = new Set()
+    for (const m of me?.memberships ?? []) {
+      if (m.role !== 'manager') continue
+      const s = m.workspace_slug
+      if (!s || s.startsWith('personal-')) continue
+      for (const d of getDescendantsInclusive(s)) managerReach.add(d)
+    }
+    return Object.keys(mountByWorkspace).some((wsSlug) =>
+      managerReach.has(wsSlug),
+    )
+  }, [isNew, existingReport, me, mountByWorkspace, getDescendantsInclusive])
 
   const loading = isNew ? tplLoading : rptLoading
   const error = isNew ? tplError : rptError
@@ -4057,7 +4078,7 @@ export default function ReportDetailPage() {
                   게시 → 발행 → 제출 → 공유 → 더보기. 보고서가 다른 이해
                   관계자에게 어떻게 노출되는지를 다루는 묶음. 저빈도 액션
                   (폴더 이동·활동·수정 잠금)은 "더보기"로 접었다. */}
-              {!isNew && existingReport?.owner_user_id === me?.user?.id && (
+              {!isNew && canMount && (
                 <Button
                   variant="outline"
                   size="sm"

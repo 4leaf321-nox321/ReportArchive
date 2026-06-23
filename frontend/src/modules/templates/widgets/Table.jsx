@@ -546,7 +546,9 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                           key={i}
                           className="px-2 py-1.5 text-center font-medium text-xs text-muted-foreground border-b"
                         >
-                          {c.label || c.key}
+                          {/* 작성자가 헤더를 비우면 빈 칸 그대로 — 예전엔 열 key
+                              (col_2 등)로 폴백해 placeholder 가 본문처럼 보였다. */}
+                          {c.label || ''}
                         </th>
                       ))}
                     </tr>
@@ -1900,7 +1902,6 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                             e.preventDefault()
                             pasteOntoHeader(i, text)
                           }}
-                          placeholder={c.key}
                           className="bg-transparent border-0 outline-none focus:ring-1 focus:ring-ring rounded px-1 py-0.5 text-xs text-center flex-1 min-w-0"
                         />
                         {c.required && <span className="text-destructive">*</span>}

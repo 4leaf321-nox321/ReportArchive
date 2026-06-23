@@ -336,6 +336,20 @@ _FIELD_ITEM_PROPS_SCHEMA = {
 }
 
 
+# Report-side variant of the field-item schema. Identical to the props one
+# except the `label` may be empty: a report writer can blank out a column
+# header (표 위젯) and still save. The template designer's props schema keeps
+# `minLength: 1` so freshly-authored templates still get a named column, but
+# once the writer overrides columns per-report an empty header is legal.
+_FIELD_ITEM_CONTENT_SCHEMA = {
+    **_FIELD_ITEM_PROPS_SCHEMA,
+    "properties": {
+        **_FIELD_ITEM_PROPS_SCHEMA["properties"],
+        "label": {"type": "string", "maxLength": 200},
+    },
+}
+
+
 # --------------------------------------------------------------------------- #
 # Widget descriptor type
 # --------------------------------------------------------------------------- #
@@ -636,10 +650,11 @@ def _table_content(props: dict) -> dict:
             "note_color": _COLOR_TOKEN_FIELD,
             "note_html": _NOTE_HTML_FIELD,
             # Per-report column overrides. When absent, the renderer falls
-            # back to props.columns (the template-defined defaults).
+            # back to props.columns (the template-defined defaults). Uses the
+            # content variant so a blanked-out column header still saves.
             "columns": {
                 "type": "array",
-                "items": _FIELD_ITEM_PROPS_SCHEMA,
+                "items": _FIELD_ITEM_CONTENT_SCHEMA,
             },
             "rows": rows_schema,
             # 셀 병합 사각형 — 0-기반 행/열 좌표와 rs/cs 스팬. 비어있으면

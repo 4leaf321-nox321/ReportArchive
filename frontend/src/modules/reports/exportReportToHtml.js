@@ -25,7 +25,7 @@
 
 import { apiClient } from '@/shared/api/client'
 
-export async function exportReportToHtml({ draft, onProgress, signal }) {
+export async function exportReportToHtml({ draft, onProgress, signal, staticDoc = false }) {
   // Progress reporter — caller-supplied (ReportDetailPage) drives the
   // ExportOverlay spinner / phase label / page-capture bar. We pass
   // `noop` when unset so call sites don`t need to guard each emit.
@@ -51,7 +51,10 @@ export async function exportReportToHtml({ draft, onProgress, signal }) {
   // canvases. Containers are tagged with `data-plotly-export-idx` so
   // the clone consumer can find each twin.
   report({ phase: 'snapshot', label: '차트 / 캔버스 스냅샷 중...' })
-  const plotlySpecs = snapshotPlotlyCharts(sourceRoot)
+  // 정적 문서 모드에선 인터랙티브 Plotly 재렌더 경로를 쓰지 않는다 — 2D 차트는
+  // 클론에 렌더된 SVG 가 그대로 남고, 3D/WebGL 은 아래 canvas 스냅샷이 PNG 로
+  // 박는다. 그래서 스펙 수집(=재렌더용)을 건너뛴다.
+  const plotlySpecs = staticDoc ? [] : snapshotPlotlyCharts(sourceRoot)
 
   // Snapshot every live <canvas> as a PNG dataURL BEFORE cloning —
   // cloneNode does not preserve canvas pixel buffers (the cloned canvas
@@ -69,7 +72,11 @@ export async function exportReportToHtml({ draft, onProgress, signal }) {
   // capture (plotly WebGL contexts contend in parallel) takes ~300ms
   // per page; for typical 5–20 page reports total is well under the
   // export latency users already accept.
-  const pageThumbnails = await capturePageThumbnails(sourceRoot, report, signal)
+  // 페이지 썸네일은 인터랙티브 뷰어의 "펼치기" 브라우즈 패널 전용이다. 정적
+  // 문서 모드엔 그 패널이 없으므로 캡처를 생략(시간 절약).
+  const pageThumbnails = staticDoc
+    ? []
+    : await capturePageThumbnails(sourceRoot, report, signal)
   throwIfAborted()
 
   // Measure each live RGL grid's rendered width BEFORE cloning. RGL does
@@ -106,8 +113,10 @@ export async function exportReportToHtml({ draft, onProgress, signal }) {
   // reanimate the chart. This OVERWRITES any canvas-img fallback that
   // replaceClonedCanvases just inserted inside Plotly containers —
   // intentionally, since we want the live re-render.
-  prepareClonedPlotlyPlaceholders(clone, plotlySpecs)
-  const hasPlotly = plotlySpecs.some((s) => s != null)
+  // 정적 모드는 차트를 비우지 않는다 — 비우면(JS 재렌더 전제) 스크립트 없는
+  // 파일에서 영영 빈 박스가 된다. 클론에 남은 렌더 결과(SVG/PNG)를 그대로 둔다.
+  if (!staticDoc) prepareClonedPlotlyPlaceholders(clone, plotlySpecs)
+  const hasPlotly = !staticDoc && plotlySpecs.some((s) => s != null)
 
   // Pin each cloned grid to its live-measured width and center it. The
   // grid items are position:absolute (no intrinsic width), so without a
@@ -179,7 +188,9 @@ export async function exportReportToHtml({ draft, onProgress, signal }) {
   // up from the offscreen surface.
   removeReactBrowsePanel(clone)
   // Replace it with the static panel that the viewer JS can drive.
-  injectStaticBrowsePanel(clone, draft, pageThumbnails)
+  // 정적 문서 모드엔 뷰어 JS 가 없으므로 패널을 주입하지 않는다(아래에서
+  // 페이지 칩 스트립도 통째로 제거).
+  if (!staticDoc) injectStaticBrowsePanel(clone, draft, pageThumbnails)
   // ProseMirror leaves `contenteditable=""` everywhere; harmless for a
   // static viewer but distracting if the file is ever inspected, so
   // strip those + a couple of common a11y artefacts.
@@ -200,6 +211,67 @@ export async function exportReportToHtml({ draft, onProgress, signal }) {
   throwIfAborted()
   await inlineImages(clone)
   throwIfAborted()
+
+  // ─── 정적 문서 모드 ───────────────────────────────────────────────
+  // 스크립트가 전혀 없는 단일 HTML: 페이지를 위→아래로 그대로 쌓고, 차트는
+  // 클론에 남은 렌더 결과(2D=SVG, 3D=PNG)를 그대로 보여준다. 모바일 메일
+  // 첨부처럼 인라인 JS 가 실행되지 않는 환경에서도 그냥 문서로 열린다.
+  if (staticDoc) {
+    // 페이지 칩 스트립(JS 내비) 은 스크립트 없이는 무의미 — 통째로 제거.
+    clone.querySelector('.report-detail-pagestrip')?.remove()
+
+    // 그리드(절대배치/transform)를 블록 흐름으로 풀어, CSS 를 적극 제거하는
+    // 메일 뷰어(Knox Portal 등)에서도 위젯이 겹치지 않게 한다.
+    linearizeGridsForStatic(clone)
+
+    report({ phase: 'css', label: '스타일 수집 중...' })
+    const cssStatic = await collectAllStylesheets()
+    throwIfAborted()
+
+    const staticWrap = buildStaticDoc({ clone, title, date })
+    const htmlClassAttrStatic = document.documentElement.className
+      ? ` class="${escapeAttr(document.documentElement.className)}"`
+      : ''
+    const colorSchemeStatic = document.documentElement.style.colorScheme || ''
+
+    const htmlStatic =
+      '<!DOCTYPE html>\n<html lang="ko"' +
+      htmlClassAttrStatic +
+      '>\n<head>\n' +
+      '<meta charset="utf-8">\n' +
+      '<meta name="viewport" content="width=device-width, initial-scale=1">\n' +
+      '<title>' +
+      escapeHtml(title) +
+      '</title>\n' +
+      (colorSchemeStatic
+        ? '<meta name="color-scheme" content="' +
+          escapeAttr(colorSchemeStatic) +
+          '">\n'
+        : '') +
+      '<style>\n' +
+      cssStatic +
+      '\n</style>\n' +
+      '<style data-source="report-html-static">\n' +
+      STATIC_OVERRIDES +
+      '\n</style>\n' +
+      '</head>\n' +
+      '<body style="margin:0;background:#f4f4f5;">\n' +
+      staticWrap.outerHTML +
+      '\n</body>\n</html>\n'
+
+    throwIfAborted()
+    report({ phase: 'finalize', label: '파일 생성 중...' })
+    const blobStatic = new Blob([htmlStatic], {
+      type: 'text/html;charset=utf-8',
+    })
+    const filenameStatic =
+      sanitizeFileName(title) +
+      '-' +
+      new Date().toISOString().slice(0, 10) +
+      '-static.html'
+    triggerDownload(blobStatic, filenameStatic)
+    return
+  }
 
   // Wrap the cloned report in the standalone viewer scaffold (toolbar +
   // slide nav). The title moves into the toolbar — no separate
@@ -903,6 +975,168 @@ function blobToDataUri(blob) {
     reader.readAsDataURL(blob)
   })
 }
+
+// --- Static grid linearization --------------------------------------- //
+//
+// 보고서 본문은 react-grid-layout 으로 각 위젯을 position:absolute +
+// transform:translate(x,y) 로 좌표 배치한다. 이 규칙들은 수집된 <style>
+// 블록(클래스 CSS)에 들어가는데, Knox Portal 같은 보안 메일 뷰어는 첨부
+// HTML 을 sanitize 하며 <style>/transform/position 을 떨궈버린다. 그러면 모든
+// 위젯이 좌상단으로 무너져 "겹쳐 보인다".
+//
+// 정적 모드에선 그리드를 일반 블록 흐름(읽기 순서대로 세로 1단)으로 풀어
+// 이 의존성을 끊는다 — 블록 요소는 스타일이 통째로 사라져도 문서 순서대로
+// 위→아래로 쌓이며 절대 겹치지 않는다. 좌표(transform translate / left·top)를
+// 읽어 읽기 순서로 DOM 을 재배열하고, 위치 관련 인라인 스타일을 중화한다.
+function linearizeGridsForStatic(rootClone) {
+  const grids = Array.from(rootClone.querySelectorAll('.react-grid-layout'))
+  grids.forEach((grid) => {
+    const items = Array.from(grid.children).filter((el) =>
+      el.classList?.contains('react-grid-item'),
+    )
+    if (items.length === 0) return
+    const positioned = items.map((el) => {
+      let x = 0
+      let y = 0
+      const m = /translate\(\s*(-?[\d.]+)px[\s,]+(-?[\d.]+)px/.exec(
+        el.style.transform || '',
+      )
+      if (m) {
+        x = parseFloat(m[1])
+        y = parseFloat(m[2])
+      } else {
+        x = parseFloat(el.style.left) || 0
+        y = parseFloat(el.style.top) || 0
+      }
+      return { el, x, y }
+    })
+    // 읽기 순서: 위→아래, 같은 행(24px 허용오차)이면 왼→오른.
+    positioned.sort((a, b) =>
+      Math.abs(a.y - b.y) > 24 ? a.y - b.y : a.x - b.x,
+    )
+    positioned.forEach(({ el }) => {
+      // 위치 의존(절대배치/변환) 제거 — 인라인이라 <style> 가 떨궈져도 유지.
+      el.style.position = 'static'
+      el.style.transform = 'none'
+      el.style.left = 'auto'
+      el.style.top = 'auto'
+      el.style.width = '100%'
+      el.style.maxWidth = '100%'
+      el.style.height = 'auto'
+      el.style.margin = '0 0 16px 0'
+      el.style.boxSizing = 'border-box'
+      grid.appendChild(el) // DOM 순서를 읽기 순서로 재배열
+    })
+    grid.style.position = 'static'
+    grid.style.height = 'auto'
+    grid.style.width = '100%'
+  })
+  // 이미지가 좁은 화면을 넘지 않도록 인라인으로 캡(스타일시트 제거 환경 대비).
+  rootClone.querySelectorAll('.react-grid-layout img').forEach((img) => {
+    img.style.maxWidth = '100%'
+    img.style.height = 'auto'
+  })
+}
+
+// --- Static document scaffold ---------------------------------------- //
+//
+// 정적(no-JS) 문서용 래퍼. 뷰어 쉘(.rv-shell, 툴바/슬라이드 내비)과 달리
+// 스크립트가 없으므로 페이지를 위→아래로 그대로 쌓고 제목 헤더만 올린다.
+// 모바일 메일 첨부처럼 인라인 JS 가 안 도는 환경에서도 평범한 문서로 열린다.
+function buildStaticDoc({ clone, title, date }) {
+  const wrap = document.createElement('div')
+  wrap.className = 'rv-static'
+  const header = document.createElement('header')
+  header.className = 'rv-static-header'
+  header.innerHTML =
+    '<h1>' +
+    escapeHtml(title) +
+    '</h1>' +
+    (date ? '<div class="rv-static-date">' + escapeHtml(date) + '</div>' : '')
+  wrap.appendChild(header)
+  wrap.appendChild(clone)
+  return wrap
+}
+
+// 정적 문서 전용 CSS 오버라이드. 앞부분은 인터랙티브 export 와 동일한 root
+// 평탄화(앱-쉘 flex / Radix ScrollArea 를 일반 블록 흐름으로 풀어 모든 페이지가
+// 보이게) 이고, 뒷부분은 .rv-static 래퍼 + 페이지 카드 중앙정렬뿐이다. rv-shell
+// /pagestrip 관련 규칙은 정적 모드엔 해당 요소가 없으므로 뺐다.
+const STATIC_OVERRIDES = [
+  '.report-detail-root {',
+  '  display: block !important;',
+  '  height: auto !important;',
+  '  min-height: 0 !important;',
+  '}',
+  '.report-detail-root > * {',
+  '  display: block !important;',
+  '  flex: none !important;',
+  '  height: auto !important;',
+  '  min-height: 0 !important;',
+  '  width: auto !important;',
+  '}',
+  '.report-detail-root [data-radix-scroll-area-viewport],',
+  '.report-detail-root [data-radix-scroll-area-root] {',
+  '  height: auto !important;',
+  '  max-height: none !important;',
+  '  overflow: visible !important;',
+  '  width: 100% !important;',
+  '}',
+  '.report-detail-root [data-radix-scroll-area-viewport] > * {',
+  '  display: block !important;',
+  '  min-width: 0 !important;',
+  '  width: 100% !important;',
+  '}',
+  '.report-detail-root .mx-auto {',
+  '  margin-left: 0 !important;',
+  '  margin-right: 0 !important;',
+  '}',
+  '.report-detail-root .max-w-5xl {',
+  '  max-width: none !important;',
+  '}',
+  // 정적 래퍼 — 가운데 정렬된 문서 폭 + 제목 헤더.
+  '.rv-static {',
+  '  max-width: 1100px;',
+  '  margin: 0 auto;',
+  '  padding: 24px 16px 64px;',
+  '  box-sizing: border-box;',
+  '}',
+  '.rv-static-header {',
+  '  padding: 4px 4px 16px;',
+  '  margin-bottom: 20px;',
+  '  border-bottom: 1px solid #e4e4e7;',
+  '}',
+  '.rv-static-header h1 {',
+  '  margin: 0;',
+  '  font-size: 20px;',
+  '  font-weight: 700;',
+  '  line-height: 1.3;',
+  '  color: #18181b;',
+  '}',
+  '.rv-static-date {',
+  '  margin-top: 4px;',
+  '  font-size: 12px;',
+  '  color: #71717a;',
+  '}',
+  // 페이지 카드 — 인터랙티브 "전체" 모드(.rv-shell[data-view="all"])의 카드
+  // 스타일을 .rv-static 로 옮겨온 것. 뷰어 CSS 가 없는 정적 모드에서도 흰
+  // 카드·테두리·그림자가 그대로 나오고, 그리드가 카드 안에서 중앙정렬된다.
+  '.rv-static .report-detail-page {',
+  '  box-sizing: content-box !important;',
+  '  margin: 0 auto 24px !important;',
+  '  padding: 24px 28px;',
+  '  background: #ffffff;',
+  '  border: 1px solid #e5e7eb;',
+  '  border-radius: 8px;',
+  '  box-shadow: 0 1px 3px rgba(0,0,0,0.03);',
+  '}',
+  // RGL 그리드는 고정 px 폭 + position:absolute 셀이라 기본은 좌측에 붙는다.
+  // auto 좌우 마진으로 카드 안에서 가운데로 — 내용 중앙정렬의 실제 레버.
+  '.rv-static .report-detail-page .react-grid-layout {',
+  '  margin-left: auto !important;',
+  '  margin-right: auto !important;',
+  '}',
+].join('\n')
 
 // --- Viewer scaffold ------------------------------------------------- //
 //

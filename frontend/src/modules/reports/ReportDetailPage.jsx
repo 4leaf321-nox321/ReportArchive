@@ -3238,7 +3238,7 @@ export default function ReportDetailPage() {
   // app shell stripped) into a single self-contained .html with
   // stylesheets inlined and images converted to base64 data URIs.
   // Keeps the on-screen visual layout exactly as the writer sees it.
-  async function handleExportHtml() {
+  async function handleExportHtml(staticDoc = false) {
     if (!draft) return
     // Belt + suspenders: cancel any leftover controller before starting
     // (shouldn`t happen — setPrinting blocks re-entry — but cheap.)
@@ -3274,8 +3274,13 @@ export default function ReportDetailPage() {
         draft,
         onProgress: setHtmlProgress,
         signal: controller.signal,
+        staticDoc,
       })
-      toast.success('HTML 파일로 저장했습니다.')
+      toast.success(
+        staticDoc
+          ? '정적 HTML 파일로 저장했습니다 (모바일·메일용).'
+          : 'HTML 파일로 저장했습니다.',
+      )
     } catch (err) {
       if (err?.name === 'AbortError') {
         toast.info('HTML 내보내기를 취소했습니다.')
@@ -3782,33 +3787,42 @@ export default function ReportDetailPage() {
           않도록 좌측 끝(앱 사이드바 옆)에 둔다. 닫혀 있으면 얇은 레일의 폴더
           버튼만, 열리면 세로 목록 패널. 폴더 컨텍스트 있고 편집중 아닐 때만,
           데스크톱 전용(앱 사이드바 접기와 동일 정책). */}
-      {!isEditing && siblingFolderId !== undefined &&
-        (folderPanelOpen ? (
-          <FolderReportsPanel
-            slug={slug}
-            folderId={siblingFolderId}
-            currentReportId={existingReport?.id}
-            onClose={() => setFolderPanelOpen(false)}
-          />
-        ) : (
-          <div className="hidden md:flex w-9 shrink-0 flex-col items-center border-r bg-card pt-2">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8"
-              onClick={() => setFolderPanelOpen(true)}
-              title="같은 폴더 보고서 목록"
-            >
-              <Folder className="h-4 w-4" />
-              <span className="sr-only">같은 폴더 보고서 목록</span>
-            </Button>
-          </div>
-        ))}
+      {!isEditing && siblingFolderId !== undefined && (
+        // HTML 저장(내보내기)엔 폴더 보조 사이드바를 포함하지 않는다 —
+        // display:contents 라 live flex 레이아웃엔 영향이 없고, export 의
+        // strip 단계가 data-export-exclude 를 통째로 제거한다.
+        <div data-export-exclude style={{ display: 'contents' }}>
+          {folderPanelOpen ? (
+            <FolderReportsPanel
+              slug={slug}
+              folderId={siblingFolderId}
+              currentReportId={existingReport?.id}
+              onClose={() => setFolderPanelOpen(false)}
+            />
+          ) : (
+            <div className="hidden md:flex w-9 shrink-0 flex-col items-center border-r bg-card pt-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => setFolderPanelOpen(true)}
+                title="같은 폴더 보고서 목록"
+              >
+                <Folder className="h-4 w-4" />
+                <span className="sr-only">같은 폴더 보고서 목록</span>
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
       <div className="relative flex-1 min-w-0 flex flex-col">
         {/* 열린 보고서 탭 스트립 — 편집 컬럼 위에만 깐다(폴더 사이드바는 덮지
             않음). 좌측 사이드바와 폴더 사이드바가 같은 높이로 맞도록 탭바를
-            패널 전체가 아니라 이 컬럼 안에 둔다. 탭이 없으면 렌더 안 됨. */}
-        <ReportTabBar pane="left" placement="pane" />
+            패널 전체가 아니라 이 컬럼 안에 둔다. 탭이 없으면 렌더 안 됨.
+            HTML 저장엔 탭 정보를 포함하지 않는다(data-export-exclude). */}
+        <div data-export-exclude style={{ display: 'contents' }}>
+          <ReportTabBar pane="left" placement="pane" />
+        </div>
         {/* 휴지통 배너 — 소프트삭제된 보고서를 열었을 때(개인 목록엔 숨지만
             게시판엔 남아 직접 열람 가능). 소유자/시스템관리자는 여기서 복구. */}
         {existingReport?.deleted_at && (
@@ -4215,9 +4229,13 @@ export default function ReportDetailPage() {
                 <Presentation className="mr-2 h-3.5 w-3.5" />
                 PPT로 저장
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={handleExportHtml}>
+              <DropdownMenuItem onSelect={() => handleExportHtml(false)}>
                 <FileCode className="mr-2 h-3.5 w-3.5" />
-                HTML로 저장
+                HTML로 저장 (인터랙티브)
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => handleExportHtml(true)}>
+                <FileCode className="mr-2 h-3.5 w-3.5" />
+                정적 HTML로 저장 (모바일·메일)
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
                 <Upload className="mr-2 h-3.5 w-3.5" />

@@ -1815,7 +1815,9 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                         style={{ fontSize: bodyFontPx }}
                         className="px-2 py-1.5 text-center font-medium text-muted-foreground border-b whitespace-pre-wrap break-words"
                       >
-                        {c.label || c.key}
+                        {/* CASE 라벨을 비우면 빈 칸 그대로 — key(case_1 등)로
+                            폴백하지 않는다. */}
+                        {c.label || ''}
                       </th>
                     ))}
                   </tr>
@@ -2292,7 +2294,6 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                           e.preventDefault()
                           pasteCaseLabels(ci, text)
                         }}
-                        placeholder={c.key}
                         style={{ fontSize: bodyFontPx }}
                         className="bg-transparent border-0 outline-none focus:ring-1 focus:ring-ring rounded px-1 py-0.5 text-center flex-1 min-w-0 font-semibold resize-none whitespace-pre-wrap break-words"
                       />

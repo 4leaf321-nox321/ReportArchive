@@ -104,6 +104,28 @@ class Settings(BaseSettings):
     # 임베딩 미배포(p47만 배포 등) 상태에서 실패 잡이 쌓인다.
     embedding_auto_on_save: bool = Field(default=False)
 
+    # --- AI / 생성 LLM (B300 보조 AI — B300_보조AI_설계.md) ---
+    # 생성 LLM 백엔드: "openai"(운영 — B300 OpenAI 호환 /v1/chat/completions) |
+    # "ollama"(로컬 /api/chat) | "mock"(개발/테스트 — 네트워크 없이 결정적 응답).
+    # 임베딩(embedding_*)과는 **별개 자원**(다른 포트·모델·프로세스). 기본 mock 이라
+    # .env 로 켜기 전까지 운영 무영향(embedding_backend 와 같은 안전 패턴).
+    llm_backend: str = Field(default="mock")
+    # openai 백엔드는 base_url 에 **/v1 까지 포함**(예: http://10.198.143.137:10000/v1).
+    # ollama 백엔드는 서버 루트(예: http://localhost:11434).
+    llm_base_url: str = Field(default="http://localhost:11434")
+    # 모델 태그/이름(.env 로 운영 설치본에 맞춤). B300 = GLM-5-2.
+    llm_model: str = Field(default="GLM-5-2")
+    # OpenAI 호환 서버가 인증을 요구하면 키 지정 → Authorization: Bearer. 비우면 헤더 없음.
+    llm_api_key: str = Field(default="")
+    # 생성 호출 타임아웃(초). reasoning 모델은 느릴 수 있어 임베딩보다 크게.
+    llm_timeout_s: float = Field(default=120.0)
+    llm_max_tokens: int = Field(default=1024)
+    # GLM reasoning 모델용 chat_template_kwargs.reasoning_effort 기본값(low|medium|high).
+    # 빈 값이면 전달하지 않음.
+    llm_reasoning_effort: str = Field(default="")
+    # 시스템 관리자는 엔티틀먼트(§E) 없이도 B300 기능 사용 가능(테스트·운영 편의). 기본 ON.
+    ai_admin_bypass: bool = Field(default=True)
+
     @property
     def is_development(self) -> bool:
         return self.app_env.lower() == "development"

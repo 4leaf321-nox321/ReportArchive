@@ -10,6 +10,7 @@ from fastapi import FastAPI
 
 from app.jobs.routes import router as jobs_router
 from app.modules.admin.routes import router as admin_router
+from app.modules.ai.routes import router as ai_router
 from app.modules.auth.routes import router as auth_router
 from app.modules.comments.routes import router as comments_router
 from app.modules.composites.routes import router as composites_router
@@ -101,6 +102,8 @@ def register_routers(app: FastAPI) -> None:
         tags=["section-taxonomy"],
     )
     app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
+    # B300 보조 AI — 연결 진단(M0). 이후 RAG Q&A·엔티틀먼트가 같은 prefix 로 붙는다.
+    app.include_router(ai_router, prefix="/api/ai", tags=["ai"])
     app.include_router(voc_router, prefix="/api/voc", tags=["voc"])
     # Phase 0 — empty routers registered now so Phase 1/2/3/4 can
     # add endpoints without touching this file. See each module's

@@ -8,6 +8,8 @@ import {
 import { PromptsTab } from './PromptsTab'
 import { McpTab } from './McpTab'
 import { SkillTab } from './SkillTab'
+import { DiagnosticsTab } from './DiagnosticsTab'
+import { useAuth } from '@/shared/auth/AuthContext'
 
 /**
  * "공통 → AI 설정" — system-wide page for managing AI-related catalogs
@@ -20,6 +22,8 @@ import { SkillTab } from './SkillTab'
  * shared across all workspaces (same scoping as 보고서 종류 / VOC).
  */
 export default function AiSettingsPage() {
+  const { me } = useAuth()
+  const isAdmin = Boolean(me?.is_system_admin)
   return (
     <div className="flex h-full flex-col gap-4 p-6">
       <div className="flex items-center gap-2">
@@ -38,9 +42,7 @@ export default function AiSettingsPage() {
           <TabsTrigger value="prompts">프롬프트</TabsTrigger>
           <TabsTrigger value="mcp">MCP 토큰</TabsTrigger>
           <TabsTrigger value="skill">스킬 생성</TabsTrigger>
-          <TabsTrigger value="api" disabled>
-            모델·API <span className="ml-1 text-[10px]">(준비 중)</span>
-          </TabsTrigger>
+          {isAdmin && <TabsTrigger value="diag">연결·진단</TabsTrigger>}
         </TabsList>
         <TabsContent value="prompts" className="flex-1 min-h-0 mt-4">
           <PromptsTab />
@@ -51,11 +53,11 @@ export default function AiSettingsPage() {
         <TabsContent value="skill" className="flex-1 min-h-0 mt-4 overflow-y-auto">
           <SkillTab />
         </TabsContent>
-        <TabsContent value="api" className="flex-1 mt-4">
-          <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
-            준비 중 — AI 모델/API 키 설정은 추후 활성화됩니다.
-          </div>
-        </TabsContent>
+        {isAdmin && (
+          <TabsContent value="diag" className="flex-1 min-h-0 mt-4 overflow-y-auto">
+            <DiagnosticsTab />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   )

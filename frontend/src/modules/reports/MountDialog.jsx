@@ -38,6 +38,7 @@ import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAuth } from '@/shared/auth/AuthContext'
 import {
   listMounts,
+  listGrantBoardSlugs,
   mountReport,
   unmountReport,
   setMountFolder,
@@ -84,6 +85,9 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
   const { me } = useAuth()
 
   const [mounts, setMounts] = React.useState([])
+  // 멤버는 아니지만 편집 권한이 열려 있어 게시할 수 있는 게시판 slug 들
+  // (board edit grant). 멤버십 기반 후보에 union 한다.
+  const [grantSlugs, setGrantSlugs] = React.useState([])
   const [pending, setPending] = React.useState({}) // slug → 'mounting' | 'unmounting'
   const [loading, setLoading] = React.useState(false)
   const [error, setError] = React.useState(null)
@@ -102,8 +106,10 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
       if (!slug || slug.startsWith('personal-')) continue
       for (const s of getDescendantsInclusive(slug)) set.add(s)
     }
+    // 멤버십 밖이라도 편집 권한이 개방된 게시판은 게시 후보에 포함.
+    for (const slug of grantSlugs) set.add(slug)
     return set
-  }, [me, getDescendantsInclusive])
+  }, [me, getDescendantsInclusive, grantSlugs])
 
   const eligible = React.useMemo(
     () =>
@@ -293,6 +299,27 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
       cancelled = true
     }
   }, [open, report?.id])
+
+  // 편집 권한이 개방된 게시판 후보(board edit grant). 사용자 단위라 report 와
+  // 무관하므로 다이얼로그가 열릴 때 한 번 불러온다. 실패해도 멤버십 기반
+  // 후보는 그대로 동작하므로 조용히 무시.
+  React.useEffect(() => {
+    if (!open) {
+      setGrantSlugs([])
+      return
+    }
+    let cancelled = false
+    listGrantBoardSlugs()
+      .then((slugs) => {
+        if (!cancelled) setGrantSlugs(slugs)
+      })
+      .catch(() => {
+        if (!cancelled) setGrantSlugs([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
 
   async function handlePolicyChange(workspaceSlug, nextPolicy) {
     // Optimistic local update; revert on failure.

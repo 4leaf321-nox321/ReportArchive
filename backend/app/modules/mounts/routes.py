@@ -95,6 +95,21 @@ def list_mounts(
     return success_response(data=payload.model_dump(mode="json"))
 
 
+@router.get("/grant-board-slugs")
+def list_grant_board_slugs(
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """게시 대화상자가 후보를 넓히는 데 쓰는 보조 목록 — 사용자가 멤버는
+    아니지만 **편집 권한(board edit grant)이 열려 있어** 게시할 수 있는 게시판
+    slug 들. 프론트는 이 집합을 멤버십 기반 후보에 합쳐(union) 표시한다.
+    멤버십 게시판은 프론트가 이미 알고 있으므로 여기엔 grant 경로만 담는다."""
+    from app.modules.grants import services as grant_services
+
+    slugs = sorted(grant_services.boards_edit_reachable_slugs(db, actor.user.id))
+    return success_response(data={"slugs": slugs})
+
+
 @router.post("")
 def create_mount(
     payload: MountCreate,

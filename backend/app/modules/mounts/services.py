@@ -127,10 +127,15 @@ def _ensure_target_is_org_workspace(
     mounting to personal/virtual is meaningless — and (c) be one the
     actor has access to.
 
-    Access matches the auth layer's `_resolve_role` semantics: walk up
-    the parent chain from the target, and accept any membership found
-    along the way. So a user with membership at a parent (e.g. 본부)
-    can publish to any descendant team without separate memberships.
+    Access has two paths:
+      1) **멤버십** — walk up the parent chain from the target and accept
+         any membership found (mirrors auth `_resolve_role`). A user with
+         membership at a parent (e.g. 본부) can publish to any descendant
+         team without separate memberships.
+      2) **게시판 편집 권한 개방(board edit grant)** — 그 게시판 매니저가
+         다른 부서/사용자에게 edit 권한을 열어두면(`/workspaces/{slug}/shares`),
+         그 부서 소속(또는 직접 grant 받은 사용자)도 게시할 수 있다. 멤버가
+         아니어도 "편집 권한이 열린 게시판"이면 게시 대상이 된다.
     """
     ws = db.get(Workspace, workspace_slug)
     if ws is None:
@@ -141,7 +146,7 @@ def _ensure_target_is_org_workspace(
         raise MountTargetInvalidError(
             f"조직 워크스페이스에만 게시할 수 있습니다 (kind={ws.kind.value})."
         )
-    # Ancestor walk — mirror _resolve_role(auth.py).
+    # 1) Ancestor walk — mirror _resolve_role(auth.py).
     visited: set[str] = set()
     cur: Optional[str] = workspace_slug
     while cur and cur not in visited:
@@ -158,6 +163,9 @@ def _ensure_target_is_org_workspace(
         if anc is None:
             break
         cur = anc.parent_slug
+    # 2) 편집 권한이 개방된 게시판이면 멤버가 아니어도 게시 허용.
+    if grant_services._board_edit_reaches(db, [workspace_slug], actor_user_id):
+        return ws
     raise MountForbiddenError(
         f"접근 권한이 없는 워크스페이스에는 게시할 수 없습니다: {workspace_slug}"
     )

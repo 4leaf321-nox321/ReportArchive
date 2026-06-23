@@ -10,6 +10,17 @@ export async function listMounts(reportId) {
 }
 
 /**
+ * 게시 후보를 넓히는 보조 목록 — 멤버는 아니지만 편집 권한(board edit
+ * grant)이 열려 있어 게시할 수 있는 게시판 slug 들. MountDialog 가 멤버십
+ * 기반 후보에 union 해서 표시한다.
+ */
+export async function listGrantBoardSlugs() {
+  const res = await apiClient.get(`${BASE}/grant-board-slugs`)
+  const data = extractData(res)
+  return data?.slugs ?? []
+}
+
+/**
  * Mount a report to one or more org boards in a single request.
  * Idempotent per-target — already-mounted boards are silently skipped.
  */

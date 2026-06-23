@@ -263,6 +263,40 @@ def _board_edit_reaches(db: Session, board_slugs, user_id: int) -> bool:
     return False
 
 
+def boards_edit_reachable_slugs(db: Session, user_id: int) -> set[str]:
+    """user 에게 (편집) board grant 가 도달하는 게시판 slug 집합 — 게시(mount)
+    후보 산출용. user 직접 grant 또는 부서 grant 하위도달(소속 ∩ descendants).
+    `_board_edit_reaches` 의 대량(bulk) 버전: 전체 edit board grant 를 한 번에
+    훑어 도달 slug 만 모은다."""
+    rows = db.execute(
+        select(
+            BoardGrant.board_slug,
+            BoardGrant.principal_type,
+            BoardGrant.principal_ref,
+        ).where(BoardGrant.level == GrantLevel.edit)
+    ).all()
+    if not rows:
+        return set()
+    from app.modules.workspaces import services as ws_services
+
+    member_slugs: set[str] | None = None
+    desc_cache: dict[str, set[str]] = {}
+    out: set[str] = set()
+    for board_slug, ptype, pref in rows:
+        if ptype == GrantPrincipalType.user and pref == str(user_id):
+            out.add(board_slug)
+        elif ptype == GrantPrincipalType.workspace and pref:
+            if member_slugs is None:
+                member_slugs = _user_membership_slugs(db, user_id)
+            if pref not in desc_cache:
+                desc_cache[pref] = set(
+                    ws_services.get_descendants_inclusive(db, pref)
+                )
+            if member_slugs & desc_cache[pref]:
+                out.add(board_slug)
+    return out
+
+
 def _boards_view_reachable_slugs(
     db: Session, reach: set[str], user_id: int
 ) -> set[str]:

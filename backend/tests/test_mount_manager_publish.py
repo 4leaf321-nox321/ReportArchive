@@ -13,6 +13,8 @@ from fastapi.testclient import TestClient
 from app.database import SessionLocal
 from app.main import app
 from app.modules.auth.services import create_access_token
+from app.modules.grants import services as gs
+from app.modules.grants.models import BoardGrant, GrantLevel, GrantPrincipalType
 from app.modules.users.models import Role, User, WorkspaceMember
 
 BOARD1 = "dev-hw"  # 작성자가 처음 게시하는 게시판
@@ -98,6 +100,58 @@ def test_manager_of_mounted_board_can_mount_elsewhere():
         }
         assert {BOARD1, BOARD2} <= slugs, slugs
     finally:
+        client.delete(f"/api/reports/{rid}", headers=_author_h())
+
+
+def test_board_edit_grant_opens_mount_target_for_nonmember():
+    """게시판에 편집 권한(board edit grant)이 열려 있으면, 그 게시판의 멤버가
+    아니어도 게시할 수 있다.
+
+    트리: ... → dev-hw → dev-he. dev-he 매니저는 *상위* 게시판 dev-hw 의
+    멤버가 아니므로 멤버십만으론 dev-hw 에 게시 못 한다(상위로는 못 올라감).
+    하지만 dev-hw 가 dev-he 부서에 edit 권한을 열어두면 게시 가능해야 한다.
+    """
+    client = TestClient(app)
+    # 행위자: dev-he 매니저(= 소스 권한). dev-hw 의 멤버는 아님.
+    mgr = _ensure_member("grant-spread-mgr@test.local", BOARD2, Role.manager)
+    rid = _make_report()
+    db = SessionLocal()
+    db.query(BoardGrant).filter_by(board_slug=BOARD1).delete()
+    db.commit()
+    try:
+        # 작성자가 dev-he(BOARD2)에 최초 게시 → 행위자가 그 게시판 매니저라
+        # 소스 권한(_ensure_can_mount)은 충족.
+        assert (
+            client.post(
+                "/api/mounts",
+                headers=_author_h(),
+                json={"report_id": rid, "workspace_slugs": [BOARD2]},
+            ).status_code
+            == 200
+        )
+        # 편집 권한 개방 전 — 상위 게시판 dev-hw(BOARD1) 게시는 거절(멤버 아님).
+        r = client.post(
+            "/api/mounts",
+            headers=_h(mgr, BOARD2),
+            json={"report_id": rid, "workspace_slugs": [BOARD1]},
+        )
+        assert r.status_code == 403, r.text
+        # dev-hw 가 dev-he 부서에 edit 권한 개방.
+        gs.upsert_board_grant(
+            db, BOARD1, GrantPrincipalType.workspace, BOARD2, GrantLevel.edit
+        )
+        db.commit()
+        # 개방 후 — 같은 게시 요청이 허용.
+        r2 = client.post(
+            "/api/mounts",
+            headers=_h(mgr, BOARD2),
+            json={"report_id": rid, "workspace_slugs": [BOARD1]},
+        )
+        assert r2.status_code == 200, r2.text
+    finally:
+        db.query(BoardGrant).filter_by(board_slug=BOARD1).delete()
+        db.commit()
+        db.close()
         client.delete(f"/api/reports/{rid}", headers=_author_h())
 
 

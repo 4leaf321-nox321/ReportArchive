@@ -35,6 +35,7 @@ import {
   CaptionInput,
   LabelField,
   PreviewLabel,
+  captionPositionOf,
   captionSkipProps,
   textStyleToClassName,
   textStyleToInlineStyle,
@@ -365,6 +366,7 @@ export function QuadrantEditor({
   // 버킷 항목 글자 크기 — 속성(text_style.font_size_px)을 반영. null(미설정)
   // 이면 현행 기본(text-sm ≈ 18px) 유지. 예전엔 text-sm 고정이라 속성이 안 먹음.
   const bodyFontPx = props.text_style?.font_size_px ?? null
+  const capPos = captionPositionOf(content)
   const [selectedPlotId, setSelectedPlotId] = useState(null)
 
   function patchContent(next) {
@@ -466,13 +468,15 @@ export function QuadrantEditor({
       className={cn('flex flex-col h-full min-h-0 gap-3', textClass)}
       style={textStyle}
     >
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patchContent({ caption: v })}
-        placeholder={captionHint}
-        readOnly={readOnly}
-        {...skipCaptionProps}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patchContent({ caption: v })}
+          placeholder={captionHint}
+          readOnly={readOnly}
+          {...skipCaptionProps}
+        />
+      )}
 
       {!readOnly && (
         <TopToolbar
@@ -545,6 +549,15 @@ export function QuadrantEditor({
           />
         )}
       </div>
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patchContent({ caption: v })}
+          placeholder={captionHint}
+          readOnly={readOnly}
+          {...skipCaptionProps}
+        />
+      )}
     </div>
   )
 }

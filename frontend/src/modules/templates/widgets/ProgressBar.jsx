@@ -12,6 +12,7 @@ import {
   LabelField,
   PreviewLabel,
   TextStyleField,
+  captionPositionOf,
   captionSkipProps,
   effectiveNumber,
   effectiveString,
@@ -221,6 +222,7 @@ export function ProgressBarEditor({ props, content, onChange, readOnly }) {
   const unit = effectiveString(content, props, 'unit', '%')
   const defaultMax = effectiveNumber(content, props, 'default_max', 100)
   const maxItems = Number.isFinite(props.max_items) ? props.max_items : null
+  const capPos = captionPositionOf(content)
 
   function patch(next) {
     const merged = {
@@ -273,14 +275,16 @@ export function ProgressBarEditor({ props, content, onChange, readOnly }) {
     if (!caption && items.length === 0) return null
     return (
       <div className={`space-y-2 ${textClass}`} style={textStyle}>
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         {items.length > 0 ? (
           <div className="space-y-2">
             {hydratedItems.map((it, i) => (
@@ -296,18 +300,30 @@ export function ProgressBarEditor({ props, content, onChange, readOnly }) {
         ) : (
           <p className="text-xs text-muted-foreground italic">(항목 없음)</p>
         )}
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
       </div>
     )
   }
 
   return (
     <div className={`space-y-3 ${textClass}`} style={textStyle}>
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patch({ caption: v })}
-        placeholder={props.label}
-        {...captionSkipProps({ content, patch })}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
       <EditorOptionBar>
         <EditorOptionNumber
           label="기본 목표값"
@@ -495,6 +511,14 @@ export function ProgressBarEditor({ props, content, onChange, readOnly }) {
           {maxItems != null ? ` / 최대 ${maxItems}개` : ''}
         </span>
       </div>
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
     </div>
   )
 }

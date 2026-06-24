@@ -59,7 +59,7 @@ def list_posts(
         return [], 0
 
     stmt = _apply_filters(select(VocPost))
-    stmt = stmt.order_by(VocPost.updated_at.desc()).limit(limit).offset(offset)
+    stmt = stmt.order_by(VocPost.created_at.desc()).limit(limit).offset(offset)
     posts = list(db.execute(stmt).scalars())
     if not posts:
         return [], int(total)
@@ -170,9 +170,8 @@ def create_comment(
         body=payload.body,
     )
     db.add(comment)
-    # Bumping the post's updated_at on comment activity makes "recent
-    # discussion" sort match user expectations.
-    post.updated_at = datetime.utcnow()
+    # NOTE: 정렬은 created_at(작성일) 기준이므로 댓글 활동으로 글 순서가
+    # 바뀌지 않도록 post.updated_at 를 일부러 건드리지 않는다.
     db.commit()
     db.refresh(comment)
     return comment

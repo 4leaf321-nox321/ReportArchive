@@ -1187,6 +1187,11 @@ export async function renderBlockPieces({
       : ''
 
   const out = []
+  // 헤더(caption)를 본문 위/아래 어디에 둘지 — 화면/PDF 와 동일하게
+  // content.caption_position 을 따른다. caption Paragraph 들을 일단 모아두고
+  // 본문 앞/뒤에 배치한다.
+  const captionPieces = []
+  const captionBelow = content?.caption_position === 'below'
   // Caption value mirrors what CaptionInput shows on screen:
   //   1. content.caption (writer-typed) wins
   //   2. effectiveProps.label (template default) is the fallback so a
@@ -1214,7 +1219,7 @@ export async function renderBlockPieces({
     else if (sectionLabel) headerText = `[${sectionLabel}]`
     else if (caption) headerText = caption
     if (headerText) {
-      out.push(
+      captionPieces.push(
         new Paragraph({
           heading: HeadingLevel.HEADING_3,
           children: [
@@ -1234,7 +1239,7 @@ export async function renderBlockPieces({
     // Wrapped in `< >` to visually mark it as a figure / object label
     // and distinguish it from inline prose. Still a Heading 3 paragraph
     // so Word's navigation pane can jump to it.
-    out.push(
+    captionPieces.push(
       new Paragraph({
         heading: HeadingLevel.HEADING_3,
         alignment: AlignmentType.CENTER,
@@ -1249,6 +1254,8 @@ export async function renderBlockPieces({
       }),
     )
   }
+  // 헤더가 '위'면 본문 앞에 먼저 배치.
+  if (!captionBelow) out.push(...captionPieces)
   try {
     const els = await convertBlock(block, effectiveProps, content, {
       maxImageWidthPx,
@@ -1271,6 +1278,8 @@ export async function renderBlockPieces({
       }),
     )
   }
+  // 헤더가 '아래'면 본문 뒤에 배치.
+  if (captionBelow) out.push(...captionPieces)
   return out
 }
 

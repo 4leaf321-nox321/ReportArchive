@@ -21,6 +21,7 @@ import {
   LabelField,
   PreviewLabel,
   captionSkipProps,
+  captionPositionOf,
   toTsv,
 } from './_shared'
 
@@ -133,6 +134,7 @@ export function ContourPreview({ props }) {
 
 export function ContourEditor({ props, content, onChange, readOnly, autoFit }) {
   const caption = content?.caption ?? ''
+  const capPos = captionPositionOf(content)
   // Input mode — 'matrix' (default, legacy) or 'rows' (long-form
   // x/y/z table). Stored on content so a single template can host
   // both styles depending on what the report author has in hand.
@@ -436,14 +438,16 @@ export function ContourEditor({ props, content, onChange, readOnly, autoFit }) {
   if (readOnly) {
     return (
       <div className={autoFit ? 'space-y-2' : 'flex flex-col h-full gap-2 min-h-0'}>
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         <div className={autoFit ? '' : 'flex-1 min-h-0'}>
           <ContourCanvas
             xLabels={rendered.xLabels}
@@ -463,18 +467,30 @@ export function ContourEditor({ props, content, onChange, readOnly, autoFit }) {
             autoFit={autoFit}
           />
         </div>
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
       </div>
     )
   }
 
   return (
     <div className="flex flex-col h-full gap-3 min-h-0">
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patch({ caption: v })}
-        placeholder={props.label}
-        {...captionSkipProps({ content, patch })}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
 
       <div className="flex flex-wrap items-center gap-3 text-xs">
         <div className="flex items-center gap-1">
@@ -791,6 +807,14 @@ export function ContourEditor({ props, content, onChange, readOnly, autoFit }) {
           )}
         </div>
       </div>
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
     </div>
   )
 }

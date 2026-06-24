@@ -24,6 +24,7 @@ import {
   LabelField,
   PreviewLabel,
   captionSkipProps,
+  captionPositionOf,
 } from './_shared'
 
 /**
@@ -154,6 +155,7 @@ export function HtmlEmbedEditor({ props, content, onChange, readOnly }) {
   const bundleId = content?.bundle_id ?? null
   const entryPath = content?.entry_path ?? ''
   const filename = content?.filename ?? ''
+  const capPos = captionPositionOf(content)
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
   // 폴더를 고른 뒤 "엔트리 지정 + 업로드" 전 단계 staging.
@@ -363,15 +365,17 @@ export function HtmlEmbedEditor({ props, content, onChange, readOnly }) {
 
   return (
     <div className="space-y-2 flex flex-col h-full min-h-0">
-      <CaptionInput
-        value={caption}
-        readOnly={readOnly}
-        onChange={readOnly ? undefined : (v) => patch({ caption: v })}
-        placeholder={props.label}
-        {...(readOnly
-          ? { skipAutofill: content?.caption_skip_autofill }
-          : captionSkipProps({ content, patch }))}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          readOnly={readOnly}
+          onChange={readOnly ? undefined : (v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...(readOnly
+            ? { skipAutofill: content?.caption_skip_autofill }
+            : captionSkipProps({ content, patch }))}
+        />
+      )}
 
       {hasMedia ? (
         <>
@@ -533,6 +537,17 @@ export function HtmlEmbedEditor({ props, content, onChange, readOnly }) {
             />
           </div>
         ))
+      )}
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          readOnly={readOnly}
+          onChange={readOnly ? undefined : (v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...(readOnly
+            ? { skipAutofill: content?.caption_skip_autofill }
+            : captionSkipProps({ content, patch }))}
+        />
       )}
     </div>
   )

@@ -35,6 +35,7 @@ import {
   LabelField,
   PreviewLabel,
   captionSkipProps,
+  captionPositionOf,
   effectiveBool,
   effectiveNumber,
   pruneOverrideKeys,
@@ -222,18 +223,22 @@ export function VideoEditor({ props, content, onChange, readOnly }) {
 
   const canAdd = files.length < max
 
+  const capPos = captionPositionOf(content)
+
   if (readOnly) {
     if (!caption && files.length === 0) return null
     return (
       <div className="space-y-2 flex flex-col h-full min-h-0">
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         {files.length > 0 && (
           <div className="flex-1 min-h-0 grid gap-3 grid-cols-1">
             {files.map((file, idx) => (
@@ -241,18 +246,30 @@ export function VideoEditor({ props, content, onChange, readOnly }) {
             ))}
           </div>
         )}
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
       </div>
     )
   }
 
   return (
     <div className="space-y-2 flex flex-col h-full min-h-0">
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patch({ caption: v })}
-        placeholder={props.label}
-        {...captionSkipProps({ content, patch })}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
       <EditorOptionBar title="재생">
         <EditorOptionNumber
           label="최대 개수"
@@ -363,6 +380,14 @@ export function VideoEditor({ props, content, onChange, readOnly }) {
             onChange={(e) => handleFiles(e.target.files)}
           />
         </div>
+      )}
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
       )}
     </div>
   )

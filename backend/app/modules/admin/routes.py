@@ -161,6 +161,47 @@ def list_access_logs(
     )
 
 
+@router.get("/access-logs/stats")
+def access_log_stats(
+    granularity: str = Query(default="day"),
+    periods: int | None = Query(default=None, ge=1, le=31),
+    success: bool | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: CurrentUser = Depends(require_system_admin),
+):
+    """부서별·기간별 접속 통계 — 일/주/월 막대그래프용. 시스템 관리자 전용.
+    success=true(성공만, 기본)/false(실패만)/생략(전체). 부서는 사용자의 홈
+    부서로 집계하고, 홈 부서가 없으면 '미지정'."""
+    return success_response(
+        data=access_log_services.access_log_stats(
+            db, granularity=granularity, periods=periods, success=success
+        )
+    )
+
+
+@router.get("/access-logs/stats/detail")
+def access_log_stats_detail(
+    granularity: str = Query(default="day"),
+    bucket: str = Query(..., description="버킷 시작일 'YYYY-MM-DD'(KST)"),
+    department: str | None = Query(default=None),
+    success: bool | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: CurrentUser = Depends(require_system_admin),
+):
+    """막대 클릭 드릴다운 — 한 버킷(+선택한 부서) 안의 사용자별 접속 횟수.
+    시스템 관리자 전용. department 생략 시 버킷 전체, '미지정'이면 홈 부서 없는
+    접속만."""
+    return success_response(
+        data=access_log_services.access_log_user_breakdown(
+            db,
+            granularity=granularity,
+            bucket_start=bucket,
+            department=department,
+            success=success,
+        )
+    )
+
+
 @router.get("/server-info")
 def server_info(
     db: Session = Depends(get_db),

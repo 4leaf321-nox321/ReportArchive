@@ -20,6 +20,7 @@ import {
   LabelField,
   PreviewLabel,
   captionSkipProps,
+  captionPositionOf,
   toTsv,
 } from './_shared'
 
@@ -110,6 +111,7 @@ export function TreeEditor({ props, content, onChange, readOnly, autoFit }) {
         : DEFAULT_ROWS,
     [content?.rows],
   )
+  const capPos = captionPositionOf(content)
   const orientation = content?.orientation === 'horizontal' ? 'horizontal' : 'vertical'
   const nodeShape = content?.node_shape === 'circle' ? 'circle' : 'rect'
   const edgeStyle = ['curve', 'step', 'straight'].includes(content?.edge_style)
@@ -196,14 +198,16 @@ export function TreeEditor({ props, content, onChange, readOnly, autoFit }) {
   if (readOnly) {
     return (
       <div className={autoFit ? 'space-y-2' : 'flex flex-col h-full gap-2 min-h-0'}>
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         <div className={autoFit ? '' : 'flex-1 min-h-0'}>
           <TreeCanvas
             rows={rows}
@@ -216,18 +220,30 @@ export function TreeEditor({ props, content, onChange, readOnly, autoFit }) {
             autoFit={autoFit}
           />
         </div>
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
       </div>
     )
   }
 
   return (
     <div className="flex flex-col h-full gap-3 min-h-0">
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patch({ caption: v })}
-        placeholder={props.label}
-        {...captionSkipProps({ content, patch })}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
 
       <div className="flex flex-wrap items-center gap-3 text-xs">
         <div className="flex items-center gap-1">
@@ -351,6 +367,14 @@ export function TreeEditor({ props, content, onChange, readOnly, autoFit }) {
           </p>
         </div>
       </div>
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
     </div>
   )
 }

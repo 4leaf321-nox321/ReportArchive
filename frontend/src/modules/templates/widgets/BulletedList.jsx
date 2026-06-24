@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { CaptionInput, DEFAULT_BODY_FONT_PX, LabelField, PreviewLabel, TextStyleField, captionSkipProps, textStyleToClassName, textStyleToInlineStyle } from './_shared'
+import { CaptionInput, DEFAULT_BODY_FONT_PX, LabelField, PreviewLabel, TextStyleField, captionPositionOf, captionSkipProps, textStyleToClassName, textStyleToInlineStyle } from './_shared'
 
 export function BulletedListPropsPanel({ props, onChange }) {
   return (
@@ -68,6 +68,7 @@ export function BulletedListEditor({ props, content, onChange, readOnly }) {
   const bodyTextClass = textStyleToClassName(props.text_style)
   const bodyTextStyle = textStyleToInlineStyle(props.text_style)
   const maxItems = props.max_items
+  const capPos = captionPositionOf(content)
   // Same "always at least one row, last row is virtual when array is empty"
   // pattern that key_value's multi-value input uses. Enter on the last row
   // appends + focuses a fresh empty entry; Enter mid-list jumps focus
@@ -134,14 +135,16 @@ export function BulletedListEditor({ props, content, onChange, readOnly }) {
     if (!caption && filled.length === 0) return null
     return (
       <div className="space-y-2">
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         {filled.length > 0 && (
           <ul
             className={`text-sm list-disc pl-5 space-y-1 ${bodyTextClass}`}
@@ -152,18 +155,30 @@ export function BulletedListEditor({ props, content, onChange, readOnly }) {
             ))}
           </ul>
         )}
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
       </div>
     )
   }
 
   return (
     <div className="space-y-2">
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patch({ caption: v })}
-        placeholder={props.label}
-        {...captionSkipProps({ content, patch })}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
       {Array.from({ length: rowCount }).map((_, idx) => {
         const hasRealEntry = idx < items.length
         const value = items[idx]
@@ -232,6 +247,14 @@ export function BulletedListEditor({ props, content, onChange, readOnly }) {
       <p className="text-[10px] text-muted-foreground pl-4">
         Enter로 항목 추가 · Tab으로 이동
       </p>
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
     </div>
   )
 }

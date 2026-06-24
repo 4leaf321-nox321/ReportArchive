@@ -47,7 +47,7 @@ import {
   useAnnotationInteractions,
   useAnnotationStore,
 } from '@/shared/annotations'
-import { AxisRangeInput, CaptionInput, DataTableActions, LabelField, PreviewLabel, captionSkipProps, toTsv } from './_shared'
+import { AxisRangeInput, CaptionInput, DataTableActions, LabelField, PreviewLabel, captionSkipProps, captionPositionOf, toTsv } from './_shared'
 
 const MODES = [
   { value: 'scatter', label: '산점도' },
@@ -123,6 +123,7 @@ export function ScatterEditor({ props, content, onChange, readOnly, autoFit }) {
     ? content.columns
     : (props?.columns ?? [])
   const rows = Array.isArray(content?.rows) ? content.rows : []
+  const capPos = captionPositionOf(content)
   const mode = content?.mode ?? props?.mode ?? 'scatter_line'
   const xColumnKey = content?.x_column_key ?? props?.x_column_key
   const xAxisTitle = content?.x_axis_title ?? props?.x_axis_title ?? ''
@@ -421,14 +422,16 @@ export function ScatterEditor({ props, content, onChange, readOnly, autoFit }) {
     if (!caption && !hasData) return null
     return (
       <div className={autoFit ? 'space-y-2' : 'flex flex-col h-full gap-2 min-h-0'}>
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         {hasData && (
           <div className={autoFit ? '' : 'flex-1 min-h-0'}>
             <ScatterCanvas
@@ -443,18 +446,30 @@ export function ScatterEditor({ props, content, onChange, readOnly, autoFit }) {
             />
           </div>
         )}
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
       </div>
     )
   }
 
   return (
     <div className="flex flex-col h-full gap-3 min-h-0">
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patch({ caption: v })}
-        placeholder={props.label}
-        {...captionSkipProps({ content, patch })}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
 
       <div className="flex flex-wrap items-center gap-3 text-xs">
         <div className="flex items-center gap-1">
@@ -710,6 +725,14 @@ export function ScatterEditor({ props, content, onChange, readOnly, autoFit }) {
           </div>
         </div>
       </div>
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
     </div>
   )
 }

@@ -801,6 +801,14 @@ const _FONT_SIZE_PX_OPTIONS = [
 export const DEFAULT_BODY_FONT_PX = 18
 
 /**
+ * 위젯 헤더(caption)의 기본 글자 px. CaptionInput 은 `text-base font-semibold`
+ * 로 렌더되고, `.report-widget-body .text-base` 는 index.css 에서 1.3rem
+ * (≈20.8px)로 부스트된다 → 21px. 헤더 글자크기 버블 메뉴의 "기본 (N px)"
+ * 표기에 쓴다. index.css 의 .text-base 부스트를 바꾸면 같이 맞춰야 한다.
+ */
+export const CAPTION_DEFAULT_PX = 21
+
+/**
  * Heading level → boosted px. Mirrors `.report-widget-body .text-lg/xl/2xl`
  * from index.css so the heading props panel's "기본" hint matches what the
  * report editor actually paints.
@@ -1090,6 +1098,18 @@ export function depthBodyInlineStyle(textStyle, depthStyles, depth) {
   return textStyleToInlineStyle(_mergedDepthStyle(textStyle, depthStyles, depth))
 }
 
+/**
+ * 주어진 depth 의 본문 *기본* 글자 px — depth_styles 오버레이 → text_style →
+ * 위젯 본문 기본(DEFAULT_BODY_FONT_PX) 순으로 해석. 작성 시 글자크기 버블
+ * 메뉴의 "기본 (N px)" 표기에 쓴다(표 셀의 defaultSizePx 와 동일한 목적).
+ */
+export function depthBodyBaseSizePx(textStyle, depthStyles, depth) {
+  const merged = _mergedDepthStyle(textStyle, depthStyles, depth)
+  return Number.isFinite(merged.font_size_px)
+    ? merged.font_size_px
+    : DEFAULT_BODY_FONT_PX
+}
+
 function _mergedDepthStyle(textStyle, depthStyles, depth) {
   // Bucket: 0, 1, or 2 — depths 3+ collapse into "2".
   const bucket = String(Math.min(Math.max(depth | 0, 0), 2))
@@ -1278,7 +1298,18 @@ export function captionSkipProps({ content, patch }) {
         caption_html: _richIsEmpty(html) ? undefined : html,
         caption: text?.trim() ? text : undefined,
       }),
+    // 헤더(제목)를 내용 위/아래로 옮기는 토글. 기본(above)은 키를 비워둬 저장값이
+    // 깔끔하게 유지되고, below 일 때만 'below' 를 기록한다.
+    position: captionPositionOf(content),
+    onChangePosition: (pos) =>
+      patch({ caption_position: pos === 'below' ? 'below' : undefined }),
   }
+}
+
+/** content.caption_position 을 정규화 — 'below' 가 아니면 모두 'above'(기본).
+ *  위젯이 CaptionInput 을 내용 앞/뒤 어디에 렌더할지 결정하는 데 쓴다. */
+export function captionPositionOf(content) {
+  return content?.caption_position === 'below' ? 'below' : 'above'
 }
 
 export function CaptionInput({
@@ -1291,6 +1322,8 @@ export function CaptionInput({
   color,
   html,
   onChangeRich,
+  position,
+  onChangePosition,
 }) {
   const skip = !!skipAutofill
   const hint = typeof placeholder === 'string' ? placeholder.trim() : ''
@@ -1383,6 +1416,22 @@ export function CaptionInput({
     </button>
   ) : null
 
+  // 헤더 위치 토글 — 내용 위(above)/아래(below) 전환. onChangePosition 을 받은
+  // 위젯에서만 노출(읽기전용엔 안 넘어옴). 위치 자체는 위젯이 CaptionInput 을
+  // 내용 앞/뒤에 렌더해 반영하고, 이 버튼은 content.caption_position 만 바꾼다.
+  const isBelow = position === 'below'
+  const positionToggle = onChangePosition ? (
+    <button
+      type="button"
+      onClick={() => onChangePosition(isBelow ? 'above' : 'below')}
+      onMouseDown={(e) => e.stopPropagation()}
+      title={isBelow ? '헤더를 내용 위로 이동' : '헤더를 내용 아래로 이동'}
+      className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+    >
+      {isBelow ? '헤더 ↑ 위로' : '헤더 ↓ 아래로'}
+    </button>
+  ) : null
+
   // Rich caption editor: color/format live in the selection bubble menu (no
   // always-on swatch). onChangeRich syncs both caption_html + plain caption.
   if (onChangeRich) {
@@ -1393,9 +1442,11 @@ export function CaptionInput({
             html={_richSeed(html, value)}
             placeholder={hasHint ? hint : '제목 (선택)'}
             onChange={onChangeRich}
+            defaultSizePx={CAPTION_DEFAULT_PX}
             className="text-base font-semibold px-2 py-1"
           />
         </div>
+        {positionToggle}
         {skipToggle}
       </div>
     )
@@ -1418,6 +1469,7 @@ export function CaptionInput({
           colorClass,
         )}
       />
+      {positionToggle}
       {skipToggle}
     </div>
   )

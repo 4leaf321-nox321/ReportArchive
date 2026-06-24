@@ -116,6 +116,34 @@ export async function listAccessLogs({
   return extractData(res)
 }
 
+/** 시스템 관리자 — 부서별·기간별 접속 통계(막대그래프용).
+ *  granularity: 'day' | 'week' | 'month'. success: true(성공)/false(실패)/
+ *  null(전체). 응답: { granularity, success, departments, points }. */
+export async function accessLogStats({ granularity = 'day', success = true } = {}) {
+  const params = { granularity }
+  if (success != null) params.success = success
+  const res = await apiClient.get('/api/admin/access-logs/stats', { params })
+  return extractData(res)
+}
+
+/** 시스템 관리자 — 막대(버킷[+부서]) 드릴다운: 그 구간의 사용자별 접속 횟수.
+ *  bucket: 'YYYY-MM-DD'(accessLogStats points[].bucket_start). department 생략 시
+ *  버킷 전체, '미지정'이면 홈 부서 없는 접속만. 응답: { total, users:[{name,email,count}] }. */
+export async function accessLogStatsDetail({
+  granularity = 'day',
+  bucket,
+  department = null,
+  success = true,
+} = {}) {
+  const params = { granularity, bucket }
+  if (department != null) params.department = department
+  if (success != null) params.success = success
+  const res = await apiClient.get('/api/admin/access-logs/stats/detail', {
+    params,
+  })
+  return extractData(res)
+}
+
 /** 시스템 관리자 — 사용자의 home(소속) 부서 변경. 새 home 으로 지정된
  *  부서에는 WorkspaceMember 행이 자동으로 확보된다. null/빈 값이면 home
  *  만 해제. */

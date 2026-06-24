@@ -18,7 +18,7 @@ import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { CaptionInput, LabelField, PreviewLabel, captionSkipProps } from './_shared'
+import { CaptionInput, LabelField, PreviewLabel, captionSkipProps, captionPositionOf } from './_shared'
 
 const DISPLAY_MODES = [
   { value: 'display', label: '큰 식 (가운데 정렬)' },
@@ -257,6 +257,7 @@ export function EquationEditor({ props, content, onChange, readOnly }) {
   const displayMode = content?.display_mode === 'inline' ? 'inline' : 'display'
   const number = content?.number ?? ''
   const textareaRef = useRef(null)
+  const capPos = captionPositionOf(content)
 
   function patch(next) {
     const merged = { ...(content ?? {}), latex, display_mode: displayMode, ...next }
@@ -306,14 +307,16 @@ export function EquationEditor({ props, content, onChange, readOnly }) {
     if (!caption && !latex) return null
     return (
       <div className="space-y-2">
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         {latex && (
           <div className="flex items-center gap-3 px-2 py-2">
             <div className="flex-1 min-w-0 overflow-x-auto">
@@ -326,18 +329,30 @@ export function EquationEditor({ props, content, onChange, readOnly }) {
             )}
           </div>
         )}
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
       </div>
     )
   }
 
   return (
     <div className="space-y-3">
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patch({ caption: v })}
-        placeholder={props.label}
-        {...captionSkipProps({ content, patch })}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
 
       <div className="flex flex-wrap items-center gap-3 text-xs">
         <div className="flex items-center gap-1">
@@ -460,6 +475,14 @@ export function EquationEditor({ props, content, onChange, readOnly }) {
           </div>
         </div>
       </div>
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
     </div>
   )
 }

@@ -33,6 +33,9 @@ import { VocNewDialog } from './VocNewDialog'
 // mental model 그대로 사용 가능.
 const PAGE_SIZE = 20
 
+// 상태 탭 선택을 화면 재진입 시에도 유지하기 위한 localStorage 키.
+const VOC_STATUS_TAB_KEY = 'voc.statusTab'
+
 /** VOC board list — 페이지 단위 네비게이션 + 컬럼 헤더 + 필터 칩 +
  *  내 글 토글. 필터·페이지·검색이 바뀌면 한 페이지 분량만 fetch (offset
  *  계산). 가상 스크롤은 빼고 page-by-page 로 단순화 — 게시판 사용자가
@@ -40,7 +43,11 @@ const PAGE_SIZE = 20
 export default function VocListPage() {
   const { me } = useAuth()
   const navigate = useNavigate()
-  const [statusTab, setStatusTab] = useState('open')
+  // 상태 탭(열림/진행중/…/전체) 선택은 화면을 떠났다 돌아와도 유지되게
+  // localStorage 에 보존 — 매번 '열림'으로 리셋되면 진행 중인 글을 추적하기 번거롭다.
+  const [statusTab, setStatusTab] = useState(
+    () => localStorage.getItem(VOC_STATUS_TAB_KEY) || 'open',
+  )
   const [category, setCategory] = useState('')
   const [mine, setMine] = useState(false)
   const [query, setQuery] = useState('')
@@ -129,7 +136,13 @@ export default function VocListPage() {
         }
       />
 
-      <Tabs value={statusTab} onValueChange={setStatusTab}>
+      <Tabs
+        value={statusTab}
+        onValueChange={(v) => {
+          setStatusTab(v)
+          localStorage.setItem(VOC_STATUS_TAB_KEY, v)
+        }}
+      >
         <TabsList>
           <TabsTrigger value="open">
             <Megaphone className="mr-1.5 h-3.5 w-3.5" />
@@ -241,7 +254,7 @@ function ColumnHeader() {
       <div className="col-span-1">상태</div>
       <div className="col-span-1">우선순위</div>
       <div className="col-span-2">작성자</div>
-      <div className="col-span-1 text-right">수정일</div>
+      <div className="col-span-1 text-right">작성일</div>
     </div>
   )
 }
@@ -325,7 +338,7 @@ function PostRow({ post, onClick, currentUserId }) {
         {post.author?.name ?? '—'}
       </div>
       <div className="col-span-1 text-[11px] text-muted-foreground whitespace-nowrap tabular-nums text-right">
-        {post.updated_at?.slice(5, 10) ?? '—'}
+        {post.created_at?.slice(5, 10) ?? '—'}
       </div>
     </button>
   )

@@ -7,7 +7,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/shared/components/ui/popover'
-import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, NoteInput, PreviewLabel, TextStyleField, captionSkipProps, CellAlignControl, computeMergeMap, hAlignClass, normalizeMerges, parseHtmlTableMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation, vAlignClass, _richIsEmpty, _richSeed, sanitizeCaptionHtml } from './_shared'
+import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, NoteInput, PreviewLabel, TextStyleField, captionSkipProps, captionPositionOf, CellAlignControl, computeMergeMap, hAlignClass, normalizeMerges, parseHtmlTableMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation, vAlignClass, _richIsEmpty, _richSeed, sanitizeCaptionHtml } from './_shared'
 import { RichTextRowEditor, RichTextFormatToolbarBody, MIXED_FONT_SIZE } from './RichTextRowEditor'
 import { ColorSwatchPicker, bgTokenClass, colorTokenClass, normalizeToken } from '@/shared/text-color'
 
@@ -243,6 +243,8 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   const cols = Array.isArray(overrideCols) ? overrideCols : templateCols
   const caption = content?.caption ?? ''
   const note = content?.note ?? ''
+  // 헤더(제목) 위치 — 'below' 면 내용 아래, 그 외엔 위(기본).
+  const capPos = captionPositionOf(content)
   const rawRows = content?.rows ?? []
   // 편집 모드에서 행이 하나도 없으면 빈 행 한 줄을 기본으로 보여준다 — 어디에
   // 입력/붙여넣기 해야 할지 바로 알 수 있게. 저장값(content.rows)은 그대로 비어
@@ -459,14 +461,16 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     if (!caption && rows.length === 0 && !note.trim()) return null
     return (
       <div className="space-y-2">
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         {rows.length > 0 && cols.length > 0 && (
           <>
             <div className="flex justify-end" data-export-skip="table-expand-toggle">
@@ -584,6 +588,16 @@ export function TableEditor({ props, content, onChange, readOnly }) {
               </table>
             </div>
           </>
+        )}
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
         )}
         <NoteInput value={note} readOnly color={content?.note_color} html={content?.note_html} />
       </div>
@@ -1433,29 +1447,41 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   if (cols.length === 0) {
     return (
       <div className="space-y-2">
-        <CaptionInput
-          value={caption}
-          onChange={(v) => patch({ caption: v })}
-          placeholder={props.label}
-          {...captionSkipProps({ content, patch })}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            onChange={(v) => patch({ caption: v })}
+            placeholder={props.label}
+            {...captionSkipProps({ content, patch })}
+          />
+        )}
         <p className="text-xs text-muted-foreground italic">열이 없습니다.</p>
         <Button variant="outline" size="sm" onClick={addColumn}>
           <Plus className="mr-1 h-3 w-3" />
           열 추가
         </Button>
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            onChange={(v) => patch({ caption: v })}
+            placeholder={props.label}
+            {...captionSkipProps({ content, patch })}
+          />
+        )}
       </div>
     )
   }
 
   return (
     <div className="space-y-2">
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patch({ caption: v })}
-        placeholder={props.label}
-        {...captionSkipProps({ content, patch })}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
       <div
         className="flex justify-end items-center gap-2"
         // outside-click 핸들러가 액션 바 클릭으로 selection 을 지우지
@@ -2091,6 +2117,14 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           열 추가
         </Button>
       </div>
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
       {/* 하단 참고 내용 — ※ 프리픽스로 표시. */}
       <NoteInput
         value={note}

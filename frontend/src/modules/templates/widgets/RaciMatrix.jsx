@@ -7,6 +7,7 @@ import {
   CaptionInput,
   DEFAULT_BODY_FONT_PX,
   DataTableActions,
+  captionPositionOf,
   LabelField,
   PreviewLabel,
   TextStyleField,
@@ -623,6 +624,7 @@ function RaciLegend() {
 // --------------------------------------------------------------------------- //
 export function RaciMatrixEditor({ props, content, onChange, readOnly }) {
   const caption = content?.caption ?? ''
+  const capPos = captionPositionOf(content)
   const rows = Array.isArray(content?.rows) ? content.rows : []
   // Effective roles — content.roles wins once the writer has touched the
   // header. Presence check (not length) so an explicitly emptied list
@@ -771,30 +773,44 @@ export function RaciMatrixEditor({ props, content, onChange, readOnly }) {
     if (!caption && rows.length === 0) return null
     return (
       <div className={`space-y-2 ${textClass}`} style={textStyle}>
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         <div className="overflow-x-auto">
           <RaciTable rows={rows} roles={roles} readOnly fontSizePx={bodyFontPx} />
         </div>
         <RaciLegend />
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
       </div>
     )
   }
 
   return (
     <div className={`space-y-3 ${textClass}`} style={textStyle}>
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patch({ caption: v })}
-        placeholder={props.label}
-        {...captionSkipProps({ content, patch })}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
       {roles.length > 0 && (
         <div className="flex justify-end">
           <DataTableActions
@@ -854,6 +870,14 @@ export function RaciMatrixEditor({ props, content, onChange, readOnly }) {
         각 열의 상단 "그룹" 칸은 업무 영역(예: 모델링·개발), 하단 "담당자" 칸은 인력명을 적습니다.
         "담당자 추가"는 가장 오른쪽 그룹을 그대로 이어받아 같은 그룹에 한 줄 더 추가합니다 — 다른 그룹으로 옮기려면 추가 후 그룹 칸을 바꾸세요.
       </p>
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
     </div>
   )
 }

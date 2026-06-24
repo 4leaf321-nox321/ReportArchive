@@ -23,6 +23,7 @@ import {
   DataTableActions,
   LabelField,
   PreviewLabel,
+  captionPositionOf,
   captionSkipProps,
   toTsv,
 } from './_shared'
@@ -207,6 +208,7 @@ export function PieEditor({ props, content, onChange, readOnly, autoFit }) {
   const sort = content?.sort !== false // default true
   const showLegend = content?.show_legend !== false // default true
   const unit = content?.unit ?? ''
+  const capPos = captionPositionOf(content)
 
   function patch(next) {
     const merged = { ...(content ?? {}), rows, ...next }
@@ -293,14 +295,16 @@ export function PieEditor({ props, content, onChange, readOnly, autoFit }) {
   if (readOnly) {
     return (
       <div className={autoFit ? 'space-y-2' : 'flex flex-col h-full gap-2 min-h-0'}>
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         <div className={autoFit ? '' : 'flex-1 min-h-0'}>
           <PieCanvas
             rows={rows}
@@ -316,18 +320,30 @@ export function PieEditor({ props, content, onChange, readOnly, autoFit }) {
             autoFit={autoFit}
           />
         </div>
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
       </div>
     )
   }
 
   return (
     <div className="flex flex-col h-full gap-3 min-h-0">
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patch({ caption: v })}
-        placeholder={props.label}
-        {...captionSkipProps({ content, patch })}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
 
       <div className="flex flex-wrap items-center gap-3 text-xs">
         <div className="flex items-center gap-1">
@@ -484,6 +500,14 @@ export function PieEditor({ props, content, onChange, readOnly, autoFit }) {
           </p>
         </div>
       </div>
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
     </div>
   )
 }

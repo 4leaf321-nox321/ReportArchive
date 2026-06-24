@@ -7567,13 +7567,18 @@ function PageStrip({
     onSelect(idx)
   }
 
+  // 이름 변경 모드 진입 — F2 키와 더블클릭이 공유한다.
+  function startRename(idx) {
+    const src = pages[idx]
+    setRenamingIdx(idx)
+    setRenameValue(src?.name ?? '')
+  }
+
   function handleChipKeyDown(event, idx) {
     // F2 → enter inline rename mode for this chip.
     if (event.key === 'F2') {
       event.preventDefault()
-      const src = pages[idx]
-      setRenamingIdx(idx)
-      setRenameValue(src?.name ?? '')
+      startRename(idx)
       return
     }
     const isCmdC =
@@ -7770,9 +7775,14 @@ function PageStrip({
               <button
                 type="button"
                 onClick={(e) => handleChipClick(e, idx)}
+                onDoubleClick={(e) => {
+                  // 더블클릭도 F2 와 동일하게 이름 변경 모드로 진입.
+                  e.preventDefault()
+                  startRename(idx)
+                }}
                 onKeyDown={(e) => handleChipKeyDown(e, idx)}
                 data-page-chip-idx={idx}
-                title="드래그: 순서 변경 · 클릭: 이동 · Ctrl/Shift+클릭: 다중 선택 · Ctrl+C/V: 복사·붙여넣기 · F2: 이름 변경"
+                title="드래그: 순서 변경 · 클릭: 이동 · 더블클릭/F2: 이름 변경 · Ctrl/Shift+클릭: 다중 선택 · Ctrl+C/V: 복사·붙여넣기"
                 className={cn(
                   'flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors',
                   // Selection style takes precedence — explicit "this is

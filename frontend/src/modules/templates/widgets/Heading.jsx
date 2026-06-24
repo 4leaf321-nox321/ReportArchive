@@ -152,6 +152,11 @@ export function HeadingEditor({ props, content, onChange, readOnly }) {
   const level = effectiveLevel(content, props)
   const textStyle = effectiveTextStyle(content, props)
   const marginBottomPx = effectiveMarginBottomPx(content, props)
+  // 선택 버블 메뉴의 "기본 (N px)" 표기용 — 현재 글자크기 override 가 있으면 그
+  // 값, 없으면 레벨 기본 px. (표 셀과 동일하게 기본 px 을 작성자에게 보여준다.)
+  const headingBaseSizePx = Number.isFinite(textStyle?.font_size_px)
+    ? textStyle.font_size_px
+    : HEADING_DEFAULT_PX_BY_LEVEL[level]
   const cls = `${levelClass(level)} ${textStyleToClassName(textStyle)}`
   const inlineTextStyle = textStyleToInlineStyle(textStyle) ?? {}
   const wrapperStyle =
@@ -213,6 +218,7 @@ export function HeadingEditor({ props, content, onChange, readOnly }) {
         <RichTextRowEditor
           html={_richSeed(htmlValue, value)}
           placeholder={props.default_text || '제목 입력'}
+          defaultSizePx={headingBaseSizePx}
           onChange={(html, text) =>
             patch({
               text_html: _richIsEmpty(html) ? undefined : html,

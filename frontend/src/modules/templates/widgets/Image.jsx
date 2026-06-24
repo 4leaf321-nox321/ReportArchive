@@ -23,6 +23,7 @@ import {
   NoteInput,
   PreviewLabel,
   captionSkipProps,
+  captionPositionOf,
   effectiveNumber,
   effectiveString,
   pruneOverrideKeys,
@@ -106,6 +107,8 @@ export function ImagePropsPanel({ props, onChange }) {
 export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
   const caption = content?.caption ?? ''
   const note = content?.note ?? ''
+  // 헤더(제목) 위치 — 'below' 면 내용 아래, 그 외엔 위(기본).
+  const capPos = captionPositionOf(content)
   const files = content?.files ?? []
   // Per-report soft UI cap on the image count; hard cap stays in
   // props.max_count via the content schema's maxItems. content wins,
@@ -258,14 +261,16 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
           fillCell && 'h-full',
         )}
       >
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         {files.length > 0 && (
           <div
             className={cn(
@@ -319,6 +324,16 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
             ))}
           </div>
         )}
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         <NoteInput value={note} readOnly color={content?.note_color} html={content?.note_html} />
         <Dialog open={!!zoomFile} onOpenChange={(o) => !o && setZoomFile(null)}>
           <DialogContent className="w-[80vw] max-w-[80vw] h-[80vh] max-h-[80vh] flex items-center justify-center p-2">
@@ -343,12 +358,14 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
         fillCell && 'h-full',
       )}
     >
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patchContent({ caption: v })}
-        placeholder={props.label}
-        {...captionSkipProps({ content, patch: patchContent })}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patchContent({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch: patchContent })}
+        />
+      )}
       <EditorOptionBar>
         <EditorOptionNumber
           label="최대 장수"
@@ -531,6 +548,14 @@ export function ImageEditor({ props, content, onChange, readOnly, autoFit }) {
             onChange={(e) => handleFiles(e.target.files)}
           />
         </div>
+      )}
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patchContent({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch: patchContent })}
+        />
       )}
       {/* 하단 참고 내용 — ※ 프리픽스로 표시. */}
       <NoteInput

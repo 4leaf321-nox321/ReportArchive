@@ -30,7 +30,7 @@ import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/components/ui/popover'
-import { AxisRangeInput, CaptionInput, DataTableActions, LabelField, PreviewLabel, captionSkipProps, toTsv } from './_shared'
+import { AxisRangeInput, CaptionInput, DataTableActions, LabelField, PreviewLabel, captionSkipProps, captionPositionOf, toTsv } from './_shared'
 import { usePrintScale } from '@/modules/reports/printContext'
 import {
   AnnotationCountBadge,
@@ -159,6 +159,7 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
   // inline-built layout doesn't visually reset when this refactor
   // lands; otherwise fall back to props (= template + override).
   const caption = content?.caption ?? ''
+  const capPos = captionPositionOf(content)
   const cols = Array.isArray(content?.columns) ? content.columns : (props.columns ?? [])
   const xKey = content?.x_column_key ?? props.x_column_key
   const chartType = content?.chart_type ?? props.chart_type ?? 'bar'
@@ -645,14 +646,16 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
     if (!caption && !hasData) return null
     return (
       <div className="flex flex-col h-full gap-2">
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         {hasData && (
           <ChartCanvas
             chartType={chartType}
@@ -670,6 +673,16 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
             annotationProps={{ readOnly: true }}
           />
         )}
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
       </div>
     )
   }
@@ -679,12 +692,14 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
       {/* Top: caption + chart_type icon toggle (bar / line). */}
       <div className="flex items-center gap-2">
         <div className="flex-1 min-w-0">
-          <CaptionInput
-            value={caption}
-            onChange={(v) => patch({ caption: v })}
-            placeholder={props.label}
-            {...captionSkipProps({ content, patch })}
-          />
+          {capPos !== 'below' && (
+            <CaptionInput
+              value={caption}
+              onChange={(v) => patch({ caption: v })}
+              placeholder={props.label}
+              {...captionSkipProps({ content, patch })}
+            />
+          )}
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
           {CHART_TYPES.map((t) => (
@@ -1032,6 +1047,14 @@ export function ChartEditor({ props, content, onChange, onChangePropsOverride, a
         </div>
         </div>
       </div>
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
     </div>
   )
 }

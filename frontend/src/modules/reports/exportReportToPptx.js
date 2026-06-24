@@ -119,17 +119,22 @@ function readVisibleCaption(blockEl) {
   if (!text) return null
   const r = capEl.getBoundingClientRect()
   const fontPx = parseFloat(window.getComputedStyle(capEl).fontSize) || 14
-  return { text, heightPx: r.height || 0, fontPx }
+  // 헤더가 본문 아래(caption_position='below')인지 — 캡션 박스가 블록 세로
+  // 중간선보다 아래에 있으면 below 로 본다(content 를 안 들고도 DOM 으로 판단).
+  const blockRect = blockEl.getBoundingClientRect()
+  const below = blockRect.height > 0 && r.top > blockRect.top + blockRect.height / 2
+  return { text, heightPx: r.height || 0, fontPx, below }
 }
 
-/** 캡션 텍스트박스를 위젯 영역 상단에 얹고, 차지한 높이(인치)를 돌려준다.
- *  캡션 없으면 0. */
+/** 캡션 텍스트박스를 위젯 영역 상단(기본) 또는 하단(below)에 얹고, 차지한
+ *  높이(인치)를 돌려준다. 캡션 없으면 0. */
 function addCaptionBox(slide, caption, pos, ptPerPx) {
   if (!caption?.text) return 0
   const capH = Math.max(0.18, Math.min(pos.h * 0.6, (caption.heightPx * ptPerPx) / 72))
+  const y = caption.below ? pos.y + pos.h - capH : pos.y
   slide.addText(
     [{ text: caption.text, options: { bold: true, fontSize: Math.max(9, Math.round(caption.fontPx * ptPerPx)) } }],
-    { x: pos.x, y: pos.y, w: pos.w, h: capH, valign: 'top', wrap: true, fontFace: TEXT_FONT, margin: 1 },
+    { x: pos.x, y, w: pos.w, h: capH, valign: 'top', wrap: true, fontFace: TEXT_FONT, margin: 1 },
   )
   return capH
 }
@@ -141,10 +146,12 @@ function tryAddNativeText(slide, meta, content, el, pos, ptPerPx, caption) {
     const basePx = readBasePx(el) ?? 18
     const runs = buildPptxText({ type: meta.type, props: meta.props, content }, { ptPerPx, basePx })
     const capH = addCaptionBox(slide, caption, pos, ptPerPx)
+    // 헤더가 아래면 본문은 위에서 시작, 위면 캡션 높이만큼 내려서 시작.
+    const bodyY = caption?.below ? pos.y : pos.y + capH
     if (runs && runs.length) {
       slide.addText(runs, {
         x: pos.x,
-        y: pos.y + capH,
+        y: bodyY,
         w: pos.w,
         h: Math.max(0.2, pos.h - capH),
         valign: 'top',
@@ -168,9 +175,11 @@ function tryAddNativeTable(slide, el, pos, ptPerPx, caption, border = { type: 'n
     const built = buildPptxTable(el, { ptPerPx, tableWidthIn: pos.w })
     if (!built || !built.rows.length) return false
     const capH = addCaptionBox(slide, caption, pos, ptPerPx)
+    // 헤더가 아래면 표는 위에서 시작, 위면 캡션 높이만큼 내려서 시작.
+    const bodyY = caption?.below ? pos.y : pos.y + capH
     slide.addTable(built.rows, {
       x: pos.x,
-      y: pos.y + capH,
+      y: bodyY,
       w: pos.w,
       h: Math.max(0.2, pos.h - capH),
       colW: built.colW,

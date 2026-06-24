@@ -30,6 +30,16 @@ import {
   X as XIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  ResponsiveContainer,
+  Tooltip as RechartsTooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
 import { copyTextToClipboard } from '@/shared/lib/clipboard'
 import { Button } from '@/shared/components/ui/button'
 import { Badge } from '@/shared/components/ui/badge'
@@ -68,6 +78,8 @@ import {
   getAccountDetail,
   listAllAccounts,
   listAccessLogs,
+  accessLogStats,
+  accessLogStatsDetail,
   setUserActive,
   setUserHomeWorkspace,
   adminSetUserPassword,
@@ -1595,7 +1607,9 @@ function AccessLogTab({ isSystemAdmin }) {
   )
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-4 xl:flex-row">
+      {/* 좌측 절반 — 컨트롤 + 접속 이력 표 */}
+      <div className="min-w-0 space-y-3 xl:w-1/2">
       <div className="flex items-center gap-3 flex-wrap text-xs">
         <div className="inline-flex items-center gap-1">
           <span className="text-muted-foreground">결과</span>
@@ -1657,7 +1671,248 @@ function AccessLogTab({ isSystemAdmin }) {
           searchPlaceholder="이름 / 이메일 / IP 검색"
         />
       )}
+      </div>
+      {/* 우측 절반 — 부서별 일/주/월 접속 막대그래프 */}
+      <div className="min-w-0 xl:w-1/2">
+        <AccessStatsChart isSystemAdmin={isSystemAdmin} />
+      </div>
     </div>
+  )
+}
+
+const ACCESS_STATS_GRANULARITIES = [
+  ['day', '일간'],
+  ['week', '주간'],
+  ['month', '월간'],
+]
+
+// 결과 필터(성공/실패/전체) — 막대그래프 + 드릴다운에 공통 적용. UI 값 →
+// API success 파라미터(true/false/null) 매핑.
+const ACCESS_RESULT_FILTERS = [
+  ['success', '성공', true],
+  ['fail', '실패', false],
+  ['all', '전체', null],
+]
+
+// 부서 막대 색상 팔레트 — Chart 위젯과 동일 계열. 부서 수가 팔레트보다 많으면
+// 순환한다.
+const ACCESS_DEPT_COLORS = [
+  '#3b82f6', '#10b981', '#f59e0b', '#ef4444',
+  '#8b5cf6', '#06b6d4', '#ec4899', '#14b8a6',
+  '#a855f7', '#f97316', '#64748b',
+]
+
+/** 부서별·기간별 접속 건수 막대그래프. 일/주/월 + 성공/실패/전체 토글, 부서별
+ *  스택 막대. 막대(부서 구간)를 클릭하면 그 구간의 사용자별 접속 횟수를 보여준다.
+ *  데이터 소스: GET /api/admin/access-logs/stats(+/detail). */
+function AccessStatsChart({ isSystemAdmin }) {
+  const [granularity, setGranularity] = useState('day')
+  const [resultFilter, setResultFilter] = useState('success') // 'success'|'fail'|'all'
+  const [drill, setDrill] = useState(null) // 클릭한 막대 구간(드릴다운 대상)
+  const successParam =
+    ACCESS_RESULT_FILTERS.find(([v]) => v === resultFilter)?.[2] ?? null
+
+  const { data, loading, error } = useAsync(
+    () =>
+      isSystemAdmin
+        ? accessLogStats({ granularity, success: successParam })
+        : Promise.resolve({ departments: [], points: [] }),
+    [isSystemAdmin, granularity, resultFilter],
+  )
+  const departments = data?.departments ?? []
+  const chartData = useMemo(
+    () =>
+      (data?.points ?? []).map((p) => ({
+        label: p.label,
+        bucket_start: p.bucket_start,
+        ...p.counts,
+      })),
+    [data],
+  )
+  const hasData = (data?.points ?? []).some((p) => p.total > 0)
+
+  function handleBarClick(entry) {
+    const p = entry?.payload ?? entry
+    if (!p?.bucket_start) return
+    // 어느 부서 구간을 클릭하든 그 날짜/시간 버킷 '전체'를 본다(부서 필터 없음).
+    setDrill({
+      granularity,
+      bucket: p.bucket_start,
+      label: p.label,
+      department: null,
+      success: successParam,
+    })
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-x-3 gap-y-2 flex-wrap text-xs">
+        <div className="inline-flex items-center gap-1">
+          {ACCESS_STATS_GRANULARITIES.map(([v, label]) => (
+            <Button
+              key={v}
+              size="sm"
+              variant={granularity === v ? 'default' : 'outline'}
+              className="h-7 text-xs"
+              onClick={() => setGranularity(v)}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+        <div className="inline-flex items-center gap-1">
+          {ACCESS_RESULT_FILTERS.map(([v, label]) => (
+            <Button
+              key={v}
+              size="sm"
+              variant={resultFilter === v ? 'default' : 'outline'}
+              className="h-7 text-xs"
+              onClick={() => setResultFilter(v)}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+        <span className="text-[11px] text-muted-foreground ml-auto">
+          막대를 클릭하면 사용자별 상세
+        </span>
+      </div>
+
+      {error ? (
+        <ErrorState description={error.message} />
+      ) : loading ? (
+        <Skeleton className="h-[460px]" />
+      ) : !hasData ? (
+        <div className="flex h-[460px] items-center justify-center rounded-md border text-sm text-muted-foreground">
+          표시할 접속 통계가 없습니다.
+        </div>
+      ) : (
+        <div className="h-[460px] rounded-md border p-2">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart
+              data={chartData}
+              margin={{ top: 8, right: 8, left: -12, bottom: 4 }}
+            >
+              <CartesianGrid
+                strokeDasharray="3 3"
+                className="stroke-border"
+                vertical={false}
+              />
+              <XAxis
+                dataKey="label"
+                tick={{ fontSize: 11 }}
+                interval="preserveStartEnd"
+              />
+              <YAxis allowDecimals={false} tick={{ fontSize: 11 }} width={32} />
+              <RechartsTooltip
+                contentStyle={{ fontSize: 12 }}
+                cursor={{ fill: 'rgba(127,127,127,0.08)' }}
+              />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              {departments.map((dept, i) => (
+                <Bar
+                  key={dept}
+                  dataKey={dept}
+                  stackId="access"
+                  fill={ACCESS_DEPT_COLORS[i % ACCESS_DEPT_COLORS.length]}
+                  cursor="pointer"
+                  onClick={handleBarClick}
+                />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      <AccessDrillDialog target={drill} onClose={() => setDrill(null)} />
+    </div>
+  )
+}
+
+/** 막대(버킷+부서) 클릭 드릴다운 — 그 구간의 사용자별 접속 횟수(내림차순). */
+function AccessDrillDialog({ target, onClose }) {
+  const { data, loading, error } = useAsync(
+    () =>
+      target
+        ? accessLogStatsDetail({
+            granularity: target.granularity,
+            bucket: target.bucket,
+            department: target.department,
+            success: target.success,
+          })
+        : Promise.resolve({ total: 0, users: [] }),
+    [
+      target?.granularity,
+      target?.bucket,
+      target?.department,
+      target?.success,
+    ],
+  )
+  const users = data?.users ?? []
+  const resultLabel =
+    target?.success === true ? '성공' : target?.success === false ? '실패' : '전체'
+
+  return (
+    <Dialog open={!!target} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="text-base">
+            {target?.label} 접속 상세
+          </DialogTitle>
+          <DialogDescription>
+            결과: {resultLabel} · 전체 부서 · 사용자별 접속 횟수
+            {data ? ` (총 ${data.total ?? 0}건)` : ''}
+          </DialogDescription>
+        </DialogHeader>
+        {error ? (
+          <ErrorState description={error.message} />
+        ) : loading ? (
+          <Skeleton className="h-40" />
+        ) : users.length === 0 ? (
+          <div className="py-8 text-center text-sm text-muted-foreground">
+            접속 기록이 없습니다.
+          </div>
+        ) : (
+          <div className="max-h-[55vh] overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-background text-xs text-muted-foreground">
+                <tr>
+                  <th className="py-1 text-left font-medium">사용자</th>
+                  <th className="w-24 py-1 text-left font-medium">부서</th>
+                  <th className="w-14 py-1 text-right font-medium">횟수</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u, i) => (
+                  <tr key={`${u.user_id ?? 'x'}-${u.email}-${i}`} className="border-t">
+                    <td className="min-w-0 py-1">
+                      <div className="truncate">
+                        {u.name || (
+                          <span className="italic text-muted-foreground">
+                            (미가입 / 삭제)
+                          </span>
+                        )}
+                      </div>
+                      <div className="truncate font-mono text-[11px] text-muted-foreground">
+                        {u.email}
+                      </div>
+                    </td>
+                    <td className="py-1 align-top">
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {u.department}
+                      </span>
+                    </td>
+                    <td className="py-1 text-right align-top font-medium tabular-nums">
+                      {u.count}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 

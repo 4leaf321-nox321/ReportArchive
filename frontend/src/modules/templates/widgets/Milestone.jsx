@@ -12,6 +12,7 @@ import {
   PreviewLabel,
   TextStyleField,
   captionSkipProps,
+  captionPositionOf,
   effectiveString,
   pruneOverrideKeys,
   textStyleToClassName,
@@ -135,6 +136,7 @@ export function MilestoneEditor({ props, content, onChange, readOnly }) {
   // text-xs(12px)로 고정돼 속성 변경이 안 먹었다. 기본값은 현행 12px 유지
   // (타임라인 마커 간격이 안 깨지게 — 키우려면 속성에서 조절).
   const labelFontPx = props.text_style?.font_size_px ?? 12
+  const capPos = captionPositionOf(content)
 
   function patch(next) {
     const merged = {
@@ -176,14 +178,16 @@ export function MilestoneEditor({ props, content, onChange, readOnly }) {
     if (!caption && items.length === 0) return null
     return (
       <div className={`space-y-2 ${textClass}`} style={textStyle}>
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         {items.length > 0 ? (
           <MilestoneTimeline
             items={items}
@@ -196,18 +200,30 @@ export function MilestoneEditor({ props, content, onChange, readOnly }) {
             (마일스톤 없음)
           </p>
         )}
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
       </div>
     )
   }
 
   return (
     <div className={`space-y-3 ${textClass}`} style={textStyle}>
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patch({ caption: v })}
-        placeholder={props.label}
-        {...captionSkipProps({ content, patch })}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
       <EditorOptionBar title="타임라인 범위">
         <EditorOptionDate
           label="시작"
@@ -364,6 +380,14 @@ export function MilestoneEditor({ props, content, onChange, readOnly }) {
         <Plus className="mr-1 h-3 w-3" />
         마일스톤 추가
       </Button>
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
     </div>
   )
 }

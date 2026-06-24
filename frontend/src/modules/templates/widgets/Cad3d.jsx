@@ -29,7 +29,7 @@ import {
 } from '@/shared/components/ui/dropdown-menu'
 import { cn } from '@/shared/lib/utils'
 import { uploadFile, fetchFileBlob } from '@/shared/api/files'
-import { CaptionInput, LabelField, PreviewLabel, captionSkipProps } from './_shared'
+import { CaptionInput, LabelField, PreviewLabel, captionPositionOf, captionSkipProps } from './_shared'
 
 // All three.js modules are pulled in via dynamic import inside the
 // editor so the main bundle stays clean for pages that don't render a
@@ -363,6 +363,7 @@ export function Cad3dEditor({ props, content, onChange, readOnly, autoFit }) {
   const fileId = content?.file_id ?? null
   const loadedFilename = content?.loaded_filename ?? null
   const viewState = content?.view_state ?? null
+  const capPos = captionPositionOf(content)
 
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
@@ -445,15 +446,17 @@ export function Cad3dEditor({ props, content, onChange, readOnly, autoFit }) {
         fillCell && 'h-full',
       )}
     >
-      <CaptionInput
-        value={caption}
-        onChange={readOnly ? undefined : (v) => patchContent({ caption: v })}
-        readOnly={readOnly}
-        placeholder={props.label}
-        {...(readOnly
-          ? { skipAutofill: content?.caption_skip_autofill }
-          : captionSkipProps({ content, patch: patchContent }))}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={readOnly ? undefined : (v) => patchContent({ caption: v })}
+          readOnly={readOnly}
+          placeholder={props.label}
+          {...(readOnly
+            ? { skipAutofill: content?.caption_skip_autofill }
+            : captionSkipProps({ content, patch: patchContent }))}
+        />
+      )}
 
       {fileId ? (
         <CadCanvas
@@ -492,6 +495,17 @@ export function Cad3dEditor({ props, content, onChange, readOnly, autoFit }) {
             onFile={handleFile}
           />
         )
+      )}
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={readOnly ? undefined : (v) => patchContent({ caption: v })}
+          readOnly={readOnly}
+          placeholder={props.label}
+          {...(readOnly
+            ? { skipAutofill: content?.caption_skip_autofill }
+            : captionSkipProps({ content, patch: patchContent }))}
+        />
       )}
     </div>
   )

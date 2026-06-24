@@ -11,6 +11,7 @@ import {
   EditorOptionNumber,
   LabelField,
   PreviewLabel,
+  captionPositionOf,
   captionSkipProps,
   effectiveNumber,
   pruneOverrideKeys,
@@ -75,6 +76,7 @@ export function AttachmentEditor({ props, content, onChange, readOnly }) {
     props.max_count ?? 50,
   )
   const allowed = props.allowed_extensions ?? null
+  const capPos = captionPositionOf(content)
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
   const fileInputRef = useRef(null)
@@ -148,14 +150,16 @@ export function AttachmentEditor({ props, content, onChange, readOnly }) {
     if (!caption && files.length === 0) return null
     return (
       <div className="space-y-2">
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         {files.length > 0 && (
           <ul className="space-y-1.5">
             {files.map((file, idx) => (
@@ -185,18 +189,30 @@ export function AttachmentEditor({ props, content, onChange, readOnly }) {
             ))}
           </ul>
         )}
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
       </div>
     )
   }
 
   return (
     <div className="space-y-2">
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patch({ caption: v })}
-        placeholder={props.label}
-        {...captionSkipProps({ content, patch })}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
       <EditorOptionBar>
         <EditorOptionNumber
           label="최대 개수"
@@ -300,6 +316,14 @@ export function AttachmentEditor({ props, content, onChange, readOnly }) {
             onChange={(e) => handleFiles(e.target.files)}
           />
         </div>
+      )}
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
       )}
     </div>
   )

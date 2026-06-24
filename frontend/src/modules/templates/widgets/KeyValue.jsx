@@ -11,6 +11,7 @@ import {
   PreviewLabel,
   TextStyleField,
   captionSkipProps,
+  captionPositionOf,
   textStyleToClassName,
   textStyleToInlineStyle,
 } from './_shared'
@@ -150,6 +151,7 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
   const items = effectiveItems(content, props)
   const bodyTextClass = textStyleToClassName(props.text_style)
   const bodyTextStyle = textStyleToInlineStyle(props.text_style)
+  const capPos = captionPositionOf(content)
 
   function patch(next) {
     const merged = { ...data, ...next }
@@ -324,14 +326,16 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
     if (!caption && filledItems.length === 0) return null
     return (
       <div className="space-y-2">
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         {filledItems.length > 0 && (
           <div
             className={`grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 items-baseline text-sm ${bodyTextClass}`}
@@ -347,6 +351,16 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
             ))}
           </div>
         )}
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
       </div>
     )
   }
@@ -354,12 +368,14 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
   // ─── Edit render ───────────────────────────────────────────────────
   return (
     <div className="space-y-3">
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patch({ caption: v })}
-        placeholder={props.label}
-        {...captionSkipProps({ content, patch })}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
       {items.length === 0 ? (
         <div className="rounded-md border border-dashed bg-muted/20 px-3 py-4 text-center text-xs text-muted-foreground">
           아직 항목이 없습니다.
@@ -408,6 +424,14 @@ export function KeyValueEditor({ props, content, onChange, readOnly }) {
         >
           <Plus className="mr-1 h-3 w-3" />항목 추가
         </Button>
+      )}
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
       )}
     </div>
   )

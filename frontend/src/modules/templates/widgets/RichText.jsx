@@ -16,8 +16,11 @@ import {
   LabelField,
   PreviewLabel,
   TextStyleField,
+  captionSkipProps,
+  captionPositionOf,
   depthBodyClassName,
   depthBodyInlineStyle,
+  depthBodyBaseSizePx,
 } from './_shared'
 import {
   RichTextRowEditor,
@@ -507,6 +510,7 @@ function stillSpansMultipleRows(sel, container) {
 // --------------------------------------------------------------------------- //
 export function RichTextEditor({ props, content, onChange, readOnly }) {
   const caption = content?.caption ?? ''
+  const capPos = captionPositionOf(content)
   const items = useMemo(() => coerceRichTextItems(content), [content])
   const totalChars = useMemo(
     () => items.reduce((sum, it) => sum + (it.text?.length ?? 0), 0),
@@ -525,26 +529,15 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
     onChange(merged)
   }
 
-  function patchCaption(nextCaption) {
-    const merged = {
-      ...(content ?? {}),
-      caption: nextCaption,
-      items,
-    }
-    if (!merged.caption) delete merged.caption
-    if (!merged.items || merged.items.length === 0) delete merged.items
-    onChange(merged)
-  }
-
-  function patchSkipAutofill(next) {
-    const merged = { ...(content ?? {}), items }
-    if (next) {
-      // Entering skip mode also clears any existing caption (typed or
-      // auto-filled) so the block visibly drops its title in one step.
-      merged.caption_skip_autofill = true
-      delete merged.caption
-    } else {
-      delete merged.caption_skip_autofill
+  // caption 관련 부분 패치 — items(본문)와 기존 content 필드를 보존하면서 넘어온
+  // 키만 갱신한다. captionSkipProps 가 주는 onChangeRich/onChangeSkipAutofill/
+  // onChangePosition 이 이 patch 로 흘러, 다른 위젯과 동일하게 헤더에 rich 편집
+  // (글자크기·색·서식 버블 메뉴)을 쓸 수 있게 한다. undefined 로 온 키는 제거해
+  // content 를 스파스하게 유지(제목 생략/위치 해제 등).
+  function patchContent(partial) {
+    const merged = { ...(content ?? {}), items, ...partial }
+    for (const k of Object.keys(partial)) {
+      if (partial[k] === undefined) delete merged[k]
     }
     if (!merged.caption) delete merged.caption
     if (!merged.items || merged.items.length === 0) delete merged.items
@@ -567,24 +560,41 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
     (d) => depthBodyInlineStyle(props.text_style, props.depth_styles, d),
     [props.text_style, props.depth_styles],
   )
+  // depth 별 본문 기본 글자 px — 작성 시 버블 메뉴의 "기본 (N px)" 표기용.
+  const baseSizeFor = useCallback(
+    (d) => depthBodyBaseSizePx(props.text_style, props.depth_styles, d),
+    [props.text_style, props.depth_styles],
+  )
 
   if (readOnly) {
     const hasBody = items.some((it) => (it.text ?? '').trim() !== '')
     return (
       <div className="space-y-2">
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         {hasBody && (
           <OutlineView
             items={items}
             bodyClassFor={bodyClassFor}
             bodyStyleFor={bodyStyleFor}
+          />
+        )}
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
           />
         )}
       </div>
@@ -593,26 +603,34 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
 
   return (
     <div className="space-y-2">
-      <CaptionInput
-        value={caption}
-        onChange={patchCaption}
-        placeholder={props.label}
-        skipAutofill={content?.caption_skip_autofill}
-        color={content?.caption_color}
-        html={content?.caption_html}
-        onChangeSkipAutofill={patchSkipAutofill}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patchContent({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch: patchContent })}
+        />
+      )}
       <OutlineEditor
         items={items}
         onChange={patchItems}
         placeholder={props.placeholder || '대표 문장을 입력하고 Tab으로 상세를 들여쓰세요.'}
         bodyClassFor={bodyClassFor}
         bodyStyleFor={bodyStyleFor}
+        baseSizeFor={baseSizeFor}
       />
       {(min || max) && (
         <p className="text-[10px] text-muted-foreground text-right">
           {totalChars}자 {min ? `(최소 ${min})` : ''} {max ? `(최대 ${max})` : ''}
         </p>
+      )}
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patchContent({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch: patchContent })}
+        />
       )}
     </div>
   )
@@ -776,7 +794,7 @@ function RelationChipStatic({ relation }) {
 // --------------------------------------------------------------------------- //
 // Edit mode — outline with Tab depth, auto-prefix, inline relation picker
 // --------------------------------------------------------------------------- //
-function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFor }) {
+function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFor, baseSizeFor }) {
   // Each row exposes an imperative handle ({focus, setCaret, getCaret,
   // getTextLength, isAtStart, isAtEnd}) provided by RichTextRowEditor.
   const inputRefs = useRef(new Map())
@@ -1655,6 +1673,7 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
           }}
           bodyClassFor={bodyClassFor}
           bodyStyleFor={bodyStyleFor}
+          baseSizeFor={baseSizeFor}
         />
       ))}
       {crossRowSelection && crossRowFormat && (
@@ -1662,6 +1681,7 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
           ref={toolbarRef}
           rect={crossRowSelection.rect}
           format={crossRowFormat}
+          defaultSizePx={baseSizeFor ? baseSizeFor(0) : undefined}
           onToggleBold={() => {
             const turnOn = !crossRowFormat.bold
             applyCommandToCrossRowRange((editor, from, to) => {
@@ -1746,6 +1766,7 @@ function OutlineRow({
   onFocusNext,
   bodyClassFor,
   bodyStyleFor,
+  baseSizeFor,
 }) {
   const depth = clamp(item.depth ?? 0, 0, MAX_DEPTH)
   const showWarning = depth >= WARN_DEPTH
@@ -2038,6 +2059,7 @@ function OutlineRow({
             ref={(el) => setInputRef(index, el)}
             html={rowHtml}
             placeholder={placeholder}
+            defaultSizePx={baseSizeFor ? baseSizeFor(depth) : undefined}
             onChange={handleContent}
             onKeyDown={handleKeyDown}
             onPastePlain={onPastePlain}
@@ -2084,6 +2106,7 @@ const CrossRowToolbarShell = forwardRef(function CrossRowToolbarShell(
     onSetFontSize,
     onSetFontFamily,
     onSetColor,
+    defaultSizePx,
   },
   ref,
 ) {
@@ -2105,6 +2128,7 @@ const CrossRowToolbarShell = forwardRef(function CrossRowToolbarShell(
     >
       <RichTextFormatToolbarBody
         state={format}
+        defaultSizePx={defaultSizePx}
         actions={{
           toggleBold: onToggleBold,
           toggleItalic: onToggleItalic,

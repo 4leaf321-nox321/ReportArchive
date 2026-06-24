@@ -53,6 +53,7 @@ import {
   shiftMergesForRow,
   TextStyleField,
   captionSkipProps,
+  captionPositionOf,
   effectiveBool,
   effectiveNumber,
   pruneOverrideKeys,
@@ -434,6 +435,8 @@ const _BULK_TOOLBAR_STATE = {
 export function ComparisonEditor({ props, content, onChange, readOnly }) {
   const caption = content?.caption ?? ''
   const note = content?.note ?? ''
+  // 헤더(제목) 위치 — 'below' 면 내용 아래, 그 외엔 위(기본).
+  const capPos = captionPositionOf(content)
   // Effective cases — content.cases wins once the writer has touched the
   // header. Presence check (not length) so an explicitly emptied list
   // doesn't silently revert to template defaults. Matches the
@@ -1734,14 +1737,16 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     if (!caption && rows.length === 0 && !note.trim()) return null
     return (
       <div className={`space-y-2 ${textClass}`} style={textStyle}>
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         {rows.length > 0 && cases.length > 0 && (
           <div
             className={cn(
@@ -1892,6 +1897,16 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
             </table>
           </div>
         )}
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         <NoteInput value={note} readOnly color={content?.note_color} html={content?.note_html} />
       </div>
     )
@@ -1900,12 +1915,14 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
   // ─── Edit render ─────────────────────────────────────────────────────
   return (
     <div className={`space-y-3 ${textClass}`} style={textStyle}>
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patch({ caption: v })}
-        placeholder={props.label}
-        {...captionSkipProps({ content, patch })}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
       <EditorOptionBar title="레이아웃">
         <EditorOptionToggle
           label="가로 스크롤"
@@ -2590,6 +2607,14 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           )}
         </Button>
       </div>
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
       <NoteInput
         value={note}
         onChange={(v) => patch({ note: v })}

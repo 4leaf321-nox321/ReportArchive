@@ -4,6 +4,7 @@ import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import {
   CaptionInput,
+  captionPositionOf,
   DEFAULT_BODY_FONT_PX,
   EditorOptionBar,
   EditorOptionSegmented,
@@ -130,6 +131,7 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
   // 현행 기본(노드 text-base≈20.8px / 설명 text-xs)을 그대로 유지하고,
   // 설정되면 그 값으로(설명은 0.8배). 예전엔 하드코딩돼 속성이 안 먹었다.
   const nodeFontPx = props.text_style?.font_size_px ?? null
+  const capPos = captionPositionOf(content)
 
   function patch(next) {
     const merged = {
@@ -213,14 +215,16 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
     if (!caption && items.length === 0) return null
     return (
       <div className={`space-y-2 ${textClass}`} style={textStyle}>
-        <CaptionInput
-          value={caption}
-          readOnly
-          placeholder={props.label}
-          skipAutofill={content?.caption_skip_autofill}
-          color={content?.caption_color}
-          html={content?.caption_html}
-        />
+        {capPos !== 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
         {items.length > 0 ? (
           <FlowchartCanvas items={items} orientation={orientation} fontSizePx={nodeFontPx} />
         ) : (
@@ -228,18 +232,30 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
             (순서도 항목 없음)
           </p>
         )}
+        {capPos === 'below' && (
+          <CaptionInput
+            value={caption}
+            readOnly
+            placeholder={props.label}
+            skipAutofill={content?.caption_skip_autofill}
+            color={content?.caption_color}
+            html={content?.caption_html}
+          />
+        )}
       </div>
     )
   }
 
   return (
     <div className={`space-y-3 ${textClass}`} style={textStyle}>
-      <CaptionInput
-        value={caption}
-        onChange={(v) => patch({ caption: v })}
-        placeholder={props.label}
-        {...captionSkipProps({ content, patch })}
-      />
+      {capPos !== 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
       <EditorOptionBar>
         <EditorOptionSegmented
           label="방향"
@@ -358,6 +374,14 @@ export function FlowchartEditor({ props, content, onChange, readOnly }) {
         <Plus className="mr-1 h-3 w-3" />
         단계 추가
       </Button>
+      {capPos === 'below' && (
+        <CaptionInput
+          value={caption}
+          onChange={(v) => patch({ caption: v })}
+          placeholder={props.label}
+          {...captionSkipProps({ content, patch })}
+        />
+      )}
     </div>
   )
 }

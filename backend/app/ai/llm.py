@@ -21,6 +21,7 @@ env(.env):
     LLM_TIMEOUT_S = 120
     LLM_MAX_TOKENS= 1024
     LLM_REASONING_EFFORT = low|medium|high   (빈 값=전달 안 함)
+    LLM_NO_PROXY  = true   (폐쇄망 직결 — httpx 가 HTTP_PROXY env 우회. 기본 true)
 """
 from __future__ import annotations
 
@@ -92,6 +93,7 @@ def _chat_ollama(
             f"{base}/api/chat",
             json={"model": model, "messages": messages, "stream": False, "options": options},
             timeout=timeout,
+            trust_env=not settings.llm_no_proxy,
         )
         resp.raise_for_status()
     except httpx.HTTPError as exc:
@@ -150,7 +152,8 @@ def _chat_openai(
 
     try:
         resp = httpx.post(
-            f"{base}/chat/completions", json=body, headers=headers, timeout=timeout
+            f"{base}/chat/completions", json=body, headers=headers, timeout=timeout,
+            trust_env=not settings.llm_no_proxy,
         )
         resp.raise_for_status()
     except httpx.HTTPError as exc:
@@ -235,11 +238,17 @@ def list_models(*, timeout: Optional[float] = None) -> list[str]:
             headers = {}
             if settings.llm_api_key:
                 headers["Authorization"] = f"Bearer {settings.llm_api_key}"
-            resp = httpx.get(f"{base}/models", headers=headers, timeout=timeout)
+            resp = httpx.get(
+                f"{base}/models", headers=headers, timeout=timeout,
+                trust_env=not settings.llm_no_proxy,
+            )
             resp.raise_for_status()
             return [m.get("id") for m in resp.json().get("data", []) if m.get("id")]
         if backend == "ollama":
-            resp = httpx.get(f"{base}/api/tags", timeout=timeout)
+            resp = httpx.get(
+                f"{base}/api/tags", timeout=timeout,
+                trust_env=not settings.llm_no_proxy,
+            )
             resp.raise_for_status()
             return [m.get("name") for m in resp.json().get("models", []) if m.get("name")]
     except httpx.HTTPError as exc:

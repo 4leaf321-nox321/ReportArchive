@@ -125,6 +125,10 @@ class Settings(BaseSettings):
     llm_reasoning_effort: str = Field(default="")
     # 시스템 관리자는 엔티틀먼트(§E) 없이도 B300 기능 사용 가능(테스트·운영 편의). 기본 ON.
     ai_admin_bypass: bool = Field(default=True)
+    # B300 은 폐쇄망 내부 직결 — httpx 가 호스트의 HTTP_PROXY/HTTPS_PROXY env 를 집어
+    # 내부 주소까지 프록시로 보내면 404(curl 은 --noproxy 로 우회). 기본 True = 프록시
+    # 우회(trust_env=False). 외부 OpenAI 등 프록시 경유가 필요한 환경이면 .env 로 false.
+    llm_no_proxy: bool = Field(default=True)
 
     @property
     def is_development(self) -> bool:

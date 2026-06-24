@@ -208,3 +208,47 @@ class EntityAlias(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )
+
+
+# 관계 종류 — 우선 part_of 하나. String 컬럼이라 새 종류 추가에 마이그레이션이
+# 필요 없다(서비스 레이어가 허용 집합을 검증).
+RELATION_PART_OF = "part_of"
+ALLOWED_RELATIONS = frozenset({RELATION_PART_OF})
+
+
+class EntityRelation(Base):
+    """엔티티 간 방향성 관계 (p54). src --relation--> dst.
+
+    part_of: src=자식, dst=부모 (부품 part_of 모델). M:N — 한 자식이 여러
+    부모에 속할 수 있다. 양쪽 FK CASCADE 라 엔티티 삭제 시 관계도 정리된다.
+    (src, dst, relation) 유니크로 중복 방지.
+    """
+
+    __tablename__ = "entity_relations"
+    __table_args__ = (
+        UniqueConstraint(
+            "src_entity_id",
+            "dst_entity_id",
+            "relation",
+            name="uq_entity_relations",
+        ),
+        Index("ix_entity_relations_dst", "dst_entity_id", "relation"),
+        Index("ix_entity_relations_src", "src_entity_id", "relation"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    src_entity_id: Mapped[int] = mapped_column(
+        ForeignKey("entities.id", ondelete="CASCADE"), nullable=False
+    )
+    dst_entity_id: Mapped[int] = mapped_column(
+        ForeignKey("entities.id", ondelete="CASCADE"), nullable=False
+    )
+    relation: Mapped[str] = mapped_column(
+        String(32), default=RELATION_PART_OF, nullable=False
+    )
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )

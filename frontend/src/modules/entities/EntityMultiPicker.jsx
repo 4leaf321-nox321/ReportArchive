@@ -35,6 +35,10 @@ export function EntityMultiPicker({
   type,
   value,
   onChange,
+  // 캐스케이드(p54) — 다른 축에서 현재 선택된 엔티티 id 배열. 이 축에 그
+  // 부모(part_of)로 묶인 값이 있으면 picker 를 그것들로 좁힌다. 비거나 관련
+  // 값이 없으면 좁히지 않음(전체).
+  relatedTo,
 }) {
   const selected = Array.isArray(value) ? value : []
   const isMulti = !!type?.multi
@@ -57,7 +61,12 @@ export function EntityMultiPicker({
       {selected.map((e) => (
         <Chip key={e.id} entity={e} onRemove={() => remove(e.id)} />
       ))}
-      <AddPopover type={type} selected={selected} onPick={pick} />
+      <AddPopover
+        type={type}
+        selected={selected}
+        onPick={pick}
+        relatedTo={relatedTo}
+      />
     </div>
   )
 }
@@ -114,14 +123,24 @@ function Chip({ entity, onRemove }) {
  * parent) so re-mounting between dialog opens resets the search box —
  * stale half-typed queries don't carry over to the next session.
  */
-function AddPopover({ type, selected, onPick }) {
+function AddPopover({ type, selected, onPick, relatedTo }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  // 캐스케이드 좁힘 on/off. relatedTo 가 있으면 기본 좁힘(true), 사용자가
+  // "전체 보기" 로 끌 수 있다.
+  const [narrow, setNarrow] = useState(true)
   const debounceRef = useRef(null)
   const inputRef = useRef(null)
+
+  // relatedTo 배열은 매 렌더 새 참조 — 안정 키로 만들어 effect dep 에 쓴다.
+  const relatedKey = Array.isArray(relatedTo)
+    ? relatedTo.filter((x) => x != null).join(',')
+    : ''
+  const hasRelated = relatedKey.length > 0
+  const applyNarrow = hasRelated && narrow
 
   // 입력 거버넌스(p53). closed 축은 사용자 즉석 추가를 막고(선택만), pattern 이
   // 있으면 새 값 형식을 검증한다. 서버가 최종 backstop 이지만 UI 에서 먼저
@@ -165,6 +184,7 @@ function AddPopover({ type, selected, onPick }) {
           typeId: type.id,
           q: query || undefined,
           limit: 100,
+          relatedTo: applyNarrow ? relatedKey.split(',').map(Number) : undefined,
         })
         setItems(res?.items ?? [])
       } catch (e) {
@@ -177,7 +197,7 @@ function AddPopover({ type, selected, onPick }) {
     }
     debounceRef.current = setTimeout(fire, query ? 250 : 0)
     return () => debounceRef.current && clearTimeout(debounceRef.current)
-  }, [open, query, type.id, type.label])
+  }, [open, query, type.id, type.label, applyNarrow, relatedKey])
 
   const trimmedQuery = query.trim()
   // Hide values already selected — re-picking the same chip would be a
@@ -255,6 +275,20 @@ function AddPopover({ type, selected, onPick }) {
             />
           </div>
 
+          {/* 캐스케이드 좁힘 토글 — 다른 축 선택과 관련된 값만 볼지/전체를 볼지. */}
+          {hasRelated && (
+            <div className="flex items-center justify-between px-0.5 text-[11px] text-muted-foreground">
+              <span>{narrow ? '선택과 관련된 값만 표시' : '전체 표시'}</span>
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 hover:bg-accent hover:text-foreground"
+                onClick={() => setNarrow((v) => !v)}
+              >
+                {narrow ? '전체 보기' : '관련만 보기'}
+              </button>
+            </div>
+          )}
+
           <div className="max-h-60 overflow-y-auto rounded-md border bg-background">
             {loading && (
               <div className="px-3 py-2 text-center text-xs text-muted-foreground">
@@ -265,7 +299,9 @@ function AddPopover({ type, selected, onPick }) {
               <div className="px-3 py-3 text-center text-xs text-muted-foreground">
                 {trimmedQuery
                   ? `'${trimmedQuery}' 와 일치하는 값이 없습니다.`
-                  : '등록된 값이 없습니다.'}
+                  : applyNarrow
+                    ? '선택과 관련된 값이 없습니다 — “전체 보기”를 눌러보세요.'
+                    : '등록된 값이 없습니다.'}
               </div>
             )}
             {!loading &&

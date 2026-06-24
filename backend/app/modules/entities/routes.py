@@ -29,6 +29,9 @@ from app.modules.entities.schemas import (
     EntityListResponse,
     EntityMergeRequest,
     EntityRead,
+    EntityRelationCreate,
+    EntityRelationItem,
+    EntityRelationsResponse,
     EntityTypeCreate,
     EntityTypeListResponse,
     EntityTypeRead,
@@ -189,6 +192,7 @@ def list_entities(
     include_deprecated: bool = Query(default=False),
     limit: int = Query(default=200, ge=1, le=500),
     with_usage: bool = Query(default=False),
+    related_to: Optional[list[int]] = Query(default=None),
     actor: EntityActor = Depends(entity_actor),
     db: Session = Depends(get_db),
 ):
@@ -211,6 +215,7 @@ def list_entities(
         include_deprecated=include_deprecated,
         limit=limit,
         with_usage=with_usage,
+        related_to=related_to or None,
     )
     if with_usage:
         items = [_to_read(r, usage_count=cnt) for (r, cnt) in rows]
@@ -419,6 +424,97 @@ def delete_entity_alias(
     label = alias.alias
     services.delete_alias(db, alias)
     return success_response(data=None, message=f"별칭 '{label}' 삭제됨.")
+
+
+def _relation_item(counterpart, rel) -> EntityRelationItem:
+    """관계 행 + 상대 엔티티 → 응답 아이템."""
+    return EntityRelationItem(
+        relation_id=rel.id,
+        relation=rel.relation,
+        entity_id=counterpart.id,
+        value=counterpart.value,
+        type_id=counterpart.type_id,
+        type_slug=counterpart.entity_type.slug if counterpart.entity_type else "",
+        code=counterpart.code,
+    )
+
+
+@entities_router.get("/{entity_id}/relations")
+def list_entity_relations(
+    entity_id: int,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 이 엔티티의 part_of 관계. parents = 이 값이 속한 상위들,
+    children = 이 값에 묶인 하위들. 관리 화면의 관계 편집용."""
+    _require_admin(actor)
+    row = services.get_entity(db, entity_id)
+    if not row:
+        return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
+    parents, children = services.list_relations(db, entity_id=entity_id)
+    parent_items = []
+    for r in parents:
+        cp = services.get_entity(db, r.dst_entity_id)
+        if cp:
+            parent_items.append(_relation_item(cp, r))
+    child_items = []
+    for r in children:
+        cp = services.get_entity(db, r.src_entity_id)
+        if cp:
+            child_items.append(_relation_item(cp, r))
+    return success_response(
+        data=EntityRelationsResponse(parents=parent_items, children=child_items)
+    )
+
+
+@entities_router.post("/{entity_id}/relations", status_code=201)
+def add_entity_relation(
+    entity_id: int,
+    payload: EntityRelationCreate,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 상위(part_of) 추가. entity_id 가 자식(src), dst 가 부모.
+    자기참조·중복·순환은 400."""
+    _require_admin(actor)
+    src = services.get_entity(db, entity_id)
+    if not src:
+        return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
+    dst = services.get_entity(db, payload.dst_entity_id)
+    if not dst:
+        return not_found_response(
+            f"상위 대상 엔티티를 찾을 수 없습니다: {payload.dst_entity_id}"
+        )
+    try:
+        rel = services.add_relation(
+            db,
+            src=src,
+            dst=dst,
+            relation=payload.relation,
+            creator_user_id=actor.user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return created_response(data=_relation_item(dst, rel))
+
+
+@entities_router.delete("/{entity_id}/relations/{relation_id}")
+def delete_entity_relation(
+    entity_id: int,
+    relation_id: int,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 관계 삭제. entity_id 가 관계의 한쪽(자식이든 부모든)이어야
+    한다(양쪽 관리 화면 모두에서 끊을 수 있게)."""
+    _require_admin(actor)
+    rel = services.get_relation(db, relation_id)
+    if not rel or (
+        rel.src_entity_id != entity_id and rel.dst_entity_id != entity_id
+    ):
+        return not_found_response(f"관계를 찾을 수 없습니다: {relation_id}")
+    services.delete_relation(db, rel)
+    return success_response(data=None, message="관계가 삭제됐습니다.")
 
 
 @entities_router.delete("/{entity_id}")

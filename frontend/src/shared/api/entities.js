@@ -74,6 +74,31 @@ export async function deleteEntityAlias(entityId, aliasId) {
 }
 
 /**
+ * Admin-only — 이 엔티티의 part_of 관계.
+ *   `{ parents: [...], children: [...] }` (각 항목 { relation_id, relation, entity_id, value, type_id, type_slug, code })
+ * parents = 이 값이 속한 상위들, children = 이 값에 묶인 하위들.
+ */
+export async function listEntityRelations(entityId) {
+  const res = await apiClient.get(`${BASE}/${entityId}/relations`)
+  return extractData(res)
+}
+
+/** Admin-only — 상위(part_of) 추가. entityId 가 자식, dstEntityId 가 부모. */
+export async function addEntityRelation(entityId, dstEntityId, relation = 'part_of') {
+  const res = await apiClient.post(`${BASE}/${entityId}/relations`, {
+    dst_entity_id: dstEntityId,
+    relation,
+  })
+  return extractData(res)
+}
+
+/** Admin-only — 관계 삭제(자식·부모 어느 쪽 화면에서든). */
+export async function deleteEntityRelation(entityId, relationId) {
+  const res = await apiClient.delete(`${BASE}/${entityId}/relations/${relationId}`)
+  return extractData(res)
+}
+
+/**
  * Picker list of entity values. Defaults to active-only; admin pages
  * pass `includeDeprecated=true` to see the full set.
  *
@@ -88,13 +113,21 @@ export async function listEntities({
   includeDeprecated = false,
   limit = 200,
   withUsage = false,
+  relatedTo,
 } = {}) {
-  const params = { limit }
-  if (typeId != null) params.type_id = typeId
-  if (q && q.trim()) params.q = q.trim()
-  if (includeDeprecated) params.include_deprecated = true
-  if (withUsage) params.with_usage = true
-  const res = await apiClient.get(BASE, { params })
+  // URLSearchParams 로 직접 조립 — related_to 는 반복 파라미터
+  // (related_to=1&related_to=2) 라야 FastAPI list[int] 에 바인딩된다.
+  // axios 기본 배열 직렬화(related_to[]=1)는 안 맞음.
+  const params = new URLSearchParams()
+  params.set('limit', String(limit))
+  if (typeId != null) params.set('type_id', String(typeId))
+  if (q && q.trim()) params.set('q', q.trim())
+  if (includeDeprecated) params.set('include_deprecated', 'true')
+  if (withUsage) params.set('with_usage', 'true')
+  if (Array.isArray(relatedTo)) {
+    for (const id of relatedTo) if (id != null) params.append('related_to', String(id))
+  }
+  const res = await apiClient.get(`${BASE}?${params.toString()}`)
   return extractData(res)
 }
 

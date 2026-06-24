@@ -5,6 +5,7 @@ import {
   Link2Off,
   Lock,
   LockOpen,
+  Network,
   Pencil,
   Plus,
   RotateCcw,
@@ -41,13 +42,16 @@ import { ErrorState } from '@/shared/components/ErrorState'
 import { useAsync } from '@/shared/hooks/useAsync'
 import {
   addEntityAlias,
+  addEntityRelation,
   createEntity,
   createEntityType,
   deleteEntity,
   deleteEntityAlias,
+  deleteEntityRelation,
   deleteEntityType,
   listEntities,
   listEntityAliases,
+  listEntityRelations,
   listEntityTypes,
   listEntityUsage,
   mergeEntity,
@@ -433,6 +437,7 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
   const [deleteAxisOpen, setDeleteAxisOpen] = useState(false)
   const [govOpen, setGovOpen] = useState(false)
   const [aliasTarget, setAliasTarget] = useState(null)
+  const [relTarget, setRelTarget] = useState(null)
 
   const { data, loading, error } = useAsync(
     () =>
@@ -534,7 +539,7 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
       {
         key: '_actions',
         header: '',
-        headerClassName: 'w-[180px]',
+        headerClassName: 'w-[220px]',
         render: (r) => (
           <div className="flex items-center justify-end gap-1">
             <Button
@@ -584,6 +589,18 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
               }}
             >
               <Tags className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0"
+              title="관계/계층 관리 — 상위(part_of) 연결. 캐스케이드 picker·롤업에 사용"
+              onClick={(e) => {
+                e.stopPropagation()
+                setRelTarget(r)
+              }}
+            >
+              <Network className="h-3.5 w-3.5" />
             </Button>
             <Button
               variant="ghost"
@@ -720,6 +737,13 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
           type={type}
           entity={aliasTarget}
           onClose={() => setAliasTarget(null)}
+        />
+      )}
+      {relTarget && (
+        <RelationsDialog
+          type={type}
+          entity={relTarget}
+          onClose={() => setRelTarget(null)}
         />
       )}
       {createOpen && (
@@ -1212,6 +1236,221 @@ function AliasDialog({ type, entity, onClose }) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/**
+ * 관계/계층 관리 — 이 엔티티의 상위(part_of) 연결을 추가/제거하고, 하위
+ * (이 값에 묶인 것들)를 보여준다. 상위를 걸면 작성 picker 가 캐스케이드로
+ * 좁혀지고(부모 선택 → 이 값이 후보로), 롤업 대시보드의 토대가 된다.
+ */
+function RelationsDialog({ type, entity, onClose }) {
+  const [rel, setRel] = useState(null) // { parents, children } | null=loading
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState([])
+  const [searching, setSearching] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+
+  async function reload() {
+    try {
+      const res = await listEntityRelations(entity.id)
+      setRel({ parents: res?.parents ?? [], children: res?.children ?? [] })
+    } catch (err) {
+      toast.error('관계 불러오기 실패', {
+        description: String(err?.message ?? err),
+      })
+      setRel({ parents: [], children: [] })
+    }
+  }
+  useEffect(() => {
+    reload()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entity.id])
+
+  // 상위 후보 검색 — 전체 축에서(부모는 보통 다른 축). 자기 자신·이미 상위인
+  // 것은 제외.
+  useEffect(() => {
+    const q = query.trim()
+    if (!q) {
+      setResults([])
+      return
+    }
+    let cancelled = false
+    setSearching(true)
+    const t = setTimeout(async () => {
+      try {
+        const res = await listEntities({ q, limit: 20 })
+        if (cancelled) return
+        const parentIds = new Set((rel?.parents ?? []).map((p) => p.entity_id))
+        setResults(
+          (res?.items ?? []).filter(
+            (e) => e.id !== entity.id && !parentIds.has(e.id),
+          ),
+        )
+      } catch {
+        if (!cancelled) setResults([])
+      } finally {
+        if (!cancelled) setSearching(false)
+      }
+    }, 250)
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
+  }, [query, entity.id, rel])
+
+  async function addParent(dst) {
+    setSubmitting(true)
+    try {
+      await addEntityRelation(entity.id, dst.id)
+      setQuery('')
+      setResults([])
+      await reload()
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err?.message || '상위 추가 실패',
+      )
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function removeRelation(relationId) {
+    try {
+      await deleteEntityRelation(entity.id, relationId)
+      await reload()
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err?.message || '관계 삭제 실패',
+      )
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Network className="h-4 w-4" /> 관계 — {entity.value}
+          </DialogTitle>
+          <DialogDescription>
+            <strong>{type.label}</strong> ‘{entity.value}’ 의 상위(part_of)를
+            연결합니다. 예: 부품을 모델에 연결하면, 작성 시 그 모델을 고른
+            사용자에게 이 부품이 후보로 좁혀집니다.
+          </DialogDescription>
+        </DialogHeader>
+
+        {/* 상위 추가 검색 */}
+        <div className="space-y-1.5">
+          <Label className="text-xs">상위(part_of) 추가</Label>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="상위로 묶을 값 검색 (전체 축)…"
+              className="h-8 pl-7 text-sm"
+            />
+          </div>
+          {query.trim() && (
+            <div className="max-h-40 overflow-y-auto rounded-md border">
+              {searching ? (
+                <p className="px-3 py-2 text-center text-xs text-muted-foreground">
+                  검색 중…
+                </p>
+              ) : results.length === 0 ? (
+                <p className="px-3 py-2 text-center text-xs text-muted-foreground">
+                  결과 없음
+                </p>
+              ) : (
+                results.map((e) => (
+                  <button
+                    key={e.id}
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => addParent(e)}
+                    className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-sm hover:bg-accent"
+                  >
+                    <span className="truncate">{e.value}</span>
+                    <Badge variant="outline" className="shrink-0 text-[9px]">
+                      {e.type_slug}
+                    </Badge>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* 현재 상위 */}
+        <div className="space-y-1">
+          <Label className="text-xs text-muted-foreground">상위 (이 값이 속한)</Label>
+          <RelationList
+            items={rel?.parents}
+            empty="상위가 없습니다."
+            onRemove={removeRelation}
+          />
+        </div>
+
+        {/* 하위 (읽기 정보) */}
+        <div className="space-y-1">
+          <Label className="text-xs text-muted-foreground">하위 (이 값에 묶인)</Label>
+          <RelationList
+            items={rel?.children}
+            empty="하위가 없습니다."
+            onRemove={removeRelation}
+          />
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={onClose}>
+            닫기
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function RelationList({ items, empty, onRemove }) {
+  if (items == null) {
+    return (
+      <p className="rounded-md border px-3 py-2 text-center text-xs text-muted-foreground">
+        불러오는 중…
+      </p>
+    )
+  }
+  if (items.length === 0) {
+    return (
+      <p className="rounded-md border px-3 py-2 text-center text-xs text-muted-foreground">
+        {empty}
+      </p>
+    )
+  }
+  return (
+    <div className="max-h-40 overflow-y-auto rounded-md border">
+      {items.map((it) => (
+        <div
+          key={it.relation_id}
+          className="flex items-center justify-between gap-2 border-b px-2.5 py-1.5 text-sm last:border-b-0"
+        >
+          <span className="flex items-center gap-1.5 truncate">
+            <span className="truncate">{it.value}</span>
+            <Badge variant="outline" className="shrink-0 text-[9px]">
+              {it.type_slug}
+            </Badge>
+          </span>
+          <button
+            type="button"
+            onClick={() => onRemove(it.relation_id)}
+            className="shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+            title="관계 삭제"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      ))}
+    </div>
   )
 }
 

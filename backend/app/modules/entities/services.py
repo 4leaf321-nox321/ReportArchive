@@ -15,9 +15,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.modules.entities.models import (
+    ALLOWED_RELATIONS,
+    RELATION_PART_OF,
     Entity,
     EntityAlias,
     EntityEntryPolicy,
+    EntityRelation,
     EntityStatus,
     EntityType,
     ReportEntity,
@@ -214,6 +217,15 @@ def value_matches_pattern(pattern: Optional[str], value: str) -> bool:
         return True
 
 
+def _related_to_subquery(related_to: list[int]):
+    """related_to(부모 id 들)에 part_of 로 묶인 자식 엔티티 id 서브쿼리.
+    캐스케이드 picker 가 "선택한 모델의 부품만" 같은 좁힘에 쓴다."""
+    return select(EntityRelation.src_entity_id).where(
+        EntityRelation.dst_entity_id.in_(related_to),
+        EntityRelation.relation == RELATION_PART_OF,
+    )
+
+
 def list_entities(
     db: Session,
     *,
@@ -222,6 +234,7 @@ def list_entities(
     include_deprecated: bool = False,
     limit: int = 200,
     with_usage: bool = False,
+    related_to: Optional[list[int]] = None,
 ) -> list[Entity] | list[tuple[Entity, int]]:
     """Picker list — filters on axis + search + (optionally) status.
 
@@ -250,6 +263,8 @@ def list_entities(
                     func.lower(Entity.description).like(needle),
                 )
             )
+        if related_to:
+            stmt = stmt.where(Entity.id.in_(_related_to_subquery(related_to)))
         stmt = stmt.order_by(Entity.value).limit(limit)
         return list(db.execute(stmt).scalars())
 
@@ -281,6 +296,8 @@ def list_entities(
                 func.lower(Entity.description).like(needle),
             )
         )
+    if related_to:
+        stmt = stmt.where(Entity.id.in_(_related_to_subquery(related_to)))
     stmt = stmt.order_by(Entity.value).limit(limit)
     return [(row, int(cnt or 0)) for row, cnt in db.execute(stmt).all()]
 
@@ -469,6 +486,46 @@ def merge_entities(
             )
         )
 
+    # 관계 이관 (p54) — src 의 part_of 관계(부모/자식 양쪽)를 into 로 옮긴다.
+    # into 로 옮겼을 때 자기참조가 되거나(상대가 into) 이미 같은 관계가 있으면
+    # 버린다.
+    def _rel_exists(s: int, d: int, rel: str) -> bool:
+        return (
+            db.execute(
+                select(EntityRelation).where(
+                    EntityRelation.src_entity_id == s,
+                    EntityRelation.dst_entity_id == d,
+                    EntityRelation.relation == rel,
+                )
+            ).scalar_one_or_none()
+            is not None
+        )
+
+    for r in list(
+        db.execute(
+            select(EntityRelation).where(EntityRelation.src_entity_id == src.id)
+        ).scalars()
+    ):
+        if r.dst_entity_id == into.id or _rel_exists(
+            into.id, r.dst_entity_id, r.relation
+        ):
+            db.delete(r)
+        else:
+            r.src_entity_id = into.id
+        db.flush()
+    for r in list(
+        db.execute(
+            select(EntityRelation).where(EntityRelation.dst_entity_id == src.id)
+        ).scalars()
+    ):
+        if r.src_entity_id == into.id or _rel_exists(
+            r.src_entity_id, into.id, r.relation
+        ):
+            db.delete(r)
+        else:
+            r.dst_entity_id = into.id
+        db.flush()
+
     db.flush()
     db.delete(src)
     db.commit()
@@ -560,6 +617,108 @@ def add_alias(
 
 
 def delete_alias(db: Session, row: EntityAlias) -> int:
+    db.delete(row)
+    db.commit()
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# Entity relations — 계층/관계(part_of). 캐스케이드 picker·롤업의 토대.
+# --------------------------------------------------------------------------- #
+def _ancestors_up(
+    db: Session, *, start_id: int, relation: str, max_depth: int = 20
+) -> set[int]:
+    """start 에서 part_of 를 따라 위(부모)로 올라가며 만나는 모든 조상 id.
+    사이클 가드용. max_depth 로 폭주 방지."""
+    seen: set[int] = set()
+    frontier = [start_id]
+    depth = 0
+    while frontier and depth < max_depth:
+        parents = db.execute(
+            select(EntityRelation.dst_entity_id).where(
+                EntityRelation.src_entity_id.in_(frontier),
+                EntityRelation.relation == relation,
+            )
+        ).scalars().all()
+        nxt = [p for p in parents if p not in seen]
+        for p in nxt:
+            seen.add(p)
+        frontier = nxt
+        depth += 1
+    return seen
+
+
+def add_relation(
+    db: Session,
+    *,
+    src: Entity,
+    dst: Entity,
+    relation: str = RELATION_PART_OF,
+    creator_user_id: Optional[int] = None,
+) -> EntityRelation:
+    """src --relation--> dst 추가. part_of 면 src=자식, dst=부모. 자기참조·중복·
+    사이클(이미 dst 가 src 의 후손이면)을 막는다. 이미 있으면 멱등 반환."""
+    if relation not in ALLOWED_RELATIONS:
+        raise ValueError(f"지원하지 않는 관계 종류입니다: {relation}")
+    if src.id == dst.id:
+        raise ValueError("자기 자신과는 관계를 맺을 수 없습니다.")
+
+    existing = db.execute(
+        select(EntityRelation).where(
+            EntityRelation.src_entity_id == src.id,
+            EntityRelation.dst_entity_id == dst.id,
+            EntityRelation.relation == relation,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    # 사이클: src part_of dst 를 더하면 dst→…→src 경로가 이미 있을 때 순환.
+    # = dst 에서 위로 올라가 src 를 만나면 거부.
+    if src.id in _ancestors_up(db, start_id=dst.id, relation=relation):
+        raise ValueError("순환 관계가 되어 추가할 수 없습니다.")
+
+    row = EntityRelation(
+        src_entity_id=src.id,
+        dst_entity_id=dst.id,
+        relation=relation,
+        created_by_user_id=creator_user_id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def get_relation(db: Session, relation_id: int) -> Optional[EntityRelation]:
+    return db.get(EntityRelation, relation_id)
+
+
+def list_relations(
+    db: Session, *, entity_id: int, relation: str = RELATION_PART_OF
+) -> tuple[list[EntityRelation], list[EntityRelation]]:
+    """(parents, children). parents = 이 엔티티가 part_of 한 상위들(src=this),
+    children = 이 엔티티에 part_of 로 묶인 하위들(dst=this)."""
+    parents = list(
+        db.execute(
+            select(EntityRelation).where(
+                EntityRelation.src_entity_id == entity_id,
+                EntityRelation.relation == relation,
+            )
+        ).scalars()
+    )
+    children = list(
+        db.execute(
+            select(EntityRelation).where(
+                EntityRelation.dst_entity_id == entity_id,
+                EntityRelation.relation == relation,
+            )
+        ).scalars()
+    )
+    return parents, children
+
+
+def delete_relation(db: Session, row: EntityRelation) -> int:
     db.delete(row)
     db.commit()
     return 0

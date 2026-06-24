@@ -52,6 +52,30 @@ class EntityAliasCreate(BaseModel):
     alias: str = Field(..., min_length=1, max_length=255)
 
 
+class EntityRelationItem(BaseModel):
+    """관계 한 건의 상대 엔티티 + 관계 메타. parents/children 양쪽에서 쓴다."""
+
+    relation_id: int
+    relation: str
+    entity_id: int
+    value: str
+    type_id: int
+    type_slug: str
+    code: Optional[str] = None
+
+
+class EntityRelationsResponse(BaseModel):
+    """parents = 이 엔티티가 part_of 한 상위들, children = 이 엔티티에 묶인 하위들."""
+
+    parents: list[EntityRelationItem]
+    children: list[EntityRelationItem]
+
+
+class EntityRelationCreate(BaseModel):
+    dst_entity_id: int
+    relation: str = "part_of"
+
+
 class EntityTypeListResponse(BaseModel):
     items: list[EntityTypeRead]
 

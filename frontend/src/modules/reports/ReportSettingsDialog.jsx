@@ -1138,6 +1138,9 @@ export function EntityTagsSection({ entities, onChange, templateIds }) {
                 type={t}
                 value={byTypeSlug.get(t.slug) ?? []}
                 onChange={(next) => setAxisValue(t.slug, next)}
+                relatedTo={(entities || [])
+                  .filter((e) => (e.type_slug ?? '') !== t.slug)
+                  .map((e) => e.id)}
               />
             </div>
           </div>

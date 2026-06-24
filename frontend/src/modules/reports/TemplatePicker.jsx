@@ -37,8 +37,10 @@ export function TemplatePicker({ onPick, compact = false, reloadKey, presetCount
   const workspaceName = (s) =>
     (workspaces ?? []).find((w) => w.slug === s)?.name ?? s
 
+  // 작성 picker — 모든 사용자가 모든 템플릿으로 보고서를 시작할 수 있어야 하므로
+  // 소유 부서 무관 전체를 가져온다(scope:'all'). 분류는 useScopeCategories 가 한다.
   const { data: templates, loading, error, reload } = useAsync(
-    () => listTemplates(),
+    () => listTemplates({ scope: 'all' }),
     [reloadKey]
   )
   const { data: categories } = useAsync(() => listTemplateCategories(), [])

@@ -27,7 +27,7 @@ from app.database import get_db
 from app.modules.auth.services import decode_access_token
 from app.modules.users import pat
 from app.modules.users.models import Role, User, WorkspaceMember
-from app.modules.workspaces.models import Workspace, WorkspaceKind
+from app.modules.workspaces.models import Workspace, WorkspaceKind, WorkspaceStatus
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -44,6 +44,11 @@ class CurrentUser:
     # role 은 편의상 user 로 합성하지만, 이 플래그가 서면 모든 쓰기·곁다리는
     # 거부되고 가시성은 "공개분만" 으로 좁혀진다(can_read_report 참조).
     public_viewer: bool = False
+    # 보관된 TF(archived) 에 멤버로 진입(TF조직_설계.md §7). public_viewer 와
+    # 달리 **멤버 가시성은 유지**(자기 TF 자료를 읽을 수 있어야 함)하되 쓰기·
+    # 게시·댓글만 막는 읽기전용. public_viewer 로 합성하면 가시성이 grant 기반
+    # 으로 좁혀져 TF 자체 자료가 안 보이므로 별도 플래그로 둔다.
+    read_only: bool = False
 
     @property
     def is_manager(self) -> bool:
@@ -62,8 +67,12 @@ class CurrentUser:
     def can_write_reports(self) -> bool:
         # 모든 부서 멤버(매니저/사용자)는 보고서·종합보고를 작성·편집.
         # 가상 부서(_global 등)는 require_writer 가 별도로 거절. 외부 공개
-        # 열람자(public_viewer)는 멤버가 아니므로 쓰기 불가.
-        return not self.public_viewer and self.role in (Role.manager, Role.user)
+        # 열람자(public_viewer)·보관 TF 진입자(read_only)는 쓰기 불가.
+        return (
+            not self.public_viewer
+            and not self.read_only
+            and self.role in (Role.manager, Role.user)
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -210,7 +219,15 @@ def get_current_user(
                 status.HTTP_403_FORBIDDEN,
                 f"{user.email}는 부서 {workspace.slug}에 접근 권한이 없습니다.",
             )
-    return CurrentUser(user=user, workspace=workspace, role=role)
+    # 보관된 TF 는 멤버(시스템관리자 포함)도 읽기전용으로만 — 쓰기·게시·댓글 차단.
+    # 복원(un-archive)은 워크스페이스 컨텍스트가 필요 없는 별도 엔드포인트로 한다.
+    read_only = (
+        workspace.kind == WorkspaceKind.tf
+        and workspace.status == WorkspaceStatus.archived
+    )
+    return CurrentUser(
+        user=user, workspace=workspace, role=role, read_only=read_only
+    )
 
 
 def _grant_services():
@@ -358,6 +375,23 @@ def require_system_admin(
     return actor
 
 
+def require_lead(
+    actor: User = Depends(get_current_user_no_workspace),
+    db: Session = Depends(get_db),
+) -> User:
+    """TF 개설 게이트 — 보직장(org 부서 매니저) 이상 또는 시스템관리자
+    (TF조직_설계.md §4). 워크스페이스 컨텍스트가 필요 없다(개설 시점엔 아직
+    TF 가 없으므로). personal 매니저는 제외(services.user_is_lead 참조)."""
+    from app.modules.workspaces import services as ws_services
+
+    if not ws_services.user_is_lead(db, actor):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "TF 개설 권한이 없습니다 (부서 매니저 이상만 가능).",
+        )
+    return actor
+
+
 def require_writer(actor: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     """Allow any authenticated workspace member to write reports / composites,
     but reject virtual aggregate workspaces (e.g. `_global`) — those are
@@ -372,6 +406,11 @@ def require_writer(actor: CurrentUser = Depends(get_current_user)) -> CurrentUse
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "다른 조직의 공개 게시판은 읽기 전용입니다.",
+        )
+    if actor.read_only:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "보관된 TF 는 읽기 전용입니다. 복원 후 작업하세요.",
         )
     if actor.role not in (Role.manager, Role.user):
         raise HTTPException(

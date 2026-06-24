@@ -2,8 +2,15 @@ import { apiClient, extractData } from './client'
 
 const BASE = '/api/templates'
 
-export async function listTemplates({ onlyLatest = true } = {}) {
-  const res = await apiClient.get(BASE, { params: { only_latest: onlyLatest } })
+/**
+ * `scope`: 'workspace'(기본) = 현재 워크스페이스 가시 범위로 필터(관리·홈 화면의
+ * 조직별 분리 유지). 'all' = 소유 부서 무관 전체 — 작성 picker 용(모든 사용자가
+ * 내 공간에서 모든 템플릿을 쓸 수 있어야 함). 렌더(by-id)는 항상 열려 있음.
+ */
+export async function listTemplates({ onlyLatest = true, scope } = {}) {
+  const params = { only_latest: onlyLatest }
+  if (scope) params.scope = scope
+  const res = await apiClient.get(BASE, { params })
   return extractData(res)
 }
 

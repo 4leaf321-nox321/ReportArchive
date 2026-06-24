@@ -27,23 +27,22 @@ export function WorkspaceProvider({ children }) {
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState(null)
 
-  React.useEffect(() => {
-    let cancelled = false
+  // 워크스페이스 레지스트리 재요청 — TF 개설/보관 후 목록을 즉시 갱신하는 데 쓴다
+  // (mount 시 1회 + 명시 호출). 반환 Promise 로 호출부가 완료를 기다릴 수 있다.
+  const reload = React.useCallback(() => {
     setLoading(true)
-    listWorkspaces()
+    return listWorkspaces()
       .then((data) => {
-        if (!cancelled) setAll(data || [])
+        setAll(data || [])
+        setError(null)
       })
-      .catch((err) => {
-        if (!cancelled) setError(err)
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
+      .catch((err) => setError(err))
+      .finally(() => setLoading(false))
   }, [])
+
+  React.useEffect(() => {
+    reload()
+  }, [reload])
 
   const slugMap = React.useMemo(() => {
     const m = new Map()
@@ -82,7 +81,9 @@ export function WorkspaceProvider({ children }) {
     recentOrgSlug ||
     (userFirstOrgSlug && slugMap.has(userFirstOrgSlug) && userFirstOrgSlug) ||
     (slugMap.has(DEFAULT_FALLBACK) && DEFAULT_FALLBACK) ||
-    all.find((w) => !w.virtual && w.parent_slug === null)?.slug
+    // ⚠ kind==='org' 명시 — TF(parent_slug=null)·가상이 fallback 으로
+    // 잘못 잡히지 않게(TF 는 트리 밖이라 부서 fallback 대상 아님).
+    all.find((w) => w.kind === 'org' && w.parent_slug === null)?.slug
 
   let effectiveSlug
   if (isPersonalPage && myPersonalSlug && slugMap.has(myPersonalSlug)) {
@@ -166,6 +167,7 @@ export function WorkspaceProvider({ children }) {
       error,
       switchWorkspace,
       patchWorkspace,
+      reload,
       prefs,
       ...helpers,
     }),
@@ -179,6 +181,7 @@ export function WorkspaceProvider({ children }) {
       error,
       switchWorkspace,
       patchWorkspace,
+      reload,
       prefs,
       helpers,
     ]
@@ -236,10 +239,17 @@ function makeHelpers(all) {
     return [...getAncestors(slug), node]
   }
 
-  function buildTree({ includeVirtual = false, includePersonal = false } = {}) {
+  function buildTree({
+    includeVirtual = false,
+    includePersonal = false,
+    includeTf = false,
+  } = {}) {
+    // TF(kind=tf)는 트리 밖(parent_slug=null)이라 그대로 두면 조직도 루트로
+    // 잘못 그려진다 — 기본 제외. "내 TF" 섹션이 별도로 평면 렌더한다.
     const keep = (w) =>
       (includeVirtual || !w.virtual) &&
-      (includePersonal || w.kind !== 'personal')
+      (includePersonal || w.kind !== 'personal') &&
+      (includeTf || w.kind !== 'tf')
     function attach(node, depth) {
       return {
         ...node,

@@ -21,15 +21,30 @@ from app.shared.responses import created_response, not_found_response, success_r
 router = APIRouter()
 
 
+def _own_personal_slug(actor: CurrentUser) -> str:
+    return f"personal-{actor.user.id}"
+
+
+def _is_own_personal_template(actor: CurrentUser, template) -> bool:
+    """이 템플릿이 *이 계정의* 개인(비공개) 템플릿인가 — 소유가 본인 personal
+    워크스페이스 단독. 생성/관리 권한을 현재 워크스페이스 컨텍스트와 무관하게
+    소유자 본인에게 허용하는 데 쓴다."""
+    return (template.owner_workspace_slugs or []) == [_own_personal_slug(actor)]
+
+
 def _assert_can_create_template(db: Session, actor: CurrentUser, owner_slugs) -> None:
     """신규 템플릿 생성 권한.
 
+    - 개인(비공개): 본인 personal 워크스페이스 단독 소유는 누구나(컨텍스트 무관).
     - 매니저: 소유 부서가 본인 관리 트리(자신+자손) 안이어야 함. 빈/전사 허용.
     - 일반 멤버: *자기(현재) 부서* 단독 소유만. 전사·타부서·다중부서 불가.
     """
     if actor.public_viewer:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "권한이 없습니다.")
     owners = list(owner_slugs or [])
+    # 개인(비공개) 템플릿 — 본인 것만 만들 수 있고, 부서/전사 컨텍스트 제약 없음.
+    if owners == [_own_personal_slug(actor)]:
+        return
     if actor.is_manager:
         if owners:
             accessible = set(
@@ -62,6 +77,12 @@ def _assert_can_manage_template(actor: CurrentUser, template) -> None:
     """
     if actor.public_viewer:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "권한이 없습니다.")
+    # 시스템 관리자는 모든 템플릿(타인 개인 비공개 포함)을 관리할 수 있다.
+    if actor.user.is_system_admin:
+        return
+    # 개인(비공개) 템플릿은 소유자 본인이 관리(컨텍스트 무관).
+    if _is_own_personal_template(actor, template):
+        return
     if actor.is_manager:
         return
     owners = template.owner_workspace_slugs or []
@@ -75,14 +96,32 @@ def _assert_can_manage_template(actor: CurrentUser, template) -> None:
 @router.get("")
 def list_templates(
     only_latest: bool = True,
+    scope: str = "workspace",
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
-    items = services.list_templates(db, actor.workspace.slug, only_latest=only_latest)
+    """템플릿 목록. `scope=all` 이면 소유 부서 무관 전체(작성 picker 용 — 모든
+    사용자가 내 공간에서 모든 템플릿을 쓸 수 있어야 함). 기본 `scope=workspace`
+    는 현재 워크스페이스 가시 범위로 필터(관리/홈 화면의 조직별 분리 유지)."""
+    items = services.list_templates(
+        db,
+        actor.workspace.slug,
+        only_latest=only_latest,
+        all_scopes=(scope == "all"),
+        user_id=actor.user.id,
+        is_system_admin=actor.user.is_system_admin,
+    )
     payload = [TemplateRead.from_orm_(t) for t in items]
     return success_response(data=payload)
 
 
+# --------------------------------------------------------------------------- #
+# 단건/버전 조회 — **가시성 가드 없음**(인증만). 템플릿은 비밀 데이터가 아니라
+# 보고서가 참조하는 공용 스키마이고, 어느 게시판/계정에서 보든 렌더돼야 한다
+# (소유 부서 비멤버가 다른 부서 게시판에서 게시글을 볼 때 "불러오는 중"에서
+# 멈추던 문제의 근본 해결). owner_workspace_slugs 는 *쓰기 권한·분류* 메타로만
+# 남는다 — 쓰기 라우트(아래)는 여전히 가드한다.
+# --------------------------------------------------------------------------- #
 @router.get("/{template_id}")
 def get_latest(
     template_id: str,
@@ -90,12 +129,7 @@ def get_latest(
     actor: CurrentUser = Depends(get_current_user),
 ):
     template = services.get_latest_version(db, template_id)
-    # 현재 워크스페이스 가시성 OR 계정 접근권(개인공간 보고서가 부서 템플릿의
-    # 최신 버전 힌트를 받을 수 있게) — get_specific_version 과 동일 기조.
-    if not template or not (
-        services.is_visible(db, template, actor.workspace.slug)
-        or services.is_visible_to_user(db, template, actor.user.id)
-    ):
+    if not template:
         return not_found_response(f"Template not found: {template_id}")
     return success_response(data=TemplateRead.from_orm_(template))
 
@@ -107,7 +141,7 @@ def list_versions(
     actor: CurrentUser = Depends(get_current_user),
 ):
     versions = services.list_versions(db, template_id)
-    if not versions or not services.is_visible(db, versions[0], actor.workspace.slug):
+    if not versions:
         return not_found_response(f"Template not found: {template_id}")
     payload = [TemplateVersionSummary.model_validate(v) for v in versions]
     return success_response(data=payload)
@@ -121,14 +155,7 @@ def get_specific_version(
     actor: CurrentUser = Depends(get_current_user),
 ):
     template = services.get_template(db, template_id, version)
-    # 현재 워크스페이스에서 보이거나(기존), 그게 아니어도 **이 계정이 접근 가능한**
-    # 템플릿이면 허용한다. 개인공간 보고서가 부서 전용 템플릿을 렌더할 때(개인공간
-    # 컨텍스트에선 그 부서가 안 보임) 템플릿 스키마를 못 불러와 "불러오는 중"에서
-    # 멈추던 문제를 푼다 — 렌더는 워크스페이스가 아니라 계정 접근권 기준이어야 한다.
-    if not template or not (
-        services.is_visible(db, template, actor.workspace.slug)
-        or services.is_visible_to_user(db, template, actor.user.id)
-    ):
+    if not template:
         return not_found_response(f"Template version not found: {template_id}@{version}")
     return success_response(data=TemplateRead.from_orm_(template))
 
@@ -158,7 +185,11 @@ def delete_template(
     멤버는 자기 부서가 소유한 템플릿을 삭제할 수 있다. 보고서가 아직 참조 중
     이면 거부(409)."""
     latest = services.get_latest_version(db, template_id)
-    if not latest or not services.is_visible(db, latest, actor.workspace.slug):
+    if not latest or not (
+        services.is_visible(db, latest, actor.workspace.slug)
+        or _is_own_personal_template(actor, latest)
+        or actor.user.is_system_admin
+    ):
         return not_found_response(f"Template not found: {template_id}")
     _assert_can_manage_template(actor, latest)
     try:
@@ -186,8 +217,24 @@ def set_template_scope(
     버전은 올리지 않는다(가시성 메타). 템플릿을 소유한 부서의 매니저만 가능.
     공유 대상 부서는 본인 트리 밖일 수 있다(그게 공유의 목적)."""
     latest = services.get_latest_version(db, template_id)
-    if not latest or not services.is_visible(db, latest, actor.workspace.slug):
+    if not latest or not (
+        services.is_visible(db, latest, actor.workspace.slug)
+        or _is_own_personal_template(actor, latest)
+        or actor.user.is_system_admin
+    ):
         return not_found_response(f"Template not found: {template_id}")
+    # 개인(비공개) 템플릿 소유자는 본인 것의 공유 범위를 자유롭게 바꿀 수 있다
+    # (비공개 → 부서/전사 승격). 그 외엔 소유 부서가 본인 트리 안이어야 한다.
+    if _is_own_personal_template(actor, latest):
+        try:
+            template = services.set_template_scope(
+                db, template_id, payload.owner_workspace_slugs
+            )
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        if template is None:
+            return not_found_response(f"Template not found: {template_id}")
+        return success_response(data=TemplateRead.from_orm_(template))
     # 권한: 현재 이 템플릿을 *소유한* 부서(들) 중 하나가 본인 관리 트리 안에
     # 있어야 한다. 전사(소유 없음) 템플릿은 여기서 못 바꾼다(관리자 영역).
     current_owners = latest.owner_workspace_slugs or []
@@ -223,7 +270,11 @@ def publish_new_version(
     actor: CurrentUser = Depends(get_current_user),
 ):
     latest = services.get_latest_version(db, template_id)
-    if not latest or not services.is_visible(db, latest, actor.workspace.slug):
+    if not latest or not (
+        services.is_visible(db, latest, actor.workspace.slug)
+        or _is_own_personal_template(actor, latest)
+        or actor.user.is_system_admin
+    ):
         return not_found_response(f"Template not found: {template_id}")
     _assert_can_manage_template(actor, latest)
     try:

@@ -1,6 +1,13 @@
 import { useMemo, useState } from 'react'
-import { Building2, Globe, Layers, User } from 'lucide-react'
+import { Building2, Globe, Layers, Lock, User } from 'lucide-react'
 import { cn } from '@/shared/lib/utils'
+
+// 개인(비공개) 항목 — 소유가 personal-* 뿐(백엔드 is_private_template 와 동일 정의).
+const isPersonalSlug = (s) => String(s).startsWith('personal-')
+const isPrivateItem = (it) => {
+  const owners = it?.owner_workspace_slugs ?? []
+  return owners.length > 0 && owners.every(isPersonalSlug)
+}
 
 /**
  * 가시성 스코프 + 소유자 기준 분류 — 보고서 템플릿·종합보고 양식처럼
@@ -27,6 +34,9 @@ export function useScopeCategories(items, { currentUserId, getName } = {}) {
     const m = new Map()
     for (const it of items ?? []) {
       for (const s of it?.owner_workspace_slugs ?? []) {
+        // 개인(personal-*) 소유는 '조직별' 버킷으로 만들지 않는다 — 사용자마다
+        // "(개인)" 버킷이 난립하는 것을 막는다. 비공개는 '개인 비공개' 그룹으로.
+        if (isPersonalSlug(s)) continue
         m.set(s, (m.get(s) ?? 0) + 1)
       }
     }
@@ -45,11 +55,13 @@ export function useScopeCategories(items, { currentUserId, getName } = {}) {
     all: list.length,
     mine: list.filter(isMine).length,
     global: list.filter(isGlobal).length,
+    private: list.filter(isPrivateItem).length,
   }
 
   const filter = (it) => {
     if (cat.type === 'mine') return isMine(it)
     if (cat.type === 'global') return isGlobal(it)
+    if (cat.type === 'private') return isPrivateItem(it)
     if (cat.type === 'org') return (it?.owner_workspace_slugs ?? []).includes(cat.slug)
     return true // 'all'
   }
@@ -66,6 +78,9 @@ export function ScopeCategorySidebar({
   onChange,
   mineLabel = '개인',
   emptyOrgText = '조직 항목이 없습니다.',
+  // 모든 사용자의 개인(비공개) 항목을 한 칸으로 묶어 보여준다. 시스템 관리자
+  // 전용(일반 사용자는 자기 것만이라 '개인' 탭과 중복 → 숨김).
+  showPrivate = false,
   className,
 }) {
   return (
@@ -91,6 +106,15 @@ export function ScopeCategorySidebar({
         active={cat.type === 'global'}
         onClick={() => onChange({ type: 'global' })}
       />
+      {showPrivate && (
+        <CategoryButton
+          icon={Lock}
+          label="개인 비공개"
+          count={counts.private}
+          active={cat.type === 'private'}
+          onClick={() => onChange({ type: 'private' })}
+        />
+      )}
       <div className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
         조직별
       </div>

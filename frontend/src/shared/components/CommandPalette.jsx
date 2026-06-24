@@ -73,8 +73,9 @@ function Palette({ open, onOpenChange }) {
     () => (open ? listReports() : Promise.resolve([])),
     [open]
   )
+  // 템플릿으로 새 보고서 시작(아래) — 작성용이라 소유 부서 무관 전체를 띄운다.
   const { data: templates } = useAsync(
-    () => (open ? listTemplates() : Promise.resolve([])),
+    () => (open ? listTemplates({ scope: 'all' }) : Promise.resolve([])),
     [open]
   )
 

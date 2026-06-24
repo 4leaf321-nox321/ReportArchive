@@ -31,7 +31,10 @@ def db():
 def _actor(db, slug, role):
     ws = db.get(Workspace, slug)
     assert ws is not None, f"seed missing workspace {slug}"
-    user = db.get(User, 1)
+    # 멤버/매니저 권한 경계를 검증하므로 **비-시스템관리자** 사용자를 쓴다. 시스템
+    # 관리자는 모든 템플릿을 관리할 수 있어(요구사항) 경계 테스트가 무의미해진다.
+    user = db.query(User).filter_by(is_system_admin=False).first()
+    assert user is not None, "비-시스템관리자 사용자 시드가 필요합니다(conftest id3)."
     return CurrentUser(user=user, workspace=ws, role=role)
 
 

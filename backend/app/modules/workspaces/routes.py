@@ -10,6 +10,8 @@ from app.modules.workspaces import services
 from app.modules.workspaces.models import Workspace, WorkspaceKind
 from app.modules.users.models import Role
 from app.modules.workspaces.schemas import (
+    TFArchiveUpdate,
+    TFWorkspaceCreate,
     WorkspaceBulkCreate,
     WorkspaceCreate,
     WorkspaceExternalViewUpdate,
@@ -20,6 +22,7 @@ from app.shared.auth import (
     CurrentUser,
     _resolve_role,
     get_current_user_no_workspace,
+    require_lead,
     require_system_admin,
 )
 from app.shared.responses import (
@@ -52,14 +55,81 @@ def list_all_workspaces(
     if user.is_system_admin:
         visible = all_rows
     else:
+        # org/virtual — 전원 노출. personal — 소유자만. TF — **멤버만**
+        # (TF조직_설계.md §5: org 처럼 browse-all 이 아니라 멤버십 스코프 —
+        # 비멤버 드롭다운엔 TF 가 보이지 않아 존재 자체가 새지 않음).
+        my_tf = services.member_tf_slugs(db, user.id)
         visible = [
             w
             for w in all_rows
-            if w.kind != WorkspaceKind.personal
-            or w.personal_owner_user_id == user.id
+            if (
+                w.kind == WorkspaceKind.personal
+                and w.personal_owner_user_id == user.id
+            )
+            or (w.kind == WorkspaceKind.tf and w.slug in my_tf)
+            or w.kind not in (WorkspaceKind.personal, WorkspaceKind.tf)
         ]
     items = [WorkspaceRead.model_validate(w) for w in visible]
     return success_response(data=items)
+
+
+@router.get("/tf/all")
+def list_all_tf(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_system_admin),
+):
+    """시스템관리자 감독용 — 모든 TF(보관 포함)를 반환(TF조직_설계.md §4).
+    난립 사후 정리·강제 종료·소유자 재지정 화면의 데이터 소스."""
+    rows = [
+        w for w in services.list_workspaces(db) if w.kind == WorkspaceKind.tf
+    ]
+    return success_response(data=[WorkspaceRead.model_validate(w) for w in rows])
+
+
+@router.post("/tf")
+def create_tf(
+    payload: TFWorkspaceCreate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_lead),
+):
+    """TF 개설 — 보직장(org 매니저) 이상 self-service. 개설자=매니저,
+    member_emails 로 부서 무관 차출(TF조직_설계.md §4). 미가입 이메일은
+    건너뛰고 message 로 알린다."""
+    try:
+        ws, missing = services.create_tf_workspace(db, payload, actor)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    msg = None
+    if missing:
+        msg = f"등록되지 않아 추가하지 못한 이메일: {', '.join(missing)}"
+    return created_response(data=WorkspaceRead.model_validate(ws), message=msg)
+
+
+@router.patch("/{slug}/archive")
+def set_tf_archived(
+    slug: str,
+    payload: TFArchiveUpdate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(get_current_user_no_workspace),
+):
+    """TF 보관/복원(읽기전용 보존) — 그 TF 의 매니저 또는 시스템관리자
+    (TF조직_설계.md §7). org/personal/virtual 은 거부."""
+    ws = db.get(Workspace, slug)
+    if not ws:
+        return not_found_response(f"부서를 찾을 수 없습니다: {slug}")
+    if ws.kind != WorkspaceKind.tf:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "TF 만 보관/복원할 수 있습니다."
+        )
+    if not (
+        actor.is_system_admin or _resolve_role(db, actor.id, slug) == Role.manager
+    ):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "이 TF 의 매니저만 보관/복원할 수 있습니다.",
+        )
+    ws = services.set_workspace_archived(db, ws, actor, payload.archived)
+    return success_response(data=WorkspaceRead.model_validate(ws))
 
 
 @router.post("")

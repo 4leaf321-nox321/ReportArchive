@@ -6410,7 +6410,8 @@ function ImportTemplatePickerDialog({ open, unresolvedPageCount, onPick, onCance
     if (!open) return
     let alive = true
     setLoading(true)
-    listTemplates({ onlyLatest: true })
+    // 작성(페이지 import) — 소유 부서 무관 전체 템플릿 제공.
+    listTemplates({ onlyLatest: true, scope: 'all' })
       .then((res) => {
         if (alive) setItems(Array.isArray(res) ? res : (res?.items ?? []))
       })

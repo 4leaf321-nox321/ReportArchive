@@ -6,6 +6,7 @@ CTEs aren't worth the complexity).
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import func, select
@@ -14,8 +15,9 @@ from sqlalchemy.orm import Session
 from app.modules.reports.models import Report
 from app.modules.templates.models import Template
 from app.modules.users.models import Role, User, WorkspaceMember
-from app.modules.workspaces.models import Workspace, WorkspaceKind
+from app.modules.workspaces.models import Workspace, WorkspaceKind, WorkspaceStatus
 from app.modules.workspaces.schemas import (
+    TFWorkspaceCreate,
     WorkspaceBulkCreate,
     WorkspaceCreate,
     WorkspaceUpdate,
@@ -41,6 +43,7 @@ _COLOR_PALETTE: tuple[str, ...] = (
     "#8b5cf6",  # violet
 )
 _VIRTUAL_COLOR = "#64748b"  # slate — used for virtual aggregate workspaces
+_TF_COLOR = "#8b5cf6"  # violet — TF 워크스페이스(트리 밖) 고정 색
 
 
 def compute_workspace_colors(workspaces: list[Workspace]) -> dict[str, str]:
@@ -77,18 +80,26 @@ def compute_workspace_colors(workspaces: list[Workspace]) -> dict[str, str]:
                 continue
             walk(child, idx + 1 + i)
 
+    # TF(kind=tf)는 parent_slug=NULL 이라 자칫 org 루트로 오인돼 팔레트 순번을
+    # 흔든다. 트리 밖 별도 평면이므로 색 계산에서 제외하고 아래서 고정색을 준다.
     real_roots = sorted(
-        (w for w in workspaces if w.parent_slug is None and not w.virtual),
+        (
+            w
+            for w in workspaces
+            if w.parent_slug is None
+            and not w.virtual
+            and w.kind != WorkspaceKind.tf
+        ),
         key=lambda w: (w.created_at, w.slug),
     )
     for i, r in enumerate(real_roots):
         walk(r, i)
 
-    # Anything we didn't reach (virtual roots, orphans whose parent was
-    # deleted) gets the neutral slate so the dot still renders.
+    # Anything we didn't reach (virtual roots, TF, orphans whose parent was
+    # deleted) gets a fixed color so the dot still renders.
     for w in workspaces:
         if w.slug not in out:
-            out[w.slug] = _VIRTUAL_COLOR
+            out[w.slug] = _TF_COLOR if w.kind == WorkspaceKind.tf else _VIRTUAL_COLOR
     return out
 
 
@@ -456,3 +467,124 @@ def ensure_personal_workspace(db: Session, user: User) -> Workspace:
         db.flush()
 
     return ws
+
+
+# --------------------------------------------------------------------------- #
+# TF(태스크포스) — 트리 밖 한시 조직 (TF조직_설계.md)
+# --------------------------------------------------------------------------- #
+def user_is_lead(db: Session, user: User) -> bool:
+    """TF 를 개설할 수 있는 '보직장 이상'인가 — 시스템관리자 OR **org 부서**의
+    매니저(role=manager). ⚠ personal 워크스페이스는 모든 사용자가 자기 것의
+    매니저이므로(ensure_personal_workspace) 반드시 제외해야 한다. 안 그러면
+    전 사용자가 보직장이 되어 개설 게이트가 무력화된다. TF 매니저 자격도
+    제외 — '보직장' 신호는 공식 조직(org)에서만."""
+    if user.is_system_admin:
+        return True
+    row = db.execute(
+        select(WorkspaceMember.id)
+        .join(Workspace, Workspace.slug == WorkspaceMember.workspace_slug)
+        .where(
+            WorkspaceMember.user_id == user.id,
+            WorkspaceMember.role == Role.manager,
+            Workspace.kind == WorkspaceKind.org,
+        )
+        .limit(1)
+    ).first()
+    return row is not None
+
+
+def _new_tf_slug(db: Session) -> str:
+    """`tf-<hex>` 형태의 충돌 없는 슬러그. URL/FK 에 그대로 쓰인다."""
+    for _ in range(10):
+        slug = f"tf-{uuid.uuid4().hex[:12]}"
+        if db.get(Workspace, slug) is None:
+            return slug
+    raise ValueError("TF 슬러그 생성에 실패했습니다. 다시 시도하세요.")
+
+
+def create_tf_workspace(
+    db: Session, payload: TFWorkspaceCreate, creator: User
+) -> tuple[Workspace, list[str]]:
+    """TF 개설. 트리 밖(parent_slug=NULL), 개설자=매니저. member_emails 의
+    기존 사용자를 role=user 로 차출(부서 무관). 반환: (TF, 추가 실패한 이메일들).
+
+    색 계산은 recompute 가 TF 를 _TF_COLOR 로 고정하지만, TF 단독 생성으로 org
+    색을 흔들지 않도록 compute_workspace_colors 가 이미 tf 를 real_roots 에서
+    제외한다."""
+    ws = Workspace(
+        slug=_new_tf_slug(db),
+        name=payload.name.strip(),
+        description=payload.description,
+        parent_slug=None,  # 트리 밖 — 상속 없음
+        kind=WorkspaceKind.tf,
+        status=WorkspaceStatus.active,
+        color=_TF_COLOR,
+        virtual=False,
+        sort_order=0,
+        created_by_user_id=creator.id,
+    )
+    db.add(ws)
+    db.flush()
+
+    # 개설자 = 매니저
+    db.add(
+        WorkspaceMember(
+            user_id=creator.id, workspace_slug=ws.slug, role=Role.manager
+        )
+    )
+
+    # 차출 멤버(부서 무관). 미가입 이메일은 건너뛰고 누락분을 보고.
+    missing: list[str] = []
+    seen: set[int] = {creator.id}
+    for email in payload.member_emails:
+        email = (email or "").strip()
+        if not email:
+            continue
+        member_user = db.execute(
+            select(User).where(User.email == email)
+        ).scalar_one_or_none()
+        if member_user is None:
+            missing.append(email)
+            continue
+        if member_user.id in seen:
+            continue
+        seen.add(member_user.id)
+        db.add(
+            WorkspaceMember(
+                user_id=member_user.id, workspace_slug=ws.slug, role=Role.user
+            )
+        )
+
+    db.commit()
+    db.refresh(ws)
+    return ws, missing
+
+
+def set_workspace_archived(
+    db: Session, ws: Workspace, actor: User, archived: bool
+) -> Workspace:
+    """TF 보관/복원(읽기전용 보존). 라우트가 kind=tf + 권한을 먼저 검사."""
+    ws.status = WorkspaceStatus.archived if archived else WorkspaceStatus.active
+    if archived:
+        ws.archived_at = datetime.utcnow()
+        ws.archived_by_user_id = actor.id
+    else:
+        ws.archived_at = None
+        ws.archived_by_user_id = None
+    db.commit()
+    db.refresh(ws)
+    return ws
+
+
+def member_tf_slugs(db: Session, user_id: int) -> set[str]:
+    """이 사용자가 멤버인 TF 슬러그 집합. TF 는 상속이 없어 직접 멤버십만 본다
+    (가시성 스코프 — org 처럼 전원 노출하지 않음)."""
+    rows = db.execute(
+        select(WorkspaceMember.workspace_slug)
+        .join(Workspace, Workspace.slug == WorkspaceMember.workspace_slug)
+        .where(
+            WorkspaceMember.user_id == user_id,
+            Workspace.kind == WorkspaceKind.tf,
+        )
+    ).scalars()
+    return set(rows)

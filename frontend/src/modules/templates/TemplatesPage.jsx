@@ -69,9 +69,19 @@ export default function TemplatesPage() {
   const currentIsOrgDept = currentWs?.kind === 'org' && !currentWs?.virtual
   // 신규 생성 가능: 매니저, 또는 현재 조직 부서를 보고 있는 일반 멤버.
   const canCreateTemplates = isManager || (role === 'user' && currentIsOrgDept)
-  // 특정 템플릿 수정/삭제: 매니저(보이는 것 전부) 또는 멤버(자기 부서 소유).
+  // 특정 템플릿 수정/삭제: 매니저(보이는 것 전부), 본인 개인(비공개) 템플릿,
+  // 또는 멤버(자기 부서 소유). 백엔드 _assert_can_manage_template 와 일치시킨다.
+  const myPersonalSlug = me?.user?.id ? `personal-${me.user.id}` : null
+  const isMyPrivateTemplate = (t) =>
+    Boolean(myPersonalSlug) &&
+    Array.isArray(t?.owner_workspace_slugs) &&
+    t.owner_workspace_slugs.length === 1 &&
+    t.owner_workspace_slugs[0] === myPersonalSlug
+  const isSysAdmin = me?.is_system_admin === true
   const canManageTemplate = (t) =>
+    isSysAdmin ||
     isManager ||
+    isMyPrivateTemplate(t) ||
     (role === 'user' &&
       Array.isArray(t?.owner_workspace_slugs) &&
       t.owner_workspace_slugs.includes(slug))
@@ -224,6 +234,9 @@ export default function TemplatesPage() {
                 onChange={tplCat.setCat}
                 mineLabel="개인 (내 템플릿)"
                 emptyOrgText="조직 템플릿이 없습니다."
+                // 시스템 관리자에게만 모든 사용자의 개인(비공개) 템플릿을
+                // 한 칸으로 묶어 노출(일반 사용자는 자기 것뿐이라 숨김).
+                showPrivate={isSysAdmin}
                 className="sticky top-6 w-44 shrink-0 self-start border-r pr-2"
               />
               {/* ── 좌측: 템플릿 목록 (sticky) ── */}

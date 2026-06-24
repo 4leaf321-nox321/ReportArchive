@@ -1,11 +1,12 @@
 """Pydantic schemas for workspaces."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.modules.workspaces.models import WorkspaceKind
+from app.modules.workspaces.models import WorkspaceKind, WorkspaceStatus
 
 
 class WorkspaceRead(BaseModel):
@@ -29,6 +30,12 @@ class WorkspaceRead(BaseModel):
     # 조직 간 공개(조직간공개_설계.md §4.1) — 이 게시판 기본 공개정책. org 에만
     # 의미. 프런트가 공개 토글/뱃지를 그릴 때 현재 상태로 읽는다.
     external_view_default: bool = False
+    # TF 수명(TF조직_설계.md §7). org/personal/virtual 은 항상 active. 프런트가
+    # archived TF 를 picker 에서 숨기고 읽기전용 배너를 그릴 때 읽는다.
+    status: WorkspaceStatus = WorkspaceStatus.active
+    archived_at: Optional[datetime] = None
+    # TF 개설자(감독·표시용). org 는 NULL.
+    created_by_user_id: Optional[int] = None
 
 
 class WorkspaceCreate(BaseModel):
@@ -66,6 +73,28 @@ class WorkspaceExternalViewUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     external_view_default: bool
+
+
+class TFWorkspaceCreate(BaseModel):
+    """TF(태스크포스) 개설 — 보직장 self-service(TF조직_설계.md §4). 슬러그는
+    서버가 생성(`tf-…`), parent 는 항상 NULL(트리 밖). 개설자는 자동으로 매니저
+    멤버가 되고, member_emails 로 다른 부서 사용자를 바로 차출할 수 있다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1, max_length=128)
+    description: str = ""
+    # 개설 시 함께 추가할 멤버(이메일). 부서 무관 — cross-functional 차출.
+    # 존재하지 않는 이메일은 무시(부분 성공)하고 결과에 누락분을 알린다.
+    member_emails: list[str] = Field(default_factory=list)
+
+
+class TFArchiveUpdate(BaseModel):
+    """TF 보관/복원 토글(TF조직_설계.md §7). archived=True 면 읽기전용 보존."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    archived: bool
 
 
 class WorkspaceBulkCreateItem(BaseModel):

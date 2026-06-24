@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import desc, select, update
+from sqlalchemy import desc, or_, select, update
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 from sqlalchemy import String as SAString
@@ -38,25 +38,82 @@ def _is_global(template: Template) -> bool:
     return not template.owner_workspace_slugs
 
 
-def list_templates(db: Session, workspace_slug: str, only_latest: bool = True) -> list[Template]:
-    visible = _visible_slugs_for(db, workspace_slug)
+def _is_personal_slug(slug: str) -> bool:
+    return slug.startswith("personal-")
 
+
+def is_private_template(template: Template) -> bool:
+    """개인(비공개) 템플릿 — 소유가 personal-* 뿐인 것. 목록에선 그 소유자에게만
+    보이고, scope=all 작성 picker 에서도 남의 것은 제외된다. (렌더 by-id 는 별개로
+    누구에게나 열려 있어, 이 템플릿으로 게시한 보고서는 모두에게 렌더된다.)"""
+    owners = template.owner_workspace_slugs or []
+    return bool(owners) and all(_is_personal_slug(s) for s in owners)
+
+
+def _all_templates(db: Session, only_latest: bool) -> list[Template]:
     query = select(Template)
-    # Global (NULL or empty array) OR any owner slug intersects visible set.
-    # PostgreSQL ARRAY overlap operator (`&&`) is exposed via .overlap().
-    if visible:
-        query = query.where(
-            (Template.owner_workspace_slugs.is_(None))
-            | (Template.owner_workspace_slugs == cast([], ARRAY(SAString)))
-            | (Template.owner_workspace_slugs.overlap(list(visible)))
-        )
-    else:
-        # Workspace tree contains nothing extra (rare) — only globals.
-        query = query.where(
-            (Template.owner_workspace_slugs.is_(None))
-            | (Template.owner_workspace_slugs == cast([], ARRAY(SAString)))
-        )
+    if only_latest:
+        query = query.where(Template.is_latest.is_(True))
+    return list(
+        db.execute(
+            query.order_by(Template.template_id, desc(Template.version))
+        ).scalars()
+    )
 
+
+def list_templates(
+    db: Session,
+    workspace_slug: str,
+    only_latest: bool = True,
+    all_scopes: bool = False,
+    user_id: Optional[int] = None,
+    is_system_admin: bool = False,
+) -> list[Template]:
+    """워크스페이스 가시 범위로 필터한 템플릿 목록. `all_scopes=True` 면 소유 부서
+    무시하고 **전체** 반환 — 작성(picker) 경로는 모든 사용자가 모든 (조직/전사)
+    템플릿을 쓸 수 있어야 하므로(내 공간 포함) 이 모드를 쓴다. 단 **개인(비공개)
+    템플릿은 그 소유자 본인에게만** 노출한다(`user_id` 로 판정). 소유 부서는
+    가시성 가드가 아니라 *분류/관리* 메타로만 남는다(렌더는 by-id 가 열려 있음).
+    관리/홈 화면은 기본(스코프) 모드로 조직별 분리를 유지한다.
+
+    `is_system_admin=True` 면 모드 무관 **모든** 템플릿(타인 개인 비공개 포함)을
+    반환한다 — 시스템 관리자는 전 템플릿을 보고 관리할 수 있어야 함."""
+    if is_system_admin:
+        return _all_templates(db, only_latest)
+
+    if all_scopes:
+        rows = _all_templates(db, only_latest)
+        # 개인(비공개) 템플릿은 본인 것만 남긴다 — 남의 개인 템플릿은 picker 에서 제외.
+        mine = f"personal-{user_id}" if user_id is not None else None
+        return [
+            t
+            for t in rows
+            if not is_private_template(t)
+            or (mine is not None and mine in (t.owner_workspace_slugs or []))
+        ]
+
+    visible = _visible_slugs_for(db, workspace_slug)
+    # 본인 개인(비공개) 템플릿은 어느 컨텍스트에서든 자기 목록에 보여야 한다
+    # (org 보드 컨텍스트엔 personal-{me} 가 가시범위에 없어 누락되던 문제). 남의
+    # 개인 템플릿은 추가하지 않는다 — 자기 것만.
+    if user_id is not None:
+        visible = visible | {f"personal-{user_id}"}
+
+    # Global(NULL/빈 배열) OR 소유 슬러그가 가시범위와 겹침.
+    conds = [
+        Template.owner_workspace_slugs.is_(None),
+        Template.owner_workspace_slugs == cast([], ARRAY(SAString)),
+    ]
+    if visible:
+        conds.append(Template.owner_workspace_slugs.overlap(list(visible)))
+    if user_id is not None:
+        # 내가 만든 템플릿은 현재 활성 워크스페이스 가시 트리 밖(다른 부서 소유)
+        # 이어도 관리 목록에 포함한다 — 작성 picker(scope=all)엔 뜨는데 "템플릿
+        # 관리"엔 안 떠 불일치하던 문제. 편집/삭제 가능 여부는 프런트
+        # canManageTemplate + 라우트 권한 게이트가 따로 판정한다.
+        conds.append(Template.created_by_user_id == user_id)
+
+    query = select(Template).where(or_(*conds))
     if only_latest:
         query = query.where(Template.is_latest.is_(True))
 

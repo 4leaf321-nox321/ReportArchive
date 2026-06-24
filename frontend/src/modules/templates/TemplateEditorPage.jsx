@@ -68,6 +68,9 @@ export default function TemplateEditorPage() {
   )
   const [selectedBlockId, setSelectedBlockId] = useState(null)
   const [saving, setSaving] = useState(false)
+  // 개인(비공개) 템플릿 — 소유=personal-{me}. 작성 picker 에서 본인만 보지만,
+  // 그 템플릿으로 게시한 보고서는 누구에게나 렌더된다(렌더는 by-id 개방).
+  const [isPrivate, setIsPrivate] = useState(false)
   // Same dialog the report editor uses — opened from the 보고서 설정
   // button below. Writes back to draft.report_defaults so the settings
   // travel with the template version on publish.
@@ -224,8 +227,13 @@ export default function TemplateEditorPage() {
           description: draft.description,
           category: draft.category,
           schema,
-          // 일반 멤버는 자기 부서 단독 소유로만 생성(가시성 선택 불가).
-          owner_workspace_slugs: isManager ? draft.owner_workspace_slugs : [slug],
+          // 개인(비공개) 선택 시 본인 personal 소유. 아니면 매니저는 선택 부서,
+          // 일반 멤버는 자기 부서 단독 소유.
+          owner_workspace_slugs: isPrivate
+            ? [`personal-${me?.user?.id}`]
+            : isManager
+              ? draft.owner_workspace_slugs
+              : [slug],
         })
         toast.success('템플릿이 생성되었습니다.')
       }
@@ -334,31 +342,47 @@ export default function TemplateEditorPage() {
                 {!isEdit && (
                   <div>
                     <Label className="text-xs">가시성</Label>
-                    {isManager ? (
-                      <>
-                        <div className="mt-1">
-                          <WorkspaceMultiSelect
-                            value={draft.owner_workspace_slugs}
-                            onChange={(next) =>
-                              setDraft({ ...draft, owner_workspace_slugs: next })
-                            }
-                            workspaces={workspaces}
-                            myUserId={me?.user?.id}
-                          />
-                        </div>
-                        <p className="mt-1 text-[10px] text-muted-foreground">
-                          여러 부서 선택 가능. 비워두면 전사 공유.
+                    {/* 개인(비공개) 토글 — 누구나. 켜면 나만 보는 템플릿이 된다
+                        (게시한 보고서는 그래도 모두에게 렌더됨). */}
+                    <label className="mt-1 flex items-start gap-2 rounded-md border p-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={isPrivate}
+                        onChange={(e) => setIsPrivate(e.target.checked)}
+                        className="mt-0.5"
+                      />
+                      <span className="text-[11px] leading-snug">
+                        <span className="font-medium">개인(비공개)</span> — 나만
+                        사용하는 템플릿. 다른 사용자의 템플릿 목록엔 보이지 않지만,
+                        이 템플릿으로 게시한 보고서는 모두에게 정상 표시됩니다.
+                      </span>
+                    </label>
+                    {!isPrivate &&
+                      (isManager ? (
+                        <>
+                          <div className="mt-2">
+                            <WorkspaceMultiSelect
+                              value={draft.owner_workspace_slugs}
+                              onChange={(next) =>
+                                setDraft({ ...draft, owner_workspace_slugs: next })
+                              }
+                              workspaces={workspaces}
+                              myUserId={me?.user?.id}
+                            />
+                          </div>
+                          <p className="mt-1 text-[10px] text-muted-foreground">
+                            여러 부서 선택 가능. 비워두면 전사 공유.
+                          </p>
+                        </>
+                      ) : (
+                        // 일반 멤버: 자기 부서 단독 소유로 고정(전사공개·타부서·공유는 매니저).
+                        <p className="mt-2 text-[11px] text-muted-foreground">
+                          자기 부서(
+                          {(workspaces ?? []).find((w) => w.slug === slug)?.name ??
+                            slug}
+                          )에만 생성됩니다. 전사 공개·다른 부서 공유는 매니저에게 문의하세요.
                         </p>
-                      </>
-                    ) : (
-                      // 일반 멤버: 자기 부서 단독 소유로 고정(전사공개·타부서·공유는 매니저).
-                      <p className="mt-1 text-[11px] text-muted-foreground">
-                        자기 부서(
-                        {(workspaces ?? []).find((w) => w.slug === slug)?.name ??
-                          slug}
-                        )에만 생성됩니다. 전사 공개·다른 부서 공유는 매니저에게 문의하세요.
-                      </p>
-                    )}
+                      ))}
                   </div>
                 )}
                 <div>

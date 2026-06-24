@@ -34,6 +34,19 @@ class WorkspaceKind(str, enum.Enum):
     org = "org"
     personal = "personal"
     virtual = "virtual"
+    # TF(태스크포스) — 공식 조직도(org 트리) 밖의 한시·교차기능 조직.
+    # `parent_slug=NULL` 로 트리에 매달지 않아 상속이 자연히 꺼지고, 멤버십은
+    # 평면 명시 리스트(부서 무관 차출)다. mount/folder/grant 는 org 와 동일하게
+    # 재사용한다. 설계: TF조직_설계.md.
+    tf = "tf"
+
+
+class WorkspaceStatus(str, enum.Enum):
+    """워크스페이스 수명 상태. org/personal/virtual 은 항상 active.
+    TF 만 archived 로 전환 가능(읽기전용 보존 — 자료 이관 없음)."""
+
+    active = "active"
+    archived = "archived"
 
 
 class Workspace(Base):
@@ -72,6 +85,25 @@ class Workspace(Base):
     # org 게시판에만 의미; personal/virtual 은 무시(개인공간은 공개 대상 아님).
     external_view_default: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
+    )
+
+    # TF 수명(TF조직_설계.md §7). org/personal/virtual 은 항상 active. TF 만
+    # archived 로 — archived 면 멤버는 읽기전용으로만 진입(쓰기·게시·댓글 차단),
+    # picker 기본 숨김.
+    status: Mapped[WorkspaceStatus] = mapped_column(
+        Enum(WorkspaceStatus, name="workspace_status_enum"),
+        nullable=False,
+        default=WorkspaceStatus.active,
+        server_default=WorkspaceStatus.active.value,
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    archived_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # TF 개설자(감독·표시용). org 는 sysadmin 이 만들어 의미 없으나 TF 는
+    # 보직장 self-service 라 누가 열었는지 추적한다. NULL=레거시/시스템 생성.
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
     created_at: Mapped[datetime] = mapped_column(

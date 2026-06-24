@@ -180,6 +180,10 @@ export function AttachmentEditor({ props, content, onChange, readOnly }) {
                   variant="ghost"
                   size="icon"
                   className="h-7 w-7"
+                  // HTML export 가 이 마커를 읽어 죽은 JS 버튼을 실제 동작하는
+                  // <a download href="data:..."> 로 교체한다(inlineAttachments).
+                  data-export-attachment-file-id={file.file_id}
+                  data-export-attachment-name={file.filename || file.file_id}
                   onClick={() => downloadFile(file.file_id, file.filename)}
                   title="다운로드"
                 >

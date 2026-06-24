@@ -693,6 +693,18 @@ function HtmlEmbedView({ content, label }) {
     ? embedBundleUrl(bundleId, entryPath || 'index.html')
     : null
 
+  // HTML export 가 이 마커를 읽어 내용을 자기완결형으로 받아 <iframe srcdoc> 으로
+  // 본문에 인라인하고 'HTML 다운로드' 링크를 붙인다(카드·인라인 공통). 카드 모드는
+  // export DOM 에 iframe 이 없으므로 이 식별정보가 유일한 단서다.
+  const embedExportMarkers = {
+    'data-export-embed': '',
+    'data-export-embed-bundle-id': bundleId || undefined,
+    'data-export-embed-file-id': fileId || undefined,
+    'data-export-embed-entry': entryPath || undefined,
+    'data-export-embed-filename': filename || title || undefined,
+    'data-export-embed-height': height,
+  }
+
   const toolbar = (
     <div className="flex items-center gap-1">
       <Button variant="outline" size="sm" onClick={() => setFullscreen(true)}>
@@ -724,7 +736,7 @@ function HtmlEmbedView({ content, label }) {
   // 단일 파일 로딩/에러는 인라인 본문 자리에 표시.
   if (display === 'inline') {
     return (
-      <div className="space-y-2">
+      <div className="space-y-2" {...embedExportMarkers}>
         <div className="flex items-center justify-end">{toolbar}</div>
         {loading ? (
           <div
@@ -758,7 +770,7 @@ function HtmlEmbedView({ content, label }) {
 
   // card 모드 — 표지 + 열기 버튼.
   return (
-    <div className="rounded-md border bg-muted/20">
+    <div className="rounded-md border bg-muted/20" {...embedExportMarkers}>
       <div className="flex items-stretch gap-3 p-3">
         {coverUrl ? (
           <img

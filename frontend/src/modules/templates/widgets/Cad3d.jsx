@@ -30,6 +30,12 @@ import {
 import { cn } from '@/shared/lib/utils'
 import { uploadFile, fetchFileBlob } from '@/shared/api/files'
 import { CaptionInput, LabelField, PreviewLabel, captionPositionOf, captionSkipProps } from './_shared'
+import {
+  findParts,
+  loadModelFromBlob,
+  maybeSplitConnectedComponents,
+  applyViewPreset,
+} from './cad3dModelCore'
 
 // All three.js modules are pulled in via dynamic import inside the
 // editor so the main bundle stays clean for pages that don't render a
@@ -90,84 +96,6 @@ function freshAnnotationId(existingIds, prefix = 'm') {
   let n = 1
   while (existingIds.has(`${prefix}_${n}`)) n += 1
   return `${prefix}_${n}`
-}
-
-/** Extract a "parts" list (toggleable hide/show units) from the imported
- *  model. CAD-tool GLB exports vary wildly in hierarchy — some flatten
- *  every component to the top level, others nest several wrapper groups,
- *  others bury the named meshes a few levels deep. We try two strategies
- *  and pick whichever gives a useful list:
- *
- *  1. **Wrapper-strip**: walk past single-child Groups, take the first
- *     multi-child level. Works for `Scene → Assembly → [Part1..]`.
- *  2. **Traversal fallback**: collect every *named* renderable node
- *     in the tree, suppressing children whose named ancestor is
- *     already in the list. Works for deeply nested assemblies where
- *     the meaningful parts live at varying depths.
- *
- *  Returns `[]` only when neither strategy finds 2+ pieces — typical for
- *  single-mesh STL/OBJ exports, where the toggle button stays hidden.
- *
- *  IDs are stable across re-exports of the same model (use the node
- *  `name`); when names collide we suffix `#<index>` so the persisted
- *  `hidden_parts` list can still distinguish them. */
-function findParts(rootObj) {
-  if (!rootObj) return []
-
-  // Strategy 1: strip wrappers.
-  let node = rootObj
-  while (node?.children?.length === 1) {
-    node = node.children[0]
-  }
-  const directKids = (node?.children ?? []).filter(hasRenderableDescendant)
-  if (directKids.length >= 2) return toPartList(directKids)
-
-  // Strategy 2: traverse and collect named renderables. Suppress nodes
-  // whose ancestor is already collected so we don't double-count
-  // (e.g. "Part" + "Part > Mesh001" both showing up).
-  const collected = []
-  const collectedSet = new Set()
-  rootObj.traverse?.((n) => {
-    if (!n.name) return
-    if (!hasRenderableDescendant(n)) return
-    let ancestor = n.parent
-    while (ancestor) {
-      if (collectedSet.has(ancestor)) return
-      ancestor = ancestor.parent
-    }
-    collected.push(n)
-    collectedSet.add(n)
-  })
-  if (collected.length >= 2) return toPartList(collected)
-
-  return []
-}
-
-function toPartList(nodes) {
-  // Name collision guard — if the model has multiple `Mesh001`s
-  // (Blender's default export, for one), give each a `#<idx>` suffix
-  // so toggling one doesn't toggle them all.
-  const counts = {}
-  for (const n of nodes) {
-    const k = n.name || ''
-    counts[k] = (counts[k] || 0) + 1
-  }
-  return nodes.map((n, i) => {
-    const displayName = n.name || `Part ${i + 1}`
-    let id
-    if (!n.name) id = `_unnamed_${i}`
-    else if (counts[n.name] > 1) id = `${n.name}#${i}`
-    else id = n.name
-    return { id, name: displayName, node: n }
-  })
-}
-
-function hasRenderableDescendant(obj) {
-  let found = false
-  obj.traverse?.((n) => {
-    if (n.isMesh || n.isLine || n.isLineSegments || n.isPoints) found = true
-  })
-  return found
 }
 
 // Edge-detection threshold (degrees). 30° gets the dihedral corners
@@ -386,7 +314,12 @@ export function Cad3dEditor({ props, content, onChange, readOnly, autoFit }) {
       delete next.annotations
       delete next.hidden_parts
       delete next.wireframe_parts
+      delete next.sidebar_open
     }
+    // sidebar_open 은 토글되면 true/false 를 명시적으로 보존한다(삭제하지 않음).
+    // 기본(부재)=열림이지만, 한 번 토글한 뒤에도 절대 부재로 돌리지 않는 이유:
+    // 부재가 되면 Editor 의 구버전 view_state.sidebar_open 폴백이 되살아나
+    // 방금 연 사이드바를 도로 닫아버리는 경합이 생긴다.
     if (!next.caption) delete next.caption
     if (!next.caption_skip_autofill) delete next.caption_skip_autofill
     if (!next.view_state) delete next.view_state
@@ -480,6 +413,12 @@ export function Cad3dEditor({ props, content, onChange, readOnly, autoFit }) {
           // because it only fires one callback).
           onChangePartsState={
             readOnly ? null : (patch) => patchContent(patch)
+          }
+          // 사이드바 열림상태 — content.sidebar_open 우선, 없으면 구버전
+          // view_state.sidebar_open 으로 폴백(이미 저장된 보고서 호환).
+          sidebarOpen={content?.sidebar_open ?? content?.view_state?.sidebar_open}
+          onChangeSidebarOpen={
+            readOnly ? null : (v) => patchContent({ sidebar_open: v })
           }
           onClear={readOnly ? null : clear}
           fillCell={fillCell}
@@ -581,6 +520,10 @@ function CadCanvas({
   onClearView,
   onChangeAnnotations,
   onChangePartsState,
+  // 저장된 파트리스트 사이드바 열림상태(content.sidebar_open). 편집모드에서
+  // 토글하면 onChangeSidebarOpen 으로 즉시 persist → 열람모드/Export 기본값이 됨.
+  sidebarOpen: sidebarOpenSaved,
+  onChangeSidebarOpen,
   onClear,
   fillCell,
 }) {
@@ -615,9 +558,25 @@ function CadCanvas({
   // override-takes-precedence pattern as transientPartVis.
   const [transientWireframe, setTransientWireframe] = useState({})
   const [partsSearch, setPartsSearch] = useState('')
-  // Persistent sidebar (replaces the previous popover). Default to
-  // open so multi-part models show their structure immediately.
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  // Persistent sidebar (replaces the previous popover). 초기값은 저장된
+  // content.sidebar_open — 부재 시 열림(다중 파트 모델 구조를 바로 보여줌).
+  const [sidebarOpen, setSidebarOpen] = useState(
+    typeof sidebarOpenSaved === 'boolean' ? sidebarOpenSaved : true,
+  )
+  // 저장된 값이 바뀌면(다른 편집/첫 로드) 로컬 상태에 반영. 열람모드에선
+  // sidebarOpenSaved 가 세션 중 바뀌지 않으므로 reader 의 임시 토글은 보존된다.
+  useEffect(() => {
+    if (typeof sidebarOpenSaved === 'boolean') setSidebarOpen(sidebarOpenSaved)
+  }, [sidebarOpenSaved])
+  // 사이드바 토글. 편집모드면 content.sidebar_open 에 즉시 저장해 열람모드/Export
+  // 기본값이 되게 한다. 카메라(view_state)와 분리돼 있어 토글이 저장뷰를 안 건드림.
+  const toggleSidebar = useCallback(
+    (next) => {
+      setSidebarOpen(next)
+      if (onChangeSidebarOpen) onChangeSidebarOpen(next)
+    },
+    [onChangeSidebarOpen],
+  )
   // Feature-edges overlay (the sharp-angle outline that makes shape
   // boundaries readable). Default on — it's the main reason we built
   // the decoration pipeline.
@@ -1006,7 +965,9 @@ function CadCanvas({
     }
     if (typeof viewState.show_grid === 'boolean') setShowGrid(viewState.show_grid)
     if (typeof viewState.show_axes === 'boolean') setShowAxes(viewState.show_axes)
-    if (typeof viewState.sidebar_open === 'boolean') setSidebarOpen(viewState.sidebar_open)
+    // sidebar_open 은 view_state 가 아니라 content.sidebar_open 으로 분리 관리한다
+    // (아래 sidebarOpenSaved 동기화 effect). view_state 변경 때마다 사이드바를
+    // 건드리면 카메라 복원과 얽혀 토글이 카메라를 저장뷰로 되돌리는 문제가 있었다.
     requestRender()
   }, [viewState, loading, error, requestRender])
 
@@ -1439,7 +1400,6 @@ function CadCanvas({
       // setup the author intended (grid/axes/sidebar).
       show_grid: showGrid,
       show_axes: showAxes,
-      sidebar_open: sidebarOpen,
     }
     // Guard against NaN/Inf — would silently break the restore path
     // (validation rejects, viewState stays unset, no "saved view" chip).
@@ -1449,7 +1409,7 @@ function CadCanvas({
       return
     }
     onSaveView(payload)
-    toast.success('현재 뷰가 저장되었습니다 (카메라 + 그리드 + 축 + 사이드바).')
+    toast.success('현재 뷰가 저장되었습니다 (카메라 + 그리드 + 축).')
   }
 
   return (
@@ -1466,7 +1426,13 @@ function CadCanvas({
             : 'aspect-video',
       )}
     >
-      <div className="flex items-center gap-1 px-2 py-1.5 text-[10px] text-muted-foreground border-b shrink-0 flex-wrap">
+      <div
+        // 에디터 툴바(뷰 프리셋·그리드·파트 토글·측정 등)는 모두 React 핸들러
+        // 기반이라 저장 HTML 에선 죽은 버튼이다. export 클론에서 통째로 제거해
+        // 인터랙티브 뷰어엔 3D 캔버스만 남긴다(정적 PNG 모드도 동일).
+        data-export-exclude
+        className="flex items-center gap-1 px-2 py-1.5 text-[10px] text-muted-foreground border-b shrink-0 flex-wrap"
+      >
         <Move3d className="h-3 w-3" />
         <span>좌클릭 회전 · 우클릭 이동 · 휠 줌</span>
         <span className="mx-1">·</span>
@@ -1538,7 +1504,7 @@ function CadCanvas({
             size="sm"
             variant={sidebarOpen ? 'secondary' : 'ghost'}
             className="h-6 px-2 text-[10px]"
-            onClick={() => setSidebarOpen((v) => !v)}
+            onClick={() => toggleSidebar(!sidebarOpen)}
             title="부품 리스트 사이드바 토글"
           >
             <Layers className="mr-1 h-3 w-3" />
@@ -1687,6 +1653,27 @@ function CadCanvas({
       <div
         ref={containerRef}
         className="relative flex-1 min-h-0"
+        // HTML export 가 이 마커를 읽어 정지 PNG 대신 저장 파일 안에서 회전/확대
+        // 가능한 three.js 뷰어로 되살린다(exportReportToHtml + cad3d 런타임).
+        data-cad3d-file-id={fileId || undefined}
+        data-cad3d-ext={
+          loadedFilename
+            ? '.' + loadedFilename.split('.').pop()?.toLowerCase()
+            : undefined
+        }
+        data-cad3d-view-state={viewState ? JSON.stringify(viewState) : undefined}
+        // 편집모드에서 숨김/와이어프레임 처리한 파트 상태(content.hidden_parts /
+        // wireframe_parts)도 export 뷰어가 그대로 재현하도록 함께 싣는다.
+        data-cad3d-hidden-parts={
+          Array.isArray(hiddenParts) && hiddenParts.length
+            ? JSON.stringify(hiddenParts)
+            : undefined
+        }
+        data-cad3d-wireframe-parts={
+          Array.isArray(wireframeParts) && wireframeParts.length
+            ? JSON.stringify(wireframeParts)
+            : undefined
+        }
         onClick={handleCanvasClick}
         onMouseMove={handleCanvasMouseMove}
         onMouseLeave={() => setHoverPoint(null)}
@@ -1741,7 +1728,7 @@ function CadCanvas({
           hasWriter={!!onChangePartsState}
           search={partsSearch}
           setSearch={setPartsSearch}
-          onClose={() => setSidebarOpen(false)}
+          onClose={() => toggleSidebar(false)}
         />
       )}
       </div>
@@ -1759,248 +1746,6 @@ function CadCanvas({
       )}
     </div>
   )
-}
-
-/** Resolve a fresh camera position for a named preset, sized off the
- *  model's bounding box so it always lands "inside the room". */
-function applyViewPreset(name, { camera, controls, center, size, THREE }) {
-  const radius = Math.max(size.x, size.y, size.z, 1) * 1.5
-  // Camera FOV is fixed at 45° in the renderer init; back off enough
-  // that the whole box fits inside the frustum with a small margin.
-  const dist = radius / Math.tan((45 / 2) * (Math.PI / 180)) * 1.1
-  controls.target.copy(center)
-  switch (name) {
-    case 'front':
-      camera.position.set(center.x, center.y, center.z + dist)
-      break
-    case 'top':
-      camera.position.set(center.x, center.y + dist, center.z + 0.001)
-      break
-    case 'side':
-      camera.position.set(center.x + dist, center.y, center.z)
-      break
-    case 'fit':
-    case 'iso':
-    default: {
-      const d = dist / Math.sqrt(3)
-      camera.position.set(center.x + d, center.y + d, center.z + d)
-      break
-    }
-  }
-  camera.up.set(0, 1, 0)
-  camera.lookAt(center)
-  camera.zoom = 1
-  camera.updateProjectionMatrix()
-  // Suppress unused warning — `THREE` is part of the destructured args
-  // for symmetry with sites that need extra math types.
-  void THREE
-}
-
-/** STL is a flat triangle soup — no node hierarchy, no per-part names.
- *  But when an STL is exported from a multi-body assembly, the bodies
- *  are usually still **spatially disconnected** (no shared vertices),
- *  so we can recover them via connected-component analysis on the
- *  triangle adjacency graph. Returns a `Group` of per-component
- *  Meshes when 2..200 components are found; otherwise leaves the
- *  original mesh alone (single body, or too many micro-fragments to
- *  be useful).
- *
- *  Only called for STL — GLB has its own hierarchy, OBJ's loader
- *  already builds per-group Meshes, so connected-component splitting
- *  would either duplicate that work or fight it.
- */
-async function maybeSplitConnectedComponents(obj, ext, stack) {
-  if (ext !== '.stl') return obj
-  if (!obj.isMesh) return obj
-  const { THREE, BufferGeometryUtils } = stack
-
-  // Safety cap — connected-component split on a multi-million-tri STL
-  // can stall the main thread for several seconds. Below the cap we
-  // do it sync (<1s for typical assemblies).
-  const triCountRaw = (obj.geometry.getAttribute('position')?.count ?? 0) / 3
-  if (triCountRaw > 500_000) {
-    console.warn('[Cad3d] STL too large for auto-split:', triCountRaw, 'tris')
-    return obj
-  }
-
-  // STL stores each triangle's vertices independently, AND each
-  // triangle carries its own flat-shaded normal. mergeVertices treats
-  // vertices as "different" when ANY attribute (including normal)
-  // differs — so two triangles meeting at an edge keep distinct
-  // copies of the shared position because the per-face normals are
-  // different. The fix: copy positions only into a fresh geometry
-  // and let three.js recompute smooth vertex normals after the
-  // merge. This recovers the actual mesh topology.
-  let indexed
-  try {
-    const positionOnly = new THREE.BufferGeometry()
-    positionOnly.setAttribute('position', obj.geometry.getAttribute('position'))
-    // 1e-4 is generous enough to absorb f32 round-trip noise from
-    // different STL writers without merging actually distinct bodies.
-    indexed = BufferGeometryUtils.mergeVertices(positionOnly, 1e-4)
-    indexed.computeVertexNormals()
-  } catch (err) {
-    console.warn('[Cad3d] mergeVertices failed, keeping single mesh:', err)
-    return obj
-  }
-  const components = findConnectedComponentsTris(indexed)
-  if (components.length < 2 || components.length > 200) {
-    indexed.dispose()
-    return obj
-  }
-
-  // Build a Group with one Mesh per component, sharing the original
-  // material. Sort components by triangle count desc so the largest
-  // body becomes "Part 1" — usually the part the user thinks of first.
-  components.sort((a, b) => b.length - a.length)
-  const group = new THREE.Group()
-  group.name = obj.name || 'STL Model'
-  for (let i = 0; i < components.length; i += 1) {
-    const subGeom = buildSubGeometryFromTris(indexed, components[i], THREE)
-    const mesh = new THREE.Mesh(subGeom, obj.material)
-    mesh.name = `Part ${i + 1}`
-    group.add(mesh)
-  }
-  // Free the merged + original — the new sub-geometries own their own
-  // attribute buffers and don't reference back.
-  indexed.dispose()
-  obj.geometry.dispose()
-  return group
-}
-
-/** Union-Find over the triangle adjacency graph. Two triangles are
- *  connected iff they share at least one vertex index (after vertex
- *  merging). Returns an array of arrays of triangle indices, one per
- *  connected component. */
-function findConnectedComponentsTris(geom) {
-  const indexAttr = geom.getIndex()
-  if (!indexAttr) return []
-  const indices = indexAttr.array
-  const triCount = indices.length / 3
-  if (triCount === 0) return []
-
-  // Bucket triangles by vertex index — every (vIdx → [t1, t2, ...]).
-  const vertexToTris = new Map()
-  for (let t = 0; t < triCount; t += 1) {
-    for (let k = 0; k < 3; k += 1) {
-      const v = indices[t * 3 + k]
-      let list = vertexToTris.get(v)
-      if (!list) {
-        list = []
-        vertexToTris.set(v, list)
-      }
-      list.push(t)
-    }
-  }
-
-  // Union triangles that share a vertex. Path compression keeps the
-  // amortized cost near O(1) per find().
-  const parent = new Int32Array(triCount)
-  for (let i = 0; i < triCount; i += 1) parent[i] = i
-  function find(x) {
-    let root = x
-    while (parent[root] !== root) root = parent[root]
-    while (parent[x] !== root) {
-      const next = parent[x]
-      parent[x] = root
-      x = next
-    }
-    return root
-  }
-  for (const tris of vertexToTris.values()) {
-    if (tris.length < 2) continue
-    const ra = find(tris[0])
-    for (let i = 1; i < tris.length; i += 1) {
-      const rb = find(tris[i])
-      if (ra !== rb) parent[rb] = ra
-    }
-  }
-
-  // Group by component root.
-  const compMap = new Map()
-  for (let t = 0; t < triCount; t += 1) {
-    const r = find(t)
-    let list = compMap.get(r)
-    if (!list) {
-      list = []
-      compMap.set(r, list)
-    }
-    list.push(t)
-  }
-  return Array.from(compMap.values())
-}
-
-/** Build a fresh BufferGeometry containing only the triangles whose
- *  indices appear in `triIndices`, copying position + normal data
- *  from the merged source. Non-indexed (flat) layout is fine here —
- *  the merge already collapsed shared vertices, and re-indexing per
- *  component would just add work for no perceptible win at the sizes
- *  we cap at. */
-function buildSubGeometryFromTris(srcGeom, triIndices, THREE) {
-  const srcIdx = srcGeom.getIndex().array
-  const posAttr = srcGeom.getAttribute('position')
-  const normAttr = srcGeom.getAttribute('normal')
-  const tc = triIndices.length
-  const positions = new Float32Array(tc * 9)
-  const normals = normAttr ? new Float32Array(tc * 9) : null
-  for (let ti = 0; ti < tc; ti += 1) {
-    const t = triIndices[ti]
-    for (let k = 0; k < 3; k += 1) {
-      const vIdx = srcIdx[t * 3 + k]
-      const off = ti * 9 + k * 3
-      positions[off + 0] = posAttr.getX(vIdx)
-      positions[off + 1] = posAttr.getY(vIdx)
-      positions[off + 2] = posAttr.getZ(vIdx)
-      if (normals) {
-        normals[off + 0] = normAttr.getX(vIdx)
-        normals[off + 1] = normAttr.getY(vIdx)
-        normals[off + 2] = normAttr.getZ(vIdx)
-      }
-    }
-  }
-  const g = new THREE.BufferGeometry()
-  g.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  if (normals) {
-    g.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
-  } else {
-    g.computeVertexNormals()
-  }
-  return g
-}
-
-/** Pick a loader based on the filename extension and return the loaded
- *  Object3D. STL produces a buffer geometry → wrap in a Mesh with a
- *  default material. */
-async function loadModelFromBlob(blob, ext, { THREE, GLTFLoader, STLLoader, OBJLoader }) {
-  const buf = await blob.arrayBuffer()
-  if (ext === '.glb' || ext === '.gltf') {
-    const loader = new GLTFLoader()
-    const gltf = await loader.parseAsync(buf, '')
-    return gltf.scene ?? gltf.scenes?.[0]
-  }
-  if (ext === '.stl') {
-    const loader = new STLLoader()
-    const geom = loader.parse(buf)
-    geom.computeVertexNormals()
-    // DoubleSide — STL files (especially when exported from
-    // open-source CAD tools) frequently have inconsistent triangle
-    // winding, which makes some faces invisible from one side under
-    // default front-face culling. Drawing both sides costs a bit of
-    // fill rate but is robust for arbitrary STL input.
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0xb0bec5,
-      metalness: 0.05,
-      roughness: 0.65,
-      side: THREE.DoubleSide,
-    })
-    return new THREE.Mesh(geom, mat)
-  }
-  if (ext === '.obj') {
-    const loader = new OBJLoader()
-    const text = new TextDecoder('utf-8').decode(buf)
-    return loader.parse(text)
-  }
-  throw new Error(`지원하지 않는 형식: ${ext}`)
 }
 
 /** Recursive disposal — geometry/material/texture all live on the GPU
@@ -2257,6 +2002,9 @@ function PartsSidebar({
       // visibility. Solid bg + shadow keeps text readable on top of
       // the 3D scene. max-w cap ensures it never eats more than half
       // the widget on tiny cells; user can still close via X.
+      // 파트 리스트는 에디터/열람 UI — 저장 HTML 엔 넣지 않는다(파트 숨김 상태는
+      // 뷰어가 직접 반영하므로 리스트 자체는 불필요). export 클론에서 제거.
+      data-export-exclude
       className="absolute top-0 right-0 bottom-0 z-20 w-[240px] max-w-[60%] border-l bg-background/95 backdrop-blur-sm shadow-lg flex flex-col min-h-0"
     >
       <div className="flex items-center justify-between px-2 py-1.5 border-b shrink-0">
@@ -2417,7 +2165,6 @@ function PartModeButton({ active, onClick, title, icon: Icon, label }) {
     </button>
   )
 }
-
 
 /** Convert a `{x,y,z}` literal to a THREE.Vector3-ish object the
  *  projector accepts. We use `camera.matrixWorld` for context but

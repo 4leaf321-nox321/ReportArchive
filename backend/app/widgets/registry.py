@@ -3227,6 +3227,11 @@ def _cad_3d_content(props: dict) -> dict:  # noqa: ARG001
                 "type": "array",
                 "items": {"type": "string", "maxLength": 200},
             },
+            # Parts-list sidebar open/closed state. Persisted on toggle in
+            # edit mode (separate from view_state so closing it never
+            # rewinds the saved camera). Absent = open (default); only the
+            # non-default `false` is stored. 열람모드/Export 도 이 값을 따른다.
+            "sidebar_open": {"type": "boolean"},
             # Phase 2: world-space measurement annotations. Distinct shape
             # from chart/image annotations (those live in 2D pct space).
             # `distance_3d`: line between p1 and p2, label shows the

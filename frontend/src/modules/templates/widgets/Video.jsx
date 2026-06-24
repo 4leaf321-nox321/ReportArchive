@@ -455,6 +455,10 @@ function VideoPlayer({ file, playback }) {
   return (
     <video
       src={blobUrl}
+      // HTML export 가 blob URL 대신 이 file_id 로 원본을 받아 data URI 로
+      // 굽는다(htmlInlineAssets.inlineVideos). blob: 는 저장 파일에서 깨진다.
+      data-export-file-id={file?.file_id || undefined}
+      data-export-mime={file?.mime_type || undefined}
       controls
       autoPlay={!!playback?.autoplay}
       loop={!!playback?.loop}

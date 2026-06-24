@@ -24,6 +24,12 @@
 // offline, with the same multi-page navigation the editor offers.
 
 import { apiClient } from '@/shared/api/client'
+import { fetchFileBlob } from '@/shared/api/files'
+import {
+  inlineVideos,
+  inlineAttachments,
+  inlineEmbeds,
+} from './htmlInlineAssets'
 
 export async function exportReportToHtml({ draft, onProgress, signal, staticDoc = false }) {
   // Progress reporter — caller-supplied (ReportDetailPage) drives the
@@ -55,6 +61,12 @@ export async function exportReportToHtml({ draft, onProgress, signal, staticDoc 
   // 클론에 렌더된 SVG 가 그대로 남고, 3D/WebGL 은 아래 canvas 스냅샷이 PNG 로
   // 박는다. 그래서 스펙 수집(=재렌더용)을 건너뛴다.
   const plotlySpecs = staticDoc ? [] : snapshotPlotlyCharts(sourceRoot)
+
+  // cad_3d(three.js) 위젯의 file_id / 확장자 / 저장된 카메라(view_state)를 라이브
+  // DOM 에서 수집. 인터랙티브 모드에선 아래에서 모델 바이트 + three 번들을
+  // 인라인해 저장 파일에서도 회전/확대가 되게 한다. 정적 모드는 canvas PNG
+  // 스냅샷(아래)을 그대로 쓰므로 수집을 건너뛴다.
+  const cad3dSpecs = staticDoc ? [] : snapshotCad3d(sourceRoot)
 
   // Snapshot every live <canvas> as a PNG dataURL BEFORE cloning —
   // cloneNode does not preserve canvas pixel buffers (the cloned canvas
@@ -101,6 +113,7 @@ export async function exportReportToHtml({ draft, onProgress, signal, staticDoc 
   // (before any await that might let the user interact with the page)
   // keeps the editor UI from carrying stray attributes.
   clearLivePlotlyAnnotations(sourceRoot)
+  clearLiveCad3dAnnotations(sourceRoot)
 
   // Replace cloned canvases with <img> tags using the live snapshots —
   // must run before any other clone manipulation so subsequent
@@ -117,6 +130,11 @@ export async function exportReportToHtml({ draft, onProgress, signal, staticDoc 
   // 파일에서 영영 빈 박스가 된다. 클론에 남은 렌더 결과(SVG/PNG)를 그대로 둔다.
   if (!staticDoc) prepareClonedPlotlyPlaceholders(clone, plotlySpecs)
   const hasPlotly = !staticDoc && plotlySpecs.some((s) => s != null)
+
+  // cad_3d: 클론의 캔버스-PNG(위 replaceClonedCanvases 결과) 자리를 빈 뷰어
+  // 컨테이너로 바꾼다. 정적 모드는 손대지 않아 PNG 가 그대로 남는다.
+  if (!staticDoc) prepareClonedCad3d(clone, cad3dSpecs)
+  const hasCad3d = !staticDoc && cad3dSpecs.some((s) => s != null)
 
   // Pin each cloned grid to its live-measured width and center it. The
   // grid items are position:absolute (no intrinsic width), so without a
@@ -210,6 +228,18 @@ export async function exportReportToHtml({ draft, onProgress, signal, staticDoc 
   report({ phase: 'images', label: '이미지 인라인 중...' })
   throwIfAborted()
   await inlineImages(clone)
+  throwIfAborted()
+
+  // 동영상 / 첨부파일 / HTML임베드 번들 자산 굽기. 이들은 런타임 blob URL·
+  // JS 인증 fetch·서버 상대경로에 의존해서, 굽지 않으면 저장 파일에서 깨진다
+  // (빈 동영상 박스, 죽은 다운로드 버튼, 404 iframe). 인터랙티브·정적 모드
+  // 양쪽에서 동작하도록 staticDoc 분기 이전에 처리한다. (htmlInlineAssets.js)
+  report({ phase: 'images', label: '동영상 / 첨부 인라인 중...' })
+  await inlineVideos(clone)
+  throwIfAborted()
+  await inlineAttachments(clone)
+  throwIfAborted()
+  await inlineEmbeds(clone)
   throwIfAborted()
 
   // ─── 정적 문서 모드 ───────────────────────────────────────────────
@@ -318,6 +348,59 @@ export async function exportReportToHtml({ draft, onProgress, signal, staticDoc 
       // content the clone had (canvas-img or SVG).
       viewerShell.querySelectorAll('[data-plotly-spec-id]').forEach((el) => {
         el.removeAttribute('data-plotly-spec-id')
+      })
+    }
+  }
+
+  // cad_3d 인터랙티브 자산: three+로더 번들(?raw)을 한 번 인라인하고, 각 모델
+  // 파일 바이트를 base64 로 받아 spec(id→{dataB64,ext,viewState})에 담는다.
+  // 같은 file_id 는 한 번만 받아 재사용. 실패 시 해당 컨테이너의 spec-id 를 떼어
+  // 정적 PNG(이미 클론에 없으니 빈 박스)…가 아니라, 안전하게 placeholder 를
+  // 비워두기보다 마커만 제거해 빈 컨테이너로 남긴다.
+  let cad3dJs = ''
+  let cad3dSpecsJson = ''
+  if (hasCad3d) {
+    report({ phase: 'plotly', label: '3D 모델 / three.js 인라인...' })
+    try {
+      const mod = await import('./cad3d/viewerRuntime.bundle.js?raw')
+      throwIfAborted()
+      cad3dJs = mod.default || mod
+      const blobCache = new Map() // file_id → base64 (중복 모델 1회만 fetch)
+      const specsById = {}
+      for (let idx = 0; idx < cad3dSpecs.length; idx += 1) {
+        const s = cad3dSpecs[idx]
+        if (!s || !s.fileId) continue
+        let dataB64 = blobCache.get(s.fileId)
+        if (dataB64 == null) {
+          try {
+            const blob = await fetchFileBlob(s.fileId)
+            throwIfAborted()
+            dataB64 = arrayBufferToBase64(await blob.arrayBuffer())
+            blobCache.set(s.fileId, dataB64)
+          } catch (err) {
+            console.warn('[html-export] cad_3d model fetch failed', s.fileId, err)
+            continue
+          }
+        }
+        specsById[String(idx)] = {
+          dataB64,
+          ext: s.ext,
+          viewState: s.viewState ?? null,
+          hiddenParts: s.hiddenParts ?? [],
+          wireframeParts: s.wireframeParts ?? [],
+        }
+      }
+      cad3dSpecsJson = JSON.stringify(specsById)
+      // 받지 못한(spec 없는) 컨테이너의 마커는 떼서 init 대상에서 제외.
+      viewerShell.querySelectorAll('[data-cad3d-spec-id]').forEach((el) => {
+        if (!(el.getAttribute('data-cad3d-spec-id') in specsById)) {
+          el.removeAttribute('data-cad3d-spec-id')
+        }
+      })
+    } catch (err) {
+      console.warn('[html-export] cad_3d runtime inline failed', err)
+      viewerShell.querySelectorAll('[data-cad3d-spec-id]').forEach((el) => {
+        el.removeAttribute('data-cad3d-spec-id')
       })
     }
   }
@@ -472,6 +555,15 @@ export async function exportReportToHtml({ draft, onProgress, signal, staticDoc 
         escapeScriptJson(plotlySpecsJson) +
         '</script>\n' +
         '<script>\n' + PLOTLY_INIT_SCRIPT + '\n</script>\n'
+      : '') +
+    // cad_3d 인터랙티브 자산 — three+로더 번들(window.__RA_CAD3D__ 정의) →
+    // 모델 spec JSON → init. Plotly 와 동일 패턴.
+    (cad3dJs
+      ? '\n<script>\n' + cad3dJs + '\n</script>\n' +
+        '<script type="application/json" id="rv-cad3d-specs">' +
+        escapeScriptJson(cad3dSpecsJson) +
+        '</script>\n' +
+        '<script>\n' + CAD3D_INIT_SCRIPT + '\n</script>\n'
       : '') +
     '</body>\n</html>\n'
 
@@ -889,6 +981,112 @@ export const PLOTLY_INIT_SCRIPT = [
   '  } else {',
   '    window.addEventListener("load", init);',
   '  }',
+  '})();',
+].join('\n')
+
+// --- cad_3d (three.js) interactive export ----------------------------- //
+//
+// cad_3d 위젯은 three.js 가 WebGL <canvas> 에 그린다. 기본 export 는 이 캔버스를
+// PNG 로 스냅샷(snapshotCanvases)해 정지 이미지로 박지만, 인터랙티브 모드에선
+// 모델 파일 바이트 + 사전 번들한 three 런타임(cad3d/viewerRuntime.bundle.js)을
+// 인라인해 저장 파일에서도 회전/확대가 되게 한다. Plotly 경로와 동일한 3단계:
+// 라이브 스냅샷 → 클론 placeholder → 번들+spec+init 인라인.
+
+// 라이브 DOM 의 각 cad_3d 컨테이너(Cad3d.jsx 가 data-cad3d-file-id 등을 심음)에서
+// file_id / 확장자 / 저장된 카메라(view_state)를 읽고, 문서 순서 인덱스로 태깅한다.
+export function snapshotCad3d(rootEl) {
+  const nodes = Array.from(rootEl.querySelectorAll('[data-cad3d-file-id]'))
+  const specs = []
+  nodes.forEach((el, idx) => {
+    const fileId = el.getAttribute('data-cad3d-file-id') || null
+    const ext = (el.getAttribute('data-cad3d-ext') || '').toLowerCase() || null
+    const parseAttrJson = (name) => {
+      const raw = el.getAttribute(name)
+      if (!raw) return null
+      try {
+        return JSON.parse(raw)
+      } catch {
+        return null
+      }
+    }
+    const viewState = parseAttrJson('data-cad3d-view-state')
+    const hiddenParts = parseAttrJson('data-cad3d-hidden-parts')
+    const wireframeParts = parseAttrJson('data-cad3d-wireframe-parts')
+    const rect = el.getBoundingClientRect()
+    specs.push(
+      fileId && ext
+        ? {
+            fileId,
+            ext,
+            viewState,
+            hiddenParts: Array.isArray(hiddenParts) ? hiddenParts : [],
+            wireframeParts: Array.isArray(wireframeParts) ? wireframeParts : [],
+            width: Math.round(rect.width) || null,
+            height: Math.round(rect.height) || null,
+          }
+        : null,
+    )
+    el.setAttribute('data-cad3d-export-idx', String(idx))
+  })
+  return specs
+}
+
+export function clearLiveCad3dAnnotations(rootEl) {
+  rootEl.querySelectorAll('[data-cad3d-export-idx]').forEach((el) => {
+    el.removeAttribute('data-cad3d-export-idx')
+  })
+}
+
+// 클론에서 각 컨테이너를 비우고(=PNG-img 제거) 뷰어 placeholder 로 만든다.
+// 라이브 크기를 inline 으로 박아 파일 열림 직후 박스가 무너지지 않게 한다.
+export function prepareClonedCad3d(cloneEl, specs) {
+  const nodes = Array.from(cloneEl.querySelectorAll('[data-cad3d-export-idx]'))
+  nodes.forEach((el) => {
+    const idxAttr = el.getAttribute('data-cad3d-export-idx')
+    el.removeAttribute('data-cad3d-export-idx')
+    if (idxAttr == null) return
+    const idx = parseInt(idxAttr, 10)
+    const spec = specs[idx]
+    if (!spec) return
+    el.innerHTML = '' // 캔버스-PNG / 로딩오버레이 제거
+    el.setAttribute('data-cad3d-spec-id', String(idx))
+    el.style.position = 'relative'
+    if (spec.width) el.style.width = spec.width + 'px'
+    if (spec.height) el.style.height = spec.height + 'px'
+    if (spec.height) el.style.minHeight = spec.height + 'px'
+  })
+}
+
+// ArrayBuffer → base64. btoa 는 바이너리 문자열을 받으므로 청크로 끊어
+// String.fromCharCode 부담/콜스택 한계를 피한다(대형 모델 대비).
+export function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer)
+  const CHUNK = 0x8000
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(
+      null,
+      bytes.subarray(i, i + CHUNK),
+    )
+  }
+  return btoa(binary)
+}
+
+// 저장 파일 안에서 실행: spec JSON 을 읽어 런타임의 initAll 로 모든 뷰어를 띄운다.
+// window.load 후 실행(인라인 <style> 가 적용돼 컨테이너 크기가 잡힌 뒤).
+export const CAD3D_INIT_SCRIPT = [
+  '(function () {',
+  '  function init() {',
+  '    if (!window.__RA_CAD3D__) return;',
+  '    var tag = document.getElementById("rv-cad3d-specs");',
+  '    if (!tag) return;',
+  '    var specs;',
+  '    try { specs = JSON.parse(tag.textContent || "{}"); } catch (e) { return; }',
+  '    try { window.__RA_CAD3D__.initAll(specs); }',
+  '    catch (e) { console.warn("cad3d init failed", e); }',
+  '  }',
+  '  if (document.readyState === "complete") { init(); }',
+  '  else { window.addEventListener("load", init); }',
   '})();',
 ].join('\n')
 

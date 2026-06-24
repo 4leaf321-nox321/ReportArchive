@@ -121,7 +121,10 @@ def update_preset(
     preset_id: int,
     payload: PresetUpdate,
     db: Session = Depends(get_db),
-    actor: CurrentUser = Depends(require_writer),
+    # 소유자 관리 작업이라 require_writer(게시판 쓰기) 가 아니라 소유권만 게이트.
+    # require_writer 면 다른 조직 공개 게시판 열람 중(public_viewer)일 때 본인
+    # 양식 수정이 "읽기 전용" 으로 잘못 막힌다.
+    actor: CurrentUser = Depends(get_current_user),
 ):
     """양식 메타정보(이름·설명·공개범위) 수정 — 작성자 또는 시스템관리자."""
     preset = services.get(db, preset_id)
@@ -140,7 +143,9 @@ def update_preset_from_report(
     preset_id: int,
     payload: PresetUpdateFromReport,
     db: Session = Depends(get_db),
-    actor: CurrentUser = Depends(require_writer),
+    # 소유자 관리 작업 — 소유권(_can_manage_preset)만 게이트(아래). source 보고서는
+    # can_read_report 로 따로 검사한다. require_writer 였으면 cross-org 열람 중 막힘.
+    actor: CurrentUser = Depends(get_current_user),
 ):
     """양식 내용(seed)을 source 보고서로 갱신 — 양식 편집 세션의 '양식에 반영'.
     작성자/시스템관리자만, source 보고서는 읽을 수 있어야 한다."""
@@ -166,7 +171,10 @@ def update_preset_from_report(
 def delete_preset(
     preset_id: int,
     db: Session = Depends(get_db),
-    actor: CurrentUser = Depends(require_writer),
+    # 소유자 관리 작업이라 소유권만 게이트(아래 _can_manage_preset). require_writer
+    # 였을 때 다른 조직 공개 게시판 열람 중(public_viewer)이면 본인 양식 삭제가
+    # "다른 조직의 공개 게시판은 읽기 전용입니다" 로 잘못 막히던 버그 수정.
+    actor: CurrentUser = Depends(get_current_user),
 ):
     preset = services.get(db, preset_id)
     if not preset:

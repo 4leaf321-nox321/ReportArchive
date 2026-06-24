@@ -36,6 +36,7 @@ class TemplateRead(BaseModel):
     owner_workspace_slugs: Optional[List[str]]
     is_published: bool
     is_latest: bool
+    archived_at: Optional[datetime] = None
     created_by_user_id: Optional[int]
     created_at: datetime
 
@@ -52,6 +53,7 @@ class TemplateRead(BaseModel):
                 "owner_workspace_slugs": obj.owner_workspace_slugs,
                 "is_published": obj.is_published,
                 "is_latest": obj.is_latest,
+                "archived_at": getattr(obj, "archived_at", None),
                 "created_by_user_id": obj.created_by_user_id,
                 "created_at": obj.created_at,
             }
@@ -84,6 +86,12 @@ class TemplateScopeUpdate(BaseModel):
     not bump the version. NULL/empty = 전사(global)."""
 
     owner_workspace_slugs: Optional[List[str]] = None
+
+
+class TemplateArchiveUpdate(BaseModel):
+    """Archive(True) / unarchive(False) a template. template_id 단위."""
+
+    archived: bool
 
 
 class TemplateVersionSummary(BaseModel):

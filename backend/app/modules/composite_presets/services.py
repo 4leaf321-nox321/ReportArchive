@@ -115,6 +115,7 @@ def list_visible(
     all_scopes: bool = False,
     user_id: Optional[int] = None,
     is_system_admin: bool = False,
+    include_archived: bool = False,
 ) -> list[CompositePreset]:
     """종합보고 양식 목록. 보고서 프리셋(presets.list_visible)과 동형 가시성:
       - 기본(scoped): 가시 트리 + 전사 + 내 개인 + 내가 만든 것(관리 분리 유지).
@@ -122,8 +123,12 @@ def list_visible(
         양식으로 시작 가능). 남의 개인(비공개)은 제외.
       - `is_system_admin=True`: 타인 개인 포함 전체.
     소유 부서는 분류/관리 메타일 뿐 — instantiate(new-composite)는 id 로 열려 있다."""
+    # 보관 제외 필터(기본). 관리 화면이 보관 해제하려고 include_archived=True 로 부른다.
+    def _archived_filter(q):
+        return q if include_archived else q.where(CompositePreset.archived_at.is_(None))
+
     ordered = lambda q: list(  # noqa: E731
-        db.execute(q.order_by(desc(CompositePreset.updated_at))).scalars()
+        db.execute(_archived_filter(q).order_by(desc(CompositePreset.updated_at))).scalars()
     )
 
     if is_system_admin:
@@ -185,6 +190,23 @@ def update(
 def delete(db: Session, preset: CompositePreset) -> None:
     db.delete(preset)
     db.commit()
+
+
+def set_archived(
+    db: Session,
+    preset: CompositePreset,
+    archived: bool,
+    user_id: Optional[int] = None,
+) -> CompositePreset:
+    """보관/보관해제. 삭제와 달리 행을 지우지 않아 기존 종합보고엔 영향 없고,
+    작성 picker·기본 목록에서만 빠진다. 멱등."""
+    from datetime import datetime
+
+    preset.archived_at = datetime.utcnow() if archived else None
+    preset.archived_by_user_id = user_id if archived else None
+    db.commit()
+    db.refresh(preset)
+    return preset
 
 
 def instantiate(

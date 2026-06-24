@@ -298,6 +298,62 @@ def delete_workspace(db: Session, ws: Workspace) -> None:
     db.commit()
 
 
+def hard_delete_tf_workspace(db: Session, ws: Workspace) -> dict:
+    """TF(태스크포스) 완전 삭제 — 테스트로 만든 TF 정리용. 보관(archive)이 행을
+    남겨두는 것과 달리 실제로 DELETE 한다.
+
+    자동 정리(FK CASCADE): 멤버십·폴더·게시(mount)·게시판/폴더/종합보고 grant.
+    수동 정리(FK 없음): ContentGrant(부서 principal), Template.owner_workspace_slugs
+    배열 참조.
+    거부 조건: 이 TF 가 *소유한* 보고서가 있으면(reports.workspace_slug=RESTRICT)
+    삭제 불가 — 보고서를 먼저 옮기거나 지워야 한다(실수로 보고서 유실 방지).
+
+    라우트가 kind=tf + 권한(그 TF 매니저 또는 시스템관리자)을 먼저 검사한다."""
+    from sqlalchemy import delete as sa_delete
+    from app.modules.grants.models import ContentGrant, GrantPrincipalType
+
+    if ws.kind != WorkspaceKind.tf:
+        raise ValueError("TF(태스크포스)만 완전 삭제할 수 있습니다.")
+
+    report_count = (
+        db.execute(
+            select(func.count(Report.id)).where(Report.workspace_slug == ws.slug)
+        ).scalar()
+        or 0
+    )
+    if report_count > 0:
+        raise ValueError(
+            f"이 TF 가 소유한 보고서가 {report_count}건 있어 삭제할 수 없습니다. "
+            f"보고서를 먼저 옮기거나 삭제한 뒤 다시 시도하세요."
+        )
+
+    # 1) ContentGrant — 이 TF 를 principal 로 가진 행(부서 / 부서매니저). FK 없음.
+    db.execute(
+        sa_delete(ContentGrant).where(
+            ContentGrant.principal_ref == ws.slug,
+            ContentGrant.principal_type.in_(
+                [
+                    GrantPrincipalType.workspace,
+                    GrantPrincipalType.workspace_manager,
+                ]
+            ),
+        )
+    )
+    # 2) Template.owner_workspace_slugs 배열에서 이 slug 제거(공유/분류 메타). 비면
+    #    None(=전사) 로 — 죽은 slug 참조를 남기는 것보다 낫다(테스트 TF엔 드묾).
+    tmpls = db.execute(
+        select(Template).where(Template.owner_workspace_slugs.contains([ws.slug]))
+    ).scalars()
+    for t in tmpls:
+        remaining = [s for s in (t.owner_workspace_slugs or []) if s != ws.slug]
+        t.owner_workspace_slugs = remaining or None
+
+    # 나머지(멤버·폴더·mount·board/folder/composite grant)는 FK CASCADE 가 정리.
+    db.delete(ws)
+    db.commit()
+    return {"slug": ws.slug, "deleted": True}
+
+
 def _norm_name(s: Optional[str]) -> str:
     """Normalize a workspace name for case-insensitive parent lookup."""
     return (s or "").strip().casefold()

@@ -60,6 +60,15 @@ class CompositePreset(Base):
     #     view_mode: "single"|"two_col"|"list", description: "..." }
     seed: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
+    # 보관(아카이브) — 템플릿과 동일. set 되면 작성 picker·기본 목록에서 숨고
+    # "보관" 분류로만 모인다. 기존 종합보고에는 영향 없음(행 유지).
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, index=True
+    )
+    archived_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
     created_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

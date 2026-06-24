@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Building2, Globe, Layers, Lock, User } from 'lucide-react'
+import { Archive, Building2, Globe, Layers, Lock, User } from 'lucide-react'
 import { cn } from '@/shared/lib/utils'
 
 // 개인(비공개) 항목 — 소유가 personal-* 뿐(백엔드 is_private_template 와 동일 정의).
@@ -29,10 +29,14 @@ export function useScopeCategories(items, { currentUserId, getName } = {}) {
   const isMine = (it) =>
     Boolean(currentUserId) && it?.created_by_user_id === currentUserId
   const isGlobal = (it) => (it?.owner_workspace_slugs ?? []).length === 0
+  // 보관(아카이브)된 항목 — 템플릿만 archived_at 을 가진다. 다른 소비처(프리셋
+  // 등)는 이 필드가 없어 항상 false → 보관 분류가 자동으로 안 뜬다.
+  const isArchived = (it) => Boolean(it?.archived_at)
 
   const orgGroups = useMemo(() => {
     const m = new Map()
     for (const it of items ?? []) {
+      if (isArchived(it)) continue // 보관은 조직별 버킷에서 제외
       for (const s of it?.owner_workspace_slugs ?? []) {
         // 개인(personal-*) 소유는 '조직별' 버킷으로 만들지 않는다 — 사용자마다
         // "(개인)" 버킷이 난립하는 것을 막는다. 비공개는 '개인 비공개' 그룹으로.
@@ -51,14 +55,19 @@ export function useScopeCategories(items, { currentUserId, getName } = {}) {
   }, [items, getName])
 
   const list = items ?? []
+  // 보관은 전체/전사/개인/조직별 어디에도 안 들어가고 '보관' 분류로만 모인다.
+  const live = list.filter((it) => !isArchived(it))
   const counts = {
-    all: list.length,
-    mine: list.filter(isMine).length,
-    global: list.filter(isGlobal).length,
-    private: list.filter(isPrivateItem).length,
+    all: live.length,
+    mine: live.filter(isMine).length,
+    global: live.filter(isGlobal).length,
+    private: live.filter(isPrivateItem).length,
+    archived: list.filter(isArchived).length,
   }
 
   const filter = (it) => {
+    if (cat.type === 'archived') return isArchived(it)
+    if (isArchived(it)) return false // 보관은 다른 분류에서 전부 제외
     if (cat.type === 'mine') return isMine(it)
     if (cat.type === 'global') return isGlobal(it)
     if (cat.type === 'private') return isPrivateItem(it)
@@ -131,6 +140,23 @@ export function ScopeCategorySidebar({
             onClick={() => onChange({ type: 'org', slug: o.slug })}
           />
         ))
+      )}
+      {/* 보관(사용 안 함) — 보관된 항목이 있을 때만 노출. 보관은 위의 어떤
+          분류에도 안 들어가고 여기로만 모인다. 항목 없는 소비처(프리셋 등)는
+          counts.archived=0 이라 자동으로 숨는다. */}
+      {counts.archived > 0 && (
+        <>
+          <div className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            사용 안 함
+          </div>
+          <CategoryButton
+            icon={Archive}
+            label="보관"
+            count={counts.archived}
+            active={cat.type === 'archived'}
+            onClick={() => onChange({ type: 'archived' })}
+          />
+        </>
       )}
     </aside>
   )

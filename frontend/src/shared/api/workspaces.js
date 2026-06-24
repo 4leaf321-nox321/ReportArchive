@@ -89,6 +89,14 @@ export async function setWorkspaceArchived(slug, archived) {
   return extractData(res)
 }
 
+/** TF 완전 삭제 — 그 TF 매니저 또는 시스템관리자. 보관과 달리 행을 실제로 지운다
+ *  (테스트로 만든 TF 정리용). 멤버·폴더·게시·grant 는 자동 정리되지만, 이 TF 가
+ *  소유한 보고서가 있으면 409 로 거부된다. */
+export async function deleteTf(slug) {
+  const res = await apiClient.delete(`${BASE}/tf/${slug}`)
+  return extractData(res)
+}
+
 /** 시스템관리자 감독용 — 모든 TF(보관 포함). */
 export async function listAllTf() {
   const res = await apiClient.get(`${BASE}/tf/all`)

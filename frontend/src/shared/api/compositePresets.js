@@ -4,10 +4,11 @@ const BASE = '/api/composite-presets'
 
 /** 종합보고 양식 목록. `scope='all'` 이면 소유 부서 무관 전체(작성 picker — 모든
  *  사용자가 모든 부서 양식으로 종합보고를 시작 가능). 기본은 워크스페이스 스코프. */
-export async function listCompositePresets({ scope } = {}) {
-  const res = await apiClient.get(BASE, {
-    params: scope ? { scope } : {},
-  })
+export async function listCompositePresets({ scope, includeArchived } = {}) {
+  const params = {}
+  if (scope) params.scope = scope
+  if (includeArchived) params.include_archived = true
+  const res = await apiClient.get(BASE, { params })
   return extractData(res)
 }
 
@@ -43,5 +44,12 @@ export async function updateCompositePreset(presetId, payload) {
 
 export async function deleteCompositePreset(presetId) {
   const res = await apiClient.delete(`${BASE}/${presetId}`)
+  return extractData(res)
+}
+
+/** 종합보고 양식 보관/보관해제. 보관하면 작성 picker·기본 목록에서 숨고 "보관"
+ *  분류로만 모인다. 행은 유지되어 그 양식으로 이미 만든 종합보고엔 영향 없음. */
+export async function setCompositePresetArchived(presetId, archived) {
+  const res = await apiClient.patch(`${BASE}/${presetId}/archive`, { archived })
   return extractData(res)
 }

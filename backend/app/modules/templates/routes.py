@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.modules.templates import services
 from app.modules.templates.schemas import (
+    TemplateArchiveUpdate,
     TemplateCreate,
     TemplateNewVersion,
     TemplateRead,
@@ -97,12 +98,16 @@ def _assert_can_manage_template(actor: CurrentUser, template) -> None:
 def list_templates(
     only_latest: bool = True,
     scope: str = "workspace",
+    include_archived: bool = False,
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
     """템플릿 목록. `scope=all` 이면 소유 부서 무관 전체(작성 picker 용 — 모든
     사용자가 내 공간에서 모든 템플릿을 쓸 수 있어야 함). 기본 `scope=workspace`
-    는 현재 워크스페이스 가시 범위로 필터(관리/홈 화면의 조직별 분리 유지)."""
+    는 현재 워크스페이스 가시 범위로 필터(관리/홈 화면의 조직별 분리 유지).
+
+    `include_archived=True` 면 보관된 템플릿도 포함한다(관리 화면이 보관 해제를
+    하려고 쓴다). 기본 False — 작성 picker·홈에선 보관 템플릿이 빠진다."""
     items = services.list_templates(
         db,
         actor.workspace.slug,
@@ -110,6 +115,7 @@ def list_templates(
         all_scopes=(scope == "all"),
         user_id=actor.user.id,
         is_system_admin=actor.user.is_system_admin,
+        include_archived=include_archived,
     )
     payload = [TemplateRead.from_orm_(t) for t in items]
     return success_response(data=payload)
@@ -203,6 +209,41 @@ def delete_template(
     return success_response(
         data=result,
         message=f"'{template_id}' 템플릿의 {result['deleted_versions']}개 버전이 삭제되었습니다.",
+    )
+
+
+@router.patch("/{template_id}/archive")
+def set_template_archived(
+    template_id: str,
+    payload: TemplateArchiveUpdate,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """템플릿 보관/보관해제. 삭제와 같은 관리 권한(보이는 템플릿 또는 자기 부서
+    소유)이면 가능하되, 삭제와 달리 **보고서가 참조 중이어도 허용**한다 — 보관은
+    행을 지우지 않아 기존 보고서 렌더가 그대로다. 보관되면 작성 picker·기본
+    목록에서 숨고 새 보고서 작성이 막힌다."""
+    latest = services.get_latest_version(db, template_id)
+    if not latest or not (
+        services.is_visible(db, latest, actor.workspace.slug)
+        or _is_own_personal_template(actor, latest)
+        or actor.user.is_system_admin
+    ):
+        return not_found_response(f"Template not found: {template_id}")
+    _assert_can_manage_template(actor, latest)
+    try:
+        result = services.set_template_archived(
+            db, template_id, payload.archived, user_id=actor.user.id
+        )
+    except ValueError as exc:
+        return not_found_response(str(exc))
+    return success_response(
+        data=result,
+        message=(
+            f"'{template_id}' 템플릿을 보관했습니다."
+            if payload.archived
+            else f"'{template_id}' 템플릿의 보관을 해제했습니다."
+        ),
     )
 
 

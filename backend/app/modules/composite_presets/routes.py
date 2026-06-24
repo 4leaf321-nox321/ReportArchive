@@ -14,6 +14,7 @@ from app.database import get_db
 from app.modules.composite_presets import services
 from app.modules.composite_presets.models import CompositePreset
 from app.modules.composite_presets.schemas import (
+    CompositePresetArchiveUpdate,
     CompositePresetCreate,
     CompositePresetInstantiate,
     CompositePresetSummary,
@@ -44,19 +45,24 @@ def _can_manage(actor: CurrentUser, preset: CompositePreset) -> bool:
 @router.get("")
 def list_composite_presets(
     scope: str = Query(default="workspace"),
+    include_archived: bool = Query(default=False),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
     """Presets visible to the actor. `scope=all` 이면 소유 부서 무관 전체(작성
     picker — 모든 사용자가 모든 부서 양식으로 종합보고를 시작 가능, 남의 개인
     비공개 제외). 기본 `scope=workspace` 는 가시 트리 + 전사 + 내 개인 + 내가
-    만든 것(관리 분리 유지). 시스템 관리자는 전체."""
+    만든 것(관리 분리 유지). 시스템 관리자는 전체.
+
+    `include_archived=True` 면 보관된 양식도 포함(관리 화면 보관 해제용). 기본
+    False — 작성 picker·기본 목록에선 보관분이 빠진다."""
     rows = services.list_visible(
         db,
         actor.workspace.slug,
         all_scopes=(scope == "all"),
         user_id=actor.user.id,
         is_system_admin=actor.user.is_system_admin,
+        include_archived=include_archived,
     )
     return success_response(
         data=[CompositePresetSummary.model_validate(r) for r in rows]
@@ -127,7 +133,9 @@ def update_composite_preset(
     preset_id: int,
     payload: CompositePresetUpdate,
     db: Session = Depends(get_db),
-    actor: CurrentUser = Depends(require_writer),
+    # 소유자 관리 작업 — 소유권(_can_manage)만 게이트. require_writer 면 다른 조직
+    # 공개 게시판 열람 중(public_viewer)일 때 본인 양식 수정이 잘못 막힌다.
+    actor: CurrentUser = Depends(get_current_user),
 ):
     """메타정보(이름·설명·공개범위) + 그룹 목록 수정. 관리 탭 전용."""
     preset = services.get(db, preset_id)
@@ -146,7 +154,9 @@ def update_composite_preset(
 def delete_composite_preset(
     preset_id: int,
     db: Session = Depends(get_db),
-    actor: CurrentUser = Depends(require_writer),
+    # 소유자 관리 작업 — 소유권(_can_manage)만 게이트. require_writer 면 다른 조직
+    # 공개 게시판 열람 중일 때 본인 양식 삭제가 "읽기 전용" 으로 잘못 막힌다.
+    actor: CurrentUser = Depends(get_current_user),
 ):
     preset = services.get(db, preset_id)
     if preset is None:
@@ -158,3 +168,26 @@ def delete_composite_preset(
         )
     services.delete(db, preset)
     return success_response(data={"deleted": True})
+
+
+@router.patch("/{preset_id}/archive")
+def set_composite_preset_archived(
+    preset_id: int,
+    payload: CompositePresetArchiveUpdate,
+    db: Session = Depends(get_db),
+    # 소유자 관리 작업 — 소유권만 게이트(삭제와 동일). 보관은 행을 안 지워 기존
+    # 종합보고엔 영향 없고, 작성 picker·기본 목록에서만 빠진다.
+    actor: CurrentUser = Depends(get_current_user),
+):
+    preset = services.get(db, preset_id)
+    if preset is None:
+        return not_found_response(f"Composite preset not found: {preset_id}")
+    if not _can_manage(actor, preset):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "이 양식을 보관/해제할 권한이 없습니다.",
+        )
+    preset = services.set_archived(
+        db, preset, payload.archived, user_id=actor.user.id
+    )
+    return success_response(data=CompositePresetSummary.model_validate(preset))

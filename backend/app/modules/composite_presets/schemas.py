@@ -48,6 +48,12 @@ class CompositePresetUpdate(BaseModel):
     groups: Optional[list[str]] = None
 
 
+class CompositePresetArchiveUpdate(BaseModel):
+    """보관(True) / 보관해제(False) 토글."""
+
+    archived: bool
+
+
 class CompositePresetSummary(BaseModel):
     """List-view projection — drops the heavy summary_widgets blob but keeps
     the (small) group skeleton so the 관리 탭 편집 다이얼로그가 별도 fetch 없이
@@ -64,6 +70,7 @@ class CompositePresetSummary(BaseModel):
     summary_widget_count: int = 0
     created_by_user_id: Optional[int] = None
     created_by_name: Optional[str] = None
+    archived_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -77,7 +84,7 @@ class CompositePresetSummary(BaseModel):
             for k in (
                 "id", "name", "description", "source_kind",
                 "owner_workspace_slugs", "created_by_user_id",
-                "created_at", "updated_at",
+                "archived_at", "created_at", "updated_at",
             )
             if hasattr(obj, k)
         }

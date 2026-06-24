@@ -7,9 +7,14 @@ const BASE = '/api/templates'
  * 조직별 분리 유지). 'all' = 소유 부서 무관 전체 — 작성 picker 용(모든 사용자가
  * 내 공간에서 모든 템플릿을 쓸 수 있어야 함). 렌더(by-id)는 항상 열려 있음.
  */
-export async function listTemplates({ onlyLatest = true, scope } = {}) {
+export async function listTemplates({
+  onlyLatest = true,
+  scope,
+  includeArchived = false,
+} = {}) {
   const params = { only_latest: onlyLatest }
   if (scope) params.scope = scope
+  if (includeArchived) params.include_archived = true
   const res = await apiClient.get(BASE, { params })
   return extractData(res)
 }
@@ -41,6 +46,15 @@ export async function publishNewVersion(templateId, payload) {
 
 export async function deleteTemplate(templateId) {
   const res = await apiClient.delete(`${BASE}/${templateId}`)
+  return extractData(res)
+}
+
+/** 템플릿 보관/보관해제. 보관하면 작성 picker·기본 목록에서 숨지만 기존 보고서
+ *  렌더는 그대로(삭제와 달리 행이 살아있음). 보고서가 참조 중이어도 가능. */
+export async function setTemplateArchived(templateId, archived) {
+  const res = await apiClient.patch(`${BASE}/${templateId}/archive`, {
+    archived,
+  })
   return extractData(res)
 }
 

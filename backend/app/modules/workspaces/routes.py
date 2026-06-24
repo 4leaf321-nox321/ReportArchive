@@ -132,6 +132,38 @@ def set_tf_archived(
     return success_response(data=WorkspaceRead.model_validate(ws))
 
 
+@router.delete("/tf/{slug}")
+def delete_tf(
+    slug: str,
+    db: Session = Depends(get_db),
+    actor: User = Depends(get_current_user_no_workspace),
+):
+    """TF 완전 삭제 — 그 TF 의 매니저 또는 시스템관리자. 보관과 달리 행을 실제로
+    지운다(테스트로 만든 TF 정리용). 멤버·폴더·게시·grant 는 자동 정리되지만,
+    이 TF 가 *소유한 보고서*가 있으면 거부(409)한다. org/personal/virtual 은 거부."""
+    ws = db.get(Workspace, slug)
+    if not ws:
+        return not_found_response(f"부서를 찾을 수 없습니다: {slug}")
+    if ws.kind != WorkspaceKind.tf:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "TF 만 완전 삭제할 수 있습니다."
+        )
+    if not (
+        actor.is_system_admin or _resolve_role(db, actor.id, slug) == Role.manager
+    ):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "이 TF 의 매니저만 삭제할 수 있습니다.",
+        )
+    try:
+        result = services.hard_delete_tf_workspace(db, ws)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    return success_response(
+        data=result, message="TF 가 완전히 삭제되었습니다."
+    )
+
+
 @router.post("")
 def create_workspace(
     payload: WorkspaceCreate,

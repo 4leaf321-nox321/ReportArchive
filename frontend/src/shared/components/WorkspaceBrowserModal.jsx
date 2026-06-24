@@ -8,6 +8,7 @@ import {
   ArchiveRestore,
   Plus,
   Check,
+  Trash2,
 } from 'lucide-react'
 import {
   Dialog,
@@ -19,7 +20,7 @@ import {
 import { Input } from '@/shared/components/ui/input'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAuth } from '@/shared/auth/AuthContext'
-import { setWorkspaceArchived } from '@/shared/api/workspaces'
+import { deleteTf, setWorkspaceArchived } from '@/shared/api/workspaces'
 import { TfCreateDialog } from '@/shared/components/TfCreateDialog'
 import { cn } from '@/shared/lib/utils'
 
@@ -107,6 +108,22 @@ export function WorkspaceBrowserModal({ open, onOpenChange }) {
       await reload()
     } catch (err) {
       toast.error(err?.response?.data?.message || err.message || '변경 실패')
+    }
+  }
+
+  async function handleDeleteTf(ws) {
+    const ok = window.confirm(
+      `'${ws.name}' TF를 완전히 삭제합니다.\n\n` +
+        `멤버·폴더·게시·공유가 함께 사라지며 되돌릴 수 없습니다. ` +
+        `(이 TF가 소유한 보고서가 있으면 삭제가 거부됩니다.)\n\n계속할까요?`,
+    )
+    if (!ok) return
+    try {
+      await deleteTf(ws.slug)
+      toast.success(`'${ws.name}' TF가 삭제되었습니다`)
+      await reload()
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err.message || '삭제 실패')
     }
   }
 
@@ -243,6 +260,20 @@ export function WorkspaceBrowserModal({ open, onOpenChange }) {
                         ) : (
                           <Archive className="h-3.5 w-3.5 text-muted-foreground" />
                         )}
+                      </button>
+                    )}
+                    {canManageTf(w.slug) && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleDeleteTf(w)
+                        }}
+                        className="rounded p-1 hover:bg-destructive/10 shrink-0"
+                        aria-label="TF 완전 삭제"
+                        title="TF 완전 삭제 (되돌릴 수 없음)"
+                      >
+                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
                       </button>
                     )}
                   </Row>

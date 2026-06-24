@@ -50,10 +50,14 @@ def is_private_template(template: Template) -> bool:
     return bool(owners) and all(_is_personal_slug(s) for s in owners)
 
 
-def _all_templates(db: Session, only_latest: bool) -> list[Template]:
+def _all_templates(
+    db: Session, only_latest: bool, include_archived: bool = False
+) -> list[Template]:
     query = select(Template)
     if only_latest:
         query = query.where(Template.is_latest.is_(True))
+    if not include_archived:
+        query = query.where(Template.archived_at.is_(None))
     return list(
         db.execute(
             query.order_by(Template.template_id, desc(Template.version))
@@ -68,6 +72,7 @@ def list_templates(
     all_scopes: bool = False,
     user_id: Optional[int] = None,
     is_system_admin: bool = False,
+    include_archived: bool = False,
 ) -> list[Template]:
     """워크스페이스 가시 범위로 필터한 템플릿 목록. `all_scopes=True` 면 소유 부서
     무시하고 **전체** 반환 — 작성(picker) 경로는 모든 사용자가 모든 (조직/전사)
@@ -79,10 +84,10 @@ def list_templates(
     `is_system_admin=True` 면 모드 무관 **모든** 템플릿(타인 개인 비공개 포함)을
     반환한다 — 시스템 관리자는 전 템플릿을 보고 관리할 수 있어야 함."""
     if is_system_admin:
-        return _all_templates(db, only_latest)
+        return _all_templates(db, only_latest, include_archived=include_archived)
 
     if all_scopes:
-        rows = _all_templates(db, only_latest)
+        rows = _all_templates(db, only_latest, include_archived=include_archived)
         # 개인(비공개) 템플릿은 본인 것만 남긴다 — 남의 개인 템플릿은 picker 에서 제외.
         mine = f"personal-{user_id}" if user_id is not None else None
         return [
@@ -116,6 +121,8 @@ def list_templates(
     query = select(Template).where(or_(*conds))
     if only_latest:
         query = query.where(Template.is_latest.is_(True))
+    if not include_archived:
+        query = query.where(Template.archived_at.is_(None))
 
     return list(db.execute(query.order_by(Template.template_id, desc(Template.version))).scalars())
 
@@ -293,6 +300,37 @@ def delete_template(db: Session, template_id: str) -> dict:
     return {
         "template_id": template_id,
         "deleted_versions": len(versions),
+    }
+
+
+def set_template_archived(
+    db: Session,
+    template_id: str,
+    archived: bool,
+    user_id: Optional[int] = None,
+) -> dict:
+    """템플릿을 보관/보관해제. template_id 의 **모든 버전 행**에 동일하게 적용한다
+    (보관은 template_id 단위 개념). 삭제와 달리 보고서가 참조 중이어도 허용한다
+    — 행이 살아 있어 기존 보고서 렌더는 그대로이고, 작성 picker·기본 목록에서만
+    빠진다. 멱등(이미 그 상태면 그대로)."""
+    from datetime import datetime
+
+    versions = list_versions(db, template_id)
+    if not versions:
+        raise ValueError(f"Template not found: {template_id}")
+
+    archived_at = datetime.utcnow() if archived else None
+    archived_by = user_id if archived else None
+    db.execute(
+        update(Template)
+        .where(Template.template_id == template_id)
+        .values(archived_at=archived_at, archived_by_user_id=archived_by)
+    )
+    db.commit()
+    return {
+        "template_id": template_id,
+        "archived": archived,
+        "affected_versions": len(versions),
     }
 
 

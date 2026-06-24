@@ -14,6 +14,8 @@ import {
   ChevronUp,
   Layers,
   X,
+  Archive,
+  ArchiveRestore,
 } from 'lucide-react'
 import {
   Dialog,
@@ -40,7 +42,12 @@ import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
-import { deleteTemplate, listTemplates, setTemplateScope } from '@/shared/api/templates'
+import {
+  deleteTemplate,
+  listTemplates,
+  setTemplateArchived,
+  setTemplateScope,
+} from '@/shared/api/templates'
 import { listPresets, deletePreset, newReportFromPreset } from '@/shared/api/presets'
 import { deleteReport } from '@/modules/reports/api'
 import {
@@ -52,6 +59,7 @@ import {
   listCompositePresets,
   updateCompositePreset,
   deleteCompositePreset,
+  setCompositePresetArchived,
 } from '@/shared/api/compositePresets'
 import { listTemplateCategories } from '@/shared/api/templateCategories'
 import { makeCategoryNameLookup } from '@/modules/reports/constants'
@@ -94,8 +102,10 @@ export default function TemplatesPage() {
       t.owner_workspace_slugs.includes(slug))
   // Gate on `slug` so we don't fire the request before WorkspaceProvider
   // has set the X-Workspace-Slug header on the API client.
+  // 관리 화면은 보관된 템플릿도 포함해서 보여준다(보관 해제·정리용). 작성
+  // picker(scope=all)는 기본대로 보관분을 제외한다.
   const { data: templates, loading, error, reload } = useAsync(
-    () => (slug ? listTemplates() : Promise.resolve([])),
+    () => (slug ? listTemplates({ includeArchived: true }) : Promise.resolve([])),
     [slug],
   )
   const { data: categories } = useAsync(() => listTemplateCategories(), [])
@@ -169,6 +179,20 @@ export default function TemplatesPage() {
       reload()
     } catch (err) {
       toast.error(err.message || '삭제 실패')
+    }
+  }
+
+  async function onToggleArchive(t) {
+    const next = !t.archived_at
+    try {
+      await setTemplateArchived(t.template_id, next)
+      toast.success(next ? `'${t.name}' 보관됨` : `'${t.name}' 보관 해제됨`)
+      // 항목이 분류를 옮겨가므로 사용자도 따라가게 한다(빈 목록에 갇히지 않도록):
+      // 보관 → '보관' 분류로, 해제 → '전체' 로. 선택도 유지돼 바로 되돌리기 가능.
+      tplCat.setCat(next ? { type: 'archived' } : { type: 'all' })
+      reload()
+    } catch (err) {
+      toast.error(err.message || (next ? '보관 실패' : '보관 해제 실패'))
     }
   }
 
@@ -317,6 +341,7 @@ export default function TemplatesPage() {
                     canDelete={canManageTemplate(selected)}
                     canEditScope={isManager}
                     onDelete={() => setPendingDelete(selected)}
+                    onArchive={() => onToggleArchive(selected)}
                     onEditScope={() => setScopeEditFor(selected)}
                     presets={selectedPresets}
                     currentUserId={me?.user?.id}
@@ -394,8 +419,10 @@ function CompositePresetsPanel({
   isAdmin,
   currentUserId,
 }) {
+  // 관리 화면은 보관된 양식도 포함(보관 분류·해제용). 작성 picker(scope=all)는
+  // 기본대로 보관분 제외.
   const { data: presets, loading, error, reload } = useAsync(
-    () => listCompositePresets(),
+    () => listCompositePresets({ includeArchived: true }),
     [],
   )
   const [query, setQuery] = useState('')
@@ -431,6 +458,19 @@ function CompositePresetsPanel({
       reload()
     } catch (err) {
       toast.error(err?.response?.data?.message || err.message || '양식 삭제 실패')
+    }
+  }
+
+  async function onToggleArchive(p) {
+    const next = !p.archived_at
+    try {
+      await setCompositePresetArchived(p.id, next)
+      toast.success(next ? `'${p.name}' 보관됨` : `'${p.name}' 보관 해제됨`)
+      // 항목이 분류를 옮겨가므로 사용자도 따라가게: 보관 → '보관', 해제 → '전체'.
+      setCat(next ? { type: 'archived' } : { type: 'all' })
+      reload()
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err.message || (next ? '보관 실패' : '보관 해제 실패'))
     }
   }
 
@@ -491,12 +531,23 @@ function CompositePresetsPanel({
                 return (
                   <li
                     key={p.id}
-                    className="flex items-start gap-2 rounded-md border px-3 py-2.5"
+                    className={cn(
+                      'flex items-start gap-2 rounded-md border px-3 py-2.5',
+                      p.archived_at && 'opacity-60',
+                    )}
                   >
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5 text-sm font-medium">
                         <Layers className="h-3.5 w-3.5 shrink-0 text-primary" />
                         <span className="truncate">{p.name}</span>
+                        {p.archived_at && (
+                          <Badge
+                            variant="outline"
+                            className="border-amber-300 text-[9px] text-amber-600"
+                          >
+                            보관됨
+                          </Badge>
+                        )}
                         {isGlobal ? (
                           <Badge variant="secondary" className="text-[9px]">
                             전사
@@ -538,6 +589,23 @@ function CompositePresetsPanel({
                           title="양식 정보 수정"
                         >
                           <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground"
+                          onClick={() => onToggleArchive(p)}
+                          title={
+                            p.archived_at
+                              ? '보관 해제 — 작성 목록에 다시 표시'
+                              : '보관 — 새 종합보고 작성에서 숨김(기존 종합보고는 그대로)'
+                          }
+                        >
+                          {p.archived_at ? (
+                            <ArchiveRestore className="h-3.5 w-3.5" />
+                          ) : (
+                            <Archive className="h-3.5 w-3.5" />
+                          )}
                         </Button>
                         <Button
                           variant="ghost"
@@ -811,11 +879,24 @@ function TemplateListItem({ template, active, presetCount, onClick }) {
         active ? 'bg-primary/10 text-primary' : 'hover:bg-muted',
       )}
     >
-      <FileCode2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+      <FileCode2
+        className={cn(
+          'h-4 w-4 shrink-0 text-muted-foreground',
+          template.archived_at && 'opacity-50',
+        )}
+      />
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium">{template.name}</span>
+        <span
+          className={cn(
+            'block truncate text-sm font-medium',
+            template.archived_at && 'text-muted-foreground',
+          )}
+        >
+          {template.name}
+        </span>
         <span className="block text-[10px] text-muted-foreground">
           v{template.version}
+          {template.archived_at && ' · 보관됨'}
         </span>
       </span>
       {presetCount > 0 && (
@@ -836,6 +917,7 @@ function TemplateDetail({
   canDelete,
   canEditScope,
   onDelete,
+  onArchive,
   onEditScope,
   presets,
   currentUserId,
@@ -871,6 +953,11 @@ function TemplateDetail({
               <FileCode2 className="h-5 w-5 shrink-0 text-muted-foreground" />
               <h2 className="text-lg font-semibold">{template.name}</h2>
               <Badge variant="outline">v{template.version}</Badge>
+              {template.archived_at && (
+                <Badge variant="outline" className="border-amber-300 text-amber-600">
+                  보관됨
+                </Badge>
+              )}
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">
               {categoryName(template.category)} · {template.template_id}
@@ -891,13 +978,37 @@ function TemplateDetail({
                   </Link>
                 </Button>
               )}
+              {canManage && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onArchive}
+                  title={
+                    template.archived_at
+                      ? '보관 해제 — 작성 목록에 다시 표시'
+                      : '보관 — 새 보고서 작성에서 숨김(기존 보고서는 그대로)'
+                  }
+                >
+                  {template.archived_at ? (
+                    <>
+                      <ArchiveRestore className="mr-1 h-3.5 w-3.5" />
+                      보관 해제
+                    </>
+                  ) : (
+                    <>
+                      <Archive className="mr-1 h-3.5 w-3.5" />
+                      보관
+                    </>
+                  )}
+                </Button>
+              )}
               {canDelete && (
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={onDelete}
                   className="text-destructive hover:text-destructive"
-                  title="템플릿 삭제"
+                  title="템플릿 삭제 (참조 보고서 없을 때만)"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>

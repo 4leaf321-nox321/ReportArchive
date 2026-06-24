@@ -67,6 +67,16 @@ class Template(Base):
     is_published: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_latest: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    # 보관(아카이브). set 되면 작성 picker·기본 목록에서 숨고 새 보고서 작성이
+    # 막힌다. 단 by-id 렌더는 그대로라 기존 보고서는 계속 렌더된다(삭제와 달리
+    # 행이 살아있음). template_id 단위 개념 — 보관 시 모든 버전 행에 set 한다.
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, index=True
+    )
+    archived_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
     created_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

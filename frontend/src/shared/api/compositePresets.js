@@ -2,9 +2,12 @@ import { apiClient, extractData } from './client'
 
 const BASE = '/api/composite-presets'
 
-/** 종합보고 양식 목록 — 현재 워크스페이스 트리(전사 + own tree)에서 보이는 것. */
-export async function listCompositePresets() {
-  const res = await apiClient.get(BASE)
+/** 종합보고 양식 목록. `scope='all'` 이면 소유 부서 무관 전체(작성 picker — 모든
+ *  사용자가 모든 부서 양식으로 종합보고를 시작 가능). 기본은 워크스페이스 스코프. */
+export async function listCompositePresets({ scope } = {}) {
+  const res = await apiClient.get(BASE, {
+    params: scope ? { scope } : {},
+  })
   return extractData(res)
 }
 

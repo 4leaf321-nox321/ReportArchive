@@ -38,7 +38,9 @@ export default function ReportNewPage() {
   // 프리셋은 템플릿에 종속(preset → template). 한 번 불러와
   // template_id 로 그룹핑해서, 평면 나열 대신 템플릿 "아래에" 중첩한다 —
   // 카드엔 "프리셋 N개" 뱃지, 템플릿을 고르면 그 템플릿의 프리셋만 선택지로.
-  const { data: presets } = useAsync(() => listPresets(), [slug])
+  // 작성 picker — 모든 사용자가 모든 부서 프리셋으로 새 보고서를 시작할 수 있어야
+  // 하므로(내 공간 포함) 소유 부서 무관 전체를 가져온다(scope:'all').
+  const { data: presets } = useAsync(() => listPresets({ scope: 'all' }), [slug])
   const presetsByTemplate = useMemo(() => {
     const map = new Map()
     for (const p of presets ?? []) {

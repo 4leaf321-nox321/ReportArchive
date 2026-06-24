@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date as date_type
 from typing import Optional
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, or_, select
 from sqlalchemy.orm import Session
 
 from app.modules.composite_presets.models import CompositePreset
@@ -101,21 +101,54 @@ def create_from_composite(
     return preset
 
 
-def list_visible(db: Session, workspace_slug: str) -> list[CompositePreset]:
-    visible = _visible_slugs_for(db, workspace_slug)
-    query = select(CompositePreset)
-    # Global presets (owner = NULL) are always visible; scoped ones only
-    # when their owner slugs intersect the actor's tree.
-    if visible:
-        query = query.where(
-            (CompositePreset.owner_workspace_slugs.is_(None))
-            | (CompositePreset.owner_workspace_slugs.overlap(list(visible)))
-        )
-    else:
-        query = query.where(CompositePreset.owner_workspace_slugs.is_(None))
-    return list(
-        db.execute(query.order_by(desc(CompositePreset.updated_at))).scalars()
+def is_private_preset(preset: CompositePreset) -> bool:
+    """개인(비공개) 양식 — 소유가 personal-* 뿐. 목록엔 소유자 본인만(instantiate
+    는 id 로 열려 있음). templates/presets 와 동일 정의."""
+    owners = preset.owner_workspace_slugs or []
+    return bool(owners) and all(str(s).startswith("personal-") for s in owners)
+
+
+def list_visible(
+    db: Session,
+    workspace_slug: str,
+    *,
+    all_scopes: bool = False,
+    user_id: Optional[int] = None,
+    is_system_admin: bool = False,
+) -> list[CompositePreset]:
+    """종합보고 양식 목록. 보고서 프리셋(presets.list_visible)과 동형 가시성:
+      - 기본(scoped): 가시 트리 + 전사 + 내 개인 + 내가 만든 것(관리 분리 유지).
+      - `all_scopes=True`(작성 picker): 소유 부서 무시 전체(모든 사용자가 모든 부서
+        양식으로 시작 가능). 남의 개인(비공개)은 제외.
+      - `is_system_admin=True`: 타인 개인 포함 전체.
+    소유 부서는 분류/관리 메타일 뿐 — instantiate(new-composite)는 id 로 열려 있다."""
+    ordered = lambda q: list(  # noqa: E731
+        db.execute(q.order_by(desc(CompositePreset.updated_at))).scalars()
     )
+
+    if is_system_admin:
+        return ordered(select(CompositePreset))
+
+    if all_scopes:
+        rows = ordered(select(CompositePreset))
+        mine = f"personal-{user_id}" if user_id is not None else None
+        return [
+            p
+            for p in rows
+            if not is_private_preset(p)
+            or (mine is not None and mine in (p.owner_workspace_slugs or []))
+        ]
+
+    # scoped — global(owner=NULL) OR 가시 트리 겹침 OR 내 개인 OR 내가 만든 것.
+    visible = _visible_slugs_for(db, workspace_slug)
+    if user_id is not None:
+        visible = visible | {f"personal-{user_id}"}
+    conds = [CompositePreset.owner_workspace_slugs.is_(None)]
+    if visible:
+        conds.append(CompositePreset.owner_workspace_slugs.overlap(list(visible)))
+    if user_id is not None:
+        conds.append(CompositePreset.created_by_user_id == user_id)
+    return ordered(select(CompositePreset).where(or_(*conds)))
 
 
 def get(db: Session, preset_id: int) -> Optional[CompositePreset]:

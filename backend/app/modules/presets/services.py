@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, or_, select
 from sqlalchemy.orm import Session
 
 from app.modules.entities import services as entity_services
@@ -88,29 +88,58 @@ def create_from_report(
     return preset
 
 
+def is_private_preset(preset: ReportPreset) -> bool:
+    """개인(비공개) 프리셋 — 소유가 personal-* 뿐. 목록엔 소유자 본인만(렌더/사용
+    경로는 id 로 열려 있음). templates.is_private_template 와 동일 정의."""
+    owners = preset.owner_workspace_slugs or []
+    return bool(owners) and all(str(s).startswith("personal-") for s in owners)
+
+
 def list_visible(
     db: Session,
     workspace_slug: str,
     *,
     template_id: Optional[str] = None,
+    all_scopes: bool = False,
+    user_id: Optional[int] = None,
+    is_system_admin: bool = False,
 ) -> list[ReportPreset]:
-    visible = _visible_slugs_for(db, workspace_slug)
-    query = select(ReportPreset)
-    # Global presets (owner = NULL — empty arrays are normalized to NULL on
-    # create) are always visible; scoped ones only when their owner slugs
-    # intersect the actor's tree.
-    if visible:
-        query = query.where(
-            (ReportPreset.owner_workspace_slugs.is_(None))
-            | (ReportPreset.owner_workspace_slugs.overlap(list(visible)))
-        )
-    else:
-        query = query.where(ReportPreset.owner_workspace_slugs.is_(None))
+    """프리셋 목록. 템플릿(list_templates)과 동형 가시성:
+      - 기본(scoped): 현재 워크스페이스 가시 트리 + 전사 + 내 개인 + 내가 만든 것.
+      - `all_scopes=True`(작성 picker): 소유 부서 무시 전체(모든 사용자가 내 공간
+        에서 모든 부서 프리셋으로 시작 가능). 단 남의 개인(비공개) 프리셋은 제외.
+      - `is_system_admin=True`: 타인 개인 포함 전체.
+    소유 부서는 *분류/관리* 메타일 뿐 사용 가드가 아니다(instantiate 는 id 로 열림)."""
+    base = select(ReportPreset)
     if template_id is not None:
-        query = query.where(ReportPreset.template_id == template_id)
-    return list(
-        db.execute(query.order_by(desc(ReportPreset.updated_at))).scalars()
+        base = base.where(ReportPreset.template_id == template_id)
+    ordered = lambda q: list(  # noqa: E731
+        db.execute(q.order_by(desc(ReportPreset.updated_at))).scalars()
     )
+
+    if is_system_admin:
+        return ordered(base)
+
+    if all_scopes:
+        rows = ordered(base)
+        mine = f"personal-{user_id}" if user_id is not None else None
+        return [
+            p
+            for p in rows
+            if not is_private_preset(p)
+            or (mine is not None and mine in (p.owner_workspace_slugs or []))
+        ]
+
+    # scoped — global(owner=NULL) OR 가시 트리 겹침 OR 내 개인 OR 내가 만든 것.
+    visible = _visible_slugs_for(db, workspace_slug)
+    if user_id is not None:
+        visible = visible | {f"personal-{user_id}"}
+    conds = [ReportPreset.owner_workspace_slugs.is_(None)]
+    if visible:
+        conds.append(ReportPreset.owner_workspace_slugs.overlap(list(visible)))
+    if user_id is not None:
+        conds.append(ReportPreset.created_by_user_id == user_id)
+    return ordered(base.where(or_(*conds)))
 
 
 def get(db: Session, preset_id: int) -> Optional[ReportPreset]:

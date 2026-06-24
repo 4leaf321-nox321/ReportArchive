@@ -32,13 +32,21 @@ router = APIRouter()
 @router.get("")
 def list_presets(
     template_id: str | None = Query(default=None),
+    scope: str = Query(default="workspace"),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
-    """Presets visible to the actor's workspace tree (전사 + own tree),
-    optionally narrowed to one template."""
+    """Presets visible to the actor. `scope=all` 이면 소유 부서 무관 전체(작성
+    picker — 모든 사용자가 내 공간에서 모든 부서 프리셋으로 시작 가능, 남의 개인
+    비공개는 제외). 기본 `scope=workspace` 는 현재 워크스페이스 가시 트리 + 전사 +
+    내 개인 + 내가 만든 것(관리 화면의 조직별 분리 유지). 시스템 관리자는 전체."""
     rows = services.list_visible(
-        db, actor.workspace.slug, template_id=template_id
+        db,
+        actor.workspace.slug,
+        template_id=template_id,
+        all_scopes=(scope == "all"),
+        user_id=actor.user.id,
+        is_system_admin=actor.user.is_system_admin,
     )
     return success_response(
         data=[PresetSummary.model_validate(r) for r in rows]

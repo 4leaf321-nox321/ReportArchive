@@ -438,6 +438,7 @@ function CompositePresetsPanel({
           onChange={setCat}
           mineLabel="개인 (내 양식)"
           emptyOrgText="조직 양식이 없습니다."
+          showPrivate={isAdmin}
           className="sticky top-6 w-44 shrink-0 self-start border-r pr-2"
         />
         <div className="min-w-0 flex-1">

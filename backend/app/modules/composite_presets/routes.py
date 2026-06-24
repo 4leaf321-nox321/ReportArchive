@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -43,11 +43,21 @@ def _can_manage(actor: CurrentUser, preset: CompositePreset) -> bool:
 
 @router.get("")
 def list_composite_presets(
+    scope: str = Query(default="workspace"),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
-    """Presets visible to the actor's workspace tree (전사 + own tree)."""
-    rows = services.list_visible(db, actor.workspace.slug)
+    """Presets visible to the actor. `scope=all` 이면 소유 부서 무관 전체(작성
+    picker — 모든 사용자가 모든 부서 양식으로 종합보고를 시작 가능, 남의 개인
+    비공개 제외). 기본 `scope=workspace` 는 가시 트리 + 전사 + 내 개인 + 내가
+    만든 것(관리 분리 유지). 시스템 관리자는 전체."""
+    rows = services.list_visible(
+        db,
+        actor.workspace.slug,
+        all_scopes=(scope == "all"),
+        user_id=actor.user.id,
+        is_system_admin=actor.user.is_system_admin,
+    )
     return success_response(
         data=[CompositePresetSummary.model_validate(r) for r in rows]
     )

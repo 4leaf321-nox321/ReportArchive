@@ -65,11 +65,12 @@ export function NewCompositeDialog({
     }
   }, [open, currentWorkspaceSlug])
 
-  // 다이얼로그를 열 때 현재 워크스페이스 트리에서 보이는 양식 목록을 로드.
+  // 작성 picker — 모든 사용자가 모든 부서 양식으로 종합보고를 시작할 수 있어야
+  // 하므로 소유 부서 무관 전체를 로드한다(scope:'all'). 분류는 useScopeCategories.
   useEffect(() => {
     if (!open) return undefined
     let cancelled = false
-    listCompositePresets()
+    listCompositePresets({ scope: 'all' })
       .then((rows) => {
         if (!cancelled) setPresets(rows ?? [])
       })

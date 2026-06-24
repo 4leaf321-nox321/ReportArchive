@@ -34,12 +34,42 @@ export async function createEntityType({
 }
 
 /**
+ * Admin-only — 축의 입력 거버넌스 수정 (p53). entryPolicy: 'open'|'closed',
+ * valuePattern: 정규식 문자열(빈 문자열/null 이면 제약 해제). 보낸 필드만 반영.
+ */
+export async function updateEntityType(id, { entryPolicy, valuePattern } = {}) {
+  const body = {}
+  if (entryPolicy !== undefined) body.entry_policy = entryPolicy
+  if (valuePattern !== undefined) body.value_pattern = valuePattern
+  const res = await apiClient.patch(`${TYPES_BASE}/${id}`, body)
+  return extractData(res)
+}
+
+/**
  * Admin-only — delete an axis. 백엔드가 값이 등록돼 있으면 400 으로 거절
  * 하므로 호출 전에 값 개수를 0 으로 만들어두어야 한다 (개별 값 삭제 또는
  * 다른 축으로 머지).
  */
 export async function deleteEntityType(id) {
   const res = await apiClient.delete(`${TYPES_BASE}/${id}`)
+  return extractData(res)
+}
+
+/** Admin-only — 엔티티의 별칭(다른 표기) 목록. `{ items: [{id, entity_id, alias, created_at}] }`. */
+export async function listEntityAliases(entityId) {
+  const res = await apiClient.get(`${BASE}/${entityId}/aliases`)
+  return extractData(res)
+}
+
+/** Admin-only — 별칭 추가. 같은 축의 다른 값/별칭과 충돌하면 400. */
+export async function addEntityAlias(entityId, alias) {
+  const res = await apiClient.post(`${BASE}/${entityId}/aliases`, { alias })
+  return extractData(res)
+}
+
+/** Admin-only — 별칭 삭제. 이후 그 표기는 자동 흡수되지 않는다. */
+export async function deleteEntityAlias(entityId, aliasId) {
+  const res = await apiClient.delete(`${BASE}/${entityId}/aliases/${aliasId}`)
   return extractData(res)
 }
 

@@ -3,10 +3,13 @@ import {
   AlertTriangle,
   ExternalLink,
   Link2Off,
+  Lock,
+  LockOpen,
   Pencil,
   Plus,
   RotateCcw,
   Search,
+  Tags,
   Trash2,
   Combine,
 } from 'lucide-react'
@@ -32,21 +35,26 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { DataTable } from '@/shared/components/DataTable'
+import { cn } from '@/shared/lib/utils'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { useAsync } from '@/shared/hooks/useAsync'
 import {
+  addEntityAlias,
   createEntity,
   createEntityType,
   deleteEntity,
+  deleteEntityAlias,
   deleteEntityType,
   listEntities,
+  listEntityAliases,
   listEntityTypes,
   listEntityUsage,
   mergeEntity,
   unlinkEntityFromAllReports,
   unlinkEntityFromReport,
   updateEntity,
+  updateEntityType,
 } from '@/shared/api/entities'
 
 /**
@@ -142,6 +150,7 @@ export default function EntitiesAdminPage() {
                 <AxisPanel
                   key={t.slug}
                   type={t}
+                  onAxisUpdated={reloadTypes}
                   onAxisDeleted={() => {
                     // 다른 축으로 자동 전환 — 삭제 직후 사라진 탭에
                     // 머무를 수 없으므로 첫 번째로 이동(없으면 null).
@@ -417,11 +426,13 @@ function NewAxisDialog({ existingSlugs, onClose, onCreated }) {
  * mutations (create/update/merge/delete) reload only the current axis,
  * not the whole page.
  */
-function AxisPanel({ type, onAxisDeleted }) {
+function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
   const [reloadKey, setReloadKey] = useState(0)
   const [query, setQuery] = useState('')
   const [includeDeprecated, setIncludeDeprecated] = useState(true)
   const [deleteAxisOpen, setDeleteAxisOpen] = useState(false)
+  const [govOpen, setGovOpen] = useState(false)
+  const [aliasTarget, setAliasTarget] = useState(null)
 
   const { data, loading, error } = useAsync(
     () =>
@@ -566,6 +577,18 @@ function AxisPanel({ type, onAxisDeleted }) {
               variant="ghost"
               size="sm"
               className="h-7 w-7 p-0"
+              title="별칭(다른 표기) 관리 — 등록한 표기는 입력 시 이 값으로 자동 흡수"
+              onClick={(e) => {
+                e.stopPropagation()
+                setAliasTarget(r)
+              }}
+            >
+              <Tags className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0"
               title="다른 값으로 머지"
               onClick={(e) => {
                 e.stopPropagation()
@@ -634,6 +657,38 @@ function AxisPanel({ type, onAxisDeleted }) {
         </div>
       </div>
 
+      {/* 입력 거버넌스 바 — 이 축의 정책/패턴을 한눈에 + 편집 진입. */}
+      <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-1.5 text-xs">
+        {type.entry_policy === 'closed' ? (
+          <span className="inline-flex items-center gap-1 text-amber-600">
+            <Lock className="h-3.5 w-3.5" /> 폐쇄형 — 관리자만 값 추가
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-muted-foreground">
+            <LockOpen className="h-3.5 w-3.5" /> 개방형 — 누구나 값 추가
+          </span>
+        )}
+        <span className="text-muted-foreground/50">·</span>
+        <span className="text-muted-foreground">
+          형식:{' '}
+          {type.value_pattern ? (
+            <code className="rounded bg-muted px-1 font-mono text-[11px]">
+              {type.value_pattern}
+            </code>
+          ) : (
+            '제한 없음'
+          )}
+        </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="ml-auto h-6 px-2 text-xs"
+          onClick={() => setGovOpen(true)}
+        >
+          입력 거버넌스 편집
+        </Button>
+      </div>
+
       {error ? (
         <ErrorState description={error.message} onRetry={reload} />
       ) : loading ? (
@@ -650,6 +705,23 @@ function AxisPanel({ type, onAxisDeleted }) {
         />
       )}
 
+      {govOpen && (
+        <AxisGovernanceDialog
+          type={type}
+          onClose={() => setGovOpen(false)}
+          onSaved={() => {
+            setGovOpen(false)
+            onAxisUpdated?.()
+          }}
+        />
+      )}
+      {aliasTarget && (
+        <AliasDialog
+          type={type}
+          entity={aliasTarget}
+          onClose={() => setAliasTarget(null)}
+        />
+      )}
       {createOpen && (
         <EditDialog
           mode="create"
@@ -858,6 +930,288 @@ function UsageList({
         </li>
       ))}
     </ul>
+  )
+}
+
+/**
+ * 입력 거버넌스 편집 — 축의 entry_policy(open/closed)와 value_pattern(정규식)을
+ * 바꾼다. 저장 시 백엔드가 정규식 유효성을 재검증한다(여기선 빠른 사전 안내만).
+ */
+function AxisGovernanceDialog({ type, onClose, onSaved }) {
+  const [policy, setPolicy] = useState(type.entry_policy ?? 'open')
+  const [pattern, setPattern] = useState(type.value_pattern ?? '')
+  const [test, setTest] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const trimmedPattern = pattern.trim()
+  // 클라이언트 정규식 유효성 — 잘못되면 저장 비활성화하고 안내.
+  const patternError = useMemo(() => {
+    if (!trimmedPattern) return null
+    try {
+      new RegExp(trimmedPattern)
+      return null
+    } catch (e) {
+      return String(e?.message ?? e)
+    }
+  }, [trimmedPattern])
+  // 테스트 입력이 패턴에 맞는지(fullmatch) 즉석 확인.
+  const testResult = useMemo(() => {
+    if (!trimmedPattern || !test) return null
+    try {
+      const m = test.match(new RegExp(trimmedPattern))
+      return !!m && m[0] === test
+    } catch {
+      return null
+    }
+  }, [trimmedPattern, test])
+
+  async function handleSave() {
+    if (patternError) return
+    setSubmitting(true)
+    try {
+      await updateEntityType(type.id, {
+        entryPolicy: policy,
+        valuePattern: trimmedPattern, // 빈 문자열이면 백엔드가 제약 해제
+      })
+      toast.success(`'${type.label}' 입력 거버넌스 저장됨`)
+      onSaved?.()
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err?.message || '저장 실패',
+      )
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>입력 거버넌스 — {type.label}</DialogTitle>
+          <DialogDescription>
+            이 축에 새 값을 추가할 수 있는 조건을 정합니다. 기존 값·태그에는
+            영향이 없습니다.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label className="text-xs">입력 정책</Label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setPolicy('open')}
+                className={cn(
+                  'rounded-md border px-3 py-2 text-left text-xs',
+                  policy === 'open'
+                    ? 'border-primary bg-primary/5'
+                    : 'hover:bg-muted',
+                )}
+              >
+                <span className="flex items-center gap-1 font-medium">
+                  <LockOpen className="h-3.5 w-3.5" /> 개방형
+                </span>
+                <span className="mt-0.5 block text-muted-foreground">
+                  누구나 picker 에서 새 값 추가
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setPolicy('closed')}
+                className={cn(
+                  'rounded-md border px-3 py-2 text-left text-xs',
+                  policy === 'closed'
+                    ? 'border-primary bg-primary/5'
+                    : 'hover:bg-muted',
+                )}
+              >
+                <span className="flex items-center gap-1 font-medium">
+                  <Lock className="h-3.5 w-3.5" /> 폐쇄형
+                </span>
+                <span className="mt-0.5 block text-muted-foreground">
+                  관리자가 등록한 값만 선택
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label className="text-xs" htmlFor="value-pattern">
+              값 형식 (정규식, 선택)
+            </Label>
+            <Input
+              id="value-pattern"
+              value={pattern}
+              onChange={(e) => setPattern(e.target.value)}
+              placeholder="예: ^[0-9]{8}$ (BOM 8자리). 비우면 제한 없음"
+              className="h-8 font-mono text-sm"
+            />
+            {patternError ? (
+              <p className="text-[11px] text-destructive">
+                정규식 오류: {patternError}
+              </p>
+            ) : trimmedPattern ? (
+              <div className="flex items-center gap-2">
+                <Input
+                  value={test}
+                  onChange={(e) => setTest(e.target.value)}
+                  placeholder="형식 테스트 입력…"
+                  className="h-7 text-xs"
+                />
+                {test && (
+                  <span
+                    className={cn(
+                      'shrink-0 text-[11px]',
+                      testResult ? 'text-emerald-600' : 'text-amber-600',
+                    )}
+                  >
+                    {testResult ? '통과' : '불일치'}
+                  </span>
+                )}
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={onClose} disabled={submitting}>
+            취소
+          </Button>
+          <Button
+            size="sm"
+            onClick={handleSave}
+            disabled={submitting || !!patternError}
+          >
+            {submitting ? '저장 중…' : '저장'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/**
+ * 별칭(다른 표기) 관리 — 한 엔티티에 여러 표기를 매핑한다. 사용자가 별칭을
+ * 입력하면 서버가 이 canonical 값으로 자동 흡수하므로 사후 머지가 줄어든다.
+ */
+function AliasDialog({ type, entity, onClose }) {
+  const [aliases, setAliases] = useState(null) // null=loading
+  const [input, setInput] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  async function reload() {
+    try {
+      const res = await listEntityAliases(entity.id)
+      setAliases(res?.items ?? [])
+    } catch (err) {
+      toast.error('별칭 불러오기 실패', {
+        description: String(err?.message ?? err),
+      })
+      setAliases([])
+    }
+  }
+  useEffect(() => {
+    reload()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entity.id])
+
+  async function handleAdd() {
+    const value = input.trim()
+    if (!value) return
+    setSubmitting(true)
+    try {
+      await addEntityAlias(entity.id, value)
+      setInput('')
+      await reload()
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err?.message || '별칭 추가 실패',
+      )
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function handleDelete(aliasId) {
+    try {
+      await deleteEntityAlias(entity.id, aliasId)
+      await reload()
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err?.message || '별칭 삭제 실패',
+      )
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Tags className="h-4 w-4" /> 별칭 — {entity.value}
+          </DialogTitle>
+          <DialogDescription>
+            등록한 표기를 사용자가 <strong>{type.label}</strong> picker 에 입력하면
+            자동으로 <strong>‘{entity.value}’</strong> 로 흡수됩니다(새 값이 생기지
+            않음). 예: <code className="font-mono">A-1234</code>,{' '}
+            <code className="font-mono">a 1234</code>.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex items-center gap-2">
+          <Input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="다른 표기 입력…"
+            className="h-8 text-sm"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                handleAdd()
+              }
+            }}
+          />
+          <Button size="sm" onClick={handleAdd} disabled={submitting || !input.trim()}>
+            <Plus className="mr-1 h-3.5 w-3.5" /> 추가
+          </Button>
+        </div>
+
+        <div className="max-h-60 overflow-y-auto rounded-md border">
+          {aliases === null ? (
+            <p className="px-3 py-3 text-center text-xs text-muted-foreground">
+              불러오는 중…
+            </p>
+          ) : aliases.length === 0 ? (
+            <p className="px-3 py-3 text-center text-xs text-muted-foreground">
+              등록된 별칭이 없습니다.
+            </p>
+          ) : (
+            aliases.map((a) => (
+              <div
+                key={a.id}
+                className="flex items-center justify-between gap-2 border-b px-3 py-1.5 text-sm last:border-b-0"
+              >
+                <span className="truncate font-mono text-xs">{a.alias}</span>
+                <button
+                  type="button"
+                  onClick={() => handleDelete(a.id)}
+                  className="shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                  title="별칭 삭제"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={onClose}>
+            닫기
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

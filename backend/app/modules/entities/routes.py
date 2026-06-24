@@ -22,6 +22,9 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.modules.entities import services
 from app.modules.entities.schemas import (
+    EntityAliasCreate,
+    EntityAliasListResponse,
+    EntityAliasRead,
     EntityCreate,
     EntityListResponse,
     EntityMergeRequest,
@@ -29,6 +32,7 @@ from app.modules.entities.schemas import (
     EntityTypeCreate,
     EntityTypeListResponse,
     EntityTypeRead,
+    EntityTypeUpdate,
     EntityUpdate,
     EntityUsageReportRef,
     EntityUsageResponse,
@@ -128,6 +132,26 @@ def create_entity_type(
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return created_response(data=EntityTypeRead.model_validate(row))
+
+
+@entity_types_router.patch("/{type_id}")
+def update_entity_type(
+    type_id: int,
+    payload: EntityTypeUpdate,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 축의 입력 거버넌스(entry_policy·value_pattern) 수정. closed
+    면 사용자 즉석 추가가 막히고, value_pattern 으로 새 값 형식을 강제한다."""
+    _require_admin(actor)
+    row = services.get_type(db, type_id)
+    if not row:
+        return not_found_response(f"엔티티 축을 찾을 수 없습니다: {type_id}")
+    try:
+        row = services.update_type(db, row, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return success_response(data=EntityTypeRead.model_validate(row))
 
 
 @entity_types_router.delete("/{type_id}")
@@ -337,6 +361,64 @@ def unlink_all_reports(
         data={"removed_count": count},
         message=f"{count}건의 보고서에서 '{row.value}' 태그 해제됨.",
     )
+
+
+@entities_router.get("/{entity_id}/aliases")
+def list_entity_aliases(
+    entity_id: int,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 이 엔티티의 별칭(다른 표기) 목록. 관리 화면에서 표시·삭제용.
+    입력 resolve 는 서버가 자동으로 하므로 picker 는 이 목록이 필요 없다."""
+    _require_admin(actor)
+    row = services.get_entity(db, entity_id)
+    if not row:
+        return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
+    items = services.list_aliases(db, entity_id=entity_id)
+    return success_response(
+        data=EntityAliasListResponse(
+            items=[EntityAliasRead.model_validate(a) for a in items]
+        )
+    )
+
+
+@entities_router.post("/{entity_id}/aliases", status_code=201)
+def add_entity_alias(
+    entity_id: int,
+    payload: EntityAliasCreate,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 별칭 추가. 같은 축의 다른 값/별칭과 충돌하면 400."""
+    _require_admin(actor)
+    row = services.get_entity(db, entity_id)
+    if not row:
+        return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
+    try:
+        alias = services.add_alias(
+            db, entity=row, alias=payload.alias, creator_user_id=actor.user.id
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return created_response(data=EntityAliasRead.model_validate(alias))
+
+
+@entities_router.delete("/{entity_id}/aliases/{alias_id}")
+def delete_entity_alias(
+    entity_id: int,
+    alias_id: int,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 별칭 삭제. 이후 그 표기 입력은 더 이상 자동 흡수되지 않는다."""
+    _require_admin(actor)
+    alias = services.get_alias(db, alias_id)
+    if not alias or alias.entity_id != entity_id:
+        return not_found_response(f"별칭을 찾을 수 없습니다: {alias_id}")
+    label = alias.alias
+    services.delete_alias(db, alias)
+    return success_response(data=None, message=f"별칭 '{label}' 삭제됨.")
 
 
 @entities_router.delete("/{entity_id}")

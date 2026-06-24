@@ -32,6 +32,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -45,6 +46,15 @@ class EntityStatus(str, enum.Enum):
 
     active = "active"
     deprecated = "deprecated"
+
+
+class EntityEntryPolicy(str, enum.Enum):
+    """축의 입력 정책. open = 누구나 picker에서 새 값 추가(현행), closed =
+    관리자가 등록한 값만 선택(사용자 즉석 추가 차단). 모델·BOM 같은 정형
+    마스터 축을 잠그는 데 쓴다."""
+
+    open = "open"
+    closed = "closed"
 
 
 class EntityType(Base):
@@ -76,6 +86,16 @@ class EntityType(Base):
     multi: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+    # 입력 거버넌스 (p53). entry_policy=closed 면 사용자 즉석 추가 차단(관리자만),
+    # value_pattern 이 있으면 새 값 생성 시 그 정규식(fullmatch)으로 형식 검증.
+    # 기존 7축은 open·NULL 로 시작해 현행 동작 보존.
+    entry_policy: Mapped[EntityEntryPolicy] = mapped_column(
+        Enum(EntityEntryPolicy, name="entity_entry_policy_enum"),
+        default=EntityEntryPolicy.open,
+        nullable=False,
+    )
+    value_pattern: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class Entity(Base):
@@ -151,4 +171,40 @@ class ReportEntity(Base):
     # — without it Postgres would scan the table to filter by entity_id.
     __table_args__ = (
         Index("ix_report_entities_entity", "entity_id"),
+    )
+
+
+class EntityAlias(Base):
+    """같은 대상의 다른 표기 → canonical 엔티티 매핑 (p53).
+
+    사용자가 별칭(예: `A-1234`)을 입력하면 서비스가 normalized(lower+trim)로
+    조회해 canonical 엔티티(`A1234`)로 태깅한다 — 새 엔티티가 안 생기고,
+    사후 merge 필요성이 사라진다.
+
+    `type_id` 는 비정규화(=entity 의 축). (type_id, normalized) 유니크로 한 축
+    안에서 같은 표기가 두 값에 매핑되는 것을 막는다. entity 삭제 시 CASCADE.
+    """
+
+    __tablename__ = "entity_aliases"
+    __table_args__ = (
+        UniqueConstraint(
+            "type_id", "normalized", name="uq_entity_aliases_type_norm"
+        ),
+        Index("ix_entity_aliases_entity", "entity_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entity_id: Mapped[int] = mapped_column(
+        ForeignKey("entities.id", ondelete="CASCADE"), nullable=False
+    )
+    type_id: Mapped[int] = mapped_column(
+        ForeignKey("entity_types.id", ondelete="CASCADE"), nullable=False
+    )
+    alias: Mapped[str] = mapped_column(String(255), nullable=False)
+    normalized: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
     )

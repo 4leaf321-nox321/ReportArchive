@@ -6,7 +6,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.modules.entities.models import EntityStatus
+from app.modules.entities.models import EntityEntryPolicy, EntityStatus
 
 
 class EntityTypeRead(BaseModel):
@@ -21,6 +21,35 @@ class EntityTypeRead(BaseModel):
     multi: bool
     sort_order: int
     description: str
+    # 입력 거버넌스 (p53). picker 가 closed 축에서 "+ 추가" 를 숨기고,
+    # value_pattern 으로 입력 형식 힌트를 띄우는 데 쓴다.
+    entry_policy: EntityEntryPolicy = EntityEntryPolicy.open
+    value_pattern: Optional[str] = None
+
+
+class EntityTypeUpdate(BaseModel):
+    """Admin-only — 축의 입력 거버넌스 수정. 보낸 필드만 반영(부분 수정).
+    value_pattern 을 빈 문자열/None 으로 보내면 패턴 제약 해제."""
+
+    entry_policy: Optional[EntityEntryPolicy] = None
+    value_pattern: Optional[str] = Field(default=None, max_length=255)
+
+
+class EntityAliasRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    entity_id: int
+    alias: str
+    created_at: datetime
+
+
+class EntityAliasListResponse(BaseModel):
+    items: list[EntityAliasRead]
+
+
+class EntityAliasCreate(BaseModel):
+    alias: str = Field(..., min_length=1, max_length=255)
 
 
 class EntityTypeListResponse(BaseModel):

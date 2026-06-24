@@ -16,6 +16,8 @@ from sqlalchemy.orm import Session
 
 from app.modules.entities.models import (
     Entity,
+    EntityAlias,
+    EntityEntryPolicy,
     EntityStatus,
     EntityType,
     ReportEntity,
@@ -23,6 +25,7 @@ from app.modules.entities.models import (
 from app.modules.entities.schemas import (
     EntityCreate,
     EntityTypeCreate,
+    EntityTypeUpdate,
     EntityUpdate,
 )
 
@@ -96,6 +99,31 @@ def create_type(db: Session, payload: EntityTypeCreate) -> EntityType:
     return row
 
 
+def update_type(db: Session, row: EntityType, payload: EntityTypeUpdate) -> EntityType:
+    """Admin-only — 축의 입력 거버넌스(entry_policy·value_pattern) 수정.
+    보낸 필드만 반영. value_pattern 은 빈 문자열로 보내면 제약 해제(None).
+    잘못된 정규식은 ValueError 로 거부해 라우트가 400 으로 surface."""
+    data = payload.model_dump(exclude_unset=True)
+
+    if "entry_policy" in data and data["entry_policy"] is not None:
+        row.entry_policy = data["entry_policy"]
+
+    if "value_pattern" in data:
+        raw = (data["value_pattern"] or "").strip()
+        if raw:
+            try:
+                re.compile(raw)
+            except re.error as exc:
+                raise ValueError(f"올바르지 않은 정규식입니다: {exc}") from exc
+            row.value_pattern = raw
+        else:
+            row.value_pattern = None
+
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def delete_type(db: Session, row: EntityType) -> int:
     """Hard-delete an axis. Blocked while the axis still has values — the
     DB-level ondelete=RESTRICT would also catch this, but we raise the
@@ -140,6 +168,50 @@ def find_by_value_ci(
             func.lower(Entity.value) == needle,
         )
     ).scalar_one_or_none()
+
+
+def _normalize(s: str) -> str:
+    """별칭/값 비교용 정규화 — 앞뒤 공백 제거 + 소문자."""
+    return (s or "").strip().lower()
+
+
+def find_by_alias(db: Session, *, type_id: int, value: str) -> Optional[Entity]:
+    """입력값을 별칭 테이블에서 찾아 canonical 엔티티로 resolve. 같은 축
+    안에서 (type_id, normalized) 가 유니크라 매칭은 최대 1건."""
+    needle = _normalize(value)
+    if not needle:
+        return None
+    alias = db.execute(
+        select(EntityAlias).where(
+            EntityAlias.type_id == type_id,
+            EntityAlias.normalized == needle,
+        )
+    ).scalar_one_or_none()
+    if alias is None:
+        return None
+    return db.get(Entity, alias.entity_id)
+
+
+def resolve_existing(db: Session, *, type_id: int, value: str) -> Optional[Entity]:
+    """입력값 → 기존 엔티티 resolve. 값 자체 매칭(대소문자 무시) 우선, 없으면
+    별칭으로 흡수. 둘 다 없으면 None(=신규 후보)."""
+    hit = find_by_value_ci(db, type_id=type_id, value=value)
+    if hit is not None:
+        return hit
+    return find_by_alias(db, type_id=type_id, value=value)
+
+
+def value_matches_pattern(pattern: Optional[str], value: str) -> bool:
+    """value_pattern(정규식, fullmatch)로 값 형식 검증. 패턴이 없으면 항상 통과.
+    저장된 패턴은 update_type 에서 이미 compile 검증을 거쳤다."""
+    if not pattern:
+        return True
+    try:
+        return re.fullmatch(pattern, value) is not None
+    except re.error:
+        # 저장 시 검증을 통과했으므로 정상 경로에선 도달하지 않지만, 손상된
+        # 패턴이 있어도 입력을 막지 않도록 안전하게 통과시킨다.
+        return True
 
 
 def list_entities(
@@ -243,11 +315,25 @@ def create_entity(
     if not value:
         raise ValueError("값은 비워둘 수 없습니다.")
 
-    existing = find_by_value_ci(db, type_id=payload.type_id, value=value)
+    # 거버넌스 게이트 (p53):
+    #   1) 기존 값/별칭으로 resolve 되면 그 canonical 을 반환(신규 생성 안 함).
+    #      picker 가 optimistic POST 하므로 409 대신 정규 행을 돌려준다.
+    existing = resolve_existing(db, type_id=payload.type_id, value=value)
     if existing is not None:
-        # Picker calls POST optimistically — return the canonical row so
-        # the caller links to the existing one instead of getting a 409.
         return existing
+
+    #   2) closed 축은 사용자 즉석 추가 차단(관리자가 등록한 값만 선택 가능).
+    if type_row.entry_policy == EntityEntryPolicy.closed:
+        raise ValueError(
+            f"'{type_row.label}' 은(는) 관리자가 등록한 값만 선택할 수 있습니다."
+        )
+
+    #   3) value_pattern 이 있으면 형식 검증.
+    if not value_matches_pattern(type_row.value_pattern, value):
+        raise ValueError(
+            f"'{type_row.label}' 형식에 맞지 않는 값입니다 "
+            f"(패턴: {type_row.value_pattern})."
+        )
 
     code = (payload.code or "").strip() or None
     row = Entity(
@@ -342,6 +428,47 @@ def merge_entities(
         db.delete(link)
         relinked += 1
 
+    # 별칭 흡수 (p53) — 머지 효과를 영속화한다. src 의 별칭들을 into 로 옮기고,
+    # src 의 값 자체도 into 의 별칭으로 등록 → 이후 옛 표기 입력이 자동으로
+    # into 로 빨려 들어간다. (type_id, normalized) 충돌은 버린다.
+    def _norm_taken(norm: str) -> bool:
+        return (
+            db.execute(
+                select(EntityAlias).where(
+                    EntityAlias.type_id == into.type_id,
+                    EntityAlias.normalized == norm,
+                )
+            ).scalar_one_or_none()
+            is not None
+        )
+
+    for a in list(
+        db.execute(
+            select(EntityAlias).where(EntityAlias.entity_id == src.id)
+        ).scalars()
+    ):
+        if a.entity_id == into.id:
+            continue
+        if _norm_taken(a.normalized):
+            db.delete(a)
+        else:
+            a.entity_id = into.id  # 같은 축이라 type_id 그대로
+            db.flush()  # 다음 _norm_taken 이 이 행을 보도록 즉시 반영
+    src_val_norm = _normalize(src.value)
+    if (
+        src_val_norm
+        and src_val_norm != _normalize(into.value)
+        and not _norm_taken(src_val_norm)
+    ):
+        db.add(
+            EntityAlias(
+                entity_id=into.id,
+                type_id=into.type_id,
+                alias=src.value,
+                normalized=src_val_norm,
+            )
+        )
+
     db.flush()
     db.delete(src)
     db.commit()
@@ -366,6 +493,73 @@ def delete_entity(db: Session, row: Entity) -> int:
             f"이 값은 {in_use}건의 보고서가 사용 중입니다. "
             "머지하거나 비활성화(deprecate) 하세요."
         )
+    db.delete(row)
+    db.commit()
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# Entity aliases — 표기 통일(자동 흡수). admin 관리, picker 입력 시 resolve.
+# --------------------------------------------------------------------------- #
+def list_aliases(db: Session, *, entity_id: int) -> list[EntityAlias]:
+    return list(
+        db.execute(
+            select(EntityAlias)
+            .where(EntityAlias.entity_id == entity_id)
+            .order_by(EntityAlias.alias)
+        ).scalars()
+    )
+
+
+def get_alias(db: Session, alias_id: int) -> Optional[EntityAlias]:
+    return db.get(EntityAlias, alias_id)
+
+
+def add_alias(
+    db: Session, *, entity: Entity, alias: str, creator_user_id: Optional[int] = None
+) -> EntityAlias:
+    """엔티티에 별칭(다른 표기)을 단다. 같은 축 안에서 충돌(다른 값과 동일,
+    다른 값의 별칭과 동일)하면 거부. 이미 이 엔티티의 별칭이면 멱등 반환."""
+    text = alias.strip()
+    if not text:
+        raise ValueError("별칭은 비워둘 수 없습니다.")
+    norm = _normalize(text)
+    if norm == _normalize(entity.value):
+        raise ValueError("값 자체와 동일한 표기는 별칭으로 등록할 필요가 없습니다.")
+
+    # 같은 축의 다른 '값' 과 충돌 — 그 표기는 이미 독립된 값이라 별칭화 불가.
+    clash_value = find_by_value_ci(db, type_id=entity.type_id, value=text)
+    if clash_value is not None and clash_value.id != entity.id:
+        raise ValueError(
+            f"같은 축에 이미 '{clash_value.value}' 값이 있어 별칭으로 쓸 수 없습니다 "
+            "(필요하면 머지하세요)."
+        )
+
+    existing = db.execute(
+        select(EntityAlias).where(
+            EntityAlias.type_id == entity.type_id,
+            EntityAlias.normalized == norm,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        if existing.entity_id == entity.id:
+            return existing  # 멱등
+        raise ValueError("이미 같은 축의 다른 값에 등록된 표기입니다.")
+
+    row = EntityAlias(
+        entity_id=entity.id,
+        type_id=entity.type_id,
+        alias=text,
+        normalized=norm,
+        created_by_user_id=creator_user_id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def delete_alias(db: Session, row: EntityAlias) -> int:
     db.delete(row)
     db.commit()
     return 0

@@ -123,6 +123,23 @@ function AddPopover({ type, selected, onPick }) {
   const debounceRef = useRef(null)
   const inputRef = useRef(null)
 
+  // 입력 거버넌스(p53). closed 축은 사용자 즉석 추가를 막고(선택만), pattern 이
+  // 있으면 새 값 형식을 검증한다. 서버가 최종 backstop 이지만 UI 에서 먼저
+  // 안내해 헛클릭을 줄인다.
+  const isClosed = type?.entry_policy === 'closed'
+  const pattern = type?.value_pattern || null
+  // 백엔드 re.fullmatch 흉내 — 매치 결과가 입력 전체와 같아야 통과. 패턴이
+  // 잘못됐으면(클라이언트 파싱 실패) 막지 않고 서버 검증에 맡긴다.
+  function patternOk(s) {
+    if (!pattern) return true
+    try {
+      const m = s.match(new RegExp(pattern))
+      return !!m && m[0] === s
+    } catch {
+      return true
+    }
+  }
+
   // Reset query/results each open so the popover doesn't show stale
   // matches from the previous axis the user touched.
   useEffect(() => {
@@ -181,9 +198,11 @@ function AddPopover({ type, selected, onPick }) {
     [items, trimmedQuery],
   )
 
+  const canCreate = !isClosed && !!trimmedQuery && !exactMatch && patternOk(trimmedQuery)
+
   async function submitCreate() {
     const value = trimmedQuery
-    if (!value) return
+    if (!value || !canCreate) return
     setSubmitting(true)
     try {
       const created = await createEntity({ type_id: type.id, value })
@@ -221,10 +240,14 @@ function AddPopover({ type, selected, onPick }) {
               ref={inputRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder={`${type.label} 검색 또는 새로 추가...`}
+              placeholder={
+                isClosed
+                  ? `${type.label} 검색...`
+                  : `${type.label} 검색 또는 새로 추가...`
+              }
               className="h-8 pl-7 text-sm"
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && trimmedQuery && !exactMatch) {
+                if (e.key === 'Enter' && canCreate) {
                   e.preventDefault()
                   submitCreate()
                 }
@@ -269,7 +292,20 @@ function AddPopover({ type, selected, onPick }) {
               ))}
           </div>
 
-          {trimmedQuery && !exactMatch && (
+          {/* closed 축 — 새 값 추가 불가 안내 */}
+          {trimmedQuery && !exactMatch && isClosed && (
+            <p className="px-1 py-0.5 text-[11px] text-muted-foreground">
+              관리자가 등록한 값만 선택할 수 있습니다.
+            </p>
+          )}
+          {/* open 축 — 형식 불일치 시 추가 차단 안내 */}
+          {trimmedQuery && !exactMatch && !isClosed && !patternOk(trimmedQuery) && (
+            <p className="px-1 py-0.5 text-[11px] text-amber-600">
+              형식에 맞지 않아 추가할 수 없습니다 (형식: {pattern}).
+            </p>
+          )}
+          {/* 추가 가능 */}
+          {canCreate && (
             <Button
               variant="outline"
               size="sm"

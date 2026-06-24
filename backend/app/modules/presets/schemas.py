@@ -26,6 +26,25 @@ class PresetInstantiate(BaseModel):
     folder_id: Optional[int] = None
 
 
+class PresetUpdate(BaseModel):
+    """메타정보만 수정(이름·설명·공개범위). 내용(seed)은 update-from-report 로
+    별도 갱신한다. 보낸 필드만 반영 — owner_workspace_slugs 는 명시적 null/[] 이면
+    전사(global)로, 생략하면 그대로 둔다(model_fields_set 으로 구분)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    owner_workspace_slugs: Optional[list[str]] = None
+
+
+class PresetUpdateFromReport(BaseModel):
+    """양식 내용(seed) + 템플릿 바인딩을 이 보고서로 덮어쓴다(양식 편집 세션의
+    '양식에 반영')."""
+
+    source_report_id: int
+
+
 class PresetSummary(BaseModel):
     """List-view projection — drops the heavy `seed` blob."""
 

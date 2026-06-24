@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   Plus,
   FileCode2,
@@ -41,7 +41,13 @@ import { useAsync } from '@/shared/hooks/useAsync'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { deleteTemplate, listTemplates, setTemplateScope } from '@/shared/api/templates'
-import { listPresets, deletePreset } from '@/shared/api/presets'
+import { listPresets, deletePreset, newReportFromPreset } from '@/shared/api/presets'
+import { deleteReport } from '@/modules/reports/api'
+import {
+  startPresetEditSession,
+  readPresetEditSession,
+  clearPresetEditSession,
+} from '@/shared/layout/presetEditSession'
 import {
   listCompositePresets,
   updateCompositePreset,
@@ -54,6 +60,7 @@ import { toast } from 'sonner'
 
 export default function TemplatesPage() {
   const { me } = useAuth()
+  const navigate = useNavigate()
   const { slug, all: workspaces } = useWorkspace()
   const orgWorkspaces = useMemo(
     () => (workspaces ?? []).filter((w) => w.kind === 'org' && !w.virtual),
@@ -177,6 +184,35 @@ export default function TemplatesPage() {
     }
   }
 
+  // 양식 내용 편집 — 그 양식을 임시 보고서로 펼쳐 에디터로 이동. 세션은
+  // sessionStorage(startPresetEditSession)에 두므로 에디터가 URL/쿼리를 갈아껴도
+  // 유지된다. 저장/취소는 PresetEditBar(AppShell 상주)가 처리(프리셋 저장 후
+  // 임시 보고서 정리).
+  async function onEditPreset(p) {
+    try {
+      // 이전에 끝내지 않고 빠져나간(abandon) 편집 세션의 임시 보고서가 있으면
+      // 먼저 정리 — 내 공간에 임시 보고서가 쌓이지 않게.
+      const stale = readPresetEditSession()
+      if (stale?.reportId) {
+        clearPresetEditSession()
+        try {
+          await deleteReport(stale.reportId)
+        } catch {
+          /* 이미 없을 수 있음 — 무시 */
+        }
+      }
+      const r = await newReportFromPreset(p.id)
+      startPresetEditSession({
+        reportId: r.id,
+        presetId: p.id,
+        presetName: p.name,
+      })
+      navigate(`/w/${r.workspace_slug}/reports/${r.id}`)
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err.message || '양식 편집 시작 실패')
+    }
+  }
+
   return (
     <div className="p-6 space-y-6">
       <PageHeader
@@ -286,6 +322,7 @@ export default function TemplatesPage() {
                     currentUserId={me?.user?.id}
                     isAdmin={me?.is_system_admin === true}
                     onDeletePreset={(p) => setPendingPresetDelete(p)}
+                    onEditPreset={onEditPreset}
                   />
                 ) : (
                   <div className="py-12 text-center text-sm text-muted-foreground">
@@ -804,6 +841,7 @@ function TemplateDetail({
   currentUserId,
   isAdmin,
   onDeletePreset,
+  onEditPreset,
 }) {
   const blocks = Array.isArray(template.schema?.blocks) ? template.schema.blocks : []
   const scoped =
@@ -981,6 +1019,17 @@ function TemplateDetail({
                           </p>
                         )}
                       </div>
+                      {canDel && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 shrink-0 text-muted-foreground hover:text-primary"
+                          onClick={() => onEditPreset?.(p)}
+                          title="이 양식 내용 수정 (에디터로 펼쳐 편집)"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
                       {canDel && (
                         <Button
                           variant="ghost"

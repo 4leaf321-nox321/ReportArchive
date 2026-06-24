@@ -17,6 +17,8 @@ from app.modules.presets.schemas import (
     PresetInstantiate,
     PresetInstantiateResult,
     PresetSummary,
+    PresetUpdate,
+    PresetUpdateFromReport,
 )
 from app.modules.reports import services as report_services
 from app.shared.auth import CurrentUser, get_current_user, require_writer
@@ -104,6 +106,62 @@ def new_report_from_preset(
     )
 
 
+def _can_manage_preset(actor: CurrentUser, preset) -> bool:
+    """양식 수정·삭제 권한 — 작성자 또는 시스템관리자. ⚠ actor.is_manager 는
+    쓰지 않는다: 내용 편집은 personal 컨텍스트(모두가 자기 personal 의 매니저)
+    에서 호출돼 매니저 게이트가 무력화되기 때문(삭제 권한과 동일선상)."""
+    return (
+        preset.created_by_user_id == actor.user.id
+        or actor.user.is_system_admin
+    )
+
+
+@router.patch("/{preset_id}")
+def update_preset(
+    preset_id: int,
+    payload: PresetUpdate,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_writer),
+):
+    """양식 메타정보(이름·설명·공개범위) 수정 — 작성자 또는 시스템관리자."""
+    preset = services.get(db, preset_id)
+    if not preset:
+        return not_found_response(f"Preset not found: {preset_id}")
+    if not _can_manage_preset(actor, preset):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "이 양식을 수정할 권한이 없습니다."
+        )
+    preset = services.update(db, preset, payload)
+    return success_response(data=PresetSummary.model_validate(preset))
+
+
+@router.post("/{preset_id}/update-from-report")
+def update_preset_from_report(
+    preset_id: int,
+    payload: PresetUpdateFromReport,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_writer),
+):
+    """양식 내용(seed)을 source 보고서로 갱신 — 양식 편집 세션의 '양식에 반영'.
+    작성자/시스템관리자만, source 보고서는 읽을 수 있어야 한다."""
+    preset = services.get(db, preset_id)
+    if not preset:
+        return not_found_response(f"Preset not found: {preset_id}")
+    if not _can_manage_preset(actor, preset):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "이 양식을 수정할 권한이 없습니다."
+        )
+    source = report_services.get_report(db, payload.source_report_id)
+    if not source:
+        return not_found_response(
+            f"Report not found: {payload.source_report_id}"
+        )
+    if not report_services.can_read_report(db, actor, source):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+    preset = services.update_seed_from_report(db, preset, source)
+    return success_response(data=PresetSummary.model_validate(preset))
+
+
 @router.delete("/{preset_id}")
 def delete_preset(
     preset_id: int,
@@ -113,10 +171,7 @@ def delete_preset(
     preset = services.get(db, preset_id)
     if not preset:
         return not_found_response(f"Preset not found: {preset_id}")
-    if (
-        preset.created_by_user_id != actor.user.id
-        and not actor.user.is_system_admin
-    ):
+    if not _can_manage_preset(actor, preset):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "본인이 만든 프리셋만 삭제할 수 있습니다.",

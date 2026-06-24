@@ -146,6 +146,38 @@ def get(db: Session, preset_id: int) -> Optional[ReportPreset]:
     return db.get(ReportPreset, preset_id)
 
 
+def update(db: Session, preset: ReportPreset, payload) -> ReportPreset:
+    """메타정보(이름·설명·공개범위)만 수정. 보낸 필드만 반영."""
+    fields = payload.model_fields_set
+    data = payload.model_dump()
+    if "name" in fields and data["name"]:
+        preset.name = data["name"]
+    if "description" in fields and data["description"] is not None:
+        preset.description = data["description"]
+    if "owner_workspace_slugs" in fields:
+        slugs = data["owner_workspace_slugs"] or None
+        if slugs is not None and len(slugs) == 0:
+            slugs = None
+        preset.owner_workspace_slugs = slugs
+    db.commit()
+    db.refresh(preset)
+    return preset
+
+
+def update_seed_from_report(
+    db: Session, preset: ReportPreset, source: Report
+) -> ReportPreset:
+    """양식 내용(seed) + 템플릿 바인딩을 source 보고서로 다시 스냅샷(create_from_report
+    와 동일한 _build_seed). 양식 편집 세션의 '양식에 반영' 이 호출한다. seed 는 복사본
+    이라 이후 source 보고서를 지워도 양식엔 영향 없다."""
+    preset.template_id = source.template_id
+    preset.template_version = source.template_version
+    preset.seed = _build_seed(source)
+    db.commit()
+    db.refresh(preset)
+    return preset
+
+
 def delete(db: Session, preset: ReportPreset) -> None:
     db.delete(preset)
     db.commit()

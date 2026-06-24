@@ -144,6 +144,11 @@ import {
   listTemplates,
 } from '@/shared/api/templates'
 import { listTemplateCategories } from '@/shared/api/templateCategories'
+import { updatePresetFromReport } from '@/shared/api/presets'
+import {
+  readPresetEditSession,
+  clearPresetEditSession,
+} from '@/shared/layout/presetEditSession'
 import { getRenderer } from '@/modules/templates/widgets'
 import { useCaptionSkipPref } from '@/shared/widgets/useCaptionSkipPref'
 import { TableViewContext } from '@/modules/templates/widgets/Table'
@@ -213,6 +218,27 @@ export default function ReportDetailPage() {
   // flow does this so the new copy lands directly in edit mode), we
   // honor it on first mount only.
   const startEditingFromState = Boolean(location.state?.startEditing)
+
+  // 프리셋 내용 편집 모드 — TemplatesPage 의 "수정"이 임시 보고서를 만들고 이 보고서로
+  // 이동(세션은 sessionStorage). 이 보고서가 그 임시 보고서면 true. 이 모드에서는
+  // 자동으로 편집모드 진입 + 툴바를 "프리셋 저장 / 돌아가기" 만으로 단순화한다.
+  const presetSession = readPresetEditSession()
+  const isPresetEditLive = Boolean(
+    presetSession &&
+      !isNew &&
+      reportId &&
+      presetSession.reportId === Number(reportId),
+  )
+  // reportId 가 바뀌기 전까지 값을 고정(래치)한다. "프리셋 저장" 시퀀스는 onSave
+  // 로 상태를 바꿔 재렌더를 유발하는데, 그 사이 세션을 비우면(clearPresetEditSession)
+  // isPresetEditLive 가 false 로 떨어지고, 그 재렌더에서 탭 등록 effect 가 이
+  // 보고서를 일반 보고서로 보고 탭에 올려버린다(돌아가기는 재렌더가 없어 멀쩡했다).
+  // 보고서 단위로 래치하면 세션이 비어도 끝까지 프리셋 편집 모드로 취급된다.
+  const presetEditRef = useRef({ id: null, value: false })
+  if (presetEditRef.current.id !== reportId) {
+    presetEditRef.current = { id: reportId, value: isPresetEditLive }
+  }
+  const isPresetEdit = presetEditRef.current.value
 
   // 'paginated' = show one page at a time with prev/next controls
   // 'all'       = stack every page vertically (scroll through them)
@@ -506,6 +532,19 @@ export default function ReportDetailPage() {
       cancelled = true
     }
   }, [isNew, existingReport?.id])
+
+  // 프리셋 편집 모드 — 보고서가 로드되면 자동으로 편집모드 진입(onEnterEdit 로
+  // 락까지 정상 획득). ref 가드로 한 번만 시도. onEnterEdit 는 함수 선언이라
+  // 호이스팅되어 콜백에서 참조 가능.
+  const presetAutoEditTried = useRef(false)
+  useEffect(() => {
+    if (!isPresetEdit || presetAutoEditTried.current) return
+    if (isNew || !existingReport || isEditing) return
+    if (existingReport.phase === 'finalized') return
+    presetAutoEditTried.current = true
+    onEnterEdit()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPresetEdit, existingReport, isEditing, isNew])
 
   // 게시 버튼 노출 조건 — 백엔드 `_ensure_can_mount` 와 동일하게:
   //   1) 작성자 본인, 또는
@@ -892,6 +931,9 @@ export default function ReportDetailPage() {
   } = useReportTabs()
   useEffect(() => {
     if (!slug) return
+    // 프리셋 편집용 임시 보고서는 탭 바에 올리지 않는다 — 저장하든 돌아가든
+    // 사라질 일회용이라 탭으로 남으면 안 된다.
+    if (isPresetEdit) return
     if (isNew) {
       if (!templateId) return
       upsertReportTab({
@@ -914,6 +956,7 @@ export default function ReportDetailPage() {
     }
   }, [
     isNew,
+    isPresetEdit,
     reportId,
     templateId,
     version,
@@ -2861,6 +2904,56 @@ export default function ReportDetailPage() {
     setIsEditing(false)
   }
 
+  // ── 프리셋 내용 편집 모드 액션 ──────────────────────────────────────
+  // 임시 보고서 정리 — 영구삭제(purge) 시도, 실패하면(드묾) 최소 휴지통으로
+  // 보내 "내 공간"에서 사라지게 한다. purge 가 간혹 실패하는 케이스가 보고돼
+  // 견고성을 위해 폴백을 둔다(원인은 console 에 남겨 추적).
+  async function cleanupPresetTempReport(reportId) {
+    if (!reportId) return
+    try {
+      await deleteReport(reportId)
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('프리셋 임시 보고서 영구삭제 실패 → 휴지통으로 대체:', e)
+      try {
+        await trashReport(reportId)
+      } catch {
+        /* 무시 */
+      }
+    }
+  }
+
+  // "프리셋 저장" — 현재 편집 draft 를 임시 보고서에 저장(onSave)한 뒤 그 보고서로
+  // 프리셋 seed 를 갱신하고, 임시 보고서를 정리한다.
+  async function onSavePresetEdit() {
+    const session = readPresetEditSession()
+    if (!session) {
+      navigate('/templates')
+      return
+    }
+    await onSave() // draft → 임시 보고서 저장(기존 보고서라 navigate 안 함)
+    try {
+      await updatePresetFromReport(session.presetId, session.reportId)
+    } catch (e) {
+      toast.error(e?.response?.data?.message || e.message || '프리셋 저장 실패')
+      return
+    }
+    clearPresetEditSession()
+    isEditingRef.current = false // 이미 저장됨 — 미저장 차단 우회
+    await cleanupPresetTempReport(session.reportId)
+    toast.success(`'${session.presetName || '양식'}' 프리셋에 저장되었습니다.`)
+    navigate('/templates')
+  }
+
+  // "돌아가기" — 저장하지 않고 임시 보고서를 버린다.
+  async function onPresetEditBack() {
+    const session = readPresetEditSession()
+    clearPresetEditSession()
+    isEditingRef.current = false // 버림 — 미저장 차단 우회
+    await cleanupPresetTempReport(session?.reportId)
+    navigate('/templates')
+  }
+
   /** Acquire the edit lock and flip into edit mode. On 409
    *  lock_held_by_other, surface a takeover dialog with the holder info;
    *  the user can then either back out or force the lock. New reports
@@ -3993,6 +4086,30 @@ export default function ReportDetailPage() {
             </div>
           </div>
 
+          {isPresetEdit ? (
+          /* 프리셋 내용 편집 모드 — 일반 보고서 툴바 대신 단순화: 편집/프리셋
+             저장 + 돌아가기. 자동으로 편집모드에 들어와 있으므로 보통 "프리셋
+             저장"·"돌아가기" 두 개만 보인다. */
+          <div className="flex items-center justify-end gap-2 ml-auto shrink-0">
+            {isEditing ? (
+              <Button variant="default" size="sm" onClick={onSavePresetEdit}>
+                <Save className="mr-1 h-3 w-3" />
+                프리셋 저장
+              </Button>
+            ) : (
+              existingReport?.phase !== 'finalized' && (
+                <Button variant="outline" size="sm" onClick={() => onEnterEdit()}>
+                  <Pencil className="mr-1 h-3 w-3" />
+                  편집
+                </Button>
+              )
+            )}
+            <Button variant="ghost" size="sm" onClick={onPresetEditBack}>
+              <ArrowLeft className="mr-1 h-3 w-3" />
+              돌아가기
+            </Button>
+          </div>
+          ) : (
           <div className="flex flex-wrap items-center justify-end gap-2 ml-auto shrink-0">
           {/* ─── Group 1: Navigation (왼쪽으로 빠짐) ───
               종합보고에서 진입한 경우에만 보이는 "돌아가기" 버튼. 진입 시
@@ -4360,6 +4477,7 @@ export default function ReportDetailPage() {
             </DropdownMenu>
           )}
           </div>
+          )}
         </div>
 
         {/* Phase banner — explicit signal that the report is past the

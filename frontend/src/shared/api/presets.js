@@ -28,6 +28,28 @@ export async function newReportFromPreset(presetId, { title, folder_id = null } 
   return extractData(res)
 }
 
+/** 양식 메타정보(이름·설명·공개범위) 수정 — 작성자 또는 시스템관리자. */
+export async function updatePreset(
+  presetId,
+  { name, description, ownerWorkspaceSlugs } = {},
+) {
+  const body = {}
+  if (name !== undefined) body.name = name
+  if (description !== undefined) body.description = description
+  if (ownerWorkspaceSlugs !== undefined)
+    body.owner_workspace_slugs = ownerWorkspaceSlugs
+  const res = await apiClient.patch(`${BASE}/${presetId}`, body)
+  return extractData(res)
+}
+
+/** 양식 내용(seed)을 source 보고서로 갱신 — 양식 편집 세션의 '양식에 반영'. */
+export async function updatePresetFromReport(presetId, sourceReportId) {
+  const res = await apiClient.post(`${BASE}/${presetId}/update-from-report`, {
+    source_report_id: sourceReportId,
+  })
+  return extractData(res)
+}
+
 export async function deletePreset(presetId) {
   const res = await apiClient.delete(`${BASE}/${presetId}`)
   return extractData(res)

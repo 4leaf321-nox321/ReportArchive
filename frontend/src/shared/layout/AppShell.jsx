@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Header } from './Header'
 import { Sidebar, MobileSidebar } from './Sidebar'
 import { MentionReturnBar } from './MentionReturnBar'
+import { PresetEditBar } from './PresetEditBar'
 import { ReportTabBar } from '@/shared/reports/ReportTabBar'
 import { ReportSplitLayout } from '@/shared/reports/ReportSplitLayout'
 import { useScrollRestoration } from './useScrollRestoration'
@@ -83,6 +84,7 @@ export function AppShell() {
           <ReportTabBar pane="left" placement="shell" />
           <main ref={mainRef} className="flex-1 min-w-0 overflow-y-auto bg-muted/30">
             <MentionReturnBar />
+            <PresetEditBar />
             {/* ReportSplitLayout 은 분할이 꺼져 있으면 display:contents 로 투명해
                 져 기존 레이아웃과 동일하게 동작하고, 켜지면 좌(에디터)·우(읽기전용)
                 2열로 나눈다. 토글 시 에디터가 remount 되지 않도록 래퍼 DOM 을 항상

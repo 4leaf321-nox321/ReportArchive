@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import engine
 from app.modules.files.models import File
+from app.modules.reports.models import Report
 from app.modules.workspaces.models import Workspace
 from app.shared.runtime_tuning import LIMITS as TUNING_LIMITS
 from app.shared.runtime_tuning import get_int as tuning_get_int
@@ -348,6 +349,20 @@ def get_storage_stats(db: Session) -> dict:
         .order_by(func.sum(File.size).desc())
     ).all()
 
+    # Report count per workspace — soft-deleted(휴지통) 제외. 파일 집계와
+    # 별도 테이블이라 슬러그 → 개수 맵으로 뽑아 아래에서 병합. 파일이 0인
+    # 부서는 위 file-기준 rows 에 안 잡혀 표에 안 나오지만, 이 표 자체가
+    # 저장공간(footprint) 중심이라 그 동작을 그대로 유지한다.
+    report_rows = db.execute(
+        select(
+            Report.workspace_slug,
+            func.count(Report.id).label("report_count"),
+        )
+        .where(Report.deleted_at.is_(None))
+        .group_by(Report.workspace_slug)
+    ).all()
+    report_count_by_slug = {slug: int(count) for slug, count in report_rows}
+
     return {
         "partition": {
             "path": str(upload_path),
@@ -367,6 +382,7 @@ def get_storage_stats(db: Session) -> dict:
                 "workspace_name": name,
                 "size_bytes": int(size),
                 "file_count": int(count),
+                "report_count": report_count_by_slug.get(slug, 0),
             }
             for slug, name, size, count in rows
         ],

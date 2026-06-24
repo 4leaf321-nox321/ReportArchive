@@ -470,6 +470,9 @@ function formatUptime(seconds) {
 
 function StorageSection() {
   const { data, loading, error, reload } = useAsync(() => getStorageStats(), [])
+  // 부서별 표 정렬 상태. 기본은 용량 내림차순 — 백엔드 기본 정렬과 동일.
+  // useState 는 아래 early-return 들보다 먼저 호출돼야 hook 순서가 안정적.
+  const [sort, setSort] = useState({ key: 'size_bytes', dir: 'desc' })
 
   if (loading) {
     return <Skeleton className="h-64 w-full" />
@@ -491,6 +494,29 @@ function StorageSection() {
   const appPercentOfPartition = partition.total_bytes
     ? (uploadDir.size_bytes * 100) / partition.total_bytes
     : 0
+
+  // 헤더 클릭 정렬. 같은 열 다시 누르면 방향 토글, 다른 열로 옮기면 부서명은
+  // 오름차순·숫자열은 내림차순을 기본으로 (큰 값 먼저 보는 게 자연스러움).
+  function toggleSort(key) {
+    setSort((s) =>
+      s.key === key
+        ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' }
+        : { key, dir: key === 'workspace_name' ? 'asc' : 'desc' },
+    )
+  }
+  // 표시용 정렬 사본 — byWorkspace 원본은 건드리지 않는다. report_count 는
+  // 백엔드 응답에 없을 수도 있어(구버전) ?? 0 으로 방어.
+  const sortedWorkspaces = [...byWorkspace].sort((a, b) => {
+    if (sort.key === 'workspace_name') {
+      const av = a.workspace_name ?? a.workspace_slug ?? ''
+      const bv = b.workspace_name ?? b.workspace_slug ?? ''
+      const cmp = av.localeCompare(bv, 'ko')
+      return sort.dir === 'asc' ? cmp : -cmp
+    }
+    const av = a[sort.key] ?? 0
+    const bv = b[sort.key] ?? 0
+    return sort.dir === 'asc' ? av - bv : bv - av
+  })
 
   return (
     <div className="space-y-4">
@@ -566,14 +592,15 @@ function StorageSection() {
               <table className="w-full text-sm">
                 <thead className="bg-muted/40">
                   <tr>
-                    <th className="px-3 py-2 text-left font-medium text-xs text-muted-foreground">부서</th>
-                    <th className="px-3 py-2 text-right font-medium text-xs text-muted-foreground">파일 수</th>
-                    <th className="px-3 py-2 text-right font-medium text-xs text-muted-foreground">용량</th>
+                    <SortTh label="부서" sortKey="workspace_name" sort={sort} onSort={toggleSort} align="left" />
+                    <SortTh label="파일 수" sortKey="file_count" sort={sort} onSort={toggleSort} />
+                    <SortTh label="용량" sortKey="size_bytes" sort={sort} onSort={toggleSort} />
+                    <SortTh label="보고서 수" sortKey="report_count" sort={sort} onSort={toggleSort} />
                     <th className="px-3 py-2 text-right font-medium text-xs text-muted-foreground">앱 footprint 대비</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {byWorkspace.map((row) => {
+                  {sortedWorkspaces.map((row) => {
                     const percent = uploadDir.size_bytes
                       ? (row.size_bytes * 100) / uploadDir.size_bytes
                       : 0
@@ -593,6 +620,9 @@ function StorageSection() {
                         <td className="px-3 py-2 text-right tabular-nums">
                           {formatBytes(row.size_bytes)}
                         </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {(row.report_count ?? 0).toLocaleString()}
+                        </td>
                         <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
                           {percent.toFixed(1)}%
                         </td>
@@ -606,6 +636,34 @@ function StorageSection() {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+// 정렬 가능한 표 헤더 셀. 활성 열이면 방향 화살표(▲/▼)를 표시하고, 클릭
+// 시 toggleSort 를 호출. 숫자열은 우측 정렬(align='right' 기본), 부서명만
+// 좌측 정렬. 폭이 안 흔들리도록 화살표 자리는 항상 고정 너비로 비워둔다.
+function SortTh({ label, sortKey, sort, onSort, align = 'right' }) {
+  const active = sort.key === sortKey
+  return (
+    <th
+      className={`px-3 py-2 font-medium text-xs text-muted-foreground ${
+        align === 'left' ? 'text-left' : 'text-right'
+      }`}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={`inline-flex items-center gap-1 hover:text-foreground ${
+          align === 'right' ? 'w-full justify-end' : ''
+        } ${active ? 'text-foreground' : ''}`}
+        title="정렬"
+      >
+        <span>{label}</span>
+        <span className="w-2 text-[9px] leading-none">
+          {active ? (sort.dir === 'asc' ? '▲' : '▼') : ''}
+        </span>
+      </button>
+    </th>
   )
 }
 

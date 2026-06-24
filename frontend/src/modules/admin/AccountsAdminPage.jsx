@@ -136,6 +136,11 @@ export default function AccountsAdminPage() {
   const [filterOpen, setFilterOpen] = useState(false)
   // 탭 — 'list'(계정 목록) / 'depts'(부서별 가입자 현황 트리).
   const [activeTab, setActiveTab] = useState('list')
+  // 이메일 복사 시 비활성 계정 제외 여부. 기본 on — 비활성 계정은 보통
+  // 메일을 받을 수 없거나 받을 필요가 없으므로 수신자 목록에서 빼는 게
+  // 합리적. 목록에는 (「비활성 포함」이 켜져 있으면) 그대로 보이되 복사
+  // 결과에서만 빠진다 — 보기/관리와 발송 대상은 별개라서 분리.
+  const [excludeInactiveOnCopy, setExcludeInactiveOnCopy] = useState(true)
 
   function reload() {
     setReloadKey((k) => k + 1)
@@ -280,12 +285,23 @@ export default function AccountsAdminPage() {
     })
   }
 
+  // 실제 복사 대상 — 소속 필터를 통과한 계정 중, 「비활성 제외」가 켜져
+  // 있으면 비활성(is_active === false) 계정을 추가로 걸러낸다.
+  const copyAccounts = useMemo(
+    () =>
+      excludeInactiveOnCopy
+        ? filteredAccounts.filter((a) => a.is_active)
+        : filteredAccounts,
+    [filteredAccounts, excludeInactiveOnCopy],
+  )
+
   /** 현재 필터된 계정들의 이메일을 `email1;email2;...` 로 묶어 클립보드.
    *  세미콜론은 Outlook / 다수 사내 메일 클라이언트가 To 필드 구분자로
    *  쓰는 포맷이라 그대로 paste 하면 수신자 리스트로 인식된다. 빈 이메일은
-   *  필터링 (가입은 됐는데 이메일이 비어있는 잘못된 row 가 있는 경우). */
+   *  필터링 (가입은 됐는데 이메일이 비어있는 잘못된 row 가 있는 경우).
+   *  「비활성 제외」가 켜져 있으면 비활성 계정은 대상에서 빠진다. */
   async function handleCopyEmails() {
-    const emails = filteredAccounts
+    const emails = copyAccounts
       .map((a) => a.email?.trim())
       .filter(Boolean)
       .join(';')
@@ -296,10 +312,13 @@ export default function AccountsAdminPage() {
     try {
       await copyTextToClipboard(emails)
       const n = emails.split(';').length
+      const excluded = filteredAccounts.length - copyAccounts.length
+      const suffix =
+        excludeInactiveOnCopy && excluded > 0 ? ` (비활성 ${excluded}개 제외)` : ''
       toast.success(
-        homeFilter
+        (homeFilter
           ? `필터된 ${n}개의 이메일을 복사했습니다.`
-          : `${n}개의 이메일을 복사했습니다.`,
+          : `${n}개의 이메일을 복사했습니다.`) + suffix,
       )
     } catch (err) {
       toast.error('클립보드 복사 실패: ' + (err?.message ?? String(err)))
@@ -693,12 +712,29 @@ export default function AccountsAdminPage() {
           size="sm"
           variant="outline"
           onClick={handleCopyEmails}
-          disabled={filteredAccounts.length === 0}
+          disabled={copyAccounts.length === 0}
           title="이메일 주소를 세미콜론(;) 구분자로 클립보드에 복사"
         >
           <ClipboardCopy className="mr-1 h-3.5 w-3.5" />
           이메일 복사
+          {copyAccounts.length > 0 && (
+            <span className="ml-1 tabular-nums text-muted-foreground">
+              ({copyAccounts.length})
+            </span>
+          )}
         </Button>
+        {/* 복사 대상에서 비활성 계정 제외. 목록 표시(「비활성 포함」)와는
+            독립 — 비활성 계정을 화면에서는 보면서 발송 대상에서만 뺄 수
+            있게. */}
+        <label className="inline-flex items-center gap-1.5 cursor-pointer select-none text-xs">
+          <input
+            type="checkbox"
+            checked={excludeInactiveOnCopy}
+            onChange={(e) => setExcludeInactiveOnCopy(e.target.checked)}
+            className="h-3.5 w-3.5"
+          />
+          <span>복사 시 비활성 제외</span>
+        </label>
         <span className="text-[11px] text-muted-foreground ml-auto">
           {homeFilter
             ? `${filteredAccounts.length} / ${accounts.length}건`

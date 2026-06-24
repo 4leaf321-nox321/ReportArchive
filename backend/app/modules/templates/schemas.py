@@ -101,3 +101,37 @@ class TemplateVersionSummary(BaseModel):
     is_latest: bool
     is_published: bool
     created_at: datetime
+
+
+# --- 템플릿↔엔티티 축 바인딩 ------------------------------------------------ #
+
+class TemplateEntityTypeItem(BaseModel):
+    """바인딩된(=노출) 축 하나. 엔티티 축 메타 + 이 템플릿에서의 required."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    entity_type_id: int
+    slug: str
+    label: str
+    icon: str = ""
+    sort_order: int = 0
+    required: bool = False
+
+
+class TemplateEntityTypesResponse(BaseModel):
+    """이 템플릿의 **유효 노출 축**. is_default=True 면 명시 바인딩이 없어 전체
+    축을 기본 노출 중이라는 뜻(관리 UI 는 이때 '전체 선택' 상태로 표시)."""
+
+    is_default: bool
+    items: list[TemplateEntityTypeItem]
+
+
+class TemplateEntityTypeBindingIn(BaseModel):
+    entity_type_id: int
+    required: bool = False
+
+
+class TemplateEntityTypesUpdate(BaseModel):
+    """노출 축 집합을 통째로 교체. 빈 리스트 = 바인딩 없음 = 전체 축 기본 노출."""
+
+    items: List[TemplateEntityTypeBindingIn] = Field(default_factory=list)

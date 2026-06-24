@@ -5131,6 +5131,11 @@ export default function ReportDetailPage() {
         currentTypeId={draft?.report_type_id ?? null}
         currentType={draft?.report_type ?? null}
         currentEntities={draft?.entities ?? []}
+        entityTemplateIds={Array.from(
+          new Set(
+            (draft?.pages ?? []).map((p) => p?.template_id).filter(Boolean),
+          ),
+        )}
         currentCollab={draft?.collab_workspace_slugs ?? []}
         metadata={
           // draft holds the user-editable subset (title/status/report_date);
@@ -8420,6 +8425,11 @@ function ReportMetaChips({
               onChange={(entities) =>
                 setDraft((d) => (d ? { ...d, entities } : d))
               }
+              templateIds={Array.from(
+                new Set(
+                  (draft.pages ?? []).map((p) => p?.template_id).filter(Boolean),
+                ),
+              )}
             />
             {/* 협업 부서 — 기준정보(엔티티)와 달리 부서 트리에서 직접 선택.
                 "관련 정보" 안에 같이 둬서 한곳에서 등록되게 한다. */}

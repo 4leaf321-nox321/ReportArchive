@@ -16,6 +16,7 @@ import {
   X,
   Archive,
   ArchiveRestore,
+  ListChecks,
 } from 'lucide-react'
 import {
   Dialog,
@@ -44,10 +45,13 @@ import { useAuth } from '@/shared/auth/AuthContext'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import {
   deleteTemplate,
+  getTemplateEntityTypes,
   listTemplates,
   setTemplateArchived,
+  setTemplateEntityTypes,
   setTemplateScope,
 } from '@/shared/api/templates'
+import { listEntityTypes } from '@/shared/api/entities'
 import { listPresets, deletePreset, newReportFromPreset } from '@/shared/api/presets'
 import { deleteReport } from '@/modules/reports/api'
 import {
@@ -129,6 +133,7 @@ export default function TemplatesPage() {
   const [pendingDelete, setPendingDelete] = useState(null) // template or null
   const [pendingPresetDelete, setPendingPresetDelete] = useState(null)
   const [scopeEditFor, setScopeEditFor] = useState(null) // 공유 부서 편집 대상
+  const [axisEditFor, setAxisEditFor] = useState(null) // 노출 축(바인딩) 편집 대상
   const [selectedId, setSelectedId] = useState(null) // template_id
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState('templates') // 'templates' | 'composite-presets'
@@ -343,6 +348,7 @@ export default function TemplatesPage() {
                     onDelete={() => setPendingDelete(selected)}
                     onArchive={() => onToggleArchive(selected)}
                     onEditScope={() => setScopeEditFor(selected)}
+                    onEditAxes={() => setAxisEditFor(selected)}
                     presets={selectedPresets}
                     currentUserId={me?.user?.id}
                     isAdmin={me?.is_system_admin === true}
@@ -404,7 +410,207 @@ export default function TemplatesPage() {
         onClose={() => setScopeEditFor(null)}
         onSaved={() => reload()}
       />
+
+      <AxisBindingDialog
+        template={axisEditFor}
+        onClose={() => setAxisEditFor(null)}
+      />
     </div>
+  )
+}
+
+/** 템플릿↔엔티티 축 바인딩 편집 — "이 템플릿으로 작성할 때 어떤 축(관련 정보)을
+ *  보여줄지"를 고른다. 축을 켜고 끄는 것이지 값(entity)을 정하는 게 아니다.
+ *
+ *  규칙(엔티티관리개선_설계.md §2.1): **하나도 안 고르면 = 전체 축 노출(기본)**.
+ *  그래서 처음 여는(미설정) 템플릿은 전체 선택 상태로 보이고, 일부만 남기면 그
+ *  부분집합만 작성 picker 에 뜬다. 이미 태깅된 보고서의 태그는 영향 없음. */
+function AxisBindingDialog({ template, onClose }) {
+  const open = Boolean(template)
+  const [axes, setAxes] = useState(null) // 전체 축 카탈로그
+  const [selected, setSelected] = useState(() => new Set()) // 노출할 entity_type_id
+  const [required, setRequired] = useState(() => new Set()) // 필수 entity_type_id
+  const [isDefault, setIsDefault] = useState(true)
+  const [loading, setLoading] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setLoading(true)
+    Promise.all([
+      listEntityTypes(),
+      getTemplateEntityTypes(template.template_id),
+    ])
+      .then(([typesRes, binding]) => {
+        if (cancelled) return
+        setAxes(typesRes?.items ?? [])
+        setIsDefault(binding?.is_default !== false)
+        // is_default(빈 바인딩)면 '전체 노출'이므로 전부 체크해서 보여준다.
+        const items = binding?.items ?? []
+        setSelected(new Set(items.map((i) => i.entity_type_id)))
+        setRequired(
+          new Set(items.filter((i) => i.required).map((i) => i.entity_type_id)),
+        )
+        // 빈 바인딩이면 binding.items 가 전체 축이라 위 selected 가 전부가 된다.
+      })
+      .catch((e) => {
+        if (cancelled) return
+        toast.error('노출 축 불러오기 실패', {
+          description: String(e?.message ?? e),
+        })
+        onClose()
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, template])
+
+  function toggleSelect(id) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+        // 노출에서 빠지면 필수도 자동 해제(필수는 노출의 부분집합).
+        setRequired((r) => {
+          if (!r.has(id)) return r
+          const rn = new Set(r)
+          rn.delete(id)
+          return rn
+        })
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+  function toggleRequired(id) {
+    setRequired((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const allCount = axes?.length ?? 0
+  const showsAll = selected.size === 0 || selected.size === allCount
+
+  async function handleSave() {
+    setSubmitting(true)
+    try {
+      // 전체 선택(또는 0개)이면 빈 배열로 보내 '전체 기본'으로 정규화 —
+      // 명시 행을 쌓아두지 않고 깔끔히 유지.
+      const items =
+        selected.size === 0 || selected.size === allCount
+          ? []
+          : [...selected].map((id) => ({
+              entity_type_id: id,
+              required: required.has(id),
+            }))
+      await setTemplateEntityTypes(template.template_id, items)
+      toast.success('노출 축을 저장했습니다.')
+      onClose()
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err?.message || '노출 축 저장 실패',
+      )
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="flex max-h-[80vh] w-[90vw] max-w-md flex-col">
+        <DialogHeader>
+          <DialogTitle>노출 축 — {template?.name}</DialogTitle>
+          <DialogDescription>
+            이 템플릿으로 보고서를 쓸 때 "관련 정보"에 보여줄 엔티티 축을 고릅니다.
+            아무것도 안 고르면 모든 축이 노출됩니다(기본). 이미 태깅된 보고서의
+            태그에는 영향이 없습니다.
+          </DialogDescription>
+        </DialogHeader>
+
+        {loading || axes === null ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            불러오는 중…
+          </p>
+        ) : (
+          <div className="-mx-1 min-h-0 flex-1 space-y-1 overflow-y-auto px-1">
+            {axes.map((a) => {
+              const on = selected.has(a.id)
+              return (
+                <div
+                  key={a.id}
+                  className="flex items-center gap-2 rounded-md border px-2.5 py-2"
+                >
+                  <label className="flex flex-1 cursor-pointer items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={() => toggleSelect(a.id)}
+                      className="h-3.5 w-3.5"
+                    />
+                    <span className={cn(!on && 'text-muted-foreground')}>
+                      {a.label}
+                    </span>
+                  </label>
+                  <label
+                    className={cn(
+                      'flex items-center gap-1 text-[11px]',
+                      on
+                        ? 'cursor-pointer text-muted-foreground'
+                        : 'cursor-not-allowed opacity-40',
+                    )}
+                    title="필수로 두면 작성 시 미입력에 대해 경고합니다(저장은 막지 않음)"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={required.has(a.id)}
+                      onChange={() => on && toggleRequired(a.id)}
+                      disabled={!on}
+                      className="h-3 w-3"
+                    />
+                    필수
+                  </label>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        <div className="flex items-center justify-between gap-2 border-t pt-3">
+          <span className="text-[11px] text-muted-foreground">
+            {showsAll
+              ? '전체 축 노출 (기본)'
+              : `${selected.size}개 축만 노출${
+                  isDefault ? ' — 저장 시 적용' : ''
+                }`}
+          </span>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onClose}
+              disabled={submitting}
+            >
+              취소
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={submitting || loading}
+            >
+              {submitting ? '저장 중…' : '저장'}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -919,6 +1125,7 @@ function TemplateDetail({
   onDelete,
   onArchive,
   onEditScope,
+  onEditAxes,
   presets,
   currentUserId,
   isAdmin,
@@ -1000,6 +1207,17 @@ function TemplateDetail({
                       보관
                     </>
                   )}
+                </Button>
+              )}
+              {canManage && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onEditAxes}
+                  title="이 템플릿으로 작성할 때 보여줄 엔티티 축(관련 정보) 선택"
+                >
+                  <ListChecks className="mr-1 h-3.5 w-3.5" />
+                  노출 축
                 </Button>
               )}
               {canDelete && (

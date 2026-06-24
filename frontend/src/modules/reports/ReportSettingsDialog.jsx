@@ -14,6 +14,7 @@ import {
 } from '@/shared/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs'
 import { listEntityTypes } from '@/shared/api/entities'
+import { getTemplateEntityTypes } from '@/shared/api/templates'
 import { EntityMultiPicker } from '@/modules/entities/EntityMultiPicker'
 import { cn } from '@/shared/lib/utils'
 import { Badge } from '@/shared/components/ui/badge'
@@ -113,6 +114,10 @@ export function ReportSettingsDialog({
   // dirty 가 되어 적용 시 onApplyEntities 로 위로 전달된다. null/빈
   // 배열이면 아무것도 태깅되지 않은 보고서.
   currentEntities = null,
+  // 이 보고서의 페이지 템플릿 id 들(중복 제거된 배열). 엔티티 축 picker 가
+  // 템플릿↔축 바인딩에 따라 노출 축을 좁히는 데 쓴다. 비거나 미지정이면
+  // 전체 축 노출(현행 동작). 템플릿 편집기 등 보고서 컨텍스트가 아닐 땐 생략.
+  entityTemplateIds = null,
   // "협업 부서" — 함께 일한 조직 워크스페이스 슬러그 배열. picker(트리)에서
   // 변경하면 onApplyCollab 로 위로 전달된다. null/빈 배열 = 미지정.
   currentCollab = null,
@@ -154,6 +159,7 @@ export function ReportSettingsDialog({
           currentTypeId={currentTypeId}
           currentType={currentType}
           currentEntities={currentEntities}
+          entityTemplateIds={entityTemplateIds}
           currentCollab={currentCollab}
           metadata={metadata}
           onClose={onClose}
@@ -188,6 +194,7 @@ function DialogBody({
   currentTypeId,
   currentType,
   currentEntities,
+  entityTemplateIds,
   currentCollab,
   metadata,
   onClose,
@@ -328,6 +335,7 @@ function DialogBody({
               onChange={setTypeDraft}
               entitiesDraft={entitiesDraft}
               onEntitiesChange={setEntitiesDraft}
+              entityTemplateIds={entityTemplateIds}
               collabDraft={collabDraft}
               onCollabChange={setCollabDraft}
               metadata={metadata}
@@ -902,6 +910,7 @@ function ReportSettingsPropertiesTab({
   onChange,
   entitiesDraft,
   onEntitiesChange,
+  entityTemplateIds,
   collabDraft,
   onCollabChange,
   metadata,
@@ -937,6 +946,7 @@ function ReportSettingsPropertiesTab({
         <EntityTagsSection
           entities={entitiesDraft}
           onChange={onEntitiesChange}
+          templateIds={entityTemplateIds}
         />
         <div className="mt-1 flex items-start gap-3">
           <Label className="w-24 shrink-0 pt-1.5 text-xs text-muted-foreground">
@@ -974,16 +984,39 @@ function ReportSettingsPropertiesTab({
  * subtle placeholder rather than collapsing entirely (avoids a layout
  * shift when the data arrives).
  */
-export function EntityTagsSection({ entities, onChange }) {
+export function EntityTagsSection({ entities, onChange, templateIds }) {
   const [types, setTypes] = useState(null) // null = loading, [] = empty (impossible post-seed but safe)
+  // 이 보고서의 페이지 템플릿들의 축 바인딩. null = (아직)없음/미조회 → 전체 축.
+  // 배열의 각 원소는 `{ is_default, items }` (조회 실패 시 null 섞일 수 있음).
+  const [bindings, setBindings] = useState(null)
   const [error, setError] = useState(null)
+
+  // templateIds 배열 자체는 매 렌더 새 참조라 effect dep 으로 부적합 — 정렬·dedupe
+  // 한 문자열 키로 안정화한다.
+  const tplKey = useMemo(
+    () =>
+      Array.from(new Set((templateIds ?? []).filter(Boolean)))
+        .sort()
+        .join(','),
+    [templateIds],
+  )
 
   useEffect(() => {
     let cancelled = false
-    listEntityTypes()
-      .then((res) => {
+    const ids = tplKey ? tplKey.split(',') : []
+    Promise.all([
+      listEntityTypes(),
+      ids.length
+        ? Promise.all(
+            // 한 템플릿 조회가 실패해도(삭제 등) 전체가 깨지지 않게 개별 catch.
+            ids.map((id) => getTemplateEntityTypes(id).catch(() => null)),
+          )
+        : Promise.resolve(null),
+    ])
+      .then(([typesRes, bindingsRes]) => {
         if (cancelled) return
-        setTypes(res?.items ?? [])
+        setTypes(typesRes?.items ?? [])
+        setBindings(bindingsRes)
       })
       .catch((e) => {
         if (cancelled) return
@@ -995,7 +1028,36 @@ export function EntityTagsSection({ entities, onChange }) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [tplKey])
+
+  // 유효 노출 축 + 필수 축 계산. 규칙(엔티티관리개선_설계.md §2.1):
+  //   - 바인딩 없음 / 어느 한 템플릿이라도 is_default(빈 바인딩) → 전체 축 노출
+  //     (빈 바인딩 = 전체 기본이므로 그 템플릿은 모든 축을 원함)
+  //   - 모든 페이지 템플릿이 명시 바인딩일 때만 그 합집합으로 제한하되, **이미
+  //     태깅된 축은 항상 유지**(유령 태그 방지 — 보이고 제거 가능해야)
+  const { visibleTypes, requiredSlugs } = useMemo(() => {
+    const required = new Set()
+    if (!types) return { visibleTypes: [], requiredSlugs: required }
+    const taggedSlugs = new Set(
+      (entities || []).map((e) => e.type_slug).filter(Boolean),
+    )
+    let restrict = null
+    if (Array.isArray(bindings) && bindings.length) {
+      const anyDefault = bindings.some((b) => !b || b.is_default)
+      if (!anyDefault) {
+        restrict = new Set()
+        for (const b of bindings)
+          for (const it of b.items ?? []) restrict.add(it.slug)
+      }
+      // 필수는 명시 바인딩들의 합집합(어느 템플릿이든 required면 경고).
+      for (const b of bindings)
+        for (const it of b?.items ?? []) if (it.required) required.add(it.slug)
+    }
+    const visible = types.filter((t) =>
+      restrict === null ? true : restrict.has(t.slug) || taggedSlugs.has(t.slug),
+    )
+    return { visibleTypes: visible, requiredSlugs: required }
+  }, [types, bindings, entities])
 
   // Group selected entities by type_slug — O(n) once per render. The
   // picker is controlled per-axis so swapping one row's list back into
@@ -1033,23 +1095,59 @@ export function EntityTagsSection({ entities, onChange }) {
       <p className="text-xs text-muted-foreground">등록된 축이 없습니다.</p>
     )
   }
+  if (visibleTypes.length === 0) {
+    // 모든 축이 바인딩에서 제외됐고 태깅된 것도 없는 경우(드묾) — 빈 섹션이
+    // 통째로 사라지면 어색하니 안내만 남긴다.
+    return (
+      <p className="text-xs text-muted-foreground">
+        이 템플릿에 노출하도록 설정된 축이 없습니다.
+      </p>
+    )
+  }
+
+  // 필수인데 아직 미입력인 축 — soft 경고(저장을 막지는 않음).
+  const missingRequired = visibleTypes.filter(
+    (t) =>
+      requiredSlugs.has(t.slug) && (byTypeSlug.get(t.slug) ?? []).length === 0,
+  )
 
   return (
     <div className="space-y-2">
-      {types.map((t) => (
-        <div key={t.id} className="flex items-start gap-3">
-          <Label className="w-24 shrink-0 pt-1.5 text-xs text-muted-foreground">
-            {t.label}
-          </Label>
-          <div className="min-w-0 flex-1">
-            <EntityMultiPicker
-              type={t}
-              value={byTypeSlug.get(t.slug) ?? []}
-              onChange={(next) => setAxisValue(t.slug, next)}
-            />
+      {visibleTypes.map((t) => {
+        const isRequired = requiredSlugs.has(t.slug)
+        const isMissing =
+          isRequired && (byTypeSlug.get(t.slug) ?? []).length === 0
+        return (
+          <div key={t.id} className="flex items-start gap-3">
+            <Label className="flex w-24 shrink-0 items-center gap-1 pt-1.5 text-xs text-muted-foreground">
+              <span>{t.label}</span>
+              {isRequired && (
+                <span
+                  className={cn(
+                    'text-[10px]',
+                    isMissing ? 'text-amber-600' : 'text-muted-foreground',
+                  )}
+                  title="이 템플릿에서 권장(필수)으로 지정된 축"
+                >
+                  *필수
+                </span>
+              )}
+            </Label>
+            <div className="min-w-0 flex-1">
+              <EntityMultiPicker
+                type={t}
+                value={byTypeSlug.get(t.slug) ?? []}
+                onChange={(next) => setAxisValue(t.slug, next)}
+              />
+            </div>
           </div>
-        </div>
-      ))}
+        )
+      })}
+      {missingRequired.length > 0 && (
+        <p className="text-[11px] text-amber-600">
+          필수 축 미입력: {missingRequired.map((t) => t.label).join(', ')}
+        </p>
+      )}
     </div>
   )
 }

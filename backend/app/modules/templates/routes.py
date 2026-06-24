@@ -9,6 +9,8 @@ from app.modules.templates import services
 from app.modules.templates.schemas import (
     TemplateArchiveUpdate,
     TemplateCreate,
+    TemplateEntityTypesResponse,
+    TemplateEntityTypesUpdate,
     TemplateNewVersion,
     TemplateRead,
     TemplateScopeUpdate,
@@ -244,6 +246,50 @@ def set_template_archived(
             if payload.archived
             else f"'{template_id}' 템플릿의 보관을 해제했습니다."
         ),
+    )
+
+
+@router.get("/{template_id}/entity-types", response_model=None)
+def get_template_entity_types(
+    template_id: str,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """이 템플릿으로 작성할 때 노출할 엔티티 축(유효값). 작성 picker 가 모든
+    사용자에게 필요하므로 가시성 가드 없이(템플릿 존재만 확인) 반환한다 — 템플릿
+    접근 모델(작성 picker=scope=all)과 일관. is_default=True 면 명시 바인딩이 없어
+    전체 축 기본 노출."""
+    if not services.get_latest_version(db, template_id):
+        return not_found_response(f"Template not found: {template_id}")
+    data = services.get_template_entity_types(db, template_id)
+    return success_response(data=TemplateEntityTypesResponse(**data))
+
+
+@router.put("/{template_id}/entity-types", response_model=None)
+def set_template_entity_types(
+    template_id: str,
+    payload: TemplateEntityTypesUpdate,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """노출 축 집합 교체. 보관/공유와 같은 관리 권한(보이는 템플릿 또는 자기 부서
+    소유, 또는 시스템 관리자)이면 가능. 빈 리스트면 전체 축 기본으로 복귀.
+    버전은 올리지 않는다(작성 메타)."""
+    latest = services.get_latest_version(db, template_id)
+    if not latest or not (
+        services.is_visible(db, latest, actor.workspace.slug)
+        or _is_own_personal_template(actor, latest)
+        or actor.user.is_system_admin
+    ):
+        return not_found_response(f"Template not found: {template_id}")
+    _assert_can_manage_template(actor, latest)
+    try:
+        data = services.set_template_entity_types(db, template_id, payload.items)
+    except ValueError as exc:
+        return not_found_response(str(exc))
+    return success_response(
+        data=TemplateEntityTypesResponse(**data),
+        message="노출 축을 저장했습니다.",
     )
 
 

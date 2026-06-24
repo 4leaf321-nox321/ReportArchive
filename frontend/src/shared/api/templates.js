@@ -58,6 +58,23 @@ export async function setTemplateArchived(templateId, archived) {
   return extractData(res)
 }
 
+/** 이 템플릿으로 작성할 때 노출할 엔티티 축(유효값). 응답:
+ *  `{ is_default, items: [{entity_type_id, slug, label, icon, sort_order, required}] }`.
+ *  is_default=true 면 명시 바인딩이 없어 전체 축을 기본 노출 중이라는 뜻. */
+export async function getTemplateEntityTypes(templateId) {
+  const res = await apiClient.get(`${BASE}/${templateId}/entity-types`)
+  return extractData(res)
+}
+
+/** 노출 축 집합을 통째로 교체. items=[{entity_type_id, required}]. 빈 배열 =
+ *  바인딩 없음 = 전체 축 기본 노출. 버전은 안 올림(작성 메타). */
+export async function setTemplateEntityTypes(templateId, items) {
+  const res = await apiClient.put(`${BASE}/${templateId}/entity-types`, {
+    items,
+  })
+  return extractData(res)
+}
+
 /** 다른 부서에 공유 — owner_workspace_slugs(공유 부서)를 통째로 교체.
  *  null/빈 배열 = 전사. 버전은 안 올림(가시성 메타). */
 export async function setTemplateScope(templateId, ownerWorkspaceSlugs) {

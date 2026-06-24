@@ -3,13 +3,14 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import desc, or_, select, update
+from sqlalchemy import delete, desc, or_, select, update
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 from sqlalchemy import String as SAString
 from sqlalchemy import cast
 
-from app.modules.templates.models import Template
+from app.modules.entities.models import EntityType
+from app.modules.templates.models import Template, TemplateEntityType
 from app.modules.templates.schemas import TemplateCreate, TemplateNewVersion
 from app.modules.users.models import WorkspaceMember
 from app.modules.workspaces import services as ws_services
@@ -373,3 +374,86 @@ def create_new_version(
     db.commit()
     db.refresh(template)
     return template
+
+
+# --------------------------------------------------------------------------- #
+# 템플릿↔엔티티 축 바인딩
+# --------------------------------------------------------------------------- #
+def _axis_item(t: EntityType, required: bool) -> dict:
+    return {
+        "entity_type_id": t.id,
+        "slug": t.slug,
+        "label": t.label,
+        "icon": t.icon,
+        "sort_order": t.sort_order,
+        "required": required,
+    }
+
+
+def get_template_entity_types(db: Session, template_id: str) -> dict:
+    """이 템플릿의 **유효 노출 축**. 명시 바인딩이 있으면 그 축들만, 없으면(빈
+    바인딩) 전체 축을 기본 노출한다(엔티티관리개선_설계.md §2.1). 정렬은 축의
+    sort_order, label 순으로 통일."""
+    axes = (
+        db.execute(
+            select(EntityType).order_by(EntityType.sort_order, EntityType.label)
+        )
+        .scalars()
+        .all()
+    )
+    bindings = (
+        db.execute(
+            select(TemplateEntityType).where(
+                TemplateEntityType.template_id == template_id
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not bindings:
+        return {
+            "is_default": True,
+            "items": [_axis_item(t, False) for t in axes],
+        }
+    required_by_id = {b.entity_type_id: b.required for b in bindings}
+    items = [
+        _axis_item(t, bool(required_by_id[t.id]))
+        for t in axes
+        if t.id in required_by_id
+    ]
+    return {"is_default": False, "items": items}
+
+
+def set_template_entity_types(
+    db: Session, template_id: str, items: list
+) -> dict:
+    """노출 축 집합을 통째로 교체(replace-style). 빈 리스트면 모든 바인딩을
+    지워 '전체 축 기본'으로 되돌린다. items 원소는 entity_type_id·required 속성을
+    가진다(같은 축 중복 시 마지막 것으로 합쳐 PK 충돌 방지)."""
+    if not list_versions(db, template_id):
+        raise ValueError(f"Template not found: {template_id}")
+    valid_ids = set(db.execute(select(EntityType.id)).scalars().all())
+
+    # dedup by entity_type_id, validate
+    by_id: dict[int, bool] = {}
+    for it in items:
+        if it.entity_type_id not in valid_ids:
+            raise ValueError(f"Unknown entity type: {it.entity_type_id}")
+        by_id[it.entity_type_id] = bool(it.required)
+
+    db.execute(
+        delete(TemplateEntityType).where(
+            TemplateEntityType.template_id == template_id
+        )
+    )
+    for type_id, required in by_id.items():
+        db.add(
+            TemplateEntityType(
+                template_id=template_id,
+                entity_type_id=type_id,
+                required=required,
+                sort_order=0,
+            )
+        )
+    db.commit()
+    return get_template_entity_types(db, template_id)

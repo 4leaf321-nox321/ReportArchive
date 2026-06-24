@@ -99,6 +99,14 @@ def _lock_conflict_response(exc: services.LockError):
 @router.get("")
 def list_reports(
     entity_ids: list[int] | None = Query(default=None, alias="entity_ids"),
+    entity_rollup: bool = Query(
+        default=False,
+        description=(
+            "관계(part_of) 롤업. True 면 entity_ids 의 각 축 필터를 그 자손까지 "
+            "넓힌다 — 예: 모델로 필터하면 그 모델의 부품 태그 보고서까지 포함. "
+            "기본 False(직접 태그만). 관계가 없으면 효과 없음(엔티티관리개선 B-2)."
+        ),
+    ),
     folder_id: str | None = Query(
         default=None,
         description=(
@@ -165,6 +173,7 @@ def list_reports(
             db,
             actor,
             entity_ids=entity_ids,
+            entity_rollup=entity_rollup,
             folder_filter=folder_filter,
         )
         pub = services.public_report_ids(db)
@@ -180,6 +189,7 @@ def list_reports(
         actor.workspace.slug,
         is_global_view=actor.workspace.virtual,
         entity_ids=entity_ids,
+        entity_rollup=entity_rollup,
         folder_filter=folder_filter,
         include_public=include_public,
         include_descendants=include_descendants,

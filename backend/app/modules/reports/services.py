@@ -79,10 +79,16 @@ class RevisionMismatchError(LockError):
     code = "revision_mismatch"
 
 
-def _apply_entity_filter(db: Session, query, entity_ids: list[int]):
+def _apply_entity_filter(db: Session, query, entity_ids: list[int], *, rollup: bool = False):
     """entity_ids 의 axis 별 AND / axis 내 OR 필터를 query 에 적용.
     유효한 id 가 하나도 없으면 None 을 반환(= 결과 0건). list_reports_in_workspace
-    의 기본 경로와 공개 탐색 extra 경로가 공유한다."""
+    의 기본 경로와 공개 탐색 extra 경로가 공유한다.
+
+    rollup=True (p54 B-2) 면 각 axis 그룹을 그 자손(part_of 하위)까지 넓힌다 —
+    예: 모델 A1234 로 필터하면 'A1234' 직접 태그 ∪ A1234 의 부품 태그 보고서까지
+    한 묶음(OR)으로 잡힌다. 자손은 다른 축이지만 **선택한 축 그룹에 합쳐** OR 로
+    묶으므로 axis 간 AND 시맨틱은 그대로다(자손이 별도 AND 조건이 되지 않음).
+    관계가 없으면 no-op(현행과 동일)."""
     rows = db.execute(
         select(Entity.id, Entity.type_id).where(Entity.id.in_(set(entity_ids)))
     ).all()
@@ -94,11 +100,16 @@ def _apply_entity_filter(db: Session, query, entity_ids: list[int]):
     if not by_type:
         return None
     for ids_in_axis in by_type.values():
+        match_ids = (
+            entity_services.expand_with_descendants(db, entity_ids=ids_in_axis)
+            if rollup
+            else ids_in_axis
+        )
         subq = (
             select(ReportEntity.report_id)
             .where(
                 ReportEntity.report_id == Report.id,
-                ReportEntity.entity_id.in_(ids_in_axis),
+                ReportEntity.entity_id.in_(match_ids),
             )
             .exists()
         )
@@ -112,6 +123,7 @@ def list_reports_in_workspace(
     *,
     is_global_view: bool = False,
     entity_ids: Optional[list[int]] = None,
+    entity_rollup: bool = False,
     folder_filter: Optional[int | str] = None,
     include_public: bool = False,
     include_descendants: bool = False,
@@ -204,7 +216,7 @@ def list_reports_in_workspace(
                     ReportMount.folder_id == folder_filter,
                 )
     if entity_ids:
-        applied = _apply_entity_filter(db, query, entity_ids)
+        applied = _apply_entity_filter(db, query, entity_ids, rollup=entity_rollup)
         if applied is None:
             return []
         query = applied
@@ -232,7 +244,7 @@ def list_reports_in_workspace(
                 .order_by(desc(Report.updated_at))
             )
             if entity_ids:
-                extra_q = _apply_entity_filter(db, extra_q, entity_ids)
+                extra_q = _apply_entity_filter(db, extra_q, entity_ids, rollup=entity_rollup)
             if extra_q is not None:
                 results.extend(db.execute(extra_q).scalars())
                 results.sort(key=lambda r: r.updated_at, reverse=True)
@@ -381,6 +393,7 @@ def list_public_reports_on_board(
     workspace_slug: str,
     *,
     entity_ids: Optional[list[int]] = None,
+    entity_rollup: bool = False,
     folder_filter: Optional[int | str] = None,
 ) -> list[Report]:
     """이 게시판에 *배치(mount)*된 공개(all_org) 보고서 — 비멤버 외부 열람자
@@ -406,7 +419,7 @@ def list_public_reports_on_board(
         .order_by(desc(Report.updated_at))
     )
     if entity_ids:
-        query = _apply_entity_filter(db, query, entity_ids)
+        query = _apply_entity_filter(db, query, entity_ids, rollup=entity_rollup)
         if query is None:
             return []
     return list(db.execute(query).scalars())
@@ -417,6 +430,7 @@ def list_visible_reports_on_board(
     actor,
     *,
     entity_ids: Optional[list[int]] = None,
+    entity_rollup: bool = False,
     folder_filter: Optional[int | str] = None,
 ) -> list[Report]:
     """비멤버(public_viewer)용 — 이 게시판에 배치(mount)된 보고서 중 actor 가 볼
@@ -445,7 +459,7 @@ def list_visible_reports_on_board(
         select(Report).where(Report.id.in_(ids)).order_by(desc(Report.updated_at))
     )
     if entity_ids:
-        query = _apply_entity_filter(db, query, entity_ids)
+        query = _apply_entity_filter(db, query, entity_ids, rollup=entity_rollup)
         if query is None:
             return []
     return list(db.execute(query).scalars())

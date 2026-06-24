@@ -99,6 +99,9 @@ export default function ReportsListPage() {
   const [entityFilter, setEntityFilter] = useState(
     () => location.state?.entityFilter ?? [],
   )
+  // 관계(part_of) 롤업 — on 이면 선택한 태그의 하위(part_of 자식) 태그 보고서까지
+  // 포함(모델 필터 → 그 부품 보고서까지). 기본 off(직접 태그만).
+  const [entityRollup, setEntityRollup] = useState(false)
   // Folder filter — `null` = 전체, 'uncategorized' = no folder, number
   // = specific folder id. Resets on workspace switch. Applies in both
   // personal AND org workspaces (Phase 1.6 brought folders to org).
@@ -271,6 +274,7 @@ export default function ReportsListPage() {
       slug
         ? listReports({
             entityIds: entityFilterIds,
+            entityRollup,
             folderId: folderQueryValue,
             // 자손 부서 보기일 땐 그 부서 게시판 자체를 보는 것이라
             // 조직간공개 포함/휴지통은 적용하지 않는다.
@@ -281,7 +285,7 @@ export default function ReportsListPage() {
             workspaceSlug: workspaceOverride,
           })
         : Promise.resolve([]),
-    [slug, entityFilterKey, folderDepKey, workspaceOverride, isOrg, includePublic, isPersonal, trashView, drillDescendants]
+    [slug, entityFilterKey, entityRollup, folderDepKey, workspaceOverride, isOrg, includePublic, isPersonal, trashView, drillDescendants]
   )
   const { data: templates } = useAsync(
     () => (slug ? listTemplates() : Promise.resolve([])),
@@ -1189,6 +1193,8 @@ export default function ReportsListPage() {
                   myUserId={myUserId}
                   entityFilter={entityFilter}
                   onEntityFilterChange={setEntityFilter}
+                  entityRollup={entityRollup}
+                  onToggleEntityRollup={() => setEntityRollup((v) => !v)}
                   phaseFilter={phaseFilter}
                   onPhaseFilterChange={setPhaseFilter}
                   periodFilter={periodFilter}
@@ -1267,6 +1273,8 @@ function FilterBar({
   myUserId,
   entityFilter,
   onEntityFilterChange,
+  entityRollup,
+  onToggleEntityRollup,
   phaseFilter,
   onPhaseFilterChange,
   periodFilter,
@@ -1435,6 +1443,22 @@ function FilterBar({
         selected={entityFilter}
         onChange={onEntityFilterChange}
       />
+      {/* 관계(part_of) 롤업 — 태그 필터가 걸렸을 때만 노출. on 이면 선택 태그의
+          하위(part_of 자식) 태그 보고서까지 포함(모델 → 그 부품까지). */}
+      {entityFilter.length > 0 && (
+        <label
+          className="inline-flex items-center gap-1.5 cursor-pointer select-none text-xs text-muted-foreground"
+          title="선택한 태그의 하위 항목(part_of) 태그가 달린 보고서까지 포함합니다"
+        >
+          <input
+            type="checkbox"
+            checked={!!entityRollup}
+            onChange={onToggleEntityRollup}
+            className="h-3.5 w-3.5"
+          />
+          <span>하위 포함</span>
+        </label>
+      )}
     </div>
   )
 }

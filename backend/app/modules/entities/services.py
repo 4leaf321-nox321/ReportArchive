@@ -724,6 +724,48 @@ def delete_relation(db: Session, row: EntityRelation) -> int:
     return 0
 
 
+def get_descendant_entity_ids(
+    db: Session,
+    *,
+    root_ids,
+    relation: str = RELATION_PART_OF,
+    max_depth: int = 20,
+) -> set[int]:
+    """root_ids 에서 part_of 를 따라 아래(자식)로 내려가며 만나는 모든 자손 id
+    (root 자신은 미포함). 롤업 필터에서 '부모로 필터하면 자식 태그도 포함'에
+    쓴다. seen + depth 로 사이클·폭주 방지."""
+    roots = {int(x) for x in root_ids}
+    if not roots:
+        return set()
+    seen: set[int] = set()
+    frontier = list(roots)
+    depth = 0
+    while frontier and depth < max_depth:
+        children = db.execute(
+            select(EntityRelation.src_entity_id).where(
+                EntityRelation.dst_entity_id.in_(frontier),
+                EntityRelation.relation == relation,
+            )
+        ).scalars().all()
+        nxt = [c for c in children if c not in seen and c not in roots]
+        for c in nxt:
+            seen.add(c)
+        frontier = nxt
+        depth += 1
+    return seen
+
+
+def expand_with_descendants(
+    db: Session, *, entity_ids, relation: str = RELATION_PART_OF
+) -> list[int]:
+    """주어진 id 집합 ∪ 그 자손들. 롤업 — 부모로 필터하면 자식 태그 보고서까지
+    포함된다. 관계가 없으면 원본 그대로(현행 동작)."""
+    base = {int(x) for x in entity_ids}
+    if not base:
+        return []
+    return list(base | get_descendant_entity_ids(db, root_ids=base, relation=relation))
+
+
 # --------------------------------------------------------------------------- #
 # Report ↔ Entity link writes — called from reports/services.py on save
 # --------------------------------------------------------------------------- #

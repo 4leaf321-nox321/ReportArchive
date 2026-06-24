@@ -4,6 +4,9 @@ const BASE = '/api/reports'
 
 export async function listReports({
   entityIds,
+  // 관계(part_of) 롤업 — true 면 entityIds 필터를 자손까지 넓힌다
+  // (모델 필터 → 그 부품 보고서까지 포함). 관계 없으면 효과 없음.
+  entityRollup,
   folderId,
   includePublic,
   includeDescendants,
@@ -21,6 +24,9 @@ export async function listReports({
   const params = new URLSearchParams()
   if (Array.isArray(entityIds)) {
     for (const id of entityIds) params.append('entity_ids', String(id))
+  }
+  if (entityRollup && Array.isArray(entityIds) && entityIds.length) {
+    params.append('entity_rollup', 'true')
   }
   if (folderId !== undefined && folderId !== null && folderId !== '') {
     // folderId can be an integer or the special "uncategorized" string —

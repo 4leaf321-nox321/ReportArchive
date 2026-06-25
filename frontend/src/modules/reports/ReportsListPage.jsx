@@ -14,6 +14,7 @@ import {
   MessageSquare,
   Plus,
   Search,
+  Send,
   ShieldCheck,
   ShieldQuestion,
   Trash2,
@@ -56,6 +57,7 @@ import {
   moveReportToFolder,
 } from './api'
 import { setMountFolder } from '@/shared/api/mounts'
+import { BulkSubmitToCompositeDialog } from '@/modules/composites/SubmitToCompositeDialog'
 
 /** MIME type carried by a report-row drag. FolderSidebar checks for this
  *  string to distinguish "user is dragging reports into me" from "user is
@@ -208,6 +210,7 @@ export default function ReportsListPage() {
   const [bulkPurgeOpen, setBulkPurgeOpen] = useState(false)
   const [bulkUnmountOpen, setBulkUnmountOpen] = useState(false)
   const [bulkMountOpen, setBulkMountOpen] = useState(false)
+  const [bulkSubmitOpen, setBulkSubmitOpen] = useState(false)
   const [bulkBusy, setBulkBusy] = useState(false)
   // FolderSidebar 의 폴더별 카운트(report_count, uncategorized_count) 는
   // 자체 listFolders 응답에서 오기 때문에, 여기서 보고서를 옮기거나
@@ -1132,6 +1135,8 @@ export default function ReportsListPage() {
                 )}
                 onMove={handleBulkMove}
                 onMount={() => setBulkMountOpen(true)}
+                canSubmitComposite={isOrg}
+                onSubmitComposite={() => setBulkSubmitOpen(true)}
                 onDelete={() => setBulkDeleteOpen(true)}
                 onUnmount={() => setBulkUnmountOpen(true)}
                 onClear={() => setSelectedIds(new Set())}
@@ -1255,6 +1260,16 @@ export default function ReportsListPage() {
           busy={bulkBusy}
           onConfirm={handleBulkMount}
         />
+        {/* 종합보고 일괄 제출 — 신청 큐 방식이라 보고서 행 자체는 안 바뀐다.
+            제출 후엔 reload 없이 선택만 해제(onDone). 후보 fetch 가 샘플
+            보고서를 쓰므로 선택이 빌 땐 마운트하지 않는다. */}
+        {bulkSubmitOpen && effectiveSelected.size > 0 && (
+          <BulkSubmitToCompositeDialog
+            reportIds={[...effectiveSelected]}
+            onClose={() => setBulkSubmitOpen(false)}
+            onDone={() => setSelectedIds(new Set())}
+          />
+        )}
       </div>
     </div>
   )
@@ -1610,6 +1625,8 @@ function BulkActionBar({
   hasMountsInSelection,
   onMove,
   onMount,
+  canSubmitComposite,
+  onSubmitComposite,
   onDelete,
   onUnmount,
   onClear,
@@ -1652,6 +1669,24 @@ function BulkActionBar({
           >
             <Unlink className="h-3.5 w-3.5" />
             게시 정리
+          </Button>
+        )}
+        {/* 종합보고 제출 — 선택한 N개 보고서를 한 종합보고에 안건으로 일괄
+            제출(작성자 승인 후 추가). 이미 안건이거나 제출 불가한 건은
+            서버가 거절하고 나머지만 처리된 뒤 ok/fail 토스트로 보고.
+            "내 공간"(개인) 보고서는 부서 게시판에 게시되기 전이라 종합보고에
+            바로 올릴 수 없으므로 org 게시판에서만 노출. */}
+        {canSubmitComposite && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1"
+            onClick={onSubmitComposite}
+            disabled={busy}
+            title="선택한 보고서들을 한 종합보고에 안건으로 일괄 제출"
+          >
+            <Send className="h-3.5 w-3.5" />
+            종합보고 제출
           </Button>
         )}
         <Button

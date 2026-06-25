@@ -13,6 +13,7 @@ import {
   Pencil,
   Plus,
   Save,
+  Send,
   Trash2,
   X,
 } from 'lucide-react'
@@ -59,6 +60,7 @@ import { ItemPickerDialog } from './ItemPickerDialog'
 import { InlineCompositeView, InlineReportView } from './InlineReportView'
 import { CompositeSummary } from './CompositeSummary'
 import { PendingRequestsPanel } from './PendingRequestsPanel'
+import { SubmitCompositeItemsDialog } from './SubmitToCompositeDialog'
 
 export default function CompositeDetailPage() {
   const { compositeId } = useParams()
@@ -203,6 +205,25 @@ export default function CompositeDetailPage() {
     const map = new Map((workspaces ?? []).map((w) => [w.slug, w.name]))
     return (s) => map.get(s) ?? s
   }, [workspaces])
+
+  // "다른 종합보고에 제출" 다이얼로그. 제출 큐는 보고서 기반 안건만 받으므로
+  // (중첩 종합보고·원본삭제 안건은 제외) 후보를 여기서 미리 추려 둔다.
+  const [submitItemsOpen, setSubmitItemsOpen] = useState(false)
+  const submittableItems = useMemo(() => {
+    return (draft?.items ?? [])
+      .map((it) => {
+        const m = itemMeta(it, workspaceName)
+        const reportId = it.ref_report_id ?? m.ref?.id ?? null
+        if (!m.isReport || m.sourceDeleted || !reportId) return null
+        const bits = [m.dept, m.author, m.date].filter(Boolean)
+        return {
+          reportId,
+          title: m.title ?? `보고서 #${reportId}`,
+          subtitle: bits.join(' · ') || null,
+        }
+      })
+      .filter(Boolean)
+  }, [draft?.items, workspaceName])
 
   // 리스트 보기 선택 index 를 안건 수 범위로 클램프(삭제 등으로 깨지지 않게).
   const itemCount = draft?.items?.length ?? 0
@@ -1137,6 +1158,21 @@ export default function CompositeDetailPage() {
                   )}
                 </>
               )}
+              {/* 다른 종합보고에 제출 — 이 종합보고의 보고서 기반 안건 중
+                  몇 개를 골라 상위/다른 종합보고에 안건으로 올린다(승인 큐).
+                  편집모드와 무관(출발 종합보고는 안 바뀜). 외부 공개 열람자는
+                  제외, 후보 안건이 하나도 없으면 숨김. */}
+              {submittableItems.length > 0 && !isPublicView && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setSubmitItemsOpen(true)}
+                  title="이 종합보고의 안건을 골라 다른 종합보고에 제출"
+                >
+                  <Send className="mr-1 h-3 w-3" />
+                  다른 종합보고에 제출
+                </Button>
+              )}
               {isEditing && (
                 <>
                   <Button
@@ -1265,6 +1301,16 @@ export default function CompositeDetailPage() {
           setPickerOpen(false)
         }}
       />
+
+      {/* 안건 → 다른 종합보고 제출. 신청 큐라 출발 종합보고 자체는 안 바뀌어
+          reload 불필요 — 닫기만. 현재 종합보고는 대상 목록에서 제외. */}
+      {submitItemsOpen && submittableItems.length > 0 && (
+        <SubmitCompositeItemsDialog
+          items={submittableItems}
+          excludeCompositeId={composite.id}
+          onClose={() => setSubmitItemsOpen(false)}
+        />
+      )}
 
       <AddGroupDialog
         open={addGroupOpen}

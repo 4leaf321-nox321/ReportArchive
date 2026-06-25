@@ -25,6 +25,7 @@ import {
   VOC_CATEGORY_BY,
   VOC_PRIORITY_BY,
   VOC_STATUS_BY,
+  vocMonthDay,
 } from './constants'
 import { VocNewDialog } from './VocNewDialog'
 
@@ -338,7 +339,7 @@ function PostRow({ post, onClick, currentUserId }) {
         {post.author?.name ?? '—'}
       </div>
       <div className="col-span-1 text-[11px] text-muted-foreground whitespace-nowrap tabular-nums text-right">
-        {post.created_at?.slice(5, 10) ?? '—'}
+        {vocMonthDay(post.created_at)}
       </div>
     </button>
   )

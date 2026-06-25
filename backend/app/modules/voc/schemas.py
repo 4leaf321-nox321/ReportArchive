@@ -1,12 +1,12 @@
 """Pydantic schemas for the VOC board."""
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.modules.voc.models import VocCategory, VocPriority, VocStatus
+from app.shared.datetime_utils import UtcDatetime
 
 
 class _UserMini(BaseModel):
@@ -22,8 +22,8 @@ class VocCommentRead(BaseModel):
     post_id: int
     body: str
     author: Optional[_UserMini]
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
 
 
 class VocAttachment(BaseModel):
@@ -49,9 +49,9 @@ class VocPostRead(BaseModel):
     workspace_slug: Optional[str]
     attachments: list[VocAttachment] = Field(default_factory=list)
     comment_count: int = 0
-    created_at: datetime
-    updated_at: datetime
-    resolved_at: Optional[datetime]
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
+    resolved_at: Optional[UtcDatetime]
 
 
 class VocPostDetail(VocPostRead):

@@ -32,6 +32,7 @@ import {
   VOC_PRIORITY_BY,
   VOC_STATUSES,
   VOC_STATUS_BY,
+  vocDateTime,
 } from './constants'
 
 /** VOC detail — post body + comment thread. Author can edit/delete own
@@ -159,7 +160,7 @@ export default function VocDetailPage() {
               <span>{post.author?.name ?? '—'}</span>
               <span>·</span>
               <span className="tabular-nums">
-                {post.created_at?.slice(0, 16).replace('T', ' ')}
+                {vocDateTime(post.created_at)}
               </span>
               {post.workspace_slug && (
                 <>
@@ -555,7 +556,7 @@ function CommentRow({ comment, isAdmin, userId, onChanged }) {
     <li className="py-3 space-y-1.5">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <span className="font-medium text-foreground">{comment.author?.name ?? '—'}</span>
-        <span className="tabular-nums">{comment.created_at?.slice(0, 16).replace('T', ' ')}</span>
+        <span className="tabular-nums">{vocDateTime(comment.created_at)}</span>
         {comment.updated_at !== comment.created_at && (
           <span className="text-[10px]">(수정됨)</span>
         )}

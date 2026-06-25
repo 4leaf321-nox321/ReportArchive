@@ -234,6 +234,9 @@ class CompositeReportRead(BaseModel):
     # actor 컨텍스트로 채운다(모델 컬럼 아님). can_edit 은 편집 가능 여부.
     is_public_view: bool = False
     can_edit: bool = True
+    # 제출 안건 승인/반려 권한 — 작성자·편집권자·조직 매니저·시스템관리자.
+    # 라우트가 actor 컨텍스트로 채운다(모델 컬럼 아님). 제출 대기 패널 버튼 게이팅용.
+    can_decide_requests: bool = False
     items: list[CompositeItemRead] = []
     created_at: datetime
     updated_at: datetime

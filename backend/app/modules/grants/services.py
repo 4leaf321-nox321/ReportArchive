@@ -678,6 +678,45 @@ def is_public_only_viewer(
     ) or _container_has_all_org(db, content_type, content_id)
 
 
+def member_can_view_composite(
+    db: Session, user_id: int, content_id: int, owner_user_id: Optional[int]
+) -> bool:
+    """활성 워크스페이스와 무관한 **멤버십 기반** 종합보고 읽기 — can_read_report 의
+    membership fallback(all_visible_report_ids)과 대칭. 활성 게시판(X-Workspace-Slug)
+    이 종합보고 home 보다 상위/다른 가지라 active-ws 기준 can_view 가 실패해도, 실제
+    소속으로 *하향 도달*하면 읽히게 한다.
+
+    **하향 상속만, 상위 자동열람 없음**(핵심 불변식): 부서 grant X 는 사용자가 X
+    또는 그 하위의 멤버일 때만 도달(소속 ∩ descendants(X)). 종합보고는 home 1개라
+    보고서 mount 처럼 상위→하위로 새는 자동 부서 grant 가 없어 content grant 를
+    그대로 써도 안전하다(visible_ids_for_user 가 보고서에서 이를 제외하는 이유와 대비)."""
+    CT = GrantContentType.composite
+    if owner_user_id is not None and owner_user_id == user_id:
+        return True
+    if has_all_org_grant(db, CT, content_id):
+        return True
+    if has_user_grant(db, CT, content_id, user_id):
+        return True
+    member_slugs = _user_membership_slugs(db, user_id)
+    if not member_slugs:
+        return False
+    from app.modules.workspaces import services as ws_services
+
+    # 부서 content grant(home 포함) 하향 도달 — 사용자가 grant 부서 또는 그 하위의 멤버.
+    for x in _workspace_grant_slugs(db, CT, content_id):
+        if member_slugs & set(ws_services.get_descendants_inclusive(db, x)):
+            return True
+    # 게시판 통째 공유 / 종합보고 기본 공유 — 멤버십 reach 기반(비멤버 경로와 동일).
+    board_slugs = set(_content_board_slugs(db, CT, content_id))
+    if board_slugs:
+        reach = membership_reach_slugs(db, user_id)
+        if _boards_view_reachable_slugs(db, reach, user_id) & board_slugs:
+            return True
+        if _composite_default_reachable_slugs(db, reach, user_id) & board_slugs:
+            return True
+    return False
+
+
 def can_edit_grant(
     db: Session,
     user,

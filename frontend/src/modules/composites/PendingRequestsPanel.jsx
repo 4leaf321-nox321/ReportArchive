@@ -12,7 +12,7 @@ import {
 
 /** 종합보고 "제출 대기" 패널 — 보고서 쪽에서 올라온 안건 제출(pending)을
  *  작성자가 승인(=안건 추가)/반려한다. pending 이 없으면 렌더 안 함. */
-export function PendingRequestsPanel({ compositeId, isOwner, onAfterAccept }) {
+export function PendingRequestsPanel({ compositeId, canDecide, onAfterAccept }) {
   const { all: workspaces } = useWorkspace()
   const workspaceName = useMemo(() => {
     const map = new Map((workspaces ?? []).map((w) => [w.slug, w.name]))
@@ -67,9 +67,9 @@ export function PendingRequestsPanel({ compositeId, isOwner, onAfterAccept }) {
         <span className="text-sm font-semibold text-amber-900">
           제출 대기 {requests.length}건
         </span>
-        {!isOwner && (
+        {!canDecide && (
           <span className="ml-1 text-[11px] text-amber-700/80">
-            (승인은 작성자만)
+            (승인은 작성자·편집권자·조직 매니저만)
           </span>
         )}
       </button>
@@ -117,7 +117,7 @@ export function PendingRequestsPanel({ compositeId, isOwner, onAfterAccept }) {
                     </div>
                   )}
                 </div>
-                {isOwner && (
+                {canDecide && (
                   <div className="flex shrink-0 items-center gap-1">
                     <Button
                       size="sm"

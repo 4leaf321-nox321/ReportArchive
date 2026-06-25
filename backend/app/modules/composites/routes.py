@@ -59,6 +59,11 @@ def _read_with_perms(
         and not actor.workspace.virtual
         and services.can_edit_composite(db, actor.user, composite)
     )
+    obj.can_decide_requests = (
+        not is_public_view
+        and not actor.workspace.virtual
+        and services.can_decide_item_request(db, actor, composite)
+    )
     return obj
 
 
@@ -282,15 +287,15 @@ def _resolve_visible(db, composite_id: int, actor: CurrentUser):
     return composite
 
 
-def _resolve_owner(db, composite_id: int, actor: CurrentUser):
-    """승인/반려 가드 — owner(또는 시스템 관리자)만."""
+def _resolve_decider(db, composite_id: int, actor: CurrentUser):
+    """승인/반려 가드 — 종합보고 작성자·시스템관리자에 더해, 편집 권한 보유자와
+    home 조직(또는 상위) 매니저까지 허용."""
     composite = _resolve_visible(db, composite_id, actor)
-    is_owner = composite.owner_user_id == actor.user.id
-    is_sys_admin = bool(getattr(actor.user, "is_system_admin", False))
-    if not (is_owner or is_sys_admin):
+    if not services.can_decide_item_request(db, actor, composite):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
-            "제출 승인/반려는 종합보고 작성자(또는 시스템 관리자)만 가능합니다.",
+            "제출 승인/반려는 종합보고 작성자·편집 권한자·조직 매니저(또는 "
+            "시스템 관리자)만 가능합니다.",
         )
     return composite
 
@@ -406,7 +411,7 @@ def accept_item_request(
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(require_writer),
 ):
-    _resolve_owner(db, composite_id, actor)
+    _resolve_decider(db, composite_id, actor)
     req = _resolve_request(db, composite_id, req_id)
     try:
         req = services.accept_item_request(
@@ -424,7 +429,7 @@ def reject_item_request(
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(require_writer),
 ):
-    _resolve_owner(db, composite_id, actor)
+    _resolve_decider(db, composite_id, actor)
     req = _resolve_request(db, composite_id, req_id)
     try:
         req = services.reject_item_request(

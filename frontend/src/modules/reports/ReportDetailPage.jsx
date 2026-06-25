@@ -319,6 +319,9 @@ export default function ReportDetailPage() {
   // Mounts state declared here, the fetching useEffect lives further
   // down past `existingReport`'s declaration — TDZ would fire otherwise.
   const [mountByWorkspace, setMountByWorkspace] = useState({})
+  // 게시(mount) 정보를 한 번이라도 받아왔는지 — 아직 로딩 전(빈 객체)과 "정말
+  // 어느 게시판에도 미게시"를 구분해 종합보고 제출 차단을 오판하지 않게 한다.
+  const [mountsLoaded, setMountsLoaded] = useState(false)
   const isOrgContext = workspace?.kind === 'org'
   const isPersonalContext = workspace?.kind === 'personal'
   const currentMount = mountByWorkspace[slug]
@@ -524,6 +527,7 @@ export default function ReportDetailPage() {
         const map = {}
         for (const m of rows) map[m.workspace_slug] = m
         setMountByWorkspace(map)
+        setMountsLoaded(true)
       })
       .catch(() => {
         /* non-fatal; folder picker just won't show for org */
@@ -4264,7 +4268,17 @@ export default function ReportDetailPage() {
               {/* 종합보고에 제출 — 발행 버튼 오른쪽. 동시편집 회피를 위해
                   종합보고를 직접 안 건드리고 신청만 한다(작성자 승인 후 추가). */}
               {!isNew && existingReport?.id && (
-                <SubmitToCompositeButton reportId={existingReport.id} />
+                <SubmitToCompositeButton
+                  reportId={existingReport.id}
+                  // 게시 정보를 받아왔는데 조직 게시판 mount 가 하나도 없으면
+                  // (개인 공간 전용) 제출 차단 — 백엔드와 동일한 규칙.
+                  needsBoardMount={
+                    mountsLoaded &&
+                    !Object.keys(mountByWorkspace).some(
+                      (s) => s && !s.startsWith('personal-'),
+                    )
+                  }
+                />
               )}
               {/* 공유는 툴바 혼잡을 줄이려 "더보기" 메뉴 안으로 이동. */}
               <Separator orientation="vertical" className="h-6 mx-1" />

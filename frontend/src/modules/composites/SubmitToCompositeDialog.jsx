@@ -25,14 +25,24 @@ import { KIND_LABEL, KIND_VARIANT } from './constants'
 
 /** 보고서 상세에서 "종합보고에 제출" — 동시편집 회피를 위해 종합보고를 직접
  *  수정하지 않고 신청만 한다. 작성자가 승인하면 그때 안건으로 추가된다. */
-export function SubmitToCompositeButton({ reportId }) {
+export function SubmitToCompositeButton({ reportId, needsBoardMount = false }) {
   const [open, setOpen] = useState(false)
   return (
     <>
       <Button
         variant="outline"
         size="sm"
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          // 어느 조직 게시판에도 미게시(개인 공간 전용) 보고서는 종합보고 제출
+          // 불가 — 먼저 게시하라고 안내하고 다이얼로그를 열지 않는다(백엔드도 차단).
+          if (needsBoardMount) {
+            toast.error(
+              '종합보고에 제출하려면 먼저 보고서를 적어도 하나의 게시판에 게시해야 합니다.',
+            )
+            return
+          }
+          setOpen(true)
+        }}
         title="이 보고서를 종합보고에 안건으로 제출 (작성자 승인 후 추가)"
       >
         <Send className="mr-1 h-3 w-3" />

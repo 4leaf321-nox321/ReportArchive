@@ -107,9 +107,21 @@ def composite_is_public(db: Session, composite: CompositeReport) -> bool:
 
 def can_read_composite(db: Session, actor, composite: CompositeReport) -> bool:
     """단일 종합보고 읽기 가시성 — grant 기반 통합(소유·sys_admin·virtual·
-    all_org·user grant·부서 grant 하위상속). public_viewer 는 공개분만."""
-    return grant_services.can_view(
+    all_org·user grant·부서 grant 하위상속). public_viewer 는 공개분만.
+
+    활성 ws 기준 can_view 를 먼저 보고, 멤버가 활성 ws 밖(home 보다 상위/다른 가지)이라
+    거부되면 **멤버십 기반**(member_can_view_composite)으로 한 번 더 본다 — can_read_report
+    의 all_visible_report_ids fallback 과 대칭. 이러면 사용자가 어떤 게시판을 active 로
+    두든 "실제 소속으로 하향 도달하는 종합보고"는 읽히되(예: 종합보고 제출), 상위 자동열람
+    은 여전히 없다. 비멤버(public_viewer)는 헤더 위조 방지를 위해 이 확장을 적용하지 않는다."""
+    if grant_services.can_view(
         db, actor, GrantContentType.composite, composite.id, composite.owner_user_id
+    ):
+        return True
+    if getattr(actor, "public_viewer", False):
+        return False
+    return grant_services.member_can_view_composite(
+        db, actor.user.id, composite.id, composite.owner_user_id
     )
 
 
@@ -119,6 +131,30 @@ def can_edit_composite(db: Session, user, composite: CompositeReport) -> bool:
     return grant_services.can_edit_grant(
         db, user, GrantContentType.composite, composite.id, composite.owner_user_id
     )
+
+
+def is_board_manager(db: Session, user_id: int, composite: CompositeReport) -> bool:
+    """이 종합보고가 속한 home 조직(또는 그 상위)의 매니저인가 — 역할 해석상
+    매니저(조상 부서 매니저 포함). 부서 종합보고 운영 주체 판정에 쓴다."""
+    from app.modules.users.models import Role
+    from app.shared.auth import _resolve_role
+
+    return _resolve_role(db, user_id, composite.workspace_slug) == Role.manager
+
+
+def can_decide_item_request(db: Session, actor, composite: CompositeReport) -> bool:
+    """제출 안건 승인/반려 권한 — 종합보고 작성자·시스템관리자에 더해, **종합보고
+    편집 권한 보유자**와 **home 조직(또는 상위) 매니저**까지. 편집권자는 어차피
+    종합보고를 직접 고칠 수 있으니 안건 수락도 자연스럽고, 매니저는 부서 종합보고
+    운영 주체라 승인할 수 있어야 한다."""
+    user = actor.user
+    if getattr(user, "is_system_admin", False):
+        return True
+    if composite.owner_user_id == user.id:
+        return True
+    if can_edit_composite(db, user, composite):
+        return True
+    return is_board_manager(db, user.id, composite)
 
 
 def is_public_only_viewer(db: Session, actor, composite: CompositeReport) -> bool:
@@ -501,6 +537,16 @@ def submit_item_request(
     report = db.get(Report, ref_report_id)
     if report is None:
         raise CompositeError("보고서를 찾을 수 없습니다.")
+    # 개인 공간 전용(어느 조직 게시판에도 미게시) 보고서는 제출 불가 — 종합보고는
+    # 게시된 글을 모으는 것이라, 먼저 최소 한 게시판에 게시해야 한다(개인 mount 제외).
+    has_org_mount = any(
+        m.workspace_slug and not m.workspace_slug.startswith("personal-")
+        for m in (report.mounts or [])
+    )
+    if not has_org_mount:
+        raise CompositeError(
+            "종합보고에 제출하려면 먼저 보고서를 적어도 하나의 게시판에 게시해야 합니다."
+        )
     if any(it.ref_report_id == ref_report_id for it in composite.items):
         raise CompositeError("이미 이 종합보고의 안건입니다.")
     dup = db.execute(

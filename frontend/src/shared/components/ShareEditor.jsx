@@ -108,7 +108,7 @@ export function ShareEditor({
 
   React.useEffect(() => {
     if (!active) return
-    if (!isFolder && !isBoard && !contentId) return
+    if (!isFolder && !isBoard && !contentId && !compositeDefaultSlug) return
     let cancelled = false
     setLoading(true)
     api
@@ -120,7 +120,7 @@ export function ShareEditor({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, contentType, contentId, boardSlug, folderId])
+  }, [active, contentType, contentId, boardSlug, folderId, compositeDefaultSlug])
 
   React.useEffect(() => {
     if (!active || !canManage) return

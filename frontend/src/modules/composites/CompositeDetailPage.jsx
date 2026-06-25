@@ -1088,7 +1088,7 @@ export default function CompositeDetailPage() {
           pending 이 없으면 패널 자체가 렌더 안 됨. */}
       <PendingRequestsPanel
         compositeId={composite.id}
-        isOwner={isOwner}
+        canDecide={Boolean(composite.can_decide_requests)}
         onAfterAccept={reload}
       />
 

@@ -99,8 +99,17 @@ export async function restoreReportVersion(id, versionId) {
 // 내에서만 결과가 온다. 반환: { results: [{report, snippet}], total, limit, offset }.
 export async function searchReports(
   q,
-  { limit = 30, offset = 0, location = 'all', board = '' } = {},
+  {
+    limit = 30,
+    offset = 0,
+    location = 'all',
+    board = '',
+    // 엔티티 태그 필터(D-2) — 축별 AND / 축내 OR. entityRollup 이면 part_of 자손까지.
+    entityIds,
+    entityRollup,
+  } = {},
 ) {
+  // entity_ids 는 반복 키(FastAPI list[int]) — URLSearchParams.append 로.
   const params = new URLSearchParams({
     q: q ?? '',
     limit: String(limit),
@@ -108,6 +117,12 @@ export async function searchReports(
     location,
     board: board ?? '',
   })
+  if (Array.isArray(entityIds)) {
+    for (const id of entityIds) params.append('entity_ids', String(id))
+  }
+  if (entityRollup && Array.isArray(entityIds) && entityIds.length) {
+    params.append('entity_rollup', 'true')
+  }
   const res = await apiClient.get(`${BASE}/search?${params.toString()}`)
   return extractData(res)
 }

@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Search, FileText, Loader2, Sparkles, Type } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Button } from '@/shared/components/ui/button'
 import { searchReports, semanticSearchReports } from '@/modules/reports/api'
+import { EntityFilterControl } from './EntityFilterControl'
 
 const LIMIT = 30
 
@@ -55,6 +56,14 @@ export default function SearchPage() {
   const [loading, setLoading] = useState(false)
   const [offset, setOffset] = useState(0)
   const [mode, setMode] = useState('keyword')
+  // 엔티티 태그 필터(D-2) — 본문 검색을 메타데이터로 좁힌다("본문 X AND 모델=A1234").
+  // 키워드 모드에만 적용(의미 검색 엔드포인트의 엔티티 결합은 D-2 후속).
+  const [entityFilter, setEntityFilter] = useState([])
+  const [entityRollup, setEntityRollup] = useState(false)
+  const entityIds = useMemo(() => entityFilter.map((e) => e.id), [entityFilter])
+  // dep 안정용 문자열 키(배열은 매 렌더 새 참조).
+  const entityKey = entityIds.slice().sort((a, b) => a - b).join(',')
+  const useEntityFilter = mode === 'keyword' && entityIds.length > 0
   // 우리가 마지막으로 URL(?q)에 써넣은 값. 외부(헤더 재검색)로 ?q 가 바뀐 것과
   // 우리 디바운스가 쓴 변경을 구분해, 외부 변경일 때만 입력을 리셋한다(루프 방지).
   const lastPushedRef = useRef(urlQ.trim())
@@ -96,7 +105,12 @@ export default function SearchPage() {
     const run =
       mode === 'semantic'
         ? semanticSearchReports(debounced, { mode: 'hybrid', limit: LIMIT })
-        : searchReports(debounced, { limit: LIMIT, offset: 0 })
+        : searchReports(debounced, {
+            limit: LIMIT,
+            offset: 0,
+            entityIds: useEntityFilter ? entityIds : undefined,
+            entityRollup: useEntityFilter ? entityRollup : undefined,
+          })
     run
       .then((d) => !cancelled && setData(d))
       .catch(() => !cancelled && setData({ results: [], total: 0 }))
@@ -105,12 +119,17 @@ export default function SearchPage() {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debounced, mode])
+  }, [debounced, mode, entityKey, entityRollup])
 
   const loadMore = useCallback(() => {
     const next = offset + LIMIT
     setLoading(true)
-    searchReports(debounced, { limit: LIMIT, offset: next })
+    searchReports(debounced, {
+      limit: LIMIT,
+      offset: next,
+      entityIds: useEntityFilter ? entityIds : undefined,
+      entityRollup: useEntityFilter ? entityRollup : undefined,
+    })
       .then((d) =>
         setData((prev) => ({
           ...d,
@@ -121,7 +140,8 @@ export default function SearchPage() {
         setOffset(next)
         setLoading(false)
       })
-  }, [debounced, offset])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debounced, offset, entityKey, entityRollup, useEntityFilter])
 
   const results = data?.results ?? []
   const total = data?.total ?? 0
@@ -172,6 +192,33 @@ export default function SearchPage() {
           })}
         </div>
         <span className="text-xs text-muted-foreground">{activeHint}</span>
+      </div>
+
+      {/* 엔티티 태그 필터(D-2) — 본문 검색을 메타데이터로 좁힌다. 키워드 모드 전용. */}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <EntityFilterControl
+          selected={entityFilter}
+          onChange={setEntityFilter}
+        />
+        {entityFilter.length > 0 && (
+          <label
+            className="inline-flex cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground"
+            title="선택한 태그의 하위 항목(part_of) 태그가 달린 보고서까지 포함"
+          >
+            <input
+              type="checkbox"
+              checked={entityRollup}
+              onChange={() => setEntityRollup((v) => !v)}
+              className="h-3.5 w-3.5"
+            />
+            <span>하위 포함</span>
+          </label>
+        )}
+        {mode === 'semantic' && entityFilter.length > 0 && (
+          <span className="text-[11px] text-amber-600">
+            태그 필터는 키워드 모드에만 적용됩니다
+          </span>
+        )}
       </div>
 
       {debounced.length >= 2 && (

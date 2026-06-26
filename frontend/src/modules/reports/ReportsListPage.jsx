@@ -40,7 +40,6 @@ import {
 } from '@/shared/components/ui/dialog'
 import { Input } from '@/shared/components/ui/input'
 import { Textarea } from '@/shared/components/ui/textarea'
-import { Label } from '@/shared/components/ui/label'
 import { DataTable } from '@/shared/components/DataTable'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { ErrorState } from '@/shared/components/ErrorState'
@@ -69,10 +68,9 @@ const REPORT_DRAG_MIME = 'application/x-report-ids'
 export { REPORT_DRAG_MIME }
 import { mountReport, unmountReport } from '@/shared/api/mounts'
 import { listTemplates } from '@/shared/api/templates'
-import { listEntityTypes } from '@/shared/api/entities'
 import { listFolders } from '@/shared/api/folders'
 import { setWorkspaceExternalView } from '@/shared/api/workspaces'
-import { EntityMultiPicker } from '@/modules/entities/EntityMultiPicker'
+import { EntityFilterControl } from './EntityFilterControl'
 import { parseUtcIso } from '@/shared/lib/period'
 import { PHASES, PHASE_LABEL, PHASE_VARIANT } from './constants'
 import {
@@ -1488,140 +1486,6 @@ function FilterBar({
           />
           <span>하위 포함</span>
         </label>
-      )}
-    </div>
-  )
-}
-
-/**
- * Entity tag filter — a single "필터" popover button (with a selected
- * count badge) opens a panel with one EntityMultiPicker per axis. Picked
- * chips also surface inline next to the button so a glance at the
- * toolbar shows what's currently filtered.
- *
- * The picker reuses EntityMultiPicker — so "+ 새 값 추가" is also live
- * here, by design: a user searching for a model that doesn't exist yet
- * can add it without leaving the list page. The new value lands as
- * `active` and immediately becomes available in the report-settings
- * picker too.
- */
-function EntityFilterControl({ selected, onChange }) {
-  const [open, setOpen] = useState(false)
-  const [types, setTypes] = useState(null)
-
-  // Fetch axes once — small/stable. Triggers on first popover open
-  // instead of mount so the list page's initial paint isn't tied to it.
-  useEffect(() => {
-    if (!open || types !== null) return
-    let cancelled = false
-    listEntityTypes()
-      .then((res) => {
-        if (!cancelled) setTypes(res?.items ?? [])
-      })
-      .catch((e) => {
-        if (cancelled) return
-        toast.error('축 목록 불러오기 실패', {
-          description: String(e?.message ?? e),
-        })
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [open, types])
-
-  const byTypeSlug = useMemo(() => {
-    const m = new Map()
-    for (const e of selected || []) {
-      const slug = e.type_slug ?? ''
-      if (!m.has(slug)) m.set(slug, [])
-      m.get(slug).push(e)
-    }
-    return m
-  }, [selected])
-
-  function setAxisValue(slug, nextList) {
-    const others = (selected || []).filter((e) => (e.type_slug ?? '') !== slug)
-    onChange?.([...others, ...nextList])
-  }
-
-  function removeOne(id) {
-    onChange?.((selected || []).filter((e) => e.id !== id))
-  }
-
-  return (
-    <div className="flex items-center gap-1.5 flex-wrap">
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <Button variant="outline" size="sm" className="h-7 gap-1 px-2 text-xs">
-            <Filter className="h-3 w-3" />
-            필터
-            {selected.length > 0 && (
-              <Badge
-                variant="secondary"
-                className="ml-0.5 h-4 px-1.5 text-[10px] font-normal"
-              >
-                {selected.length}
-              </Badge>
-            )}
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-[28rem] p-3">
-          {types === null && (
-            <p className="text-xs text-muted-foreground">불러오는 중...</p>
-          )}
-          {types !== null && types.length === 0 && (
-            <p className="text-xs text-muted-foreground">등록된 축이 없습니다.</p>
-          )}
-          {types !== null && types.length > 0 && (
-            <div className="space-y-2">
-              {types.map((t) => (
-                <div key={t.id} className="flex items-start gap-3">
-                  <Label className="w-20 shrink-0 pt-1.5 text-xs text-muted-foreground">
-                    {t.label}
-                  </Label>
-                  <div className="min-w-0 flex-1">
-                    <EntityMultiPicker
-                      type={t}
-                      value={byTypeSlug.get(t.slug) ?? []}
-                      onChange={(next) => setAxisValue(t.slug, next)}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </PopoverContent>
-      </Popover>
-      {/* Inline chip strip — same shape as the dialog chips so users
-          recognize them. Only renders when there's at least one
-          selection; otherwise the bar collapses back to just the
-          "필터" button. */}
-      {selected.map((e) => (
-        <span
-          key={e.id}
-          className="inline-flex items-center gap-1 rounded-full border bg-background px-2 py-0.5 text-[11px]"
-          title={`${e.type_slug}: ${e.value}`}
-        >
-          <span className="max-w-[10rem] truncate">{e.value}</span>
-          <button
-            type="button"
-            onClick={() => removeOne(e.id)}
-            className="-mr-1 ml-0.5 rounded-full p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-            title="필터에서 제거"
-          >
-            <X className="h-3 w-3" />
-          </button>
-        </span>
-      ))}
-      {selected.length > 0 && (
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-xs text-muted-foreground"
-          onClick={() => onChange?.([])}
-        >
-          초기화
-        </Button>
       )}
     </div>
   )

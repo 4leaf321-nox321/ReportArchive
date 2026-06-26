@@ -14,6 +14,7 @@ import {
   Tags,
   Trash2,
   Combine,
+  GitMerge,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
@@ -38,6 +39,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { DataTable } from '@/shared/components/DataTable'
 import { EntityGraphDialog } from './EntityGraphDialog'
+import { MergeCandidatesDialog } from './MergeCandidatesDialog'
 import { cn } from '@/shared/lib/utils'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { ErrorState } from '@/shared/components/ErrorState'
@@ -503,6 +505,7 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
   const [editTarget, setEditTarget] = useState(null)
   const [mergeTarget, setMergeTarget] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
+  const [mergeScanOpen, setMergeScanOpen] = useState(false)
 
   function reload() {
     setReloadKey((n) => n + 1)
@@ -702,6 +705,16 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
           <span>비활성 포함</span>
         </label>
         <div className="ml-auto flex items-center gap-2">
+          {/* 중복/동의어 후보를 AI 보조로 찾아 머지(엔티티머지보조_설계.md). */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setMergeScanOpen(true)}
+            title="이 축에서 같은 대상을 가리키는 중복 값을 찾아 합칩니다"
+          >
+            <GitMerge className="mr-1 h-3.5 w-3.5" />
+            중복 스캔
+          </Button>
           <Button size="sm" onClick={() => setCreateOpen(true)}>
             <Plus className="mr-1 h-3.5 w-3.5" />
             추가
@@ -837,6 +850,13 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
             setMergeTarget(null)
             reload()
           }}
+        />
+      )}
+      {mergeScanOpen && (
+        <MergeCandidatesDialog
+          type={type}
+          onClose={() => setMergeScanOpen(false)}
+          onChanged={reload}
         />
       )}
       {deleteTarget && (

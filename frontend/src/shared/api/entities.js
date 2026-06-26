@@ -234,6 +234,24 @@ export async function mergeEntity(id, intoId) {
 }
 
 /**
+ * Admin-only — 축의 중복/동의어 후보 클러스터 스캔(엔티티머지보조_설계.md).
+ * 온디맨드(저장 안 함). 반환: { clusters, scanned, truncated, backend, threshold }.
+ */
+export async function scanMergeCandidates(typeId) {
+  const res = await apiClient.post(`${TYPES_BASE}/${typeId}/merge-candidates`)
+  return extractData(res)
+}
+
+/** Admin-only — 후보 쌍을 "중복 아님"으로 기각(다음 스캔부터 제외). */
+export async function dismissMergePair(typeId, entityIdA, entityIdB) {
+  const res = await apiClient.post(`${TYPES_BASE}/${typeId}/merge-dismiss`, {
+    entity_id_a: entityIdA,
+    entity_id_b: entityIdB,
+  })
+  return extractData(res)
+}
+
+/**
  * Admin-only — slim list of reports currently tagged with this entity.
  * Workspace-agnostic by design so the admin dialogs always show every
  * blocker, regardless of the admin's active workspace. Used by:

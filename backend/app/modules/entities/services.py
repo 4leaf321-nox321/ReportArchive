@@ -21,6 +21,8 @@ from app.modules.entities.models import (
     Entity,
     EntityAlias,
     EntityEntryPolicy,
+    EntityMerge,
+    EntityMergeDismissal,
     EntityRelation,
     EntityStatus,
     EntityTemporalKind,
@@ -494,7 +496,7 @@ def set_entity_years(db: Session, row: Entity, years: list[int]) -> list[int]:
 
 
 def merge_entities(
-    db: Session, *, src: Entity, into: Entity
+    db: Session, *, src: Entity, into: Entity, merged_by_user_id: int | None = None
 ) -> int:
     """Re-link all `report_entities` rows from `src` to `into`, drop `src`,
     return the number of reports re-linked.
@@ -504,11 +506,23 @@ def merge_entities(
     just dedupe a value. If `into` is already linked to a report that
     `src` is also linked to, the duplicate link is silently dropped
     (composite PK on report_entities).
+
+    `merged_by_user_id` 가 주어지면 `entity_merges` 감사 로그를 남긴다(p60) — src
+    는 삭제되므로 값/코드/흡수 별칭을 스냅샷으로 보존(되돌리기 정책="감사 로그만").
     """
     if src.id == into.id:
         return 0
     if src.type_id != into.type_id:
         raise ValueError("같은 타입(축)의 엔티티끼리만 머지할 수 있습니다.")
+
+    # 삭제 전 스냅샷 — 감사 로그용(src 는 아래에서 사라진다).
+    snap_type_id = src.type_id
+    snap_src_id = src.id
+    snap_src_value = src.value
+    snap_src_code = src.code
+    snap_into_id = into.id
+    snap_into_value = into.value
+    absorbed_aliases: list[str] = []
 
     # Walk reports holding `src` and re-point them to `into`. Doing this
     # row-by-row (rather than a single UPDATE) lets us swallow the
@@ -562,6 +576,7 @@ def merge_entities(
             db.delete(a)
         else:
             a.entity_id = into.id  # 같은 축이라 type_id 그대로
+            absorbed_aliases.append(a.alias)
             db.flush()  # 다음 _norm_taken 이 이 행을 보도록 즉시 반영
     src_val_norm = _normalize(src.value)
     if (
@@ -577,6 +592,7 @@ def merge_entities(
                 normalized=src_val_norm,
             )
         )
+        absorbed_aliases.append(src.value)
 
     # 관계 이관 (p54) — src 의 part_of 관계(부모/자식 양쪽)를 into 로 옮긴다.
     # into 로 옮겼을 때 자기참조가 되거나(상대가 into) 이미 같은 관계가 있으면
@@ -619,9 +635,57 @@ def merge_entities(
         db.flush()
 
     db.flush()
+
+    # 감사 로그 (p60) — src 삭제 전에 스냅샷으로 기록. by 가 없으면 생략(내부 호출).
+    if merged_by_user_id is not None:
+        db.add(
+            EntityMerge(
+                type_id=snap_type_id,
+                src_entity_id=snap_src_id,
+                src_value=snap_src_value,
+                src_code=snap_src_code,
+                into_entity_id=snap_into_id,
+                into_value=snap_into_value,
+                absorbed_aliases=absorbed_aliases,
+                relinked_report_count=relinked,
+                merged_by_user_id=merged_by_user_id,
+            )
+        )
+
     db.delete(src)
     db.commit()
     return relinked
+
+
+def dismiss_merge_pair(
+    db: Session, *, entity_a: Entity, entity_b: Entity, user_id: int | None
+) -> bool:
+    """중복 후보에서 "중복 아님"으로 기각한 쌍을 negative list 에 적재 (p60).
+    (low, high) 정규화로 (A,B)=(B,A) 중복 방지. 이미 있으면 멱등(False 반환,
+    새로 적재하면 True). 같은 축이 아니면 ValueError."""
+    if entity_a.id == entity_b.id:
+        raise ValueError("같은 엔티티는 기각할 수 없습니다.")
+    if entity_a.type_id != entity_b.type_id:
+        raise ValueError("같은 타입(축)의 엔티티 쌍만 기각할 수 있습니다.")
+    low, high = sorted((entity_a.id, entity_b.id))
+    existing = db.execute(
+        select(EntityMergeDismissal).where(
+            EntityMergeDismissal.entity_low_id == low,
+            EntityMergeDismissal.entity_high_id == high,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return False
+    db.add(
+        EntityMergeDismissal(
+            type_id=entity_a.type_id,
+            entity_low_id=low,
+            entity_high_id=high,
+            dismissed_by_user_id=user_id,
+        )
+    )
+    db.commit()
+    return True
 
 
 def delete_entity(db: Session, row: Entity) -> int:

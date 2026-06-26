@@ -34,7 +34,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -344,4 +344,76 @@ class EntityRelation(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
+    )
+
+
+class EntityMergeDismissal(Base):
+    """"중복 아님"으로 기각한 엔티티 쌍 (p60, 엔티티머지보조_설계.md).
+
+    중복 후보 탐지가 같은 쌍을 매번 다시 띄우지 않도록 기억하는 negative list.
+    (low, high) 정규화로 (A,B)=(B,A) 중복을 막는다. 한쪽 엔티티가 머지/삭제되면
+    CASCADE 로 죽은 기각행이 정리된다.
+    """
+
+    __tablename__ = "entity_merge_dismissals"
+    __table_args__ = (
+        UniqueConstraint(
+            "entity_low_id",
+            "entity_high_id",
+            name="uq_entity_merge_dismissals_pair",
+        ),
+        Index("ix_entity_merge_dismissals_type", "type_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    type_id: Mapped[int] = mapped_column(
+        ForeignKey("entity_types.id", ondelete="CASCADE"), nullable=False
+    )
+    entity_low_id: Mapped[int] = mapped_column(
+        ForeignKey("entities.id", ondelete="CASCADE"), nullable=False
+    )
+    entity_high_id: Mapped[int] = mapped_column(
+        ForeignKey("entities.id", ondelete="CASCADE"), nullable=False
+    )
+    dismissed_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    dismissed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, nullable=False
+    )
+
+
+class EntityMerge(Base):
+    """머지 감사 로그 (p60). 누가·언제·무엇을 합쳤나.
+
+    src 는 머지로 삭제되므로 값/코드/흡수 별칭을 **스냅샷**으로 보존한다.
+    type/into 는 이후 또 머지·삭제될 수 있어 SET NULL — 이력은 스냅샷으로 유지.
+    되돌리기 정책="감사 로그만"의 핵심(추적은 되지만 완전 undo 는 아님).
+    """
+
+    __tablename__ = "entity_merges"
+    __table_args__ = (Index("ix_entity_merges_type", "type_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    type_id: Mapped[int | None] = mapped_column(
+        ForeignKey("entity_types.id", ondelete="SET NULL"), nullable=True
+    )
+    src_entity_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    src_value: Mapped[str] = mapped_column(Text, nullable=False)
+    src_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    into_entity_id: Mapped[int | None] = mapped_column(
+        ForeignKey("entities.id", ondelete="SET NULL"), nullable=True
+    )
+    into_value: Mapped[str] = mapped_column(Text, nullable=False)
+    absorbed_aliases: Mapped[list] = mapped_column(
+        JSONB, default=list, nullable=False
+    )
+    relinked_report_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    merged_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    merged_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, nullable=False
     )

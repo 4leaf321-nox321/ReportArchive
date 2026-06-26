@@ -258,6 +258,14 @@ class EntityMergeRequest(BaseModel):
     into_id: int
 
 
+class EntityMergeDismissRequest(BaseModel):
+    """중복 후보 검토에서 "중복 아님"으로 기각할 쌍 (p60). 순서 무관 —
+    서비스가 (low, high)로 정규화해 저장한다."""
+
+    entity_id_a: int
+    entity_id_b: int
+
+
 class EntityUsageReportRef(BaseModel):
     """Slim ref to a report tagged with an entity. Used by the admin
     page's "어떤 보고서가 막고 있나?" lookups — populated by

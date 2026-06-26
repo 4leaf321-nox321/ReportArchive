@@ -20,13 +20,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.modules.entities import graph, services
+from app.modules.entities import graph, merge_candidates, services
 from app.modules.entities.schemas import (
     EntityAliasCreate,
     EntityAliasListResponse,
     EntityAliasRead,
     EntityCreate,
     EntityListResponse,
+    EntityMergeDismissRequest,
     EntityMergeRequest,
     EntityRead,
     EntityRelationCreate,
@@ -185,6 +186,50 @@ def delete_entity_type(
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     return success_response(data=None, message=f"'{name}' 축이 삭제됐습니다.")
+
+
+@entity_types_router.post("/{type_id}/merge-candidates")
+def scan_merge_candidates(
+    type_id: int,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """축의 중복/동의어 후보 클러스터(엔티티머지보조_설계.md §6). 온디맨드 스캔 —
+    저장 안 함. L0 정규화 + L1 임베딩(넓은 그물). 오탐은 검토 UI/LLM 이 거른다.
+    Admin only."""
+    _require_admin(actor)
+    if not services.get_type(db, type_id):
+        return not_found_response(f"엔티티 축을 찾을 수 없습니다: {type_id}")
+    try:
+        result = merge_candidates.find_merge_candidates(db, type_id)
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    return success_response(data=result)
+
+
+@entity_types_router.post("/{type_id}/merge-dismiss")
+def dismiss_merge_candidate(
+    type_id: int,
+    payload: EntityMergeDismissRequest,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """중복 후보 쌍을 "중복 아님"으로 기각 → 다음 스캔부터 제외(p60). Admin only."""
+    _require_admin(actor)
+    a = services.get_entity(db, payload.entity_id_a)
+    b = services.get_entity(db, payload.entity_id_b)
+    if not a or not b:
+        return not_found_response("기각할 엔티티를 찾을 수 없습니다.")
+    try:
+        added = services.dismiss_merge_pair(
+            db, entity_a=a, entity_b=b, user_id=actor.user.id
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return success_response(
+        data={"dismissed": added},
+        message="중복 아님으로 표시했습니다." if added else "이미 기각된 쌍입니다.",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -399,7 +444,9 @@ def merge_entity(
             f"머지 대상 엔티티를 찾을 수 없습니다: {payload.into_id}"
         )
     try:
-        relinked = services.merge_entities(db, src=src, into=into)
+        relinked = services.merge_entities(
+            db, src=src, into=into, merged_by_user_id=actor.user.id
+        )
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return success_response(

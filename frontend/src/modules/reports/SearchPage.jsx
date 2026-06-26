@@ -1,9 +1,18 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { Search, FileText, Loader2, Sparkles, Type } from 'lucide-react'
+import {
+  Search,
+  FileText,
+  Loader2,
+  Sparkles,
+  Type,
+  MessageCircleQuestion,
+} from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Button } from '@/shared/components/ui/button'
 import { searchReports, semanticSearchReports } from '@/modules/reports/api'
+import { askAi } from '@/shared/api/ai'
+import { useAuth } from '@/shared/auth/AuthContext'
 import { EntityFilterControl } from './EntityFilterControl'
 
 const LIMIT = 30
@@ -23,6 +32,13 @@ const MODES = [
     hint: '뜻이 비슷한 보고서까지 (의미 + 키워드 융합)',
   },
 ]
+// RAG Q&A 모드 (B300). ai_features 에 'rag_qa' 가 있는 사용자에게만 노출.
+const ASK_MODE = {
+  key: 'ask',
+  label: '질문하기',
+  icon: MessageCircleQuestion,
+  hint: '아카이브 보고서를 근거로 답변 (출처 인용)',
+}
 
 /** 검색어의 각 단어(공백 분리)를 <mark> 로 강조. 대소문자 무시, 모든 일치. */
 function Highlighted({ text, query }) {
@@ -60,6 +76,17 @@ export default function SearchPage() {
   const [loading, setLoading] = useState(false)
   const [offset, setOffset] = useState(0)
   const [mode, setMode] = useState('keyword')
+  // RAG Q&A — 권한(ai_features)이 있을 때만 "질문하기" 모드 노출.
+  const { me } = useAuth()
+  const hasRagQa = !!me?.ai_features?.includes('rag_qa')
+  const isAsk = mode === 'ask'
+  const modes = useMemo(
+    () => (hasRagQa ? [...MODES, ASK_MODE] : MODES),
+    [hasRagQa],
+  )
+  const [askLoading, setAskLoading] = useState(false)
+  const [askResult, setAskResult] = useState(null) // {answer, citations, no_evidence}
+  const [askError, setAskError] = useState(null)
   // 엔티티 태그 필터(D-2) — 본문/의미 검색을 메타데이터로 좁힌다("본문 X AND 모델=A1234").
   // 키워드·의미 두 모드 모두 적용.
   const [entityFilter, setEntityFilter] = useState([])
@@ -106,6 +133,8 @@ export default function SearchPage() {
 
   // 디바운스된 검색어 → URL(?q) 동기화 + 첫 페이지 조회.
   useEffect(() => {
+    // 질문하기 모드는 자동 조회 안 함 — LLM 호출 비용이라 Enter/버튼으로만.
+    if (mode === 'ask') return undefined
     if (debounced !== lastPushedRef.current) {
       lastPushedRef.current = debounced
       setParams(debounced ? { q: debounced } : {}, { replace: true })
@@ -166,13 +195,31 @@ export default function SearchPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debounced, offset, entityKey, entityRollup, useEntityFilter, year])
 
+  const submitAsk = useCallback(async () => {
+    const q = input.trim()
+    if (q.length < 2 || askLoading) return
+    setAskLoading(true)
+    setAskError(null)
+    try {
+      const res = await askAi({ query: q })
+      setAskResult(res)
+    } catch (e) {
+      setAskError(
+        e?.response?.data?.message || e?.message || '질문 처리에 실패했습니다.',
+      )
+      setAskResult(null)
+    } finally {
+      setAskLoading(false)
+    }
+  }, [input, askLoading])
+
   const results = data?.results ?? []
   const total = data?.total ?? 0
   // 의미 검색은 오프셋 페이지네이션이 없다(서버가 상위 N개만 RRF로 반환).
   // 키워드/브라우즈(필터 전용) 경로만 더보기.
   const hasMore = !usingSemantic && results.length < total
   const showEmpty = !loading && canSearch && total === 0
-  const activeHint = MODES.find((m) => m.key === mode)?.hint
+  const activeHint = modes.find((m) => m.key === mode)?.hint
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-6">
@@ -187,14 +234,24 @@ export default function SearchPage() {
           ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="제목·본문에서 검색 (표·긴 글 등 위젯 내용 포함)"
+          onKeyDown={(e) => {
+            if (isAsk && e.key === 'Enter' && !e.nativeEvent.isComposing) {
+              e.preventDefault()
+              submitAsk()
+            }
+          }}
+          placeholder={
+            isAsk
+              ? '아카이브에 질문하기 (예: 낙하 시험에서 가장 취약한 부품은?) — Enter'
+              : '제목·본문에서 검색 (표·긴 글 등 위젯 내용 포함)'
+          }
           className="h-11 pl-9 text-base"
         />
       </div>
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <div className="inline-flex rounded-md border p-0.5">
-          {MODES.map((m) => {
+          {modes.map((m) => {
             const Icon = m.icon
             const active = mode === m.key
             return (
@@ -218,6 +275,84 @@ export default function SearchPage() {
         <span className="text-xs text-muted-foreground">{activeHint}</span>
       </div>
 
+      {/* 질문하기(RAG Q&A) 패널 — 답변 카드 + 출처 인용 칩. */}
+      {isAsk && (
+        <div className="mt-1">
+          {askLoading && (
+            <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> 답변 생성 중…
+            </div>
+          )}
+          {!askLoading && askError && (
+            <p className="py-10 text-center text-sm text-destructive">
+              {askError}
+            </p>
+          )}
+          {!askLoading && !askError && !askResult && (
+            <p className="py-16 text-center text-sm text-muted-foreground">
+              질문을 입력하고 Enter — 아카이브 보고서를 근거로 답하고 출처를
+              인용합니다.
+            </p>
+          )}
+          {!askLoading &&
+            askResult &&
+            (askResult.no_evidence ? (
+              <p className="py-16 text-center text-sm text-muted-foreground">
+                {askResult.answer || '관련 보고서를 찾지 못했습니다.'}
+              </p>
+            ) : (
+              <div className="rounded-lg border bg-card p-4">
+                <div className="whitespace-pre-wrap text-sm leading-relaxed">
+                  {askResult.answer}
+                </div>
+                {askResult.citations?.length > 0 && (
+                  <div className="mt-3 border-t pt-3">
+                    <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">
+                      출처
+                    </p>
+                    <div className="flex flex-col gap-1">
+                      {askResult.citations.map((c) => (
+                        <button
+                          key={c.n}
+                          type="button"
+                          onClick={() =>
+                            navigate(
+                              `/w/${c.workspace_slug}/reports/${c.report_id}`,
+                            )
+                          }
+                          className="flex items-start gap-2 rounded px-1.5 py-1 text-left hover:bg-muted"
+                        >
+                          <span
+                            className={`mt-0.5 shrink-0 rounded px-1.5 text-[10px] font-bold ${
+                              c.used
+                                ? 'bg-primary/15 text-primary'
+                                : 'bg-muted text-muted-foreground'
+                            }`}
+                          >
+                            [{c.n}]
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-xs font-medium">
+                              {c.title || `보고서 ${c.report_id}`}
+                            </span>
+                            {c.snippet && (
+                              <span className="block truncate text-[11px] text-muted-foreground">
+                                {c.snippet}
+                              </span>
+                            )}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+        </div>
+      )}
+
+      {!isAsk && (
+        <>
       {/* 필터 줄 — 엔티티 태그(D-2, 값의 적용연도는 태그 picker 안에서) +
           자료연도(보고서 작성연도, p56). 둘은 독립적으로 AND 결합. */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -321,6 +456,8 @@ export default function SearchPage() {
             더보기 ({results.length}/{total})
           </Button>
         </div>
+      )}
+        </>
       )}
     </div>
   )

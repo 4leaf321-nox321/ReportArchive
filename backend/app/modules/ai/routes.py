@@ -10,13 +10,18 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.ai.llm import LLMError, chat, list_models
+from app.ai.models import AiEntitlement, AiFeature, AiSubjectKind
 from app.config import settings
+from app.database import get_db
 from app.modules.users.models import User
-from app.shared.auth import require_system_admin
+from app.modules.workspaces.models import Workspace
+from app.shared.auth import get_current_user, require_system_admin
 from app.shared.responses import error_response, success_response
 
 router = APIRouter()
@@ -99,3 +104,167 @@ def diag_chat(payload: DiagChatPayload, _: User = Depends(require_system_admin))
             "latency_ms": latency_ms,
         }
     )
+
+
+# --------------------------------------------------------------------------- #
+# A. 아카이브 RAG Q&A — "우리 보고서에게 묻기" (B300_보조AI_설계.md §A)
+# --------------------------------------------------------------------------- #
+class AskPayload(BaseModel):
+    query: str = Field(..., min_length=1, max_length=2000)
+    limit: int = Field(default=8, ge=1, le=20)
+
+
+@router.post("/ask")
+def ask(
+    payload: AskPayload,
+    actor=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """자연어 질문 → 권한 게이팅된 시맨틱 검색 → B300 가 출처 인용해 답변.
+
+    기능 게이트(§E): 'rag_qa' 엔티틀먼트 없으면 403. 데이터 권한은 검색 scope 가
+    이미 보장(권한 밖 보고서는 인용 불가). 근거 약하면 LLM 미호출(환각 방지),
+    LLM 실패는 502(검색·앱 무영향)."""
+    # 지연 import — entitlements(↔users) 모듈 로드 순환 회피.
+    from app.ai import qa
+    from app.ai.entitlements import ai_enabled_for
+
+    if not ai_enabled_for(db, actor.user, "rag_qa"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "AI 질문하기 권한이 없습니다."
+        )
+    try:
+        data = qa.ask_archive(db, actor, payload.query, limit=payload.limit)
+    except LLMError as exc:
+        return error_response(f"AI 응답 실패: {exc}", status_code=502)
+    return success_response(data=data)
+
+
+# --------------------------------------------------------------------------- #
+# E. 접근 제어(엔티틀먼트) — 선별 유저/조직만 B300 기능 사용 (B300_보조AI_설계.md §E)
+# 전부 시스템 관리자 전용. "AI 접근" 탭이 읽고 쓴다.
+# --------------------------------------------------------------------------- #
+class AiEntitlementCreate(BaseModel):
+    feature: AiFeature
+    subject_kind: AiSubjectKind
+    user_id: int | None = None
+    workspace_slug: str | None = None
+    include_descendants: bool = False
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class AiEntitlementRead(BaseModel):
+    id: int
+    feature: AiFeature
+    subject_kind: AiSubjectKind
+    user_id: int | None
+    workspace_slug: str | None
+    include_descendants: bool
+    enabled: bool
+    note: str | None
+    # 화면 표시용 — 유저 grant 면 이메일/이름, 조직 grant 면 워크스페이스 이름.
+    subject_label: str
+
+
+def _entitlement_read(db: Session, e: AiEntitlement) -> AiEntitlementRead:
+    label = ""
+    if e.subject_kind == AiSubjectKind.user and e.user_id is not None:
+        u = db.get(User, e.user_id)
+        label = (u.email or u.name or f"#{e.user_id}") if u else f"#{e.user_id}"
+    elif e.subject_kind == AiSubjectKind.workspace and e.workspace_slug:
+        w = db.get(Workspace, e.workspace_slug)
+        label = (w.name if w else e.workspace_slug) or e.workspace_slug
+    return AiEntitlementRead(
+        id=e.id,
+        feature=e.feature,
+        subject_kind=e.subject_kind,
+        user_id=e.user_id,
+        workspace_slug=e.workspace_slug,
+        include_descendants=e.include_descendants,
+        enabled=e.enabled,
+        note=e.note,
+        subject_label=label,
+    )
+
+
+@router.get("/entitlements")
+def list_entitlements(
+    _: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """모든 B300 기능 grant 목록(시스템 관리자). 최신순."""
+    rows = db.execute(
+        select(AiEntitlement).order_by(AiEntitlement.created_at.desc())
+    ).scalars().all()
+    return success_response(
+        data={"items": [_entitlement_read(db, e) for e in rows]}
+    )
+
+
+@router.post("/entitlements", status_code=201)
+def create_entitlement(
+    payload: AiEntitlementCreate,
+    actor: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """grant 생성. subject_kind 에 맞는 대상(user_id 또는 workspace_slug) 필수."""
+    if payload.subject_kind == AiSubjectKind.user:
+        if payload.user_id is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "user_id 가 필요합니다.")
+        if db.get(User, payload.user_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "사용자를 찾을 수 없습니다.")
+        workspace_slug = None
+        user_id = payload.user_id
+    else:
+        if not payload.workspace_slug:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "workspace_slug 가 필요합니다."
+            )
+        if db.get(Workspace, payload.workspace_slug) is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, "워크스페이스를 찾을 수 없습니다."
+            )
+        user_id = None
+        workspace_slug = payload.workspace_slug
+
+    # 중복(같은 기능·대상) 거부 — 유니크 제약과 같은 의미를 친절히 surface.
+    dup = db.execute(
+        select(AiEntitlement).where(
+            AiEntitlement.feature == payload.feature,
+            AiEntitlement.subject_kind == payload.subject_kind,
+            AiEntitlement.user_id == user_id,
+            AiEntitlement.workspace_slug == workspace_slug,
+        )
+    ).scalar_one_or_none()
+    if dup is not None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "이미 같은 권한이 부여되어 있습니다."
+        )
+
+    row = AiEntitlement(
+        feature=payload.feature,
+        subject_kind=payload.subject_kind,
+        user_id=user_id,
+        workspace_slug=workspace_slug,
+        include_descendants=payload.include_descendants,
+        note=(payload.note or "").strip() or None,
+        created_by_user_id=actor.id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return success_response(data=_entitlement_read(db, row))
+
+
+@router.delete("/entitlements/{entitlement_id}")
+def delete_entitlement(
+    entitlement_id: int,
+    _: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """grant 해제 = 행 삭제(설계상 '끄기'). 멱등."""
+    row = db.get(AiEntitlement, entitlement_id)
+    if row is not None:
+        db.delete(row)
+        db.commit()
+    return success_response(data=None, message="권한이 해제됐습니다.")

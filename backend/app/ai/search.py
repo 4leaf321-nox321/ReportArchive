@@ -92,6 +92,7 @@ def semantic_search(
     entity_ids: Optional[list[int]] = None,
     entity_rollup: bool = False,
     year: Optional[int] = None,
+    snippet_chars: Optional[int] = 200,
 ) -> list[dict]:
     """벡터 유사도 검색 — 보고서별 최적(최근접) 청크 기준 상위 limit 개.
 
@@ -99,6 +100,9 @@ def semantic_search(
     1개로 접는다). 권한 스코프로 사전 필터. min_score 미만(약한 매치)은 제외 —
     하이브리드에서 노이즈/mock 결과가 키워드를 오염시키지 않게. scope 를 주면
     (hybrid 가 한 번 계산해 전달) 재계산하지 않는다.
+
+    snippet_chars: 결과 `snippet` 길이 상한(기본 200). None 이면 청크 전문 —
+    RAG Q&A 가 인용 컨텍스트로 청크 전체를 받을 때 쓴다.
     """
     q = (query or "").strip()
     if not q:
@@ -140,7 +144,9 @@ def semantic_search(
                 "score": round(score, 4),
                 "block_id": block_id,
                 "page_idx": page_idx,
-                "snippet": (text or "")[:200],
+                "snippet": (text or "")
+                if snippet_chars is None
+                else (text or "")[:snippet_chars],
             }
         if len(best) >= limit:
             break

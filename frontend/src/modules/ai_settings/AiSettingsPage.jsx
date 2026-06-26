@@ -9,6 +9,7 @@ import { PromptsTab } from './PromptsTab'
 import { McpTab } from './McpTab'
 import { SkillTab } from './SkillTab'
 import { DiagnosticsTab } from './DiagnosticsTab'
+import { AccessTab } from './AccessTab'
 import { useAuth } from '@/shared/auth/AuthContext'
 
 /**
@@ -43,6 +44,7 @@ export default function AiSettingsPage() {
           <TabsTrigger value="mcp">MCP 토큰</TabsTrigger>
           <TabsTrigger value="skill">스킬 생성</TabsTrigger>
           {isAdmin && <TabsTrigger value="diag">연결·진단</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="access">AI 접근</TabsTrigger>}
         </TabsList>
         <TabsContent value="prompts" className="flex-1 min-h-0 mt-4">
           <PromptsTab />
@@ -56,6 +58,11 @@ export default function AiSettingsPage() {
         {isAdmin && (
           <TabsContent value="diag" className="flex-1 min-h-0 mt-4 overflow-y-auto">
             <DiagnosticsTab />
+          </TabsContent>
+        )}
+        {isAdmin && (
+          <TabsContent value="access" className="flex-1 min-h-0 mt-4 overflow-y-auto">
+            <AccessTab />
           </TabsContent>
         )}
       </Tabs>

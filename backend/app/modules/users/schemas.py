@@ -55,6 +55,9 @@ class MeRead(BaseModel):
     # Distinct from workspace `role`: a 부서 관리자 (role=admin in a
     # workspace) doesn't have this unless explicitly granted.
     is_system_admin: bool = False
+    # 이 사용자가 쓸 수 있는 B300 보조 AI 기능(엔티틀먼트, B300_보조AI_설계.md §E).
+    # 본인 응답에만 실어 프런트가 미권한 사용자에게 AI 진입점을 숨기는 데 쓴다.
+    ai_features: list[str] = []
 
 
 class UpdateProfileRequest(BaseModel):

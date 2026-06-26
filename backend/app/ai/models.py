@@ -10,23 +10,90 @@
 """
 from __future__ import annotations
 
+import enum
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
+    Enum,
     ForeignKey,
     Index,
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.config import settings
 from app.database import Base
+
+
+class AiFeature(str, enum.Enum):
+    """B300 보조 AI 기능 식별자. `all` = 모든 기능 와일드카드(grant 편의)."""
+
+    rag_qa = "rag_qa"
+    auto_summary = "auto_summary"
+    all = "all"
+
+
+class AiSubjectKind(str, enum.Enum):
+    """엔티틀먼트 부여 대상 종류 — 개별 유저 또는 워크스페이스(조직)."""
+
+    user = "user"
+    workspace = "workspace"
+
+
+class AiEntitlement(Base):
+    """B300 기능 접근 권한 (E, B300_보조AI_설계.md). **기본 deny** — 시스템
+    관리자가 명시적으로 허락한 유저/조직만 해당 기능을 쓴다(파일럿→점진 확대).
+
+    가시성(grants)과 다른 축: "데이터를 누가 보나"가 아니라 "이 *기능*을 누가
+    쓰나". `include_descendants`(기본 OFF)면 워크스페이스 트리 하위까지 적용 —
+    상위→하위 자동 전파는 의도치 않은 노출의 단골이라 의식적으로 켜야 한다.
+    끄기 = 행 삭제(감사는 created_by/created_at/note)."""
+
+    __tablename__ = "ai_entitlements"
+    __table_args__ = (
+        UniqueConstraint(
+            "feature",
+            "subject_kind",
+            "user_id",
+            "workspace_slug",
+            name="uq_ai_entitlements_subject",
+        ),
+        Index("ix_ai_entitlements_user", "user_id"),
+        Index("ix_ai_entitlements_workspace", "workspace_slug"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    feature: Mapped[AiFeature] = mapped_column(
+        Enum(AiFeature, name="ai_feature_enum"), nullable=False
+    )
+    subject_kind: Mapped[AiSubjectKind] = mapped_column(
+        Enum(AiSubjectKind, name="ai_subject_kind_enum"), nullable=False
+    )
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    workspace_slug: Mapped[str | None] = mapped_column(
+        ForeignKey("workspaces.slug", ondelete="CASCADE"), nullable=True
+    )
+    include_descendants: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class ReportChunk(Base):

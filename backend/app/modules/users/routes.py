@@ -73,6 +73,14 @@ def _account_read(db: Session, user: User, *, membership_count: int) -> AccountA
     )
 
 
+def _ai_features_for(db, user) -> set[str]:
+    """app.ai.entitlements 를 호출 시점에 import — 모듈 로드 순환(entitlements 가
+    users.models 를 참조)을 끊는다."""
+    from app.ai.entitlements import ai_features_for
+
+    return ai_features_for(db, user)
+
+
 @router.get("/me")
 def get_me(
     request: Request,
@@ -160,6 +168,8 @@ def get_me(
         ],
         is_system_admin=user.is_system_admin,
         preferences=user.preferences or {},
+        # 지연 import — entitlements ↔ users 순환 회피(앱 부팅 시점 의존 끊기).
+        ai_features=sorted(_ai_features_for(db, user)),
     )
     return success_response(data=payload)
 

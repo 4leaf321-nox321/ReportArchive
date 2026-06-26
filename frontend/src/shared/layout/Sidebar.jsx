@@ -5,6 +5,7 @@ import {
   FileCode2,
   Layers,
   Network,
+  Boxes,
   Settings,
   Home,
   Users,
@@ -78,6 +79,7 @@ const MY_ACTIVITY_MENU = [
  *  나중에 관리/비관리 기능 분리가 들어가면 한쪽 절반은 관리자 섹션으로
  *  내려갈 후보. */
 const PUBLIC_MENU = [
+  { to: '/entities', label: '기준정보 탐색', icon: Boxes },
   { to: '/templates', label: '템플릿 관리', icon: FileCode2 },
   { to: '/voc', label: 'VOC', icon: MessageSquare },
   { to: '/ai-settings', label: 'AI 설정', icon: Sparkles },

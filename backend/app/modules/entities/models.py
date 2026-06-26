@@ -58,6 +58,27 @@ class EntityEntryPolicy(str, enum.Enum):
     closed = "closed"
 
 
+class EntityTemporalKind(str, enum.Enum):
+    """축의 **시간 차원** 정책 (p56). 매년 값이 쌓이는 데이터에서 "올해 관련"만
+    기본 노출하고 전체는 옵트인으로 보기 위해, 축마다 연도 적용 방식을 선언한다
+    (엔티티그래프_온톨로지_설계.md "시간 차원"). 연도 필터(year=Y)가 걸렸을 때:
+
+      evergreen — 연도 무관, 항상 노출(시험종류·단계·시뮬종류). 필터 무시.
+      lifecycle — 값의 유효구간(valid_from_year~valid_to_year)에 Y가 들면 노출
+                  (부품·BOM 등 도입/폐지가 있는 축). NULL 끝=개방(진행중).
+      yearly    — 값이 명시 배정된 연도들(entity_years) 중 Y가 있으면 노출
+                  (모델 — 연도별 assign, 불연속 가능).
+      derived   — 명시 안 하고, 그 값이 쓰인 보고서(report_date) 연도에서 추론
+                  (개방형 축의 관리비 0 경로).
+
+    기존 7축은 evergreen 으로 시작 → 연도 필터가 no-op 이라 현행 동작 보존."""
+
+    evergreen = "evergreen"
+    lifecycle = "lifecycle"
+    yearly = "yearly"
+    derived = "derived"
+
+
 class EntityType(Base):
     """An axis (e.g. 모델명, 부품명, BOM Code).
 
@@ -98,6 +119,14 @@ class EntityType(Base):
     )
     value_pattern: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
+    # 시간 차원 정책 (p56). 기존 축은 evergreen 으로 시작해 연도 필터가 no-op →
+    # 현행 동작 보존. admin 이 모델→yearly, 부품→lifecycle/derived 식으로 승격.
+    temporal_kind: Mapped[EntityTemporalKind] = mapped_column(
+        Enum(EntityTemporalKind, name="entity_temporal_kind_enum"),
+        default=EntityTemporalKind.evergreen,
+        nullable=False,
+    )
+
 
 class Entity(Base):
     """A single value within one axis (e.g. type=모델, value="A1234")."""
@@ -128,6 +157,12 @@ class Entity(Base):
         default=EntityStatus.active,
         nullable=False,
     )
+
+    # 유효구간 (p56, temporal_kind=lifecycle 축에서만 의미). NULL=개방
+    # (from NULL=이전부터, to NULL=진행중). yearly 축은 entity_years 세트를,
+    # evergreen/derived 축은 둘 다 무시한다.
+    valid_from_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    valid_to_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -172,6 +207,26 @@ class ReportEntity(Base):
     # — without it Postgres would scan the table to filter by entity_id.
     __table_args__ = (
         Index("ix_report_entities_entity", "entity_id"),
+    )
+
+
+class EntityYear(Base):
+    """yearly 축(예: 모델)의 값에 명시 배정된 연도 (p56). 한 값이 여러 연도에
+    속할 수 있고 불연속도 허용(2023·2025만, 2024 빠짐) — 그래서 범위 컬럼이
+    아니라 세트 테이블이다. (entity_id, year) 복합 PK 로 중복 방지, entity 삭제
+    시 CASCADE.
+
+    lifecycle 축은 이 테이블을 안 쓰고 entities.valid_from/to_year 범위를 쓴다."""
+
+    __tablename__ = "entity_years"
+
+    entity_id: Mapped[int] = mapped_column(
+        ForeignKey("entities.id", ondelete="CASCADE"), primary_key=True
+    )
+    year: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    __table_args__ = (
+        Index("ix_entity_years_year", "year"),
     )
 
 

@@ -107,6 +107,8 @@ export async function searchReports(
     // 엔티티 태그 필터(D-2) — 축별 AND / 축내 OR. entityRollup 이면 part_of 자손까지.
     entityIds,
     entityRollup,
+    // 자료 연도 — 보고서 작성연도(report_date) 필터(p56). 엔티티 적용연도와 독립.
+    year,
   } = {},
 ) {
   // entity_ids 는 반복 키(FastAPI list[int]) — URLSearchParams.append 로.
@@ -123,6 +125,7 @@ export async function searchReports(
   if (entityRollup && Array.isArray(entityIds) && entityIds.length) {
     params.append('entity_rollup', 'true')
   }
+  if (year != null) params.set('year', String(year))
   const res = await apiClient.get(`${BASE}/search?${params.toString()}`)
   return extractData(res)
 }
@@ -134,7 +137,7 @@ export async function searchReports(
 // SearchPage 가 두 모드를 같은 렌더 경로로 다루게 한다. 페이지네이션 없음(total=길이).
 export async function semanticSearchReports(
   q,
-  { mode = 'hybrid', limit = 30, entityIds, entityRollup } = {},
+  { mode = 'hybrid', limit = 30, entityIds, entityRollup, year } = {},
 ) {
   const params = new URLSearchParams({
     q: q ?? '',
@@ -147,6 +150,7 @@ export async function semanticSearchReports(
   if (entityRollup && Array.isArray(entityIds) && entityIds.length) {
     params.append('entity_rollup', 'true')
   }
+  if (year != null) params.set('year', String(year))
   const res = await apiClient.get(`${BASE}/search/semantic?${params.toString()}`)
   const data = extractData(res)
   const results = (data.results ?? []).map((r) => ({

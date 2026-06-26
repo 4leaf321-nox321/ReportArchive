@@ -8,6 +8,10 @@ import { EntityFilterControl } from './EntityFilterControl'
 
 const LIMIT = 30
 
+const CURRENT_YEAR = new Date().getFullYear()
+// 작성연도(자료연도) 후보 — 올해부터 9년 전까지. 검색은 기본 "전체"(null).
+const YEAR_OPTIONS = Array.from({ length: 10 }, (_, i) => CURRENT_YEAR - i)
+
 // 검색 모드. 'keyword' = 기존 pg_trgm 부분일치. 'semantic' = 임베딩 기반 의미 검색
 // (서버 mode=hybrid 로 호출 — 벡터+키워드 RRF 융합). 의미 모드는 페이지네이션 없음.
 const MODES = [
@@ -60,6 +64,9 @@ export default function SearchPage() {
   // 키워드·의미 두 모드 모두 적용.
   const [entityFilter, setEntityFilter] = useState([])
   const [entityRollup, setEntityRollup] = useState(false)
+  // 자료 연도(작성연도, report_date) 필터(p56). 엔티티의 적용연도와 독립 —
+  // "언제 작성된 보고서냐". 검색은 기본 전체(null), 사용자가 좁힐 수 있다.
+  const [year, setYear] = useState(null)
   const entityIds = useMemo(() => entityFilter.map((e) => e.id), [entityFilter])
   // dep 안정용 문자열 키(배열은 매 렌더 새 참조).
   const entityKey = entityIds.slice().sort((a, b) => a - b).join(',')
@@ -109,12 +116,14 @@ export default function SearchPage() {
             limit: LIMIT,
             entityIds: useEntityFilter ? entityIds : undefined,
             entityRollup: useEntityFilter ? entityRollup : undefined,
+            year: year ?? undefined,
           })
         : searchReports(debounced, {
             limit: LIMIT,
             offset: 0,
             entityIds: useEntityFilter ? entityIds : undefined,
             entityRollup: useEntityFilter ? entityRollup : undefined,
+            year: year ?? undefined,
           })
     run
       .then((d) => !cancelled && setData(d))
@@ -124,7 +133,7 @@ export default function SearchPage() {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debounced, mode, entityKey, entityRollup])
+  }, [debounced, mode, entityKey, entityRollup, year])
 
   const loadMore = useCallback(() => {
     const next = offset + LIMIT
@@ -134,6 +143,7 @@ export default function SearchPage() {
       offset: next,
       entityIds: useEntityFilter ? entityIds : undefined,
       entityRollup: useEntityFilter ? entityRollup : undefined,
+      year: year ?? undefined,
     })
       .then((d) =>
         setData((prev) => ({
@@ -146,7 +156,7 @@ export default function SearchPage() {
         setLoading(false)
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debounced, offset, entityKey, entityRollup, useEntityFilter])
+  }, [debounced, offset, entityKey, entityRollup, useEntityFilter, year])
 
   const results = data?.results ?? []
   const total = data?.total ?? 0
@@ -199,12 +209,33 @@ export default function SearchPage() {
         <span className="text-xs text-muted-foreground">{activeHint}</span>
       </div>
 
-      {/* 엔티티 태그 필터(D-2) — 본문 검색을 메타데이터로 좁힌다. 키워드 모드 전용. */}
+      {/* 필터 줄 — 엔티티 태그(D-2, 값의 적용연도는 태그 picker 안에서) +
+          자료연도(보고서 작성연도, p56). 둘은 독립적으로 AND 결합. */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <EntityFilterControl
           selected={entityFilter}
           onChange={setEntityFilter}
         />
+        <label
+          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
+          title="보고서가 작성된 해(report_date)로 좁힙니다 — 태그 값의 적용연도와는 다릅니다"
+        >
+          작성연도
+          <select
+            value={year ?? 'all'}
+            onChange={(e) =>
+              setYear(e.target.value === 'all' ? null : Number(e.target.value))
+            }
+            className="h-7 rounded-md border bg-background px-2 text-xs"
+          >
+            <option value="all">전체</option>
+            {YEAR_OPTIONS.map((y) => (
+              <option key={y} value={y}>
+                {y}
+              </option>
+            ))}
+          </select>
+        </label>
         {entityFilter.length > 0 && (
           <label
             className="inline-flex cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground"

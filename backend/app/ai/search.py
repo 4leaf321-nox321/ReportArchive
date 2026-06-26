@@ -21,6 +21,7 @@ from app.modules.reports.models import Report
 from app.modules.reports.services import (
     all_visible_report_ids,
     entity_filter_report_ids,
+    report_ids_in_year,
     list_public_reports_on_board,
 )
 
@@ -36,6 +37,16 @@ def _apply_entity_scope(db, scope, entity_ids, entity_rollup):
         return scope
     efilter = entity_filter_report_ids(db, entity_ids, rollup=entity_rollup)
     return efilter if scope is None else (scope & efilter)
+
+
+def _apply_year_scope(db, scope, year):
+    """자료 연도(보고서 작성연도, report_date) 필터를 scope 에 교집합으로 얹는다
+    (p56). 엔티티 필터와 같은 방식 — 벡터 경로는 미리 계산한 report id 집합을
+    AND. year 없으면 scope 그대로."""
+    if year is None:
+        return scope
+    yfilter = report_ids_in_year(db, year)
+    return yfilter if scope is None else (scope & yfilter)
 
 
 def _visible_scope_ids(db: Session, actor) -> Optional[set[int]]:
@@ -80,6 +91,7 @@ def semantic_search(
     scope=_UNSET,
     entity_ids: Optional[list[int]] = None,
     entity_rollup: bool = False,
+    year: Optional[int] = None,
 ) -> list[dict]:
     """벡터 유사도 검색 — 보고서별 최적(최근접) 청크 기준 상위 limit 개.
 
@@ -93,8 +105,10 @@ def semantic_search(
         return []
     if scope is _UNSET:
         scope = _visible_scope_ids(db, actor)
-        # 직접 호출 경로에서만 엔티티 필터 적용 — hybrid 는 미리 필터한 scope 를 넘긴다.
+        # 직접 호출 경로에서만 엔티티·연도 필터 적용 — hybrid 는 미리 필터한
+        # scope 를 넘긴다(거기서 한 번에 얹음).
         scope = _apply_entity_scope(db, scope, entity_ids, entity_rollup)
+        scope = _apply_year_scope(db, scope, year)
     if scope is not None and not scope:
         return []
 
@@ -174,6 +188,7 @@ def hybrid_search(
     rrf_k: int = 60,
     entity_ids: Optional[list[int]] = None,
     entity_rollup: bool = False,
+    year: Optional[int] = None,
 ) -> list[dict]:
     """semantic + keyword 를 RRF 로 합산. 한쪽에만 잡혀도 상위로 끌어올린다.
 
@@ -184,6 +199,7 @@ def hybrid_search(
     """
     scope = _visible_scope_ids(db, actor)
     scope = _apply_entity_scope(db, scope, entity_ids, entity_rollup)
+    scope = _apply_year_scope(db, scope, year)
     if scope is not None and not scope:
         return []
 

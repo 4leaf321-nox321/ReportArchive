@@ -93,6 +93,7 @@ import { useAsync } from '@/shared/hooks/useAsync'
 import { usePersistedState } from '@/shared/hooks/usePersistedState'
 import { useWidgetCatalog } from '@/shared/hooks/useWidgetCatalog'
 import { listEntityTypes } from '@/shared/api/entities'
+import { EntityGraphDialog } from '@/modules/entities/EntityGraphDialog'
 import {
   getReport,
   createReport,
@@ -4123,7 +4124,7 @@ export default function ReportDetailPage() {
             </Button>
           </div>
           ) : (
-          <div className="flex flex-wrap items-center justify-end gap-2 ml-auto shrink-0">
+          <div className="flex flex-wrap items-center justify-end gap-2 ml-auto min-w-0">
           {/* ─── Group 1: Navigation (왼쪽으로 빠짐) ───
               종합보고에서 진입한 경우에만 보이는 "돌아가기" 버튼. 진입 시
               location.state.fromComposite 로 어느 종합보고에서 왔는지가
@@ -7066,6 +7067,8 @@ function loadEntityTypesCached() {
 export function ReportEntitiesPanel({ entities, collabSlugs }) {
   const [open, setOpen] = useState(false)
   const [types, setTypes] = useState(null) // 축 catalog (label·순서) — null=미로딩
+  // 클릭한 기준정보 값의 관계도 팝업(읽기 전용, 비관리자=active만). null=닫힘.
+  const [graphEntity, setGraphEntity] = useState(null)
   const { all: workspaces } = useWorkspace()
 
   useEffect(() => {
@@ -7172,22 +7175,28 @@ export function ReportEntitiesPanel({ entities, collabSlugs }) {
               </dt>
               <dd className="flex min-w-0 flex-1 flex-wrap gap-1">
                 {g.items.map((e) => (
-                  <span
+                  <button
                     key={e.id}
+                    type="button"
+                    onClick={() =>
+                      setGraphEntity({ id: e.id, value: e.value })
+                    }
                     className={cn(
-                      'inline-flex items-center rounded-full border px-2 py-0.5',
+                      'inline-flex items-center gap-1 rounded-full border px-2 py-0.5',
+                      'transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-foreground',
                       e.status === 'inactive'
                         ? 'border-dashed text-muted-foreground'
                         : 'bg-background text-foreground/80',
                     )}
                     title={
                       e.status === 'inactive'
-                        ? '비활성화된 값이지만 이 보고서에 태깅되어 있음'
-                        : undefined
+                        ? '비활성화된 값이지만 이 보고서에 태깅되어 있음 — 클릭하면 관계도 보기'
+                        : '클릭하면 이 값의 관계도(연결된 모델·부품·시험 등) 보기'
                     }
                   >
                     {e.value}
-                  </span>
+                    <Share2 className="h-2.5 w-2.5 opacity-50" />
+                  </button>
                 ))}
               </dd>
             </div>
@@ -7219,6 +7228,13 @@ export function ReportEntitiesPanel({ entities, collabSlugs }) {
             </div>
           )}
         </dl>
+      )}
+      {graphEntity && (
+        <EntityGraphDialog
+          entityId={graphEntity.id}
+          label={graphEntity.value}
+          onClose={() => setGraphEntity(null)}
+        />
       )}
     </div>
   )

@@ -11,6 +11,10 @@ import {
 import { cn } from '@/shared/lib/utils'
 import { createEntity, listEntities } from '@/shared/api/entities'
 
+const CURRENT_YEAR = new Date().getFullYear()
+// 연도 드롭다운 후보 — 올해부터 9년 전까지. "전체"는 null 로 표현.
+const YEAR_OPTIONS = Array.from({ length: 10 }, (_, i) => CURRENT_YEAR - i)
+
 /**
  * One-axis entity picker — compact horizontal chips + "+ 추가" popover.
  *
@@ -132,6 +136,11 @@ function AddPopover({ type, selected, onPick, relatedTo }) {
   // 캐스케이드 좁힘 on/off. relatedTo 가 있으면 기본 좁힘(true), 사용자가
   // "전체 보기" 로 끌 수 있다.
   const [narrow, setNarrow] = useState(true)
+  // 연도 좁힘 (p56). evergreen 이 아닌 축은 기본 "올해"로 좁혀 매년 누적되는
+  // 값의 폭증을 누른다. 드롭다운에서 다른 연도나 "전체"(null)를 고를 수 있다.
+  const yearApplies = !!type?.temporal_kind && type.temporal_kind !== 'evergreen'
+  const [year, setYear] = useState(CURRENT_YEAR) // null = 전체
+  const applyYear = yearApplies && year != null
   const debounceRef = useRef(null)
   const inputRef = useRef(null)
 
@@ -185,6 +194,7 @@ function AddPopover({ type, selected, onPick, relatedTo }) {
           q: query || undefined,
           limit: 100,
           relatedTo: applyNarrow ? relatedKey.split(',').map(Number) : undefined,
+          year: applyYear ? year : undefined,
         })
         setItems(res?.items ?? [])
       } catch (e) {
@@ -197,7 +207,7 @@ function AddPopover({ type, selected, onPick, relatedTo }) {
     }
     debounceRef.current = setTimeout(fire, query ? 250 : 0)
     return () => debounceRef.current && clearTimeout(debounceRef.current)
-  }, [open, query, type.id, type.label, applyNarrow, relatedKey])
+  }, [open, query, type.id, type.label, applyNarrow, relatedKey, applyYear, year])
 
   const trimmedQuery = query.trim()
   // Hide values already selected — re-picking the same chip would be a
@@ -289,6 +299,31 @@ function AddPopover({ type, selected, onPick, relatedTo }) {
             </div>
           )}
 
+          {/* 연도 선택 (p56) — 연도별로 적용 여부가 갈리는 축에서 특정 연도나
+              "전체"를 고른다. 기본은 올해. */}
+          {yearApplies && (
+            <div className="flex items-center justify-between px-0.5 text-[11px] text-muted-foreground">
+              <span>연도</span>
+              <select
+                value={year ?? 'all'}
+                onChange={(e) =>
+                  setYear(
+                    e.target.value === 'all' ? null : Number(e.target.value),
+                  )
+                }
+                className="h-6 rounded border bg-background px-1 text-[11px]"
+                title="이 축은 연도별로 적용 여부가 갈립니다 — 연도를 고르거나 전체를 보세요"
+              >
+                <option value="all">전체</option>
+                {YEAR_OPTIONS.map((y) => (
+                  <option key={y} value={y}>
+                    {y}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <div className="max-h-60 overflow-y-auto rounded-md border bg-background">
             {loading && (
               <div className="px-3 py-2 text-center text-xs text-muted-foreground">
@@ -301,7 +336,9 @@ function AddPopover({ type, selected, onPick, relatedTo }) {
                   ? `'${trimmedQuery}' 와 일치하는 값이 없습니다.`
                   : applyNarrow
                     ? '선택과 관련된 값이 없습니다 — “전체 보기”를 눌러보세요.'
-                    : '등록된 값이 없습니다.'}
+                    : applyYear
+                      ? `${year}년에 해당하는 값이 없습니다 — 연도를 “전체”로 바꿔보세요.`
+                      : '등록된 값이 없습니다.'}
               </div>
             )}
             {!loading &&

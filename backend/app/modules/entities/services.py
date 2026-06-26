@@ -8,9 +8,10 @@ models:
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -22,7 +23,9 @@ from app.modules.entities.models import (
     EntityEntryPolicy,
     EntityRelation,
     EntityStatus,
+    EntityTemporalKind,
     EntityType,
+    EntityYear,
     RelationType,
     ReportEntity,
 )
@@ -113,6 +116,9 @@ def update_type(db: Session, row: EntityType, payload: EntityTypeUpdate) -> Enti
 
     if "entry_policy" in data and data["entry_policy"] is not None:
         row.entry_policy = data["entry_policy"]
+
+    if "temporal_kind" in data and data["temporal_kind"] is not None:
+        row.temporal_kind = data["temporal_kind"]
 
     if "value_pattern" in data:
         raw = (data["value_pattern"] or "").strip()
@@ -229,6 +235,50 @@ def _related_to_subquery(related_to: list[int]):
     )
 
 
+def _temporal_year_filter(year: int):
+    """축의 temporal_kind 에 따라 "연도 Y 에 해당하는 값" WHERE 조건 (p56).
+
+    각 행의 축 종류를 상관 스칼라 서브쿼리로 읽어 분기한다(명시 join 없이 —
+    Entity.entity_type 의 eager join 과 충돌 회피):
+      evergreen → 항상 통과 / lifecycle → 유효구간에 Y 포함 /
+      yearly → entity_years 에 Y 존재 / derived → 그 해 보고서에 등장.
+    """
+    from app.modules.reports.models import Report  # 지연 import — 순환 회피
+
+    type_kind = (
+        select(EntityType.temporal_kind)
+        .where(EntityType.id == Entity.type_id)
+        .correlate(Entity)
+        .scalar_subquery()
+    )
+    lifecycle_ok = and_(
+        or_(Entity.valid_from_year.is_(None), Entity.valid_from_year <= year),
+        or_(Entity.valid_to_year.is_(None), Entity.valid_to_year >= year),
+    )
+    yearly_ok = (
+        select(EntityYear.entity_id)
+        .where(EntityYear.entity_id == Entity.id, EntityYear.year == year)
+        .correlate(Entity)
+        .exists()
+    )
+    derived_ok = (
+        select(ReportEntity.report_id)
+        .join(Report, Report.id == ReportEntity.report_id)
+        .where(
+            ReportEntity.entity_id == Entity.id,
+            func.extract("year", Report.report_date) == year,
+        )
+        .correlate(Entity)
+        .exists()
+    )
+    return or_(
+        type_kind == EntityTemporalKind.evergreen,
+        and_(type_kind == EntityTemporalKind.lifecycle, lifecycle_ok),
+        and_(type_kind == EntityTemporalKind.yearly, yearly_ok),
+        and_(type_kind == EntityTemporalKind.derived, derived_ok),
+    )
+
+
 def list_entities(
     db: Session,
     *,
@@ -238,6 +288,7 @@ def list_entities(
     limit: int = 200,
     with_usage: bool = False,
     related_to: Optional[list[int]] = None,
+    year: Optional[int] = None,
 ) -> list[Entity] | list[tuple[Entity, int]]:
     """Picker list — filters on axis + search + (optionally) status.
 
@@ -268,6 +319,8 @@ def list_entities(
             )
         if related_to:
             stmt = stmt.where(Entity.id.in_(_related_to_subquery(related_to)))
+        if year is not None:
+            stmt = stmt.where(_temporal_year_filter(year))
         stmt = stmt.order_by(Entity.value).limit(limit)
         return list(db.execute(stmt).scalars())
 
@@ -301,6 +354,8 @@ def list_entities(
         )
     if related_to:
         stmt = stmt.where(Entity.id.in_(_related_to_subquery(related_to)))
+    if year is not None:
+        stmt = stmt.where(_temporal_year_filter(year))
     stmt = stmt.order_by(Entity.value).limit(limit)
     return [(row, int(cnt or 0)) for row, cnt in db.execute(stmt).all()]
 
@@ -367,6 +422,14 @@ def create_entity(
     db.add(row)
     db.commit()
     db.refresh(row)
+
+    # yearly 축(모델 등)은 새 값이 "올해 배정"으로 시작하게 한다 — 연도 필터
+    # 기본값(올해)에서 방금 만든 값이 곧바로 보이도록. 이후 다른 연도는 admin 이
+    # 추가. lifecycle/derived/evergreen 축은 자동 배정하지 않는다.
+    if type_row.temporal_kind == EntityTemporalKind.yearly:
+        db.add(EntityYear(entity_id=row.id, year=datetime.utcnow().year))
+        db.commit()
+
     return row
 
 
@@ -398,10 +461,36 @@ def update_entity(db: Session, row: Entity, payload: EntityUpdate) -> Entity:
         row.description = data["description"].strip()
     if "status" in data and data["status"] is not None:
         row.status = data["status"]
+    # 유효구간 (p56, lifecycle). 키가 오면 그대로 반영 — null 이면 해제(개방).
+    if "valid_from_year" in data:
+        row.valid_from_year = data["valid_from_year"]
+    if "valid_to_year" in data:
+        row.valid_to_year = data["valid_to_year"]
 
     db.commit()
     db.refresh(row)
     return row
+
+
+def get_entity_years(db: Session, entity_id: int) -> list[int]:
+    """yearly 축 값에 배정된 연도(오름차순). 다른 축에선 보통 빈 리스트."""
+    return list(
+        db.execute(
+            select(EntityYear.year)
+            .where(EntityYear.entity_id == entity_id)
+            .order_by(EntityYear.year)
+        ).scalars()
+    )
+
+
+def set_entity_years(db: Session, row: Entity, years: list[int]) -> list[int]:
+    """연도 세트 전체 교체(replace). 중복·None 제거 후 정렬해 저장."""
+    clean = sorted({int(y) for y in years if y is not None})
+    db.execute(delete(EntityYear).where(EntityYear.entity_id == row.id))
+    for y in clean:
+        db.add(EntityYear(entity_id=row.id, year=y))
+    db.commit()
+    return clean
 
 
 def merge_entities(

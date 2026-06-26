@@ -220,6 +220,12 @@ def search_reports(
         default=False,
         description="관계(part_of) 롤업 — entity_ids 필터를 자손까지 확장",
     ),
+    year: int | None = Query(
+        default=None,
+        ge=1900,
+        le=2200,
+        description="자료 연도 — 보고서 작성연도(report_date) 필터. 미지정=전체",
+    ),
     limit: int = Query(default=30, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -234,7 +240,7 @@ def search_reports(
         location = "all"
     rows, total = services.search_reports(
         db, actor, q, limit=limit, offset=offset, location=location, board=board,
-        entity_ids=entity_ids, entity_rollup=entity_rollup,
+        entity_ids=entity_ids, entity_rollup=entity_rollup, year=year,
     )
     needle = q.strip()
     results = [
@@ -257,6 +263,10 @@ def semantic_search_reports(
     entity_rollup: bool = Query(
         default=False, description="관계(part_of) 롤업 — entity_ids 를 자손까지 확장"
     ),
+    year: int | None = Query(
+        default=None, ge=1900, le=2200,
+        description="자료 연도 — 보고서 작성연도(report_date) 필터. 미지정=전체",
+    ),
     limit: int = Query(default=20, ge=1, le=50),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
@@ -274,13 +284,13 @@ def semantic_search_reports(
     if mode == "semantic":
         results = ai_search.semantic_search(
             db, q, actor, limit=limit,
-            entity_ids=entity_ids, entity_rollup=entity_rollup,
+            entity_ids=entity_ids, entity_rollup=entity_rollup, year=year,
         )
     else:
         mode = "hybrid"
         results = ai_search.hybrid_search(
             db, q, actor, limit=limit,
-            entity_ids=entity_ids, entity_rollup=entity_rollup,
+            entity_ids=entity_ids, entity_rollup=entity_rollup, year=year,
         )
     return success_response(data={"results": results, "mode": mode, "limit": limit})
 

@@ -576,6 +576,7 @@ def search_reports(
     board: str = "",
     entity_ids: Optional[list[int]] = None,
     entity_rollup: bool = False,
+    year: Optional[int] = None,
 ) -> tuple[list[Report], int]:
     """본문(search_text) + 제목 부분일치(pg_trgm ILIKE) 검색. 가시성 스코프 적용.
 
@@ -641,6 +642,11 @@ def search_reports(
             conditions.append(Report.search_text.ilike(f"%{tok}%"))
     if scope_ids is not None:
         conditions.append(Report.id.in_(scope_ids))
+    # 자료 연도(작성연도) 필터 — report_date 의 연도. 엔티티의 적용연도(temporal)와
+    # 독립이다(p56 보충): 여긴 "언제 작성된 보고서냐", 엔티티 필터는 "값이 어느
+    # 해에 적용되냐". 둘은 AND 로 맞물린다.
+    if year is not None:
+        conditions.append(func.extract("year", Report.report_date) == year)
 
     count_q = select(func.count(Report.id)).where(*conditions)
     select_q = select(Report).where(*conditions)
@@ -671,6 +677,19 @@ def search_reports(
         .all()
     )
     return list(rows), total
+
+
+def report_ids_in_year(db: Session, year: int) -> set[int]:
+    """report_date 가 주어진 연도인(삭제 안 된) 보고서 id 집합 (p56). 시맨틱/
+    하이브리드 검색이 벡터 scope 에 자료연도 필터를 교집합으로 얹는 데 쓴다 —
+    키워드 경로는 search_reports 가 조건절로 직접 거른다."""
+    rows = db.execute(
+        select(Report.id).where(
+            Report.deleted_at.is_(None),
+            func.extract("year", Report.report_date) == year,
+        )
+    ).scalars()
+    return set(rows)
 
 
 def _validate_page(db: Session, page: ReportPage) -> None:

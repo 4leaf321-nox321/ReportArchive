@@ -39,6 +39,8 @@ from app.modules.entities.schemas import (
     EntityUpdate,
     EntityUsageReportRef,
     EntityUsageResponse,
+    EntityYearsResponse,
+    EntityYearsUpdate,
     RelationTypeCreate,
     RelationTypeListResponse,
     RelationTypeRead,
@@ -95,6 +97,8 @@ def _to_read(row, usage_count: Optional[int] = None) -> EntityRead:
         code=row.code,
         description=row.description,
         status=row.status,
+        valid_from_year=row.valid_from_year,
+        valid_to_year=row.valid_to_year,
         created_by_user_id=row.created_by_user_id,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -271,12 +275,17 @@ def list_entities(
     limit: int = Query(default=200, ge=1, le=500),
     with_usage: bool = Query(default=False),
     related_to: Optional[list[int]] = Query(default=None),
+    year: Optional[int] = Query(default=None, ge=1900, le=2200),
     actor: EntityActor = Depends(entity_actor),
     db: Session = Depends(get_db),
 ):
     """Picker list. Defaults to active-only; admin page passes
     `include_deprecated=true`. Without `type_id` returns across all
     axes (mostly useful for global search).
+
+    `year` (p56) filters by the axis's temporal policy: evergreen 축은
+    무시(항상 포함), lifecycle=유효구간, yearly=배정연도, derived=그 해
+    보고서에 등장. 미지정이면 전체(연도 무관).
 
     `with_usage=true` is admin-only — it adds a per-row COUNT subquery
     to populate `usage_count`. We gate it on role to keep the picker
@@ -294,6 +303,7 @@ def list_entities(
         limit=limit,
         with_usage=with_usage,
         related_to=related_to or None,
+        year=year,
     )
     if with_usage:
         items = [_to_read(r, usage_count=cnt) for (r, cnt) in rows]
@@ -336,6 +346,37 @@ def update_entity(
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return success_response(data=_to_read(row))
+
+
+@entities_router.get("/{entity_id}/years")
+def list_entity_years(
+    entity_id: int,
+    _actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """yearly 축(모델 등) 값에 배정된 연도 세트 (p56). 인증만 필요(읽기) — 편집
+    다이얼로그·탐색에서 읽는다. 다른 축이면 보통 빈 리스트."""
+    row = services.get_entity(db, entity_id)
+    if not row:
+        return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
+    years = services.get_entity_years(db, entity_id)
+    return success_response(data=EntityYearsResponse(years=years))
+
+
+@entities_router.put("/{entity_id}/years")
+def set_entity_years(
+    entity_id: int,
+    payload: EntityYearsUpdate,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 연도 세트 전체 교체 (p56). 빈 리스트면 전부 해제."""
+    _require_admin(actor)
+    row = services.get_entity(db, entity_id)
+    if not row:
+        return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
+    years = services.set_entity_years(db, row, payload.years)
+    return success_response(data=EntityYearsResponse(years=years))
 
 
 @entities_router.post("/{entity_id}/merge")
@@ -601,16 +642,25 @@ def entity_subgraph(
     entity_id: int,
     relations: Optional[list[str]] = Query(default=None, alias="relations"),
     depth: int = Query(default=2, ge=1, le=10),
-    _actor: EntityActor = Depends(entity_actor),
+    actor: EntityActor = Depends(entity_actor),
     db: Session = Depends(get_db),
 ):
     """이 엔티티 주변 서브그래프(노드+엣지, D-2). 재귀 CTE(graph.subgraph)로 양방향
     `depth` hop 까지. `relations`(반복) 로 따라갈 관계 종류 제한(미지정=전체).
-    관계도 시각화·AI(GraphRAG) 컨텍스트의 토대. 인증만 필요(읽기)."""
+    관계도 시각화·AI(GraphRAG) 컨텍스트의 토대. 인증만 필요(읽기).
+
+    일반 사용자(비관리자)에겐 active 엔티티만 노출한다 — deprecated 기준정보는
+    관리자만 본다(엔티티 관리 화면). 시드 자신은 deprecated 라도 중심으로 남는다."""
     row = services.get_entity(db, entity_id)
     if not row:
         return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
-    data = graph.subgraph(db, [entity_id], relations=relations or None, max_depth=depth)
+    data = graph.subgraph(
+        db,
+        [entity_id],
+        relations=relations or None,
+        max_depth=depth,
+        active_only=not actor.is_admin,
+    )
     return success_response(data=data)
 
 

@@ -66,10 +66,15 @@ export async function createEntityType({
  * Admin-only — 축의 입력 거버넌스 수정 (p53). entryPolicy: 'open'|'closed',
  * valuePattern: 정규식 문자열(빈 문자열/null 이면 제약 해제). 보낸 필드만 반영.
  */
-export async function updateEntityType(id, { entryPolicy, valuePattern } = {}) {
+export async function updateEntityType(
+  id,
+  { entryPolicy, valuePattern, temporalKind } = {},
+) {
   const body = {}
   if (entryPolicy !== undefined) body.entry_policy = entryPolicy
   if (valuePattern !== undefined) body.value_pattern = valuePattern
+  // 시간 차원 정책 (p56): evergreen|lifecycle|yearly|derived.
+  if (temporalKind !== undefined) body.temporal_kind = temporalKind
   const res = await apiClient.patch(`${TYPES_BASE}/${id}`, body)
   return extractData(res)
 }
@@ -157,6 +162,7 @@ export async function listEntities({
   limit = 200,
   withUsage = false,
   relatedTo,
+  year,
 } = {}) {
   // URLSearchParams 로 직접 조립 — related_to 는 반복 파라미터
   // (related_to=1&related_to=2) 라야 FastAPI list[int] 에 바인딩된다.
@@ -170,6 +176,8 @@ export async function listEntities({
   if (Array.isArray(relatedTo)) {
     for (const id of relatedTo) if (id != null) params.append('related_to', String(id))
   }
+  // 연도 필터 (p56) — 축의 temporal_kind 에 따라 서버가 해석. 미지정=전체.
+  if (year != null) params.set('year', String(year))
   const res = await apiClient.get(`${BASE}?${params.toString()}`)
   return extractData(res)
 }
@@ -187,14 +195,35 @@ export async function createEntity({ type_id, value, code, description = '' } = 
   return extractData(res)
 }
 
-/** Admin-only: rename / restamp / deprecate / restore. */
-export async function updateEntity(id, { value, code, description, status } = {}) {
+/** Admin-only: rename / restamp / deprecate / restore + lifecycle 유효구간(p56).
+ * validFromYear/validToYear 에 null 을 명시하면 해제(개방), undefined 면 미변경. */
+export async function updateEntity(
+  id,
+  { value, code, description, status, validFromYear, validToYear } = {},
+) {
   const body = {}
   if (value !== undefined) body.value = value
   if (code !== undefined) body.code = code
   if (description !== undefined) body.description = description
   if (status !== undefined) body.status = status
+  if (validFromYear !== undefined) body.valid_from_year = validFromYear
+  if (validToYear !== undefined) body.valid_to_year = validToYear
   const res = await apiClient.patch(`${BASE}/${id}`, body)
+  return extractData(res)
+}
+
+/**
+ * yearly 축(모델 등) 값에 배정된 연도 세트 (p56). `{ years: [int] }`(오름차순).
+ * 인증만 필요(읽기).
+ */
+export async function getEntityYears(id) {
+  const res = await apiClient.get(`${BASE}/${id}/years`)
+  return extractData(res)
+}
+
+/** Admin-only — 연도 세트 전체 교체(replace). 빈 배열이면 전부 해제. */
+export async function setEntityYears(id, years) {
+  const res = await apiClient.put(`${BASE}/${id}/years`, { years })
   return extractData(res)
 }
 

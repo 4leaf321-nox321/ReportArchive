@@ -37,7 +37,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { DataTable } from '@/shared/components/DataTable'
-import { EntityGraphView } from './EntityGraphView'
+import { EntityGraphDialog } from './EntityGraphDialog'
 import { cn } from '@/shared/lib/utils'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { ErrorState } from '@/shared/components/ErrorState'
@@ -51,19 +51,28 @@ import {
   deleteEntityAlias,
   deleteEntityRelation,
   deleteEntityType,
+  getEntityYears,
   listEntities,
   listEntityAliases,
   listEntityRelations,
   listEntityTypes,
   listEntityUsage,
   listRelationTypes,
-  getEntityGraph,
   mergeEntity,
+  setEntityYears,
   unlinkEntityFromAllReports,
   unlinkEntityFromReport,
   updateEntity,
   updateEntityType,
 } from '@/shared/api/entities'
+
+// 시간 차원 정책 (p56) 짧은 라벨 — 축 거버넌스 바에 현재 설정을 한 단어로 표시.
+const TEMPORAL_KIND_LABEL = {
+  evergreen: '연도 무관',
+  lifecycle: '유효구간',
+  yearly: '연도별 배정',
+  derived: '자동 추론',
+}
 
 /**
  * /admin/entities — admin-only management for the N-axis controlled
@@ -713,6 +722,10 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
             '제한 없음'
           )}
         </span>
+        <span className="text-muted-foreground/50">·</span>
+        <span className="text-muted-foreground">
+          연도: {TEMPORAL_KIND_LABEL[type.temporal_kind] ?? '연도 무관'}
+        </span>
         <Button
           variant="ghost"
           size="sm"
@@ -765,7 +778,8 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
       )}
       {graphTarget && (
         <EntityGraphDialog
-          entity={graphTarget}
+          entityId={graphTarget.id}
+          label={graphTarget.value}
           onClose={() => setGraphTarget(null)}
         />
       )}
@@ -987,6 +1001,9 @@ function UsageList({
 function AxisGovernanceDialog({ type, onClose, onSaved }) {
   const [policy, setPolicy] = useState(type.entry_policy ?? 'open')
   const [pattern, setPattern] = useState(type.value_pattern ?? '')
+  const [temporalKind, setTemporalKind] = useState(
+    type.temporal_kind ?? 'evergreen',
+  )
   const [test, setTest] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -1019,6 +1036,7 @@ function AxisGovernanceDialog({ type, onClose, onSaved }) {
       await updateEntityType(type.id, {
         entryPolicy: policy,
         valuePattern: trimmedPattern, // 빈 문자열이면 백엔드가 제약 해제
+        temporalKind,
       })
       toast.success(`'${type.label}' 입력 거버넌스 저장됨`)
       onSaved?.()
@@ -1117,6 +1135,34 @@ function AxisGovernanceDialog({ type, onClose, onSaved }) {
                 )}
               </div>
             ) : null}
+          </div>
+
+          {/* 시간 차원 정책 (p56) — 연도 필터가 이 축에 어떻게 적용될지. */}
+          <div className="space-y-1.5">
+            <Label className="text-xs" htmlFor="temporal-kind">
+              시간 차원 (연도 적용 방식)
+            </Label>
+            <select
+              id="temporal-kind"
+              value={temporalKind}
+              onChange={(e) => setTemporalKind(e.target.value)}
+              className="h-8 w-full rounded-md border bg-background px-2 text-sm"
+            >
+              <option value="evergreen">연도 무관 (항상 노출)</option>
+              <option value="lifecycle">유효구간 (도입~폐지 연도)</option>
+              <option value="yearly">연도별 배정 (값마다 연도 세트)</option>
+              <option value="derived">자동 추론 (쓰인 보고서 연도)</option>
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              {temporalKind === 'evergreen' &&
+                '연도 필터를 무시하고 항상 보입니다(시험 종류·단계 등).'}
+              {temporalKind === 'lifecycle' &&
+                '값마다 유효 시작/종료 연도를 두고, 그 구간에 드는 해에만 노출(부품·BOM).'}
+              {temporalKind === 'yearly' &&
+                '값마다 적용 연도를 명시 배정합니다(모델). 새 값은 올해로 시작.'}
+              {temporalKind === 'derived' &&
+                '별도 입력 없이, 그 값이 쓰인 보고서의 연도로 자동 판정합니다(관리비 0).'}
+            </p>
           </div>
         </div>
 
@@ -1485,75 +1531,6 @@ function RelationsDialog({ type, entity, onClose }) {
   )
 }
 
-/**
- * 관계도 — 이 엔티티 주변 2단계 서브그래프를 force 그래프로(GET /entities/{id}/graph).
- * D-1 RelationsDialog 가 텍스트 목록이라면, 이건 같은 데이터를 시각화한다.
- */
-function EntityGraphDialog({ entity, onClose }) {
-  const [graph, setGraph] = useState(null) // null=loading
-  const [relTypes, setRelTypes] = useState([])
-  const [error, setError] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    setGraph(null)
-    setError(false)
-    Promise.all([
-      getEntityGraph(entity.id, { depth: 2 }),
-      listRelationTypes().catch(() => ({ items: [] })),
-    ])
-      .then(([g, rt]) => {
-        if (cancelled) return
-        setGraph(g)
-        setRelTypes(rt?.items ?? [])
-      })
-      .catch(() => !cancelled && setError(true))
-    return () => {
-      cancelled = true
-    }
-  }, [entity.id])
-
-  const relTypeLabels = useMemo(() => {
-    const m = new Map()
-    for (const rt of relTypes) m.set(rt.slug, rt.label)
-    return m
-  }, [relTypes])
-
-  return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="flex h-[80vh] max-h-[80vh] w-[80vw] max-w-[80vw] flex-col overflow-hidden">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Share2 className="h-4 w-4" /> 관계도 — {entity.value}
-          </DialogTitle>
-          <DialogDescription>
-            이 값 주변 2단계 관계 그래프. 노드를 끌어 배치하고 휠로 확대/축소합니다.
-            다이아몬드 = 엔티티(축별 색), 화살표 = 관계(가리키면 종류 표시).
-          </DialogDescription>
-        </DialogHeader>
-        <div className="min-h-0 flex-1">
-          {error ? (
-            <div className="flex h-full items-center justify-center text-sm text-destructive">
-              그래프를 불러오지 못했습니다.
-            </div>
-          ) : graph === null ? (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              불러오는 중…
-            </div>
-          ) : (
-            <EntityGraphView
-              graph={graph}
-              centerId={entity.id}
-              relTypeLabels={relTypeLabels}
-              active
-            />
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
 function RelationList({ items, empty, onRemove, relTypeBySlug }) {
   if (items == null) {
     return (
@@ -1606,32 +1583,92 @@ function RelationList({ items, empty, onRemove, relTypeBySlug }) {
  */
 function EditDialog({ mode, type, target, onClose, onSaved }) {
   const isCreate = mode === 'create'
+  const isLifecycle = type.temporal_kind === 'lifecycle'
+  const isYearly = type.temporal_kind === 'yearly'
   const [value, setValue] = useState(target?.value ?? '')
   const [code, setCode] = useState(target?.code ?? '')
   const [description, setDescription] = useState(target?.description ?? '')
+  // lifecycle 유효구간 — 빈 문자열 = 개방(NULL).
+  const [fromYear, setFromYear] = useState(
+    target?.valid_from_year != null ? String(target.valid_from_year) : '',
+  )
+  const [toYear, setToYear] = useState(
+    target?.valid_to_year != null ? String(target.valid_to_year) : '',
+  )
+  // yearly 연도 세트 — 쉼표/공백 구분 텍스트로 편집. 신규는 올해로 시작
+  // (백엔드 자동배정과 일치). 기존 값은 마운트 시 로드.
+  const [yearsText, setYearsText] = useState(
+    isCreate && isYearly ? String(new Date().getFullYear()) : '',
+  )
   const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (isCreate || !isYearly || !target?.id) return undefined
+    let cancelled = false
+    getEntityYears(target.id)
+      .then((res) => {
+        if (!cancelled) setYearsText((res?.years ?? []).join(', '))
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [isCreate, isYearly, target?.id])
+
+  // 입력 텍스트 → 정렬된 고유 연도 배열(범위 밖/비정수 무시).
+  const parsedYears = useMemo(() => {
+    const set = new Set()
+    for (const tok of yearsText.split(/[\s,]+/)) {
+      if (!tok) continue
+      const n = Number(tok)
+      if (Number.isInteger(n) && n >= 1900 && n <= 2200) set.add(n)
+    }
+    return [...set].sort((a, b) => a - b)
+  }, [yearsText])
 
   const trimmedValue = value.trim()
   const canSubmit = trimmedValue.length > 0 && !submitting
+
+  function yearOrNull(s) {
+    const t = s.trim()
+    if (!t) return null
+    const n = Number(t)
+    return Number.isInteger(n) ? n : null
+  }
 
   async function handleSubmit() {
     if (!canSubmit) return
     setSubmitting(true)
     try {
       if (isCreate) {
-        await createEntity({
+        const created = await createEntity({
           type_id: type.id,
           value: trimmedValue,
           code: code.trim() || undefined,
           description: description.trim(),
         })
+        // 연도 데이터는 별도 경로 — 생성된 id 로 후속 반영.
+        if (isLifecycle && (fromYear.trim() || toYear.trim())) {
+          await updateEntity(created.id, {
+            validFromYear: yearOrNull(fromYear),
+            validToYear: yearOrNull(toYear),
+          })
+        }
+        if (isYearly) await setEntityYears(created.id, parsedYears)
         toast.success(`'${trimmedValue}' 추가됨`)
       } else {
         await updateEntity(target.id, {
           value: trimmedValue,
           code: code.trim() || '',
           description: description.trim(),
+          ...(isLifecycle
+            ? {
+                validFromYear: yearOrNull(fromYear),
+                validToYear: yearOrNull(toYear),
+              }
+            : {}),
         })
+        if (isYearly) await setEntityYears(target.id, parsedYears)
         toast.success(`'${trimmedValue}' 수정됨`)
       }
       onSaved()
@@ -1686,6 +1723,62 @@ function EditDialog({ mode, type, target, onClose, onSaved }) {
               className="mt-1"
             />
           </div>
+
+          {/* lifecycle 축 — 유효구간(도입~폐지). 비우면 개방. (p56) */}
+          {isLifecycle && (
+            <div>
+              <Label className="text-xs">유효 연도 구간 (선택)</Label>
+              <div className="mt-1 flex items-center gap-2">
+                <Input
+                  value={fromYear}
+                  onChange={(e) => setFromYear(e.target.value)}
+                  inputMode="numeric"
+                  placeholder="시작 (예: 2022)"
+                  className="h-9"
+                />
+                <span className="text-muted-foreground">~</span>
+                <Input
+                  value={toYear}
+                  onChange={(e) => setToYear(e.target.value)}
+                  inputMode="numeric"
+                  placeholder="종료 (비우면 진행중)"
+                  className="h-9"
+                />
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                비우면 그쪽이 개방됩니다(시작 비움=이전부터, 종료 비움=진행중).
+              </p>
+            </div>
+          )}
+
+          {/* yearly 축 — 적용 연도 세트. 쉼표/공백 구분. (p56) */}
+          {isYearly && (
+            <div>
+              <Label className="text-xs">적용 연도</Label>
+              <Input
+                value={yearsText}
+                onChange={(e) => setYearsText(e.target.value)}
+                placeholder="예: 2024, 2025"
+                className="mt-1 h-9"
+              />
+              <div className="mt-1 flex flex-wrap items-center gap-1">
+                {parsedYears.length === 0 ? (
+                  <span className="text-[11px] text-muted-foreground">
+                    배정된 연도 없음 — 이 값은 연도 필터에서 숨겨집니다.
+                  </span>
+                ) : (
+                  parsedYears.map((y) => (
+                    <span
+                      key={y}
+                      className="rounded-full border bg-background px-2 py-0.5 text-[11px]"
+                    >
+                      {y}
+                    </span>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="ghost" size="sm" onClick={onClose}>

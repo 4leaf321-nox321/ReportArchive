@@ -6,7 +6,11 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.modules.entities.models import EntityEntryPolicy, EntityStatus
+from app.modules.entities.models import (
+    EntityEntryPolicy,
+    EntityStatus,
+    EntityTemporalKind,
+)
 
 
 class EntityTypeRead(BaseModel):
@@ -25,6 +29,8 @@ class EntityTypeRead(BaseModel):
     # value_pattern 으로 입력 형식 힌트를 띄우는 데 쓴다.
     entry_policy: EntityEntryPolicy = EntityEntryPolicy.open
     value_pattern: Optional[str] = None
+    # 시간 차원 정책 (p56). 연도 필터의 적용 방식을 축 단위로 결정.
+    temporal_kind: EntityTemporalKind = EntityTemporalKind.evergreen
 
 
 class EntityTypeUpdate(BaseModel):
@@ -33,6 +39,7 @@ class EntityTypeUpdate(BaseModel):
 
     entry_policy: Optional[EntityEntryPolicy] = None
     value_pattern: Optional[str] = Field(default=None, max_length=255)
+    temporal_kind: Optional[EntityTemporalKind] = None
 
 
 class EntityAliasRead(BaseModel):
@@ -162,6 +169,9 @@ class EntityRead(BaseModel):
     code: Optional[str] = None
     description: str
     status: EntityStatus
+    # 유효구간 (p56, lifecycle 축). NULL=개방. yearly 축은 별도 /years 엔드포인트.
+    valid_from_year: Optional[int] = None
+    valid_to_year: Optional[int] = None
     created_by_user_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
@@ -223,6 +233,22 @@ class EntityUpdate(BaseModel):
     code: Optional[str] = Field(default=None, max_length=64)
     description: Optional[str] = Field(default=None, max_length=2000)
     status: Optional[EntityStatus] = None
+    # 유효구간 (p56, lifecycle). 키를 보내면 반영(null 보내면 해제). yearly 축의
+    # 연도 세트는 이 스키마가 아니라 PUT /entities/{id}/years 로 관리.
+    valid_from_year: Optional[int] = Field(default=None, ge=1900, le=2200)
+    valid_to_year: Optional[int] = Field(default=None, ge=1900, le=2200)
+
+
+class EntityYearsResponse(BaseModel):
+    """yearly 축 값에 명시 배정된 연도 세트 (오름차순)."""
+
+    years: list[int]
+
+
+class EntityYearsUpdate(BaseModel):
+    """Admin-only — 연도 세트 전체 교체(replace). 빈 리스트면 전부 해제."""
+
+    years: list[int] = Field(default_factory=list)
 
 
 class EntityMergeRequest(BaseModel):

@@ -23,7 +23,12 @@ from sqlalchemy import literal, select
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 
-from app.modules.entities.models import Entity, EntityRelation, EntityType
+from app.modules.entities.models import (
+    Entity,
+    EntityRelation,
+    EntityStatus,
+    EntityType,
+)
 
 # 깊이 상한 — 사이클/폭주 가드(acyclic 타입은 순환이 없지만, 비acyclic·손상 데이터
 # 에서도 안전하게 종료하도록 모든 CTE 가 depth < max_depth 로 멈춘다).
@@ -47,8 +52,10 @@ def _reachable_one_dir(
     relations: Optional[list[str]],
     direction: str,
     max_depth: int,
+    active_only: bool = False,
 ) -> set[int]:
-    """한 방향 재귀 CTE. start 에서 도달 가능한 노드 집합(start 자신 제외)."""
+    """한 방향 재귀 CTE. start 에서 도달 가능한 노드 집합(start 자신 제외).
+    active_only 면 deprecated 엔티티를 거치지 않는다(일반 사용자 노출용)."""
     match_col, next_col = _dir_cols(direction)
 
     # 시드 frontier = start_ids(depth 0). PG 배열을 unnest 해 행으로 편다.
@@ -66,10 +73,18 @@ def _reachable_one_dir(
     )
     if relations:
         step = step.where(EntityRelation.relation.in_(relations))
+    if active_only:
+        step = step.where(next_col.in_(_active_entity_ids()))
     trav = trav.union_all(step)
 
     rows = db.execute(select(trav.c.node).distinct()).all()
     return {r[0] for r in rows} - set(start_ids)
+
+
+def _active_entity_ids():
+    """active 상태 엔티티 id 의 스칼라 서브쿼리 — 재귀 step 의 `next.in_(...)`
+    필터로 써서 deprecated 노드로는 한 hop 도 넘어가지 않게 한다."""
+    return select(Entity.id).where(Entity.status == EntityStatus.active)
 
 
 def _reachable_undirected(
@@ -78,6 +93,7 @@ def _reachable_undirected(
     *,
     relations: Optional[list[str]],
     max_depth: int,
+    active_only: bool = False,
 ) -> set[int]:
     """무방향 재귀 CTE — 매 hop 마다 엣지를 양방향 어느 쪽으로든 따라간다(혼합 경로).
     서브그래프/AI 컨텍스트처럼 '이 노드 주변 N hop 전부'가 필요할 때(방향 무관).
@@ -105,6 +121,8 @@ def _reachable_undirected(
     )
     if relations:
         step = step.where(er.relation.in_(relations))
+    if active_only:
+        step = step.where(next_node.in_(_active_entity_ids()))
     trav = trav.union_all(step)
     rows = db.execute(select(trav.c.node).distinct()).all()
     return {r[0] for r in rows} - set(start_ids)
@@ -117,12 +135,14 @@ def reachable(
     relations: Optional[list[str]] = None,
     direction: str = "in",
     max_depth: int = _DEFAULT_MAX_DEPTH,
+    active_only: bool = False,
 ) -> set[int]:
     """start_ids 에서 주어진 관계(들)를 따라 도달하는 모든 엔티티 id(start 제외).
 
     relations=None 이면 모든 관계 종류를 따라간다. direction:
       - 'in'/'out' : 순수 방향(롤업=자손, 조상 등). 매 hop 같은 방향만.
       - 'both'     : 무방향(엣지를 어느 쪽으로든) — 꺾이는 경로 포함, 서브그래프용.
+    active_only=True 면 deprecated 엔티티는 거치지도 수집하지도 않는다.
     재귀 CTE 한 방으로 — Python BFS 보다 라운드트립이 적다.
     """
     ids = sorted({int(x) for x in start_ids})
@@ -130,10 +150,12 @@ def reachable(
         return set()
     if direction == "both":
         return _reachable_undirected(
-            db, ids, relations=relations, max_depth=max_depth
+            db, ids, relations=relations, max_depth=max_depth,
+            active_only=active_only,
         )
     return _reachable_one_dir(
-        db, ids, relations=relations, direction=direction, max_depth=max_depth
+        db, ids, relations=relations, direction=direction, max_depth=max_depth,
+        active_only=active_only,
     )
 
 
@@ -169,18 +191,22 @@ def subgraph(
     *,
     relations: Optional[list[str]] = None,
     max_depth: int = 2,
+    active_only: bool = False,
 ) -> dict:
     """seed 주변 서브그래프(노드+엣지). 관계도 시각화·AI(GraphRAG) 컨텍스트용.
 
     노드 = seed ∪ 양방향 도달분, 엣지 = 그 노드 집합 안에서 끝이 양쪽 다 들어오는
     entity_relations. 노드엔 표시 메타(value, type_slug)를 동봉한다.
+    active_only=True(일반 사용자)면 deprecated 노드를 거치지 않아 active 분만 보인다
+    — seed 자신은 deprecated 라도 중심으로 남는다(라우트가 진입 보장).
     반환: {"nodes": [{id,value,type_slug,type_id}], "edges": [{src,dst,relation}]}
     """
     seeds = sorted({int(x) for x in seed_ids})
     if not seeds:
         return {"nodes": [], "edges": []}
     node_ids = set(seeds) | reachable(
-        db, seeds, relations=relations, direction="both", max_depth=max_depth
+        db, seeds, relations=relations, direction="both", max_depth=max_depth,
+        active_only=active_only,
     )
 
     # 노드 메타.

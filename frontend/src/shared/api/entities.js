@@ -128,6 +128,20 @@ export async function deleteEntityRelation(entityId, relationId) {
 }
 
 /**
+ * 이 엔티티 주변 서브그래프(노드+엣지, D-2). 관계도 시각화용.
+ *   { nodes: [{id, value, type_id, type_slug}], edges: [{src, dst, relation}] }
+ * `relations`(배열) 로 따라갈 관계 종류 제한(미지정=전체), `depth` hop 수(기본 2).
+ */
+export async function getEntityGraph(entityId, { relations, depth = 2 } = {}) {
+  const params = new URLSearchParams({ depth: String(depth) })
+  if (Array.isArray(relations)) {
+    for (const r of relations) params.append('relations', r)
+  }
+  const res = await apiClient.get(`${BASE}/${entityId}/graph?${params.toString()}`)
+  return extractData(res)
+}
+
+/**
  * Picker list of entity values. Defaults to active-only; admin pages
  * pass `includeDeprecated=true` to see the full set.
  *

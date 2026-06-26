@@ -10,6 +10,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  Share2,
   Tags,
   Trash2,
   Combine,
@@ -36,6 +37,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { DataTable } from '@/shared/components/DataTable'
+import { EntityGraphView } from './EntityGraphView'
 import { cn } from '@/shared/lib/utils'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { ErrorState } from '@/shared/components/ErrorState'
@@ -55,6 +57,7 @@ import {
   listEntityTypes,
   listEntityUsage,
   listRelationTypes,
+  getEntityGraph,
   mergeEntity,
   unlinkEntityFromAllReports,
   unlinkEntityFromReport,
@@ -439,6 +442,7 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
   const [govOpen, setGovOpen] = useState(false)
   const [aliasTarget, setAliasTarget] = useState(null)
   const [relTarget, setRelTarget] = useState(null)
+  const [graphTarget, setGraphTarget] = useState(null)
 
   const { data, loading, error } = useAsync(
     () =>
@@ -607,6 +611,18 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
               variant="ghost"
               size="sm"
               className="h-7 w-7 p-0"
+              title="관계도 보기 — 이 값 주변 그래프"
+              onClick={(e) => {
+                e.stopPropagation()
+                setGraphTarget(r)
+              }}
+            >
+              <Share2 className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0"
               title="다른 값으로 머지"
               onClick={(e) => {
                 e.stopPropagation()
@@ -745,6 +761,12 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
           type={type}
           entity={relTarget}
           onClose={() => setRelTarget(null)}
+        />
+      )}
+      {graphTarget && (
+        <EntityGraphDialog
+          entity={graphTarget}
+          onClose={() => setGraphTarget(null)}
         />
       )}
       {createOpen && (
@@ -1458,6 +1480,75 @@ function RelationsDialog({ type, entity, onClose }) {
             닫기
           </Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/**
+ * 관계도 — 이 엔티티 주변 2단계 서브그래프를 force 그래프로(GET /entities/{id}/graph).
+ * D-1 RelationsDialog 가 텍스트 목록이라면, 이건 같은 데이터를 시각화한다.
+ */
+function EntityGraphDialog({ entity, onClose }) {
+  const [graph, setGraph] = useState(null) // null=loading
+  const [relTypes, setRelTypes] = useState([])
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setGraph(null)
+    setError(false)
+    Promise.all([
+      getEntityGraph(entity.id, { depth: 2 }),
+      listRelationTypes().catch(() => ({ items: [] })),
+    ])
+      .then(([g, rt]) => {
+        if (cancelled) return
+        setGraph(g)
+        setRelTypes(rt?.items ?? [])
+      })
+      .catch(() => !cancelled && setError(true))
+    return () => {
+      cancelled = true
+    }
+  }, [entity.id])
+
+  const relTypeLabels = useMemo(() => {
+    const m = new Map()
+    for (const rt of relTypes) m.set(rt.slug, rt.label)
+    return m
+  }, [relTypes])
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="flex h-[80vh] max-h-[80vh] w-[80vw] max-w-[80vw] flex-col overflow-hidden">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Share2 className="h-4 w-4" /> 관계도 — {entity.value}
+          </DialogTitle>
+          <DialogDescription>
+            이 값 주변 2단계 관계 그래프. 노드를 끌어 배치하고 휠로 확대/축소합니다.
+            다이아몬드 = 엔티티(축별 색), 화살표 = 관계(가리키면 종류 표시).
+          </DialogDescription>
+        </DialogHeader>
+        <div className="min-h-0 flex-1">
+          {error ? (
+            <div className="flex h-full items-center justify-center text-sm text-destructive">
+              그래프를 불러오지 못했습니다.
+            </div>
+          ) : graph === null ? (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              불러오는 중…
+            </div>
+          ) : (
+            <EntityGraphView
+              graph={graph}
+              centerId={entity.id}
+              relTypeLabels={relTypeLabels}
+              active
+            />
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   )

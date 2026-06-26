@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from sqlalchemy import select
@@ -893,6 +894,88 @@ def get_report(
     if not services.can_read_report(db, actor, report):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
     return success_response(data=_read_with_perms(db, actor, report))
+
+
+@router.get("/{report_id}/ai-summary")
+def get_report_ai_summary(
+    report_id: int,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """보고서의 B300 자동 요약 + 추천 태그/분류(B). 보고서 열람 권한 그대로 —
+    못 보는 보고서면 403. 요약이 아직 없으면 data=null(자동요약 OFF·미적재·미권한)."""
+    from app.ai.models import ReportAiSummary
+
+    report = services.get_report(db, report_id)
+    if not report:
+        return not_found_response(f"Report not found: {report_id}")
+    if not services.can_read_report(db, actor, report):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+    row = db.get(ReportAiSummary, report_id)
+    if row is None:
+        return success_response(data=None)
+    return success_response(
+        data={
+            "summary": row.summary,
+            "tags": row.tags or [],
+            "suggested_category": row.suggested_category,
+            "model": row.model,
+            "updated_at": row.updated_at,
+        }
+    )
+
+
+class BulkAiSummaryRequest(BaseModel):
+    report_ids: list[int]
+
+
+@router.post("/ai-summary/bulk")
+def bulk_ai_summary(
+    payload: BulkAiSummaryRequest,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """선택한 보고서들의 AI 요약을 일괄 생성/갱신(force) — 목록 다중선택 + 단건
+    '다시 생성'이 공유. 게이트: 요청자가 'auto_summary' 권한자(§E) **그리고** 그
+    보고서를 편집할 수 있어야(편집 권한 있는 문서만). 인가가 여기서 끝나므로 잡은
+    authorized=True 로 적재(핸들러는 작성자 게이트 건너뜀). 워커가 처리."""
+    from app.ai.entitlements import ai_enabled_for
+    from app.jobs.queue import enqueue
+    from app.shared.permissions import can_edit
+    from sqlalchemy.exc import IntegrityError
+
+    if not ai_enabled_for(db, actor.user, "auto_summary"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "AI 요약 권한이 없습니다."
+        )
+
+    enqueued, skipped, already = 0, 0, 0
+    for rid in set(payload.report_ids):
+        report = services.get_report(db, rid)
+        if not report or report.deleted_at is not None:
+            skipped += 1
+            continue
+        if not can_edit(db, actor.user, report).allowed:
+            skipped += 1  # 편집 권한 없는 문서는 제외
+            continue
+        try:
+            # force 잡은 별도 dedup_key — 대기 중인 자동(force=False) 잡에 막혀
+            # 재생성이 누락되지 않도록.
+            enqueue(
+                db,
+                "summarize_report",
+                {"report_id": rid, "force": True, "authorized": True},
+                dedup_key=f"summarize_report:force:{rid}",
+            )
+            db.commit()
+            enqueued += 1
+        except IntegrityError:
+            db.rollback()  # 이미 같은 재생성 잡이 대기/처리 중
+            already += 1
+    return success_response(
+        data={"enqueued": enqueued, "skipped": skipped, "already": already},
+        message=f"{enqueued}건 요약 생성 요청 (대기중 {already}, 제외 {skipped}).",
+    )
 
 
 @router.post("")

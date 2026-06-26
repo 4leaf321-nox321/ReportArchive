@@ -455,13 +455,18 @@ def _clear_embedding_bucket(session) -> None:
 
 
 @event.listens_for(Session, "after_commit")
-def _enqueue_report_embeddings(session) -> None:
+def _enqueue_report_ai_jobs(session) -> None:
+    """저장된 보고서에 임베딩(RAG)·자동요약(B) 잡을 적재. 두 스위치는 독립이라
+    한쪽만 켜도 그 잡만 뜬다. 자동요약의 작성자 엔티틀먼트(§E) 게이트는 핸들러
+    에서 — 트리거는 전역 스위치만 본다."""
     bucket = session.info.pop("_reports_to_embed", None)
     if not bucket:
         return
     from app.config import settings
 
-    if not settings.embedding_auto_on_save:
+    do_embed = settings.embedding_auto_on_save
+    do_summarize = settings.llm_auto_summarize_on_save
+    if not (do_embed or do_summarize):
         return
     report_ids = {o.id for o in bucket if getattr(o, "id", None) is not None}
     if not report_ids:
@@ -474,16 +479,20 @@ def _enqueue_report_embeddings(session) -> None:
     from app.database import SessionLocal
     from app.jobs.queue import enqueue
 
+    def _try(s2, job_type, rid):
+        try:
+            enqueue(s2, job_type, {"report_id": rid}, dedup_key=f"{job_type}:{rid}")
+            s2.commit()
+        except IntegrityError:
+            s2.rollback()  # 이미 같은 보고서 잡이 대기/처리 중
+
     s2 = SessionLocal()
     try:
         for rid in report_ids:
-            try:
-                enqueue(
-                    s2, "embed_report", {"report_id": rid}, dedup_key=f"embed:{rid}"
-                )
-                s2.commit()
-            except IntegrityError:
-                s2.rollback()  # 이미 같은 보고서 임베딩 잡이 대기/처리 중
+            if do_embed:
+                _try(s2, "embed_report", rid)
+            if do_summarize:
+                _try(s2, "summarize_report", rid)
     finally:
         s2.close()
 

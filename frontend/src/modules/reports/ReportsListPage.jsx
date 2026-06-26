@@ -55,6 +55,7 @@ import {
   deleteReport,
   listReports,
   moveReportToFolder,
+  bulkAiSummary,
 } from './api'
 import { setMountFolder } from '@/shared/api/mounts'
 import { BulkSubmitToCompositeDialog } from '@/modules/composites/SubmitToCompositeDialog'
@@ -1139,6 +1140,24 @@ export default function ReportsListPage() {
                 canSubmitComposite={isOrg}
                 onSubmitComposite={() => setBulkSubmitOpen(true)}
                 onSuggestEntities={() => setBulkSuggestOpen(true)}
+                onAiSummary={
+                  me?.ai_features?.includes('auto_summary')
+                    ? async () => {
+                        try {
+                          const r = await bulkAiSummary([...effectiveSelected])
+                          toast.success(
+                            `AI 요약 ${r.enqueued}건 요청 (대기중 ${r.already ?? 0}, 제외 ${r.skipped})`,
+                          )
+                        } catch (e) {
+                          toast.error(
+                            e?.response?.data?.message ||
+                              e?.message ||
+                              'AI 요약 요청 실패',
+                          )
+                        }
+                      }
+                    : undefined
+                }
                 onDelete={() => setBulkDeleteOpen(true)}
                 onUnmount={() => setBulkUnmountOpen(true)}
                 onClear={() => setSelectedIds(new Set())}
@@ -1496,6 +1515,7 @@ function BulkActionBar({
   canSubmitComposite,
   onSubmitComposite,
   onSuggestEntities,
+  onAiSummary,
   onDelete,
   onUnmount,
   onClear,
@@ -1553,6 +1573,21 @@ function BulkActionBar({
           <Sparkles className="h-3.5 w-3.5" />
           AI 태그 추천
         </Button>
+        {/* AI 요약 생성(B) — 선택한 보고서들의 요약을 일괄 생성/갱신(force).
+            auto_summary 권한자에게만(부모가 onAiSummary 를 줄 때만) 노출. */}
+        {onAiSummary && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1"
+            onClick={onAiSummary}
+            disabled={busy}
+            title="선택한 보고서들의 AI 요약을 생성/갱신(편집 권한 있는 문서만)"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            AI 요약
+          </Button>
+        )}
         {/* 종합보고 제출 — 선택한 N개 보고서를 한 종합보고에 안건으로 일괄
             제출(작성자 승인 후 추가). 이미 안건이거나 제출 불가한 건은
             서버가 거절하고 나머지만 처리된 뒤 ok/fail 토스트로 보고.

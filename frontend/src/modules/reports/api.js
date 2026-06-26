@@ -168,6 +168,27 @@ export async function semanticSearchReports(
   return { results, total: results.length, mode: data.mode ?? mode }
 }
 
+/**
+ * 보고서 B300 자동 요약 + 추천 태그/분류(B). 요약 없으면 data=null. 열람 권한
+ * 그대로(못 보는 보고서면 403). { summary, tags[], suggested_category, model, updated_at }
+ */
+export async function getReportAiSummary(id) {
+  const res = await apiClient.get(`${BASE}/${id}/ai-summary`)
+  return extractData(res)
+}
+
+/**
+ * 선택한 보고서들의 AI 요약을 일괄 생성/갱신(force, B). 목록 다중선택 + 단건
+ * "다시 생성"이 공유. 요청자가 auto_summary 권한자 + 그 문서 편집 가능해야 적재됨.
+ *   { enqueued, skipped, already }
+ */
+export async function bulkAiSummary(reportIds) {
+  const res = await apiClient.post(`${BASE}/ai-summary/bulk`, {
+    report_ids: reportIds,
+  })
+  return extractData(res)
+}
+
 /** Metadata-only folder placement — no lock required. Owner-only. */
 export async function moveReportToFolder(id, folderId) {
   const res = await apiClient.put(`${BASE}/${id}/folder`, {

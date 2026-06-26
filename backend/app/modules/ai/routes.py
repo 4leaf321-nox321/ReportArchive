@@ -256,6 +256,41 @@ def create_entitlement(
     return success_response(data=_entitlement_read(db, row))
 
 
+@router.post("/resummarize")
+def resummarize_all(
+    force: bool = False,
+    _: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """자동요약 백필(B) — 삭제 안 된 모든 보고서에 summarize_report 잡 적재.
+    작성자 엔티틀먼트·content_hash skip 은 핸들러가 판정(권한 없으면 그냥 skip).
+    force=true 면 무변경도 재요약. 전역 스위치와 무관하게 명시 트리거."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.jobs.queue import enqueue
+    from app.modules.reports.models import Report
+
+    rids = db.execute(
+        select(Report.id).where(Report.deleted_at.is_(None))
+    ).scalars().all()
+    n = 0
+    for rid in rids:
+        try:
+            enqueue(
+                db,
+                "summarize_report",
+                {"report_id": rid, "force": force},
+                dedup_key=f"summarize_report:{rid}",
+            )
+            db.commit()
+            n += 1
+        except IntegrityError:
+            db.rollback()
+    return success_response(
+        data={"enqueued": n}, message=f"{n}건 요약 잡을 적재했습니다."
+    )
+
+
 @router.delete("/entitlements/{entitlement_id}")
 def delete_entitlement(
     entitlement_id: int,

@@ -94,6 +94,7 @@ import { usePersistedState } from '@/shared/hooks/usePersistedState'
 import { useWidgetCatalog } from '@/shared/hooks/useWidgetCatalog'
 import { listEntityTypes } from '@/shared/api/entities'
 import { EntityGraphDialog } from '@/modules/entities/EntityGraphDialog'
+import { ReportAiSummaryButton } from './ReportAiSummaryButton'
 import {
   getReport,
   createReport,
@@ -4096,6 +4097,10 @@ export default function ReportDetailPage() {
                     </div>
                   </PopoverContent>
                 </Popover>
+              )}
+              {/* "i" 옆 AI 요약 버튼(B) — 요약이 있을 때만 보임, 클릭 시 모달. */}
+              {!isNew && existingReport?.id && (
+                <ReportAiSummaryButton reportId={existingReport.id} />
               )}
             </div>
           </div>

@@ -27,10 +27,41 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.config import settings
 from app.database import Base
+
+
+class ReportAiSummary(Base):
+    """보고서 1건의 B300 자동 요약 + 추천 태그/분류 (B, B300_보조AI_설계.md §B).
+
+    저장 시 백그라운드 `summarize_report` 잡이 채운다(report 당 1행). content_hash
+    + 모델 지문으로 본문 무변경 저장은 재요약 skip. **요약은 표시물(승인 불필요),
+    tags/suggested_category 는 '추천'** — 사람이 적용해야 실분류/태그에 반영
+    (자동 반영 금지). 보고서 하드삭제 시 CASCADE.
+    """
+
+    __tablename__ = "report_ai_summaries"
+
+    report_id: Mapped[int] = mapped_column(
+        ForeignKey("reports.id", ondelete="CASCADE"), primary_key=True
+    )
+    summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # LLM 이 뽑은 키워드 태그(추천) — 적용은 사람이. 자유문자열 리스트.
+    tags: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    # 추천 분류(섹션/카테고리) — 적용 전까지 표시만.
+    suggested_category: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 본문+모델 지문 해시(무변경 재요약 skip).
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
 
 class AiFeature(str, enum.Enum):

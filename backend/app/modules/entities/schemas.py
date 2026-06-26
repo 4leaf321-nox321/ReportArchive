@@ -266,6 +266,12 @@ class EntityMergeDismissRequest(BaseModel):
     entity_id_b: int
 
 
+class EntityMergeValidateRequest(BaseModel):
+    """한 클러스터(값 묶음)를 LLM 검증자에게 보내 같은 것/다른 것 판정 (Phase 2)."""
+
+    entity_ids: list[int]
+
+
 class EntityUsageReportRef(BaseModel):
     """Slim ref to a report tagged with an entity. Used by the admin
     page's "어떤 보고서가 막고 있나?" lookups — populated by

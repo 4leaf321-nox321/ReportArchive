@@ -1,5 +1,11 @@
 import { useEffect, useState } from 'react'
-import { GitMerge, Loader2, RefreshCw, AlertTriangle } from 'lucide-react'
+import {
+  GitMerge,
+  Loader2,
+  RefreshCw,
+  AlertTriangle,
+  Sparkles,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import {
   Dialog,
@@ -15,6 +21,7 @@ import {
   scanMergeCandidates,
   dismissMergePair,
   mergeEntity,
+  validateMergeCluster,
 } from '@/shared/api/entities'
 
 /**
@@ -126,6 +133,34 @@ function ClusterCard({ typeId, cluster, onResolved }) {
   const [included, setIncluded] = useState(() => new Set(members.map((m) => m.id)))
   const [survivorId, setSurvivorId] = useState(cluster.suggested_survivor_id)
   const [busy, setBusy] = useState(false)
+  const [validating, setValidating] = useState(false)
+  const [verdict, setVerdict] = useState(null)
+
+  async function handleValidate() {
+    if (validating || busy) return
+    setValidating(true)
+    try {
+      const v = await validateMergeCluster(
+        typeId,
+        members.map((m) => m.id),
+      )
+      setVerdict(v)
+      if (v.backend === 'mock') {
+        toast.info('LLM이 mock이라 검증을 건너뜁니다(직접 판단).')
+        return
+      }
+      // 검증 결과로 체크박스/생존값 자동 세팅 — 중복=체크, outlier=해제.
+      if (Array.isArray(v.duplicate_ids)) {
+        setIncluded(new Set(v.duplicate_ids))
+        if (v.canonical_id) setSurvivorId(v.canonical_id)
+        toast.success('AI 검증 완료 — 같은 값만 체크했습니다.')
+      }
+    } catch (e) {
+      toast.error(e?.response?.data?.message || e?.message || 'AI 검증 실패')
+    } finally {
+      setValidating(false)
+    }
+  }
 
   function toggle(id) {
     setIncluded((prev) => {
@@ -247,8 +282,14 @@ function ClusterCard({ typeId, cluster, onResolved }) {
           )
         })}
       </div>
+      {verdict?.reason && (
+        <div className="mt-2 flex items-start gap-1.5 rounded bg-violet-50 px-2 py-1 text-xs text-violet-800 dark:bg-violet-950/40 dark:text-violet-200">
+          <Sparkles className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>AI: {verdict.reason}</span>
+        </div>
+      )}
       <div className="mt-2 flex items-center gap-2">
-        <Button size="sm" onClick={handleMerge} disabled={busy}>
+        <Button size="sm" onClick={handleMerge} disabled={busy || validating}>
           {busy ? (
             <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
           ) : (
@@ -256,11 +297,26 @@ function ClusterCard({ typeId, cluster, onResolved }) {
           )}
           합치기{mergeCount > 0 ? ` (${mergeCount})` : ''}
         </Button>
+        {/* LLM 검증자 — 같은 것/다른 것을 판정해 체크박스를 자동 세팅(Phase 2). */}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleValidate}
+          disabled={busy || validating}
+          title="LLM이 같은 값끼리 묶고 다른 값을 분리합니다"
+        >
+          {validating ? (
+            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Sparkles className="mr-1 h-3.5 w-3.5" />
+          )}
+          AI 검증
+        </Button>
         <Button
           variant="ghost"
           size="sm"
           onClick={handleDismissAll}
-          disabled={busy}
+          disabled={busy || validating}
         >
           중복 아님
         </Button>

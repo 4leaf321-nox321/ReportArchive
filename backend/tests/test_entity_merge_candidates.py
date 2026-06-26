@@ -137,6 +137,54 @@ def test_scan_endpoint_admin_only(monkeypatch):
         _cleanup(type_id)
 
 
+def test_validate_cluster_llm(monkeypatch):
+    """LLM 검증자 — chat 패치로 duplicates/outliers 를 값→id 로 매핑하는지.
+    mock 백엔드면 verdict 없이 backend='mock'."""
+    import types
+
+    type_id, ids = _mk_axis_with(["갤럭시S26", "GALAXYS26", "S26 Ultra"])
+    try:
+        from app.modules.entities import merge_candidates as mcmod
+
+        # mock 백엔드 — verdict 없음.
+        monkeypatch.setattr("app.config.settings.llm_backend", "mock")
+        db = SessionLocal()
+        try:
+            v0 = mcmod.validate_cluster(db, type_id, ids)
+            assert v0["backend"] == "mock"
+            assert v0["duplicate_ids"] is None
+        finally:
+            db.close()
+
+        # openai 백엔드 + chat 패치 — 갤럭시S26/GALAXYS26=중복, Ultra=outlier.
+        monkeypatch.setattr("app.config.settings.llm_backend", "openai")
+
+        def fake_chat(messages, **kw):
+            return types.SimpleNamespace(
+                content=(
+                    '{"duplicates": ["갤럭시S26", "GALAXYS26"], '
+                    '"canonical": "갤럭시S26", "outliers": ["S26 Ultra"], '
+                    '"reason": "동일 모델"}'
+                ),
+                backend="openai",
+                model="x",
+            )
+
+        monkeypatch.setattr("app.ai.llm.chat", fake_chat)
+        db = SessionLocal()
+        try:
+            v = mcmod.validate_cluster(db, type_id, ids)
+            dup = {db.get(Entity, i).value for i in v["duplicate_ids"]}
+            out = {db.get(Entity, i).value for i in v["outlier_ids"]}
+            assert dup == {"갤럭시S26", "GALAXYS26"}
+            assert out == {"S26 Ultra"}
+            assert db.get(Entity, v["canonical_id"]).value == "갤럭시S26"
+        finally:
+            db.close()
+    finally:
+        _cleanup(type_id)
+
+
 def test_merge_writes_audit_log(monkeypatch):
     """merge_entities(merged_by_user_id=..) 가 entity_merges 감사 로그를 남긴다."""
     monkeypatch.setattr("app.config.settings.embedding_backend", "mock")

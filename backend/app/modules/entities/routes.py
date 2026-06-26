@@ -29,6 +29,7 @@ from app.modules.entities.schemas import (
     EntityListResponse,
     EntityMergeDismissRequest,
     EntityMergeRequest,
+    EntityMergeValidateRequest,
     EntityRead,
     EntityRelationCreate,
     EntityRelationItem,
@@ -205,6 +206,28 @@ def scan_merge_candidates(
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     return success_response(data=result)
+
+
+@entity_types_router.post("/{type_id}/merge-validate")
+def validate_merge_cluster(
+    type_id: int,
+    payload: EntityMergeValidateRequest,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """LLM 검증자 (Phase 2, §5) — 한 클러스터의 값들을 LLM 이 판정해 같은 것
+    (duplicates)·다른 것(outliers)·대표(canonical)로 분리. UI 의 멤버 체크박스를
+    자동 세팅한다. Admin only(엔티틀먼트 bypass). mock 백엔드면 verdict 없음."""
+    _require_admin(actor)
+    if not services.get_type(db, type_id):
+        return not_found_response(f"엔티티 축을 찾을 수 없습니다: {type_id}")
+    try:
+        verdict = merge_candidates.validate_cluster(
+            db, type_id, payload.entity_ids
+        )
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    return success_response(data=verdict)
 
 
 @entity_types_router.post("/{type_id}/merge-dismiss")

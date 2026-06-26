@@ -242,6 +242,19 @@ export async function scanMergeCandidates(typeId) {
   return extractData(res)
 }
 
+/**
+ * Admin-only — 한 클러스터를 LLM 검증자에게 보내 판정(Phase 2). 반환:
+ * { backend, duplicate_ids, canonical_id, outlier_ids, reason }. mock 이면 verdict 없음.
+ */
+export async function validateMergeCluster(typeId, entityIds) {
+  const res = await apiClient.post(
+    `${TYPES_BASE}/${typeId}/merge-validate`,
+    { entity_ids: entityIds },
+    { timeout: 600000 }, // LLM 생성 — 길게(CPU/재시도 대비).
+  )
+  return extractData(res)
+}
+
 /** Admin-only — 후보 쌍을 "중복 아님"으로 기각(다음 스캔부터 제외). */
 export async function dismissMergePair(typeId, entityIdA, entityIdB) {
   const res = await apiClient.post(`${TYPES_BASE}/${typeId}/merge-dismiss`, {

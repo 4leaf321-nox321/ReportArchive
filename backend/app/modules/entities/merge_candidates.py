@@ -220,3 +220,93 @@ def find_merge_candidates(
         "threshold": thr,
         "clusters": clusters,
     }
+
+
+def validate_cluster(db: Session, type_id: int, entity_ids: list[int]) -> dict:
+    """LLM 검증자 (Phase 2, §5) — 한 클러스터의 값들 중 **실제로 같은 대상**을
+    가리키는 것끼리 묶고, 대표 표기를 고르고, 다른 것(outlier)을 분리한다.
+
+    넓은 그물(L1 0.60)이 섞어 넣은 오탐(예: S26 vs S26 Ultra)을 LLM이 걸러
+    Phase 1 UI의 멤버별 체크박스를 자동 세팅하게 한다(중복=체크, outlier=해제,
+    대표=생존). 머지는 admin 전용이라 엔티틀먼트는 bypass(별도 게이트 없음).
+
+    반환: {backend, duplicate_ids, canonical_id, outlier_ids, reason}.
+      mock 백엔드면 verdict 없음(backend='mock', 나머지 None)."""
+    import json
+    import re
+
+    etype = db.get(EntityType, type_id)
+    if etype is None:
+        raise ValueError(f"Unknown entity type: {type_id}")
+    ents = [db.get(Entity, i) for i in entity_ids]
+    ents = [e for e in ents if e and e.type_id == type_id]
+    if len(ents) < 2:
+        raise ValueError("검증하려면 값이 2개 이상이어야 합니다.")
+
+    backend = (settings.llm_backend or "mock").lower()
+    if backend == "mock":
+        return {
+            "backend": "mock",
+            "duplicate_ids": None,
+            "canonical_id": None,
+            "outlier_ids": None,
+            "reason": "LLM 미연결(mock) — 사람이 직접 판단하세요.",
+        }
+
+    from app.ai.llm import LLMError, chat
+
+    by_value = {e.value: e.id for e in ents}
+    values = [e.value for e in ents]
+    system = (
+        "너는 기준정보(엔티티) 중복 판정기다. 한 축(분류 기준) 안의 값들이 주어지면, "
+        "그 중 **현실에서 같은 대상**을 가리키는 표기끼리 묶어라. 한글/영문 표기가 달라도 "
+        "같은 것이면 같게 보고(예: '갤럭시S26'='GALAXYS26'='Galaxy S26'), 모델이 다르면 "
+        "다르게 본다(예: 'S26'≠'S26 Ultra'). **JSON 으로만** 답하라(코드블록 없이).\n"
+        '형식: {"duplicates": ["같은 표기들"], "canonical": "대표 표기", '
+        '"outliers": ["다른 표기들"], "reason": "한 줄 근거"}\n'
+        "duplicates 는 서로 같은 것들의 목록(대표 포함), outliers 는 나머지. 모두 입력 "
+        "값 문자열 그대로 적는다. 전부 다르면 duplicates 는 빈 배열."
+    )
+    user = json.dumps(
+        {"축": etype.label, "값들": values}, ensure_ascii=False
+    )
+    try:
+        res = chat(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]
+        )
+    except LLMError as exc:
+        raise ValueError(f"LLM 호출 실패: {exc}") from exc
+
+    m = re.search(r"\{.*\}", res.content or "", re.DOTALL)
+    if not m:
+        raise ValueError("LLM 응답에서 JSON 을 찾지 못했습니다.")
+    try:
+        parsed = json.loads(m.group(0))
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"LLM 응답 파싱 실패: {exc}") from exc
+
+    # 값 문자열 → id 매핑(정확 일치 → 대소문자 무시 폴백). 모르는 값은 무시.
+    lower_map = {v.lower(): vid for v, vid in by_value.items()}
+
+    def _to_id(v):
+        if not isinstance(v, str):
+            return None
+        return by_value.get(v) or lower_map.get(v.strip().lower())
+
+    dup_ids = [i for i in (_to_id(v) for v in parsed.get("duplicates") or []) if i]
+    out_ids = [i for i in (_to_id(v) for v in parsed.get("outliers") or []) if i]
+    canonical_id = _to_id(parsed.get("canonical"))
+    # 대표가 duplicates 에 없으면(혹은 누락) duplicates 첫 항목으로 보정.
+    if canonical_id not in dup_ids:
+        canonical_id = dup_ids[0] if dup_ids else None
+
+    return {
+        "backend": backend,
+        "duplicate_ids": dup_ids,
+        "canonical_id": canonical_id,
+        "outlier_ids": out_ids,
+        "reason": str(parsed.get("reason") or "")[:500],
+    }

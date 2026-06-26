@@ -259,13 +259,19 @@ def validate_cluster(db: Session, type_id: int, entity_ids: list[int]) -> dict:
     values = [e.value for e in ents]
     system = (
         "너는 기준정보(엔티티) 중복 판정기다. 한 축(분류 기준) 안의 값들이 주어지면, "
-        "그 중 **현실에서 같은 대상**을 가리키는 표기끼리 묶어라. 한글/영문 표기가 달라도 "
-        "같은 것이면 같게 보고(예: '갤럭시S26'='GALAXYS26'='Galaxy S26'), 모델이 다르면 "
-        "다르게 본다(예: 'S26'≠'S26 Ultra'). **JSON 으로만** 답하라(코드블록 없이).\n"
+        "그 중 **현실에서 정확히 같은 대상**을 가리키는 표기끼리만 묶어라.\n"
+        "판정 규칙:\n"
+        "- 표기(대소문자·공백·한글/영문)만 다르고 같은 대상이면 **같다**: "
+        "'갤럭시S26'='GALAXYS26'='Galaxy S26'.\n"
+        "- **등급·접미사·세대가 다르면 서로 다른 제품이다(절대 합치지 마라)**: "
+        "'S26'·'S26+'·'S26 Ultra'·'S26 Pro' 는 **모두 다름**. 'A100'≠'A200'. "
+        "'1세대'≠'2세대'. 같은 제품군이라는 이유로 묶으면 안 된다.\n"
+        "- 확신이 없으면 묶지 말고 outliers 로 분리한다(틀린 머지는 위험).\n"
+        "**JSON 으로만** 답하라(코드블록 없이).\n"
         '형식: {"duplicates": ["같은 표기들"], "canonical": "대표 표기", '
         '"outliers": ["다른 표기들"], "reason": "한 줄 근거"}\n'
-        "duplicates 는 서로 같은 것들의 목록(대표 포함), outliers 는 나머지. 모두 입력 "
-        "값 문자열 그대로 적는다. 전부 다르면 duplicates 는 빈 배열."
+        "duplicates 는 서로 같은 것들의 목록(대표 포함, 2개 미만이면 빈 배열), "
+        "outliers 는 나머지. 모두 입력 값 문자열 그대로 적는다."
     )
     user = json.dumps(
         {"축": etype.label, "값들": values}, ensure_ascii=False

@@ -18,7 +18,11 @@ from app.modules.workspaces.models import Workspace
 from app.shared.auth import get_current_user_no_workspace
 
 # 와일드카드('all')가 펼쳐지는 실제 기능 집합. 새 B300 기능을 추가하면 여기에.
-ALL_FEATURES: set[str] = {AiFeature.rag_qa.value, AiFeature.auto_summary.value}
+ALL_FEATURES: set[str] = {
+    AiFeature.rag_qa.value,
+    AiFeature.auto_summary.value,
+    AiFeature.report_authoring.value,
+}
 
 
 def _add(feats: set[str], feature: AiFeature) -> None:

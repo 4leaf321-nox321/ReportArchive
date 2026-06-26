@@ -134,6 +134,10 @@ class Settings(BaseSettings):
     # 기본 OFF: 켜기 전까지 운영 무영향. 켜져도 작성자 'auto_summary' 엔티틀먼트가
     # 있는 보고서만 실제 요약(핸들러에서 게이트).
     llm_auto_summarize_on_save: bool = Field(default=False)
+    # local LLM 보고서 작성(C) 최대 시도 횟수(첫 호출 포함). LLM 이 형식(JSON/위젯)
+    # 을 틀리면 에러를 돌려주고 고쳐서 재요청 — 작은 로컬 모델 성공률 보강. 1=재시도
+    # 없음. .env(LLM_AUTHOR_MAX_ATTEMPTS)로 조절.
+    llm_author_max_attempts: int = Field(default=3, ge=1, le=6)
     # B300 은 폐쇄망 내부 직결 — httpx 가 호스트의 HTTP_PROXY/HTTPS_PROXY env 를 집어
     # 내부 주소까지 프록시로 보내면 404(curl 은 --noproxy 로 우회). 기본 True = 프록시
     # 우회(trust_env=False). 외부 OpenAI 등 프록시 경유가 필요한 환경이면 .env 로 false.

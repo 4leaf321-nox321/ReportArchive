@@ -95,6 +95,7 @@ import { useWidgetCatalog } from '@/shared/hooks/useWidgetCatalog'
 import { listEntityTypes } from '@/shared/api/entities'
 import { EntityGraphDialog } from '@/modules/entities/EntityGraphDialog'
 import { ReportAiSummaryButton } from './ReportAiSummaryButton'
+import { LlmAuthorDialog } from './LlmAuthorDialog'
 import {
   getReport,
   createReport,
@@ -332,6 +333,7 @@ export default function ReportDetailPage() {
   // grid of available prompts; once the user picks one we stash the row
   // in `aiPromptActive` and the existing AiPromptDialog renders it.
   const [aiPromptPickerOpen, setAiPromptPickerOpen] = useState(false)
+  const [llmAuthorOpen, setLlmAuthorOpen] = useState(false)
   const [aiPromptActive, setAiPromptActive] = useState(null)
   // Takeover prompt — holds the LockConflictError.holder payload when
   // the user tried to acquire a lock that someone else holds. Driving
@@ -4350,6 +4352,15 @@ export default function ReportDetailPage() {
                 <Sparkles className="mr-2 h-3.5 w-3.5" />
                 AI 프롬프트 선택
               </DropdownMenuItem>
+              {/* Local LLM 작성 — report_authoring 권한자 + 본인 작성중 보고서. */}
+              {me?.ai_features?.includes('report_authoring') &&
+                !isNew &&
+                existingReport?.id && (
+                  <DropdownMenuItem onSelect={() => setLlmAuthorOpen(true)}>
+                    <Sparkles className="mr-2 h-3.5 w-3.5" />
+                    Local LLM으로 작성
+                  </DropdownMenuItem>
+                )}
             </DropdownMenuContent>
           </DropdownMenu>
 
@@ -4959,6 +4970,21 @@ export default function ReportDetailPage() {
           setAiPromptPickerOpen(false)
         }}
       />
+
+      {llmAuthorOpen && existingReport?.id && (
+        <LlmAuthorDialog
+          reportId={existingReport.id}
+          editing={effectiveIsEditing}
+          onClose={() => setLlmAuthorOpen(false)}
+          onDone={() => {
+            // 편집 중이었다면 에디터의 (이제 낡은) draft 를 버리고 편집 모드를
+            // 나가 AI 결과를 보여준다 — reloadReport 는 existingReport 만 갱신하고
+            // 에디터 draft 는 안 건드리므로(저장 핸들러와 동일 패턴).
+            setIsEditing(false)
+            reloadReport()
+          }}
+        />
+      )}
 
       <AiPromptDialog
         open={aiPromptActive != null}

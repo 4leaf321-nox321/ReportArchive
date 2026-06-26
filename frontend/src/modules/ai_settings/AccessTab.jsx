@@ -17,6 +17,11 @@ import {
 const FEATURES = [
   { key: 'rag_qa', label: 'RAG 질문하기', desc: '아카이브에 자연어로 질문' },
   { key: 'auto_summary', label: '자동 요약·태깅', desc: '저장 시 초록/추천 태그' },
+  {
+    key: 'report_authoring',
+    label: '보고서 작성하기',
+    desc: 'Local LLM으로 보고서 내용 생성',
+  },
   { key: 'all', label: '전체 (모든 AI 기능)', desc: '현재·향후 B300 기능 일괄' },
 ]
 const FEATURE_LABEL = Object.fromEntries(FEATURES.map((f) => [f.key, f.label]))

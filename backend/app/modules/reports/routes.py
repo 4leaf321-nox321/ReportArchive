@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from sqlalchemy import select
@@ -742,9 +742,24 @@ def update_ai_draft(
     # 읽기전용 보드를 보고 있어도 본인 초안은 이어서 수정할 수 있어야 한다.
     actor: CurrentUser = Depends(get_current_user),
 ):
-    """AI(Claude)가 **기존 초안**을 이어서 수정. 본인이 만든 `drafting` 상태만
-    대상이며, 편집 락 없이(비대화형) 저장한다. 기본은 병합 — 준 블록만 덮어쓰고
-    나머지는 둔다. 검증 실패 시 블록별 에러를 400 으로 돌려 AI 가 고쳐 재호출."""
+    """AI(Claude/MCP)가 **기존 초안**을 이어서 수정. 비대화형이라 편집 락이 잡혀
+    있으면(본인 다른 탭 포함) 막는다 — 진행 중 사람 편집을 보호. 사내 'Local LLM
+    작성'은 사용자가 직접 편집 중 호출하고 고지를 받으므로 본인 락을 허용한다
+    (`_apply_ai_draft(allow_self_lock=True)`)."""
+    return _apply_ai_draft(report_id, payload, db, actor, allow_self_lock=False)
+
+
+def _apply_ai_draft(
+    report_id: int,
+    payload: AiDraftUpdate,
+    db: Session,
+    actor: CurrentUser,
+    *,
+    allow_self_lock: bool = False,
+):
+    """AI 초안 적용 본체. `allow_self_lock=True` 면 **본인이 잡은** 편집 락은
+    충돌로 보지 않는다(다른 사용자의 락은 그대로 막음). 기본은 병합 — 준 블록만
+    덮어쓰고 나머지는 둔다. 검증 실패 시 블록별 에러를 400 으로 돌린다."""
     from app.modules.reports.models import ReportPhase
 
     report = services.get_report(db, report_id)
@@ -766,13 +781,19 @@ def update_ai_draft(
     # 이 사전 점검이 진행 중인 사람 편집을 덮어쓰는 걸 막는 1차 방어선이다.
     # (락 해제/만료 후 재시도하면 됨. revision 증가·버전 이력이 2차 안전망.)
     held = services.get_active_lock(db, report)
-    if held is not None:
+    # allow_self_lock: 사내 'Local LLM 작성'은 사용자가 편집 중(=본인 락) 호출하고
+    # "저장 안 된 편집분이 사라질 수 있음" 고지를 받으므로 본인 락은 통과시킨다.
+    # 다른 사용자가 잡은 락은 어느 경우든 막는다(남의 편집 보호).
+    if held is not None and not (allow_self_lock and held.user_id == actor.user.id):
+        msg = (
+            "다른 사용자가 이 보고서를 편집 중이라 AI 작성을 적용할 수 없습니다. "
+            "상대가 편집을 마친 뒤 다시 시도하세요."
+            if allow_self_lock
+            else "이 보고서를 편집 중인 세션이 있어 AI 수정을 적용할 수 없습니다. "
+            "편집 화면을 닫거나 잠금 해제 후 다시 시도하세요."
+        )
         return _lock_conflict_response(
-            services.LockHeldByOtherError(
-                "이 보고서를 편집 중인 세션이 있어 AI 수정을 적용할 수 없습니다. "
-                "편집 화면을 닫거나 잠금 해제 후 다시 시도하세요.",
-                holder=held,
-            )
+            services.LockHeldByOtherError(msg, holder=held)
         )
 
     template = template_services.get_template(
@@ -1032,6 +1053,212 @@ def bulk_ai_summary(
     return success_response(
         data={"enqueued": enqueued, "skipped": skipped, "already": already},
         message=f"{enqueued}건 요약 생성 요청 (대기중 {already}, 제외 {skipped}).",
+    )
+
+
+class LlmAuthorRequest(BaseModel):
+    instructions: str = Field(..., min_length=1, max_length=4000)
+    page: int = Field(default=1, ge=1)
+
+
+@router.post("/{report_id}/llm-author")
+def llm_author_report(
+    report_id: int,
+    payload: LlmAuthorRequest,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """연결된 local LLM(B300)으로 보고서 내용 생성 — MCP 외부 AI 작성의 사내판.
+    사용자 지시 + 템플릿 작성 가이드를 LLM 에 주고, 나온 blocks 를 기존 AI 초안
+    적용 파이프라인(update_ai_draft)으로 흘려보낸다(정규화·검증 재사용).
+
+    게이트: report_authoring 엔티틀먼트(§E). 본인 소유·drafting 제약은
+    update_ai_draft 가 재확인(=본인 작성 중 보고서만). LLM 실패는 502."""
+    import json
+    import re
+
+    from app.ai.entitlements import ai_enabled_for
+    from app.ai.llm import LLMError, chat
+    from app.config import settings
+
+    if not ai_enabled_for(db, actor.user, "report_authoring"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "보고서 작성(AI) 권한이 없습니다."
+        )
+
+    report = services.get_report(db, report_id)
+    if not report:
+        return not_found_response(f"Report not found: {report_id}")
+    template = template_services.get_template(
+        db, report.template_id, report.template_version
+    )
+    if not template:
+        return not_found_response(
+            f"Template not found: {report.template_id}@{report.template_version}"
+        )
+
+    block_types = {
+        b.get("type")
+        for b in (template.schema.get("blocks") or [])
+        if isinstance(b, dict) and b.get("type")
+    }
+    template_block_ids = {
+        b.get("id")
+        for b in (template.schema.get("blocks") or [])
+        if isinstance(b, dict) and b.get("id")
+    }
+    guide = ai_authoring.build_authoring_guide(template.schema)
+    # 빈/자유형 템플릿(고정 블록 0개)이어도 위젯을 지을 수 있도록 — 위젯 룰을
+    # 템플릿 타입 + 기본 팔레트로 항상 채워 형식 정보를 준다(block_types 가 빈 set
+    # 이면 룰도 비어, 작은 모델이 위젯 형식을 몰라 빈 결과를 내던 문제 보강).
+    palette_types = block_types | {
+        "heading",
+        "rich_text",
+        "bulleted_list",
+        "key_value",
+        "table",
+        "chart",
+    }
+    rules = authoring_rules.rules_for_types(palette_types)
+    if guide:
+        example = ai_authoring.build_example_input(template.schema)
+    else:
+        # 빈 템플릿 — extra_blocks 로 위젯을 짓는 예시를 보여준다. (기본 예시는
+        # blocks={} 라, 작은 모델이 그대로 따라 해 위젯 0개가 되던 원인.)
+        example = {
+            "title": "<보고서 제목>",
+            "extra_blocks": [
+                {"id": "sec1", "type": "heading", "content": {"text": "개요"}},
+                {
+                    "id": "body1",
+                    "type": "rich_text",
+                    "content": "여기에 본문 내용을 문단으로 작성한다.",
+                },
+            ],
+        }
+
+    system = (
+        "당신은 사내 보고서 작성 어시스턴트다. 사용자 지시에 따라 보고서 내용을 "
+        "만들어 **JSON 으로만**(코드블록 없이) 답하라.\n"
+        '형식: {"title": "제목", "blocks": {"<block_id>": {위젯 content}}, '
+        '"extra_blocks": [{"id": "고유키", "type": "위젯타입", "props"?: {...}, '
+        '"content": ...}]}\n\n'
+        "규칙:\n"
+        "- [작성 가이드]에 block_id 가 있으면 그 칸을 채운다(blocks).\n"
+        "- 가이드가 비었거나(=빈 템플릿) 새 위젯이 필요하면 **반드시 extra_blocks "
+        "로 위젯을 직접 만들어** 내용을 넣는다. 절대 빈 blocks 만 내지 마라.\n"
+        "- extra_blocks 항목: id(임의 고유 문자열)·type(아래 위젯 타입)·content(위젯 "
+        "룰 형식). 표/차트는 props.columns 로 열을 정의한다.\n"
+        "- 위젯 content 형식은 [위젯 룰]을 따른다. 지시한 내용은 반드시 채운다.\n\n"
+        'extra_blocks 예: [{"id":"h1","type":"heading","content":{"text":"개요"}}, '
+        '{"id":"body","type":"rich_text","content":"본문 문단을 길게 작성."}]\n\n'
+        f"[작성 가이드]\n{json.dumps(guide, ensure_ascii=False)}\n\n"
+        f"[예시 입력]\n{json.dumps(example, ensure_ascii=False)}\n\n"
+        f"[위젯 룰]\n{rules[:6000]}"
+    )
+    # 자동 재시도 루프 — 형식(JSON)/검증(위젯) 실패면 그 에러를 LLM 에 돌려주고
+    # 고쳐서 다시(설정 횟수). 권한·소유·잠금(403/404/409) 같은 비-형식 실패는
+    # 재시도 무의미 → 즉시 반환.
+    max_attempts = max(1, settings.llm_author_max_attempts)
+    last_error = "알 수 없는 오류"
+    for attempt in range(1, max_attempts + 1):
+        user_msg = payload.instructions
+        if attempt > 1:
+            user_msg += (
+                f"\n\n[직전 시도가 다음 이유로 실패했습니다 — 고쳐서 JSON 만 다시 "
+                f"출력하세요]\n{last_error}\n가이드의 block_id 와 위젯 content 형식을 "
+                "정확히 지키고, 코드블록 없이 JSON 객체만 출력하세요."
+            )
+        try:
+            res = chat(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_msg},
+                ]
+            )
+        except LLMError as exc:
+            return error_response(f"AI 작성 실패(LLM 호출): {exc}", status_code=502)
+
+        m = re.search(r"\{.*\}", res.content or "", re.DOTALL)
+        if not m:
+            last_error = "응답에서 JSON 객체를 찾지 못함."
+            continue
+        try:
+            parsed = json.loads(m.group(0))
+        except (json.JSONDecodeError, ValueError) as exc:
+            last_error = f"JSON 파싱 실패: {exc}"
+            continue
+
+        # 위젯을 하나도 안 만든 degenerate 응답(제목만) — blocks·extra_blocks 가
+        # 둘 다 비면 재시도. (작은 모델이 빈 결과를 내던 주 실패 모드.)
+        if not (parsed.get("blocks") or parsed.get("extra_blocks")):
+            last_error = (
+                "위젯을 하나도 만들지 않았습니다(blocks·extra_blocks 둘 다 비었음). "
+                "extra_blocks 로 최소 한 개 위젯을 만들어 지시한 내용을 채우세요."
+            )
+            continue
+
+        # 작은 모델 보정 — extra_blocks 로 만들 위젯을 blocks(dict)에 잘못 넣는 일이
+        # 잦다(빈 템플릿에서 특히). 템플릿에 없는 block_id 인데 {type, content} 형태면
+        # extra_block 으로 재해석해 살린다(없는 block_id 라 그냥 두면 드롭됨).
+        raw_blocks = parsed.get("blocks")
+        raw_extra = list(parsed.get("extra_blocks") or [])
+        fixed_blocks: dict = {}
+        if isinstance(raw_blocks, dict):
+            for bid, val in raw_blocks.items():
+                if bid in template_block_ids:
+                    fixed_blocks[bid] = val
+                elif isinstance(val, dict) and val.get("type"):
+                    raw_extra.append(
+                        {
+                            "id": str(bid),
+                            "type": val.get("type"),
+                            "props": val.get("props") or {},
+                            "content": val.get("content", val),
+                        }
+                    )
+                else:
+                    fixed_blocks[bid] = val
+
+        try:
+            upd = AiDraftUpdate(
+                title=(parsed.get("title") or None),
+                blocks=fixed_blocks,
+                extra_blocks=raw_extra,
+                block_sections=parsed.get("block_sections") or {},
+                page=payload.page,
+            )
+            # 정규화·검증·저장은 기존 AI 초안 경로 재사용(본인·drafting 재확인).
+            # 본인이 편집 중(=본인 락)이어도 적용 — 사용자가 직접 호출하고 프론트가
+            # "저장 안 된 편집분이 사라질 수 있음"을 고지한다(allow_self_lock).
+            result = _apply_ai_draft(
+                report_id, upd, db, actor, allow_self_lock=True
+            )
+        except Exception as exc:  # noqa: BLE001 — 스키마/적용 예외도 재시도 대상
+            db.rollback()
+            last_error = f"적용 오류: {exc}"
+            continue
+
+        code = getattr(result, "status_code", 200)
+        if code < 400:
+            return result  # 성공
+        # 비-형식 실패(권한·소유·drafting·잠금)는 재시도해도 동일 → 그대로 반환.
+        if code in (403, 404, 409):
+            return result
+        # 검증/형식(400) — 에러를 다음 시도 피드백으로.
+        db.rollback()
+        try:
+            body = json.loads(bytes(result.body))
+            last_error = body.get("message") or "검증 실패"
+            errs = body.get("errors") or []
+            if errs:
+                last_error += " / " + "; ".join(str(e) for e in errs[:5])
+        except Exception:  # noqa: BLE001
+            last_error = "검증 실패"
+
+    return error_response(
+        f"AI 작성이 {max_attempts}회 시도 후에도 형식을 맞추지 못했습니다: {last_error}",
+        status_code=502,
     )
 
 

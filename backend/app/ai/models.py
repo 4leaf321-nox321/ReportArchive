@@ -69,6 +69,7 @@ class AiFeature(str, enum.Enum):
 
     rag_qa = "rag_qa"
     auto_summary = "auto_summary"
+    report_authoring = "report_authoring"
     all = "all"
 
 

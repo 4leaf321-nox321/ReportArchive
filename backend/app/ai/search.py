@@ -20,11 +20,22 @@ from app.config import settings
 from app.modules.reports.models import Report
 from app.modules.reports.services import (
     all_visible_report_ids,
+    entity_filter_report_ids,
     list_public_reports_on_board,
 )
 
 # scope 인자 미지정 vs 명시적 None(무스코프) 구분용 센티넬.
 _UNSET: object = object()
+
+
+def _apply_entity_scope(db, scope, entity_ids, entity_rollup):
+    """엔티티 태그 필터를 가시 scope 에 교집합으로 얹는다. 벡터 경로(시맨틱)는
+    쿼리에 EXISTS 를 엮기 번거로워, 매칭 report id 집합을 미리 계산해 scope 와
+    AND 한다(권한은 그대로 존중). entity_ids 없으면 scope 그대로."""
+    if not entity_ids:
+        return scope
+    efilter = entity_filter_report_ids(db, entity_ids, rollup=entity_rollup)
+    return efilter if scope is None else (scope & efilter)
 
 
 def _visible_scope_ids(db: Session, actor) -> Optional[set[int]]:
@@ -67,6 +78,8 @@ def semantic_search(
     candidate_chunks: int = 200,
     min_score: float = 0.0,
     scope=_UNSET,
+    entity_ids: Optional[list[int]] = None,
+    entity_rollup: bool = False,
 ) -> list[dict]:
     """벡터 유사도 검색 — 보고서별 최적(최근접) 청크 기준 상위 limit 개.
 
@@ -80,6 +93,8 @@ def semantic_search(
         return []
     if scope is _UNSET:
         scope = _visible_scope_ids(db, actor)
+        # 직접 호출 경로에서만 엔티티 필터 적용 — hybrid 는 미리 필터한 scope 를 넘긴다.
+        scope = _apply_entity_scope(db, scope, entity_ids, entity_rollup)
     if scope is not None and not scope:
         return []
 
@@ -157,14 +172,18 @@ def hybrid_search(
     *,
     limit: int = 20,
     rrf_k: int = 60,
+    entity_ids: Optional[list[int]] = None,
+    entity_rollup: bool = False,
 ) -> list[dict]:
     """semantic + keyword 를 RRF 로 합산. 한쪽에만 잡혀도 상위로 끌어올린다.
 
     RRF: score(report) = Σ 1/(rrf_k + rank) over 각 랭킹(0-base rank).
     의미(벡터)와 정확 단어(pg_trgm) 양쪽 강점을 모두 취한다. 권한 스코프(전
-    워크스페이스 합집합)를 한 번 계산해 양쪽에 동일 적용한다.
+    워크스페이스 합집합)를 한 번 계산해 양쪽에 동일 적용한다. entity_ids 필터도
+    scope 에 한 번 얹어 시맨틱·키워드 양쪽이 같은 엔티티 필터를 본다.
     """
     scope = _visible_scope_ids(db, actor)
+    scope = _apply_entity_scope(db, scope, entity_ids, entity_rollup)
     if scope is not None and not scope:
         return []
 

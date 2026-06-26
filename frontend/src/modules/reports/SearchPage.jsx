@@ -56,14 +56,14 @@ export default function SearchPage() {
   const [loading, setLoading] = useState(false)
   const [offset, setOffset] = useState(0)
   const [mode, setMode] = useState('keyword')
-  // 엔티티 태그 필터(D-2) — 본문 검색을 메타데이터로 좁힌다("본문 X AND 모델=A1234").
-  // 키워드 모드에만 적용(의미 검색 엔드포인트의 엔티티 결합은 D-2 후속).
+  // 엔티티 태그 필터(D-2) — 본문/의미 검색을 메타데이터로 좁힌다("본문 X AND 모델=A1234").
+  // 키워드·의미 두 모드 모두 적용.
   const [entityFilter, setEntityFilter] = useState([])
   const [entityRollup, setEntityRollup] = useState(false)
   const entityIds = useMemo(() => entityFilter.map((e) => e.id), [entityFilter])
   // dep 안정용 문자열 키(배열은 매 렌더 새 참조).
   const entityKey = entityIds.slice().sort((a, b) => a - b).join(',')
-  const useEntityFilter = mode === 'keyword' && entityIds.length > 0
+  const useEntityFilter = entityIds.length > 0
   // 우리가 마지막으로 URL(?q)에 써넣은 값. 외부(헤더 재검색)로 ?q 가 바뀐 것과
   // 우리 디바운스가 쓴 변경을 구분해, 외부 변경일 때만 입력을 리셋한다(루프 방지).
   const lastPushedRef = useRef(urlQ.trim())
@@ -104,7 +104,12 @@ export default function SearchPage() {
     setLoading(true)
     const run =
       mode === 'semantic'
-        ? semanticSearchReports(debounced, { mode: 'hybrid', limit: LIMIT })
+        ? semanticSearchReports(debounced, {
+            mode: 'hybrid',
+            limit: LIMIT,
+            entityIds: useEntityFilter ? entityIds : undefined,
+            entityRollup: useEntityFilter ? entityRollup : undefined,
+          })
         : searchReports(debounced, {
             limit: LIMIT,
             offset: 0,
@@ -213,11 +218,6 @@ export default function SearchPage() {
             />
             <span>하위 포함</span>
           </label>
-        )}
-        {mode === 'semantic' && entityFilter.length > 0 && (
-          <span className="text-[11px] text-amber-600">
-            태그 필터는 키워드 모드에만 적용됩니다
-          </span>
         )}
       </div>
 

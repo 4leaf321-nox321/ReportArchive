@@ -253,6 +253,10 @@ def search_reports(
 def semantic_search_reports(
     q: str = Query(..., min_length=1, max_length=400, description="의미 검색어"),
     mode: str = Query(default="hybrid", description="hybrid|semantic"),
+    entity_ids: list[int] | None = Query(default=None, alias="entity_ids"),
+    entity_rollup: bool = Query(
+        default=False, description="관계(part_of) 롤업 — entity_ids 를 자손까지 확장"
+    ),
     limit: int = Query(default=20, ge=1, le=50),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
@@ -260,17 +264,24 @@ def semantic_search_reports(
     """시맨틱/하이브리드 검색 — 임베딩(report_chunks) 기반 의미 검색.
 
     mode=semantic: 벡터 유사도만. mode=hybrid(기본): 벡터+키워드(pg_trgm)를 RRF 융합.
-    가시성은 키워드 검색과 동일 규칙(권한 밖 보고서 미노출). 결과 항목:
+    `entity_ids`(반복)로 엔티티 태그 필터를 결합(D-2) — 의미 검색에도 "태그=모델 X"를
+    얹는다. 가시성은 키워드 검색과 동일 규칙(권한 밖 보고서 미노출). 결과 항목:
     {report_id, title, snippet, score|rrf_score, block_id, page_idx, ...}.
     """
     # 지연 import — ai 패키지(pgvector)를 reports 라우터 import 시점에 끌지 않게.
     from app.ai import search as ai_search
 
     if mode == "semantic":
-        results = ai_search.semantic_search(db, q, actor, limit=limit)
+        results = ai_search.semantic_search(
+            db, q, actor, limit=limit,
+            entity_ids=entity_ids, entity_rollup=entity_rollup,
+        )
     else:
         mode = "hybrid"
-        results = ai_search.hybrid_search(db, q, actor, limit=limit)
+        results = ai_search.hybrid_search(
+            db, q, actor, limit=limit,
+            entity_ids=entity_ids, entity_rollup=entity_rollup,
+        )
     return success_response(data={"results": results, "mode": mode, "limit": limit})
 
 

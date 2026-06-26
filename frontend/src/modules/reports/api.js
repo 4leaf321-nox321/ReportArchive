@@ -132,12 +132,21 @@ export async function searchReports(
 // 키워드로 자연 degrade 한다(임계값 게이트). 서버 응답은 flat({report_id,title,...})
 // 이므로 키워드 검색과 동일한 { results:[{report, snippet}], total } 형태로 정규화해
 // SearchPage 가 두 모드를 같은 렌더 경로로 다루게 한다. 페이지네이션 없음(total=길이).
-export async function semanticSearchReports(q, { mode = 'hybrid', limit = 30 } = {}) {
+export async function semanticSearchReports(
+  q,
+  { mode = 'hybrid', limit = 30, entityIds, entityRollup } = {},
+) {
   const params = new URLSearchParams({
     q: q ?? '',
     mode,
     limit: String(limit),
   })
+  if (Array.isArray(entityIds)) {
+    for (const id of entityIds) params.append('entity_ids', String(id))
+  }
+  if (entityRollup && Array.isArray(entityIds) && entityIds.length) {
+    params.append('entity_rollup', 'true')
+  }
   const res = await apiClient.get(`${BASE}/search/semantic?${params.toString()}`)
   const data = extractData(res)
   const results = (data.results ?? []).map((r) => ({

@@ -117,6 +117,41 @@ def _apply_entity_filter(db: Session, query, entity_ids: list[int], *, rollup: b
     return query
 
 
+def entity_filter_report_ids(
+    db: Session, entity_ids: list[int], *, rollup: bool = False
+) -> set[int]:
+    """`_apply_entity_filter` 와 동일 시맨틱(axis 간 AND / axis 내 OR + rollup)을
+    **report id 집합**으로 반환. 시맨틱/하이브리드 검색이 scope 에 교집합으로 얹어
+    엔티티 필터를 적용하는 데 쓴다(쿼리 결합이 어려운 벡터 경로용). 유효 id 가
+    없으면 빈 set(= 0건)."""
+    rows = db.execute(
+        select(Entity.id, Entity.type_id).where(Entity.id.in_(set(entity_ids)))
+    ).all()
+    by_type: dict[int, list[int]] = {}
+    for entity_id, type_id in rows:
+        by_type.setdefault(type_id, []).append(entity_id)
+    if not by_type:
+        return set()
+    result: Optional[set[int]] = None
+    for ids_in_axis in by_type.values():
+        match_ids = (
+            entity_services.expand_with_descendants(db, entity_ids=ids_in_axis)
+            if rollup
+            else ids_in_axis
+        )
+        axis_rids = set(
+            db.execute(
+                select(ReportEntity.report_id).where(
+                    ReportEntity.entity_id.in_(match_ids)
+                )
+            ).scalars()
+        )
+        result = axis_rids if result is None else (result & axis_rids)
+        if not result:  # AND 가 빈 집합이면 더 볼 것 없음
+            return set()
+    return result or set()
+
+
 def list_reports_in_workspace(
     db: Session,
     workspace_slug: str,

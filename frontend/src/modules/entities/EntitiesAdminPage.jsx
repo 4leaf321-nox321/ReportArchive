@@ -58,6 +58,9 @@ import {
   listEntityTypes,
   listEntityUsage,
   listRelationTypes,
+  createRelationType,
+  updateRelationType,
+  deleteRelationType,
   mergeEntity,
   setEntityYears,
   unlinkEntityFromAllReports,
@@ -95,6 +98,7 @@ export default function EntitiesAdminPage() {
   const types = typesResp?.items ?? []
   const [axisSlug, setAxisSlug] = useState(null)
   const [newAxisOpen, setNewAxisOpen] = useState(false)
+  const [relTypesOpen, setRelTypesOpen] = useState(false)
 
   // Pick the first axis once the list arrives. Falls through cleanly on
   // re-mount because we treat null as "no axis chosen yet".
@@ -129,10 +133,20 @@ export default function EntitiesAdminPage() {
         title="엔티티 관리"
         description="보고서를 태깅하는 N축 통제어휘. 사용자가 picker 에서 추가한 값을 정리/머지/비활성화 합니다."
         actions={
-          <Button size="sm" onClick={() => setNewAxisOpen(true)}>
-            <Plus className="mr-1 h-3.5 w-3.5" />
-            새 축 추가
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setRelTypesOpen(true)}
+            >
+              <Network className="mr-1 h-3.5 w-3.5" />
+              관계 종류 관리
+            </Button>
+            <Button size="sm" onClick={() => setNewAxisOpen(true)}>
+              <Plus className="mr-1 h-3.5 w-3.5" />
+              새 축 추가
+            </Button>
+          </div>
         }
       />
 
@@ -194,6 +208,13 @@ export default function EntitiesAdminPage() {
             setAxisSlug(created.slug)
             reloadTypes()
           }}
+        />
+      )}
+
+      {relTypesOpen && (
+        <RelationTypesDialog
+          axes={types}
+          onClose={() => setRelTypesOpen(false)}
         />
       )}
     </div>
@@ -2101,4 +2122,378 @@ function formatDate(iso) {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return ''
   return d.toISOString().slice(0, 10)
+}
+
+/**
+ * 관계 종류 레지스트리 관리 (D-1 후속) — relation_types CRUD. 엔티티끼리 잇는
+ * 엣지의 *종류*(part_of / tested_by …)를 admin 이 직접 추가·편집·삭제한다. 지금까지
+ * 7종이 시드돼 있고, 새 도메인 관계가 필요할 때 마이그레이션 없이 여기서 늘린다.
+ * 사용 중인 종류 삭제는 백엔드가 거부(toast 로 표시).
+ */
+function RelationTypesDialog({ axes, onClose }) {
+  const [items, setItems] = useState(null) // null=loading
+  const [editing, setEditing] = useState(null) // null | {} (new) | row (edit)
+
+  async function reload() {
+    try {
+      const res = await listRelationTypes()
+      setItems(res?.items ?? [])
+    } catch (err) {
+      toast.error('관계 종류 불러오기 실패', {
+        description: String(err?.message ?? err),
+      })
+      setItems([])
+    }
+  }
+  useEffect(() => {
+    reload()
+  }, [])
+
+  async function handleDelete(rt) {
+    if (
+      !window.confirm(
+        `'${rt.label}'(${rt.slug}) 관계 종류를 삭제할까요? 사용 중이면 거부됩니다.`,
+      )
+    )
+      return
+    try {
+      await deleteRelationType(rt.slug)
+      toast.success(`'${rt.label}' 삭제됨`)
+      reload()
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err?.message || '삭제 실패',
+      )
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="flex max-h-[80vh] w-[44rem] max-w-[44rem] flex-col overflow-hidden">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Network className="h-4 w-4" /> 관계 종류 관리
+          </DialogTitle>
+          <DialogDescription>
+            엔티티 간 관계의 종류를 정의합니다. 이행성(롤업 대상)·방향·허용 축을
+            지정하며, slug 는 관계들이 가리키는 키라 생성 후 변경 불가입니다.
+          </DialogDescription>
+        </DialogHeader>
+
+        {editing !== null ? (
+          <RelationTypeForm
+            axes={axes}
+            value={editing}
+            onCancel={() => setEditing(null)}
+            onSaved={() => {
+              setEditing(null)
+              reload()
+            }}
+          />
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col gap-2">
+            <div className="flex justify-end">
+              <Button size="sm" onClick={() => setEditing({})}>
+                <Plus className="mr-1 h-3.5 w-3.5" /> 관계 종류 추가
+              </Button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto rounded-md border">
+              {items === null ? (
+                <p className="p-4 text-center text-xs text-muted-foreground">
+                  불러오는 중…
+                </p>
+              ) : items.length === 0 ? (
+                <p className="p-4 text-center text-xs text-muted-foreground">
+                  등록된 관계 종류가 없습니다.
+                </p>
+              ) : (
+                <ul className="divide-y">
+                  {items.map((rt) => (
+                    <li
+                      key={rt.slug}
+                      className="flex items-start gap-2 px-3 py-2 text-sm"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-medium">{rt.label}</span>
+                          <code className="rounded bg-muted px-1 font-mono text-[11px] text-muted-foreground">
+                            {rt.slug}
+                          </code>
+                        </div>
+                        <div className="mt-0.5 flex flex-wrap gap-1">
+                          {rt.transitive && (
+                            <Badge
+                              variant="secondary"
+                              className="text-[10px]"
+                              title="연쇄로 이어짐 — '관련 포함' 검색이 자손까지 끝까지 펼침(예: part_of)"
+                            >
+                              이행(롤업)
+                            </Badge>
+                          )}
+                          {rt.directed && (
+                            <Badge
+                              variant="secondary"
+                              className="text-[10px]"
+                              title="출발→도착 방향이 의미를 가짐(역방향은 다른 뜻)"
+                            >
+                              방향성
+                            </Badge>
+                          )}
+                          {rt.acyclic && (
+                            <Badge
+                              variant="secondary"
+                              className="text-[10px]"
+                              title="A→B→A 같은 순환을 금지(계층·버전 구조)"
+                            >
+                              순환금지
+                            </Badge>
+                          )}
+                          <span
+                            className="text-[11px] text-muted-foreground"
+                            title="허용 출발 축 → 도착 축 (전체 = 제약 없음)"
+                          >
+                            {(rt.src_axis_slugs?.join('·') || '전체')} →{' '}
+                            {rt.dst_axis_slugs?.join('·') || '전체'}
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setEditing(rt)}
+                        className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                        title="편집"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(rt)}
+                        className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                        title="삭제"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** 체크박스 + 제목 + 평이한 설명 한 줄. 관계 메타 용어(이행/방향/순환)를
+ *  관리자가 정확히 이해하도록 각 항목에 예시를 곁들인다. */
+function CheckRow({ checked, onChange, title, desc }) {
+  return (
+    <label className="flex cursor-pointer items-start gap-2">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={onChange}
+        className="mt-0.5 h-3.5 w-3.5 shrink-0"
+      />
+      <span className="min-w-0">
+        <span className="text-xs font-medium">{title}</span>
+        <span className="mt-0.5 block text-[11px] leading-snug text-muted-foreground">
+          {desc}
+        </span>
+      </span>
+    </label>
+  )
+}
+
+/** 관계 종류 추가/편집 폼. value={} 면 생성(slug 입력), 아니면 편집(slug 고정). */
+function RelationTypeForm({ axes, value, onCancel, onSaved }) {
+  const isCreate = !value.slug
+  const [slug, setSlug] = useState(value.slug ?? '')
+  const [label, setLabel] = useState(value.label ?? '')
+  const [inverseLabel, setInverseLabel] = useState(value.inverse_label ?? '')
+  const [directed, setDirected] = useState(value.directed ?? true)
+  const [transitive, setTransitive] = useState(value.transitive ?? false)
+  const [acyclic, setAcyclic] = useState(value.acyclic ?? false)
+  const [srcAxes, setSrcAxes] = useState(value.src_axis_slugs ?? [])
+  const [dstAxes, setDstAxes] = useState(value.dst_axis_slugs ?? [])
+  const [sortOrder, setSortOrder] = useState(String(value.sort_order ?? 0))
+  const [description, setDescription] = useState(value.description ?? '')
+  const [submitting, setSubmitting] = useState(false)
+
+  const trimmedSlug = slug.trim()
+  const canSubmit =
+    !submitting &&
+    label.trim().length > 0 &&
+    (!isCreate || /^[a-z0-9_]+$/.test(trimmedSlug))
+
+  function toggleAxis(setter, list, axisSlug) {
+    setter(
+      list.includes(axisSlug)
+        ? list.filter((s) => s !== axisSlug)
+        : [...list, axisSlug],
+    )
+  }
+
+  async function handleSave() {
+    if (!canSubmit) return
+    setSubmitting(true)
+    const common = {
+      label: label.trim(),
+      inverse_label: inverseLabel.trim(),
+      directed,
+      transitive,
+      acyclic,
+      // 빈 배열 → 백엔드가 '제약 없음'(NULL)으로 저장.
+      src_axis_slugs: srcAxes,
+      dst_axis_slugs: dstAxes,
+      sort_order: Number(sortOrder) || 0,
+      description: description.trim(),
+    }
+    try {
+      if (isCreate) {
+        await createRelationType({ slug: trimmedSlug, ...common })
+        toast.success(`'${label.trim()}' 추가됨`)
+      } else {
+        await updateRelationType(value.slug, common)
+        toast.success(`'${label.trim()}' 수정됨`)
+      }
+      onSaved()
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err?.message || '저장 실패',
+      )
+      setSubmitting(false)
+    }
+  }
+
+  function AxisChecks({ list, setter }) {
+    return (
+      <div className="flex flex-wrap gap-1.5">
+        {axes.map((a) => (
+          <label
+            key={a.slug}
+            className="inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]"
+          >
+            <input
+              type="checkbox"
+              checked={list.includes(a.slug)}
+              onChange={() => toggleAxis(setter, list, a.slug)}
+              className="h-3 w-3"
+            />
+            {a.label}
+          </label>
+        ))}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs">slug (영소문자·숫자·_)</Label>
+            <Input
+              value={slug}
+              onChange={(e) => setSlug(e.target.value)}
+              disabled={!isCreate}
+              placeholder="예: depends_on"
+              className="mt-1 h-9 font-mono text-sm disabled:opacity-60"
+            />
+          </div>
+          <div>
+            <Label className="text-xs">정렬 순서</Label>
+            <Input
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value)}
+              inputMode="numeric"
+              className="mt-1 h-9"
+            />
+          </div>
+        </div>
+        <p className="-mt-1 text-[11px] text-muted-foreground">
+          slug = 시스템 내부 식별자(관계들이 이 키를 참조). 생성 후 변경 불가.
+          정렬 순서 = picker·목록에서 표시 순서(작을수록 위).
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs">라벨</Label>
+            <Input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="예: 의존함"
+              className="mt-1 h-9"
+            />
+          </div>
+          <div>
+            <Label className="text-xs">역방향 라벨</Label>
+            <Input
+              value={inverseLabel}
+              onChange={(e) => setInverseLabel(e.target.value)}
+              placeholder="예: 의존 대상"
+              className="mt-1 h-9"
+            />
+          </div>
+        </div>
+        <p className="-mt-1 text-[11px] text-muted-foreground">
+          라벨 = 출발 엔티티 관점 표기, 역방향 라벨 = 도착 엔티티 관점 표기.
+          예: part_of → 라벨 &ldquo;포함됨&rdquo;(부품 입장) ↔ 역 &ldquo;포함&rdquo;(모델 입장).
+        </p>
+        <div className="space-y-2.5 rounded-md border bg-muted/20 p-3">
+          <CheckRow
+            checked={transitive}
+            onChange={() => setTransitive((v) => !v)}
+            title="이행적 (연쇄·롤업 대상)"
+            desc="관계가 연쇄로 이어집니다. A가 B에, B가 C에 속하면 A도 C에 속한 것으로 봅니다. 켜면 '관련 포함' 검색이 자손까지 끝까지 펼칩니다. 예: part_of(나사⊂모듈⊂모델 → 나사도 모델 소속). 끄면 한 단계만 보고 연쇄하지 않습니다(예: tested_by)."
+          />
+          <CheckRow
+            checked={directed}
+            onChange={() => setDirected((v) => !v)}
+            title="방향성 있음"
+            desc="한쪽 방향(출발→도착)이 의미를 갖는 관계입니다. 예: 부품 tested_by 시험 — '부품이 시험된다'는 방향이고 역은 다른 뜻. '관련 포함' 검색은 방향성 관계를 주체→속성 방향으로만 따라갑니다. 끄면 양쪽이 대등한 대칭 관계(예: '관련됨')."
+          />
+          <CheckRow
+            checked={acyclic}
+            onChange={() => setAcyclic((v) => !v)}
+            title="순환 금지"
+            desc="A→B→A 같은 고리를 막습니다. 켜면 순환이 생기는 관계 추가를 거부 — 계층·버전 구조에 필수입니다(예: 'A가 B의 부품인데 B도 A의 부품'은 불가). 보통 이행적 관계와 함께 켭니다(part_of·supersedes)."
+          />
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          이 관계를 맺을 수 있는 축을 제한합니다(잘못된 조합 입력 방지). 예:
+          tested_by → 출발=부품, 도착=시험. 둘 다 비우면 아무 축이나 허용.
+        </p>
+        <div>
+          <Label className="text-xs">허용 출발 축 (비우면 제약 없음)</Label>
+          <div className="mt-1">
+            <AxisChecks list={srcAxes} setter={setSrcAxes} />
+          </div>
+        </div>
+        <div>
+          <Label className="text-xs">허용 도착 축 (비우면 제약 없음)</Label>
+          <div className="mt-1">
+            <AxisChecks list={dstAxes} setter={setDstAxes} />
+          </div>
+        </div>
+        <div>
+          <Label className="text-xs">설명 (선택)</Label>
+          <Textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={2}
+            className="mt-1"
+          />
+        </div>
+      </div>
+      <DialogFooter className="mt-3">
+        <Button variant="ghost" size="sm" onClick={onCancel} disabled={submitting}>
+          ← 목록
+        </Button>
+        <Button size="sm" onClick={handleSave} disabled={!canSubmit}>
+          {submitting ? '저장 중…' : isCreate ? '추가' : '저장'}
+        </Button>
+      </DialogFooter>
+    </div>
+  )
 }

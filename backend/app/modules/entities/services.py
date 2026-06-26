@@ -929,29 +929,36 @@ def expand_related(db: Session, *, entity_ids) -> list[int]:
     스마트 기본(relation_types 메타 활용, 깊이 UI 불필요), 2단계:
       1) 이행관계(transitive=True, 예: part_of)로 **자손(direction='in')까지 끝까지**
          롤업 — 기존 '하위 포함'과 같은 안전한 방향(형제·조상으로 새지 않음).
-      2) 그 구조 집합에서 비이행관계(tested_by·has_defect·occurs_at 등)로 **양방향
-         1-hop** — 모델뿐 아니라 그 부품에 걸린 시험·불량·단계까지 잡는다(시험은
-         보통 모델이 아니라 부품에 직접 연결되므로 1단계 자손 확장이 선행돼야 함).
-    관계가 없으면 원본 그대로(no-op). 방향성 정밀화는 후속(설계 §5 2b)."""
+      2) 그 구조 집합에서 비이행관계로 **1-hop** — 관계별 방향성(p55 directed)을
+         존중한다: 방향성 관계(tested_by·has_defect 등 src=주체→dst=속성)는 'out'
+         (주체에서 속성으로만), 무방향 관계는 'both'. 시험·불량은 보통 모델이 아니라
+         부품에 직접 연결되므로 1단계 자손 확장이 선행돼야 잡힌다.
+    관계가 없으면 원본 그대로(no-op)."""
     base = {int(x) for x in entity_ids}
     if not base:
         return []
     rel_rows = db.execute(
-        select(RelationType.slug, RelationType.transitive)
+        select(RelationType.slug, RelationType.transitive, RelationType.directed)
     ).all()
-    transitive = [slug for slug, t in rel_rows if t]
-    nontransitive = [slug for slug, t in rel_rows if not t]
+    transitive = [slug for slug, t, _ in rel_rows if t]
+    # 비이행을 방향성 유무로 나눠 각자 의미 있는 방향으로만 따라간다.
+    nt_directed = [slug for slug, t, d in rel_rows if not t and d]
+    nt_undirected = [slug for slug, t, d in rel_rows if not t and not d]
     # 1) 이행관계 자손 롤업.
     structural = set(base)
     if transitive:
         structural |= graph.reachable(
             db, base, relations=transitive, direction="in"
         )
-    # 2) 구조 집합 주변의 비이행 1-hop.
+    # 2) 구조 집합 주변의 비이행 1-hop — 방향성은 'out'(주체→속성), 무방향은 'both'.
     out = set(structural)
-    if nontransitive:
+    if nt_directed:
         out |= graph.reachable(
-            db, structural, relations=nontransitive, direction="both", max_depth=1
+            db, structural, relations=nt_directed, direction="out", max_depth=1
+        )
+    if nt_undirected:
+        out |= graph.reachable(
+            db, structural, relations=nt_undirected, direction="both", max_depth=1
         )
     return list(out)
 

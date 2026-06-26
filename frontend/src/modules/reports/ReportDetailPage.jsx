@@ -86,6 +86,7 @@ import {
 } from '@/shared/components/ui/dropdown-menu'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { ErrorState } from '@/shared/components/ErrorState'
+import { WorkspaceMultiSelect } from '@/shared/components/WorkspaceMultiSelect'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useAsync } from '@/shared/hooks/useAsync'
@@ -3110,7 +3111,13 @@ export default function ReportDetailPage() {
    *  and extra blocks added at report-write time become first-class
    *  template blocks. blocks_order is honored so the saved order
    *  matches the on-screen order. */
-  async function onSaveAsTemplate({ templateId, name, description, category }) {
+  async function onSaveAsTemplate({
+    templateId,
+    name,
+    description,
+    category,
+    ownerSlugs,
+  }) {
     const page = currentPageData
     const template = currentTemplate
     if (!page || !template) {
@@ -3171,9 +3178,11 @@ export default function ReportDetailPage() {
         description: description || '',
         category: category || 'misc',
         schema,
-        // Scope to current workspace so it appears in this workspace's
-        // template picker. Empty/null would make it globally visible.
-        owner_workspace_slugs: slug ? [slug] : null,
+        // 다이얼로그의 가시성 선택값을 사용한다(매니저: 부서 다중선택/전사,
+        // 일반: 현재 부서, 개인: personal-{me}). 값이 안 오면 종전처럼 현재
+        // 부서로 스코프. 백엔드가 권한을 최종 검증한다.
+        owner_workspace_slugs:
+          ownerSlugs !== undefined ? ownerSlugs : slug ? [slug] : null,
       })
       toast.success(`템플릿 '${created.name}' 저장됨`)
       if (fixupNotes.length > 0) {
@@ -4926,6 +4935,10 @@ export default function ReportDetailPage() {
         sourceTemplate={currentTemplate}
         pageCount={pageCount}
         currentPageIndex={safeCurrent}
+        isManager={me?.role === 'manager'}
+        workspaces={workspaces}
+        myUserId={me?.user?.id}
+        currentSlug={slug}
         onConfirm={onSaveAsTemplate}
       />
 
@@ -6813,6 +6826,10 @@ function SaveAsTemplateDialog({
   sourceTemplate,
   pageCount,
   currentPageIndex,
+  isManager,
+  workspaces,
+  myUserId,
+  currentSlug,
   onConfirm,
 }) {
   // Template id is auto-generated as a UUID on every open, mirroring the
@@ -6822,6 +6839,9 @@ function SaveAsTemplateDialog({
   const [description, setDescription] = useState('')
   const [category, setCategory] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  // 가시성(공유 범위) — 생성 폼과 동일. 개인(비공개) 또는 매니저 부서 다중선택.
+  const [isPrivate, setIsPrivate] = useState(false)
+  const [ownerWs, setOwnerWs] = useState([])
   const { data: categories } = useAsync(() => listTemplateCategories(), [])
   const catList = categories ?? []
 
@@ -6834,6 +6854,8 @@ function SaveAsTemplateDialog({
     setName(base ? `${base} 사본` : '')
     setDescription('')
     setCategory(sourceTemplate?.category ?? '')
+    setIsPrivate(false)
+    setOwnerWs([])
     setSubmitting(false)
   }, [open, sourceTitle, sourceTemplate])
 
@@ -6847,6 +6869,17 @@ function SaveAsTemplateDialog({
   async function handleSubmit(e) {
     e.preventDefault()
     if (!templateId.trim() || !name.trim()) return
+    // 개인(비공개)=personal-{me}, 매니저=선택 부서(없으면 전사=null),
+    // 일반 멤버=현재 부서 단독.
+    const ownerSlugs = isPrivate
+      ? [`personal-${myUserId}`]
+      : isManager
+        ? ownerWs.length
+          ? ownerWs
+          : null
+        : currentSlug
+          ? [currentSlug]
+          : null
     setSubmitting(true)
     try {
       await onConfirm({
@@ -6854,6 +6887,7 @@ function SaveAsTemplateDialog({
         name: name.trim(),
         description: description.trim(),
         category: category || 'misc',
+        ownerSlugs,
       })
     } catch {
       setSubmitting(false)
@@ -6935,6 +6969,47 @@ function SaveAsTemplateDialog({
               ))}
             </select>
           </div>
+
+          {/* 가시성(공유 범위) — 템플릿 생성 폼과 동일. 개인(비공개) 또는
+              매니저 부서 다중선택. 일반 멤버는 현재 부서로 고정. */}
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">가시성</label>
+            <label className="flex items-start gap-2 rounded-md border p-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={isPrivate}
+                onChange={(e) => setIsPrivate(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span className="text-[11px] leading-snug">
+                <span className="font-medium">개인(비공개)</span> — 나만 사용하는
+                템플릿. 다른 사용자 목록엔 안 보이지만, 이 템플릿으로 게시한 보고서는
+                모두에게 정상 표시됩니다.
+              </span>
+            </label>
+            {!isPrivate &&
+              (isManager ? (
+                <>
+                  <WorkspaceMultiSelect
+                    value={ownerWs}
+                    onChange={setOwnerWs}
+                    workspaces={workspaces}
+                    myUserId={myUserId}
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    여러 부서 선택 가능. 비워두면 전사 공유.
+                  </p>
+                </>
+              ) : (
+                <p className="text-[11px] text-muted-foreground">
+                  자기 부서(
+                  {(workspaces ?? []).find((w) => w.slug === currentSlug)?.name ??
+                    currentSlug}
+                  )에 저장됩니다. 전사 공개·다른 부서 공유는 매니저에게 문의하세요.
+                </p>
+              ))}
+          </div>
+
           <div className="flex justify-end gap-2">
             <Button
               type="button"

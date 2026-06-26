@@ -49,10 +49,15 @@ export function TemplatePicker({ onPick, compact = false, reloadKey, presetCount
   const trimmed = query.trim().toLowerCase()
   const searching = trimmed.length > 0
 
+  const orgWorkspaces = useMemo(
+    () => (workspaces ?? []).filter((w) => w.kind === 'org' && !w.virtual),
+    [workspaces],
+  )
   // "어디 템플릿인지"(전체/개인/전사/조직별) 분류 — 템플릿 관리와 동일한 공용 훅.
   const scope = useScopeCategories(list, {
     currentUserId: me?.user?.id,
     getName: workspaceName,
+    orgWorkspaces,
   })
 
   // 선택한 범위로 먼저 거른 뒤, 그 안에서만 문제 분류(카테고리)로 묶는다.
@@ -99,6 +104,9 @@ export function TemplatePicker({ onPick, compact = false, reloadKey, presetCount
       <ScopeCategorySidebar
         counts={scope.counts}
         orgGroups={scope.orgGroups}
+        orgTree={scope.orgTree}
+        orgRollup={scope.rollup}
+        onOrgRollupChange={scope.setRollup}
         cat={scope.cat}
         onChange={scope.setCat}
         mineLabel="개인 (내 템플릿)"

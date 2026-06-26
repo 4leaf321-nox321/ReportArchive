@@ -143,6 +143,7 @@ export default function TemplatesPage() {
   const tplCat = useScopeCategories(list, {
     currentUserId: me?.user?.id,
     getName: workspaceName,
+    orgWorkspaces,
   })
   const byCat = list.filter(tplCat.filter)
   const trimmed = query.trim().toLowerCase()
@@ -295,6 +296,9 @@ export default function TemplatesPage() {
               <ScopeCategorySidebar
                 counts={tplCat.counts}
                 orgGroups={tplCat.orgGroups}
+                orgTree={tplCat.orgTree}
+                orgRollup={tplCat.rollup}
+                onOrgRollupChange={tplCat.setRollup}
                 cat={tplCat.cat}
                 onChange={tplCat.setCat}
                 mineLabel="개인 (내 템플릿)"
@@ -640,10 +644,12 @@ function CompositePresetsPanel({
 
   const rows = useMemo(() => presets ?? [], [presets])
   // 전사/조직별/개인 분류 — 보고서 템플릿 탭·picker 와 같은 방식(공용 훅).
-  const { cat, setCat, counts, orgGroups, filter } = useScopeCategories(rows, {
-    currentUserId,
-    getName: workspaceName,
-  })
+  const { cat, setCat, counts, orgGroups, orgTree, rollup, setRollup, filter } =
+    useScopeCategories(rows, {
+      currentUserId,
+      getName: workspaceName,
+      orgWorkspaces: orgOptions,
+    })
   const byCat = rows.filter(filter)
   const trimmed = query.trim().toLowerCase()
   const filtered = trimmed
@@ -717,6 +723,9 @@ function CompositePresetsPanel({
         <ScopeCategorySidebar
           counts={counts}
           orgGroups={orgGroups}
+          orgTree={orgTree}
+          orgRollup={rollup}
+          onOrgRollupChange={setRollup}
           cat={cat}
           onChange={setCat}
           mineLabel="개인 (내 양식)"

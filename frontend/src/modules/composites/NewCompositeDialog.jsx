@@ -275,10 +275,16 @@ function CompositePresetPickerDialog({
     const map = new Map((workspaces ?? []).map((w) => [w.slug, w.name]))
     return (s) => map.get(s) ?? s
   }, [workspaces])
-  const { cat, setCat, counts, orgGroups, filter } = useScopeCategories(presets, {
-    currentUserId,
-    getName: wsName,
-  })
+  const orgWorkspaces = useMemo(
+    () => (workspaces ?? []).filter((w) => w.kind === 'org' && !w.virtual),
+    [workspaces],
+  )
+  const { cat, setCat, counts, orgGroups, orgTree, rollup, setRollup, filter } =
+    useScopeCategories(presets, {
+      currentUserId,
+      getName: wsName,
+      orgWorkspaces,
+    })
   useEffect(() => {
     if (open) {
       setQuery('')
@@ -324,6 +330,9 @@ function CompositePresetPickerDialog({
           <ScopeCategorySidebar
             counts={counts}
             orgGroups={orgGroups}
+            orgTree={orgTree}
+            orgRollup={rollup}
+            onOrgRollupChange={setRollup}
             cat={cat}
             onChange={setCat}
             mineLabel="개인 (내 양식)"

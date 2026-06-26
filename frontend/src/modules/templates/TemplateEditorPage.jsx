@@ -18,7 +18,12 @@ import { useAsync } from '@/shared/hooks/useAsync'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useWidgetCatalog } from '@/shared/hooks/useWidgetCatalog'
-import { getLatestTemplate, createTemplate, publishNewVersion } from '@/shared/api/templates'
+import {
+  getLatestTemplate,
+  createTemplate,
+  publishNewVersion,
+  setTemplateScope,
+} from '@/shared/api/templates'
 import { listTemplateCategories } from '@/shared/api/templateCategories'
 import {
   GRID_COLS,
@@ -42,6 +47,14 @@ import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
 import { toast } from 'sonner'
 
 const ROW_HEIGHT = 50
+
+/** owner_workspace_slugs 동치 비교(순서·중복 무시, null≈[]). 수정 저장 때
+ *  공유 범위가 실제로 바뀐 경우에만 /scope 를 호출하려고 쓴다. */
+function sameOwners(a, b) {
+  const na = [...new Set((a ?? []).filter(Boolean))].sort()
+  const nb = [...new Set((b ?? []).filter(Boolean))].sort()
+  return na.length === nb.length && na.every((x, i) => x === nb[i])
+}
 
 export default function TemplateEditorPage() {
   const { templateId } = useParams()
@@ -80,6 +93,11 @@ export default function TemplateEditorPage() {
     if (isEdit && existing) {
       const next = schemaToDraft(existing)
       setDraft(next)
+      // 기존 스코프로 가시성 블록 프리필 — 소유가 personal-* 뿐이면 개인(비공개).
+      const owners = existing.owner_workspace_slugs ?? []
+      setIsPrivate(
+        owners.length > 0 && owners.every((s) => String(s).startsWith('personal-')),
+      )
       // Don't auto-select on load — the right panel stays closed until the
       // user clicks a block. Adding a new block via palette still auto-
       // selects (handled in addBlock).
@@ -219,6 +237,32 @@ export default function TemplateEditorPage() {
           category: draft.category,
           schema,
         })
+        // 공유 범위(가시성)는 버전과 별개 메타 — 매니저가 바꿨을 때만 /scope 로
+        // 반영한다. 개인(비공개)=personal-{me}, 아니면 선택 부서(없으면 전사=null).
+        // 전사 템플릿을 좁히는 등 서버가 막는 경우(403)는 버전 발행은 그대로 두고
+        // 경고만 띄운다.
+        if (isManager) {
+          const orgOwners = (draft.owner_workspace_slugs ?? []).filter(
+            (s) => !String(s).startsWith('personal-'),
+          )
+          const desired = isPrivate
+            ? [`personal-${me?.user?.id}`]
+            : orgOwners.length
+              ? orgOwners
+              : null
+          if (!sameOwners(existing?.owner_workspace_slugs, desired)) {
+            try {
+              await setTemplateScope(templateId, desired)
+            } catch (e) {
+              toast.warning(
+                '새 버전은 발행됐지만 공유 범위 변경은 실패했습니다: ' +
+                  (e?.message || ''),
+              )
+              navigate('/templates')
+              return
+            }
+          }
+        }
         toast.success('새 버전이 발행되었습니다.')
       } else {
         await createTemplate({
@@ -339,52 +383,76 @@ export default function TemplateEditorPage() {
                       )}
                   </select>
                 </div>
-                {!isEdit && (
-                  <div>
-                    <Label className="text-xs">가시성</Label>
-                    {/* 개인(비공개) 토글 — 누구나. 켜면 나만 보는 템플릿이 된다
-                        (게시한 보고서는 그래도 모두에게 렌더됨). */}
-                    <label className="mt-1 flex items-start gap-2 rounded-md border p-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={isPrivate}
-                        onChange={(e) => setIsPrivate(e.target.checked)}
-                        className="mt-0.5"
-                      />
-                      <span className="text-[11px] leading-snug">
-                        <span className="font-medium">개인(비공개)</span> — 나만
-                        사용하는 템플릿. 다른 사용자의 템플릿 목록엔 보이지 않지만,
-                        이 템플릿으로 게시한 보고서는 모두에게 정상 표시됩니다.
-                      </span>
-                    </label>
-                    {!isPrivate &&
-                      (isManager ? (
-                        <>
-                          <div className="mt-2">
-                            <WorkspaceMultiSelect
-                              value={draft.owner_workspace_slugs}
-                              onChange={(next) =>
-                                setDraft({ ...draft, owner_workspace_slugs: next })
-                              }
-                              workspaces={workspaces}
-                              myUserId={me?.user?.id}
-                            />
-                          </div>
-                          <p className="mt-1 text-[10px] text-muted-foreground">
-                            여러 부서 선택 가능. 비워두면 전사 공유.
+                {/* 가시성(공유 범위) — 생성은 종전대로, 수정 시에도 노출.
+                    매니저는 편집 가능(저장 시 /scope 로 반영), 비매니저는 현재
+                    공유 범위 읽기전용(서버도 매니저 전용이라 일치). */}
+                <div>
+                  <Label className="text-xs">가시성</Label>
+                  {!isEdit || isManager ? (
+                    <>
+                      {/* 개인(비공개) 토글 — 켜면 나만 보는 템플릿이 된다
+                          (게시한 보고서는 그래도 모두에게 렌더됨). */}
+                      <label className="mt-1 flex items-start gap-2 rounded-md border p-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={isPrivate}
+                          onChange={(e) => setIsPrivate(e.target.checked)}
+                          className="mt-0.5"
+                        />
+                        <span className="text-[11px] leading-snug">
+                          <span className="font-medium">개인(비공개)</span> — 나만
+                          사용하는 템플릿. 다른 사용자의 템플릿 목록엔 보이지 않지만,
+                          이 템플릿으로 게시한 보고서는 모두에게 정상 표시됩니다.
+                        </span>
+                      </label>
+                      {!isPrivate &&
+                        (isManager ? (
+                          <>
+                            <div className="mt-2">
+                              <WorkspaceMultiSelect
+                                value={draft.owner_workspace_slugs}
+                                onChange={(next) =>
+                                  setDraft({ ...draft, owner_workspace_slugs: next })
+                                }
+                                workspaces={workspaces}
+                                myUserId={me?.user?.id}
+                              />
+                            </div>
+                            <p className="mt-1 text-[10px] text-muted-foreground">
+                              여러 부서 선택 가능. 비워두면 전사 공유.
+                              {isEdit &&
+                                ' (전사 공개 템플릿의 범위 축소는 관리자 영역이라 막힐 수 있습니다.)'}
+                            </p>
+                          </>
+                        ) : (
+                          // 일반 멤버(생성): 자기 부서 단독 소유로 고정.
+                          <p className="mt-2 text-[11px] text-muted-foreground">
+                            자기 부서(
+                            {(workspaces ?? []).find((w) => w.slug === slug)?.name ??
+                              slug}
+                            )에만 생성됩니다. 전사 공개·다른 부서 공유는 매니저에게 문의하세요.
                           </p>
-                        </>
-                      ) : (
-                        // 일반 멤버: 자기 부서 단독 소유로 고정(전사공개·타부서·공유는 매니저).
-                        <p className="mt-2 text-[11px] text-muted-foreground">
-                          자기 부서(
-                          {(workspaces ?? []).find((w) => w.slug === slug)?.name ??
-                            slug}
-                          )에만 생성됩니다. 전사 공개·다른 부서 공유는 매니저에게 문의하세요.
-                        </p>
-                      ))}
-                  </div>
-                )}
+                        ))}
+                    </>
+                  ) : (
+                    // 수정 + 비매니저 — 현재 공유 범위 읽기전용.
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      현재{' '}
+                      {isPrivate
+                        ? '개인(비공개)'
+                        : draft.owner_workspace_slugs?.length
+                          ? `공유 부서: ${draft.owner_workspace_slugs
+                              .map(
+                                (s) =>
+                                  (workspaces ?? []).find((w) => w.slug === s)?.name ??
+                                  s,
+                              )
+                              .join(', ')}`
+                          : '전사 공개'}
+                      . 공유 범위 변경은 매니저에게 문의하세요.
+                    </p>
+                  )}
+                </div>
                 <div>
                   <Label className="text-xs">보고서 기본 설정</Label>
                   <Button

@@ -20,7 +20,15 @@ import { EntityMultiPicker } from '@/modules/entities/EntityMultiPicker'
  * `onChange(next)`로 위로 전달. EntityMultiPicker를 그대로 써서 "+ 새 값 추가"도
  * 라이브(목록에서 못 찾은 모델을 즉석 추가 가능).
  */
-export function EntityFilterControl({ selected, onChange }) {
+export function EntityFilterControl({
+  selected,
+  onChange,
+  // '관련 포함'(2b) — 켜면 선택 태그를 관계 그래프로 넓혀(이행 자손 + 비이행
+  // 1-hop) 부품·시험·불량까지 함께 잡는다. related/onRelatedChange 를 주면
+  // 토글이 노출된다(검색·목록 두 곳이 공유). 안 주면 토글 없이 기존 동작.
+  related,
+  onRelatedChange,
+}) {
   const [open, setOpen] = useState(false)
   const [types, setTypes] = useState(null)
 
@@ -124,6 +132,22 @@ export function EntityFilterControl({ selected, onChange }) {
           </button>
         </span>
       ))}
+      {/* '관련 포함' 토글 — 선택이 있을 때만. part_of 자손 + 시험·불량 등
+          관계로 묶인 보고서까지 함께 검색/필터. */}
+      {selected.length > 0 && onRelatedChange && (
+        <label
+          className="inline-flex cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground"
+          title="선택한 태그와 관계로 묶인 항목(하위 부품·걸린 시험·불량 등)이 달린 보고서까지 포함"
+        >
+          <input
+            type="checkbox"
+            checked={!!related}
+            onChange={() => onRelatedChange(!related)}
+            className="h-3.5 w-3.5"
+          />
+          <span>관련 포함</span>
+        </label>
+      )}
       {selected.length > 0 && (
         <Button
           variant="ghost"

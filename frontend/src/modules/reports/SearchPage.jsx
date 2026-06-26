@@ -71,6 +71,14 @@ export default function SearchPage() {
   // dep 안정용 문자열 키(배열은 매 렌더 새 참조).
   const entityKey = entityIds.slice().sort((a, b) => a - b).join(',')
   const useEntityFilter = entityIds.length > 0
+  // 검색 실행 조건: 검색어(2자+) "또는" 메타 필터(태그/작성연도)만으로도 돈다.
+  // 백엔드는 빈 검색어 + 필터(브라우즈)를 지원하므로, 태그만 걸어도 "모델 X
+  // 관련 보고서 전부"가 바로 뜬다. (effect 가 deps 로 참조하므로 위에서 선언.)
+  const hasQuery = debounced.length >= 2
+  const hasFilter = useEntityFilter || year != null
+  const canSearch = hasQuery || hasFilter
+  // 의미(시맨틱) 모드는 검색어가 있어야만 — 빈 검색어 + 필터는 키워드 브라우즈로.
+  const usingSemantic = mode === 'semantic' && hasQuery
   // 우리가 마지막으로 URL(?q)에 써넣은 값. 외부(헤더 재검색)로 ?q 가 바뀐 것과
   // 우리 디바운스가 쓴 변경을 구분해, 외부 변경일 때만 입력을 리셋한다(루프 방지).
   const lastPushedRef = useRef(urlQ.trim())
@@ -103,14 +111,14 @@ export default function SearchPage() {
       setParams(debounced ? { q: debounced } : {}, { replace: true })
     }
     setOffset(0)
-    if (debounced.length < 2) {
+    if (!canSearch) {
       setData(null)
       return
     }
     let cancelled = false
     setLoading(true)
     const run =
-      mode === 'semantic'
+      usingSemantic
         ? semanticSearchReports(debounced, {
             mode: 'hybrid',
             limit: LIMIT,
@@ -161,8 +169,9 @@ export default function SearchPage() {
   const results = data?.results ?? []
   const total = data?.total ?? 0
   // 의미 검색은 오프셋 페이지네이션이 없다(서버가 상위 N개만 RRF로 반환).
-  const hasMore = mode === 'keyword' && results.length < total
-  const showEmpty = !loading && debounced.length >= 2 && total === 0
+  // 키워드/브라우즈(필터 전용) 경로만 더보기.
+  const hasMore = !usingSemantic && results.length < total
+  const showEmpty = !loading && canSearch && total === 0
   const activeHint = MODES.find((m) => m.key === mode)?.hint
 
   return (
@@ -215,6 +224,8 @@ export default function SearchPage() {
         <EntityFilterControl
           selected={entityFilter}
           onChange={setEntityFilter}
+          related={entityRollup}
+          onRelatedChange={setEntityRollup}
         />
         <label
           className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
@@ -236,37 +247,23 @@ export default function SearchPage() {
             ))}
           </select>
         </label>
-        {entityFilter.length > 0 && (
-          <label
-            className="inline-flex cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground"
-            title="선택한 태그의 하위 항목(part_of) 태그가 달린 보고서까지 포함"
-          >
-            <input
-              type="checkbox"
-              checked={entityRollup}
-              onChange={() => setEntityRollup((v) => !v)}
-              className="h-3.5 w-3.5"
-            />
-            <span>하위 포함</span>
-          </label>
-        )}
       </div>
 
-      {debounced.length >= 2 && (
+      {canSearch && (
         <p className="mb-3 text-xs text-muted-foreground">
           {loading && results.length === 0 ? '검색 중…' : `결과 ${total}건`}
         </p>
       )}
 
-      {debounced.length < 2 && (
+      {!canSearch && (
         <p className="py-16 text-center text-sm text-muted-foreground">
-          두 글자 이상 입력하면 제목과 본문에서 검색합니다.
+          두 글자 이상 입력하거나, 태그·작성연도 필터를 걸면 검색합니다.
         </p>
       )}
 
       {showEmpty && (
         <p className="py-16 text-center text-sm text-muted-foreground">
-          “{debounced}”에 대한 결과가 없습니다.
+          {hasQuery ? `“${debounced}”에 대한 결과가 없습니다.` : '필터에 해당하는 보고서가 없습니다.'}
         </p>
       )}
 

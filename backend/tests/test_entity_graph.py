@@ -113,6 +113,33 @@ def test_delegated_helpers_match():
         db.close()
 
 
+def test_expand_related_multi_relation():
+    """'관련 포함'(2b) — 이행관계 자손 롤업 + 비이행 1-hop. 형제·조상으로 안 샘."""
+    db = SessionLocal()
+    ids = []
+    try:
+        model = _mk(db, "model"); part = _mk(db, "part"); rt = _mk(db, "rel_test")
+        model2 = _mk(db, "model"); part2 = _mk(db, "part")
+        ids += [model.id, part.id, rt.id, model2.id, part2.id]
+        services.add_relation(db, src=part, dst=model, relation="part_of")   # part→model
+        services.add_relation(db, src=part, dst=rt, relation="tested_by")    # part→rel_test
+        services.add_relation(db, src=part2, dst=model2, relation="part_of")  # 무관한 모델2
+
+        # 모델 기준: 자손 part(이행) + 그 part 의 시험 rt(비이행 1-hop)까지.
+        rel = set(entity_services.expand_related(db, entity_ids=[model.id]))
+        assert rel == {model.id, part.id, rt.id}
+        # 형제/무관 모델로 새지 않는다(part_of 'in'=자손 방향).
+        assert model2.id not in rel and part2.id not in rel
+
+        # part 기준: 자기 + 시험(비이행 1-hop). 조상 model 은 안 끌어옴(자손 방향).
+        rel_p = set(entity_services.expand_related(db, entity_ids=[part.id]))
+        assert rt.id in rel_p
+        assert model.id not in rel_p
+    finally:
+        _cleanup(db, ids)
+        db.close()
+
+
 def _create_report(client, title):
     tpl = client.get("/api/templates", headers=_h()).json()["data"][0]
     return client.post(

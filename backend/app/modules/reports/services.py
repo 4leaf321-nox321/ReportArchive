@@ -84,11 +84,12 @@ def _apply_entity_filter(db: Session, query, entity_ids: list[int], *, rollup: b
     유효한 id 가 하나도 없으면 None 을 반환(= 결과 0건). list_reports_in_workspace
     의 기본 경로와 공개 탐색 extra 경로가 공유한다.
 
-    rollup=True (p54 B-2) 면 각 axis 그룹을 그 자손(part_of 하위)까지 넓힌다 —
-    예: 모델 A1234 로 필터하면 'A1234' 직접 태그 ∪ A1234 의 부품 태그 보고서까지
-    한 묶음(OR)으로 잡힌다. 자손은 다른 축이지만 **선택한 축 그룹에 합쳐** OR 로
-    묶으므로 axis 간 AND 시맨틱은 그대로다(자손이 별도 AND 조건이 되지 않음).
-    관계가 없으면 no-op(현행과 동일)."""
+    rollup=True ('관련 포함', 2b) 면 각 axis 그룹을 관계 그래프로 넓힌다 — 이행관계
+    (part_of 등)는 끝까지, 비이행(tested_by·has_defect 등)은 1-hop, 양방향
+    (entity_services.expand_related). 예: 모델 A1234 로 필터하면 'A1234' 직접 태그
+    ∪ 부품·시험·불량 태그 보고서까지 한 묶음(OR)으로 잡힌다. 확장분은 다른 축이지만
+    **선택한 축 그룹에 합쳐** OR 로 묶으므로 axis 간 AND 시맨틱은 그대로다(확장분이
+    별도 AND 조건이 되지 않음). 관계가 없으면 no-op(현행과 동일)."""
     rows = db.execute(
         select(Entity.id, Entity.type_id).where(Entity.id.in_(set(entity_ids)))
     ).all()
@@ -101,7 +102,7 @@ def _apply_entity_filter(db: Session, query, entity_ids: list[int], *, rollup: b
         return None
     for ids_in_axis in by_type.values():
         match_ids = (
-            entity_services.expand_with_descendants(db, entity_ids=ids_in_axis)
+            entity_services.expand_related(db, entity_ids=ids_in_axis)
             if rollup
             else ids_in_axis
         )
@@ -135,7 +136,7 @@ def entity_filter_report_ids(
     result: Optional[set[int]] = None
     for ids_in_axis in by_type.values():
         match_ids = (
-            entity_services.expand_with_descendants(db, entity_ids=ids_in_axis)
+            entity_services.expand_related(db, entity_ids=ids_in_axis)
             if rollup
             else ids_in_axis
         )

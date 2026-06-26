@@ -1467,26 +1467,15 @@ function FilterBar({
           />
         </div>
       )}
+      {/* '관련 포함'(2b) 토글은 EntityFilterControl 안으로 통합 — 검색·목록이
+          같은 컨트롤·로직을 공유한다. on 이면 선택 태그를 관계 그래프로 넓혀
+          하위 부품·걸린 시험·불량까지 포함. */}
       <EntityFilterControl
         selected={entityFilter}
         onChange={onEntityFilterChange}
+        related={entityRollup}
+        onRelatedChange={onToggleEntityRollup}
       />
-      {/* 관계(part_of) 롤업 — 태그 필터가 걸렸을 때만 노출. on 이면 선택 태그의
-          하위(part_of 자식) 태그 보고서까지 포함(모델 → 그 부품까지). */}
-      {entityFilter.length > 0 && (
-        <label
-          className="inline-flex items-center gap-1.5 cursor-pointer select-none text-xs text-muted-foreground"
-          title="선택한 태그의 하위 항목(part_of) 태그가 달린 보고서까지 포함합니다"
-        >
-          <input
-            type="checkbox"
-            checked={!!entityRollup}
-            onChange={onToggleEntityRollup}
-            className="h-3.5 w-3.5"
-          />
-          <span>하위 포함</span>
-        </label>
-      )}
     </div>
   )
 }

@@ -922,6 +922,40 @@ def expand_with_descendants(
     return list(base | get_descendant_entity_ids(db, root_ids=base, relation=relation))
 
 
+def expand_related(db: Session, *, entity_ids) -> list[int]:
+    """'관련 포함' 확장 (2b) — 선택 엔티티에서 관계 그래프를 타고 관련 엔티티까지
+    넓힌다. `expand_with_descendants`(part_of 자손 전용)의 일반화.
+
+    스마트 기본(relation_types 메타 활용, 깊이 UI 불필요), 2단계:
+      1) 이행관계(transitive=True, 예: part_of)로 **자손(direction='in')까지 끝까지**
+         롤업 — 기존 '하위 포함'과 같은 안전한 방향(형제·조상으로 새지 않음).
+      2) 그 구조 집합에서 비이행관계(tested_by·has_defect·occurs_at 등)로 **양방향
+         1-hop** — 모델뿐 아니라 그 부품에 걸린 시험·불량·단계까지 잡는다(시험은
+         보통 모델이 아니라 부품에 직접 연결되므로 1단계 자손 확장이 선행돼야 함).
+    관계가 없으면 원본 그대로(no-op). 방향성 정밀화는 후속(설계 §5 2b)."""
+    base = {int(x) for x in entity_ids}
+    if not base:
+        return []
+    rel_rows = db.execute(
+        select(RelationType.slug, RelationType.transitive)
+    ).all()
+    transitive = [slug for slug, t in rel_rows if t]
+    nontransitive = [slug for slug, t in rel_rows if not t]
+    # 1) 이행관계 자손 롤업.
+    structural = set(base)
+    if transitive:
+        structural |= graph.reachable(
+            db, base, relations=transitive, direction="in"
+        )
+    # 2) 구조 집합 주변의 비이행 1-hop.
+    out = set(structural)
+    if nontransitive:
+        out |= graph.reachable(
+            db, structural, relations=nontransitive, direction="both", max_depth=1
+        )
+    return list(out)
+
+
 # --------------------------------------------------------------------------- #
 # Report ↔ Entity link writes — called from reports/services.py on save
 # --------------------------------------------------------------------------- #

@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.modules.entities import services
+from app.modules.entities import graph, services
 from app.modules.entities.schemas import (
     EntityAliasCreate,
     EntityAliasListResponse,
@@ -594,6 +594,24 @@ def delete_entity_relation(
         return not_found_response(f"관계를 찾을 수 없습니다: {relation_id}")
     services.delete_relation(db, rel)
     return success_response(data=None, message="관계가 삭제됐습니다.")
+
+
+@entities_router.get("/{entity_id}/graph")
+def entity_subgraph(
+    entity_id: int,
+    relations: Optional[list[str]] = Query(default=None, alias="relations"),
+    depth: int = Query(default=2, ge=1, le=10),
+    _actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """이 엔티티 주변 서브그래프(노드+엣지, D-2). 재귀 CTE(graph.subgraph)로 양방향
+    `depth` hop 까지. `relations`(반복) 로 따라갈 관계 종류 제한(미지정=전체).
+    관계도 시각화·AI(GraphRAG) 컨텍스트의 토대. 인증만 필요(읽기)."""
+    row = services.get_entity(db, entity_id)
+    if not row:
+        return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
+    data = graph.subgraph(db, [entity_id], relations=relations or None, max_depth=depth)
+    return success_response(data=data)
 
 
 @entities_router.delete("/{entity_id}")

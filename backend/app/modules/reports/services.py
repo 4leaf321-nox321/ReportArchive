@@ -539,12 +539,18 @@ def search_reports(
     offset: int = 0,
     location: str = "all",
     board: str = "",
+    entity_ids: Optional[list[int]] = None,
+    entity_rollup: bool = False,
 ) -> tuple[list[Report], int]:
     """본문(search_text) + 제목 부분일치(pg_trgm ILIKE) 검색. 가시성 스코프 적용.
 
     query 가 비면(공백 포함) 가시 범위 전체를 최신순으로 탐색(브라우즈).
     location: 'personal'=내 소유(내공간) / 'boards'=게시판 공유(부서게시판) /
     'all'=전체. 가시 스코프에 교집합으로 얹는다.
+
+    `entity_ids`(D-2) 면 엔티티 태그 필터를 결합한다 — 목록 경로와 동일 시맨틱
+    (axis 간 AND, axis 내 OR). `entity_rollup` 이면 part_of 자손까지 확장. 이걸로
+    "본문 'X' AND 모델=A1234" 같은 결합 검색이 된다(엔티티그래프_온톨로지_설계.md §5).
 
     스코프: public_viewer=이 게시판 공개분, virtual=무스코프(전체), 그 외=
     visible_report_ids(grant ∪ 소유). 정렬은 (검색 시) 제목 매치 우선 → 최신순,
@@ -601,7 +607,17 @@ def search_reports(
     if scope_ids is not None:
         conditions.append(Report.id.in_(scope_ids))
 
-    total = db.execute(select(func.count(Report.id)).where(*conditions)).scalar() or 0
+    count_q = select(func.count(Report.id)).where(*conditions)
+    select_q = select(Report).where(*conditions)
+    # 엔티티 태그 필터(2a) — 목록 경로와 동일한 _apply_entity_filter 재사용. 유효
+    # id 가 하나도 없으면 None → 0건(사용자가 필터를 걸었으니 무필터로 새지 않게).
+    if entity_ids:
+        count_q = _apply_entity_filter(db, count_q, entity_ids, rollup=entity_rollup)
+        select_q = _apply_entity_filter(db, select_q, entity_ids, rollup=entity_rollup)
+        if count_q is None or select_q is None:
+            return [], 0
+
+    total = db.execute(count_q).scalar() or 0
     if total == 0:
         return [], 0
 
@@ -615,13 +631,7 @@ def search_reports(
     else:
         order_by = (desc(Report.updated_at),)
     rows = (
-        db.execute(
-            select(Report)
-            .where(*conditions)
-            .order_by(*order_by)
-            .offset(offset)
-            .limit(limit)
-        )
+        db.execute(select_q.order_by(*order_by).offset(offset).limit(limit))
         .scalars()
         .all()
     )

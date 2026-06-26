@@ -14,6 +14,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.modules.entities import graph
 from app.modules.entities.models import (
     RELATION_PART_OF,
     Entity,
@@ -630,24 +631,11 @@ def delete_alias(db: Session, row: EntityAlias) -> int:
 def _ancestors_up(
     db: Session, *, start_id: int, relation: str, max_depth: int = 20
 ) -> set[int]:
-    """start 에서 part_of 를 따라 위(부모)로 올라가며 만나는 모든 조상 id.
-    사이클 가드용. max_depth 로 폭주 방지."""
-    seen: set[int] = set()
-    frontier = [start_id]
-    depth = 0
-    while frontier and depth < max_depth:
-        parents = db.execute(
-            select(EntityRelation.dst_entity_id).where(
-                EntityRelation.src_entity_id.in_(frontier),
-                EntityRelation.relation == relation,
-            )
-        ).scalars().all()
-        nxt = [p for p in parents if p not in seen]
-        for p in nxt:
-            seen.add(p)
-        frontier = nxt
-        depth += 1
-    return seen
+    """start 에서 relation 을 따라 위(부모/조상)로 올라가며 만나는 모든 조상 id.
+    add_relation 의 사이클 가드용. graph.reachable(out) 에 위임(재귀 CTE)."""
+    return graph.reachable(
+        db, [start_id], relations=[relation], direction="out", max_depth=max_depth
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -826,28 +814,12 @@ def get_descendant_entity_ids(
     relation: str = RELATION_PART_OF,
     max_depth: int = 20,
 ) -> set[int]:
-    """root_ids 에서 part_of 를 따라 아래(자식)로 내려가며 만나는 모든 자손 id
+    """root_ids 에서 relation 을 따라 아래(자식)로 내려가며 만나는 모든 자손 id
     (root 자신은 미포함). 롤업 필터에서 '부모로 필터하면 자식 태그도 포함'에
-    쓴다. seen + depth 로 사이클·폭주 방지."""
-    roots = {int(x) for x in root_ids}
-    if not roots:
-        return set()
-    seen: set[int] = set()
-    frontier = list(roots)
-    depth = 0
-    while frontier and depth < max_depth:
-        children = db.execute(
-            select(EntityRelation.src_entity_id).where(
-                EntityRelation.dst_entity_id.in_(frontier),
-                EntityRelation.relation == relation,
-            )
-        ).scalars().all()
-        nxt = [c for c in children if c not in seen and c not in roots]
-        for c in nxt:
-            seen.add(c)
-        frontier = nxt
-        depth += 1
-    return seen
+    쓴다. graph.reachable(in) 에 위임(재귀 CTE)."""
+    return graph.reachable(
+        db, root_ids, relations=[relation], direction="in", max_depth=max_depth
+    )
 
 
 def expand_with_descendants(

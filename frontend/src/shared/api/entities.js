@@ -2,6 +2,35 @@ import { apiClient, extractData } from './client'
 
 const TYPES_BASE = '/api/entity-types'
 const BASE = '/api/entities'
+const RELATION_TYPES_BASE = '/api/relation-types'
+
+/**
+ * 관계 종류 레지스트리(p55). 관계 추가 picker(타입 선택)·관리 UI가 읽는다.
+ *   { items: [{ slug, label, inverse_label, directed, transitive, acyclic,
+ *               src_axis_slugs, dst_axis_slugs, sort_order, description }] }
+ */
+export async function listRelationTypes() {
+  const res = await apiClient.get(RELATION_TYPES_BASE)
+  return extractData(res)
+}
+
+/** Admin-only — 새 관계 종류 등록. */
+export async function createRelationType(payload) {
+  const res = await apiClient.post(RELATION_TYPES_BASE, payload)
+  return extractData(res)
+}
+
+/** Admin-only — 관계 종류 메타 수정(slug 불변). */
+export async function updateRelationType(slug, payload) {
+  const res = await apiClient.patch(`${RELATION_TYPES_BASE}/${slug}`, payload)
+  return extractData(res)
+}
+
+/** Admin-only — 관계 종류 삭제(사용 중이면 거부). */
+export async function deleteRelationType(slug) {
+  const res = await apiClient.delete(`${RELATION_TYPES_BASE}/${slug}`)
+  return extractData(res)
+}
 
 /**
  * List the axes (모델 / 부품 / BOM / 단계 / 불량 / 시험 / 시뮬레이션 등).

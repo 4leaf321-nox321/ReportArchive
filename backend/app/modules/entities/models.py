@@ -34,6 +34,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -210,10 +211,47 @@ class EntityAlias(Base):
     )
 
 
-# 관계 종류 — 우선 part_of 하나. String 컬럼이라 새 종류 추가에 마이그레이션이
-# 필요 없다(서비스 레이어가 허용 집합을 검증).
+# 관계 종류 기본값. 허용 집합은 더 이상 코드 상수가 아니라 relation_types 테이블
+# (RelationType, p55)에서 조회한다 — 서비스 레이어가 검증. part_of 는 시드된 기본
+# 타입이라 안전 기본값으로 둔다.
 RELATION_PART_OF = "part_of"
-ALLOWED_RELATIONS = frozenset({RELATION_PART_OF})
+
+
+class RelationType(Base):
+    """엔티티 간 엣지의 *종류* 레지스트리 (p55). entity_types(축)와 대칭.
+
+    각 타입은 방향성·이행성(재귀 펼침 대상인지)·비순환 여부·허용 출발/도착 축을
+    메타로 가진다. add_relation 검증과 트래버설(이행 타입만 재귀)·향후 AI 스키마
+    인지의 토대(엔티티그래프_온톨로지_설계.md §3.1).
+
+    무FK: entity_relations.relation 이 이 slug 를 가리키되 FK 는 없다(서비스가 정합성).
+    """
+
+    __tablename__ = "relation_types"
+    __table_args__ = (UniqueConstraint("slug", name="uq_relation_types_slug"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slug: Mapped[str] = mapped_column(String(32), nullable=False)
+    label: Mapped[str] = mapped_column(String(64), nullable=False)
+    inverse_label: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    # 방향성 있나(false=무방향 동치).
+    directed: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # 이행적 = 재귀 펼침(롤업/트래버설)에 쓰는가. part_of=true, tested_by=false.
+    transitive: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 사이클 금지 = add 시 순환 가드 적용.
+    acyclic: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 허용 출발/도착 축 slug. NULL=제약 없음.
+    src_axis_slugs: Mapped[list[str] | None] = mapped_column(
+        ARRAY(String(32)), nullable=True
+    )
+    dst_axis_slugs: Mapped[list[str] | None] = mapped_column(
+        ARRAY(String(32)), nullable=True
+    )
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
 
 
 class EntityRelation(Base):

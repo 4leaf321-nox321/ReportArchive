@@ -24,6 +24,7 @@ from app.modules.activities.routes import router as activities_router
 from app.modules.entities.routes import (
     entities_router,
     entity_types_router,
+    relation_types_router,
 )
 from app.modules.files.routes import router as files_router
 from app.modules.folders.routes import router as folders_router
@@ -74,6 +75,11 @@ def register_routers(app: FastAPI) -> None:
         entity_types_router,
         prefix="/api/entity-types",
         tags=["entity-types"],
+    )
+    app.include_router(
+        relation_types_router,
+        prefix="/api/relation-types",
+        tags=["relation-types"],
     )
     app.include_router(
         entities_router,

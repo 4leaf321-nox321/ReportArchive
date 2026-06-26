@@ -54,6 +54,7 @@ import {
   listEntityRelations,
   listEntityTypes,
   listEntityUsage,
+  listRelationTypes,
   mergeEntity,
   unlinkEntityFromAllReports,
   unlinkEntityFromReport,
@@ -1250,6 +1251,23 @@ function RelationsDialog({ type, entity, onClose }) {
   const [results, setResults] = useState([])
   const [searching, setSearching] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  // 관계 종류 레지스트리(p55) + 추가 시 선택한 종류. 기본 part_of.
+  const [relTypes, setRelTypes] = useState([])
+  const [selectedRel, setSelectedRel] = useState('part_of')
+
+  useEffect(() => {
+    listRelationTypes()
+      .then((res) => setRelTypes(res?.items ?? []))
+      .catch(() => setRelTypes([]))
+  }, [])
+
+  // slug → 관계 종류 메타(라벨·역라벨·도착축 제약). 표시·검색 좁힘에 쓴다.
+  const relTypeBySlug = useMemo(() => {
+    const m = new Map()
+    for (const rt of relTypes) m.set(rt.slug, rt)
+    return m
+  }, [relTypes])
+  const selectedRelType = relTypeBySlug.get(selectedRel) ?? null
 
   async function reload() {
     try {
@@ -1282,9 +1300,15 @@ function RelationsDialog({ type, entity, onClose }) {
         const res = await listEntities({ q, limit: 20 })
         if (cancelled) return
         const parentIds = new Set((rel?.parents ?? []).map((p) => p.entity_id))
+        // 선택한 관계 종류가 도착 축을 제약하면 그 축의 값만 후보로(서버도 거부하지만
+        // 미리 좁혀 UX 향상). 제약 없으면 전체 축.
+        const dstAxes = selectedRelType?.dst_axis_slugs ?? null
         setResults(
           (res?.items ?? []).filter(
-            (e) => e.id !== entity.id && !parentIds.has(e.id),
+            (e) =>
+              e.id !== entity.id &&
+              !parentIds.has(e.id) &&
+              (!dstAxes || dstAxes.includes(e.type_slug)),
           ),
         )
       } catch {
@@ -1297,18 +1321,18 @@ function RelationsDialog({ type, entity, onClose }) {
       cancelled = true
       clearTimeout(t)
     }
-  }, [query, entity.id, rel])
+  }, [query, entity.id, rel, selectedRel, selectedRelType])
 
   async function addParent(dst) {
     setSubmitting(true)
     try {
-      await addEntityRelation(entity.id, dst.id)
+      await addEntityRelation(entity.id, dst.id, selectedRel)
       setQuery('')
       setResults([])
       await reload()
     } catch (err) {
       toast.error(
-        err?.response?.data?.message || err?.message || '상위 추가 실패',
+        err?.response?.data?.message || err?.message || '관계 추가 실패',
       )
     } finally {
       setSubmitting(false)
@@ -1334,23 +1358,44 @@ function RelationsDialog({ type, entity, onClose }) {
             <Network className="h-4 w-4" /> 관계 — {entity.value}
           </DialogTitle>
           <DialogDescription>
-            <strong>{type.label}</strong> ‘{entity.value}’ 의 상위(part_of)를
-            연결합니다. 예: 부품을 모델에 연결하면, 작성 시 그 모델을 고른
-            사용자에게 이 부품이 후보로 좁혀집니다.
+            <strong>{type.label}</strong> ‘{entity.value}’ 에서 출발하는 관계를
+            연결합니다(이 값 → 대상). 종류에 따라 캐스케이드 picker·롤업·확장
+            검색에 쓰입니다.
           </DialogDescription>
         </DialogHeader>
 
-        {/* 상위 추가 검색 */}
+        {/* 관계 추가 — 종류 선택 + 대상 검색 */}
         <div className="space-y-1.5">
-          <Label className="text-xs">상위(part_of) 추가</Label>
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="상위로 묶을 값 검색 (전체 축)…"
-              className="h-8 pl-7 text-sm"
-            />
+          <Label className="text-xs">관계 추가</Label>
+          <div className="flex items-center gap-1.5">
+            <select
+              value={selectedRel}
+              onChange={(e) => {
+                setSelectedRel(e.target.value)
+                setResults([])
+              }}
+              className="h-8 shrink-0 rounded-md border bg-background px-2 text-xs"
+              title="관계 종류"
+            >
+              {relTypes.map((rt) => (
+                <option key={rt.slug} value={rt.slug}>
+                  {rt.label}
+                </option>
+              ))}
+            </select>
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={
+                  selectedRelType?.dst_axis_slugs?.length
+                    ? `대상 검색 (${selectedRelType.dst_axis_slugs.join('·')})…`
+                    : '대상 값 검색 (전체 축)…'
+                }
+                className="h-8 pl-7 text-sm"
+              />
+            </div>
           </div>
           {query.trim() && (
             <div className="max-h-40 overflow-y-auto rounded-md border">
@@ -1382,22 +1427,28 @@ function RelationsDialog({ type, entity, onClose }) {
           )}
         </div>
 
-        {/* 현재 상위 */}
+        {/* 나가는 관계 (이 값 → 대상) */}
         <div className="space-y-1">
-          <Label className="text-xs text-muted-foreground">상위 (이 값이 속한)</Label>
+          <Label className="text-xs text-muted-foreground">
+            나가는 관계 (이 값 → 대상)
+          </Label>
           <RelationList
             items={rel?.parents}
-            empty="상위가 없습니다."
+            empty="나가는 관계가 없습니다."
+            relTypeBySlug={relTypeBySlug}
             onRemove={removeRelation}
           />
         </div>
 
-        {/* 하위 (읽기 정보) */}
+        {/* 들어오는 관계 (대상 → 이 값) */}
         <div className="space-y-1">
-          <Label className="text-xs text-muted-foreground">하위 (이 값에 묶인)</Label>
+          <Label className="text-xs text-muted-foreground">
+            들어오는 관계 (대상 → 이 값)
+          </Label>
           <RelationList
             items={rel?.children}
-            empty="하위가 없습니다."
+            empty="들어오는 관계가 없습니다."
+            relTypeBySlug={relTypeBySlug}
             onRemove={removeRelation}
           />
         </div>
@@ -1412,7 +1463,7 @@ function RelationsDialog({ type, entity, onClose }) {
   )
 }
 
-function RelationList({ items, empty, onRemove }) {
+function RelationList({ items, empty, onRemove, relTypeBySlug }) {
   if (items == null) {
     return (
       <p className="rounded-md border px-3 py-2 text-center text-xs text-muted-foreground">
@@ -1435,6 +1486,9 @@ function RelationList({ items, empty, onRemove }) {
           className="flex items-center justify-between gap-2 border-b px-2.5 py-1.5 text-sm last:border-b-0"
         >
           <span className="flex items-center gap-1.5 truncate">
+            <Badge className="shrink-0 text-[9px]">
+              {relTypeBySlug?.get(it.relation)?.label ?? it.relation}
+            </Badge>
             <span className="truncate">{it.value}</span>
             <Badge variant="outline" className="shrink-0 text-[9px]">
               {it.type_slug}

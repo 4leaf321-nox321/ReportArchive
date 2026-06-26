@@ -76,6 +76,59 @@ class EntityRelationCreate(BaseModel):
     relation: str = "part_of"
 
 
+class RelationTypeRead(BaseModel):
+    """엣지 종류 레지스트리 한 줄 (p55). 관계 추가 picker·관리 UI가 읽는다."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    slug: str
+    label: str
+    inverse_label: str = ""
+    directed: bool = True
+    transitive: bool = False
+    acyclic: bool = False
+    src_axis_slugs: Optional[list[str]] = None
+    dst_axis_slugs: Optional[list[str]] = None
+    sort_order: int = 0
+    description: str = ""
+
+
+class RelationTypeListResponse(BaseModel):
+    items: list[RelationTypeRead]
+
+
+class RelationTypeCreate(BaseModel):
+    """Admin-only — 새 관계 종류 등록. slug 는 안정 식별자(entity_relations.relation
+    이 가리킴) — 서비스가 정규화·중복 거부."""
+
+    slug: str = Field(..., min_length=1, max_length=32)
+    label: str = Field(..., min_length=1, max_length=64)
+    inverse_label: str = Field(default="", max_length=64)
+    directed: bool = True
+    transitive: bool = False
+    acyclic: bool = False
+    src_axis_slugs: Optional[list[str]] = None
+    dst_axis_slugs: Optional[list[str]] = None
+    sort_order: int = Field(default=0, ge=0, le=10_000)
+    description: str = Field(default="", max_length=2000)
+
+
+class RelationTypeUpdate(BaseModel):
+    """Admin-only — 메타 부분 수정. slug 는 불변(관계들이 가리키는 키). 축 제약은
+    빈 리스트를 보내면 '제약 없음'으로 해제."""
+
+    label: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    inverse_label: Optional[str] = Field(default=None, max_length=64)
+    directed: Optional[bool] = None
+    transitive: Optional[bool] = None
+    acyclic: Optional[bool] = None
+    src_axis_slugs: Optional[list[str]] = None
+    dst_axis_slugs: Optional[list[str]] = None
+    sort_order: Optional[int] = Field(default=None, ge=0, le=10_000)
+    description: Optional[str] = Field(default=None, max_length=2000)
+
+
 class EntityTypeListResponse(BaseModel):
     items: list[EntityTypeRead]
 

@@ -15,7 +15,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.modules.entities.models import (
-    ALLOWED_RELATIONS,
     RELATION_PART_OF,
     Entity,
     EntityAlias,
@@ -23,6 +22,7 @@ from app.modules.entities.models import (
     EntityRelation,
     EntityStatus,
     EntityType,
+    RelationType,
     ReportEntity,
 )
 from app.modules.entities.schemas import (
@@ -30,6 +30,8 @@ from app.modules.entities.schemas import (
     EntityTypeCreate,
     EntityTypeUpdate,
     EntityUpdate,
+    RelationTypeCreate,
+    RelationTypeUpdate,
 )
 
 import re
@@ -648,6 +650,91 @@ def _ancestors_up(
     return seen
 
 
+# --------------------------------------------------------------------------- #
+# RelationType — 엣지 종류 레지스트리 (p55). admin 관리.
+# --------------------------------------------------------------------------- #
+def list_relation_types(db: Session) -> list[RelationType]:
+    return list(
+        db.execute(
+            select(RelationType).order_by(
+                RelationType.sort_order, RelationType.slug
+            )
+        ).scalars()
+    )
+
+
+def get_relation_type(db: Session, slug: str) -> Optional[RelationType]:
+    return db.execute(
+        select(RelationType).where(RelationType.slug == slug)
+    ).scalar_one_or_none()
+
+
+def create_relation_type(db: Session, payload: RelationTypeCreate) -> RelationType:
+    if get_relation_type(db, payload.slug) is not None:
+        raise ValueError(f"이미 존재하는 관계 종류입니다: {payload.slug}")
+    row = RelationType(
+        slug=payload.slug,
+        label=payload.label,
+        inverse_label=payload.inverse_label or "",
+        directed=payload.directed,
+        transitive=payload.transitive,
+        acyclic=payload.acyclic,
+        src_axis_slugs=payload.src_axis_slugs or None,
+        dst_axis_slugs=payload.dst_axis_slugs or None,
+        sort_order=payload.sort_order,
+        description=payload.description or "",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def update_relation_type(
+    db: Session, row: RelationType, payload: RelationTypeUpdate
+) -> RelationType:
+    """메타 갱신. slug 는 불변(엔티티 관계들이 가리키는 키라 바꾸면 끊어짐)."""
+    data = payload.model_dump(exclude_unset=True)
+    for field in (
+        "label",
+        "inverse_label",
+        "directed",
+        "transitive",
+        "acyclic",
+        "sort_order",
+        "description",
+    ):
+        if field in data and data[field] is not None:
+            setattr(row, field, data[field])
+    # 축 제약은 명시적으로 빈 리스트/None 을 보내 '제약 없음'으로 풀 수 있어야 하므로
+    # exclude_unset 으로 키 존재 여부만 본다([] → None 으로 저장 = 제약 해제).
+    if "src_axis_slugs" in data:
+        row.src_axis_slugs = data["src_axis_slugs"] or None
+    if "dst_axis_slugs" in data:
+        row.dst_axis_slugs = data["dst_axis_slugs"] or None
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def delete_relation_type(db: Session, row: RelationType) -> int:
+    """삭제. 이미 그 타입을 쓰는 엔티티 관계가 있으면 거부(데이터 고아 방지) —
+    먼저 관계들을 정리/이관해야 한다."""
+    in_use = db.scalar(
+        select(func.count())
+        .select_from(EntityRelation)
+        .where(EntityRelation.relation == row.slug)
+    )
+    if in_use:
+        raise ValueError(
+            f"이 관계 종류를 사용하는 관계가 {in_use}건 있어 삭제할 수 없습니다."
+        )
+    removed_id = row.id
+    db.delete(row)
+    db.commit()
+    return removed_id
+
+
 def add_relation(
     db: Session,
     *,
@@ -656,12 +743,26 @@ def add_relation(
     relation: str = RELATION_PART_OF,
     creator_user_id: Optional[int] = None,
 ) -> EntityRelation:
-    """src --relation--> dst 추가. part_of 면 src=자식, dst=부모. 자기참조·중복·
-    사이클(이미 dst 가 src 의 후손이면)을 막는다. 이미 있으면 멱등 반환."""
-    if relation not in ALLOWED_RELATIONS:
+    """src --relation--> dst 추가. 관계 종류는 relation_types 레지스트리(p55)에서
+    조회·검증한다 — 허용 타입인지, 축 제약(src_axis_slugs/dst_axis_slugs)에 맞는지,
+    acyclic 타입이면 순환이 안 되는지. 자기참조·중복도 막는다. 이미 있으면 멱등 반환."""
+    rtype = get_relation_type(db, relation)
+    if rtype is None:
         raise ValueError(f"지원하지 않는 관계 종류입니다: {relation}")
     if src.id == dst.id:
         raise ValueError("자기 자신과는 관계를 맺을 수 없습니다.")
+
+    # 축 제약 — 타입이 허용 축을 지정했으면 src/dst 의 축이 그 안이어야 한다.
+    src_slug = src.entity_type.slug if src.entity_type else None
+    dst_slug = dst.entity_type.slug if dst.entity_type else None
+    if rtype.src_axis_slugs and src_slug not in rtype.src_axis_slugs:
+        raise ValueError(
+            f"'{rtype.label}' 관계의 출발 축이 아닙니다(허용: {', '.join(rtype.src_axis_slugs)})."
+        )
+    if rtype.dst_axis_slugs and dst_slug not in rtype.dst_axis_slugs:
+        raise ValueError(
+            f"'{rtype.label}' 관계의 도착 축이 아닙니다(허용: {', '.join(rtype.dst_axis_slugs)})."
+        )
 
     existing = db.execute(
         select(EntityRelation).where(
@@ -673,9 +774,9 @@ def add_relation(
     if existing is not None:
         return existing
 
-    # 사이클: src part_of dst 를 더하면 dst→…→src 경로가 이미 있을 때 순환.
-    # = dst 에서 위로 올라가 src 를 만나면 거부.
-    if src.id in _ancestors_up(db, start_id=dst.id, relation=relation):
+    # 순환 가드는 acyclic 타입만(part_of·supersedes 등). 비acyclic 타입(tested_by 등)은
+    # 애초에 계층이 아니라 순환 개념이 없어 가드를 건너뛴다.
+    if rtype.acyclic and src.id in _ancestors_up(db, start_id=dst.id, relation=relation):
         raise ValueError("순환 관계가 되어 추가할 수 없습니다.")
 
     row = EntityRelation(
@@ -695,27 +796,21 @@ def get_relation(db: Session, relation_id: int) -> Optional[EntityRelation]:
 
 
 def list_relations(
-    db: Session, *, entity_id: int, relation: str = RELATION_PART_OF
+    db: Session, *, entity_id: int, relation: Optional[str] = None
 ) -> tuple[list[EntityRelation], list[EntityRelation]]:
-    """(parents, children). parents = 이 엔티티가 part_of 한 상위들(src=this),
-    children = 이 엔티티에 part_of 로 묶인 하위들(dst=this)."""
-    parents = list(
-        db.execute(
-            select(EntityRelation).where(
-                EntityRelation.src_entity_id == entity_id,
-                EntityRelation.relation == relation,
-            )
-        ).scalars()
-    )
-    children = list(
-        db.execute(
-            select(EntityRelation).where(
-                EntityRelation.dst_entity_id == entity_id,
-                EntityRelation.relation == relation,
-            )
-        ).scalars()
-    )
-    return parents, children
+    """(outgoing, incoming). outgoing = 이 엔티티가 src 인 관계(this --rel--> X),
+    incoming = 이 엔티티가 dst 인 관계(X --rel--> this).
+
+    `relation=None`(기본) 이면 **모든 관계 종류**를 반환 — 관리 화면이 타입별로
+    묶어 보여준다. 특정 slug 를 주면 그 종류만(롤업·캐스케이드 내부용)."""
+    out_q = select(EntityRelation).where(EntityRelation.src_entity_id == entity_id)
+    in_q = select(EntityRelation).where(EntityRelation.dst_entity_id == entity_id)
+    if relation is not None:
+        out_q = out_q.where(EntityRelation.relation == relation)
+        in_q = in_q.where(EntityRelation.relation == relation)
+    outgoing = list(db.execute(out_q).scalars())
+    incoming = list(db.execute(in_q).scalars())
+    return outgoing, incoming
 
 
 def delete_relation(db: Session, row: EntityRelation) -> int:

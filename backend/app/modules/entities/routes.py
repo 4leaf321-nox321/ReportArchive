@@ -39,6 +39,10 @@ from app.modules.entities.schemas import (
     EntityUpdate,
     EntityUsageReportRef,
     EntityUsageResponse,
+    RelationTypeCreate,
+    RelationTypeListResponse,
+    RelationTypeRead,
+    RelationTypeUpdate,
 )
 from app.modules.users.models import Role, User, WorkspaceMember
 from app.shared.auth import _resolve_user_from_token, bearer_scheme
@@ -177,6 +181,80 @@ def delete_entity_type(
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     return success_response(data=None, message=f"'{name}' 축이 삭제됐습니다.")
+
+
+# --------------------------------------------------------------------------- #
+# relation-types router — `/api/relation-types` (엣지 종류 레지스트리, p55)
+# --------------------------------------------------------------------------- #
+relation_types_router = APIRouter()
+
+
+@relation_types_router.get("")
+def list_relation_types(
+    _actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """모든 관계 종류. 관계 추가 picker(타입 선택)와 관리 UI가 읽는다. 인증만
+    필요(역할 게이트 없음 — picker 가 모든 사용자에 필요)."""
+    rows = services.list_relation_types(db)
+    return success_response(
+        data=RelationTypeListResponse(
+            items=[RelationTypeRead.model_validate(r) for r in rows]
+        )
+    )
+
+
+@relation_types_router.post("", status_code=201)
+def create_relation_type(
+    payload: RelationTypeCreate,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 새 관계 종류 등록. slug 중복은 거부."""
+    _require_admin(actor)
+    try:
+        row = services.create_relation_type(db, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return created_response(data=RelationTypeRead.model_validate(row))
+
+
+@relation_types_router.patch("/{slug}")
+def update_relation_type(
+    slug: str,
+    payload: RelationTypeUpdate,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 메타 수정(slug 불변)."""
+    _require_admin(actor)
+    row = services.get_relation_type(db, slug)
+    if not row:
+        return not_found_response(f"관계 종류를 찾을 수 없습니다: {slug}")
+    try:
+        row = services.update_relation_type(db, row, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return success_response(data=RelationTypeRead.model_validate(row))
+
+
+@relation_types_router.delete("/{slug}")
+def delete_relation_type(
+    slug: str,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only. 그 타입을 쓰는 엔티티 관계가 있으면 거부(고아 방지)."""
+    _require_admin(actor)
+    row = services.get_relation_type(db, slug)
+    if not row:
+        return not_found_response(f"관계 종류를 찾을 수 없습니다: {slug}")
+    label = row.label
+    try:
+        services.delete_relation_type(db, row)
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    return success_response(data=None, message=f"'{label}' 관계 종류가 삭제됐습니다.")
 
 
 # --------------------------------------------------------------------------- #
@@ -445,8 +523,9 @@ def list_entity_relations(
     actor: EntityActor = Depends(entity_actor),
     db: Session = Depends(get_db),
 ):
-    """Admin-only — 이 엔티티의 part_of 관계. parents = 이 값이 속한 상위들,
-    children = 이 값에 묶인 하위들. 관리 화면의 관계 편집용."""
+    """Admin-only — 이 엔티티의 **모든** 관계(종류 불문, p55). parents = 이 값이
+    src 인 관계(part_of 면 상위), children = 이 값이 dst 인 관계(part_of 면 하위).
+    각 item 에 relation slug 가 있어 화면이 종류별로 묶어 표시한다."""
     _require_admin(actor)
     row = services.get_entity(db, entity_id)
     if not row:

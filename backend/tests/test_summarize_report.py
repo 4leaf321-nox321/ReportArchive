@@ -115,6 +115,43 @@ def test_summarize_not_entitled_skips():
         _drop(rid)
 
 
+def test_apply_ai_summary_tags_and_gate():
+    """추천 적용 — 편집한 태그가 report.tags 에 합산, 편집 권한 없으면 403."""
+    c = TestClient(app)
+    rid = _create_report(c, ADMIN, "APPLY " + uuid.uuid4().hex[:6])
+    try:
+        # 권한자(소유자) → 태그 합산 + 요약 수정.
+        r = c.post(
+            f"/api/reports/{rid}/ai-summary/apply",
+            headers=_h(ADMIN),
+            json={"tags": ["낙하", "구조해석"], "summary": "수정 요약"},
+        )
+        assert r.status_code == 200, r.text
+        assert set(r.json()["data"]["tags"]) >= {"낙하", "구조해석"}
+
+        # 중복 제외 + 추가.
+        r2 = c.post(
+            f"/api/reports/{rid}/ai-summary/apply",
+            headers=_h(ADMIN),
+            json={"tags": ["낙하", "신규"]},
+        )
+        tags = r2.json()["data"]["tags"]
+        assert tags.count("낙하") == 1 and "신규" in tags
+
+        # 편집 권한 없는 유저(user3) → 403.
+        r3 = c.post(
+            f"/api/reports/{rid}/ai-summary/apply",
+            headers={
+                "Authorization": f"Bearer {create_access_token(USER)}",
+                "X-Workspace-Slug": "dx",
+            },
+            json={"tags": ["x"]},
+        )
+        assert r3.status_code == 403
+    finally:
+        _drop(rid)
+
+
 def test_summarize_soft_delete_removes():
     c = TestClient(app)
     rid = _create_report(c, ADMIN, "SOFTDEL " + uuid.uuid4().hex[:6])

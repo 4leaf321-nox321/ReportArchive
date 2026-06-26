@@ -4100,7 +4100,10 @@ export default function ReportDetailPage() {
               )}
               {/* "i" 옆 AI 요약 버튼(B) — 요약이 있을 때만 보임, 클릭 시 모달. */}
               {!isNew && existingReport?.id && (
-                <ReportAiSummaryButton reportId={existingReport.id} />
+                <ReportAiSummaryButton
+                  reportId={existingReport.id}
+                  canEdit={!!existingReport.can_edit}
+                />
               )}
             </div>
           </div>

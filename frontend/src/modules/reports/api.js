@@ -189,6 +189,24 @@ export async function bulkAiSummary(reportIds) {
   return extractData(res)
 }
 
+/**
+ * AI 추천(요약·태그·분류)을 검토·수정 후 적용(B 후속). 편집 가능자만(서버 can_edit).
+ * 보낸 필드만 반영 — summary=ReportAiSummary 갱신, tags=report.tags 합산,
+ * setReportType=true 면 reportTypeId 로 보고서 종류 설정.
+ */
+export async function applyAiSummary(
+  id,
+  { summary, tags, reportTypeId, setReportType = false } = {},
+) {
+  const res = await apiClient.post(`${BASE}/${id}/ai-summary/apply`, {
+    summary,
+    tags,
+    report_type_id: reportTypeId ?? null,
+    set_report_type: setReportType,
+  })
+  return extractData(res)
+}
+
 /** Metadata-only folder placement — no lock required. Owner-only. */
 export async function moveReportToFolder(id, folderId) {
   const res = await apiClient.put(`${BASE}/${id}/folder`, {

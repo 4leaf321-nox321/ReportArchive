@@ -925,6 +925,63 @@ def get_report_ai_summary(
     )
 
 
+class ApplyAiSummaryRequest(BaseModel):
+    # 편집한 요약(있으면 ReportAiSummary.summary 갱신). None=미변경.
+    summary: str | None = None
+    # 사용자가 검토·수정한 태그들 — report.tags(free-form)에 합산(중복 제외). None=미적용.
+    tags: list[str] | None = None
+    # 보고서 종류(분류) 적용 — set_report_type=True 일 때만 반영(None 이면 해제).
+    report_type_id: int | None = None
+    set_report_type: bool = False
+
+
+@router.post("/{report_id}/ai-summary/apply")
+def apply_ai_summary(
+    report_id: int,
+    payload: ApplyAiSummaryRequest,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """AI 추천(요약·태그·분류)을 **검토·수정 후 적용**(B 후속). 자동 반영이 아니라
+    사람이 확정 — 편집 가능자(can_edit)만. 잠금 불필요(메타데이터 갱신, 폴더이동
+    패턴). 태그는 report.tags 에 합산, 분류는 report_type 으로."""
+    from app.ai.models import ReportAiSummary
+    from app.shared.permissions import can_edit
+
+    report = services.get_report(db, report_id)
+    if not report:
+        return not_found_response(f"Report not found: {report_id}")
+    if not can_edit(db, actor.user, report).allowed:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "이 보고서를 편집할 권한이 없습니다."
+        )
+
+    if payload.summary is not None:
+        row = db.get(ReportAiSummary, report_id)
+        if row is not None:
+            row.summary = payload.summary.strip()
+
+    if payload.tags is not None:
+        merged = list(report.tags or [])
+        for t in payload.tags:
+            t = (t or "").strip()
+            if t and t not in merged:
+                merged.append(t)
+        report.tags = merged
+
+    if payload.set_report_type:
+        report.report_type_id = payload.report_type_id
+
+    db.commit()
+    return success_response(
+        data={
+            "tags": list(report.tags or []),
+            "report_type_id": report.report_type_id,
+        },
+        message="적용되었습니다.",
+    )
+
+
 class BulkAiSummaryRequest(BaseModel):
     report_ids: list[int]
 

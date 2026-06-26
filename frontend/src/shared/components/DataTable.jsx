@@ -166,16 +166,17 @@ export function DataTable({
     })
   }
 
-  // Selection helpers — the header checkbox toggles every row that
-  // currently matches the filter (across pages, not just the current
-  // page) so "select all" lines up with the count pill above. Toggling
-  // off when partial selection clears just the visible-filter slice;
-  // anything selected outside the filter (e.g. from a previous query)
-  // is left alone so the user doesn't silently lose work.
+  // Selection helpers — the header checkbox toggles every row on the
+  // CURRENT page (the visible slice), matching the Gmail/Finder default:
+  // "select all" selects what you can see, not hidden rows on other
+  // pages. With page size = "all" the page slice is the whole filtered
+  // set, so that case still selects everything. Toggling off clears just
+  // the current-page slice; anything selected on other pages (via
+  // shift+click or a prior page) is left alone so work isn't silently lost.
   const selectionEnabled = selectable && typeof onSelectionChange === 'function'
   const visibleIds = React.useMemo(
-    () => (selectionEnabled ? sorted.map((r) => getRowId(r)) : []),
-    [selectionEnabled, sorted, getRowId],
+    () => (selectionEnabled ? pageRows.map((r) => getRowId(r)) : []),
+    [selectionEnabled, pageRows, getRowId],
   )
   const selectedInView = React.useMemo(() => {
     if (!selectionEnabled || !selectedIds) return 0

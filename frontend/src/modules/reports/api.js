@@ -52,6 +52,23 @@ export async function getReport(id) {
   return extractData(res)
 }
 
+// 자동태깅 — 저장된 본문에서 엔티티(축) 태그 후보를 추천. **아무것도 저장하지
+// 않는다** — 제안 칩 데이터일 뿐(사용자가 수락 → entity_ids 로 PATCH 해야 태깅).
+// 반환: { items: [{id, type_id, type_slug, value, code, status, source, score}], truncated }
+export async function suggestReportEntities(id) {
+  const res = await apiClient.post(`${BASE}/${id}/suggest-entities`)
+  return extractData(res)
+}
+
+// 가산(union) 태그 적용 — 기존 태그를 두고 entity_ids 만 더한다(제거 안 함).
+// 일괄 AI 태그 적용(여러 보고서 검토→수락)용. 반환: { report_id, entity_ids, added }
+export async function addReportEntities(id, entityIds) {
+  const res = await apiClient.post(`${BASE}/${id}/entities/add`, {
+    entity_ids: entityIds,
+  })
+  return extractData(res)
+}
+
 // 수정 이력 — 메타만(최신순, cursor=beforeId). 반환: [{id, seq, revision, author_user_id,
 // author_name, source, created_at, body_bytes, label, is_pinned}]
 export async function listReportVersions(id, { limit = 50, beforeId } = {}) {

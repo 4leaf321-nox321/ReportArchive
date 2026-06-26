@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     # 매치·mock(미설정 운영)·미임베딩 상태가 키워드 결과를 오염시키지 않도록 한다.
     # 실제 E5/bge-m3 의 "관련 있음"은 보통 0.3+ 라 0.2 면 노이즈만 걸러진다.
     embedding_hybrid_min_score: float = Field(default=0.2)
+    # 자동태깅 유사도 추천의 최소 코사인 점수(엔티티 값 ↔ 보고서 청크). 검색용
+    # hybrid 임계(0.2)보다는 높고, 짧은 값↔청크라 0.55 면 실제 관련 항목(bge-m3
+    # 기준 ~0.43–0.50)도 거의 다 걸러진다 → 0.45 로 둬 의미 있는 후보가 뜨게 한다.
+    # 제안은 검토 후 수락(기본 미선택)이라 약간의 노이즈는 안전.
+    embedding_suggest_min_score: float = Field(default=0.45)
     # 보고서 저장/수정 시 자동으로 embed_report 잡을 적재할지. **기본 OFF** — pgvector
     # 확장·report_chunks·워커가 모두 준비된 환경에서만 켠다(.env 로 true). 안 그러면
     # 임베딩 미배포(p47만 배포 등) 상태에서 실패 잡이 쌓인다.

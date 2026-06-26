@@ -1270,6 +1270,27 @@ def update_report(
     return report
 
 
+def add_entities_to_report(
+    db: Session, report: Report, entity_ids: list[int]
+) -> list:
+    """기존 태그에 entity_ids 를 **가산**(union)으로 더한다 — 제거는 안 함.
+
+    일괄 AI 태그 적용(여러 보고서 검토→수락)의 쓰기 경로. 보고서를 *편집 세션*
+    으로 여는 게 아니므로(편집 락 미사용) replace 대신 합집합만 적용한다 — 다른
+    사람이 편집 중이라도 기존 태그를 덮어쓰지 않게. 검증/중복제거는
+    set_report_entities 가 처리한다. 반환은 적용 후 전체 엔티티 리스트."""
+    existing = [e.id for e in (report.entities or [])]
+    merged = list(dict.fromkeys([*existing, *(entity_ids or [])]))  # 순서보존 union
+    if set(merged) == set(existing):
+        return list(report.entities or [])  # 추가분 없음 — no-op
+    result = entity_services.set_report_entities(
+        db, report_id=report.id, entity_ids=merged
+    )
+    db.commit()
+    db.refresh(report)
+    return result
+
+
 # ─── 버전(수정 이력) ───────────────────────────────────────────────────
 def list_report_versions(
     db: Session, report_id: int, *, limit: int = 50, before_id: Optional[int] = None

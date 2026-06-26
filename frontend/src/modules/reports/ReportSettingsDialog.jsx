@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Info, Settings2 } from 'lucide-react'
+import { Info, Settings2, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
@@ -16,6 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui
 import { listEntityTypes } from '@/shared/api/entities'
 import { getTemplateEntityTypes } from '@/shared/api/templates'
 import { EntityMultiPicker } from '@/modules/entities/EntityMultiPicker'
+import { suggestReportEntities } from './api'
 import { cn } from '@/shared/lib/utils'
 import { Badge } from '@/shared/components/ui/badge'
 import { X } from 'lucide-react'
@@ -118,6 +119,10 @@ export function ReportSettingsDialog({
   // 템플릿↔축 바인딩에 따라 노출 축을 좁히는 데 쓴다. 비거나 미지정이면
   // 전체 축 노출(현행 동작). 템플릿 편집기 등 보고서 컨텍스트가 아닐 땐 생략.
   entityTemplateIds = null,
+  // 저장된 보고서 id. 있으면 엔티티 태그 섹션에 "AI 태그 추천" 버튼이 떠서
+  // 저장된 본문 기준으로 후보를 제안한다. 새(미저장) 보고서·템플릿 편집기에선
+  // null → 버튼 숨김(본문이 서버에 없어 추천 불가).
+  entityReportId = null,
   // "협업 부서" — 함께 일한 조직 워크스페이스 슬러그 배열. picker(트리)에서
   // 변경하면 onApplyCollab 로 위로 전달된다. null/빈 배열 = 미지정.
   currentCollab = null,
@@ -160,6 +165,7 @@ export function ReportSettingsDialog({
           currentType={currentType}
           currentEntities={currentEntities}
           entityTemplateIds={entityTemplateIds}
+          entityReportId={entityReportId}
           currentCollab={currentCollab}
           metadata={metadata}
           onClose={onClose}
@@ -195,6 +201,7 @@ function DialogBody({
   currentType,
   currentEntities,
   entityTemplateIds,
+  entityReportId,
   currentCollab,
   metadata,
   onClose,
@@ -336,6 +343,7 @@ function DialogBody({
               entitiesDraft={entitiesDraft}
               onEntitiesChange={setEntitiesDraft}
               entityTemplateIds={entityTemplateIds}
+              entityReportId={entityReportId}
               collabDraft={collabDraft}
               onCollabChange={setCollabDraft}
               metadata={metadata}
@@ -911,6 +919,7 @@ function ReportSettingsPropertiesTab({
   entitiesDraft,
   onEntitiesChange,
   entityTemplateIds,
+  entityReportId,
   collabDraft,
   onCollabChange,
   metadata,
@@ -947,6 +956,7 @@ function ReportSettingsPropertiesTab({
           entities={entitiesDraft}
           onChange={onEntitiesChange}
           templateIds={entityTemplateIds}
+          reportId={entityReportId}
         />
         <div className="mt-1 flex items-start gap-3">
           <Label className="w-24 shrink-0 pt-1.5 text-xs text-muted-foreground">
@@ -984,12 +994,16 @@ function ReportSettingsPropertiesTab({
  * subtle placeholder rather than collapsing entirely (avoids a layout
  * shift when the data arrives).
  */
-export function EntityTagsSection({ entities, onChange, templateIds }) {
+export function EntityTagsSection({ entities, onChange, templateIds, reportId }) {
   const [types, setTypes] = useState(null) // null = loading, [] = empty (impossible post-seed but safe)
   // 이 보고서의 페이지 템플릿들의 축 바인딩. null = (아직)없음/미조회 → 전체 축.
   // 배열의 각 원소는 `{ is_default, items }` (조회 실패 시 null 섞일 수 있음).
   const [bindings, setBindings] = useState(null)
   const [error, setError] = useState(null)
+  // 자동태깅(AI 태그 추천) — null=미조회, []=조회했으나 후보 0, [...]=후보.
+  const [suggestions, setSuggestions] = useState(null)
+  const [suggesting, setSuggesting] = useState(false)
+  const [suggestTruncated, setSuggestTruncated] = useState(false)
 
   // templateIds 배열 자체는 매 렌더 새 참조라 effect dep 으로 부적합 — 정렬·dedupe
   // 한 문자열 키로 안정화한다.
@@ -1078,6 +1092,54 @@ export function EntityTagsSection({ entities, onChange, templateIds }) {
     onChange?.([...others, ...nextList])
   }
 
+  // "AI 태그 추천" — 저장된 본문에서 후보를 받아온다(아무것도 저장 안 함).
+  async function handleSuggest() {
+    if (!reportId || suggesting) return
+    setSuggesting(true)
+    try {
+      const res = await suggestReportEntities(reportId)
+      setSuggestions(res?.items ?? [])
+      setSuggestTruncated(res?.truncated === true)
+    } catch (e) {
+      toast.error('태그 추천 실패', { description: String(e?.message ?? e) })
+    } finally {
+      setSuggesting(false)
+    }
+  }
+
+  // 제안을 수락 → 슬림 EntityRefMini 모양으로 draft 에 추가. 칩에서 그 제안 제거.
+  function acceptSuggestion(s) {
+    const exists = (entities || []).some((e) => e.id === s.id)
+    if (!exists) {
+      onChange?.([
+        ...(entities || []),
+        {
+          id: s.id,
+          type_id: s.type_id,
+          type_slug: s.type_slug,
+          value: s.value,
+          code: s.code ?? null,
+          status: s.status,
+        },
+      ])
+    }
+    setSuggestions((prev) => (prev || []).filter((x) => x.id !== s.id))
+  }
+
+  // 화면에 띄울 제안 = 아직 태깅 안 됐고, 현재 노출 축(visibleTypes)에 속한 것만.
+  // (숨은 축에 몰래 태깅되는 혼란 방지 — 보이는 축으로 한정.)
+  const visibleSlugSet = useMemo(
+    () => new Set(visibleTypes.map((t) => t.slug)),
+    [visibleTypes],
+  )
+  const shownSuggestions = useMemo(() => {
+    if (!Array.isArray(suggestions)) return []
+    const tagged = new Set((entities || []).map((e) => e.id))
+    return suggestions.filter(
+      (s) => !tagged.has(s.id) && visibleSlugSet.has(s.type_slug),
+    )
+  }, [suggestions, entities, visibleSlugSet])
+
   if (types === null) {
     return (
       <p className="text-xs text-muted-foreground">축 목록 불러오는 중...</p>
@@ -1113,6 +1175,82 @@ export function EntityTagsSection({ entities, onChange, templateIds }) {
 
   return (
     <div className="space-y-2">
+      {reportId && (
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] text-muted-foreground">
+            본문에서 태그 후보를 찾아 제안합니다(저장된 내용 기준).
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1 text-xs"
+            onClick={handleSuggest}
+            disabled={suggesting}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            {suggesting ? '추천 중…' : 'AI 태그 추천'}
+          </Button>
+        </div>
+      )}
+      {Array.isArray(suggestions) && (
+        <div className="rounded-md border border-dashed bg-muted/30 p-2">
+          {shownSuggestions.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground">
+              추천할 새 태그가 없습니다.
+            </p>
+          ) : (
+            <>
+              <div className="mb-1.5 flex items-center justify-between">
+                <span className="text-[11px] text-muted-foreground">
+                  추천 태그 — 클릭해 추가 ({shownSuggestions.length})
+                </span>
+                <button
+                  type="button"
+                  className="text-[11px] text-muted-foreground hover:text-foreground"
+                  onClick={() => shownSuggestions.forEach(acceptSuggestion)}
+                >
+                  전체 추가
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {shownSuggestions.map((s) => {
+                  const axis = types.find((t) => t.slug === s.type_slug)
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => acceptSuggestion(s)}
+                      title={
+                        s.source === 'similarity'
+                          ? `유사도 추천 (${Math.round((s.score ?? 0) * 100)}%)`
+                          : '본문에 등장(정확 매칭)'
+                      }
+                      className="inline-flex items-center gap-1 rounded-full border bg-background px-2 py-0.5 text-xs hover:border-primary hover:bg-primary/5"
+                    >
+                      {s.source === 'similarity' && (
+                        <Sparkles className="h-3 w-3 text-muted-foreground" />
+                      )}
+                      {axis && (
+                        <span className="text-[10px] text-muted-foreground">
+                          {axis.label}
+                        </span>
+                      )}
+                      <span>{s.value}</span>
+                      <span className="text-muted-foreground">＋</span>
+                    </button>
+                  )
+                })}
+              </div>
+              {suggestTruncated && (
+                <p className="mt-1 text-[10px] text-muted-foreground">
+                  값이 많아 일부만 검토했습니다.
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
       {visibleTypes.map((t) => {
         const isRequired = requiredSlugs.has(t.slug)
         const isMissing =

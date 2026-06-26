@@ -132,6 +132,25 @@ class EntityRefMini(BaseModel):
     status: EntityStatus
 
 
+class EntitySuggestion(EntityRefMini):
+    """자동태깅 제안 1건 — 칩으로 띄울 슬림 엔티티 + 출처/점수.
+
+    `source`='deterministic'(본문에 값/코드/별칭이 그대로 등장, score=1.0) 또는
+    'similarity'(report_chunks 임베딩 유사도). **자동 태깅이 아니라 제안** — 사용자가
+    수락해야 report_entities 에 들어간다(엔티티관리개선_설계.md §4.4)."""
+
+    source: str
+    score: float
+
+
+class EntitySuggestResponse(BaseModel):
+    items: list[EntitySuggestion]
+    # 후보가 상한을 넘어 유사도 평가가 일부만 됐는지(프런트가 "일부만 검토됨" 안내).
+    truncated: bool = False
+    # 보고서가 이미 가진 태그(중복 추가 방지 표시용). 일괄 검토 화면의 "기존 태그" 칼럼.
+    current: list[EntityRefMini] = Field(default_factory=list)
+
+
 class EntityListResponse(BaseModel):
     items: list[EntityRead]
 

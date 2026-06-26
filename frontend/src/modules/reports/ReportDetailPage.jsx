@@ -5150,6 +5150,8 @@ export default function ReportDetailPage() {
             (draft?.pages ?? []).map((p) => p?.template_id).filter(Boolean),
           ),
         )}
+        // 저장된 보고서일 때만 "AI 태그 추천"(저장된 본문 기준). 새 보고서는 null.
+        entityReportId={isNew ? null : existingReport?.id ?? null}
         currentCollab={draft?.collab_workspace_slugs ?? []}
         metadata={
           // draft holds the user-editable subset (title/status/report_date);
@@ -8444,6 +8446,9 @@ function ReportMetaChips({
                   (draft.pages ?? []).map((p) => p?.template_id).filter(Boolean),
                 ),
               )}
+              // 저장된 보고서면 「AI 태그 추천」 버튼을 이 팝오버에도 노출 — 편집
+              // 툴바 칩 → 한 번의 클릭으로 닿는 가장 쉬운 진입점.
+              reportId={reportId ?? null}
             />
             {/* 협업 부서 — 기준정보(엔티티)와 달리 부서 트리에서 직접 선택.
                 "관련 정보" 안에 같이 둬서 한곳에서 등록되게 한다. */}

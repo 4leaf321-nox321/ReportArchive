@@ -15,6 +15,7 @@ from app.modules.reports.schemas import (
     LockInfo,
     ReportCopy,
     ReportCreate,
+    ReportEntitiesAdd,
     ReportLinkCreate,
     ReportLinkKindRead,
     ReportLinkRead,
@@ -1276,6 +1277,77 @@ def update_report(
         db.commit()
 
     return success_response(data=_read_with_perms(db, actor, report))
+
+
+@router.post("/{report_id}/suggest-entities")
+def suggest_report_entities(
+    report_id: int,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_writer),
+):
+    """본문에서 엔티티(축) 태그 후보를 추천 — **자동 태깅이 아니라 제안 칩**.
+
+    결정적 매칭(본문에 값/코드/별칭이 그대로 등장, 환각 0) + report_chunks 임베딩
+    유사도(mock 백엔드면 생략). 반환은 후보 목록일 뿐 아무것도 저장하지 않는다 —
+    사용자가 수락해 entity_ids 로 PATCH 해야 태깅된다(엔티티관리개선_설계.md §4.4).
+
+    편집 권한(can_edit)을 요구한다 — 태깅 보조 도구이므로 편집 가능한 사용자만.
+    """
+    from app.modules.entities import autotag
+    from app.shared.permissions import can_edit
+
+    report = services.get_report(db, report_id)
+    if not report:
+        return not_found_response(f"Report not found: {report_id}")
+    if not services.can_read_report(db, actor, report):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+    if not can_edit(db, actor.user, report).allowed:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "이 보고서를 편집할 권한이 없습니다."
+        )
+
+    result = autotag.suggest_entities(db, report)
+    return success_response(data=result)
+
+
+@router.post("/{report_id}/entities/add")
+def add_report_entities(
+    report_id: int,
+    payload: ReportEntitiesAdd,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_writer),
+):
+    """기존 태그에 entity_ids 를 **가산**(union)으로 더한다 — 제거 안 함.
+
+    일괄 AI 태그 적용(목록에서 여러 보고서 선택→추천 검토→수락)의 쓰기 경로.
+    보고서를 편집 세션으로 여는 게 아니므로 편집 락을 요구하지 않고(다른 일괄
+    동작과 동일), 합집합만 적용해 동시 편집자의 기존 태그를 덮어쓰지 않는다.
+    편집 권한(can_edit)은 요구한다. 반환은 적용 후 전체 엔티티 리스트.
+    """
+    from app.shared.permissions import can_edit
+
+    report = services.get_report(db, report_id)
+    if not report:
+        return not_found_response(f"Report not found: {report_id}")
+    if not services.can_read_report(db, actor, report):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+    if not can_edit(db, actor.user, report).allowed:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "이 보고서를 편집할 권한이 없습니다."
+        )
+    before = {e.id for e in (report.entities or [])}
+    try:
+        entities = services.add_entities_to_report(db, report, payload.entity_ids)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    after = [e.id for e in entities]
+    return success_response(
+        data={
+            "report_id": report.id,
+            "entity_ids": after,  # 적용 후 전체 태그 id
+            "added": len([i for i in after if i not in before]),  # 새로 추가된 수
+        }
+    )
 
 
 # --------------------------------------------------------------------------- #

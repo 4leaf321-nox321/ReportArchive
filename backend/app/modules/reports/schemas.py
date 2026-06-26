@@ -544,6 +544,14 @@ class ReportUpdate(BaseModel):
     expected_revision: Optional[int] = Field(default=None, ge=1)
 
 
+class ReportEntitiesAdd(BaseModel):
+    """가산(union) 태그 적용 — 기존 태그를 두고 entity_ids 만 더한다. 일괄 AI
+    태그 적용(여러 보고서 검토→수락)의 요청 바디. ReportUpdate.entity_ids 가
+    *전체 교체*인 것과 달리 이건 *추가만* 한다."""
+
+    entity_ids: list[int] = Field(default_factory=list)
+
+
 # ───────────────────────────────────────────────────────────────────────── #
 # Report links                                                              #
 # ───────────────────────────────────────────────────────────────────────── #

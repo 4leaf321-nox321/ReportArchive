@@ -17,6 +17,7 @@ import {
   Send,
   ShieldCheck,
   ShieldQuestion,
+  Sparkles,
   Trash2,
   Unlink,
   X,
@@ -58,6 +59,7 @@ import {
 } from './api'
 import { setMountFolder } from '@/shared/api/mounts'
 import { BulkSubmitToCompositeDialog } from '@/modules/composites/SubmitToCompositeDialog'
+import { BulkSuggestEntitiesDialog } from './BulkSuggestEntitiesDialog'
 
 /** MIME type carried by a report-row drag. FolderSidebar checks for this
  *  string to distinguish "user is dragging reports into me" from "user is
@@ -211,6 +213,7 @@ export default function ReportsListPage() {
   const [bulkUnmountOpen, setBulkUnmountOpen] = useState(false)
   const [bulkMountOpen, setBulkMountOpen] = useState(false)
   const [bulkSubmitOpen, setBulkSubmitOpen] = useState(false)
+  const [bulkSuggestOpen, setBulkSuggestOpen] = useState(false)
   const [bulkBusy, setBulkBusy] = useState(false)
   // FolderSidebar 의 폴더별 카운트(report_count, uncategorized_count) 는
   // 자체 listFolders 응답에서 오기 때문에, 여기서 보고서를 옮기거나
@@ -1137,6 +1140,7 @@ export default function ReportsListPage() {
                 onMount={() => setBulkMountOpen(true)}
                 canSubmitComposite={isOrg}
                 onSubmitComposite={() => setBulkSubmitOpen(true)}
+                onSuggestEntities={() => setBulkSuggestOpen(true)}
                 onDelete={() => setBulkDeleteOpen(true)}
                 onUnmount={() => setBulkUnmountOpen(true)}
                 onClear={() => setSelectedIds(new Set())}
@@ -1267,6 +1271,17 @@ export default function ReportsListPage() {
           <BulkSubmitToCompositeDialog
             reportIds={[...effectiveSelected]}
             onClose={() => setBulkSubmitOpen(false)}
+            onDone={() => setSelectedIds(new Set())}
+          />
+        )}
+        {/* 일괄 AI 태그 추천 — 선택 보고서별 추천을 모아 검토 후 가산 적용.
+            선택된 행에서 id+제목만 넘긴다(다이얼로그가 보고서별로 추천 조회). */}
+        {bulkSuggestOpen && effectiveSelected.size > 0 && (
+          <BulkSuggestEntitiesDialog
+            reports={list
+              .filter((r) => effectiveSelected.has(r.id))
+              .map((r) => ({ id: r.id, title: r.title }))}
+            onClose={() => setBulkSuggestOpen(false)}
             onDone={() => setSelectedIds(new Set())}
           />
         )}
@@ -1627,6 +1642,7 @@ function BulkActionBar({
   onMount,
   canSubmitComposite,
   onSubmitComposite,
+  onSuggestEntities,
   onDelete,
   onUnmount,
   onClear,
@@ -1671,6 +1687,19 @@ function BulkActionBar({
             게시 정리
           </Button>
         )}
+        {/* AI 태그 추천 — 선택한 보고서들의 본문에서 태그 후보를 모아 검토
+            화면에서 수락한 것만 가산 적용. 추천만 하고 자동 저장하지 않는다. */}
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 gap-1"
+          onClick={onSuggestEntities}
+          disabled={busy}
+          title="선택한 보고서들의 본문에서 태그 후보를 추천받아 검토 후 적용"
+        >
+          <Sparkles className="h-3.5 w-3.5" />
+          AI 태그 추천
+        </Button>
         {/* 종합보고 제출 — 선택한 N개 보고서를 한 종합보고에 안건으로 일괄
             제출(작성자 승인 후 추가). 이미 안건이거나 제출 불가한 건은
             서버가 거절하고 나머지만 처리된 뒤 ok/fail 토스트로 보고.

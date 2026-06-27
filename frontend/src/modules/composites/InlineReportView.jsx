@@ -71,7 +71,7 @@ function deltaLabel(baselineIso) {
 function compareRightHighlight(state) {
   if (state === 'removed')
     return {
-      border: ' border-l-4 border-rose-400 pl-2 rounded-sm',
+      border: ' ring-2 ring-inset ring-rose-400 rounded-md p-1 bg-rose-50/60 dark:ring-rose-500/70 dark:bg-rose-950/30',
       label: '삭제',
       chipCls:
         'border-rose-400 bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300',
@@ -79,7 +79,7 @@ function compareRightHighlight(state) {
     }
   if (state === 'changed')
     return {
-      border: ' border-l-4 border-amber-400 pl-2 rounded-sm',
+      border: ' ring-2 ring-inset ring-amber-400 rounded-md p-1 bg-amber-50/60 dark:ring-amber-500/70 dark:bg-amber-950/30',
       label: '변경',
       chipCls:
         'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
@@ -252,7 +252,7 @@ function InlinePage({
                 ? compareRightHighlight(compareState)
                 : changed
                   ? {
-                      border: ' border-l-4 border-amber-400 pl-2 rounded-sm',
+                      border: ' ring-2 ring-inset ring-amber-400 rounded-md p-1 bg-amber-50/60 dark:ring-amber-500/70 dark:bg-amber-950/30',
                       label: deltaLabel(baselineTakenAt),
                       chipCls:
                         'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300',

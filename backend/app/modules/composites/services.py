@@ -90,6 +90,60 @@ def get(db: Session, composite_id: int) -> Optional[CompositeReport]:
     return db.get(CompositeReport, composite_id)
 
 
+def find_previous_recurrence(
+    db: Session, composite: CompositeReport
+) -> Optional[CompositeReport]:
+    """The recurring composite that directly precedes `composite` in its
+    series — baseline for §7.4 per-widget delta. Series membership: explicit
+    `series_id` when set, else inferred by (workspace_slug, owner_user_id,
+    kind=recurring) per the model's documented rule (the −7d cadence is just
+    the canonical spacing; we take the nearest *prior* occurrence so the diff
+    survives off-cadence weeks). Returns None for theme / first-in-series."""
+    if composite.kind != CompositeKind.recurring:
+        return None
+    q = select(CompositeReport).where(
+        CompositeReport.kind == CompositeKind.recurring,
+        CompositeReport.id != composite.id,
+    )
+    if composite.series_id is not None:
+        q = q.where(CompositeReport.series_id == composite.series_id)
+    else:
+        q = q.where(
+            CompositeReport.workspace_slug == composite.workspace_slug,
+            CompositeReport.owner_user_id == composite.owner_user_id,
+            CompositeReport.series_id.is_(None),
+        )
+    # "Previous" = nearest occurrence strictly before this one. Prefer
+    # period_date ordering (recurring composites are period-anchored); fall
+    # back to created_at when this composite has no period_date.
+    if composite.period_date is not None:
+        q = q.where(CompositeReport.period_date < composite.period_date).order_by(
+            desc(CompositeReport.period_date), desc(CompositeReport.id)
+        )
+    else:
+        q = q.where(CompositeReport.created_at < composite.created_at).order_by(
+            desc(CompositeReport.created_at)
+        )
+    return db.execute(q.limit(1)).scalars().first()
+
+
+def prev_snapshot_taken_at_map(
+    db: Session, composite: CompositeReport
+) -> dict[int, datetime]:
+    """ref_report_id → snapshot_taken_at of the same item in the previous
+    recurrence. The frontend compares each widget's `block_updated_at` against
+    this baseline to flag "지난 회차 이후 변경" (§7.4). Empty when there's no
+    prior recurrence or it was never published (snapshot_taken_at NULL)."""
+    prev = find_previous_recurrence(db, composite)
+    if prev is None:
+        return {}
+    out: dict[int, datetime] = {}
+    for it in prev.items:
+        if it.ref_report_id is not None and it.snapshot_taken_at is not None:
+            out[it.ref_report_id] = it.snapshot_taken_at
+    return out
+
+
 def is_visible_to(db: Session, composite: CompositeReport, workspace_slug: str) -> bool:
     """부서 grant 가 이 게시판 W 에 도달하나(하위 상속, all_org 제외) — 코어
     스코프 게이트. 단일-콘텐츠 actor 판정은 can_read_composite 를 쓴다."""

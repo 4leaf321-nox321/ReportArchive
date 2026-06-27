@@ -205,6 +205,16 @@ class ReportPage(BaseModel):
     # against a known whitelist because the taxonomy lives on the frontend
     # side and might evolve.
     block_sections: dict[str, Optional[str]] = {}
+    # Per-block last-changed timestamp (ISO8601), keyed by block id — set
+    # server-side by `update_report`'s save-time diff (§7.4 / §14). The map
+    # is a *sibling* of `content` (never inside it, or RAG text extraction
+    # would mistake a block id for a widget). Absent / missing key = "모름"
+    # → readers treat it as "not changed since last snapshot" (no false
+    # positives on legacy rows). Forward-only: populated from the next save
+    # onward. Declaring the field here is what makes it survive both the
+    # read serialization (ReportRead.pages) and the AI-merge round-trip
+    # (routes._apply_ai_draft filters kept pages by ReportPage.model_fields).
+    block_updated_at: dict[str, str] = {}
 
 
 class ReportRead(BaseModel):

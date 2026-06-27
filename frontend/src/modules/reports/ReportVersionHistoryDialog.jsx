@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { History, RotateCcw, Loader2, Pin } from 'lucide-react'
+import { History, RotateCcw, Loader2, Pin, Columns2 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   Dialog,
@@ -16,6 +16,7 @@ import {
   getReportVersion,
   restoreReportVersion,
 } from '@/modules/reports/api'
+import { useReportTabs } from '@/shared/reports/ReportTabsContext'
 
 const SOURCE_LABEL = { save: '저장', restore: '되돌림', publish: '게시' }
 
@@ -59,6 +60,21 @@ export function ReportVersionHistoryDialog({
   const [bodyLoading, setBodyLoading] = useState(false)
   const [confirm, setConfirm] = useState(false)
   const [restoring, setRestoring] = useState(false)
+  const { setCompareVersion } = useReportTabs()
+
+  // 선택한 버전을 우측 분할 패널에 띄워 현재 편집본과 나란히 비교한다(읽기전용).
+  function openCompare() {
+    if (!selected || !body) return
+    setCompareVersion({
+      reportId: String(reportId),
+      versionId: selected.id,
+      seq: selected.seq,
+      source: selected.source,
+      createdAt: selected.created_at,
+      body,
+    })
+    onOpenChange(false)
+  }
 
   useEffect(() => {
     if (!open || !reportId) return
@@ -180,21 +196,33 @@ export function ReportVersionHistoryDialog({
                       {SOURCE_LABEL[selected.source] || selected.source}
                       {selected.author_name ? ` · ${selected.author_name}` : ''}
                     </div>
-                    {canEdit && (
+                    <div className="flex items-center gap-2 shrink-0">
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={restoring || bodyLoading}
-                        onClick={() => setConfirm(true)}
+                        disabled={bodyLoading || !body}
+                        onClick={openCompare}
+                        title="이 버전을 우측 분할 화면에 띄워 현재 편집본과 비교"
                       >
-                        {restoring ? (
-                          <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <RotateCcw className="mr-1 h-3.5 w-3.5" />
-                        )}
-                        이 버전으로 되돌리기
+                        <Columns2 className="mr-1 h-3.5 w-3.5" />
+                        분할로 비교
                       </Button>
-                    )}
+                      {canEdit && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={restoring || bodyLoading}
+                          onClick={() => setConfirm(true)}
+                        >
+                          {restoring ? (
+                            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                          )}
+                          이 버전으로 되돌리기
+                        </Button>
+                      )}
+                    </div>
                   </div>
                   <div className="flex-1 overflow-y-auto bg-muted/20 p-4">
                     {bodyLoading ? (

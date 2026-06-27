@@ -94,6 +94,14 @@ export function ReportTabsProvider({ children }) {
   const [tabs, setTabs] = useState([])
   const [rightTabs, setRightTabs] = useState([])
   const [rightActiveKey, setRightActiveKey] = useState(null)
+  // 분할 "버전 비교" — 우측 패널에 현재(좌측) 보고서의 과거 버전을 띄워 나란히
+  // 비교한다. compareVersion = { reportId, versionId, seq, source, createdAt, body }
+  // | null (body 는 InlineReportView snapshot 형). compareDiff 는 좌(draft) vs
+  // 우(버전)의 block 단위 차이 — ReportDetailPage 가 계산해 채운다. scrollSyncEnabled
+  // 는 좌우 스크롤 연동 토글. 셋 다 비저장(세션 영속 X — 보기 상태일 뿐).
+  const [compareVersion, setCompareVersion] = useState(null)
+  const [compareDiff, setCompareDiff] = useState(null)
+  const [scrollSyncEnabled, setScrollSyncEnabled] = useState(false)
   const pendingCloseRef = useRef(null)
   // 활성(편집중) 좌측 탭을 우측으로 보낼 때, 이웃으로의 라우트 이동이 성공한
   // 뒤에만 실제 이동을 커밋하기 위한 보류 키. 미저장 가드에서 "머무름"을 고르면
@@ -337,11 +345,19 @@ export function ReportTabsProvider({ children }) {
     pendingMoveRightRef.current = null
   }, [])
 
+  // 활성(좌측) 보고서가 바뀌면 버전 비교를 초기화한다 — 비교는 특정 보고서에
+  // 한정된 보기 상태라, 다른 보고서로 넘어가면 무의미·오인 소지.
+  useEffect(() => {
+    setCompareVersion(null)
+    setCompareDiff(null)
+  }, [activeKey])
+
   const rightTab = useMemo(
     () => (rightActiveKey ? rightTabs.find((t) => t.key === rightActiveKey) ?? null : null),
     [rightActiveKey, rightTabs],
   )
-  const splitOpen = onReportRoute && Boolean(rightTab)
+  // 우측 분할은 일반 분할(rightTab) 또는 버전 비교(compareVersion) 중 하나로 열린다.
+  const splitOpen = onReportRoute && (Boolean(rightTab) || Boolean(compareVersion))
 
   const value = useMemo(
     () => ({
@@ -360,6 +376,13 @@ export function ReportTabsProvider({ children }) {
       splitOpen,
       setRightActive,
       closeRight,
+      // 버전 비교(분할) — 우측에 과거 버전 + 좌우 diff + 스크롤 동기화
+      compareVersion,
+      setCompareVersion,
+      compareDiff,
+      setCompareDiff,
+      scrollSyncEnabled,
+      setScrollSyncEnabled,
       // 이동(분할버튼 + 드래그드롭) + 순서 변경
       moveTab,
       reorderTab,
@@ -379,6 +402,9 @@ export function ReportTabsProvider({ children }) {
       splitOpen,
       setRightActive,
       closeRight,
+      compareVersion,
+      compareDiff,
+      scrollSyncEnabled,
       moveTab,
       reorderTab,
       clearPendingMove,

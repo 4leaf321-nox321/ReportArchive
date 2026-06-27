@@ -155,6 +155,11 @@ class CompositeItemRead(BaseModel):
     ref_composite: Optional[ItemRefComposite] = None
     snapshot_content: Optional[dict] = None
     snapshot_taken_at: Optional[datetime] = None
+    # §7.4 위젯 delta baseline — 이전 회차에서 같은 원본 item 이 동결된 시각.
+    # 프런트가 위젯별 `block_updated_at` 과 비교해 "지난 회차 이후 변경"을 칠한다.
+    # 모델 컬럼 아님 — 상세 라우트(`_read_with_perms`)가 회차 resolver 로 채운다.
+    # None = 이전 회차 없음/미발행 → 강조 안 함.
+    prev_snapshot_taken_at: Optional[datetime] = None
     # 원본 보고서가 영구삭제돼 분리된 발행 안건(스냅샷만 남음). 프런트가
     # 스냅샷으로 렌더하되 "원본 삭제됨" 표시를 띄우게 한다.
     source_deleted: bool = False

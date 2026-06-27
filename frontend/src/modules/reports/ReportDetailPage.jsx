@@ -115,6 +115,7 @@ import { isWidgetCopyable, copyWidget, widgetCopyKind, downloadWidgetImage } fro
 import { copyTextToClipboard } from '@/shared/lib/clipboard'
 import { useReportLock } from './useReportLock'
 import { useReportTabs } from '@/shared/reports/ReportTabsContext'
+import { computeCompareDiff } from '@/shared/reports/compareDiff'
 import { ReportTabBar } from '@/shared/reports/ReportTabBar'
 import { useWidgetClipboard } from '@/shared/reports/WidgetClipboardContext'
 import { extractWidgetFormat, hasAnyFormat } from './widgetFormat'
@@ -253,6 +254,10 @@ export default function ReportDetailPage() {
   // 'paginated'. globalViewMode 는 이제 읽기 전용 폴백, viewMode 가 표시 상태.
   const [globalViewMode] = usePersistedState('ra:report-view-mode:v1', 'paginated')
   const [viewMode, setViewMode] = useState(globalViewMode)
+  // 보고서 단독 보기용 위젯 delta(§7.4) — 고른 날짜('YYYY-MM-DD') 이후
+  // block_updated_at 이 더 새로운 위젯에 앰버 보더 + "변경" 칩. null = 강조 끔.
+  // 순수 보기 상태(저장/영속 안 함) — 새로고침하면 초기화.
+  const [deltaSinceDate, setDeltaSinceDate] = useState(null)
   // 좌측 보조 사이드바(같은 폴더 보고서 목록) 토글. 보고서 간 이동해도
   // 유지되도록 개인설정으로 기억. 상단 툴바의 옛 FolderSiblingNav 를 대체.
   const [folderPanelOpen, setFolderPanelOpen] = usePersistedState(
@@ -937,7 +942,24 @@ export default function ReportDetailPage() {
     dropTab: dropReportTab,
     splitOpen,
     clearPendingMove,
+    compareVersion,
+    setCompareDiff,
   } = useReportTabs()
+  // 버전 비교(분할) — 좌(현재 draft) vs 우(버전 body)를 block 단위로 비교해 공유
+  // 컨텍스트로 올린다(우측 InlineReportView 가 같은 판정을 쓴다). compareVersion 이
+  // 없으면 계산 안 함(비용 0). 편집 중엔 draft 가 바뀔 때마다 자동 갱신.
+  const compareActive = Boolean(compareVersion)
+  const compareDiffLocal = useMemo(
+    () =>
+      compareVersion?.body
+        ? computeCompareDiff(draft?.pages, compareVersion.body.pages)
+        : null,
+    [compareVersion, draft?.pages],
+  )
+  useEffect(() => {
+    setCompareDiff(compareDiffLocal)
+    return () => setCompareDiff(null)
+  }, [compareDiffLocal, setCompareDiff])
   useEffect(() => {
     if (!slug) return
     // 프리셋 편집용 임시 보고서는 탭 바에 올리지 않는다 — 저장하든 돌아가든
@@ -3896,8 +3918,10 @@ export default function ReportDetailPage() {
       {/* 좌측 보조 사이드바 — 같은 폴더 보고서 목록. 제목/툴바를 어지럽히지
           않도록 좌측 끝(앱 사이드바 옆)에 둔다. 닫혀 있으면 얇은 레일의 폴더
           버튼만, 열리면 세로 목록 패널. 폴더 컨텍스트 있고 편집중 아닐 때만,
-          데스크톱 전용(앱 사이드바 접기와 동일 정책). */}
-      {!isEditing && siblingFolderId !== undefined && (
+          데스크톱 전용(앱 사이드바 접기와 동일 정책).
+          분할(splitOpen) 중엔 숨긴다 — 닫혀도 36px 레일이 좌측 콘텐츠를 차지해
+          우측 패널보다 좁아지므로(좌우 폭 비대칭). */}
+      {!isEditing && !splitOpen && siblingFolderId !== undefined && (
         // HTML 저장(내보내기)엔 폴더 보조 사이드바를 포함하지 않는다 —
         // display:contents 라 live flex 레이아웃엔 영향이 없고, export 의
         // strip 단계가 data-export-exclude 를 통째로 제거한다.
@@ -4096,6 +4120,20 @@ export default function ReportDetailPage() {
                         updatedByEmail={existingReport.updated_by_email}
                         updatedAt={existingReport.updated_at}
                       />
+                    </div>
+                    {/* 위젯 변경 강조 — 고른 날짜 이후 수정된 위젯에 앰버 보더 +
+                        "변경" 칩(§7.4 보고서 단독 delta). 순수 보기 필터(비저장). */}
+                    <div className="border-t pt-2 space-y-1.5">
+                      <div className="text-[11px] font-medium text-foreground/80">
+                        변경 위젯 표시
+                      </div>
+                      <DeltaSinceControl
+                        value={deltaSinceDate}
+                        onChange={setDeltaSinceDate}
+                      />
+                      <div className="text-[10px] leading-snug text-muted-foreground/80">
+                        고른 날짜 이후 수정된 위젯에 노란 표시가 뜹니다.
+                      </div>
                     </div>
                   </PopoverContent>
                 </Popover>
@@ -4697,6 +4735,9 @@ export default function ReportDetailPage() {
                     page={p}
                     template={getCachedTemplate(pageTemplateMap, p)}
                     isEditing={effectiveIsEditing}
+                    deltaSinceDate={deltaSinceDate}
+                    compareActive={compareActive}
+                    compareDiff={compareDiffLocal}
                     activeBlock={activeBlock}
                     onActivate={(blockId) => setActiveBlock({ pageIdx: idx, blockId })}
                     onChangeContent={(blockId, value) => updateBlockContent(idx, blockId, value)}
@@ -4753,6 +4794,9 @@ export default function ReportDetailPage() {
                     page={currentPageData}
                     template={currentTemplate}
                     isEditing={effectiveIsEditing}
+                    deltaSinceDate={deltaSinceDate}
+                    compareActive={compareActive}
+                    compareDiff={compareDiffLocal}
                     activeBlock={activeBlock}
                     onActivate={(blockId) =>
                       setActiveBlock({ pageIdx: safeCurrent, blockId })
@@ -7704,6 +7748,93 @@ function normalizeRichTextPrefix(v) {
   return t === '' ? null : t
 }
 
+// §7.4 보고서 단독 delta — 위젯의 마지막 변경시각(block_updated_at[id])이
+// 고른 날짜의 (로컬) 자정 이후면 "그 날짜 이후 변경". stamp(UTC ISO)·sinceDate
+// 둘 다 있어야 하고, sinceDate 는 'T00:00:00'(타임존 없음)로 로컬 자정 해석.
+// 버전 비교(분할) — 좌측(현재 편집본) 위젯의 강조 스타일. compareDiff 상태값으로
+// 결정: changed=앰버(내용 다름), added=에메랄드(이 버전엔 없던 신규). removed 는
+// 좌측엔 안 나타난다(버전에만 있던 block). null = 강조 없음.
+function compareLeftHighlight(state) {
+  if (state === 'added')
+    return {
+      border: ' border-l-4 border-emerald-400 pl-2 rounded-sm',
+      label: '신규',
+      chipCls:
+        'border-emerald-400 bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+      title: '이 버전에는 없던 새 위젯',
+    }
+  if (state === 'changed')
+    return {
+      border: ' border-l-4 border-amber-400 pl-2 rounded-sm',
+      label: '변경',
+      chipCls:
+        'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
+      title: '이 버전과 내용이 다름',
+    }
+  return null
+}
+
+// 버전 비교(분할) — 우측(과거 버전) 위젯 강조. changed=앰버(내용 다름),
+// removed=로즈(현재 편집본에서 삭제됨). added 는 우측엔 안 나타난다.
+function compareRightHighlight(state) {
+  if (state === 'removed')
+    return {
+      border: ' border-l-4 border-rose-400 pl-2 rounded-sm',
+      label: '삭제',
+      chipCls:
+        'border-rose-400 bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300',
+      title: '현재 편집본에서 삭제된 위젯',
+    }
+  if (state === 'changed')
+    return {
+      border: ' border-l-4 border-amber-400 pl-2 rounded-sm',
+      label: '변경',
+      chipCls:
+        'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
+      title: '현재 편집본과 내용이 다름',
+    }
+  return null
+}
+
+function widgetChangedSinceDate(stampIso, sinceDateStr) {
+  if (!stampIso || !sinceDateStr) return false
+  const stamp = Date.parse(stampIso)
+  const since = Date.parse(`${sinceDateStr}T00:00:00`)
+  if (Number.isNaN(stamp) || Number.isNaN(since)) return false
+  return stamp >= since
+}
+
+// 툴바 컨트롤 — 날짜를 고르면 그 이후 변경된 위젯이 강조된다. 비우면 해제.
+function DeltaSinceControl({ value, onChange }) {
+  return (
+    <div
+      className="inline-flex items-center gap-1"
+      title="고른 날짜 이후 변경된 위젯을 강조합니다"
+    >
+      <History className="h-3.5 w-3.5 text-muted-foreground" />
+      <input
+        type="date"
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value || null)}
+        className="h-6 rounded border border-input bg-background px-1.5 text-[11px] font-mono"
+        aria-label="이 날짜 이후 변경된 위젯 강조"
+      />
+      <span className="text-[11px] text-muted-foreground">이후 변경</span>
+      {value && (
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          className="text-muted-foreground hover:text-foreground"
+          title="강조 해제"
+          aria-label="강조 해제"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      )}
+    </div>
+  )
+}
+
 function ViewModeToggle({ value, onChange }) {
   return (
     <div className="inline-flex rounded-md border bg-background overflow-hidden">
@@ -8714,6 +8845,130 @@ function FloatingPager({ current, total, onChange }) {
 // --------------------------------------------------------------------------- //
 
 /**
+ * 읽기전용 본문 렌더 — 분할 보기 우측 패널이 좌측 에디터와 **픽셀 동일**하게
+ * 보이도록, 에디터의 view-mode 렌더 경로(PageSection + RGL, isEditing=false)를
+ * 그대로 재사용한다. 별도 CSS-grid 렌더러(InlineReportView)와 달리 레이아웃 엔진이
+ * 같아 차트/트리맵 높이·간격·글자 크기가 일치한다.
+ *
+ * 안전성: 무거운 ReportDetailPage 의 싱글톤 효과(편집락·useBlocker·beforeunload·
+ * 전역 리스너·IndexedDB)는 여기 없다(PageSection 만 재사용). block-<id> 충돌은
+ * exposeBlockIds=false 로 차단. useComments 는 provider 부재 시 no-op 을 돌려주고
+ * mention 컨텍스트도 기본 null 을 허용하므로 추가 provider 없이 동작한다.
+ *
+ * `report` 는 전체 보고서 객체(또는 동형 스냅샷) — pages·page_width_px·page_gap_px·
+ * page_blend_blocks·rich-text prefix·workspace_slug·id·phase 가 필요하다.
+ */
+export function ReadOnlyReportBody({
+  report,
+  exposeBlockIds = false,
+  compareDiff = null,
+  compareSide = null,
+  // 위젯 복사(읽기전용 분할 → 좌측 편집창 붙여넣기). 주어지면 위젯 hover 시 「복사」.
+  onCopyWidget = null,
+}) {
+  const { categories: sectionCategories, itemByCode: sectionItemByCode } =
+    useSectionTaxonomy()
+  const reportStyleValue = useReportStyleValue({
+    depthGlyphs: [
+      report?.page_rich_text_prefix_d0,
+      report?.page_rich_text_prefix_d1,
+      report?.page_rich_text_prefix_d2,
+    ],
+  })
+  const pages = useMemo(
+    () =>
+      Array.isArray(report?.pages) && report.pages.length > 0
+        ? report.pages
+        : [
+            {
+              template_id: report?.template_id,
+              template_version: report?.template_version,
+              content: report?.content ?? {},
+            },
+          ],
+    [report],
+  )
+  const pageTemplateMap = usePageTemplates(pages, report?.workspace_slug ?? null)
+  const widthPx = Number.isFinite(report?.page_width_px)
+    ? report.page_width_px
+    : DEFAULT_REPORT_WIDTH_PX
+  // 위젯 간격(RGL 세로 margin) — 에디터와 **동일하게** raw page_gap_px 를 그대로
+  // 넘긴다(미설정이면 PageSection 의 effectiveRowGap 이 REPORT_ROW_GAP=4 로 폴백).
+  // 여기서 DEFAULT_REPORT_GAP_PX(12)로 미리 치환하면 에디터(4)와 간격이 달라지고,
+  // 그 gap 이 고정높이(row_span×8+(row_span-1)×gap) 공식에도 들어가 그래프 등
+  // 비-autofit 위젯 높이까지 어긋난다.
+  // ⚠ 핵심 — auto_fit 위젯(긴 글·표 등)은 view 모드에서도 **실측 높이**(contentHeights)
+  // 가 있어야 올바른 row_span 으로 그려진다(없으면 effectiveLayouts 가 AUTO_FIT_INITIAL_
+  // ROWS≈332px 플레이스홀더로 떨어져 모든 위젯이 커진다). 에디터와 동일하게 측정
+  // 루프(BlockEditorCard 의 ResizeObserver → onMeasureContentHeight → 여기 state)를
+  // 돌려준다. { [pageIdx]: { [blockId]: px } }.
+  const [contentHeights, setContentHeights] = useState({})
+  const setContentHeight = useCallback((pageIdx, blockId, px) => {
+    setContentHeights((prev) => {
+      const pg = prev[pageIdx] ?? {}
+      if (pg[blockId] === px) return prev
+      return { ...prev, [pageIdx]: { ...pg, [blockId]: px } }
+    })
+  }, [])
+  const noop = () => {}
+  if (!report) return null
+  return (
+    <ReportStyleContext.Provider value={reportStyleValue}>
+      <div
+        className={cn(
+          'relative p-6 space-y-8 mx-auto w-full report-detail-content',
+          report.page_blend_blocks === true && 'report-blend-blocks',
+        )}
+        style={{ maxWidth: `${widthPx}px` }}
+      >
+        {/* 에디터와 동일한 print 전용 제목 — 화면엔 `hidden`(display:none)이지만
+            Tailwind `space-y-8` 은 `:not([hidden])`(attribute) 기준이라 이 div 도
+            형제로 카운트된다. 덕분에 첫 PageSection(report-page-0)이 "둘째 자식"이
+            돼 margin-top 32px 를 받는다 — 에디터의 "개요 윗쪽 여백"과 일치시키는
+            핵심(이게 없으면 read-only 쪽만 그 여백이 사라진다). */}
+        <div className="hidden print:block mb-4">
+          <h1 className="text-2xl font-bold">{report.title || '(제목 없음)'}</h1>
+          <div className="text-sm text-muted-foreground mt-1">
+            {report.report_date}
+            {report.owner_name ? ` · ${report.owner_name}` : ''}
+          </div>
+        </div>
+        {pages.map((p, idx) => (
+          <PageSection
+            key={idx}
+            pageIdx={idx}
+            page={p}
+            template={getCachedTemplate(pageTemplateMap, p)}
+            isEditing={false}
+            exposeBlockIds={exposeBlockIds}
+            compareActive={Boolean(compareDiff)}
+            compareDiff={compareDiff}
+            compareSide={compareSide}
+            onCopyWidget={onCopyWidget}
+            activeBlock={null}
+            onActivate={noop}
+            onChangeContent={noop}
+            onAddBlock={noop}
+            onAddExtraBlockAt={noop}
+            onRename={noop}
+            // 에디터와 동일한 auto_fit 측정 루프 — 없으면 모든 auto_fit 위젯이
+            // 플레이스홀더 높이로 깨진다(위 contentHeights 주석 참조).
+            contentHeights={contentHeights[idx]}
+            onMeasureContentHeight={(blockId, px) => setContentHeight(idx, blockId, px)}
+            sectionCategories={sectionCategories}
+            sectionItemByCode={sectionItemByCode}
+            rowGapPx={report.page_gap_px}
+            reportId={report.id ?? null}
+            reportPhase={report.phase}
+            showPageHeader={pages.length > 1}
+          />
+        ))}
+      </div>
+    </ReportStyleContext.Provider>
+  )
+}
+
+/**
  * Renders one page's blocks inside a resizable grid. Pages share the same
  * GRID_COLS / ROW_HEIGHT so dragging a block to "8 cols" looks identical
  * across pages and across edit/view modes.
@@ -8723,6 +8978,19 @@ function PageSection({
   page,
   template,
   isEditing,
+  // 고른 날짜 이후 변경 강조용 기준일('YYYY-MM-DD' | null). §7.4 보고서 단독 delta.
+  deltaSinceDate = null,
+  // 버전 비교(분할) — 좌(현재) vs 우(버전) diff 맵 + 활성 여부.
+  compareActive = false,
+  compareDiff = null,
+  // 비교 강조 방향 — 'right'(버전 패널)면 삭제/변경, 그 외(좌/기본)면 추가/변경.
+  compareSide = null,
+  // block-<id> DOM id 노출 여부. 분할 우측(읽기전용 재사용)은 false 로 좌측
+  // 에디터의 getElementById('block-…') 충돌을 막는다(InlineReportView 와 동형).
+  exposeBlockIds = true,
+  // 읽기전용 분할 우측 패널에서 위젯을 공유 클립보드로 복사(좌측 편집창 붙여넣기용).
+  // 주어지면 view 모드에서 위젯 hover 시 「복사」 버튼이 뜬다. null = 미노출.
+  onCopyWidget = null,
   activeBlock,
   onActivate,
   onChangeContent,
@@ -9041,13 +9309,35 @@ function PageSection({
               : REPORT_GRID_COLS
             const rowHasRoom = rowUsed < REPORT_GRID_COLS
             const canInsertHorizontally = rowHasRoom || blockColSpan >= 2
+            // §7.4 — 고른 날짜 이후 이 위젯이 바뀌었나(강조 여부).
+            const widgetStamp = page?.block_updated_at?.[block.id]
+            const changedSince = deltaSinceDate
+              ? widgetChangedSinceDate(widgetStamp, deltaSinceDate)
+              : false
+            // 강조 — 버전 비교 모드면 좌·우 diff 결과(우선), 아니면 날짜 delta.
+            // 둘은 동시에 켜지지 않는다(비교가 우선).
+            const hl = compareActive
+              ? (compareSide === 'right'
+                  ? compareRightHighlight(compareDiff?.[pageIdx]?.[block.id])
+                  : compareLeftHighlight(compareDiff?.[pageIdx]?.[block.id]))
+              : changedSince
+                ? {
+                    border: ' border-l-4 border-amber-400 pl-2 rounded-sm',
+                    label: '변경',
+                    chipCls:
+                      'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
+                    title: `${new Date(widgetStamp).toLocaleString()} 변경됨`,
+                  }
+                : null
             return (
               <div
                 key={block.id}
                 // `group/insert` scopes the hover state to this block's
                 // wrapper so DirectionalAddArrows only lights up over the
                 // hovered card, not its neighbors.
-                className="min-w-0 h-full relative group/insert"
+                className={
+                  'min-w-0 h-full relative group/insert' + (hl ? hl.border : '')
+                }
                 onContextMenu={
                   showContextMenu
                     ? (e) => {
@@ -9062,6 +9352,47 @@ function PageSection({
                     : undefined
                 }
               >
+                {hl && (
+                  <span
+                    data-export-skip="delta-indicator"
+                    className={
+                      'absolute left-2 -top-2 z-20 inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium shadow-sm ' +
+                      hl.chipCls
+                    }
+                    title={hl.title || ''}
+                  >
+                    {hl.label}
+                  </span>
+                )}
+                {/* 읽기전용 분할 패널 — 위젯을 좌측 편집창으로 복사(공유 클립보드).
+                    hover 시 노출. export 에선 생략. */}
+                {onCopyWidget && !isEditing && (
+                  <button
+                    type="button"
+                    data-export-skip="copy-widget"
+                    onClick={() =>
+                      onCopyWidget({
+                        type: block.type,
+                        props: page?.props_overrides?.[block.id]
+                          ? {
+                              ...(block.props ?? {}),
+                              ...page.props_overrides[block.id],
+                            }
+                          : { ...(block.props ?? {}) },
+                        content: page?.content?.[block.id] ?? null,
+                        layout:
+                          page?.layout_overrides?.[block.id] ?? block.layout ?? null,
+                        section: resolveBlockSection(page, block),
+                        sourceReportId: reportId ?? null,
+                      })
+                    }
+                    title="이 위젯을 복사 (편집 창에 붙여넣기)"
+                    className="absolute right-1 top-1 z-20 inline-flex items-center gap-1 rounded-md border bg-background/95 px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-foreground group-hover/insert:opacity-100"
+                  >
+                    <Copy className="h-3 w-3" />
+                    복사
+                  </button>
+                )}
                 {liveResize?.i === block.id ? (
                   // 리사이즈 중엔 무거운 위젯 대신 가벼운 붉은 플레이스홀더만
                   // 그린다 — 위젯 콘텐츠 reflow 비용을 없애 드래그가 마우스를
@@ -9084,6 +9415,7 @@ function PageSection({
                   reportId={reportId}
                   pageIndex={pageIdx}
                   reportPhase={reportPhase}
+                  exposeBlockIds={exposeBlockIds}
                   content={page?.content?.[block.id]}
                   propsOverride={page?.props_overrides?.[block.id] ?? null}
                   active={isActive}
@@ -9708,6 +10040,13 @@ function normalizePage(p) {
     block_sections:
       p.block_sections && typeof p.block_sections === 'object'
         ? { ...p.block_sections }
+        : {},
+    // 위젯 delta 표시용 — 서버가 저장 때 도장한 위젯별 변경시각(§7.4). 저장
+    // 자체엔 불필요(서버가 매번 재생성)하지만, draft 에서 강조를 그리려면 보존해야
+    // 한다. 안 실어두면 여기서 떨궈져 보고서 상세 delta 가 비어 보인다.
+    block_updated_at:
+      p.block_updated_at && typeof p.block_updated_at === 'object'
+        ? { ...p.block_updated_at }
         : {},
   }
 }
@@ -10564,6 +10903,9 @@ function BlockEditorCard({
   showDragHandle,
   autoFit,
   isExtra,
+  // block-<id> DOM id 노출 여부(기본 true). 분할 우측 읽기전용 재사용 시 false 로
+  // 좌측 에디터의 getElementById('block-…') 충돌을 막는다.
+  exposeBlockIds = true,
   sectionCode,
   sectionItemByCode,
   onActivate,
@@ -10985,7 +11327,7 @@ function BlockEditorCard({
     const { Editor: HE } = renderer
     return (
       <div
-        id={`block-${block.id}`}
+        id={exposeBlockIds ? `block-${block.id}` : undefined}
         onClick={onActivate}
         className={cn(
           'group relative h-full flex items-center',
@@ -11085,7 +11427,7 @@ function BlockEditorCard({
     <CurrentBlockRefContext.Provider value={blockRefLabel}>
     <TableViewContext.Provider value={tableViewValue}>
     <Card
-      id={`block-${block.id}`}
+      id={exposeBlockIds ? `block-${block.id}` : undefined}
       // Marker for the page-level "컨테이너 경계 녹이기" toggle — the
       // CSS rule in index.css drops border / background / shadow on
       // elements carrying this attribute when the wrapping page has

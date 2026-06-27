@@ -2476,6 +2476,9 @@ function ItemRow({
             <InlineReportView
               reportId={item.ref_report_id}
               snapshot={snapshot ?? undefined}
+              // §7.4 위젯 delta — 이전 회차에서 이 안건이 동결된 시각을 기준점으로
+              // 넘긴다(백엔드가 회차 resolver 로 채움). null 이면 강조 없음.
+              baselineTakenAt={item.prev_snapshot_taken_at ?? null}
             />
           ) : item.ref_composite_id ? (
             <InlineCompositeView compositeId={item.ref_composite_id} />

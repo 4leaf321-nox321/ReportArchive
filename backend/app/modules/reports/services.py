@@ -809,9 +809,42 @@ def _pages_to_jsonb(pages: list[ReportPage]) -> list[dict]:
             "extra_blocks": list(p.extra_blocks or []),
             "blocks_order": list(p.blocks_order or []),
             "block_sections": dict(p.block_sections or {}),
+            # Per-block last-changed stamps. Carried verbatim so paths that
+            # already hold stamps on the ReportPage (read→write round-trip,
+            # copy, AI merge) preserve them. `update_report` overwrites this
+            # with a freshly computed diff after calling _pages_to_jsonb;
+            # other callers (create) just get the (usually empty) passthrough.
+            "block_updated_at": dict(p.block_updated_at or {}),
         }
         for p in pages
     ]
+
+
+def _stamp_block_changes(
+    old_content: Optional[dict],
+    new_content: Optional[dict],
+    prev_stamps: Optional[dict],
+    now_iso: str,
+) -> dict[str, str]:
+    """Per-block diff of old vs new content → stamp changed/added blocks with
+    `now_iso`, drop deleted blocks (so a reused block id starts clean).
+
+    `dict != dict` is a JSON-safe deep compare: key order is ignored (Python
+    dict equality), list order is honored (a reordered table = real change).
+    Unchanged blocks keep their previous stamp; a block with no prior stamp
+    and no change stays absent → "모름" (not highlighted). Save is a whole
+    overwrite so the server holds both sides and judges alone — the client /
+    AI never reports "what changed" (§14.4)."""
+    old_content = old_content or {}
+    new_content = new_content or {}
+    stamps = dict(prev_stamps or {})
+    for bid in set(old_content) | set(new_content):
+        if bid not in new_content:
+            stamps.pop(bid, None)  # deleted → drop (id reuse stays clean)
+        elif old_content.get(bid) != new_content.get(bid):
+            stamps[bid] = now_iso  # added / changed → stamp
+        # unchanged → keep existing stamp (or stay absent = "모름")
+    return stamps
 
 
 def _resolve_pages_for_create(payload: ReportCreate) -> list[ReportPage]:
@@ -1254,13 +1287,35 @@ def update_report(
 
     if new_pages is not None:
         _validate_pages(db, new_pages)
+        # Capture the *stored* pages BEFORE we overwrite them — the save-time
+        # block diff (§7.4 / §14.4) compares old vs new content per page index
+        # to stamp only the blocks that actually changed. Done here (not in the
+        # client/AI payload) because save is a whole overwrite, so the server
+        # alone holds both sides. Funnels every writer (manual edit, AI draft
+        # merge/replace via _apply_ai_draft) through one diff.
+        old_pages = list(report.pages or [])
+        from datetime import datetime as _dt, timezone as _tz
+
+        now_iso = _dt.now(_tz.utc).isoformat().replace("+00:00", "Z")
+
         page0 = new_pages[0]
         report.template_id = page0.template_id
         report.template_version = page0.template_version
         report.content = page0.content or {}
         report.layout_overrides = _normalize_overrides(page0.layout_overrides)
         report.props_overrides = _sanitize_props_overrides(page0.props_overrides)
-        report.pages = _pages_to_jsonb(new_pages)
+        new_jsonb = _pages_to_jsonb(new_pages)
+        for i, page in enumerate(new_jsonb):
+            old_page = old_pages[i] if i < len(old_pages) else None
+            page["block_updated_at"] = _stamp_block_changes(
+                (old_page or {}).get("content"),
+                page.get("content"),
+                # prev stamps come from the STORED page, not the payload —
+                # the client/AI may echo a stale map, the DB is authoritative.
+                (old_page or {}).get("block_updated_at"),
+                now_iso,
+            )
+        report.pages = new_jsonb
 
     # Apply non-page scalar fields. `report_type_id` is included so the
     # picker can both set and clear (explicit None) the tag in one PATCH.

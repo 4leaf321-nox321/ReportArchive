@@ -64,6 +64,14 @@ def _read_with_perms(
         and not actor.workspace.virtual
         and services.can_decide_item_request(db, actor, composite)
     )
+    # §7.4 위젯 delta baseline — 이전 회차에서 같은 원본 item 이 동결된 시각을
+    # item별로 채운다. 프런트가 위젯 `block_updated_at` 과 비교해 강조한다.
+    prev_map = services.prev_snapshot_taken_at_map(db, composite)
+    if prev_map:
+        for it in obj.items:
+            ref = getattr(it.ref_report, "id", None)
+            if ref is not None:
+                it.prev_snapshot_taken_at = prev_map.get(ref)
     return obj
 
 

@@ -6,6 +6,7 @@ import { getReport } from '@/modules/reports/api'
 import { getComposite } from '@/shared/api/composites'
 import { getTemplateVersion } from '@/shared/api/templates'
 import { getRenderer } from '@/modules/templates/widgets'
+import { autoFitForBlock, fixedBlockHeightPx } from '@/shared/reports/reportLayout'
 import {
   DEFAULT_REPORT_WIDTH_PX,
   DEFAULT_REPORT_GAP_PX,
@@ -48,11 +49,61 @@ export function widgetSnapshot(page, block) {
   }
 }
 
+// §7.4 위젯 delta — 위젯의 마지막 변경시각(block_updated_at[id])이 이전 회차의
+// 동결 시각(baseline)보다 뒤면 "지난 회차 이후 변경". baseline/stamp 중 하나라도
+// 없으면(=모름) 강조하지 않는다(legacy 행 false positive 0, §14.2).
+function widgetChangedSince(stampIso, baselineIso) {
+  if (!stampIso || !baselineIso) return false
+  const s = Date.parse(stampIso)
+  const b = Date.parse(baselineIso)
+  if (Number.isNaN(s) || Number.isNaN(b)) return false
+  return s > b
+}
+
+function deltaLabel(baselineIso) {
+  const d = new Date(baselineIso)
+  if (Number.isNaN(d.getTime())) return '변경됨'
+  return `${d.getMonth() + 1}/${d.getDate()} 이후 변경`
+}
+
+// 버전 비교(분할) — 우측(과거 버전) 위젯의 강조. changed=앰버(내용 다름),
+// removed=로즈(현재 편집본에서 삭제됨). added 는 우측엔 안 나타난다(버전엔 없던 것).
+function compareRightHighlight(state) {
+  if (state === 'removed')
+    return {
+      border: ' border-l-4 border-rose-400 pl-2 rounded-sm',
+      label: '삭제',
+      chipCls:
+        'border-rose-400 bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300',
+      title: '현재 편집본에서 삭제된 위젯',
+    }
+  if (state === 'changed')
+    return {
+      border: ' border-l-4 border-amber-400 pl-2 rounded-sm',
+      label: '변경',
+      chipCls:
+        'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
+      title: '현재 편집본과 내용이 다름',
+    }
+  return null
+}
+
 export function InlineReportView({
   reportId,
   snapshot,
   exposeBlockIds = true,
   onCopyWidget = null,
+  // 이전 회차에서 이 안건이 동결된 시각(CompositeItemRead.prev_snapshot_taken_at).
+  // 위젯 delta 강조의 기준점. null 이면 강조 없음(첫 회차·미발행·theme).
+  baselineTakenAt = null,
+  // 버전 비교(분할 우측) — 좌(현재)와 다른/삭제된 위젯 강조. compareSide==='right'
+  // 이고 compareDiff 가 있을 때만 동작(종합보고 delta 와 독립).
+  compareDiff = null,
+  compareSide = null,
+  // 에디터(ReportDetailPage)와 동일한 컨테이너/글자 스케일로 렌더한다. 분할 보기
+  // 좌(에디터)와 우(이 뷰)의 글자 크기·위젯 카드 chrome·blend 를 일치시키려는 용도.
+  // 기본 false — 종합보고/버전미리보기/export 는 기존 렌더를 그대로 유지(회귀 방지).
+  editorChrome = false,
 }) {
   // Live fetch only when no snapshot is supplied. Snapshot-rendered
   // items don't need a network roundtrip — the frozen blob already has
@@ -92,7 +143,20 @@ export function InlineReportView({
     : DEFAULT_REPORT_GAP_PX
   return (
     <ReportStyleContext.Provider value={styleValue}>
-      <div className="space-y-4 mx-auto w-full" style={{ maxWidth: `${pageWidthPx}px` }}>
+      <div
+        className={
+          // 페이지 간 간격 — editorChrome 이면 에디터(.report-detail-content)의
+          // space-y-8 에 맞춘다(기본은 종전 space-y-4).
+          (editorChrome ? 'space-y-8' : 'space-y-4') +
+          ' mx-auto w-full' +
+          // 에디터와 동일하게, blend(컨테이너 경계 숨김) 보고서면 위젯 카드 chrome 을
+          // 끄는 .report-blend-blocks 를 건다(자식 [data-report-widget-card] 대상).
+          (editorChrome && report.page_blend_blocks === true
+            ? ' report-blend-blocks'
+            : '')
+        }
+        style={{ maxWidth: `${pageWidthPx}px` }}
+      >
         {pages.map((p, idx) => (
           <InlinePage
             key={idx}
@@ -103,6 +167,10 @@ export function InlineReportView({
             exposeBlockIds={exposeBlockIds}
             onCopyWidget={onCopyWidget}
             sourceReportId={report?.id ?? null}
+            baselineTakenAt={baselineTakenAt}
+            compareDiff={compareDiff}
+            compareSide={compareSide}
+            editorChrome={editorChrome}
           />
         ))}
       </div>
@@ -118,6 +186,10 @@ function InlinePage({
   exposeBlockIds = true,
   onCopyWidget = null,
   sourceReportId = null,
+  baselineTakenAt = null,
+  compareDiff = null,
+  compareSide = null,
+  editorChrome = false,
 }) {
   const { data: template, loading } = useAsync(
     () => getTemplateVersion(page.template_id, page.template_version),
@@ -164,7 +236,43 @@ function InlinePage({
       >
         {rows.map(({ row, items }) => (
           <div key={row} className="grid grid-cols-12 gap-3">
-            {items.map((it) => (
+            {items.map((it) => {
+              // §7.4 — 이 위젯이 이전 회차 동결 이후 바뀌었나.
+              const changed = widgetChangedSince(
+                page.block_updated_at?.[it.block.id],
+                baselineTakenAt,
+              )
+              // 강조 — 버전 비교(우측)면 좌·우 diff 결과(우선), 아니면 종합보고
+              // 회차 delta. 둘은 같은 화면에서 동시에 쓰이지 않는다.
+              const compareState =
+                compareSide === 'right' && compareDiff
+                  ? compareDiff?.[index]?.[it.block.id]
+                  : null
+              const hl = compareState
+                ? compareRightHighlight(compareState)
+                : changed
+                  ? {
+                      border: ' border-l-4 border-amber-400 pl-2 rounded-sm',
+                      label: deltaLabel(baselineTakenAt),
+                      chipCls:
+                        'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
+                      title: '지난 회차 이후 변경된 위젯',
+                    }
+                  : null
+              // 세로 크기 — editorChrome 이면 에디터처럼 비-auto_fit 위젯(차트·트리맵
+              // 등)에 row_span 기반 고정 높이를 줘 에디터와 같은 높이로 렌더한다.
+              // auto_fit 위젯은 content 로 높이를 몬다(에디터와 동일). 종합보고/export
+              // (editorChrome=false)는 종전처럼 전부 content 높이.
+              const layout =
+                page?.layout_overrides?.[it.block.id] ?? it.block.layout ?? {}
+              const blockAutoFit = editorChrome
+                ? autoFitForBlock(it.block, layout)
+                : true
+              const fixedHeight =
+                editorChrome && !blockAutoFit
+                  ? fixedBlockHeightPx(layout.row_span, rowGapPx)
+                  : null
+              return (
               <div
                 key={it.block.id}
                 // `id="block-<id>"` mirrors what BlockEditorCard attaches
@@ -183,9 +291,28 @@ function InlinePage({
                 // ('block-…')가 우측 노드를 잡을 수 있다. 그 패널은 export 를 안
                 // 하므로 id 를 떼서 충돌을 막는다.
                 id={exposeBlockIds ? `block-${it.block.id}` : undefined}
-                style={{ gridColumn: `span ${it.colSpan} / span ${it.colSpan}` }}
-                className="min-w-0 relative group"
+                style={{
+                  gridColumn: `span ${it.colSpan} / span ${it.colSpan}`,
+                  // 비-auto_fit 위젯은 에디터와 같은 고정 픽셀 높이로(아래 BlockBody
+                  // 카드가 h-full 로 채운다). auto_fit/일반은 height 미지정(content).
+                  height: fixedHeight ? `${fixedHeight}px` : undefined,
+                }}
+                className={'min-w-0 relative group' + (hl ? hl.border : '')}
               >
+                {/* 위젯 강조 — 종합보고 회차 delta(§7.4) 또는 버전 비교 결과.
+                    좌측 보더 + 칩. export 에선 생략(data-export-skip). */}
+                {hl && (
+                  <span
+                    data-export-skip="delta-indicator"
+                    className={
+                      'absolute -top-2 left-2 z-10 inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium shadow-sm ' +
+                      hl.chipCls
+                    }
+                    title={hl.title || ''}
+                  >
+                    {hl.label}
+                  </span>
+                )}
                 {/* 위젯 복사 — 분할 보기 우측(읽기전용) 패널에서 위젯을 복사해
                     좌측 편집창에 붙여넣기. onCopyWidget 이 있을 때만 노출. */}
                 {onCopyWidget && getRenderer(it.block.type)?.Editor && (
@@ -210,9 +337,13 @@ function InlinePage({
                   propsOverride={page.props_overrides?.[it.block.id] ?? null}
                   sectionCode={resolveBlockSection(page, it.block)}
                   sectionItemByCode={sectionItemByCode}
+                  editorChrome={editorChrome}
+                  autoFit={blockAutoFit}
+                  fillHeight={Boolean(fixedHeight)}
                 />
               </div>
-            ))}
+              )
+            })}
           </div>
         ))}
       </div>
@@ -226,7 +357,20 @@ function InlinePage({
  *  When the block carries a 단락 구분 (section marker), prepends the
  *  same colored header strip the report detail page draws so the
  *  composite view matches the source visually. */
-export function BlockBody({ block, content, propsOverride, sectionCode, sectionItemByCode }) {
+export function BlockBody({
+  block,
+  content,
+  propsOverride,
+  sectionCode,
+  sectionItemByCode,
+  // 에디터와 동일한 글자 스케일·카드 chrome·패딩으로 그릴지(분할 보기 좌우 일치용).
+  // 기본 false → 기존 종합보고/export 렌더 유지.
+  editorChrome = false,
+  // 위젯 auto_fit 여부(에디터와 동일 판정). false = 고정 높이 위젯(차트·트리맵 등).
+  autoFit = true,
+  // 고정 높이(비-auto_fit)면 카드가 부모(고정 px) 높이를 채우도록 h-full 사슬을 건다.
+  fillHeight = false,
+}) {
   const renderer = getRenderer(block.type)
   if (!renderer?.Editor) return null
   const mergedProps = propsOverride
@@ -240,53 +384,86 @@ export function BlockBody({ block, content, propsOverride, sectionCode, sectionI
   // card chrome to attach to) — match that here too.
   const showSectionHeader =
     sectionItem && sectionCategory && block.type !== 'heading'
-  const body = (
+  const editor = (
     <Editor
       props={mergedProps}
       content={content}
       onChange={() => {}}
       readOnly
-      // autoFit=true → content drives height. RGL row_span isn't
-      // enforced here; the source report's saved row_span often
-      // matches dynamic measurement, but using saved row_span as a
-      // hard ceiling would clip charts/images that re-measured to a
-      // larger size on the source. Letting content drive matches
-      // what users see when they actually open the report.
-      autoFit={true}
+      // autoFit: editorChrome 분할 보기에선 호출부가 에디터와 같은 판정을 넘긴다
+      // (비-auto_fit 차트/트리맵은 false → 부모 고정 높이를 채움). 종합보고/export
+      // (editorChrome=false)는 true(content 가 높이를 몬다) 그대로 유지.
+      autoFit={autoFit}
     />
   )
-  if (!showSectionHeader) return body
-  // Mirrors `viewModeSectionHeader` in ReportDetailPage — same height,
-  // same tint math (color + alpha for bg / border), same typography.
-  // The body sits below the strip with no rounded corners on its top
-  // so the two read as one continuous card.
-  return (
-    <div
-      data-report-widget-card="true"
-      className="rounded-md border bg-card overflow-hidden"
-      style={{ borderColor: `${sectionCategory.color}40` }}
-    >
-      <div
-        // data-export-skip → matches the marker in ReportDetailPage's
-        // viewModeSectionHeader so the composite DOCX exporter's
-        // html2canvas pass drops this strip from the captured PNG.
-        data-export-skip="section-header"
-        className="flex items-center px-3 border-b"
-        style={{
-          height: 34,
-          backgroundColor: `${sectionCategory.color}14`,
-          color: sectionCategory.color,
-          borderBottomColor: `${sectionCategory.color}40`,
-        }}
-        title={sectionItem.label}
-      >
-        <span className="text-[15px] font-semibold tracking-tight">
-          {sectionItem.label}
-        </span>
-      </div>
-      <div className="p-3">{body}</div>
+  // editorChrome=true → 에디터(BlockEditorCard)와 같은 본문 글자 스케일을 위해
+  // `.report-widget-body` 로 감싼다(index.css 의 1.3× 오버라이드 적용). 그 외엔
+  // 기존 그대로(맨몸 Editor) — 종합보고/export 렌더에 영향 없음.
+  const body = editorChrome ? (
+    <div className={'report-widget-body' + (fillHeight ? ' h-full' : '')}>
+      {editor}
     </div>
+  ) : (
+    editor
   )
+  // 본문 패딩 — editorChrome 이면 에디터 view 모드 카드와 동일(px-6 pt-4 pb-4),
+  // 아니면 기존 종합보고/export 패딩(p-3). 고정 높이면 flex-1 로 카드 안을 채운다.
+  const bodyPad =
+    (editorChrome ? 'px-6 pt-4 pb-4' : 'p-3') +
+    (fillHeight ? ' flex-1 min-h-0' : '')
+  // 카드 외곽 — 고정 높이 위젯이면 h-full flex-col 로 부모(고정 px) 높이를 채운다.
+  const cardCls =
+    (editorChrome
+      ? 'rounded-lg border bg-card shadow-sm overflow-hidden'
+      : 'rounded-md border bg-card overflow-hidden') +
+    (fillHeight ? ' h-full flex flex-col' : '')
+
+  // 헤딩은 에디터에서도 카드 chrome 이 없다(맨몸) — 동일하게.
+  if (block.type === 'heading') return body
+
+  if (showSectionHeader) {
+    // Mirrors `viewModeSectionHeader` in ReportDetailPage — same height,
+    // same tint math (color + alpha for bg / border), same typography.
+    return (
+      <div
+        data-report-widget-card="true"
+        className={cardCls}
+        style={{ borderColor: `${sectionCategory.color}40` }}
+      >
+        <div
+          // data-export-skip → matches the marker in ReportDetailPage's
+          // viewModeSectionHeader so the composite DOCX exporter's
+          // html2canvas pass drops this strip from the captured PNG.
+          data-export-skip="section-header"
+          className="flex items-center px-3 border-b shrink-0"
+          style={{
+            height: 34,
+            backgroundColor: `${sectionCategory.color}14`,
+            color: sectionCategory.color,
+            borderBottomColor: `${sectionCategory.color}40`,
+          }}
+          title={sectionItem.label}
+        >
+          <span className="text-[15px] font-semibold tracking-tight">
+            {sectionItem.label}
+          </span>
+        </div>
+        <div className={bodyPad}>{body}</div>
+      </div>
+    )
+  }
+
+  // 단락 구분 없는 일반 위젯. editorChrome 이면 에디터처럼 카드(테두리·배경·그림자
+  // ·패딩)로 감싼다 — blend 보고서면 부모의 .report-blend-blocks 가 이 chrome 을
+  // 끈다(data-report-widget-card 마커). 그 외엔 기존처럼 맨몸(종합보고/export 불변).
+  if (editorChrome) {
+    return (
+      <div data-report-widget-card="true" className={cardCls}>
+        <div className={bodyPad}>{body}</div>
+      </div>
+    )
+  }
+  return body
 }
 
 /** Resolve a block's effective section code — page override beats

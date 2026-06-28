@@ -28,6 +28,7 @@ import { fetchFileBlob } from '@/shared/api/files'
 import {
   inlineVideos,
   inlineAttachments,
+  inlineDocs,
   inlineEmbeds,
 } from './htmlInlineAssets'
 
@@ -238,6 +239,8 @@ export async function exportReportToHtml({ draft, onProgress, signal, staticDoc 
   await inlineVideos(clone)
   throwIfAborted()
   await inlineAttachments(clone)
+  throwIfAborted()
+  await inlineDocs(clone)
   throwIfAborted()
   await inlineEmbeds(clone)
   throwIfAborted()

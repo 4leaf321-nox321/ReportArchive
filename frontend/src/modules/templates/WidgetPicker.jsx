@@ -68,7 +68,7 @@ export const WIDGET_PICKER_CATEGORIES = [
   },
   {
     name: '미디어 / 첨부',
-    types: ['image', 'attachment', 'video', 'html_embed', 'cad_3d'],
+    types: ['image', 'attachment', 'doc_viewer', 'video', 'html_embed', 'cad_3d'],
   },
 ]
 

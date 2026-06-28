@@ -99,6 +99,49 @@ export async function inlineAttachments(rootEl) {
   )
 }
 
+// --- doc_viewer (PDF) ------------------------------------------------- //
+//
+// DocViewer.jsx 가 표시 루트(카드·인라인 공통)에 심은 data-export-doc-* 마커를
+// 읽어, 라이브의 PDF.js 캔버스(현재 페이지만 그려진 죽은 캔버스)를 걷어내고
+// 원본 PDF 전체를 받는 "⬇ PDF 다운로드" 링크(data: URI)로 교체한다 —
+// 오프라인 자기완결(문서가져오기_설계.md §4.1). 캔버스를 그대로 두면 한 페이지만
+// 남고 나머지는 유실되므로 통째로 교체한다.
+export async function inlineDocs(rootEl) {
+  const nodes = Array.from(rootEl.querySelectorAll('[data-export-doc]'))
+  await Promise.all(
+    nodes.map(async (el) => {
+      const fileId = el.getAttribute('data-export-doc-file-id') || ''
+      const filenameRaw =
+        el.getAttribute('data-export-doc-filename') || 'document'
+      if (!fileId) return
+      try {
+        const blob = await fetchFileBlob(fileId)
+        const dataUri = await blobToDataUri(blob)
+        const filename = /\.pdf$/i.test(filenameRaw)
+          ? filenameRaw
+          : `${filenameRaw}.pdf`
+
+        el.innerHTML = ''
+        el.removeAttribute('data-export-doc')
+
+        const a = document.createElement('a')
+        a.setAttribute('href', dataUri)
+        a.setAttribute('download', filename)
+        a.setAttribute('title', '다운로드')
+        a.textContent = `⬇ ${filename}`
+        a.style.cssText =
+          'display:inline-flex;align-items:center;gap:6px;font-size:13px;color:#2563eb;text-decoration:none;border:1px solid #e4e4e7;border-radius:8px;padding:8px 12px;background:#fff'
+        el.appendChild(a)
+      } catch (err) {
+        console.warn('[html-export] doc inline failed', fileId, err)
+        el.removeAttribute('data-export-doc')
+        el.removeAttribute('data-export-doc-file-id')
+        el.removeAttribute('data-export-doc-filename')
+      }
+    }),
+  )
+}
+
 // --- html_embed (번들/단일, 카드/인라인 모두) ------------------------- //
 //
 // HtmlEmbed.jsx 가 표시 루트(카드·인라인 공통)에 심은 data-export-embed-* 마커를

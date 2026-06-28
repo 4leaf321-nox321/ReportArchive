@@ -470,6 +470,11 @@ def _rich_text_content(props: dict) -> dict:
             # length should look at either field.
             "markdown": md_schema,
             "items": {"type": "array", "items": item_schema},
+            # Per-report override of the template's props.outline_numbering —
+            # lets the report writer toggle 개요 번호(1/1.1/1.1.1) ↔ 불릿 on
+            # this specific widget from the inline editor. Unset = inherit the
+            # template default (문서가져오기_설계.md §5).
+            "outline_numbering": {"type": "boolean"},
         },
         # Body fields are intentionally optional during draft state — the
         # report writer can fill caption first, body later.
@@ -494,6 +499,11 @@ RICH_TEXT: WidgetDescriptor = {
             # scroll) and the rendered grid item's row height is content-
             # driven instead of clamped to layout.row_span.
             "expand_with_content": {"type": "boolean"},
+            # When true, the outline renders hierarchical numbers (1 / 1.1 /
+            # 1.1.1) by depth instead of the bullet glyphs (■ – ·) — for
+            # 규격서·논문류 정형 개요. Per-widget opt-in; default off keeps the
+            # familiar bullet outline (문서가져오기_설계.md §5).
+            "outline_numbering": {"type": "boolean"},
             "text_style": _TEXT_STYLE_SCHEMA,
             "depth_styles": _DEPTH_STYLES_SCHEMA,
         },
@@ -1023,6 +1033,74 @@ HTML_EMBED: WidgetDescriptor = {
     },
     "content_schema_for": _html_embed_content,
     "default_props": {"label": "HTML"},
+}
+
+
+# --------------------------------------------------------------------------- #
+# 8c. doc_viewer — uploaded PDF rendered in-place via PDF.js                   #
+# --------------------------------------------------------------------------- #
+# Pattern mirrors `attachment`/`html_embed`: the report stores a single
+# `file_id` from /api/files, and the frontend fetches the bytes via the auth'd
+# files API and renders them inline with PDF.js (page nav / zoom / text select)
+# instead of a download card. This is the "보존(archive-as-is)" path for
+# 논문·외부 규격서 PDF — the canonical document stays intact, while its text
+# layer is extracted server-side and indexed for 검색/RAG (문서가져오기_설계.md
+# §4). AI never fills this — like image / attachment / cad_3d, it needs a real
+# file_id.
+def _doc_viewer_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            "caption_position": _CAPTION_POSITION_FIELD,
+            "file_id": {"type": "string", "minLength": 1},
+            # Display-only original filename (for the upload button label and
+            # the export download link).
+            "filename": {"type": "string", "maxLength": 255},
+            "size": {"type": "integer", "minimum": 0},
+            "mime_type": {"type": "string", "maxLength": 100},
+            # Total PDF page count (filled at upload time alongside text
+            # extraction) — lets the viewer show "1 / N" without re-parsing.
+            "page_count": {"type": "integer", "minimum": 1, "maximum": 10000},
+            # Optional explicit pixel height for the viewer cell (inline mode);
+            # falls back to the grid cell height when unset.
+            "height_px": {"type": "integer", "minimum": 120, "maximum": 4000},
+            # display="card" (cover + open button, default when unset) vs
+            # "inline" (PDF.js rendered in-place). Mirrors html_embed.
+            "display": {"type": "string", "enum": ["card", "inline"]},
+            # 1-based page the viewer opens on.
+            "initial_page": {"type": "integer", "minimum": 1},
+            # Server-extracted PDF text layer, stored at upload time so it
+            # flows into search_text / report_chunks via the standard
+            # text-extraction path (text_extraction.py) with no special-casing
+            # there. Scanned PDFs with no text layer leave this empty (OCR is
+            # future work — 문서가져오기_설계.md §10).
+            "extracted_text": {"type": "string"},
+        },
+        # file_id is *not* required so a freshly-inserted widget with no upload
+        # yet still validates — the frontend handles the "empty" UX inline.
+        "additionalProperties": False,
+    }
+
+
+DOC_VIEWER: WidgetDescriptor = {
+    "type": "doc_viewer",
+    "label": "문서 뷰어",
+    "description": "업로드한 PDF 문서를 본문 안에서 바로 열람 (PDF.js). 텍스트는 검색/RAG 에 자동 반영",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "maxLength": 200},
+        },
+        "required": [],
+        "additionalProperties": False,
+    },
+    "content_schema_for": _doc_viewer_content,
+    "default_props": {"label": "문서"},
 }
 
 
@@ -3613,6 +3691,7 @@ WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
         ATTACHMENT,
         VIDEO,
         HTML_EMBED,
+        DOC_VIEWER,
         CHART,
         SCATTER,
         SCATTER3D,
@@ -3669,6 +3748,7 @@ REF_CATEGORIES: list[dict] = [
     {"key": "attachment", "label": "첨부"},
     {"key": "video", "label": "영상"},
     {"key": "embed", "label": "임베드"},
+    {"key": "document", "label": "문서"},
 ]
 _REF_CATEGORY_KEYS = {c["key"] for c in REF_CATEGORIES}
 
@@ -3717,6 +3797,7 @@ REF_CATEGORY_BY_TYPE: dict[str, Optional[str]] = {
     "attachment": "attachment",
     "video": "video",
     "html_embed": "embed",
+    "doc_viewer": "document",
 }
 
 # Fail loudly at import if a widget was added without a reference category, or

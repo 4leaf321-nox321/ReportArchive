@@ -80,6 +80,30 @@ _WS_RE = re.compile(r"\s+")
 # 있어도 대부분 잡힌다.
 _MAX_CHUNK_CHARS = 8_000
 _MAX_TOTAL_CHARS = 100_000
+# 상한을 넘는 블록(예: doc_viewer 의 긴 PDF 본문)은 잘라버리지 않고 여러 청크로
+# 분할한다 — 장문 문서도 전체가 검색/RAG 에 들어오게(문서가져오기_설계.md §4.2).
+# 블록당 분할 수 상한으로 비정상 입력을 방어(80 × 8k ≈ 640k 자).
+_MAX_CHUNKS_PER_BLOCK = 80
+
+
+def _split_long_text(text: str, size: int, max_pieces: int) -> list[str]:
+    """긴 문자열을 size 이하 조각으로 분할. 가능하면 공백 경계에서 끊어 단어가
+    잘리지 않게 하고, max_pieces 까지만 만든다(초과분은 버림)."""
+    pieces: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n and len(pieces) < max_pieces:
+        end = min(i + size, n)
+        if end < n:
+            # 조각 뒷부분(중간 이후)의 마지막 공백에서 끊는다 — 없으면 그대로 자름.
+            sp = text.rfind(" ", i + size // 2, end)
+            if sp > i:
+                end = sp
+        piece = text[i:end].strip()
+        if piece:
+            pieces.append(piece)
+        i = end
+    return pieces
 
 
 class _HTMLStripper(HTMLParser):
@@ -260,16 +284,27 @@ def extract_chunks(
             out=chunks,
         )
 
-    # 빈 청크 제거 + 청크별 길이 상한.
+    # 빈 청크 제거 + 청크별 길이 상한. 상한 초과 블록은 잘라내지 않고 여러
+    # 청크로 분할해 장문 문서 전체를 색인한다(메타는 그대로 복제).
     result: list[TextChunk] = []
     for c in chunks:
         t = c.text.strip()
         if not t:
             continue
-        if len(t) > _MAX_CHUNK_CHARS:
-            t = t[:_MAX_CHUNK_CHARS]
-        c.text = t
-        result.append(c)
+        if len(t) <= _MAX_CHUNK_CHARS:
+            c.text = t
+            result.append(c)
+            continue
+        for piece in _split_long_text(t, _MAX_CHUNK_CHARS, _MAX_CHUNKS_PER_BLOCK):
+            result.append(
+                TextChunk(
+                    text=piece,
+                    report_id=c.report_id,
+                    page_idx=c.page_idx,
+                    block_id=c.block_id,
+                    widget_type=c.widget_type,
+                )
+            )
     return result
 
 

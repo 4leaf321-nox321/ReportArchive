@@ -269,6 +269,15 @@ class Report(Base):
         String(16), nullable=True
     )
 
+    # 절 번호 자동매김 — True 면 문서 순서대로 heading(제목) 위젯에 레벨별
+    # 계층 번호(1 / 1.1 / 1.1.1)를 렌더 시 계산해 붙인다(규격서·논문용).
+    # NULL/False 면 현행과 100% 동일(번호 없음). 번호는 그림/표 번호처럼
+    # 저장하지 않고 렌더 시점에 문서 순서로 계산하므로 절 추가·이동 시
+    # 자동 재계산된다. 보고서 설정 다이얼로그의 페이지 탭에서 토글.
+    page_heading_numbering: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+
     # Optional report-type tag — system-wide controlled vocabulary
     # orthogonal to the template (templates describe shape; types
     # describe purpose, e.g. "주간 보고", "안전 점검"). Managed by

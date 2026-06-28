@@ -8,7 +8,7 @@ import { useWidgetRelations } from '@/shared/hooks/useWidgetRelations'
 import { useReportStyle } from '@/shared/reports/ReportStyleContext'
 import { useReportMention } from '@/shared/reports/ReportMentionContext'
 import { hexToToken, colorTokenClass, tokenFromClassName } from '@/shared/text-color'
-import { blockRefKey } from '@/shared/reports/blockNumbering'
+import { blockRefKey, outlineNumbers } from '@/shared/reports/blockNumbering'
 import {
   CaptionInput,
   DEFAULT_BODY_FONT_PX,
@@ -189,6 +189,19 @@ export function RichTextPropsPanel({ props, onChange }) {
         />
         필수 입력
       </label>
+      <label className="flex items-center gap-2 text-xs">
+        <input
+          type="checkbox"
+          checked={!!props.outline_numbering}
+          onChange={(e) =>
+            onChange({ ...props, outline_numbering: e.target.checked || undefined })
+          }
+        />
+        개요 번호 매기기 (1 / 1.1 / 1.1.1)
+        <span className="text-[10px] text-muted-foreground">
+          깊이 기호(■ – ·) 대신 계층 번호
+        </span>
+      </label>
       <p className="text-[10px] text-muted-foreground">
         이 위젯은 줄 단위 아웃라인 입력입니다. Tab으로 깊이를 늘리고 Shift+Tab으로 줄이세요.
         자식 줄(들여쓰기된 줄)의 <strong>맨 앞</strong>에서{' '}
@@ -254,6 +267,10 @@ const INDENT_PX_PER_DEPTH = 24
 // relation picker. Picked deliberately as a sequence that's rare in body
 // text (a single "/" is too common — URL paths, dates, etc.).
 const COMBO_TRIGGER = '//'
+
+// 개요 번호(1 / 1.1 / 1.1.1) — outline_numbering 이 켜진 위젯에서 prefix 글리프
+// 대신 쓴다. 위젯·DOCX·PPTX 가 같은 결과를 쓰도록 공유 모듈에 둔다.
+const computeOutlineNumbers = outlineNumbers
 
 // Symbols typed at the start of a line that auto-convert to a depth.
 // Order matters only for documentation — we match the first character.
@@ -518,6 +535,13 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
   )
   const min = props.min_length
   const max = props.max_length
+  // 개요 번호 켜짐 여부 — per-report content 오버라이드가 템플릿 props 기본값을
+  // 이긴다. content 에 키가 없으면(=null) 템플릿 기본값을 따른다. 작성자는
+  // 편집 화면의 인라인 토글로 이 위젯만 번호/불릿을 바로 바꿀 수 있다.
+  const numbering =
+    content?.outline_numbering != null
+      ? !!content.outline_numbering
+      : !!props.outline_numbering
 
   function patchItems(nextItems) {
     // ...content 보존 — 안 그러면 본문만 바꿔도 caption_skip_autofill(제목 생략),
@@ -542,6 +566,15 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
     if (!merged.caption) delete merged.caption
     if (!merged.items || merged.items.length === 0) delete merged.items
     onChange(merged)
+  }
+
+  // 인라인 토글 — 번호 ↔ 불릿. 템플릿 기본값과 같아지면 키를 지워 상속으로
+  // 되돌린다(content 를 스파스하게 유지).
+  function toggleNumbering() {
+    const next = !numbering
+    patchContent({
+      outline_numbering: next === !!props.outline_numbering ? undefined : next,
+    })
   }
 
   // Body-text styling — depth-aware. Each row asks for its class via this
@@ -583,6 +616,7 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
         {hasBody && (
           <OutlineView
             items={items}
+            numbering={numbering}
             bodyClassFor={bodyClassFor}
             bodyStyleFor={bodyStyleFor}
           />
@@ -611,8 +645,22 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
           {...captionSkipProps({ content, patch: patchContent })}
         />
       )}
+      {/* 인라인 머리표 토글 — 작성자가 이 위젯만 번호(1.1.1) ↔ 불릿(■ – ·)을
+          바로 전환. 템플릿 props 기본값을 per-report 로 덮어쓴다(toggleNumbering). */}
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={toggleNumbering}
+          className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          title="개요 머리표 전환 — 번호(1.1.1) ↔ 불릿(■ – ·)"
+        >
+          {numbering ? '1.1.1 번호' : '■ 불릿'}
+        </button>
+      </div>
       <OutlineEditor
         items={items}
+        numbering={numbering}
         onChange={patchItems}
         placeholder={props.placeholder || '대표 문장을 입력하고 Tab으로 상세를 들여쓰세요.'}
         bodyClassFor={bodyClassFor}
@@ -639,10 +687,12 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
 // --------------------------------------------------------------------------- //
 // View mode — read-only structured render
 // --------------------------------------------------------------------------- //
-function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
+function OutlineView({ items, numbering, bodyClassFor, bodyStyleFor }) {
   // 보고서 단위 depth-별 글리프 override. depth 2 글리프는 depth 2+ 모두
   // 에 그대로 적용 (= 깊은 들여쓰기는 depth 2 값을 이어 쓴다).
   const { depthGlyphs } = useReportStyle()
+  // 개요 번호가 켜졌으면 글리프 대신 1/1.1/1.1.1 (위젯 내부 계산).
+  const numbers = numbering ? computeOutlineNumbers(items) : null
   // 본문 안 @멘션 보고서 링크 클릭 → SPA 이동. 링크는 dangerouslySetInnerHTML
   // 로 그려진 <a data-report-id> 라 React onClick 핸들러를 직접 못 붙이므로,
   // wrapper 에서 위임 처리한다. mention 컨텍스트가 없으면(내보내기/미리보기 등)
@@ -763,7 +813,9 @@ function OutlineView({ items, bodyClassFor, bodyStyleFor }) {
               style={prefixStyle}
               data-rt-prefix
             >
-              {depthGlyphs?.[Math.min(depth, 2)] || DEPTH_PREFIX[depth]}
+              {numbers
+                ? numbers[i]
+                : depthGlyphs?.[Math.min(depth, 2)] || DEPTH_PREFIX[depth]}
             </span>
             <RelationChipStatic relation={it.relation} />
             <span
@@ -794,7 +846,9 @@ function RelationChipStatic({ relation }) {
 // --------------------------------------------------------------------------- //
 // Edit mode — outline with Tab depth, auto-prefix, inline relation picker
 // --------------------------------------------------------------------------- //
-function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFor, baseSizeFor }) {
+function OutlineEditor({ items, numbering, onChange, placeholder, bodyClassFor, bodyStyleFor, baseSizeFor }) {
+  // 편집 중에도 글리프 대신 개요 번호를 보여준다(읽기 렌더와 동일한 값).
+  const outlineNumbers = numbering ? computeOutlineNumbers(items) : null
   // Each row exposes an imperative handle ({focus, setCaret, getCaret,
   // getTextLength, isAtStart, isAtEnd}) provided by RichTextRowEditor.
   const inputRefs = useRef(new Map())
@@ -1609,6 +1663,7 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
           key={i}
           index={i}
           item={it}
+          numberPrefix={outlineNumbers ? outlineNumbers[i] : undefined}
           isFirst={i === 0}
           parentDepth={items[i - 1]?.depth}
           placeholder={i === 0 && !it.text ? placeholder : ''}
@@ -1744,6 +1799,7 @@ function OutlineEditor({ items, onChange, placeholder, bodyClassFor, bodyStyleFo
 function OutlineRow({
   index,
   item,
+  numberPrefix,
   isFirst,
   parentDepth,
   placeholder,
@@ -2051,7 +2107,9 @@ function OutlineRow({
           } ${prefixFmt.className}`}
           style={prefixStyle}
         >
-          {depthGlyphs?.[Math.min(depth, 2)] || DEPTH_PREFIX[depth]}
+          {numberPrefix != null
+            ? numberPrefix
+            : depthGlyphs?.[Math.min(depth, 2)] || DEPTH_PREFIX[depth]}
         </span>
         <RelationChip relation={relation} onChange={onRelationChange} />
         <div className="flex-1 min-w-0 outline-rich-row">

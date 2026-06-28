@@ -135,8 +135,8 @@ import {
   useReportLinks,
 } from './ReportLinks'
 import { ReportMentionProvider, useReportMention } from '@/shared/reports/ReportMentionContext'
-import { blockRefKey, buildBlockIndex, referenceableBlockList } from '@/shared/reports/blockNumbering'
-import { CurrentBlockRefContext } from '@/shared/reports/CurrentBlockRefContext'
+import { blockRefKey, buildBlockIndex, buildHeadingNumbers, referenceableBlockList } from '@/shared/reports/blockNumbering'
+import { CurrentBlockRefContext, CurrentBlockHeadingNumberContext } from '@/shared/reports/CurrentBlockRefContext'
 import BlockRefPreview from './BlockRefPreview'
 import DeptMentionPreview from './DeptMentionPreview'
 import { ReportMentionDialog } from './ReportMentionDialog'
@@ -651,6 +651,8 @@ export default function ReportDetailPage() {
           tplDefaults?.page_rich_text_prefix_d2 ?? null,
         // 새 보고서는 저장된 보기 모드 없음 → null(개인 전역설정 폴백).
         page_default_view_mode: null,
+        // 절 번호 자동매김 — 템플릿 기본값에서 상속(없으면 OFF).
+        page_heading_numbering: tplDefaults?.page_heading_numbering === true,
         report_type_id: null,
         report_type: null,
         // Entity tags (모델/부품/BOM/단계/불량/시험/시뮬레이션) — starts
@@ -718,6 +720,8 @@ export default function ReportDetailPage() {
         page_rich_text_prefix_d2: existingReport.page_rich_text_prefix_d2 ?? null,
         // 보고서별 기본 보기 모드. null → 표시 상태는 개인 전역설정으로 폴백.
         page_default_view_mode: existingReport.page_default_view_mode ?? null,
+        // 절 번호 자동매김 — true → heading 에 1/1.1/1.1.1. null/false → 없음(현행).
+        page_heading_numbering: existingReport.page_heading_numbering === true,
         // 보고서 종류 — picker writes the FK + embedded ref so the
         // settings dialog (and the list view, once we rerender it)
         // can show the name/status without a second roundtrip.
@@ -1406,17 +1410,17 @@ export default function ReportDetailPage() {
   // document order so numbers are continuous across pages; recomputed when the
   // draft / templates / catalog change, so reordering a block re-numbers every
   // body reference automatically. (Hook above the early returns — see below.)
-  const blockRefIndex = useMemo(() => {
+  // Whole-report block list in *visual reading order* (top→bottom, left→right),
+  // not blocks_order array order — shared source for both cross-reference
+  // numbering (그림/표) and 절 번호(heading) numbering.
+  const orderedBlocks = useMemo(() => {
     const ordered = []
     const pages = draft?.pages ?? []
     pages.forEach((page, pageIndex) => {
       const tpl = getCachedTemplate(pageTemplateMap, page)
       const overrides = page?.layout_overrides ?? {}
-      // Number in *visual reading order* (top→bottom, left→right), not
-      // blocks_order array order — otherwise a block dropped at the top of the
-      // page but appended to blocks_order would get a high number. Position
-      // comes from the effective layout (row, col_offset), with the array
-      // index as a stable tiebreaker for same-cell / missing col_offset.
+      // Position comes from the effective layout (row, col_offset), with the
+      // array index as a stable tiebreaker for same-cell / missing col_offset.
       const positioned = combinedBlocks(tpl, page).map((b, idx) => {
         const lay = overrides[b.id] ?? b.layout ?? {}
         return {
@@ -1437,11 +1441,30 @@ export default function ReportDetailPage() {
             ? c.caption_html.replace(/<[^>]*>/g, '').trim()
             : '') ||
           (b.props?.label ?? '')
-        ordered.push({ id: b.id, type: b.type, caption, pageIndex })
+        // Heading level for 절 번호: per-report override (content.level) wins
+        // over the template (props.level); buildHeadingNumbers ignores non-headings.
+        const level =
+          c.level === 1 || c.level === 2 || c.level === 3
+            ? c.level
+            : b.props?.level
+        ordered.push({ id: b.id, type: b.type, caption, pageIndex, level })
       }
     })
-    return buildBlockIndex(ordered, widgetCatalog)
-  }, [draft, pageTemplateMap, widgetCatalog])
+    return ordered
+  }, [draft, pageTemplateMap])
+
+  const blockRefIndex = useMemo(
+    () => buildBlockIndex(orderedBlocks, widgetCatalog),
+    [orderedBlocks, widgetCatalog],
+  )
+
+  // Section numbers for headings ("1.1.1"), only when the report opts in.
+  // null when off → no numbering threading, render identical to today.
+  const headingNumberIndex = useMemo(
+    () =>
+      draft?.page_heading_numbering ? buildHeadingNumbers(orderedBlocks) : null,
+    [orderedBlocks, draft?.page_heading_numbering],
+  )
 
   const referenceableBlocks = useMemo(
     () => referenceableBlockList(blockRefIndex),
@@ -2727,6 +2750,8 @@ export default function ReportDetailPage() {
         page_rich_text_prefix_d2: normalizeRichTextPrefix(draft.page_rich_text_prefix_d2),
         // 보고서별 기본 보기 모드. null 이면 저장값 해제(개인 전역설정 폴백).
         page_default_view_mode: draft.page_default_view_mode ?? null,
+        // 절 번호 자동매김 — heading 1/1.1/1.1.1 토글.
+        page_heading_numbering: draft.page_heading_numbering === true,
         // 보고서 종류 — null clears the tag. The backend's update
         // schema uses `exclude_unset`, so always sending the key (even
         // when null) is the explicit "clear" signal.
@@ -2927,6 +2952,7 @@ export default function ReportDetailPage() {
         page_rich_text_prefix_d2: existingReport.page_rich_text_prefix_d2 ?? null,
         // 보기 모드도 cancel 시 서버 스냅샷으로 복원.
         page_default_view_mode: existingReport.page_default_view_mode ?? null,
+        page_heading_numbering: existingReport.page_heading_numbering === true,
         revision: existingReport.revision ?? 1,
         pages,
       })
@@ -3492,6 +3518,8 @@ export default function ReportDetailPage() {
         draft,
         pageTemplateMap,
         sectionItemByCode,
+        blockRefIndex,
+        headingNumberIndex,
         onProgress: setDocxProgress,
         signal: controller.signal,
       })
@@ -3905,6 +3933,7 @@ export default function ReportDetailPage() {
       blockIndex={blockRefIndex}
       referenceableBlocks={referenceableBlocks}
       scrollToBlock={scrollToBlock}
+      headingNumberIndex={headingNumberIndex}
       onBlockRefClick={onBlockRefClick}
       onDeptMentionClick={onDeptMentionClick}
     >
@@ -5218,6 +5247,7 @@ export default function ReportDetailPage() {
         currentGapPx={draft?.page_gap_px ?? null}
         defaultGapPx={DEFAULT_REPORT_GAP_PX}
         currentBlendBlocks={draft?.page_blend_blocks === true}
+        currentHeadingNumbering={draft?.page_heading_numbering === true}
         currentSlideGuide={
           draft
             ? {
@@ -5370,6 +5400,11 @@ export default function ReportDetailPage() {
         }}
         onApplyBlendBlocks={(blend) => {
           setDraft((d) => (d ? { ...d, page_blend_blocks: blend === true } : d))
+        }}
+        onApplyHeadingNumbering={(on) => {
+          setDraft((d) =>
+            d ? { ...d, page_heading_numbering: on === true } : d,
+          )
         }}
         onApplySlideGuide={(cfg) => {
           // cfg = { enabled, ratio, customW, customH }. enabled 이 false
@@ -10945,6 +10980,10 @@ function BlockEditorCard({
   const mentionCtx = useReportMention()
   const blockRefLabel =
     mentionCtx?.blockIndex?.get(blockRefKey(pageIndex ?? 0, block.id))?.label ?? null
+  // 절 번호(heading) — 켜졌을 때만 채워짐. HeadingEditor 가 읽어 제목 앞에 붙인다.
+  const blockHeadingNumber =
+    mentionCtx?.headingNumberIndex?.get(blockRefKey(pageIndex ?? 0, block.id)) ??
+    null
 
   // Non-inline-editable widgets render as if in view mode while sitting
   // inside the edit grid — their "edit" happens in a separate modal that
@@ -11325,7 +11364,10 @@ function BlockEditorCard({
 
   if (block.type === 'heading') {
     const { Editor: HE } = renderer
+    // Heading takes an early return (no Card chrome), so it must carry the
+    // 절 번호 context itself — the providers further down never wrap it.
     return (
+      <CurrentBlockHeadingNumberContext.Provider value={blockHeadingNumber}>
       <div
         id={exposeBlockIds ? `block-${block.id}` : undefined}
         onClick={onActivate}
@@ -11384,6 +11426,7 @@ function BlockEditorCard({
           </div>
         </div>
       </div>
+      </CurrentBlockHeadingNumberContext.Provider>
     )
   }
 
@@ -11425,6 +11468,7 @@ function BlockEditorCard({
   }
   return (
     <CurrentBlockRefContext.Provider value={blockRefLabel}>
+    <CurrentBlockHeadingNumberContext.Provider value={blockHeadingNumber}>
     <TableViewContext.Provider value={tableViewValue}>
     <Card
       id={exposeBlockIds ? `block-${block.id}` : undefined}
@@ -11660,6 +11704,7 @@ function BlockEditorCard({
       )}
     </Card>
     </TableViewContext.Provider>
+    </CurrentBlockHeadingNumberContext.Provider>
     </CurrentBlockRefContext.Provider>
   )
 }

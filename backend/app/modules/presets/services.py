@@ -33,6 +33,7 @@ _DISPLAY_FIELDS = (
     "page_rich_text_prefix_d0",
     "page_rich_text_prefix_d1",
     "page_rich_text_prefix_d2",
+    "page_heading_numbering",
 )
 
 

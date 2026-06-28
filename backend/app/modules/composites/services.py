@@ -757,6 +757,7 @@ def _freeze_item_snapshots(
             "page_width_px": report.page_width_px,
             "page_gap_px": report.page_gap_px,
             "page_blend_blocks": report.page_blend_blocks,
+            "page_heading_numbering": report.page_heading_numbering,
             "report_date": (
                 report.report_date.isoformat() if report.report_date else None
             ),

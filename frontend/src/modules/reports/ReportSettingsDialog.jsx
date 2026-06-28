@@ -94,6 +94,8 @@ export function ReportSettingsDialog({
   // 시각적으로 구분되지 않게 하는 토글. null/false면 기존처럼 카드 경계가
   // 보이고, true면 경계가 사라진다. 보고서/템플릿 양쪽에서 사용.
   currentBlendBlocks = false,
+  // 절 번호 자동매김(heading 1/1.1/1.1.1). null/false면 번호 없음(현행).
+  currentHeadingNumbering = false,
   // PPT 슬라이드 가이드 설정. { enabled, ratio, customW, customH } 형태로
   // 들어오고, 다이얼로그는 같은 shape 으로 onApplySlideGuide 를 호출한다.
   // null 이거나 일부 필드가 비어 있으면 DEFAULT_SLIDE_GUIDE_CONFIG 를
@@ -136,6 +138,7 @@ export function ReportSettingsDialog({
   onApplyWidth,
   onApplyGap,
   onApplyBlendBlocks,
+  onApplyHeadingNumbering,
   onApplySlideGuide,
   onApplyRichTextPrefixes,
   onApplyType,
@@ -158,6 +161,7 @@ export function ReportSettingsDialog({
           currentGapPx={currentGapPx}
           defaultGapPx={defaultGapPx}
           currentBlendBlocks={currentBlendBlocks}
+          currentHeadingNumbering={currentHeadingNumbering}
           currentSlideGuide={currentSlideGuide}
           currentRichTextPrefixes={currentRichTextPrefixes}
           showPropertiesTab={showPropertiesTab}
@@ -172,6 +176,7 @@ export function ReportSettingsDialog({
           onApplyWidth={onApplyWidth}
           onApplyGap={onApplyGap}
           onApplyBlendBlocks={onApplyBlendBlocks}
+          onApplyHeadingNumbering={onApplyHeadingNumbering}
           onApplySlideGuide={onApplySlideGuide}
           onApplyRichTextPrefixes={onApplyRichTextPrefixes}
           onApplyType={onApplyType}
@@ -194,6 +199,7 @@ function DialogBody({
   currentGapPx,
   defaultGapPx,
   currentBlendBlocks,
+  currentHeadingNumbering,
   currentSlideGuide,
   currentRichTextPrefixes,
   showPropertiesTab,
@@ -208,6 +214,7 @@ function DialogBody({
   onApplyWidth,
   onApplyGap,
   onApplyBlendBlocks,
+  onApplyHeadingNumbering,
   onApplySlideGuide,
   onApplyRichTextPrefixes,
   onApplyType,
@@ -217,6 +224,7 @@ function DialogBody({
   const initialWidth = Number.isFinite(currentWidthPx) ? currentWidthPx : null
   const initialGap = Number.isFinite(currentGapPx) ? currentGapPx : null
   const initialBlend = currentBlendBlocks === true
+  const initialHeadingNumbering = currentHeadingNumbering === true
   const initialSlide = normalizeSlideGuide(currentSlideGuide)
   // depth-별 prefix draft. 길이 3 의 문자열 배열로 들고 있고, "" 과 null
   // 은 같은 상태("그 depth 는 기본 글리프 사용")로 취급한다. 사용자가
@@ -228,6 +236,9 @@ function DialogBody({
   const [gapDraft, setGapDraft] = useState(initialGap)
   const [gapValid, setGapValid] = useState(true)
   const [blendDraft, setBlendDraft] = useState(initialBlend)
+  const [headingNumberingDraft, setHeadingNumberingDraft] = useState(
+    initialHeadingNumbering,
+  )
   const [slideDraft, setSlideDraft] = useState(initialSlide)
   const [slideValid, setSlideValid] = useState(true)
   const [prefixesDraft, setPrefixesDraft] = useState(initialPrefixes)
@@ -245,6 +256,8 @@ function DialogBody({
   const widthChanged = (widthDraft ?? null) !== (currentWidthPx ?? null)
   const gapChanged = (gapDraft ?? null) !== (currentGapPx ?? null)
   const blendChanged = blendDraft !== initialBlend
+  const headingNumberingChanged =
+    headingNumberingDraft !== initialHeadingNumbering
   const slideChanged = !sameSlideGuide(slideDraft, initialSlide)
   // depth 3 칸 각각을 비교. "" / null 동치 처리는 normalizePrefixesDraft
   // 가 이미 "" 로 통일해 두니 직접 문자열 비교만 하면 된다.
@@ -268,6 +281,7 @@ function DialogBody({
     widthChanged ||
     gapChanged ||
     blendChanged ||
+    headingNumberingChanged ||
     slideChanged ||
     prefixesChanged ||
     (showPropertiesTab && (typeChanged || entitiesChanged || collabChanged))
@@ -277,6 +291,8 @@ function DialogBody({
     if (widthChanged) onApplyWidth?.(widthDraft ?? null)
     if (gapChanged) onApplyGap?.(gapDraft ?? null)
     if (blendChanged) onApplyBlendBlocks?.(blendDraft)
+    if (headingNumberingChanged)
+      onApplyHeadingNumbering?.(headingNumberingDraft)
     if (slideChanged) onApplySlideGuide?.(slideDraft)
     if (prefixesChanged) {
       // 빈 칸은 null 로 변환해서 backend 가 그 depth 컬럼만 NULL 로 리셋.
@@ -323,6 +339,8 @@ function DialogBody({
             }}
             blendValue={blendDraft}
             onBlendChange={setBlendDraft}
+            headingNumberingValue={headingNumberingDraft}
+            onHeadingNumberingChange={setHeadingNumberingDraft}
             slideValue={slideDraft}
             onSlideChange={(value, valid) => {
               setSlideDraft(value)
@@ -382,6 +400,8 @@ function PageSettingsTab({
   onGapChange,
   blendValue,
   onBlendChange,
+  headingNumberingValue,
+  onHeadingNumberingChange,
   slideValue,
   onSlideChange,
   prefixesValue,
@@ -418,6 +438,17 @@ function PageSettingsTab({
           onChange={onBlendChange}
           onLabel="페이지에 녹이기"
           offLabel="경계 표시 (기본)"
+        />
+      </SettingRow>
+      <SettingRow
+        label="절 번호"
+        hint="켜면 제목(heading) 위젯에 문서 순서대로 계층 번호(1, 1.1, 1.1.1)를 자동으로 붙입니다 — 규격서·논문처럼 절 구조가 있는 문서에 적합합니다. 번호는 저장되지 않고 표시할 때 계산되므로 절을 추가·이동하면 자동으로 다시 매겨집니다. 끄면 현재와 동일하게 번호가 없습니다."
+      >
+        <InlineToggleControl
+          checked={headingNumberingValue === true}
+          onChange={onHeadingNumberingChange}
+          onLabel="자동 번호 (1.1.1)"
+          offLabel="번호 없음 (기본)"
         />
       </SettingRow>
       <SettingRow

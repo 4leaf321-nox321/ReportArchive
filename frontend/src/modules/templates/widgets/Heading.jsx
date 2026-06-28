@@ -8,6 +8,7 @@ import {
   PopoverTrigger,
 } from '@/shared/components/ui/popover'
 import { cn } from '@/shared/lib/utils'
+import { useCurrentBlockHeadingNumber } from '@/shared/reports/CurrentBlockRefContext'
 import {
   HEADING_DEFAULT_PX_BY_LEVEL,
   TextStyleField,
@@ -143,6 +144,10 @@ export function HeadingPreview({ props }) {
 // Editor                                                                        //
 // --------------------------------------------------------------------------- //
 export function HeadingEditor({ props, content, onChange, readOnly }) {
+  // 절 번호 자동매김이 켜진 보고서에서만 채워짐("1.1.1"). 렌더 부모가 문서순서로
+  // 계산해 per-block 으로 내려준다. 편집 모드에선 붙이지 않는다(작성 텍스트와
+  // 섞이면 혼란 — 읽기/내보내기 렌더에만 prefix).
+  const headingNumber = useCurrentBlockHeadingNumber()
   const value = content?.text ?? ''
   // dual-field: 평문 text(제목 역할·TOC·export)는 유지하고, 색·서식 일부만 칠한
   // rich 마크업은 text_html 에 둔다(긴 글처럼 per-char). 둘 다 RichTextRowEditor
@@ -198,6 +203,11 @@ export function HeadingEditor({ props, content, onChange, readOnly }) {
     if (!value && !hasRich) return null
     return (
       <div className={`px-2 py-1 ${cls}`} style={{ ...inlineTextStyle, ...wrapperStyle }}>
+        {headingNumber && (
+          <span className="mr-2" data-heading-number>
+            {headingNumber}
+          </span>
+        )}
         {hasRich ? (
           <span
             className="[&_p]:m-0 [&_p]:inline"
@@ -211,10 +221,27 @@ export function HeadingEditor({ props, content, onChange, readOnly }) {
   }
 
   return (
-    <div className="relative group/heading" style={wrapperStyle}>
+    <div
+      className="relative group/heading flex items-baseline"
+      style={wrapperStyle}
+    >
+      {/* 절 번호(headingNumber)는 편집 중에도 비편집 prefix 로 함께 보여준다 —
+          작성자가 번호 구조를 바로 확인할 수 있게(읽기/내보내기와 동일한 값).
+          flex-1 은 outline-rich-row(내가 제어하는 블록)에 둔다 — className 은
+          tiptap contenteditable 로 내려가 wrapper 를 늘리지 못하기 때문. */}
+      {headingNumber && (
+        <span
+          className={cn('shrink-0 pl-2 py-1', cls)}
+          style={inlineTextStyle}
+          contentEditable={false}
+          data-heading-number
+        >
+          {headingNumber}
+        </span>
+      )}
       {/* 색·서식은 텍스트 선택 시 뜨는 버블 메뉴에서(긴 글과 동일). 평문 text 도
           onChange 가 함께 동기화해 제목 역할을 유지. */}
-      <div className="outline-rich-row">
+      <div className="outline-rich-row flex-1 min-w-0">
         <RichTextRowEditor
           html={_richSeed(htmlValue, value)}
           placeholder={props.default_text || '제목 입력'}
@@ -226,7 +253,8 @@ export function HeadingEditor({ props, content, onChange, readOnly }) {
             })
           }
           className={cn(
-            'placeholder:text-muted-foreground/50 px-2 py-1 pr-9',
+            'placeholder:text-muted-foreground/50 py-1 pr-9',
+            headingNumber ? 'pl-2' : 'px-2',
             cls,
           )}
           style={inlineTextStyle}

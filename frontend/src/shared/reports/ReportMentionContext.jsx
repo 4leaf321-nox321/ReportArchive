@@ -47,6 +47,10 @@ export function ReportMentionProvider({
   blockIndex,
   referenceableBlocks,
   scrollToBlock,
+  // headingNumberIndex : Map<refKey, "1.1.1"> for heading 위젯, when the report
+  //   has 절 번호 자동매김 on (else null/empty). Computed from whole-report
+  //   document order; BlockEditorCard reads it to prefix each heading.
+  headingNumberIndex,
   // onBlockRefClick(pageIndex, blockId, anchorEl) — 본문 `#` 참조 링크 클릭의
   //   "스마트" 처리. 대상이 화면에 보이면 하이라이트만, 안 보이면 미리보기
   //   팝오버, "이동" 시 점프+복귀까지 호스트(보고서 상세)가 담당한다.
@@ -73,6 +77,7 @@ export function ReportMentionProvider({
       blockIndex: blockIndex ?? null,
       referenceableBlocks: referenceableBlocks ?? [],
       scrollToBlock: scrollToBlock ?? null,
+      headingNumberIndex: headingNumberIndex ?? null,
       onBlockRefClick: onBlockRefClick ?? null,
       onDeptMentionClick: onDeptMentionClick ?? null,
       popup,
@@ -88,6 +93,7 @@ export function ReportMentionProvider({
       blockIndex,
       referenceableBlocks,
       scrollToBlock,
+      headingNumberIndex,
       onBlockRefClick,
       onDeptMentionClick,
       popup,

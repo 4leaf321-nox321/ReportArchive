@@ -34,6 +34,11 @@ import {
 } from 'docx'
 import { getReport } from '@/modules/reports/api'
 import { getTemplateVersion } from '@/shared/api/templates'
+import { fetchWidgetCatalog } from '@/shared/api/widgets'
+import {
+  buildBlockIndex,
+  buildHeadingNumbers,
+} from '@/shared/reports/blockNumbering'
 import {
   BODY_FONT,
   BODY_FULL_WIDTH_PX,
@@ -132,6 +137,43 @@ async function withOffscreenItemMount(snapshot, runWithScope) {
   } finally {
     root.unmount()
     container.remove()
+  }
+}
+
+/** 멤버 보고서(group) 의 그림/표 번호 + 절 번호 맵을 계산한다 — 단일 보고서
+ *  DOCX export 와 동일하게 캡션·제목에 번호가 붙도록(renderBlockPieces 가 소비).
+ *  visual reading order = groupBlocksByRow(combinedBlocks) flatten. */
+function groupNumbering(group, catalog) {
+  const ordered = []
+  const pages = group.pages || []
+  pages.forEach((page, pageIndex) => {
+    const tpl = group.templateMap?.get(
+      `${page.template_id}@${page.template_version}`,
+    )
+    if (!tpl) return
+    const rowGroups = groupBlocksByRow(combinedBlocks(tpl, page), page)
+    for (const rowItems of rowGroups) {
+      for (const { block } of rowItems) {
+        const c = page.content?.[block.id] ?? {}
+        const caption =
+          (c.caption && c.caption.trim()) ||
+          (typeof c.caption_html === 'string'
+            ? c.caption_html.replace(/<[^>]*>/g, '').trim()
+            : '') ||
+          (block.props?.label ?? '')
+        const level =
+          c.level === 1 || c.level === 2 || c.level === 3
+            ? c.level
+            : block.props?.level
+        ordered.push({ id: block.id, type: block.type, caption, pageIndex, level })
+      }
+    }
+  })
+  return {
+    blockRefIndex: buildBlockIndex(ordered, catalog),
+    headingNumberIndex: group.report?.page_heading_numbering
+      ? buildHeadingNumbers(ordered)
+      : null,
   }
 }
 
@@ -254,6 +296,10 @@ export async function exportCompositeToDocx({
       })
     }
   }
+
+  // 번호 parity — 위젯 카탈로그(ref category 판정용)를 한 번 받아 멤버 보고서별
+  // 번호 계산에 쓴다. 실패해도 export 는 진행(번호만 빠짐).
+  const widgetCatalog = await fetchWidgetCatalog().catch(() => null)
 
   // Total widget count across all resolved items — drives the progress
   // bar at widget granularity (one tick per html2canvas capture / text
@@ -399,6 +445,7 @@ export async function exportCompositeToDocx({
       page_rich_text_prefix_d0: group.report?.page_rich_text_prefix_d0,
       page_rich_text_prefix_d1: group.report?.page_rich_text_prefix_d1,
       page_rich_text_prefix_d2: group.report?.page_rich_text_prefix_d2,
+      page_heading_numbering: group.report?.page_heading_numbering,
     }
     // 안건별 depth-별 글리프. 각 depth 칸이 null 이면 module 기본으로
     // 폴백. 종합 차원의 일괄 override 는 아직 두지 않는다 — 사용자
@@ -408,12 +455,18 @@ export async function exportCompositeToDocx({
       sanitizeDepthGlyph(group.report?.page_rich_text_prefix_d1),
       sanitizeDepthGlyph(group.report?.page_rich_text_prefix_d2),
     ]
+    // 멤버 보고서 단위 번호(그림/표 + 절). renderBlockPieces 가 캡션·제목에 붙인다.
+    const { blockRefIndex, headingNumberIndex } = groupNumbering(
+      group,
+      widgetCatalog,
+    )
     await withOffscreenItemMount(snapshot, async (scopeEl) => {
       // Walk pages → row groups → blocks, same as the report exporter,
       // but scoped to the offscreen container's DOM so block-id
       // lookups don't collide with other reports that may be mounted
       // elsewhere on the page.
-      for (const page of group.pages) {
+      for (let pageIndex = 0; pageIndex < group.pages.length; pageIndex++) {
+        const page = group.pages[pageIndex]
         const tpl = group.templateMap.get(`${page.template_id}@${page.template_version}`)
         if (!tpl) continue
         const blocks = combinedBlocks(tpl, page)
@@ -430,6 +483,9 @@ export async function exportCompositeToDocx({
             const pieces = await renderBlockPieces({
               block: blk,
               page,
+              pageIndex,
+              blockRefIndex,
+              headingNumberIndex,
               sectionItemByCode: sectionLookup,
               maxImageWidthPx: perItemWidthPx,
               scopeEl,
@@ -451,6 +507,9 @@ export async function exportCompositeToDocx({
             const pieces = await renderBlockPieces({
               block,
               page,
+              pageIndex,
+              blockRefIndex,
+              headingNumberIndex,
               sectionItemByCode: sectionLookup,
               maxImageWidthPx: cellWidthPx,
               scopeEl,

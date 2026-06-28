@@ -12,6 +12,16 @@ import {
   DEFAULT_REPORT_GAP_PX,
 } from '@/modules/reports/ReportSettingsDialog'
 import { useSectionTaxonomy } from '@/shared/hooks/useSectionTaxonomy'
+import { useWidgetCatalog } from '@/shared/hooks/useWidgetCatalog'
+import {
+  buildBlockIndex,
+  buildHeadingNumbers,
+  blockRefKey,
+} from '@/shared/reports/blockNumbering'
+import {
+  CurrentBlockRefContext,
+  CurrentBlockHeadingNumberContext,
+} from '@/shared/reports/CurrentBlockRefContext'
 import {
   ReportStyleContext,
   useReportStyleValue,
@@ -88,6 +98,21 @@ function compareRightHighlight(state) {
   return null
 }
 
+/** 보고서의 페이지 배열 — pages 가 비면 레거시 단일 content 를 1페이지로 감싼다.
+ *  렌더 루프와 번호 계산이 같은 목록을 보도록 공유한다(null-safe). */
+function pagesOf(report) {
+  if (!report) return []
+  return Array.isArray(report.pages) && report.pages.length > 0
+    ? report.pages
+    : [
+        {
+          template_id: report.template_id,
+          template_version: report.template_version,
+          content: report.content ?? {},
+        },
+      ]
+}
+
 export function InlineReportView({
   reportId,
   snapshot,
@@ -125,13 +150,69 @@ export function InlineReportView({
       report?.page_rich_text_prefix_d2,
     ],
   })
+  // 번호 parity — 에디터(ReportDetailPage)처럼 그림/표 번호 + 절 번호를 종합보고에도
+  // 보여준다. 보고서 전체(여러 페이지)를 문서 순서로 훑어 한 번 계산하므로, 페이지
+  // 템플릿을 부모에서 모두 해석한다(InlinePage 의 자체 fetch 는 렌더용으로 유지 —
+  // 같은 URL GET 이라 2차 호출은 브라우저 캐시를 탄다). rich_text 개요 번호는 위젯
+  // 자체 계산이라 별도 처리 불필요.
+  const { catalog } = useWidgetCatalog()
+  const { data: templateMap } = useAsync(async () => {
+    const pgs = pagesOf(report)
+    const uniq = new Map()
+    for (const p of pgs) {
+      if (p?.template_id == null) continue
+      uniq.set(`${p.template_id}::${p.template_version}`, p)
+    }
+    if (uniq.size === 0) return {}
+    const entries = await Promise.all(
+      [...uniq.entries()].map(async ([key, p]) => {
+        try {
+          return [key, await getTemplateVersion(p.template_id, p.template_version)]
+        } catch {
+          return [key, null]
+        }
+      }),
+    )
+    return Object.fromEntries(entries)
+  }, [report])
+  const { blockRefIndex, headingNumberIndex } = useMemo(() => {
+    if (!report) return { blockRefIndex: null, headingNumberIndex: null }
+    const ordered = []
+    pagesOf(report).forEach((page, pageIndex) => {
+      const schema =
+        templateMap?.[`${page.template_id}::${page.template_version}`]?.schema
+      // Visual reading order = byRow(combinedBlocks) flattened — exactly what
+      // InlinePage renders, so numbers line up with what the reader sees.
+      const flat = byRow(combinedBlocks(schema, page), page).flatMap((r) =>
+        r.items.map((it) => it.block),
+      )
+      for (const b of flat) {
+        const c = page.content?.[b.id] ?? {}
+        const caption =
+          (c.caption && c.caption.trim()) ||
+          (typeof c.caption_html === 'string'
+            ? c.caption_html.replace(/<[^>]*>/g, '').trim()
+            : '') ||
+          (b.props?.label ?? '')
+        const level =
+          c.level === 1 || c.level === 2 || c.level === 3
+            ? c.level
+            : b.props?.level
+        ordered.push({ id: b.id, type: b.type, caption, pageIndex, level })
+      }
+    })
+    return {
+      blockRefIndex: buildBlockIndex(ordered, catalog),
+      headingNumberIndex: report.page_heading_numbering
+        ? buildHeadingNumbers(ordered)
+        : null,
+    }
+  }, [report, templateMap, catalog])
   if (!snapshot && loading) return <Skeleton className="h-24" />
   if (!snapshot && error)
     return <div className="text-xs text-destructive">{error.message}</div>
   if (!report) return null
-  const pages = Array.isArray(report.pages) && report.pages.length > 0
-    ? report.pages
-    : [{ template_id: report.template_id, template_version: report.template_version, content: report.content ?? {} }]
+  const pages = pagesOf(report)
   // Per-report content width + widget gap — same constraints the report
   // detail page applies. Reports that pre-date these settings fall back
   // to the frontend defaults.
@@ -166,6 +247,8 @@ export function InlineReportView({
             rowGapPx={pageGapPx}
             exposeBlockIds={exposeBlockIds}
             onCopyWidget={onCopyWidget}
+            blockRefIndex={blockRefIndex}
+            headingNumberIndex={headingNumberIndex}
             sourceReportId={report?.id ?? null}
             baselineTakenAt={baselineTakenAt}
             compareDiff={compareDiff}
@@ -185,6 +268,8 @@ function InlinePage({
   rowGapPx,
   exposeBlockIds = true,
   onCopyWidget = null,
+  blockRefIndex = null,
+  headingNumberIndex = null,
   sourceReportId = null,
   baselineTakenAt = null,
   compareDiff = null,
@@ -331,16 +416,31 @@ function InlinePage({
                     복사
                   </button>
                 )}
-                <BlockBody
-                  block={it.block}
-                  content={page.content?.[it.block.id]}
-                  propsOverride={page.props_overrides?.[it.block.id] ?? null}
-                  sectionCode={resolveBlockSection(page, it.block)}
-                  sectionItemByCode={sectionItemByCode}
-                  editorChrome={editorChrome}
-                  autoFit={blockAutoFit}
-                  fillHeight={Boolean(fixedHeight)}
-                />
+                <CurrentBlockRefContext.Provider
+                  value={
+                    blockRefIndex?.get(blockRefKey(index, it.block.id))?.label ??
+                    null
+                  }
+                >
+                  <CurrentBlockHeadingNumberContext.Provider
+                    value={
+                      headingNumberIndex?.get(
+                        blockRefKey(index, it.block.id),
+                      ) ?? null
+                    }
+                  >
+                    <BlockBody
+                      block={it.block}
+                      content={page.content?.[it.block.id]}
+                      propsOverride={page.props_overrides?.[it.block.id] ?? null}
+                      sectionCode={resolveBlockSection(page, it.block)}
+                      sectionItemByCode={sectionItemByCode}
+                      editorChrome={editorChrome}
+                      autoFit={blockAutoFit}
+                      fillHeight={Boolean(fixedHeight)}
+                    />
+                  </CurrentBlockHeadingNumberContext.Provider>
+                </CurrentBlockRefContext.Provider>
               </div>
               )
             })}

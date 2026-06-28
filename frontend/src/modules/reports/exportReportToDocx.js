@@ -36,6 +36,7 @@ import html2canvas from 'html2canvas'
 // 401 retries uniformly.
 import { apiClient } from '@/shared/api/client'
 import { COLOR_TOKENS } from '@/shared/text-color'
+import { blockRefKey, outlineNumbers } from '@/shared/reports/blockNumbering'
 // rt-c-{token} 클래스(현재 색 저장 형식) → 라이트모드 hex(swatch). DOCX 는
 // 문서(밝은 배경)라 라이트 hex 가 적절. walkInline 이 클래스 색을 이걸로 매핑.
 // `기본`(no-color) 토큰은 token=null·swatch=null 이라 매핑에서 제외해야 한다 —
@@ -120,6 +121,11 @@ export async function exportReportToDocx({
   draft,
   pageTemplateMap,
   sectionItemByCode,
+  // 번호 parity — 화면(편집기)에서 계산한 그림/표 번호(blockRefIndex)와 절 번호
+  // (headingNumberIndex)를 그대로 받아 캡션·제목 앞에 붙인다. 없으면(예: 종합보고
+  // 경로) 번호 없이 기존대로.
+  blockRefIndex = null,
+  headingNumberIndex = null,
   onProgress,
   signal,
 }) {
@@ -258,6 +264,9 @@ export async function exportReportToDocx({
         const pieces = await renderBlockPieces({
           block,
           page,
+          pageIndex: pageIdx,
+          blockRefIndex,
+          headingNumberIndex,
           sectionItemByCode,
           maxImageWidthPx: BODY_FULL_WIDTH_PX,
           depthGlyphs,
@@ -295,6 +304,9 @@ export async function exportReportToDocx({
         const pieces = await renderBlockPieces({
           block,
           page,
+          pageIndex: pageIdx,
+          blockRefIndex,
+          headingNumberIndex,
           sectionItemByCode,
           maxImageWidthPx: cellWidthPx,
           depthGlyphs,
@@ -398,6 +410,9 @@ async function convertBlock(block, props, content, opts = {}) {
   // (length 3, `[d0, d1, d2]`). null/missing → falls through to
   // module default DEPTH_PREFIX in convertRichText.
   const depthGlyphs = opts.depthGlyphs ?? null
+  // 번호 parity — 절 번호(heading)·개요 번호(rich_text) on/off.
+  const headingNumber = opts.headingNumber ?? null
+  const outlineNumbering = opts.outlineNumbering === true
   const out = []
 
   // NB: caption emission moved to `renderBlockPieces` — it composes a
@@ -407,10 +422,10 @@ async function convertBlock(block, props, content, opts = {}) {
 
   switch (block.type) {
     case 'heading':
-      out.push(...convertHeading(props, content))
+      out.push(...convertHeading(props, content, headingNumber))
       break
     case 'rich_text':
-      out.push(...convertRichText(content, depthGlyphs))
+      out.push(...convertRichText(content, depthGlyphs, outlineNumbering))
       break
     case 'bulleted_list':
       out.push(...convertBulletedList(content))
@@ -457,6 +472,11 @@ async function convertBlock(block, props, content, opts = {}) {
     }
     case 'attachment':
       out.push(...convertAttachment(content))
+      break
+    // doc_viewer (PDF) — 한 페이지만 캡처하면 오해를 주므로 시각 캡처 대신
+    // 첨부처럼 파일명 텍스트로 표기한다(문서가져오기_설계.md §4.1).
+    case 'doc_viewer':
+      out.push(...convertDocViewer(content))
       break
     // Visual widgets — captured via html2canvas screenshot of their DOM
     // node. Annotation labels (if any) are echoed as plain text after
@@ -543,7 +563,7 @@ async function convertBlock(block, props, content, opts = {}) {
 
 // --- Converters ------------------------------------------------------- //
 
-function convertHeading(props, content) {
+function convertHeading(props, content, headingNumber = null) {
   const text = content?.text ?? props?.default_text ?? ''
   const html = content?.text_html
   const hasRich = typeof html === 'string' && html.replace(/<[^>]*>/g, '').trim()
@@ -559,6 +579,12 @@ function convertHeading(props, content) {
   const children = hasRich
     ? htmlToTextRuns(html, text, { size: TITLE_SIZE, color: '000000' })
     : [new TextRun({ text, size: TITLE_SIZE, color: '000000' })]
+  // 절 번호(page_heading_numbering)가 켜졌으면 제목 앞에 "1.1.1 " prefix.
+  if (headingNumber) {
+    children.unshift(
+      new TextRun({ text: `${headingNumber} `, size: TITLE_SIZE, color: '000000' }),
+    )
+  }
   return [new Paragraph({ heading: headingLevel, children })]
 }
 
@@ -572,7 +598,7 @@ const RT_INDENT_TWIPS_PER_DEPTH = 360 // ~0.25in
 // 만큼 안쪽으로 들어가고, 깊은 depth 는 그 위에 360씩 더 들어감.
 const RT_BASE_INDENT_TWIPS = 360 // ~0.25in
 
-function convertRichText(content, depthGlyphs) {
+function convertRichText(content, depthGlyphs, outlineNumbering = false) {
   // The widget accepts two persisted shapes:
   //   - { items: [{ depth, text, html? }, ...] }  — canonical, what
   //     the TipTap editor writes back on every edit.
@@ -592,13 +618,21 @@ function convertRichText(content, depthGlyphs) {
     const overrideIdx = Math.min(depth, 2)
     return depthGlyphs?.[overrideIdx] || DEPTH_PREFIX[depth] || '·'
   }
-  return items.map((it) => {
+  // 개요 번호가 켜졌으면 글리프 대신 1/1.1/1.1.1 (화면·HTML 과 동일 계산).
+  const nums = outlineNumbering ? outlineNumbers(items) : null
+  return items.map((it, i) => {
     const depth = clamp(it?.depth ?? 0, 0, 5)
-    const prefix = `${glyphFor(depth)} `
+    const prefix = nums
+      ? nums[i]
+        ? `${nums[i]} `
+        : ''
+      : `${glyphFor(depth)} `
     const runs = htmlToTextRuns(it?.html, it?.text ?? '')
-    runs.unshift(
-      new TextRun({ text: prefix, color: '888888', size: BODY_SIZE }),
-    )
+    if (prefix) {
+      runs.unshift(
+        new TextRun({ text: prefix, color: '888888', size: BODY_SIZE }),
+      )
+    }
     return new Paragraph({
       indent: {
         left:
@@ -887,6 +921,19 @@ function convertAttachment(content) {
   )
 }
 
+function convertDocViewer(content) {
+  const name = content?.filename || content?.file_id || ''
+  if (!name) return []
+  const pages = content?.page_count ? ` (${content.page_count}쪽)` : ''
+  return [
+    new Paragraph({
+      children: [
+        new TextRun({ text: `📄 ${name}${pages}`, size: BODY_SIZE }),
+      ],
+    }),
+  ]
+}
+
 // Visual widgets that don't have a clean text representation. We snapshot
 // the currently rendered DOM (the report is in view-mode at this point)
 // with html2canvas and embed the resulting PNG. The captured node has the
@@ -1163,6 +1210,10 @@ export function groupBlocksByRow(blocks, page) {
 export async function renderBlockPieces({
   block,
   page,
+  // 번호 parity — 화면에서 계산한 그림/표·절 번호 맵 + 이 블록의 페이지 인덱스.
+  pageIndex = 0,
+  blockRefIndex = null,
+  headingNumberIndex = null,
   sectionItemByCode,
   maxImageWidthPx,
   // Optional offscreen container to scope visual-block DOM lookup to.
@@ -1208,6 +1259,14 @@ export async function renderBlockPieces({
       : ''
   const caption = captionSkipped ? '' : writerCaption || templateLabel
   const isLongTextWidget = LONG_TEXT_BLOCK_TYPES.has(block.type)
+  // 번호 parity — 이 블록의 그림/표 번호("그림 1") + 절 번호("1.1") + 개요번호 여부.
+  const refKey = blockRefKey(pageIndex, block.id)
+  const blockLabel = blockRefIndex?.get(refKey)?.label ?? null
+  const headingNumber = headingNumberIndex?.get(refKey) ?? null
+  const outlineNumberingOn =
+    content?.outline_numbering != null
+      ? !!content.outline_numbering
+      : !!effectiveProps?.outline_numbering
 
   if (isLongTextWidget) {
     // Long-text widgets retain the combined "[단락구분] : 제목" header
@@ -1245,7 +1304,7 @@ export async function renderBlockPieces({
         alignment: AlignmentType.CENTER,
         children: [
           new TextRun({
-            text: `<${caption}>`,
+            text: blockLabel ? `<${blockLabel}. ${caption}>` : `<${caption}>`,
             bold: true,
             size: 20,
             color: '000000',
@@ -1261,6 +1320,8 @@ export async function renderBlockPieces({
       maxImageWidthPx,
       scopeEl,
       depthGlyphs,
+      headingNumber,
+      outlineNumbering: outlineNumberingOn,
     })
     for (const el of els) out.push(el)
   } catch (err) {

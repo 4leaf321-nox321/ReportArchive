@@ -9,6 +9,7 @@
  *  와 같은 사유.)
  */
 import { COLOR_TOKENS } from '@/shared/text-color'
+import { outlineNumbers } from '@/shared/reports/blockNumbering'
 
 export const NATIVE_TEXT_TYPES = new Set([
   'heading',
@@ -125,21 +126,33 @@ function headingLines(meta) {
   cr.forEach((r) => {
     r.bold = true
   })
+  // 절 번호(page_heading_numbering) — 호출부가 렌더된 DOM 에서 읽어 meta 에 실어
+  // 준다(캡션과 같은 방식). 있으면 제목 앞에 "1.1.1 " prefix.
+  if (meta.headingNumber) {
+    cr.unshift({ text: `${meta.headingNumber} `, bold: true })
+  }
   return [{ charRuns: cr, para: {} }]
 }
 
 function richTextLines(meta) {
   const items = Array.isArray(meta.content?.items) ? meta.content.items : []
+  // 개요 번호 — 위젯 자체계산(content 오버라이드 → props 기본값). 켜졌으면 글리프
+  // 대신 1/1.1/1.1.1 (화면·HTML·DOCX 와 동일 계산).
+  const numberingOn =
+    meta.content?.outline_numbering != null
+      ? !!meta.content.outline_numbering
+      : !!meta.props?.outline_numbering
+  const nums = numberingOn ? outlineNumbers(items) : null
   const lines = []
-  for (const it of items) {
+  items.forEach((it, i) => {
     const text = typeof it?.text === 'string' ? it.text : ''
     const cr = htmlToCharRuns(it?.html, text)
-    if (cr.length === 0) continue
+    if (cr.length === 0) return
     const depth = Math.max(0, Math.min(5, Math.floor(Number(it?.depth) || 0)))
-    const glyph = DEPTH_PREFIX[depth] || '·'
-    const prefix = { text: `${'  '.repeat(depth)}${glyph} `, color: '888888' }
+    const marker = nums ? nums[i] || '' : DEPTH_PREFIX[depth] || '·'
+    const prefix = { text: `${'  '.repeat(depth)}${marker} `, color: '888888' }
     lines.push({ charRuns: [prefix, ...cr], para: {} })
-  }
+  })
   return lines
 }
 

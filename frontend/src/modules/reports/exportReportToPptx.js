@@ -144,7 +144,16 @@ function addCaptionBox(slide, caption, pos, ptPerPx) {
 function tryAddNativeText(slide, meta, content, el, pos, ptPerPx, caption) {
   try {
     const basePx = readBasePx(el) ?? 18
-    const runs = buildPptxText({ type: meta.type, props: meta.props, content }, { ptPerPx, basePx })
+    // 절 번호 — 렌더된 heading DOM 의 [data-heading-number] 를 읽어 넘긴다(캡션과
+    // 동일하게 화면 계산 결과를 그대로 사용 → PPTX 에 별도 index 계산 불필요).
+    const headingNumber =
+      meta.type === 'heading'
+        ? el?.querySelector?.('[data-heading-number]')?.textContent?.trim() || null
+        : null
+    const runs = buildPptxText(
+      { type: meta.type, props: meta.props, content, headingNumber },
+      { ptPerPx, basePx },
+    )
     const capH = addCaptionBox(slide, caption, pos, ptPerPx)
     // 헤더가 아래면 본문은 위에서 시작, 위면 캡션 높이만큼 내려서 시작.
     const bodyY = caption?.below ? pos.y : pos.y + capH

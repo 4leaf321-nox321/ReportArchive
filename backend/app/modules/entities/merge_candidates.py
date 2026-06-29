@@ -233,7 +233,6 @@ def validate_cluster(db: Session, type_id: int, entity_ids: list[int]) -> dict:
     반환: {backend, duplicate_ids, canonical_id, outlier_ids, reason}.
       mock 백엔드면 verdict 없음(backend='mock', 나머지 None)."""
     import json
-    import re
 
     etype = db.get(EntityType, type_id)
     if etype is None:
@@ -253,6 +252,7 @@ def validate_cluster(db: Session, type_id: int, entity_ids: list[int]) -> dict:
             "reason": "LLM 미연결(mock) — 사람이 직접 판단하세요.",
         }
 
+    from app.ai.jsonio import extract_json
     from app.ai.llm import LLMError, chat
 
     by_value = {e.value: e.id for e in ents}
@@ -281,18 +281,15 @@ def validate_cluster(db: Session, type_id: int, entity_ids: list[int]) -> dict:
             [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
-            ]
+            ],
+            json_mode=True,
         )
     except LLMError as exc:
         raise ValueError(f"LLM 호출 실패: {exc}") from exc
 
-    m = re.search(r"\{.*\}", res.content or "", re.DOTALL)
-    if not m:
-        raise ValueError("LLM 응답에서 JSON 을 찾지 못했습니다.")
-    try:
-        parsed = json.loads(m.group(0))
-    except (json.JSONDecodeError, ValueError) as exc:
-        raise ValueError(f"LLM 응답 파싱 실패: {exc}") from exc
+    parsed = extract_json(res.content)
+    if parsed is None:
+        raise ValueError("LLM 응답에서 유효한 JSON 을 찾지 못했습니다.")
 
     # 값 문자열 → id 매핑(정확 일치 → 대소문자 무시 폴백). 모르는 값은 무시.
     lower_map = {v.lower(): vid for v, vid in by_value.items()}

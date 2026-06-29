@@ -138,6 +138,14 @@ class Settings(BaseSettings):
     # 을 틀리면 에러를 돌려주고 고쳐서 재요청 — 작은 로컬 모델 성공률 보강. 1=재시도
     # 없음. .env(LLM_AUTHOR_MAX_ATTEMPTS)로 조절.
     llm_author_max_attempts: int = Field(default=3, ge=1, le=6)
+    # 보고서 작성(C) 전용 토큰 한도 — 보고서 JSON(여러 위젯+긴 본문)은 일반 호출용
+    # llm_max_tokens(1024) 로는 쉽게 잘려(finish_reason=length) 미완 JSON → 파싱
+    # 실패가 매번 반복된다. 작성은 별도로 크게 잡는다. .env(LLM_AUTHOR_MAX_TOKENS).
+    llm_author_max_tokens: int = Field(default=8192, ge=1024)
+    # 작성 호출에 JSON 출력 모드 사용(openai=response_format json_object, ollama=
+    # format:json). 서버가 거부하면 .env(LLM_AUTHOR_JSON_MODE=false)로 끄고 관대한
+    # 파서에 맡긴다. 기본 ON — 형식 일탈을 서버단에서 막는 가장 확실한 수단.
+    llm_author_json_mode: bool = Field(default=True)
     # B300 은 폐쇄망 내부 직결 — httpx 가 호스트의 HTTP_PROXY/HTTPS_PROXY env 를 집어
     # 내부 주소까지 프록시로 보내면 404(curl 은 --noproxy 로 우회). 기본 True = 프록시
     # 우회(trust_env=False). 외부 OpenAI 등 프록시 경유가 필요한 환경이면 .env 로 false.

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Sparkles, AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
 import {
@@ -25,13 +25,20 @@ import { llmAuthorReport } from '@/modules/reports/api'
 export function LlmAuthorDialog({ reportId, editing = false, onClose, onDone }) {
   const [instructions, setInstructions] = useState('')
   const [busy, setBusy] = useState(false)
+  // 진행 중인 요청을 끊기 위한 컨트롤러 — "중단" 시 abort 하면 서버도 LLM 생성을 멈춘다.
+  const abortRef = useRef(null)
 
   async function handleSubmit() {
     const text = instructions.trim()
     if (text.length < 2 || busy) return
+    const controller = new AbortController()
+    abortRef.current = controller
     setBusy(true)
     try {
-      const res = await llmAuthorReport(reportId, { instructions: text })
+      const res = await llmAuthorReport(reportId, {
+        instructions: text,
+        signal: controller.signal,
+      })
       const warnings = res?.warnings ?? []
       toast.success(
         warnings.length
@@ -41,18 +48,33 @@ export function LlmAuthorDialog({ reportId, editing = false, onClose, onDone }) 
       onDone?.()
       onClose?.()
     } catch (e) {
-      toast.error(
-        e?.response?.data?.message ||
-          e?.message ||
-          'AI 작성에 실패했습니다.',
-      )
+      // 사용자가 중단(abort)한 경우는 에러가 아니라 정상 취소 — 토스트만 안내.
+      if (e?.code === 'ERR_CANCELED' || e?.name === 'CanceledError') {
+        toast.info('AI 작성을 중단했습니다.')
+      } else {
+        toast.error(
+          e?.response?.data?.message ||
+            e?.message ||
+            'AI 작성에 실패했습니다.',
+        )
+      }
     } finally {
+      abortRef.current = null
       setBusy(false)
     }
   }
 
+  function handleCancel() {
+    // 진행 중이면 요청을 끊는다(서버가 연결 끊김을 감지해 생성 중단). 아니면 모달만 닫음.
+    if (busy && abortRef.current) {
+      abortRef.current.abort()
+    } else {
+      onClose?.()
+    }
+  }
+
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose?.()}>
+    <Dialog open onOpenChange={(o) => !o && handleCancel()}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -90,8 +112,8 @@ export function LlmAuthorDialog({ reportId, editing = false, onClose, onDone }) 
         />
 
         <DialogFooter>
-          <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
-            취소
+          <Button variant="ghost" size="sm" onClick={handleCancel}>
+            {busy ? '중단' : '취소'}
           </Button>
           <Button
             size="sm"

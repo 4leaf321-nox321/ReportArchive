@@ -91,7 +91,7 @@ def test_chat_openai_builds_body_and_sends_reasoning(monkeypatch):
                 "usage": {"total_tokens": 3},
             }
 
-    def fake_post(url, json=None, headers=None, timeout=None):
+    def fake_post(url, json=None, headers=None, timeout=None, **kwargs):
         captured["url"] = url
         captured["json"] = json
         captured["headers"] = headers
@@ -118,3 +118,62 @@ def test_chat_openai_http_error_wrapped(monkeypatch):
     monkeypatch.setattr(llm.httpx, "post", boom)
     with pytest.raises(LLMError, match="호출 실패"):
         chat([{"role": "user", "content": "hi"}])
+
+
+def test_chat_openai_json_mode_falls_back_on_400(monkeypatch):
+    """response_format 미지원 서버(400)면 그 옵션만 빼고 1회 재시도해 성공한다."""
+    monkeypatch.setattr(llm.settings, "llm_backend", "openai")
+    monkeypatch.setattr(llm.settings, "llm_base_url", "http://stub:9001/v1")
+
+    calls = []
+
+    class _OK:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": "{}"}}]}
+
+    class _Resp400:
+        status_code = 400
+
+    def fake_post(url, json=None, headers=None, timeout=None, **kwargs):
+        calls.append(dict(json or {}))  # 스냅샷 — 호출부가 같은 dict 를 mutate 함
+        if "response_format" in (json or {}):
+            raise llm.httpx.HTTPStatusError(
+                "bad request", request=None, response=_Resp400()
+            )
+        return _OK()
+
+    monkeypatch.setattr(llm.httpx, "post", fake_post)
+
+    res = chat([{"role": "user", "content": "hi"}], json_mode=True)
+    assert res.content == "{}"
+    assert len(calls) == 2  # 1차(json_mode) 400 → 2차(옵션 제거) 성공
+    assert "response_format" in calls[0]
+    assert "response_format" not in calls[1]
+
+
+def test_chat_openai_context_overflow_raises_context_error(monkeypatch):
+    """컨텍스트 초과 400(본문에 'maximum context length')은 LLMContextError 로 올라
+    재시도 없이 끝난다 — response_format 폴백과 구분."""
+    from app.ai.llm import LLMContextError
+
+    monkeypatch.setattr(llm.settings, "llm_backend", "openai")
+    monkeypatch.setattr(llm.settings, "llm_base_url", "http://stub:9001/v1")
+
+    calls = []
+
+    class _Resp400:
+        status_code = 400
+        text = "This model's maximum context length is 4096 tokens."
+
+    def fake_post(url, json=None, headers=None, timeout=None, **kwargs):
+        calls.append(dict(json or {}))
+        raise llm.httpx.HTTPStatusError("bad", request=None, response=_Resp400())
+
+    monkeypatch.setattr(llm.httpx, "post", fake_post)
+
+    with pytest.raises(LLMContextError):
+        chat([{"role": "user", "content": "hi"}], json_mode=True)
+    assert len(calls) == 1  # 컨텍스트 초과는 폴백 재시도 안 함

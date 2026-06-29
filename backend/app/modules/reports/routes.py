@@ -1,7 +1,9 @@
 """Report routes — CRUD scoped to the actor's workspace tree."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -40,6 +42,7 @@ from app.shared.responses import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _read_with_perms(db: Session, actor: CurrentUser, report) -> ReportRead:
@@ -1062,9 +1065,10 @@ class LlmAuthorRequest(BaseModel):
 
 
 @router.post("/{report_id}/llm-author")
-def llm_author_report(
+async def llm_author_report(
     report_id: int,
     payload: LlmAuthorRequest,
+    request: Request,
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
@@ -1073,13 +1077,24 @@ def llm_author_report(
     적용 파이프라인(update_ai_draft)으로 흘려보낸다(정규화·검증 재사용).
 
     게이트: report_authoring 엔티틀먼트(§E). 본인 소유·drafting 제약은
-    update_ai_draft 가 재확인(=본인 작성 중 보고서만). LLM 실패는 502."""
-    import json
-    import re
+    update_ai_draft 가 재확인(=본인 작성 중 보고서만). LLM 실패는 502.
 
+    프론트가 요청을 abort 하면 연결이 끊겨(request.is_disconnected) 생성을 즉시
+    중단한다(스트리밍 중 매 청크·재시도 사이 확인) — 업스트림 LLM 연결도 닫혀
+    GPU 가 풀린다. 재시도 루프도 끊김 즉시 빠져나온다."""
+    import json
     from app.ai.entitlements import ai_enabled_for
-    from app.ai.llm import LLMError, chat
+    from app.ai.jsonio import extract_json
+    from app.ai.llm import LLMCancelled, LLMContextError, LLMError, chat_cancellable
     from app.config import settings
+
+    # 토큰(컨텍스트) 초과로 더 못 만드는 상황을 사용자에게 그대로 알리는 안내문.
+    # 일반 사용자는 .env 를 못 바꾸므로 "더 짧게/관리자 요청" 쪽으로 안내한다.
+    token_limit_msg = (
+        "AI가 만들 내용이 모델의 토큰(컨텍스트) 한도를 초과했습니다. "
+        "보고서를 더 짧게 나눠 작성하거나, 관리자에게 모델 토큰 한도 확대를 "
+        "요청하세요."
+    )
 
     if not ai_enabled_for(db, actor.user, "report_authoring"):
         raise HTTPException(
@@ -1162,6 +1177,9 @@ def llm_author_report(
     max_attempts = max(1, settings.llm_author_max_attempts)
     last_error = "알 수 없는 오류"
     for attempt in range(1, max_attempts + 1):
+        # 재시도 사이에서도 중단을 즉시 반영(끊겼으면 다음 LLM 호출 안 함).
+        if await request.is_disconnected():
+            return error_response("AI 작성이 취소되었습니다.", status_code=499)
         user_msg = payload.instructions
         if attempt > 1:
             user_msg += (
@@ -1170,23 +1188,53 @@ def llm_author_report(
                 "정확히 지키고, 코드블록 없이 JSON 객체만 출력하세요."
             )
         try:
-            res = chat(
+            res = await chat_cancellable(
                 [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user_msg},
-                ]
+                ],
+                # 보고서 JSON 은 길다 — 일반 한도(1024)면 잘려서 미완 JSON → 파싱
+                # 실패가 매번 반복. 작성 전용 한도로 크게 잡는다.
+                max_tokens=settings.llm_author_max_tokens,
+                # 유효 JSON 출력 강제(서버가 지원하면 형식 일탈을 원천 차단).
+                json_mode=settings.llm_author_json_mode,
+                # 프론트 abort → 연결 끊김 → 생성 즉시 중단(GPU 해제).
+                should_cancel=request.is_disconnected,
             )
+        except LLMCancelled:
+            return error_response("AI 작성이 취소되었습니다.", status_code=499)
+        except LLMContextError as exc:
+            # 요청이 컨텍스트를 넘어 서버가 거부 — 같은 입력 재시도해도 동일하므로
+            # 즉시 멈추고 '토큰 초과'를 사용자에게 알린다(상세는 로그로).
+            logger.warning(
+                "llm-author 토큰(컨텍스트) 초과 (report=%s): %s", report_id, exc
+            )
+            return error_response(token_limit_msg, status_code=502)
         except LLMError as exc:
             return error_response(f"AI 작성 실패(LLM 호출): {exc}", status_code=502)
 
-        m = re.search(r"\{.*\}", res.content or "", re.DOTALL)
-        if not m:
-            last_error = "응답에서 JSON 객체를 찾지 못함."
-            continue
-        try:
-            parsed = json.loads(m.group(0))
-        except (json.JSONDecodeError, ValueError) as exc:
-            last_error = f"JSON 파싱 실패: {exc}"
+        finish_reason = getattr(res, "finish_reason", None)
+        truncated = (finish_reason or "").lower() == "length"
+        parsed = extract_json(res.content)
+
+        # 출력이 토큰 한도에서 잘리면(finish_reason=length) JSON 이 미완성이라
+        # 형식 피드백 재시도는 무의미 — 즉시 멈추고 '토큰 초과'를 사용자에게 알린다.
+        # (단, 잘렸어도 파서가 살려냈으면 그대로 진행한다 — 부분이라도 적용.)
+        if truncated and parsed is None:
+            preview = (res.content or "")[:500].replace("\n", " ")
+            logger.warning(
+                "llm-author 출력 잘림 (report=%s, attempt=%s): %s",
+                report_id, attempt, preview,
+            )
+            return error_response(token_limit_msg, status_code=502)
+
+        if parsed is None:
+            preview = (res.content or "")[:500].replace("\n", " ")
+            logger.warning(
+                "llm-author JSON 파싱 실패 (report=%s, attempt=%s, finish=%s): %s",
+                report_id, attempt, finish_reason, preview,
+            )
+            last_error = "응답에서 유효한 JSON 객체를 찾지 못함."
             continue
 
         # 위젯을 하나도 안 만든 degenerate 응답(제목만) — blocks·extra_blocks 가

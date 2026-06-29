@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import re
 
+from typing import Optional
+
 from sqlalchemy.orm import Session
 
 from app.ai import search as ai_search
-from app.ai.llm import chat
+from app.ai.llm import CancelCheck, chat, chat_cancellable
 from app.config import settings
 
 # 컨텍스트 토큰 폭주 방지 — 출처 1개당 본문 길이 상한(문자).
@@ -29,14 +31,17 @@ _SYSTEM = (
 _CITE_RE = re.compile(r"\[(\d+)\]")
 
 
-def ask_archive(db: Session, actor, query: str, *, limit: int = 8) -> dict:
-    """질문 → {answer, citations, no_evidence, ...}. actor 는 검색 권한 scope 용
-    (.user.id 기반 가시 보고서). 기능 권한 게이트는 호출부에서 이미 통과."""
+def _retrieve(db: Session, actor, query: str, *, limit: int):
+    """질문 → (질문문, citations, blocks) 또는 근거 없음 dict.
+
+    검색(semantic_search) 결과를 번호 출처 블록·citations 메타로 가공한다.
+    동기/비동기 ask 양쪽이 공유한다. 근거가 약하면 곧장 no_evidence dict 를
+    반환하고, 충분하면 (q, citations, blocks) 튜플을 준다."""
     q = (query or "").strip()
     if not q:
         return {"answer": "", "citations": [], "no_evidence": True}
 
-    # 1) 검색 — 청크 전문(snippet_chars=None) + 근거 가드 임계(min_score 재사용).
+    # 청크 전문(snippet_chars=None) + 근거 가드 임계(min_score 재사용).
     hits = ai_search.semantic_search(
         db,
         q,
@@ -52,7 +57,6 @@ def ask_archive(db: Session, actor, query: str, *, limit: int = 8) -> dict:
             "no_evidence": True,
         }
 
-    # 2) 번호 출처 블록 + citations 메타(프론트 클릭 점프용).
     citations, blocks = [], []
     for i, h in enumerate(hits, start=1):
         full = h.get("snippet") or ""
@@ -69,27 +73,57 @@ def ask_archive(db: Session, actor, query: str, *, limit: int = 8) -> dict:
                 "snippet": full[:200],
             }
         )
+    return q, citations, blocks
 
+
+def _qa_messages(q: str, blocks: list[str]) -> list[dict]:
     user_msg = "[출처]\n" + "\n\n".join(blocks) + f"\n\n질문: {q}"
+    return [
+        {"role": "system", "content": _SYSTEM},
+        {"role": "user", "content": user_msg},
+    ]
 
-    # 3) LLM 호출 — 실패(LLMError)는 위로 전파(라우트가 502). 검색·앱은 무영향.
-    res = chat(
-        [
-            {"role": "system", "content": _SYSTEM},
-            {"role": "user", "content": user_msg},
-        ]
-    )
-    answer = res.content or ""
 
-    # 4) 답변에 실제 인용된 번호만 표시용 마킹(LLM 이 누락/오기해도 출처는 전부 반환).
-    used = {int(n) for n in _CITE_RE.findall(answer)}
+def _finalize(answer: str, citations: list[dict], res) -> dict:
+    # 답변에 실제 인용된 번호만 표시용 마킹(LLM 이 누락/오기해도 출처는 전부 반환).
+    used = {int(n) for n in _CITE_RE.findall(answer or "")}
     for c in citations:
         c["used"] = c["n"] in used
-
     return {
-        "answer": answer,
+        "answer": answer or "",
         "citations": citations,
         "no_evidence": False,
         "model": res.model,
         "backend": res.backend,
     }
+
+
+def ask_archive(db: Session, actor, query: str, *, limit: int = 8) -> dict:
+    """질문 → {answer, citations, no_evidence, ...}. actor 는 검색 권한 scope 용
+    (.user.id 기반 가시 보고서). 기능 권한 게이트는 호출부에서 이미 통과."""
+    retrieved = _retrieve(db, actor, query, limit=limit)
+    if isinstance(retrieved, dict):
+        return retrieved
+    q, citations, blocks = retrieved
+    # LLM 호출 — 실패(LLMError)는 위로 전파(라우트가 502). 검색·앱은 무영향.
+    res = chat(_qa_messages(q, blocks))
+    return _finalize(res.content or "", citations, res)
+
+
+async def ask_archive_cancellable(
+    db: Session,
+    actor,
+    query: str,
+    *,
+    limit: int = 8,
+    should_cancel: Optional[CancelCheck] = None,
+) -> dict:
+    """ask_archive 의 비동기·취소 가능 버전(라우트가 클라이언트 연결 끊김을
+    should_cancel 로 넘긴다). 검색은 동기지만 짧고, 긴 LLM 생성만 스트리밍해
+    중간 취소된다. 결과 형태는 ask_archive 와 동일."""
+    retrieved = _retrieve(db, actor, query, limit=limit)
+    if isinstance(retrieved, dict):
+        return retrieved
+    q, citations, blocks = retrieved
+    res = await chat_cancellable(_qa_messages(q, blocks), should_cancel=should_cancel)
+    return _finalize(res.content or "", citations, res)

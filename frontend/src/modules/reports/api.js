@@ -212,14 +212,19 @@ export async function applyAiSummary(
  * instructions=작성할 내용 지시. 본인 작성 중(drafting) 보고서에 적용. 성공 시
  * 보고서가 갱신되므로 호출부가 reload 해야 한다.
  */
-export async function llmAuthorReport(id, { instructions, page = 1 } = {}) {
+export async function llmAuthorReport(
+  id,
+  { instructions, page = 1, signal } = {},
+) {
   // LLM 생성은 느리다(특히 CPU 백엔드 + 형식 실패 시 자동 재시도 — 백엔드
   // llm_timeout_s × llm_author_max_attempts 까지). 공유 클라이언트 기본 60초로는
   // 끊기므로 이 호출만 길게(10분) 잡는다.
+  // signal: AbortController.signal — 사용자가 "중단"하면 요청을 끊고, 서버도
+  // 연결 끊김을 감지해 LLM 생성을 멈춘다.
   const res = await apiClient.post(
     `${BASE}/${id}/llm-author`,
     { instructions, page },
-    { timeout: 600000 },
+    { timeout: 600000, signal },
   )
   return extractData(res)
 }

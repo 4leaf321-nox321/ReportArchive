@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.ai.llm import LLMError, chat, list_models
+from app.ai.llm import LLMCancelled, LLMError, chat, list_models
 from app.ai.models import AiEntitlement, AiFeature, AiSubjectKind
 from app.config import settings
 from app.database import get_db
@@ -115,8 +115,9 @@ class AskPayload(BaseModel):
 
 
 @router.post("/ask")
-def ask(
+async def ask(
     payload: AskPayload,
+    request: Request,
     actor=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -124,7 +125,10 @@ def ask(
 
     기능 게이트(§E): 'rag_qa' 엔티틀먼트 없으면 403. 데이터 권한은 검색 scope 가
     이미 보장(권한 밖 보고서는 인용 불가). 근거 약하면 LLM 미호출(환각 방지),
-    LLM 실패는 502(검색·앱 무영향)."""
+    LLM 실패는 502(검색·앱 무영향).
+
+    프론트가 요청을 abort 하면 연결이 끊겨(request.is_disconnected) 생성을 즉시
+    중단한다 — 업스트림 LLM 연결도 닫혀 GPU 가 풀린다."""
     # 지연 import — entitlements(↔users) 모듈 로드 순환 회피.
     from app.ai import qa
     from app.ai.entitlements import ai_enabled_for
@@ -134,7 +138,13 @@ def ask(
             status.HTTP_403_FORBIDDEN, "AI 질문하기 권한이 없습니다."
         )
     try:
-        data = qa.ask_archive(db, actor, payload.query, limit=payload.limit)
+        data = await qa.ask_archive_cancellable(
+            db, actor, payload.query, limit=payload.limit,
+            should_cancel=request.is_disconnected,
+        )
+    except LLMCancelled:
+        # 사용자가 중단 — 클라이언트는 이미 떠났으므로 응답 본문은 사실상 버려진다.
+        return error_response("AI 응답이 취소되었습니다.", status_code=499)
     except LLMError as exc:
         return error_response(f"AI 응답 실패: {exc}", status_code=502)
     return success_response(data=data)

@@ -195,23 +195,38 @@ export default function SearchPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debounced, offset, entityKey, entityRollup, useEntityFilter, year])
 
+  // 진행 중인 질문 요청을 끊기 위한 컨트롤러 — "중단" 시 abort 하면 서버도 LLM 생성 멈춤.
+  const askAbortRef = useRef(null)
+
   const submitAsk = useCallback(async () => {
     const q = input.trim()
     if (q.length < 2 || askLoading) return
+    const controller = new AbortController()
+    askAbortRef.current = controller
     setAskLoading(true)
     setAskError(null)
     try {
-      const res = await askAi({ query: q })
+      const res = await askAi({ query: q, signal: controller.signal })
       setAskResult(res)
     } catch (e) {
-      setAskError(
-        e?.response?.data?.message || e?.message || '질문 처리에 실패했습니다.',
-      )
-      setAskResult(null)
+      // 사용자가 중단(abort)한 경우는 에러로 표시하지 않는다.
+      if (e?.code === 'ERR_CANCELED' || e?.name === 'CanceledError') {
+        setAskError(null)
+      } else {
+        setAskError(
+          e?.response?.data?.message || e?.message || '질문 처리에 실패했습니다.',
+        )
+        setAskResult(null)
+      }
     } finally {
+      askAbortRef.current = null
       setAskLoading(false)
     }
   }, [input, askLoading])
+
+  const cancelAsk = useCallback(() => {
+    askAbortRef.current?.abort()
+  }, [])
 
   const results = data?.results ?? []
   const total = data?.total ?? 0
@@ -279,8 +294,11 @@ export default function SearchPage() {
       {isAsk && (
         <div className="mt-1">
           {askLoading && (
-            <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
+            <div className="flex items-center gap-3 py-10 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" /> 답변 생성 중…
+              <Button variant="outline" size="sm" onClick={cancelAsk}>
+                중단
+              </Button>
             </div>
           )}
           {!askLoading && askError && (

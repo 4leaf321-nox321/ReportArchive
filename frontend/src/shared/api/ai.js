@@ -27,8 +27,10 @@ export async function chatAiDiag({ prompt, reasoningEffort = null }) {
  *     no_evidence, model, backend }
  * 'rag_qa' 엔티틀먼트 없으면 403, 근거 약하면 no_evidence=true.
  */
-export async function askAi({ query, limit = 8 }) {
-  const res = await apiClient.post('/api/ai/ask', { query, limit })
+export async function askAi({ query, limit = 8, signal } = {}) {
+  // signal: AbortController.signal — 사용자가 "중단"하면 요청을 끊고, 서버도
+  // 연결 끊김을 감지해 LLM 생성을 멈춘다.
+  const res = await apiClient.post('/api/ai/ask', { query, limit }, { signal })
   return extractData(res)
 }
 

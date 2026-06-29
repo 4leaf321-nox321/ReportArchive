@@ -412,6 +412,11 @@ class ReportSummary(BaseModel):
     # "내 스코프 밖 + 공개라서 끼어든" 보고서 행을 라우트가 표시한다 — 목록이
     # 자기 게시판 분과 섞이지 않게 프런트가 뱃지/구분을 그린다. 기본 목록은 0.
     is_external_public: bool = False
+    # B300 자동 요약(§B) 존재 여부 + 요약문 — 목록 "상태" 칸의 ✨ 칩으로 노출.
+    # 라우트가 report_ai_summaries 를 한 번에 LEFT JOIN(후처리)해 채운다. 요약이
+    # 짧아(2~3문장) 본문을 그대로 실어 칩 호버에 추가 요청 없이 보여준다. 기본 0.
+    has_ai_summary: bool = False
+    ai_summary: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod

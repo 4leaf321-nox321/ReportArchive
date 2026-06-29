@@ -59,6 +59,7 @@ import {
 } from './api'
 import { setMountFolder } from '@/shared/api/mounts'
 import { BulkSubmitToCompositeDialog } from '@/modules/composites/SubmitToCompositeDialog'
+import { AiSummaryListChip } from './AiSummaryListChip'
 import { BulkSuggestEntitiesDialog } from './BulkSuggestEntitiesDialog'
 
 /** MIME type carried by a report-row drag. FolderSidebar checks for this
@@ -697,11 +698,14 @@ export default function ReportsListPage() {
       key: 'phase',
       header: '상태',
       sortable: true,
-      headerClassName: 'w-[88px]',
+      headerClassName: 'w-[110px]',
       render: (r) => (
-        <Badge variant={PHASE_VARIANT[r.phase] ?? 'secondary'}>
-          {PHASE_LABEL[r.phase] ?? r.phase}
-        </Badge>
+        <div className="flex items-center gap-1">
+          <Badge variant={PHASE_VARIANT[r.phase] ?? 'secondary'}>
+            {PHASE_LABEL[r.phase] ?? r.phase}
+          </Badge>
+          {r.has_ai_summary && <AiSummaryListChip summary={r.ai_summary} />}
+        </div>
       ),
     },
     {

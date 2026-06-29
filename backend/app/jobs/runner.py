@@ -31,11 +31,13 @@ class Worker:
         poll_ms: int = 1000,
         reap_interval_s: int = 60,
         reap_timeout_s: int = DEFAULT_REAP_TIMEOUT_S,
+        heartbeat_interval_s: int = 10,
     ) -> None:
         self.concurrency = max(1, concurrency)
         self.poll_s = max(0.05, poll_ms / 1000.0)
         self.reap_interval_s = reap_interval_s
         self.reap_timeout_s = reap_timeout_s
+        self.heartbeat_interval_s = heartbeat_interval_s
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._id_base = f"{os.uname().nodename}:{os.getpid()}"
@@ -46,16 +48,18 @@ class Worker:
             "worker start — concurrency=%d poll=%.2fs reap_timeout=%ds",
             self.concurrency, self.poll_s, self.reap_timeout_s,
         )
-        # 부팅 시 좀비 한 번 회수(이전 크래시 잔재).
+        # 부팅 시 좀비 한 번 회수(이전 크래시 잔재) + 생존 신호 1회.
         self._reap_once()
+        self._heartbeat_once()
 
         for i in range(self.concurrency):
             t = threading.Thread(target=self._loop, args=(i,), name=f"job-w{i}", daemon=True)
             t.start()
             self._threads.append(t)
 
-        # 메인 스레드 = 주기 reaper + shutdown 대기.
+        # 메인 스레드 = 주기 reaper + 하트비트 + shutdown 대기.
         last_reap = time.monotonic()
+        last_beat = time.monotonic()
         while not self._stop.is_set():
             self._stop.wait(timeout=1.0)
             if self._stop.is_set():
@@ -63,6 +67,9 @@ class Worker:
             if time.monotonic() - last_reap >= self.reap_interval_s:
                 self._reap_once()
                 last_reap = time.monotonic()
+            if time.monotonic() - last_beat >= self.heartbeat_interval_s:
+                self._heartbeat_once()
+                last_beat = time.monotonic()
 
         logger.info("worker stopping — draining in-flight jobs…")
         for t in self._threads:
@@ -81,6 +88,22 @@ class Worker:
                 logger.warning("reaped %d stuck job(s)", n)
         except Exception:  # noqa: BLE001
             logger.exception("reaper error")
+            session.rollback()
+        finally:
+            session.close()
+
+    def _heartbeat_once(self) -> None:
+        """생존 신호 upsert — 관리자 "작업 큐" 탭의 워커 상태 표시용. 실패해도
+        잡 처리엔 영향 없으니 조용히 흡수(로그만)."""
+        session = SessionLocal()
+        try:
+            queue.touch_heartbeat(
+                session,
+                self._id_base,
+                meta={"concurrency": self.concurrency, "poll_s": self.poll_s},
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("heartbeat error")
             session.rollback()
         finally:
             session.close()

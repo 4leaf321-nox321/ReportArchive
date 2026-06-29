@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from app.jobs.admin_routes import router as jobs_admin_router
 from app.jobs.routes import router as jobs_router
 from app.modules.admin.routes import router as admin_router
 from app.modules.ai.routes import router as ai_router
@@ -133,5 +134,11 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(activities_router, prefix="/api", tags=["activities"])
     # 통합 공유(grant) — /api/{reports|composites}/{id}/shares.
     app.include_router(grants_router, prefix="/api", tags=["grants"])
-    # 백그라운드 작업 큐 — 상태 폴링(읽기 전용). 적재는 각 도메인 라우트가 직접.
+    # 백그라운드 작업 큐 — 운영(관리자) 라우트를 폴링 라우트보다 *먼저* 등록해야
+    # "/api/jobs/admin" 이 jobs_router 의 GET /{job_id} 로 새지 않는다(라우트 매칭
+    # 은 등록 순서). 관리자: 통계·헬스·재시도·취소·정리.
+    app.include_router(
+        jobs_admin_router, prefix="/api/jobs/admin", tags=["jobs-admin"]
+    )
+    # 상태 폴링(읽기 전용, 본인 잡). 적재는 각 도메인 라우트가 직접.
     app.include_router(jobs_router, prefix="/api/jobs", tags=["jobs"])

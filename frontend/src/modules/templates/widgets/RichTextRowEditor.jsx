@@ -318,6 +318,17 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
     },
     onFocus: () => onFocusRef.current?.(),
     onBlur: ({ editor }) => {
+      // 포커스가 빠질 때(특히 한글 IME 조합을 마치고 다른 창/프로그램으로 전환)
+      // 마지막 입력이 부모 state 로 아직 안 올라갔을 수 있다. blur 시 현재 에디터
+      // 내용을 한 번 더 onChange 로 흘려 "마지막 글자 유실"을 막는다. 이미 같은
+      // 내용이 올라가 있으면(externalHtmlRef 일치) 건너뛴다(중복 커밋 방지).
+      if (editor && !editor.isDestroyed && !suppressUpdateRef.current) {
+        const nextHtml = editor.getHTML()
+        if (nextHtml !== externalHtmlRef.current) {
+          externalHtmlRef.current = nextHtml
+          onChangeRef.current?.(nextHtml, editor.getText())
+        }
+      }
       onBlurRef.current?.()
       // 셀 밖/다른 셀로 포커스가 빠지면 남아 있던 텍스트 선택을 접어 버블
       // 메뉴(서식 팔렛)를 닫는다 — 안 그러면 셀마다 에디터가 선택을 그대로
@@ -339,6 +350,11 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
     if (!editor) return
     const incoming = html || '<p></p>'
     if (externalHtmlRef.current === incoming) return
+    // IME 조합 중엔 setContent 가 조합을 끊어 조합 중이던 마지막 글자를 날린다
+    // (ProseMirror 도 조합 중 DOM 변경을 피한다). 조합이 끝날 때까지 재시드를
+    // 미룬다 — externalHtmlRef 를 갱신하지 않으므로, 조합 종료 후 onUpdate 가
+    // 최신 html 을 올리면 이 효과가 다시 평가돼 자연스레 일치(재시드 불필요)한다.
+    if (editor.view?.composing) return
     externalHtmlRef.current = incoming
     editor.commands.setContent(incoming, { emitUpdate: false })
   }, [html, editor])

@@ -83,6 +83,33 @@ def _read_with_perms(db: Session, actor: CurrentUser, report) -> ReportRead:
     return obj
 
 
+def _ai_summary_map(db: Session, reports: list) -> dict[int, str]:
+    """주어진 보고서들의 B300 자동 요약(§B)을 한 번에 조회 → {report_id: 요약문}.
+
+    목록 "상태" 칸의 ✨ 칩용. 행마다 따로 부르지 않고 (report_id IN ...) 한 쿼리로
+    묶는다. 빈 요약(summary='')은 '없음'으로 간주해 제외 — 프런트 칩 표시 기준과
+    일치(요약 텍스트가 있을 때만 칩)."""
+    from app.ai.models import ReportAiSummary
+
+    ids = [r.id for r in reports]
+    if not ids:
+        return {}
+    rows = db.execute(
+        select(ReportAiSummary.report_id, ReportAiSummary.summary)
+        .where(ReportAiSummary.report_id.in_(ids))
+        .where(ReportAiSummary.summary != "")
+    ).all()
+    return {rid: text for rid, text in rows}
+
+
+def _apply_ai_summary(summary: ReportSummary, report_id: int, ai_map: dict) -> None:
+    """_ai_summary_map 결과를 ReportSummary 행에 반영(있으면 플래그+요약문)."""
+    text = ai_map.get(report_id)
+    if text:
+        summary.has_ai_summary = True
+        summary.ai_summary = text
+
+
 def _lock_conflict_response(exc: services.LockError):
     """Translate a service-layer LockError into a 409 in the standard
     {success, message, errors} envelope. `errors[0]` carries a stable
@@ -182,10 +209,12 @@ def list_reports(
             folder_filter=folder_filter,
         )
         pub = services.public_report_ids(db)
+        ai_map = _ai_summary_map(db, reports)
         payload = []
         for r in reports:
             summary = ReportSummary.model_validate(r)
             summary.is_external_public = r.id in pub
+            _apply_ai_summary(summary, r.id, ai_map)
             payload.append(summary)
         return success_response(data=payload)
 
@@ -205,11 +234,13 @@ def list_reports(
     if include_public and not actor.workspace.virtual:
         scoped = services.visible_report_ids(db, actor) or set()
         external_ids = services.public_report_ids(db) - scoped
+    ai_map = _ai_summary_map(db, reports)
     payload = []
     for r in reports:
         summary = ReportSummary.model_validate(r)
         if r.id in external_ids:
             summary.is_external_public = True
+        _apply_ai_summary(summary, r.id, ai_map)
         payload.append(summary)
     return success_response(data=payload)
 

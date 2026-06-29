@@ -129,3 +129,24 @@ class Job(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class WorkerHeartbeat(Base):
+    """워커 프로세스 생존 신호 — 운영 가시성(잡 큐 탭)의 "워커 정지" 판정용.
+
+    워커 메인 루프가 주기적으로 last_seen 을 upsert 한다. 헬스 조회는 최근
+    N초 내 갱신된 행이 있으면 "살아있음"으로 본다. 처리 경로와 무관(끊겨도
+    잡 처리엔 영향 없고, 표시만 못 함)."""
+
+    __tablename__ = "worker_heartbeats"
+
+    worker_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    meta: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )

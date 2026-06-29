@@ -635,6 +635,21 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
     )
   }
 
+  // 인라인 머리표 토글 — 작성자가 이 위젯만 번호(1.1.1) ↔ 불릿(■ – ·)을 바로
+  // 전환. 템플릿 props 기본값을 per-report 로 덮어쓴다(toggleNumbering). 헤더
+  // 컨트롤 줄(위/아래·제목 생략 옆)에 끼워 같은 줄에 둔다(CaptionInput.extraControls).
+  const numberingToggle = (
+    <button
+      type="button"
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={toggleNumbering}
+      className="shrink-0 inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      title="개요 머리표 전환 — 번호(1.1.1) ↔ 불릿(■ – ·)"
+    >
+      {numbering ? '1.1.1 번호' : '■ 불릿'}
+    </button>
+  )
+
   return (
     <div className="space-y-2">
       {capPos !== 'below' && (
@@ -642,22 +657,10 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
           value={caption}
           onChange={(v) => patchContent({ caption: v })}
           placeholder={props.label}
+          extraControls={numberingToggle}
           {...captionSkipProps({ content, patch: patchContent })}
         />
       )}
-      {/* 인라인 머리표 토글 — 작성자가 이 위젯만 번호(1.1.1) ↔ 불릿(■ – ·)을
-          바로 전환. 템플릿 props 기본값을 per-report 로 덮어쓴다(toggleNumbering). */}
-      <div className="flex justify-end">
-        <button
-          type="button"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={toggleNumbering}
-          className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          title="개요 머리표 전환 — 번호(1.1.1) ↔ 불릿(■ – ·)"
-        >
-          {numbering ? '1.1.1 번호' : '■ 불릿'}
-        </button>
-      </div>
       <OutlineEditor
         items={items}
         numbering={numbering}
@@ -677,6 +680,7 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
           value={caption}
           onChange={(v) => patchContent({ caption: v })}
           placeholder={props.label}
+          extraControls={numberingToggle}
           {...captionSkipProps({ content, patch: patchContent })}
         />
       )}

@@ -1324,6 +1324,9 @@ export function CaptionInput({
   onChangeRich,
   position,
   onChangePosition,
+  // 위젯이 헤더 컨트롤 줄(위/아래·제목 생략 옆)에 끼워 넣을 추가 토글. 예: 긴 글의
+  // 번호↔불릿 머리표 토글. 제목 생략(skip) 상태에서도 유지되도록 두 분기 모두 렌더.
+  extraControls = null,
 }) {
   const skip = !!skipAutofill
   const hint = typeof placeholder === 'string' ? placeholder.trim() : ''
@@ -1377,7 +1380,7 @@ export function CaptionInput({
   // user's "제목부분 표기가 그냥 없어져야" expectation.
   if (skip && onChangeSkipAutofill) {
     return (
-      <div className="flex items-center px-2 py-1">
+      <div className="flex items-center gap-1 px-2 py-1">
         <button
           type="button"
           onClick={() => onChangeSkipAutofill(false)}
@@ -1392,6 +1395,7 @@ export function CaptionInput({
         >
           자동 채움 켜기
         </button>
+        {extraControls}
       </div>
     )
   }
@@ -1446,6 +1450,7 @@ export function CaptionInput({
             className="text-base font-semibold px-2 py-1"
           />
         </div>
+        {extraControls}
         {positionToggle}
         {skipToggle}
       </div>
@@ -1469,6 +1474,7 @@ export function CaptionInput({
           colorClass,
         )}
       />
+      {extraControls}
       {positionToggle}
       {skipToggle}
     </div>

@@ -99,13 +99,14 @@ function buildRichText(lines) {
 
 /** 위젯 미리보기 한 줄 요약(최대 40자). */
 function summarize(s) {
-  if (s.type === 'heading') return s.content.text
+  if (s.type === 'heading') return s.content?.text ?? ''
+  if (s.type === 'image') return s.alt || '이미지'
   if (s.type === 'table') {
     const c = s.content
     return `${c.columns.length}열 × ${c.rows.length + 1}행`
   }
-  const first = s.content.items?.[0]?.text ?? ''
-  const n = s.content.items?.length ?? 0
+  const first = s.content?.items?.[0]?.text ?? ''
+  const n = s.content?.items?.length ?? 0
   return n > 1 ? `${first} … (${n}줄)` : first
 }
 
@@ -187,3 +188,133 @@ export function parseTextToWidgets(text) {
 
   return segments.map((s) => ({ ...s, preview: summarize(s) }))
 }
+
+// --------------------------------------------------------------------------- //
+// HTML(text/html) 파서 — 워드·PPT·웹에서 복사한 서식 있는 붙여넣기용            //
+// --------------------------------------------------------------------------- //
+// PPT 텍스트박스(도형)를 복사하면 text/plain 이 비어 text/html 만 온다. 워드는
+// 문단·목록·표·이미지 구조를 text/html 로 준다. 그래서 html 이 있으면 이걸
+// 우선 파싱해 세그먼트(heading/rich_text/table/image)로 만든다. 이미지 세그먼트는
+// { type:'image', src } 로 두고, 위젯 생성 시점에 업로드한다.
+
+const _BLOCKISH = /^(H[1-6]|P|DIV|SECTION|ARTICLE|BLOCKQUOTE|LI|UL|OL|TABLE|IMG|BR|HR|FIGURE)$/
+
+/** 이 요소 안에 블록 구조가 더 있는지(있으면 재귀, 없으면 textContent 한 덩어리). */
+function hasBlockDescendant(el) {
+  return !!el.querySelector('h1,h2,h3,h4,h5,h6,ul,ol,table,img,p,div,li')
+}
+
+export function parseHtmlToWidgets(html) {
+  if (!html || typeof window === 'undefined' || !window.DOMParser) return []
+  let doc
+  try {
+    doc = new DOMParser().parseFromString(html, 'text/html')
+  } catch {
+    return []
+  }
+  if (!doc?.body) return []
+
+  const segments = []
+  let textBuf = [] // { depth, text }
+
+  function flushText() {
+    const items = textBuf.filter((it) => (it.text ?? '').trim() !== '')
+    textBuf = []
+    if (!items.length) return
+    const isList = items.some((it) => it.depth > 0)
+    segments.push({ type: 'rich_text', content: { items }, kind: isList ? '목록' : '문단', preview: '' })
+  }
+  function pushHeading(el, level) {
+    const text = (el.textContent || '').trim()
+    if (!text) return
+    flushText()
+    segments.push({ type: 'heading', content: { text, level: Math.min(3, Math.max(1, level)) }, kind: '제목', preview: '' })
+  }
+  function pushImage(el) {
+    const src = el.getAttribute('src') || ''
+    if (!src) return
+    flushText()
+    segments.push({ type: 'image', src, alt: el.getAttribute('alt') || '', kind: '이미지', preview: '' })
+  }
+  function pushTable(el) {
+    const rows = Array.from(el.querySelectorAll('tr'))
+      .map((tr) => Array.from(tr.querySelectorAll('th,td')).map((c) => (c.textContent || '').replace(/\s+/g, ' ').trim()))
+      .filter((r) => r.length > 0)
+    if (!rows.length) return
+    flushText()
+    const colCount = rows.reduce((m, r) => Math.max(m, r.length), 0)
+    const header = rows[0]
+    const columns = Array.from({ length: colCount }, (_, i) => ({
+      key: `col_${i + 1}`,
+      label: header[i] || `열 ${i + 1}`,
+      type: 'text',
+    }))
+    const body = rows.slice(1).map((r) => {
+      const o = {}
+      columns.forEach((c, i) => {
+        o[c.key] = r[i] ?? ''
+      })
+      return o
+    })
+    segments.push({ type: 'table', content: { columns, rows: body }, kind: '표', preview: '' })
+  }
+  function walkList(listEl, depth) {
+    for (const li of Array.from(listEl.children)) {
+      if (li.tagName !== 'LI') continue
+      // li 직속 텍스트만 모으고, 중첩 목록은 depth+1 로 재귀.
+      let text = ''
+      const nestedLists = []
+      for (const node of Array.from(li.childNodes)) {
+        if (node.nodeType === 3) text += node.textContent
+        else if (node.nodeType === 1) {
+          if (node.tagName === 'UL' || node.tagName === 'OL') nestedLists.push(node)
+          else if (node.tagName === 'IMG') pushImage(node)
+          else text += node.textContent
+        }
+      }
+      text = text.replace(/\s+/g, ' ').trim()
+      if (text) textBuf.push({ depth: Math.min(MAX_DEPTH, Math.max(1, depth)), text })
+      for (const n of nestedLists) walkList(n, depth + 1)
+    }
+  }
+  function walk(node) {
+    for (const el of Array.from(node.children)) {
+      const tag = el.tagName
+      if (/^H[1-6]$/.test(tag)) pushHeading(el, Number(tag[1]))
+      else if (tag === 'UL' || tag === 'OL') walkList(el, 1)
+      else if (tag === 'TABLE') pushTable(el)
+      else if (tag === 'IMG') pushImage(el)
+      else if (tag === 'BR' || tag === 'HR') {
+        /* 문단 경계 — 텍스트 버퍼는 유지(줄바꿈은 문단 내부로 흡수) */
+      } else if (_BLOCKISH.test(tag)) {
+        if (hasBlockDescendant(el)) {
+          walk(el)
+        } else {
+          // lineToItem 으로 워드 mso-list 문단의 앞 불릿 글리프(·•– 등)를 제거해
+          // 위젯 depth 글리프와 이중 표기되는 걸 막는다.
+          const text = (el.textContent || '').replace(/\s+/g, ' ').trim()
+          if (text) textBuf.push(lineToItem(text))
+          for (const img of Array.from(el.querySelectorAll('img'))) pushImage(img)
+        }
+      } else {
+        // span/a/b 등 인라인 컨테이너 — 블록이 더 있으면 재귀, 아니면 텍스트.
+        if (hasBlockDescendant(el)) walk(el)
+        else {
+          const text = (el.textContent || '').replace(/\s+/g, ' ').trim()
+          if (text) textBuf.push(lineToItem(text))
+        }
+      }
+    }
+  }
+
+  walk(doc.body)
+  flushText()
+  return segments.map((s) => ({ ...s, preview: summarize(s) }))
+}
+
+/** data:/blob:/http(s) 이미지 src 는 fetch 로 바이트를 얻어 업로드할 수 있다.
+ *  file:// 등 접근 불가한 로컬 경로는 브라우저 보안상 못 읽으므로 건너뛴다. */
+export function isFetchableImageSrc(src) {
+  return /^(data:|blob:|https?:)/i.test(src || '')
+}
+

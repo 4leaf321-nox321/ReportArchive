@@ -76,6 +76,8 @@ import { Input } from '@/shared/components/ui/input'
 import { InlineReportView } from '@/modules/composites/InlineReportView'
 import { Textarea } from '@/shared/components/ui/textarea'
 import { PasteToWidgetsDialog } from './PasteToWidgetsDialog'
+import { isFetchableImageSrc } from './pasteToWidgets'
+import { uploadFile } from '@/shared/api/files'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/components/ui/popover'
 import {
@@ -2163,23 +2165,57 @@ export default function ReportDetailPage() {
 
   /** 붙여넣기→위젯 분해(④) — 세그먼트 배열을 페이지 끝에 순서대로 추가하고
    *  각 위젯 content 를 시드한다. id 를 미리 발급(같은 배치 내 충돌 방지)하고,
-   *  첫 위젯에 포커스/스크롤한다. */
-  function createWidgetsFromSegments(pageIdx, segments) {
+   *  첫 위젯에 포커스/스크롤한다. 이미지 세그먼트는 blob(클립보드 파일) 또는
+   *  fetch 가능한 src 를 업로드해 image 위젯으로 만든다(async). */
+  async function createWidgetsFromSegments(pageIdx, segments) {
     if (!segments?.length) return
     const page = draftRef.current?.pages?.[pageIdx]
     if (!page) return
     const tpl = getCachedTemplate(pageTemplateMap, page)
     const used = new Set(collectPageBlockIds(page, tpl))
     let firstId = null
+    let created = 0
+    let skipped = 0
     for (const seg of segments) {
+      let content = seg.content ?? null
+      if (seg.type === 'image') {
+        try {
+          let blob = seg.blob ?? null
+          if (!blob && seg.src && isFetchableImageSrc(seg.src)) {
+            const resp = await fetch(seg.src)
+            blob = await resp.blob()
+          }
+          if (!blob) {
+            skipped++
+            continue
+          }
+          const ext = (blob.type && blob.type.split('/')[1]) || 'png'
+          const file = new File([blob], seg.alt?.trim() || `image.${ext}`, {
+            type: blob.type || 'image/png',
+          })
+          const meta = await uploadFile(file)
+          content = { files: [{ file_id: meta.id, alt: seg.alt || '' }] }
+        } catch {
+          skipped++
+          continue
+        }
+      }
       const id = freshExtraId(seg.type, used)
       used.add(id)
       if (!firstId) firstId = id
       const defaults = widgetCatalog?.byType?.[seg.type]?.default_props ?? {}
-      addExtraBlock(pageIdx, seg.type, defaults, id, seg.content ?? null)
+      addExtraBlock(pageIdx, seg.type, defaults, id, content)
+      created++
     }
     if (firstId) focusExtraBlock(pageIdx, firstId)
-    toast.success(`위젯 ${segments.length}개를 만들었습니다.`)
+    if (created) {
+      toast.success(
+        `위젯 ${created}개를 만들었습니다.` +
+          (skipped ? ` (이미지 ${skipped}개는 붙일 수 없어 건너뜀)` : ''),
+      )
+    } else if (skipped) {
+      toast.error('붙여넣은 이미지를 가져올 수 없습니다.')
+    }
   }
 
   /** Replace the entire props object for an extra block. PropsPanel hands

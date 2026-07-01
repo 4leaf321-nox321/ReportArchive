@@ -1341,6 +1341,193 @@ async def llm_author_report(
     )
 
 
+class LlmSectionsRequest(BaseModel):
+    # True=모든 위젯 재지정(기존 수동 지정도 교체), False=단락구분 없는 위젯만.
+    overwrite: bool = False
+    # 선택 힌트(비워도 됨).
+    instructions: str = Field(default="", max_length=2000)
+
+
+@router.post("/{report_id}/llm-sections")
+async def llm_assign_sections(
+    report_id: int,
+    payload: LlmSectionsRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """연결된 local LLM 으로 현재 문서의 위젯 '단락 구분'(section)을 자동 지정한다.
+    각 위젯 텍스트 + 분류 코드 목록을 LLM 에 주고 {번호: code} 를 받아 block_sections
+    에 반영. 게이트(report_authoring)·취소(연결끊김)·재시도는 llm-author 와 동일.
+    본인 소유·drafting 보고서만(남의 락 차단)."""
+    from app.ai.entitlements import ai_enabled_for
+    from app.ai.jsonio import extract_json
+    from app.ai.llm import LLMCancelled, LLMContextError, LLMError, chat_cancellable
+    from app.config import settings
+    from app.modules.reports.models import ReportPhase
+    from app.widgets.text_extraction import extract_chunks_for_report
+
+    if not ai_enabled_for(db, actor.user, "report_authoring"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "보고서 작성(AI) 권한이 없습니다."
+        )
+
+    report = services.get_report(db, report_id)
+    if not report:
+        return not_found_response(f"Report not found: {report_id}")
+    # 소유·drafting·락 가드 (_apply_ai_draft 와 동일 규칙; 본인 락은 통과).
+    if report.owner_user_id != actor.user.id:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "본인이 만든 보고서만 AI로 수정할 수 있습니다."
+        )
+    if report.phase != ReportPhase.drafting:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"작성 중(drafting) 보고서만 AI로 수정할 수 있습니다 (현재: {report.phase.value}).",
+        )
+    held = services.get_active_lock(db, report)
+    if held is not None and held.user_id != actor.user.id:
+        return _lock_conflict_response(
+            services.LockHeldByOtherError(
+                "다른 사용자가 이 보고서를 편집 중이라 적용할 수 없습니다. "
+                "상대가 편집을 마친 뒤 다시 시도하세요.",
+                holder=held,
+            )
+        )
+
+    # 위젯 목록: (page_idx, block_id) 별 대표 텍스트 + 타입. 제목/페이지 마커 제외.
+    pages = list(report.pages or [])
+    _MARKERS = {"__title__", "__page__"}
+    by_block: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for ch in extract_chunks_for_report(report):
+        if ch.block_id is None or ch.page_idx is None or ch.widget_type in _MARKERS:
+            continue
+        key = (ch.page_idx, ch.block_id)
+        if key not in by_block:
+            by_block[key] = {"type": ch.widget_type or "", "text": ""}
+            order.append(key)
+        cur = by_block[key]
+        if len(cur["text"]) < 400 and ch.text:
+            cur["text"] = (cur["text"] + " " + ch.text).strip()[:400]
+
+    def _already_set(page_idx: int, block_id: str) -> bool:
+        if page_idx >= len(pages):
+            return False
+        bs = (pages[page_idx] or {}).get("block_sections") or {}
+        return isinstance(bs.get(block_id), str) and bool(bs.get(block_id))
+
+    ref_map: dict[str, tuple] = {}
+    lines: list[str] = []
+    for key in order:
+        page_idx, block_id = key
+        if not payload.overwrite and _already_set(page_idx, block_id):
+            continue
+        ref = str(len(ref_map) + 1)
+        ref_map[ref] = key
+        info = by_block[key]
+        lines.append(
+            f'[{ref}] ({page_idx + 1}장, {info["type"]}) {info["text"] or "(내용 없음)"}'
+        )
+
+    if not ref_map:
+        return success_response(
+            data={"assigned": 0, "total": 0, "warnings": ["지정할 위젯이 없습니다."]}
+        )
+
+    taxonomy = section_taxonomy_services.taxonomy_for_ai(db)
+    valid = section_taxonomy_services.valid_codes(db)
+    tax_lines: list[str] = []
+    for cat in taxonomy:
+        tax_lines.append(f'# {cat.get("category_name", "")}')
+        for it in cat.get("items", []):
+            en = f' ({it["en"]})' if it.get("en") else ""
+            tax_lines.append(f'- {it["code"]} : {it.get("label", "")}{en}')
+    tax_text = "\n".join(tax_lines)
+
+    system = (
+        "당신은 보고서 위젯에 '단락 구분'(섹션) 코드를 부여하는 분류기다. 각 위젯의 "
+        "내용을 보고 [분류 목록]에서 가장 알맞은 code 하나를 고른다. **JSON 으로만** "
+        "(코드블록 없이) 답하라.\n"
+        '형식: {"<번호>": "<code>"}  예: {"1": "rationale", "2": "risk"}\n\n'
+        "규칙:\n"
+        "- 키는 위젯 번호([n] 의 n), 값은 [분류 목록]의 **code 문자열**(한글 라벨 금지).\n"
+        "- 목록에 없는 code 는 쓰지 마라. 애매하면 그 번호는 생략한다.\n"
+        "- 최대한 많은 위젯에 대해 판단한다.\n\n"
+        f"[분류 목록]\n{tax_text}"
+    )
+    widget_text = "\n".join(lines)
+    token_limit_msg = (
+        "AI 처리 내용이 모델의 토큰(컨텍스트) 한도를 초과했습니다. 문서를 더 짧게 "
+        "나누거나 관리자에게 모델 토큰 한도 확대를 요청하세요."
+    )
+
+    max_attempts = max(1, settings.llm_author_max_attempts)
+    last_error = "알 수 없는 오류"
+    for attempt in range(1, max_attempts + 1):
+        if await request.is_disconnected():
+            return error_response("단락구분 지정이 취소되었습니다.", status_code=499)
+        user_msg = f"[위젯 목록]\n{widget_text}"
+        if payload.instructions.strip():
+            user_msg = f"[참고 지시]\n{payload.instructions.strip()}\n\n" + user_msg
+        if attempt > 1:
+            user_msg += (
+                f"\n\n[직전 시도가 실패했습니다 — 고쳐서 JSON 만 다시 출력하세요]\n"
+                f"{last_error}\n번호→code 매핑만, 코드블록 없이 JSON 객체로."
+            )
+        try:
+            res = await chat_cancellable(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_msg},
+                ],
+                max_tokens=settings.llm_author_max_tokens,
+                json_mode=settings.llm_author_json_mode,
+                should_cancel=request.is_disconnected,
+            )
+        except LLMCancelled:
+            return error_response("단락구분 지정이 취소되었습니다.", status_code=499)
+        except LLMContextError as exc:
+            logger.warning("llm-sections 토큰 초과 (report=%s): %s", report_id, exc)
+            return error_response(token_limit_msg, status_code=502)
+        except LLMError as exc:
+            return error_response(
+                f"단락구분 지정 실패(LLM 호출): {exc}", status_code=502
+            )
+
+        parsed = extract_json(res.content)
+        if not isinstance(parsed, dict):
+            last_error = "응답에서 유효한 JSON 객체를 찾지 못함."
+            continue
+        sections_by_page: dict[int, dict[str, str]] = {}
+        assigned = 0
+        for ref, code in parsed.items():
+            key = ref_map.get(str(ref))
+            if not key or not isinstance(code, str) or code not in valid:
+                continue
+            page_idx, block_id = key
+            sections_by_page.setdefault(page_idx, {})[block_id] = code
+            assigned += 1
+        if assigned == 0:
+            last_error = (
+                "유효한 (번호→코드) 매핑이 없습니다. 목록의 code 문자열을 정확히 쓰세요."
+            )
+            continue
+        try:
+            services.apply_block_sections(db, report, sections_by_page)
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            return error_response(f"적용 오류: {exc}", status_code=500)
+        return success_response(
+            data={"assigned": assigned, "total": len(ref_map), "warnings": []}
+        )
+
+    return error_response(
+        f"단락구분 지정이 {max_attempts}회 시도 후에도 형식을 맞추지 못했습니다: {last_error}",
+        status_code=502,
+    )
+
+
 @router.post("")
 def create_report(
     payload: ReportCreate,

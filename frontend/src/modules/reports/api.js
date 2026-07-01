@@ -229,6 +229,25 @@ export async function llmAuthorReport(
   return extractData(res)
 }
 
+/**
+ * 연결된 local LLM 으로 현재 문서의 위젯 '단락 구분'(section)을 자동 지정
+ * (report_authoring 권한 필요). overwrite=true 면 기존 수동 지정도 재지정,
+ * false 면 빈 위젯만. 본인 작성 중(drafting) 보고서에 적용 → 성공 시 reload.
+ * 반환: { assigned, total, warnings }.
+ */
+export async function llmAssignSections(
+  id,
+  { overwrite = false, instructions = '', signal } = {},
+) {
+  // 작성과 동일하게 LLM 호출이 느려 이 호출만 길게(10분) 잡는다. signal 로 중단.
+  const res = await apiClient.post(
+    `${BASE}/${id}/llm-sections`,
+    { overwrite, instructions },
+    { timeout: 600000, signal },
+  )
+  return extractData(res)
+}
+
 /** Metadata-only folder placement — no lock required. Owner-only. */
 export async function moveReportToFolder(id, folderId) {
   const res = await apiClient.put(`${BASE}/${id}/folder`, {

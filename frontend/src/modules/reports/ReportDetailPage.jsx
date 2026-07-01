@@ -54,6 +54,7 @@ import {
   LayoutTemplate,
   Share2,
   Sparkles,
+  Tags,
   Tag,
   Trash2,
   Undo2,
@@ -100,6 +101,7 @@ import { listEntityTypes } from '@/shared/api/entities'
 import { EntityGraphDialog } from '@/modules/entities/EntityGraphDialog'
 import { ReportAiSummaryButton } from './ReportAiSummaryButton'
 import { LlmAuthorDialog } from './LlmAuthorDialog'
+import { LlmSectionsDialog } from './LlmSectionsDialog'
 import {
   getReport,
   createReport,
@@ -343,6 +345,7 @@ export default function ReportDetailPage() {
   // in `aiPromptActive` and the existing AiPromptDialog renders it.
   const [aiPromptPickerOpen, setAiPromptPickerOpen] = useState(false)
   const [llmAuthorOpen, setLlmAuthorOpen] = useState(false)
+  const [llmSectionsOpen, setLlmSectionsOpen] = useState(false)
   const [aiPromptActive, setAiPromptActive] = useState(null)
   // Takeover prompt — holds the LockConflictError.holder payload when
   // the user tried to acquire a lock that someone else holds. Driving
@@ -4627,10 +4630,16 @@ export default function ReportDetailPage() {
               {me?.ai_features?.includes('report_authoring') &&
                 !isNew &&
                 existingReport?.id && (
-                  <DropdownMenuItem onSelect={() => setLlmAuthorOpen(true)}>
-                    <Sparkles className="mr-2 h-3.5 w-3.5" />
-                    Local LLM으로 작성
-                  </DropdownMenuItem>
+                  <>
+                    <DropdownMenuItem onSelect={() => setLlmAuthorOpen(true)}>
+                      <Sparkles className="mr-2 h-3.5 w-3.5" />
+                      Local LLM으로 작성
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => setLlmSectionsOpen(true)}>
+                      <Tags className="mr-2 h-3.5 w-3.5" />
+                      Local LLM으로 단락구분 지정
+                    </DropdownMenuItem>
+                  </>
                 )}
             </DropdownMenuContent>
           </DropdownMenu>
@@ -5268,6 +5277,19 @@ export default function ReportDetailPage() {
             // 편집 중이었다면 에디터의 (이제 낡은) draft 를 버리고 편집 모드를
             // 나가 AI 결과를 보여준다 — reloadReport 는 existingReport 만 갱신하고
             // 에디터 draft 는 안 건드리므로(저장 핸들러와 동일 패턴).
+            setIsEditing(false)
+            reloadReport()
+          }}
+        />
+      )}
+
+      {llmSectionsOpen && existingReport?.id && (
+        <LlmSectionsDialog
+          reportId={existingReport.id}
+          editing={effectiveIsEditing}
+          onClose={() => setLlmSectionsOpen(false)}
+          onDone={() => {
+            // 작성과 동일 — 저장본 기준 적용 후 편집 나가고 재조회.
             setIsEditing(false)
             reloadReport()
           }}

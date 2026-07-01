@@ -1120,6 +1120,36 @@ def copy_report(
     return new_report
 
 
+def apply_block_sections(
+    db: Session, report: Report, sections_by_page: dict[int, dict[str, str]]
+) -> int:
+    """지정한 (pageIdx → {blockId: code}) 만 각 페이지 block_sections 에 병합한다
+    (나머지 블록·content 는 그대로). LLM 단락구분 자동 지정이 쓴다. 준 코드만
+    덮어쓰고, 반영이 있으면 revision 을 올려 저장한다. 적용 개수를 돌려준다.
+
+    호출부(라우트)가 소유·drafting·락 가드를 먼저 통과시킨다. block_sections 는
+    search_text 에서 제외되므로 재색인은 불필요."""
+    pages = list(report.pages or [])
+    applied = 0
+    new_pages: list[dict] = []
+    for idx, page in enumerate(pages):
+        p = dict(page)
+        sec = sections_by_page.get(idx)
+        if sec:
+            merged = dict(p.get("block_sections") or {})
+            for bid, code in sec.items():
+                merged[bid] = code
+                applied += 1
+            p["block_sections"] = merged
+        new_pages.append(p)
+    if applied:
+        report.pages = new_pages
+        report.revision = (report.revision or 1) + 1
+        db.commit()
+        db.refresh(report)
+    return applied
+
+
 # --------------------------------------------------------------------------- #
 # Edit lock — pessimistic, per-report, with TTL                               #
 # --------------------------------------------------------------------------- #

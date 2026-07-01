@@ -1914,10 +1914,18 @@ export function SlashMenu({ rect, query, onSelect, onClose }) {
     setActive(0)
   }, [q])
   const menuRef = useRef(null)
+  const activeItemRef = useRef(null)
   const activeRef = useRef(0)
   activeRef.current = active
   const filteredRef = useRef(filtered)
   filteredRef.current = filtered
+
+  // 방향키로 선택을 옮기면 그 항목이 보이도록 메뉴를 스크롤한다(키보드만으로
+  // 전체 목록 탐색 가능). block:'nearest' 라 최소한으로만 스크롤하고, 메뉴가
+  // position:fixed 라 페이지 스크롤엔 영향 없다.
+  useEffect(() => {
+    activeItemRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [active])
 
   useEffect(() => {
     function onKey(e) {
@@ -1973,6 +1981,7 @@ export function SlashMenu({ rect, query, onSelect, onClose }) {
           <button
             key={w.type}
             type="button"
+            ref={i === active ? activeItemRef : undefined}
             onMouseEnter={() => setActive(i)}
             onClick={() => onSelect(w.type)}
             className={cn(

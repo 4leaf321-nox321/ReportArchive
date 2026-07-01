@@ -1899,15 +1899,15 @@ export function SlashMenu({ rect, query, onSelect, onClose }) {
   const q = (query ?? '').trim().toLowerCase()
   const filtered = useMemo(() => {
     const widgets = catalog?.widgets ?? []
-    const list = q
-      ? widgets.filter(
-          (w) =>
-            (w.label ?? '').toLowerCase().includes(q) ||
-            (w.type ?? '').toLowerCase().includes(q) ||
-            (w.description ?? '').toLowerCase().includes(q),
-        )
-      : widgets
-    return list.slice(0, 8)
+    // 전체 위젯을 다 노출한다 — 메뉴는 max-h + overflow-y-auto 로 스크롤되므로
+    // 길이 제한이 불필요하다(예전 slice(0,8)은 나머지 위젯을 가려 버렸다).
+    if (!q) return widgets
+    return widgets.filter(
+      (w) =>
+        (w.label ?? '').toLowerCase().includes(q) ||
+        (w.type ?? '').toLowerCase().includes(q) ||
+        (w.description ?? '').toLowerCase().includes(q),
+    )
   }, [catalog, q])
   const [active, setActive] = useState(0)
   useEffect(() => {

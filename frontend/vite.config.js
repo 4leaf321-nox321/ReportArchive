@@ -9,6 +9,29 @@ const pkg = JSON.parse(
   readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'),
 )
 
+// dev 서버는 시작 시 package.json 을 한 번 읽어 __APP_VERSION__ 을 박아넣으므로,
+// 버전을 올려도 이미 떠 있는 서버는 옛 버전을 계속 보여준다(vite 는 vite.config.js
+// 변경 때만 자동 재시작하고 package.json 변경은 무시). 이 플러그인이 package.json
+// 변경을 감지해 dev 서버를 스스로 재시작 → 좌측 상단 버전이 자동 갱신된다.
+function restartOnPackageJsonChange() {
+  const pkgPath = path.resolve(__dirname, 'package.json')
+  return {
+    name: 'restart-on-package-json-change',
+    apply: 'serve',
+    configureServer(server) {
+      server.watcher.add(pkgPath)
+      server.watcher.on('change', (file) => {
+        if (path.resolve(file) === pkgPath) {
+          server.config.logger.info(
+            '[version] package.json 변경 감지 — dev 서버 재시작(버전 갱신)',
+          )
+          server.restart()
+        }
+      })
+    },
+  }
+}
+
 // 위젯 작성 상세 룰(AI 프롬프트용)의 **단일 소스** — 백엔드의 authoring_rules.json.
 // 빌드 시 읽어 __WIDGET_AUTHORING_RULES__ 로 주입(프런트는 동기 import, 런타임 fetch X).
 // MCP(describe_template/describe_widgets)도 같은 파일을 런타임에 읽으므로 출처가 하나다.
@@ -39,7 +62,7 @@ export default defineConfig(({ mode }) => {
       __APP_VERSION__: JSON.stringify(pkg.version),
       __WIDGET_AUTHORING_RULES__: JSON.stringify(widgetAuthoringRules),
     },
-    plugins: [react()],
+    plugins: [react(), restartOnPackageJsonChange()],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, 'src'),

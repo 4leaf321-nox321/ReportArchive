@@ -62,6 +62,28 @@ export function PasteToWidgetsDialog({ open, onOpenChange, onConfirm }) {
     const html = cd.getData('text/html') || ''
     const plain = cd.getData('text/plain') || ''
 
+    // ⚠️ [임시 진단] PPT 텍스트박스 SVG 안에 <text> 가 있는지(=글자를 뽑을 수
+    // 있는지) 콘솔로 확인. 확인 뒤 제거.
+    if (svgFile) {
+      svgFile
+        .text()
+        .then((t) => {
+          // eslint-disable-next-line no-console
+          console.groupCollapsed(
+            '%c[svg 진단] size=' + svgFile.size + ' <text>=' + (t.match(/<text[\s>]/g) || []).length + ' <tspan>=' + (t.match(/<tspan[\s>]/g) || []).length + ' <path>=' + (t.match(/<path[\s>]/g) || []).length,
+            'color:#a21caf',
+          )
+          // eslint-disable-next-line no-console
+          console.log(t.slice(0, 2000))
+          // eslint-disable-next-line no-console
+          console.groupEnd()
+        })
+        .catch((err) => {
+          // eslint-disable-next-line no-console
+          console.warn('[svg 진단] 읽기 실패', err)
+        })
+    }
+
     // 순수 평문만(이미지·SVG·html 없음) 있으면 기본 동작(textarea 입력)에 맡긴다.
     if (!svgFile && !rasterFiles.length && !html.trim()) return
     e.preventDefault()

@@ -93,6 +93,20 @@ export function PasteToWidgetsDialog({ open, onOpenChange, onConfirm }) {
               break
             }
           }
+          // ⚠️ [임시 진단] 여러 객체 복사 시 SVG 가 객체별로 <g> 분리되는지 확인.
+          // 확인 뒤 제거. 여러 개(텍스트박스+도형 등) 복사해서 이 로그를 캡처해줘.
+          if (svgText) {
+            // eslint-disable-next-line no-console
+            console.log(
+              '[svg struct] len=', svgText.length,
+              '<g>=', (svgText.match(/<g[\s>]/g) || []).length,
+              '<text>=', (svgText.match(/<text[\s>]/g) || []).length,
+              '<rect>=', (svgText.match(/<rect[\s>]/g) || []).length,
+              '<path>=', (svgText.match(/<path[\s>]/g) || []).length,
+            )
+            // eslint-disable-next-line no-console
+            console.log('[svg full]', svgText.slice(0, 5000))
+          }
           // 도형(채우기/선 있는 shape)이 든 SVG 는 텍스트로 뽑지 않고 이미지로 붙인다
           // (텍스트박스=텍스트, 도형=이미지). 순수 텍스트 SVG(텍스트박스)만 추출.
           if (svgText && !svgHasDrawnShapes(svgText)) {

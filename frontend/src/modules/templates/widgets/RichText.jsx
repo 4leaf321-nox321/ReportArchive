@@ -1425,13 +1425,18 @@ function OutlineEditor({ items, numbering, onChange, placeholder, bodyClassFor, 
     // Typing fires onUpdate on every keystroke; coalesce so a typing burst
     // produces a single undo entry (the state from before the burst).
     commitChange(next, { coalesce: true })
-    // 슬래시커맨드(①) — 행 시작이 "/…"(공백 없음)면 위젯 메뉴를 캐럿 위치에 연다.
-    // onInsertWidgetAfter 가 없으면(읽기/미배선) 무시.
+    // 슬래시커맨드(①) — 캐럿 앞이 "(줄시작|공백)/…"(공백 없는 질의)면 메뉴를
+    // 캐럿 위치에 연다. 줄에 내용이 있어도 새 단어로 "/" 를 시작하면 동작한다
+    // (Notion 방식). onInsertWidgetAfter 가 없으면(읽기/미배선) 무시.
     if (!onInsertWidgetAfter) return
-    const m = /^\/([^\s/]*)$/.exec(text ?? '')
+    const ed = inputRefs.current.get(idx)
+    const caret = ed?.getCaret?.() ?? (text ?? '').length
+    const before = (text ?? '').slice(0, caret)
+    const m = /(?:^|\s)\/([^\s/]*)$/.exec(before)
     if (m) {
-      const rect = currentCaretRect()
-      setSlash({ index: idx, query: m[1], rect })
+      const query = m[1]
+      const slashStart = caret - (query.length + 1) // "/" 의 0-based 위치
+      setSlash({ index: idx, query, rect: currentCaretRect(), slashStart, caret })
     } else {
       setSlash((s) => (s && s.index === idx ? null : s))
     }
@@ -1458,24 +1463,29 @@ function OutlineEditor({ items, numbering, onChange, placeholder, bodyClassFor, 
   //  - 이 긴 글이 사실상 비어 있으면: 트리거 행을 비우고 replaceAnchor 로 요청 —
   //    부모가 이 위젯 자리를 새 위젯으로 대체해 빈 위젯이 남지 않게 한다.
   function chooseSlash(type) {
-    const idx = slash?.index ?? null
+    const s = slash
     setSlash(null)
-    if (idx == null) {
+    if (!s) {
       onInsertWidgetAfter?.(type)
       return
     }
-    const remaining = items.filter((_, i) => i !== idx)
-    const hasContent = remaining.some((it) => (it.text ?? '').trim() !== '')
-    if (hasContent) {
-      commitChange(remaining, { coalesce: false })
-      onInsertWidgetAfter?.(type, { replaceAnchor: false })
-    } else {
-      const cleared = items.map((it, i) =>
-        i === idx ? { ...it, text: '', html: '<p></p>' } : it,
+    const idx = s.index
+    // 트리거 행에서 "/query" 조각만 제거하고(나머지 내용·서식은 보존) 나머지
+    // 행은 그대로 둔다. ProseMirror 위치는 0-based+1.
+    let nextItems = items
+    const ed = inputRefs.current.get(idx)
+    if (ed?.applyAndCapture && s.caret > s.slashStart) {
+      const r = ed.applyAndCapture((editor) => {
+        editor.chain().deleteRange({ from: s.slashStart + 1, to: s.caret + 1 }).run()
+      })
+      nextItems = items.map((it, i) =>
+        i === idx ? { ...it, html: r.html, text: r.text } : it,
       )
-      commitChange(cleared, { coalesce: false })
-      onInsertWidgetAfter?.(type, { replaceAnchor: true })
     }
+    const hasContent = nextItems.some((it) => (it.text ?? '').trim() !== '')
+    commitChange(nextItems, { coalesce: false })
+    // 위젯에 내용이 남으면 아래에 새 위젯 추가, 완전히 비면 이 자리를 대체.
+    onInsertWidgetAfter?.(type, { replaceAnchor: !hasContent })
   }
 
   function setDepth(idx, depth) {

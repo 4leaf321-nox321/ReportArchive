@@ -318,3 +318,36 @@ export function isFetchableImageSrc(src) {
   return /^(data:|blob:|https?:)/i.test(src || '')
 }
 
+/** SVG(image/svg+xml) 텍스트 → 위젯 세그먼트. PowerPoint 는 텍스트박스/도형을
+ *  복사할 때 text/plain·text/html 없이 image/svg+xml + 래스터 이미지만 클립보드에
+ *  담는데, SVG 는 XML 이라 <text>/<tspan> 안에 실제 글자가 들어 있다. 이를 뽑아
+ *  문단/목록으로 만든다(글자가 없으면 [] → 호출부가 이미지로 폴백). */
+export function parseSvgToWidgets(svgText) {
+  if (!svgText || typeof window === 'undefined' || !window.DOMParser) return []
+  let doc
+  try {
+    doc = new DOMParser().parseFromString(svgText, 'image/svg+xml')
+  } catch {
+    return []
+  }
+  if (!doc || doc.getElementsByTagName('parsererror').length) return []
+  const lines = []
+  for (const t of Array.from(doc.getElementsByTagName('text'))) {
+    // <text> 안의 <tspan> 은 보통 줄 단위 → 각각 한 줄로. 없으면 text 통째로.
+    const tspans = Array.from(t.children).filter(
+      (c) => (c.localName || c.tagName || '').toLowerCase() === 'tspan',
+    )
+    if (tspans.length) {
+      for (const ts of tspans) {
+        const s = (ts.textContent || '').replace(/\s+/g, ' ').trim()
+        if (s) lines.push(s)
+      }
+    } else {
+      const s = (t.textContent || '').replace(/\s+/g, ' ').trim()
+      if (s) lines.push(s)
+    }
+  }
+  if (!lines.length) return []
+  return parseTextToWidgets(lines.join('\n'))
+}
+

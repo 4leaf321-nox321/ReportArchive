@@ -1452,18 +1452,30 @@ function OutlineEditor({ items, numbering, onChange, placeholder, bodyClassFor, 
     setSlash(null)
   }
 
-  // 슬래시 메뉴에서 위젯 선택 — 트리거 행의 "/query" 텍스트를 비우고, 부모에게
-  // "이 위젯 아래에 고른 위젯 삽입"을 요청한다(부모가 새 위젯에 포커스도 준다).
+  // 슬래시 메뉴에서 위젯 선택. 트리거 행을 정리하고 부모에게 위젯 삽입을 맡긴다.
+  //  - 이 긴 글에 다른 내용이 있으면: 트리거 행만 제거하고 아래에 새 위젯 삽입
+  //    (빈 줄이 안 남는다).
+  //  - 이 긴 글이 사실상 비어 있으면: 트리거 행을 비우고 replaceAnchor 로 요청 —
+  //    부모가 이 위젯 자리를 새 위젯으로 대체해 빈 위젯이 남지 않게 한다.
   function chooseSlash(type) {
     const idx = slash?.index ?? null
     setSlash(null)
-    if (idx != null) {
+    if (idx == null) {
+      onInsertWidgetAfter?.(type)
+      return
+    }
+    const remaining = items.filter((_, i) => i !== idx)
+    const hasContent = remaining.some((it) => (it.text ?? '').trim() !== '')
+    if (hasContent) {
+      commitChange(remaining, { coalesce: false })
+      onInsertWidgetAfter?.(type, { replaceAnchor: false })
+    } else {
       const cleared = items.map((it, i) =>
         i === idx ? { ...it, text: '', html: '<p></p>' } : it,
       )
       commitChange(cleared, { coalesce: false })
+      onInsertWidgetAfter?.(type, { replaceAnchor: true })
     }
-    onInsertWidgetAfter?.(type)
   }
 
   function setDepth(idx, depth) {
@@ -1856,7 +1868,8 @@ function OutlineEditor({ items, numbering, onChange, placeholder, bodyClassFor, 
 // 슬래시커맨드(①) 위젯 목록 메뉴 — 캐럿 위치에 fixed 로 뜬다. query 로 카탈로그를
 // 필터하고 ↑/↓ 이동·Enter/Tab 선택·Esc/바깥클릭 닫힘. 키 이벤트는 capture 로 잡아
 // 아래 행(ProseMirror)의 기본 동작(줄바꿈·행 이동)보다 먼저 선점한다.
-function SlashMenu({ rect, query, onSelect, onClose }) {
+// 긴 글·제목(Heading) 위젯이 공유한다.
+export function SlashMenu({ rect, query, onSelect, onClose }) {
   const { catalog } = useWidgetCatalog()
   const q = (query ?? '').trim().toLowerCase()
   const filtered = useMemo(() => {
@@ -2185,7 +2198,10 @@ function OutlineRow({
       // — the filter updates naturally on the next onChange.
     }
 
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    // Ctrl/⌘+Enter 는 "아래에 새 위젯 추가"(②) 전용 — 여기서 처리하지 않고
+    // 흘려보내 상위 카드(BlockEditorCard)의 onKeyDown 이 잡게 한다. 안 그러면
+    // 현재 위젯에 빈 줄이 하나 추가되면서 새 위젯도 생기는 이중 동작이 된다.
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !e.metaKey && !e.ctrlKey) {
       e.preventDefault()
       // Mid-line Enter splits the row at the caret; end-of-line Enter just
       // appends a new sibling. splitAtCaret returns null only when the row

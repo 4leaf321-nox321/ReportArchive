@@ -20,6 +20,7 @@ import {
   sanitizeCaptionHtml,
 } from './_shared'
 import { RichTextRowEditor } from './RichTextRowEditor'
+import { SlashMenu } from './RichText'
 
 // --------------------------------------------------------------------------- //
 // Effective-value plumbing                                                    //
@@ -143,11 +144,13 @@ export function HeadingPreview({ props }) {
 // --------------------------------------------------------------------------- //
 // Editor                                                                        //
 // --------------------------------------------------------------------------- //
-export function HeadingEditor({ props, content, onChange, readOnly }) {
+export function HeadingEditor({ props, content, onChange, readOnly, onInsertWidgetAfter }) {
   // 절 번호 자동매김이 켜진 보고서에서만 채워짐("1.1.1"). 렌더 부모가 문서순서로
   // 계산해 per-block 으로 내려준다. 편집 모드에선 붙이지 않는다(작성 텍스트와
   // 섞이면 혼란 — 읽기/내보내기 렌더에만 prefix).
   const headingNumber = useCurrentBlockHeadingNumber()
+  // 슬래시커맨드(①) — 빈 제목에서 / 로 위젯 삽입. { query, rect } | null.
+  const [slash, setSlash] = useState(null)
   const value = content?.text ?? ''
   // dual-field: 평문 text(제목 역할·TOC·export)는 유지하고, 색·서식 일부만 칠한
   // rich 마크업은 text_html 에 둔다(긴 글처럼 per-char). 둘 다 RichTextRowEditor
@@ -244,14 +247,19 @@ export function HeadingEditor({ props, content, onChange, readOnly }) {
       <div className="outline-rich-row flex-1 min-w-0">
         <RichTextRowEditor
           html={_richSeed(htmlValue, value)}
-          placeholder={props.default_text || '제목 입력'}
+          placeholder={props.default_text || '제목 입력 (빈 제목에서 / 로 위젯 추가)'}
           defaultSizePx={headingBaseSizePx}
-          onChange={(html, text) =>
+          onChange={(html, text) => {
             patch({
               text_html: _richIsEmpty(html) ? undefined : html,
               text: text ?? '',
             })
-          }
+            // 슬래시커맨드(①) — 제목 전체가 "/…"(공백 없음)면 위젯 메뉴를 연다.
+            if (!onInsertWidgetAfter) return
+            const m = /^\/([^\s/]*)$/.exec(text ?? '')
+            if (m) setSlash({ query: m[1], rect: headingCaretRect() })
+            else setSlash(null)
+          }}
           className={cn(
             'placeholder:text-muted-foreground/50 py-1 pr-9',
             headingNumber ? 'pl-2' : 'px-2',
@@ -268,8 +276,31 @@ export function HeadingEditor({ props, content, onChange, readOnly }) {
         marginBottomPx={marginBottomPx}
         onPatch={patch}
       />
+      {slash && (
+        <SlashMenu
+          rect={slash.rect}
+          query={slash.query}
+          onSelect={(type) => {
+            setSlash(null)
+            // 빈 제목을 비우고, 이 제목 자리를 고른 위젯으로 대체(빈 제목 안 남김).
+            patch({ text: '', text_html: undefined })
+            onInsertWidgetAfter?.(type, { replaceAnchor: true })
+          }}
+          onClose={() => setSlash(null)}
+        />
+      )}
     </div>
   )
+}
+
+// 캐럿(또는 활성 요소) 화면 좌표 — 제목 슬래시 메뉴 앵커.
+function headingCaretRect() {
+  const sel = typeof window !== 'undefined' ? window.getSelection?.() : null
+  if (sel && sel.rangeCount > 0) {
+    const r = sel.getRangeAt(0).getBoundingClientRect()
+    if (r && (r.top || r.left || r.bottom)) return r
+  }
+  return document.activeElement?.getBoundingClientRect?.() ?? null
 }
 
 // --------------------------------------------------------------------------- //

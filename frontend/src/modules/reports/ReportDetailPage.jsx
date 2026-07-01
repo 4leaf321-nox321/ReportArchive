@@ -2071,13 +2071,25 @@ export default function ReportDetailPage() {
    *  anchorId 가 null 이면 페이지 끝에 추가(빈 페이지/전역 단축키). 새 id 를
    *  미리 발급해(최신 draftRef 기준) 포커스 대상으로 쓴다. 슬래시커맨드(①)와
    *  키보드 이어쓰기(②) 공용 진입점. */
-  function insertWidgetAfter(pageIdx, anchorId, type) {
+  function insertWidgetAfter(pageIdx, anchorId, type, opts = {}) {
     const page = draftRef.current?.pages?.[pageIdx]
     if (!page) return
+    const defaults = widgetCatalog?.byType?.[type]?.default_props ?? {}
+    // 빈 트리거 위젯 대체(①) — anchor 가 extra 블록이면 그 자리에서 타입만
+    // 교체(레이아웃 유지, 빈 위젯이 남지 않음). 템플릿 블록은 자리 교체가 안 되니
+    // 아래에 삽입으로 폴백(원래 구조의 빈 블록은 유지).
+    if (opts.replaceAnchor && anchorId) {
+      const isExtra = (page.extra_blocks ?? []).some((b) => b.id === anchorId)
+      if (isExtra) {
+        replaceExtraBlockType(pageIdx, anchorId, type, defaults)
+        if (INLINE_EDITABLE_WIDGETS.has(type)) focusExtraBlock(pageIdx, anchorId)
+        else setActiveBlock({ pageIdx, blockId: anchorId })
+        return
+      }
+    }
     const tpl = getCachedTemplate(pageTemplateMap, page)
     const existingIds = collectPageBlockIds(page, tpl)
     const newId = freshExtraId(type, existingIds)
-    const defaults = widgetCatalog?.byType?.[type]?.default_props ?? {}
     if (anchorId) {
       addExtraBlockAt(pageIdx, type, defaults, anchorId, 'down', null, newId)
     } else {
@@ -2086,6 +2098,36 @@ export default function ReportDetailPage() {
     // 텍스트 계열(rich_text·heading)만 contenteditable 포커스; 나머지는 선택만.
     if (INLINE_EDITABLE_WIDGETS.has(type)) focusExtraBlock(pageIdx, newId)
     else setActiveBlock({ pageIdx, blockId: newId })
+  }
+
+  /** extra 블록의 타입을 그 자리에서 교체 — 슬래시커맨드로 "빈 긴 글/제목"을 다른
+   *  위젯으로 바꿀 때 사용(id·레이아웃 유지, 이전 content/스타일 오버라이드는
+   *  새 타입에 안 맞으니 비운다). 새 타입의 제목 생략 기본값만 시드한다. */
+  function replaceExtraBlockType(pageIdx, blockId, type, defaultProps) {
+    setDraft((d) => {
+      if (!d) return d
+      const page = d.pages[pageIdx]
+      if (!page) return d
+      const skipSeed = getCaptionSkip(type)
+      const nextContent = { ...(page.content ?? {}) }
+      if (skipSeed) nextContent[blockId] = { caption_skip_autofill: true }
+      else delete nextContent[blockId]
+      const nextPropsOv = { ...(page.props_overrides ?? {}) }
+      delete nextPropsOv[blockId]
+      const nextPages = d.pages.map((p, i) =>
+        i === pageIdx
+          ? {
+              ...p,
+              extra_blocks: (p.extra_blocks ?? []).map((b) =>
+                b.id === blockId ? { ...b, type, props: { ...defaultProps } } : b,
+              ),
+              content: nextContent,
+              props_overrides: nextPropsOv,
+            }
+          : p,
+      )
+      return { ...d, pages: nextPages }
+    })
   }
 
   /** 키보드 이어쓰기(②) — 아래에 긴 글(rich_text) 위젯을 만들고 커서 이동. */
@@ -4884,8 +4926,8 @@ export default function ReportDetailPage() {
                     }
                     onAddBlock={(type, defaults) => addExtraBlock(idx, type, defaults)}
                     onInsertBelow={(anchorId) => insertTextBlockAfter(idx, anchorId)}
-                    onInsertWidgetAfter={(anchorId, type) =>
-                      insertWidgetAfter(idx, anchorId, type)
+                    onInsertWidgetAfter={(anchorId, type, opts) =>
+                      insertWidgetAfter(idx, anchorId, type, opts)
                     }
                     onPasteWidgets={() => setPasteWidgetsTarget({ pageIdx: idx })}
                     onImportFromReport={() => setImportTarget({ pageIdx: idx })}
@@ -4952,8 +4994,8 @@ export default function ReportDetailPage() {
                     }
                     onAddBlock={(type, defaults) => addExtraBlock(safeCurrent, type, defaults)}
                     onInsertBelow={(anchorId) => insertTextBlockAfter(safeCurrent, anchorId)}
-                    onInsertWidgetAfter={(anchorId, type) =>
-                      insertWidgetAfter(safeCurrent, anchorId, type)
+                    onInsertWidgetAfter={(anchorId, type, opts) =>
+                      insertWidgetAfter(safeCurrent, anchorId, type, opts)
                     }
                     onPasteWidgets={() => setPasteWidgetsTarget({ pageIdx: safeCurrent })}
                     onImportFromReport={() => setImportTarget({ pageIdx: safeCurrent })}
@@ -9629,7 +9671,9 @@ function PageSection({
                   }
                   onMeasureEditHeight={(px) => handleMeasureEdit(block.id, px)}
                   onAddBelow={() => onInsertBelow?.(block.id)}
-                  onInsertWidgetAfter={(type) => onInsertWidgetAfter?.(block.id, type)}
+                  onInsertWidgetAfter={(type, opts) =>
+                    onInsertWidgetAfter?.(block.id, type, opts)
+                  }
                 />
                 )}
                 {showInsertArrows && (
@@ -11597,7 +11641,13 @@ function BlockEditorCard({
             </div>
           )}
           <div ref={contentRef}>
-            <HE props={effectiveProps} content={content} onChange={onChange} readOnly={readOnly} />
+            <HE
+              props={effectiveProps}
+              content={content}
+              onChange={onChange}
+              readOnly={readOnly}
+              onInsertWidgetAfter={onInsertWidgetAfter}
+            />
           </div>
         </div>
       </div>

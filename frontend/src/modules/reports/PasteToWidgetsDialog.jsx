@@ -57,14 +57,20 @@ export function PasteToWidgetsDialog({ open, onOpenChange, onConfirm }) {
     // 있으면 기본 동작(텍스트가 textarea 로 들어가고 onChange 가 파싱)에 맡긴다.
     if (files.length || html.trim()) {
       e.preventDefault()
-      let segs = []
-      if (html.trim()) segs = parseHtmlToWidgets(html)
-      if (segs.length === 0 && plain.trim()) segs = parseTextToWidgets(plain)
-      // 클립보드의 이미지 파일 처리 — PPT 텍스트박스(도형)를 복사하면 그 도형을
-      // 그린 PNG 가 이미지로 함께 온다. 이미 텍스트/표 세그먼트가 있으면 그 이미지는
-      // "도형 렌더" 일 가능성이 커서 버린다(텍스트 우선). 텍스트가 전혀 없을 때만
-      // (순수 이미지 복사) 이미지 위젯으로 추가한다. 워드 본문에 인라인으로 박힌
-      // 이미지는 HTML <img> 로 파싱돼 별도 처리되므로 여기 영향 없음.
+      // 텍스트 우선 원칙. PPT 텍스트박스(도형)를 복사하면 그 도형을 그린 PNG 가
+      // 이미지(클립보드 파일 + html <img>)로 오고, 텍스트는 text/plain 이나
+      // html 안에 별도로 담긴다. 그래서 (1) html 에서 실제 텍스트가 나오면 그걸,
+      // (2) 아니면 text/plain 이 있으면 그걸(= html 이 도형 이미지뿐이어도 평문
+      // 텍스트를 살린다), (3) 둘 다 없을 때만 이미지로 받아들인다.
+      const htmlSegs = html.trim() ? parseHtmlToWidgets(html) : []
+      const htmlHasText = htmlSegs.some((s) => s.type !== 'image')
+      let segs
+      if (htmlHasText) segs = htmlSegs
+      else if (plain.trim()) segs = parseTextToWidgets(plain)
+      else segs = htmlSegs
+
+      // 텍스트/표 세그먼트가 하나도 없을 때만(순수 이미지 복사) 클립보드 이미지를
+      // 이미지 위젯으로 추가한다. 텍스트가 있으면 도형 렌더 이미지는 버린다.
       const hasTextSeg = segs.some((s) => s.type !== 'image')
       if (!hasTextSeg) {
         for (const f of files) {

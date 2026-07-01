@@ -610,6 +610,10 @@ export default function ReportDetailPage() {
   const autoAcquiredRef = useRef(false)
   useEffect(() => {
     if (!startEditingFromState || isNew || !reportId) return
+    // 보고서 로드 완료까지 대기. 로드 전에 락을 걸면 워크스페이스 컨텍스트
+    // (X-Workspace-Slug 헤더)가 아직 안 잡혀 POST /lock 이 400 으로 실패한다.
+    // 보고서 GET 도 같은 헤더가 필요하므로 existingReport 가 있으면 헤더는 확정.
+    if (!existingReport || String(existingReport.id) !== String(reportId)) return
     if (autoAcquiredRef.current) return
     autoAcquiredRef.current = true
     ;(async () => {
@@ -627,7 +631,7 @@ export default function ReportDetailPage() {
       }
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startEditingFromState, isNew, reportId])
+  }, [startEditingFromState, isNew, reportId, existingReport])
 
   // Local working copy of the report. `pages` is the source of truth for
   // template binding + content + layout_overrides; the top-level fields

@@ -47,33 +47,27 @@ export function PasteToWidgetsDialog({ open, onOpenChange, onConfirm }) {
 
   function handlePaste(e) {
     const cd = e.clipboardData
-    // eslint-disable-next-line no-console
-    console.log('%c[paste] fired', 'color:#a21caf', 'types=', Array.from(cd?.types || []))
     if (!cd) return
     const items = Array.from(cd.items || [])
-    // ⚠️ [임시 진단] 모든 파일 항목을 무조건 로깅 — svg/xml 은 내용까지 읽어 <text>
-    // 유무 확인. 확인 뒤 이 블록 제거.
-    items.forEach((it, idx) => {
-      if (it.kind !== 'file') return
-      const f = it.getAsFile()
-      // eslint-disable-next-line no-console
-      console.log(`[paste] file#${idx}`, it.type, f ? { name: f.name, size: f.size } : 'getAsFile→null')
-      if (f && (it.type === 'image/svg+xml' || /svg|xml/.test(it.type))) {
-        f.text().then((t) => {
-          // eslint-disable-next-line no-console
-          console.log(
-            `[paste] svg#${idx} <text>=${(t.match(/<text[\s>]/g) || []).length} <tspan>=${(t.match(/<tspan[\s>]/g) || []).length} <path>=${(t.match(/<path[\s>]/g) || []).length}`,
-            t.slice(0, 1500),
-          )
+
+    // PPT 텍스트박스는 image/svg+xml 을 **string 항목**(파일 아님)으로 담는다 —
+    // getData('image/svg+xml') 는 빈값이라 getAsString 으로 읽어야 한다. SVG(=XML)
+    // 안 <text>/<tspan> 에 실제 글자가 있어 이를 추출한다. getAsString/getAsFile 은
+    // 이벤트 유효 시점에 동기적으로 호출해 Promise 로 잡아둔다.
+    const svgItem = items.find((it) => it.type === 'image/svg+xml')
+    const svgPromise = svgItem
+      ? new Promise((resolve) => {
+          try {
+            if (svgItem.kind === 'string') svgItem.getAsString((s) => resolve(s || ''))
+            else {
+              const f = svgItem.getAsFile()
+              f ? f.text().then(resolve, () => resolve('')) : resolve('')
+            }
+          } catch {
+            resolve('')
+          }
         })
-      }
-    })
-    // 클립보드 항목을 동기적으로(이벤트 유효 시점) 붙잡는다 — 파일은 이벤트가 끝나도
-    // 살아 있어 async 로 읽을 수 있다. PPT 텍스트박스는 image/svg+xml 로 오는데
-    // SVG(=XML) 안에 실제 글자가 있어 그걸 추출한다.
-    const svgFile =
-      items.find((it) => it.kind === 'file' && it.type === 'image/svg+xml')?.getAsFile() ||
-      null
+      : null
     const rasterFiles = items
       .filter((it) => it.kind === 'file' && (it.type || '').startsWith('image/') && it.type !== 'image/svg+xml')
       .map((it) => it.getAsFile())
@@ -82,11 +76,11 @@ export function PasteToWidgetsDialog({ open, onOpenChange, onConfirm }) {
     const plain = cd.getData('text/plain') || ''
 
     // 순수 평문만(이미지·SVG·html 없음) 있으면 기본 동작(textarea 입력)에 맡긴다.
-    if (!svgFile && !rasterFiles.length && !html.trim()) return
+    if (!svgPromise && !rasterFiles.length && !html.trim()) return
     e.preventDefault()
 
-    // 텍스트 우선. (1) html 에서 텍스트, (2) text/plain, (3) SVG 안의 <text>(PPT
-    // 텍스트박스), (4) 그래도 없으면 래스터/SVG 이미지로. async(SVG 파일 읽기).
+    // 텍스트 우선. (1) html 텍스트, (2) text/plain, (3) SVG 속 <text>(PPT 텍스트박스),
+    // (4) 그래도 없으면 래스터/SVG 이미지로.
     ;(async () => {
       const htmlSegs = html.trim() ? parseHtmlToWidgets(html) : []
       let segs = htmlSegs
@@ -95,26 +89,38 @@ export function PasteToWidgetsDialog({ open, onOpenChange, onConfirm }) {
         segs = parseTextToWidgets(plain)
         hasTextSeg = segs.length > 0
       }
-      if (!hasTextSeg && svgFile) {
-        try {
-          const svgSegs = parseSvgToWidgets(await svgFile.text())
-          if (svgSegs.length) {
-            segs = svgSegs
-            hasTextSeg = true
-          }
-        } catch {
-          /* SVG 파싱 실패 → 아래 이미지 폴백 */
+      let svgText = ''
+      if (!hasTextSeg && svgPromise) {
+        svgText = await svgPromise
+        // ⚠️ [임시 진단] SVG 에서 글자 추출 가능한지 확인. 확인 뒤 이 줄 제거.
+        // eslint-disable-next-line no-console
+        console.log(
+          '[paste] svg len=', svgText.length,
+          '<text>=', (svgText.match(/<text[\s>]/g) || []).length,
+          '<tspan>=', (svgText.match(/<tspan[\s>]/g) || []).length,
+          '<path>=', (svgText.match(/<path[\s>]/g) || []).length,
+        )
+        const svgSegs = parseSvgToWidgets(svgText)
+        if (svgSegs.length) {
+          segs = svgSegs
+          hasTextSeg = true
         }
       }
       if (!hasTextSeg) {
-        // 텍스트가 전혀 없음(순수 이미지 복사) → 이미지 위젯. 래스터가 있으면 그걸,
-        // 없고 SVG 만 있으면 SVG 를 이미지로.
+        // 텍스트가 전혀 없음 → 이미지 위젯. 래스터가 있으면 그걸, 없고 SVG 만 있으면
+        // SVG 문자열을 Blob 으로 만들어 이미지로.
         segs = []
         for (const f of rasterFiles) {
           segs.push({ type: 'image', blob: f, alt: f.name || '', kind: '이미지', preview: f.name || '이미지' })
         }
-        if (!rasterFiles.length && svgFile) {
-          segs.push({ type: 'image', blob: svgFile, alt: '', kind: '이미지', preview: '이미지(SVG)' })
+        if (!rasterFiles.length && svgText) {
+          segs.push({
+            type: 'image',
+            blob: new Blob([svgText], { type: 'image/svg+xml' }),
+            alt: '',
+            kind: '이미지',
+            preview: '이미지(SVG)',
+          })
         }
       }
       setRich(segs)

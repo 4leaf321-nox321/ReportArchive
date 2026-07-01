@@ -601,6 +601,32 @@ export default function ReportDetailPage() {
     },
   })
 
+  // startEditing 으로 진입(프리셋 "작성 시작" · 보고서 "복사")할 때 편집 락을
+  // 자동 획득한다. isEditing 초기값만 true 로 켜면(위 useState) 락을 잡지 않아
+  // 첫 "저장" 이 lock_not_held("편집 권한이 없습니다…")로 실패한다. onEnterEdit
+  // 과 동일한 획득/충돌 처리를 마운트 시 1회만 수행(저장 보고서 대상, isNew 제외).
+  const autoAcquiredRef = useRef(false)
+  useEffect(() => {
+    if (!startEditingFromState || isNew || !reportId) return
+    if (autoAcquiredRef.current) return
+    autoAcquiredRef.current = true
+    ;(async () => {
+      try {
+        await lock.acquire({ force: false })
+        setTakeoverPrompt(null)
+      } catch (err) {
+        // 락 획득 실패 시 편집 상태를 풀어 "락 없는 편집"을 막는다.
+        setIsEditing(false)
+        if (err instanceof LockConflictError && err.code === 'lock_held_by_other') {
+          setTakeoverPrompt(err.holder)
+        } else {
+          toast.error(err?.message || '편집 모드 진입 실패')
+        }
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startEditingFromState, isNew, reportId])
+
   // Local working copy of the report. `pages` is the source of truth for
   // template binding + content + layout_overrides; the top-level fields
   // hold cross-page metadata.

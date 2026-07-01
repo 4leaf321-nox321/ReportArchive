@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Settings2 } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
@@ -149,8 +149,10 @@ export function HeadingEditor({ props, content, onChange, readOnly, onInsertWidg
   // 계산해 per-block 으로 내려준다. 편집 모드에선 붙이지 않는다(작성 텍스트와
   // 섞이면 혼란 — 읽기/내보내기 렌더에만 prefix).
   const headingNumber = useCurrentBlockHeadingNumber()
-  // 슬래시커맨드(①) — 빈 제목에서 / 로 위젯 삽입. { query, rect } | null.
+  // 슬래시커맨드(①) — 제목 줄 끝의 "/…" 로 위젯 삽입. { query, rect, slashStart,
+  // caret } | null. rowRef 로 편집기 핸들을 잡아 "/query" 조각만 지운다.
   const [slash, setSlash] = useState(null)
+  const rowRef = useRef(null)
   const value = content?.text ?? ''
   // dual-field: 평문 text(제목 역할·TOC·export)는 유지하고, 색·서식 일부만 칠한
   // rich 마크업은 text_html 에 둔다(긴 글처럼 per-char). 둘 다 RichTextRowEditor
@@ -246,19 +248,31 @@ export function HeadingEditor({ props, content, onChange, readOnly, onInsertWidg
           onChange 가 함께 동기화해 제목 역할을 유지. */}
       <div className="outline-rich-row flex-1 min-w-0">
         <RichTextRowEditor
+          ref={rowRef}
           html={_richSeed(htmlValue, value)}
-          placeholder={props.default_text || '제목 입력 (빈 제목에서 / 로 위젯 추가)'}
+          placeholder={props.default_text || '제목 입력 ( / 로 위젯 추가)'}
           defaultSizePx={headingBaseSizePx}
           onChange={(html, text) => {
             patch({
               text_html: _richIsEmpty(html) ? undefined : html,
               text: text ?? '',
             })
-            // 슬래시커맨드(①) — 제목 전체가 "/…"(공백 없음)면 위젯 메뉴를 연다.
+            // 슬래시커맨드(①) — 제목 줄 끝이 "(줄시작|공백)/…"면 위젯 메뉴를 연다
+            // (긴 글과 동일). 내용이 있어도 띄어쓰기 뒤 / 로 동작한다.
             if (!onInsertWidgetAfter) return
-            const m = /^\/([^\s/]*)$/.exec(text ?? '')
-            if (m) setSlash({ query: m[1], rect: headingCaretRect() })
-            else setSlash(null)
+            const t = text ?? ''
+            const m = /(?:^|\s)\/([^\s/]*)$/.exec(t)
+            if (m) {
+              const query = m[1]
+              setSlash({
+                query,
+                rect: headingCaretRect(),
+                slashStart: t.length - (query.length + 1),
+                caret: t.length,
+              })
+            } else {
+              setSlash(null)
+            }
           }}
           className={cn(
             'placeholder:text-muted-foreground/50 py-1 pr-9',
@@ -281,11 +295,25 @@ export function HeadingEditor({ props, content, onChange, readOnly, onInsertWidg
           rect={slash.rect}
           query={slash.query}
           onSelect={(type) => {
+            const s = slash
             setSlash(null)
-            // 제목은 그대로 두고(제목 텍스트만 "/…" 지움) 아래에 새 위젯을 추가한다.
-            // 제목을 없애 버리면 "변경"처럼 동작해, 새 위젯을 이어 붙이는
-            // 본래 의도와 어긋난다. 제목은 남겨 사용자가 제목을 채워 넣게 둔다.
-            patch({ text: '', text_html: undefined })
+            // 제목 줄에서 "/query" 조각만 지우고(제목 문구·서식은 보존) 아래에 새
+            // 위젯을 추가한다. 제목을 통째로 없애면 "변경"처럼 동작해 이어 붙이기
+            // 의도와 어긋난다. 편집기 핸들이 없으면 전체를 비우는 폴백.
+            if (rowRef.current?.applyAndCapture && s && s.caret > s.slashStart) {
+              const r = rowRef.current.applyAndCapture((editor) => {
+                editor
+                  .chain()
+                  .deleteRange({ from: s.slashStart + 1, to: s.caret + 1 })
+                  .run()
+              })
+              patch({
+                text: r.text,
+                text_html: _richIsEmpty(r.html) ? undefined : r.html,
+              })
+            } else {
+              patch({ text: '', text_html: undefined })
+            }
             onInsertWidgetAfter?.(type)
           }}
           onClose={() => setSlash(null)}

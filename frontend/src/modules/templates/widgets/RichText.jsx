@@ -1482,10 +1482,25 @@ function OutlineEditor({ items, numbering, onChange, placeholder, bodyClassFor, 
         i === idx ? { ...it, html: r.html, text: r.text } : it,
       )
     }
-    const hasContent = nextItems.some((it) => (it.text ?? '').trim() !== '')
-    commitChange(nextItems, { coalesce: false })
-    // 위젯에 내용이 남으면 아래에 새 위젯 추가, 완전히 비면 이 자리를 대체.
-    onInsertWidgetAfter?.(type, { replaceAnchor: !hasContent })
+    // "/query" 제거 후 트리거 행이 비었는지 / 다른 행에 내용이 있는지로 분기.
+    const triggerEmpty = (nextItems[idx]?.text ?? '').trim() === ''
+    const otherHasContent = nextItems.some(
+      (it, i) => i !== idx && (it.text ?? '').trim() !== '',
+    )
+    if (triggerEmpty && otherHasContent) {
+      // 트리거 행만 비고 다른 내용이 있으면 그 빈 행을 아예 제거(빈 줄 안 남김)
+      // 하고 아래에 새 위젯을 추가한다.
+      commitChange(nextItems.filter((_, i) => i !== idx), { coalesce: false })
+      onInsertWidgetAfter?.(type)
+    } else if (triggerEmpty) {
+      // 위젯 전체가 비었으면 이 자리를 새 위젯으로 대체.
+      commitChange(nextItems, { coalesce: false })
+      onInsertWidgetAfter?.(type, { replaceAnchor: true })
+    } else {
+      // 트리거 행에 내용이 남으면(예: "내용 ") 그대로 두고 아래에 추가.
+      commitChange(nextItems, { coalesce: false })
+      onInsertWidgetAfter?.(type)
+    }
   }
 
   function setDepth(idx, depth) {

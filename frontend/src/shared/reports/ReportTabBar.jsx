@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { X, Columns2 } from 'lucide-react'
 import { cn } from '@/shared/lib/utils'
@@ -40,6 +40,9 @@ export function ReportTabBar({ pane = 'left', placement = 'shell' }) {
         onSelect={(t) => ctx.setRightActive(t.key)}
         onClose={(t) => ctx.closeRight(t.key)}
         onDropTab={handleDrop}
+        onCloseOthers={(t) => ctx.closeOtherTabs('right', t.key)}
+        onCloseToRight={(t) => ctx.closeTabsToRight('right', t.key)}
+        onCloseAll={() => ctx.closeAllTabs('right')}
       />
     )
   }
@@ -56,6 +59,9 @@ export function ReportTabBar({ pane = 'left', placement = 'shell' }) {
       onSelect={(t) => navigate(routeForTab(t))}
       onClose={(t) => ctx.closeTab(t.key)}
       onDropTab={handleDrop}
+      onCloseOthers={(t) => ctx.closeOtherTabs('left', t.key)}
+      onCloseToRight={(t) => ctx.closeTabsToRight('left', t.key)}
+      onCloseAll={() => ctx.closeAllTabs('left')}
       onSplit={(t) => ctx.moveTab(t.key, 'right')}
       // 저장된 보고서만 우측으로. 활성(편집중) 탭은 다른 열린 탭이 있을 때만
       // (옮긴 뒤 편집 창에 그 보고서를 열어야 하므로).
@@ -73,14 +79,49 @@ function TabStrip({
   onSelect,
   onClose,
   onDropTab,
+  onCloseOthers = null,
+  onCloseToRight = null,
+  onCloseAll = null,
   onSplit = null,
   canSplit = null,
 }) {
   // 드롭 삽입 위치(0..tabs.length). null = 드래그 중 아님.
   const [dropHint, setDropHint] = useState(null)
   const dragDepth = useRef(0)
+  // 우클릭 컨텍스트 메뉴 — { x, y, tab, index } | null.
+  const [menu, setMenu] = useState(null)
+
+  // 메뉴 열림 동안 바깥 클릭·Esc·스크롤·리사이즈로 닫는다.
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    const onKey = (e) => {
+      if (e.key === 'Escape') close()
+    }
+    window.addEventListener('mousedown', close)
+    window.addEventListener('resize', close)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', close)
+      window.removeEventListener('resize', close)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
 
   if (!tabs || tabs.length === 0) return null
+
+  function openMenu(e, tab, index) {
+    e.preventDefault()
+    e.stopPropagation()
+    // 대략적인 메뉴 크기로 뷰포트 밖으로 넘치지 않게 보정.
+    const MW = 208
+    const MH = 176
+    const x = Math.min(e.clientX, window.innerWidth - MW - 8)
+    const y = Math.min(e.clientY, window.innerHeight - MH - 8)
+    setMenu({ x: Math.max(8, x), y: Math.max(8, y), tab, index })
+  }
 
   function hasTabData(e) {
     return Array.from(e.dataTransfer?.types ?? []).includes(DND_MIME)
@@ -101,6 +142,7 @@ function TabStrip({
   }
 
   return (
+    <>
     <div
       data-app-chrome="report-tabs"
       onDragEnter={(e) => {
@@ -172,6 +214,7 @@ function TabStrip({
               if (d) onDropTab(d.key, d.srcPane, toIndex)
             }}
             onClick={() => onSelect(tab)}
+            onContextMenu={(e) => openMenu(e, tab, index)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault()
@@ -223,6 +266,79 @@ function TabStrip({
           </div>
         )
       })}
+    </div>
+    {menu && (
+      <TabContextMenu
+        x={menu.x}
+        y={menu.y}
+        canCloseOthers={tabs.length > 1}
+        canCloseToRight={menu.index < tabs.length - 1}
+        onClose={() => {
+          onClose(menu.tab)
+          setMenu(null)
+        }}
+        onCloseOthers={() => {
+          onCloseOthers?.(menu.tab)
+          setMenu(null)
+        }}
+        onCloseToRight={() => {
+          onCloseToRight?.(menu.tab)
+          setMenu(null)
+        }}
+        onCloseAll={() => {
+          onCloseAll?.()
+          setMenu(null)
+        }}
+      />
+    )}
+    </>
+  )
+}
+
+// 탭 우클릭 컨텍스트 메뉴 — 커서 위치에 fixed 로 띄운다(overflow 클리핑 회피).
+// 바깥 클릭/Esc/스크롤 닫기는 TabStrip 이 관리하므로 여기선 항목만 렌더.
+function TabContextMenu({
+  x,
+  y,
+  canCloseOthers,
+  canCloseToRight,
+  onClose,
+  onCloseOthers,
+  onCloseToRight,
+  onCloseAll,
+}) {
+  const items = [
+    { label: '닫기', onClick: onClose, disabled: false },
+    { label: '다른 탭 모두 닫기', onClick: onCloseOthers, disabled: !canCloseOthers },
+    { label: '오른쪽 탭 모두 닫기', onClick: onCloseToRight, disabled: !canCloseToRight },
+    { sep: true },
+    { label: '모두 닫기', onClick: onCloseAll, disabled: false },
+  ]
+  return (
+    <div
+      role="menu"
+      // 메뉴 위에서의 mousedown 이 바깥-닫기(window mousedown)로 새지 않게 차단.
+      onMouseDown={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.preventDefault()}
+      style={{ left: x, top: y }}
+      className="fixed z-[60] min-w-[11rem] overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+    >
+      {items.map((it, i) =>
+        it.sep ? (
+          <div key={`sep-${i}`} className="-mx-1 my-1 h-px bg-muted" />
+        ) : (
+          <button
+            key={it.label}
+            type="button"
+            role="menuitem"
+            disabled={it.disabled}
+            onClick={it.onClick}
+            className="relative flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50"
+          >
+            {it.label}
+          </button>
+        ),
+      )}
     </div>
   )
 }

@@ -103,6 +103,11 @@ export function ReportTabsProvider({ children }) {
   const [compareDiff, setCompareDiff] = useState(null)
   const [scrollSyncEnabled, setScrollSyncEnabled] = useState(false)
   const pendingCloseRef = useRef(null)
+  // 여러 좌측 탭을 한 번에 닫을 때(모두/다른탭/오른쪽) 활성 탭이 포함되면, 생존
+  // 탭(또는 목록)으로의 라우트 이동이 성공한 뒤에만 실제 제거를 커밋하기 위한
+  // 보류 키 목록. 미저장 가드에서 "머무름"을 고르면 activeKey 가 그대로라 커밋되지
+  // 않아 탭이 유지된다(유실 방지).
+  const pendingRemoveKeysRef = useRef(null)
   // 활성(편집중) 좌측 탭을 우측으로 보낼 때, 이웃으로의 라우트 이동이 성공한
   // 뒤에만 실제 이동을 커밋하기 위한 보류 키. 미저장 가드에서 "머무름"을 고르면
   // ReportDetailPage 가 clearPendingMove() 로 취소한다(유실/오작동 방지).
@@ -148,6 +153,16 @@ export function ReportTabsProvider({ children }) {
     if (pending && activeKey !== pending) {
       pendingCloseRef.current = null
       setTabs((prev) => prev.filter((t) => t.key !== pending))
+    }
+  }, [activeKey])
+
+  // 일괄 닫기 보류 커밋 — 이동 목적지(생존 탭/목록)로 활성 탭이 바뀌어
+  // 닫을 목록에 더는 활성 탭이 없으면(=가드 통과) 그 탭들을 제거한다.
+  useEffect(() => {
+    const keys = pendingRemoveKeysRef.current
+    if (keys && !keys.includes(activeKey)) {
+      pendingRemoveKeysRef.current = null
+      setTabs((prev) => prev.filter((t) => !keys.includes(t.key)))
     }
   }, [activeKey])
 
@@ -252,6 +267,71 @@ export function ReportTabsProvider({ children }) {
   const dropTab = useCallback((key) => {
     setTabs((prev) => prev.filter((t) => t.key !== key))
   }, [])
+
+  // 좌측 탭 여러 개 닫기. 활성 탭이 안 끼면 즉시 제거, 끼면 생존 탭(없으면 목록)
+  // 으로 이동한 뒤 커밋(미저장 가드 통과 시). closeTab 과 같은 이동/보류 규약.
+  const closeManyLeft = useCallback(
+    (keysToClose) => {
+      if (!keysToClose.length) return
+      const closeSet = new Set(keysToClose)
+      const active = activeKeyRef.current
+      if (!active || !closeSet.has(active)) {
+        setTabs((prev) => prev.filter((t) => !closeSet.has(t.key)))
+        return
+      }
+      const cur = tabsRef.current
+      const survivor = cur.find((t) => !closeSet.has(t.key)) ?? null
+      pendingRemoveKeysRef.current = keysToClose
+      if (survivor) {
+        navigate(routeForTab(survivor))
+      } else {
+        const slug = cur.find((t) => t.key === active)?.slug
+        navigate(slug ? `/w/${slug}/reports` : '/')
+      }
+    },
+    [navigate],
+  )
+
+  // 우측(읽기전용 분할) 탭 여러 개 닫기 — 라우트와 무관하므로 상태만 갱신.
+  const closeManyRight = useCallback((keysToClose) => {
+    if (!keysToClose.length) return
+    const closeSet = new Set(keysToClose)
+    const survivors = rightTabsRef.current.filter((t) => !closeSet.has(t.key))
+    setRightTabs(survivors)
+    if (closeSet.has(rightActiveKeyRef.current)) {
+      setRightActiveKey(survivors.length ? survivors[survivors.length - 1].key : null)
+    }
+  }, [])
+
+  // ── 탭 컨텍스트 메뉴용 일괄 닫기(좌/우 공용) ─────────────────────────
+  const paneKeys = useCallback(
+    (pane) => (pane === 'right' ? rightTabsRef.current : tabsRef.current),
+    [],
+  )
+  const closeOtherTabs = useCallback(
+    (pane, key) => {
+      const keys = paneKeys(pane).filter((t) => t.key !== key).map((t) => t.key)
+      pane === 'right' ? closeManyRight(keys) : closeManyLeft(keys)
+    },
+    [paneKeys, closeManyLeft, closeManyRight],
+  )
+  const closeTabsToRight = useCallback(
+    (pane, key) => {
+      const list = paneKeys(pane)
+      const idx = list.findIndex((t) => t.key === key)
+      if (idx < 0) return
+      const keys = list.slice(idx + 1).map((t) => t.key)
+      pane === 'right' ? closeManyRight(keys) : closeManyLeft(keys)
+    },
+    [paneKeys, closeManyLeft, closeManyRight],
+  )
+  const closeAllTabs = useCallback(
+    (pane) => {
+      const keys = paneKeys(pane).map((t) => t.key)
+      pane === 'right' ? closeManyRight(keys) : closeManyLeft(keys)
+    },
+    [paneKeys, closeManyLeft, closeManyRight],
+  )
 
   // ── 우측(secondary, 읽기전용 분할) 탭 ────────────────────────────────
   const setRightActive = useCallback((key) => {
@@ -369,6 +449,9 @@ export function ReportTabsProvider({ children }) {
       promoteNewTab,
       closeTab,
       dropTab,
+      closeOtherTabs,
+      closeTabsToRight,
+      closeAllTabs,
       // 우측(분할)
       rightTabs,
       rightActiveKey,
@@ -396,6 +479,9 @@ export function ReportTabsProvider({ children }) {
       promoteNewTab,
       closeTab,
       dropTab,
+      closeOtherTabs,
+      closeTabsToRight,
+      closeAllTabs,
       rightTabs,
       rightActiveKey,
       rightTab,

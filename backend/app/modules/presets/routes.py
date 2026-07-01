@@ -80,7 +80,13 @@ def new_report_from_preset(
     preset_id: int,
     payload: PresetInstantiate,
     db: Session = Depends(get_db),
-    actor: CurrentUser = Depends(require_writer),
+    # ⚠ require_writer 를 쓰지 않는다: 새 보고서는 항상 caller 의 personal 공간
+    # (personal-{user.id})에 생성되므로 현재 보고 있는 게시판의 쓰기 권한은
+    # 무관하다. require_writer 는 활성 workspace(X-Workspace-Slug)를 게이트해,
+    # 다른 조직 공개 게시판 열람(public_viewer)·가상(통합) 부서·보관된 TF·
+    # 열람전용(viewer) 게시판을 보던 중 프리셋으로 시작하면 "편집 권한 없음"
+    # 으로 잘못 막는다. create_ai_draft·프리셋 update/delete 와 동일한 규약.
+    actor: CurrentUser = Depends(get_current_user),
 ):
     """Create a new report seeded from the preset, in the caller's personal
     space (게시는 이후 별도 액션 — same as a blank new report)."""

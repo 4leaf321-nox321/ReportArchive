@@ -1365,6 +1365,7 @@ async def llm_assign_sections(
     from app.ai.llm import LLMCancelled, LLMContextError, LLMError, chat_cancellable
     from app.config import settings
     from app.modules.reports.models import ReportPhase
+    from app.shared.permissions import can_edit
     from app.widgets.text_extraction import extract_chunks_for_report
 
     if not ai_enabled_for(db, actor.user, "report_authoring"):
@@ -1375,15 +1376,17 @@ async def llm_assign_sections(
     report = services.get_report(db, report_id)
     if not report:
         return not_found_response(f"Report not found: {report_id}")
-    # 소유·drafting·락 가드 (_apply_ai_draft 와 동일 규칙; 본인 락은 통과).
-    if report.owner_user_id != actor.user.id:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "본인이 만든 보고서만 AI로 수정할 수 있습니다."
-        )
-    if report.phase != ReportPhase.drafting:
+    # 단락 구분은 내용이 아니라 메타데이터라, "작성"(내용 생성)과 달리 drafting 에
+    # 묶지 않고 **수동 편집과 동일한 권한(can_edit)** 으로 게이트한다 → 검토(reviewing)
+    # 단계 보고서도 지정 가능. 발행 완료(finalized)만 편집 차단.
+    if report.phase == ReportPhase.finalized:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
-            f"작성 중(drafting) 보고서만 AI로 수정할 수 있습니다 (현재: {report.phase.value}).",
+            "발행 완료된 보고서는 편집할 수 없습니다. 발행 취소 후 지정하세요.",
+        )
+    if not can_edit(db, actor.user, report).allowed:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "이 보고서를 편집할 권한이 없습니다."
         )
     held = services.get_active_lock(db, report)
     if held is not None and held.user_id != actor.user.id:

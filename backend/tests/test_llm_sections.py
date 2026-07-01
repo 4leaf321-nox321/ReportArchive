@@ -161,6 +161,72 @@ def test_llm_sections_fill_empty_only(monkeypatch):
         _cleanup(rid, suffix)
 
 
+def _set_phase(rid, phase):
+    db = SessionLocal()
+    try:
+        rep = db.get(Report, rid)
+        rep.phase = phase
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_llm_sections_works_in_reviewing(monkeypatch):
+    """단락 구분은 메타데이터라 검토(reviewing) 단계에서도 지정된다(작성과 달리)."""
+    from app.modules.reports.models import ReportPhase
+
+    c = TestClient(app)
+    suffix = uuid.uuid4().hex[:6]
+    code = _seed_code(suffix)
+    rid = _create_report(c, ADMIN, "personal-2", "REV " + suffix)
+    try:
+        _set_content(rid, {"b1": {"text": "리스크"}})
+        _set_phase(rid, ReportPhase.reviewing)
+
+        async def fake_chat(messages, **kw):
+            return types.SimpleNamespace(
+                content=f'{{"1": "{code}"}}', model="mock", backend="mock"
+            )
+
+        monkeypatch.setattr("app.ai.llm.chat_cancellable", fake_chat)
+        r = c.post(
+            f"/api/reports/{rid}/llm-sections",
+            headers=_h(ADMIN, "personal-2"),
+            json={"overwrite": True},
+        )
+        assert r.status_code == 200, r.text
+        assert _block_sections(rid).get("b1") == code
+    finally:
+        _cleanup(rid, suffix)
+
+
+def test_llm_sections_blocks_finalized(monkeypatch):
+    """발행 완료(finalized)는 편집 차단 → 403."""
+    from app.modules.reports.models import ReportPhase
+
+    c = TestClient(app)
+    suffix = uuid.uuid4().hex[:6]
+    _seed_code(suffix)
+    rid = _create_report(c, ADMIN, "personal-2", "FIN " + suffix)
+    try:
+        _set_content(rid, {"b1": {"text": "리스크"}})
+        _set_phase(rid, ReportPhase.finalized)
+
+        async def fake_chat(messages, **kw):  # 호출되면 안 됨
+            raise AssertionError("finalized 인데 LLM 호출됨")
+
+        monkeypatch.setattr("app.ai.llm.chat_cancellable", fake_chat)
+        r = c.post(
+            f"/api/reports/{rid}/llm-sections",
+            headers=_h(ADMIN, "personal-2"),
+            json={"overwrite": True},
+        )
+        assert r.status_code == 403, r.text
+        assert "발행 완료" in r.json()["message"]
+    finally:
+        _cleanup(rid, suffix)
+
+
 def test_llm_sections_drops_invalid_code(monkeypatch):
     """분류 목록에 없는 code 는 무시하고 유효한 것만 적용한다."""
     c = TestClient(app)

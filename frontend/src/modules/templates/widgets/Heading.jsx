@@ -282,9 +282,11 @@ export function HeadingEditor({ props, content, onChange, readOnly, onInsertWidg
           query={slash.query}
           onSelect={(type) => {
             setSlash(null)
-            // 빈 제목을 비우고, 이 제목 자리를 고른 위젯으로 대체(빈 제목 안 남김).
+            // 제목은 그대로 두고(제목 텍스트만 "/…" 지움) 아래에 새 위젯을 추가한다.
+            // 제목을 없애 버리면 "변경"처럼 동작해, 새 위젯을 이어 붙이는
+            // 본래 의도와 어긋난다. 제목은 남겨 사용자가 제목을 채워 넣게 둔다.
             patch({ text: '', text_html: undefined })
-            onInsertWidgetAfter?.(type, { replaceAnchor: true })
+            onInsertWidgetAfter?.(type)
           }}
           onClose={() => setSlash(null)}
         />

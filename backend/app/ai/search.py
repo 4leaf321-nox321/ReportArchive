@@ -185,6 +185,36 @@ def _keyword_search(db: Session, query: str, scope: Optional[set[int]], *, limit
     ).all()
 
 
+def _hydrate_full_snippets(db: Session, query: str, results: list[dict]) -> None:
+    """RAG Q&A 모드(snippet_chars=None) 전용 — 스니펫이 비어 있는 *키워드 전용*
+    히트에 인용용 청크 본문을 채운다. 시맨틱 히트는 이미 전문 스니펫을 갖고
+    있어 건너뛴다.
+
+    질의 토큰을 포함하는 청크를 우선 골라(없으면 첫 청크) 정확매치 근거가
+    LLM 컨텍스트에 실제로 들어가게 한다 — 본문 없는 인용(빈 출처)은 환각을
+    유발하므로 키워드 히트도 반드시 본문을 갖게 한다.
+    """
+    tokens = [t for t in (query or "").split() if t]
+    for item in results:
+        if item.get("snippet"):
+            continue
+        order_cols = []
+        if tokens:
+            order_cols.append(
+                case(*[(ReportChunk.text.ilike(f"%{t}%"), 0) for t in tokens], else_=1)
+            )
+        row = db.execute(
+            select(ReportChunk.block_id, ReportChunk.page_idx, ReportChunk.text)
+            .where(ReportChunk.report_id == item["report_id"])
+            .order_by(*order_cols)
+            .limit(1)
+        ).first()
+        if row:
+            item["block_id"] = row[0]
+            item["page_idx"] = row[1]
+            item["snippet"] = row[2] or ""
+
+
 def hybrid_search(
     db: Session,
     query: str,
@@ -195,6 +225,7 @@ def hybrid_search(
     entity_ids: Optional[list[int]] = None,
     entity_rollup: bool = False,
     year: Optional[int] = None,
+    snippet_chars: Optional[int] = 200,
 ) -> list[dict]:
     """semantic + keyword 를 RRF 로 합산. 한쪽에만 잡혀도 상위로 끌어올린다.
 
@@ -202,6 +233,10 @@ def hybrid_search(
     의미(벡터)와 정확 단어(pg_trgm) 양쪽 강점을 모두 취한다. 권한 스코프(전
     워크스페이스 합집합)를 한 번 계산해 양쪽에 동일 적용한다. entity_ids 필터도
     scope 에 한 번 얹어 시맨틱·키워드 양쪽이 같은 엔티티 필터를 본다.
+
+    snippet_chars: 시맨틱 히트 `snippet` 길이 상한(기본 200). None 이면 청크
+    전문 — RAG Q&A 가 인용 컨텍스트로 쓸 때. 이때 키워드 전용 히트도
+    _hydrate_full_snippets 로 본문을 채운다(빈 출처 방지).
     """
     scope = _visible_scope_ids(db, actor)
     scope = _apply_entity_scope(db, scope, entity_ids, entity_rollup)
@@ -213,6 +248,7 @@ def hybrid_search(
     sem = semantic_search(
         db, query, actor, limit=max(limit, 50),
         min_score=settings.embedding_hybrid_min_score, scope=scope,
+        snippet_chars=snippet_chars,
     )
     kw_rows = _keyword_search(db, query, scope, limit=max(limit, 50))
 
@@ -250,4 +286,7 @@ def hybrid_search(
                 "in_keyword": rid in kw_ids,
             }
         )
+    # RAG Q&A(전문 모드): 키워드 전용 히트는 snippet 이 비어 있으므로 본문 보강.
+    if snippet_chars is None:
+        _hydrate_full_snippets(db, query, out)
     return out

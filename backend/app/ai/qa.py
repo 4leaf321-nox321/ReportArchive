@@ -1,10 +1,12 @@
 """아카이브 RAG Q&A (A, B300_보조AI_설계.md §A) — 질문 → 검색 → 인용 답변.
 
-semantic_search 로 권한 게이팅된 상위 청크를 모아 번호 출처 프롬프트를 만들고
-B300(llm.chat)에게 **출처만 근거로** 답하게 한다. 근거가 약하면(검색 0건 또는
-최고 유사도 < 임계) LLM 을 호출하지 않아 환각을 막는다. 데이터 권한은
-semantic_search 의 가시 scope 가 이미 보장(권한 밖 보고서는 컨텍스트에 못 들어가
-인용 불가) — 기능 권한 게이트(§E)는 호출부에서 통과시킨다.
+hybrid_search(시맨틱 벡터 + pg_trgm 키워드 RRF)로 권한 게이팅된 상위 청크를
+모아 번호 출처 프롬프트를 만들고 B300(llm.chat)에게 **출처만 근거로** 답하게
+한다. 하이브리드라 품번·코드·고유명사 같은 정확매치 질문도 누락 없이 근거로
+끌어온다(시맨틱 단독이 약한 부분). 근거가 약하면(검색 0건) LLM 을 호출하지 않아
+환각을 막는다. 데이터 권한은 hybrid_search 의 가시 scope 가 이미 보장(권한 밖
+보고서는 컨텍스트에 못 들어가 인용 불가) — 기능 권한 게이트(§E)는 호출부에서
+통과시킨다.
 """
 from __future__ import annotations
 
@@ -16,7 +18,6 @@ from sqlalchemy.orm import Session
 
 from app.ai import search as ai_search
 from app.ai.llm import CancelCheck, chat, chat_cancellable
-from app.config import settings
 
 # 컨텍스트 토큰 폭주 방지 — 출처 1개당 본문 길이 상한(문자).
 _MAX_CHARS_PER_SOURCE = 1200
@@ -34,20 +35,20 @@ _CITE_RE = re.compile(r"\[(\d+)\]")
 def _retrieve(db: Session, actor, query: str, *, limit: int):
     """질문 → (질문문, citations, blocks) 또는 근거 없음 dict.
 
-    검색(semantic_search) 결과를 번호 출처 블록·citations 메타로 가공한다.
+    검색(hybrid_search) 결과를 번호 출처 블록·citations 메타로 가공한다.
     동기/비동기 ask 양쪽이 공유한다. 근거가 약하면 곧장 no_evidence dict 를
     반환하고, 충분하면 (q, citations, blocks) 튜플을 준다."""
     q = (query or "").strip()
     if not q:
         return {"answer": "", "citations": [], "no_evidence": True}
 
-    # 청크 전문(snippet_chars=None) + 근거 가드 임계(min_score 재사용).
-    hits = ai_search.semantic_search(
+    # 하이브리드(시맨틱+키워드 RRF) + 청크 전문(snippet_chars=None). 시맨틱 측
+    # 근거 가드 임계(embedding_hybrid_min_score)는 hybrid_search 내부 적용.
+    hits = ai_search.hybrid_search(
         db,
         q,
         actor,
         limit=limit,
-        min_score=settings.embedding_hybrid_min_score,
         snippet_chars=None,
     )
     if not hits:

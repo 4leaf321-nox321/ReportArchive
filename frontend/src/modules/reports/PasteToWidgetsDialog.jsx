@@ -48,6 +48,33 @@ export function PasteToWidgetsDialog({ open, onOpenChange, onConfirm }) {
   function handlePaste(e) {
     const cd = e.clipboardData
     if (!cd) return
+    // ⚠️ [임시 진단] 비동기 Clipboard API 로 svg 를 읽을 수 있는지 + <text> 유무 확인.
+    if (navigator.clipboard?.read) {
+      navigator.clipboard
+        .read()
+        .then(async (clipItems) => {
+          for (const ci of clipItems) {
+            // eslint-disable-next-line no-console
+            console.log('[clipboard.read] types:', ci.types)
+            const svgType = ci.types.find((t) => t === 'image/svg+xml')
+            if (svgType) {
+              const t = await (await ci.getType(svgType)).text()
+              // eslint-disable-next-line no-console
+              console.log(
+                '[clipboard.read] svg len=', t.length,
+                '<text>=', (t.match(/<text[\s>]/g) || []).length,
+                '<tspan>=', (t.match(/<tspan[\s>]/g) || []).length,
+                '<path>=', (t.match(/<path[\s>]/g) || []).length,
+                t.slice(0, 1500),
+              )
+            }
+          }
+        })
+        .catch((err) => {
+          // eslint-disable-next-line no-console
+          console.warn('[clipboard.read] fail', err)
+        })
+    }
     const items = Array.from(cd.items || [])
 
     // PPT 텍스트박스는 image/svg+xml 을 **string 항목**(파일 아님)으로 담는다 —

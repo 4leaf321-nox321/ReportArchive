@@ -47,8 +47,27 @@ export function PasteToWidgetsDialog({ open, onOpenChange, onConfirm }) {
 
   function handlePaste(e) {
     const cd = e.clipboardData
+    // eslint-disable-next-line no-console
+    console.log('%c[paste] fired', 'color:#a21caf', 'types=', Array.from(cd?.types || []))
     if (!cd) return
     const items = Array.from(cd.items || [])
+    // ⚠️ [임시 진단] 모든 파일 항목을 무조건 로깅 — svg/xml 은 내용까지 읽어 <text>
+    // 유무 확인. 확인 뒤 이 블록 제거.
+    items.forEach((it, idx) => {
+      if (it.kind !== 'file') return
+      const f = it.getAsFile()
+      // eslint-disable-next-line no-console
+      console.log(`[paste] file#${idx}`, it.type, f ? { name: f.name, size: f.size } : 'getAsFile→null')
+      if (f && (it.type === 'image/svg+xml' || /svg|xml/.test(it.type))) {
+        f.text().then((t) => {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[paste] svg#${idx} <text>=${(t.match(/<text[\s>]/g) || []).length} <tspan>=${(t.match(/<tspan[\s>]/g) || []).length} <path>=${(t.match(/<path[\s>]/g) || []).length}`,
+            t.slice(0, 1500),
+          )
+        })
+      }
+    })
     // 클립보드 항목을 동기적으로(이벤트 유효 시점) 붙잡는다 — 파일은 이벤트가 끝나도
     // 살아 있어 async 로 읽을 수 있다. PPT 텍스트박스는 image/svg+xml 로 오는데
     // SVG(=XML) 안에 실제 글자가 있어 그걸 추출한다.
@@ -61,28 +80,6 @@ export function PasteToWidgetsDialog({ open, onOpenChange, onConfirm }) {
       .filter(Boolean)
     const html = cd.getData('text/html') || ''
     const plain = cd.getData('text/plain') || ''
-
-    // ⚠️ [임시 진단] PPT 텍스트박스 SVG 안에 <text> 가 있는지(=글자를 뽑을 수
-    // 있는지) 콘솔로 확인. 확인 뒤 제거.
-    if (svgFile) {
-      svgFile
-        .text()
-        .then((t) => {
-          // eslint-disable-next-line no-console
-          console.groupCollapsed(
-            '%c[svg 진단] size=' + svgFile.size + ' <text>=' + (t.match(/<text[\s>]/g) || []).length + ' <tspan>=' + (t.match(/<tspan[\s>]/g) || []).length + ' <path>=' + (t.match(/<path[\s>]/g) || []).length,
-            'color:#a21caf',
-          )
-          // eslint-disable-next-line no-console
-          console.log(t.slice(0, 2000))
-          // eslint-disable-next-line no-console
-          console.groupEnd()
-        })
-        .catch((err) => {
-          // eslint-disable-next-line no-console
-          console.warn('[svg 진단] 읽기 실패', err)
-        })
-    }
 
     // 순수 평문만(이미지·SVG·html 없음) 있으면 기본 동작(textarea 입력)에 맡긴다.
     if (!svgFile && !rasterFiles.length && !html.trim()) return

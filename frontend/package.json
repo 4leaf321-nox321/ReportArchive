@@ -1,7 +1,7 @@
 {
   "name": "report-automation-frontend",
   "private": true,
-  "version": "0.63.16",
+  "version": "0.63.17",
   "type": "module",
   "scripts": {
     "dev": "vite",

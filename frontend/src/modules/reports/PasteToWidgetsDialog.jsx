@@ -14,6 +14,7 @@ import {
   parseTextToWidgets,
   parseHtmlToWidgets,
   parseSvgToWidgets,
+  svgHasDrawnShapes,
 } from './pasteToWidgets'
 
 // 붙여넣기 → 여러 위젯 분해(④) 대화상자. 붙여넣기 이벤트에서 clipboardData 를 직접
@@ -82,30 +83,44 @@ export function PasteToWidgetsDialog({ open, onOpenChange, onConfirm }) {
         segs = parseTextToWidgets(plain)
         hasTextSeg = segs.length > 0
       }
+      let svgText = ''
       if (!hasTextSeg && clipReadPromise) {
         try {
           const clipItems = await clipReadPromise
-          let svgText = ''
           for (const ci of clipItems || []) {
             if (ci.types.includes('image/svg+xml')) {
               svgText = await (await ci.getType('image/svg+xml')).text()
               break
             }
           }
-          const svgSegs = svgText ? parseSvgToWidgets(svgText) : []
-          if (svgSegs.length) {
-            segs = svgSegs
-            hasTextSeg = true
+          // 도형(채우기/선 있는 shape)이 든 SVG 는 텍스트로 뽑지 않고 이미지로 붙인다
+          // (텍스트박스=텍스트, 도형=이미지). 순수 텍스트 SVG(텍스트박스)만 추출.
+          if (svgText && !svgHasDrawnShapes(svgText)) {
+            const svgSegs = parseSvgToWidgets(svgText)
+            if (svgSegs.length) {
+              segs = svgSegs
+              hasTextSeg = true
+            }
           }
         } catch {
           /* 권한거부·비보안컨텍스트 등 → 아래 이미지 폴백 */
         }
       }
       if (!hasTextSeg) {
-        // 텍스트가 전혀 없음(순수 이미지 복사, 또는 SVG 를 못 읽는 환경) → 이미지 위젯.
+        // 텍스트가 아님(도형/그림, 순수 이미지 복사, 또는 SVG 를 못 읽는 환경) → 이미지.
         segs = []
         for (const f of rasterFiles) {
           segs.push({ type: 'image', blob: f, alt: f.name || '', kind: '이미지', preview: f.name || '이미지' })
+        }
+        // 도형인데 래스터 PNG 가 없으면 SVG 자체를 이미지로.
+        if (!rasterFiles.length && svgText) {
+          segs.push({
+            type: 'image',
+            blob: new Blob([svgText], { type: 'image/svg+xml' }),
+            alt: '',
+            kind: '이미지',
+            preview: '이미지(SVG)',
+          })
         }
       }
       setRich(segs)

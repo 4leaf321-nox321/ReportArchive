@@ -324,6 +324,38 @@ export function isFetchableImageSrc(src) {
  *  문단/목록으로 만든다(글자가 없으면 [] → 호출부가 이미지로 폴백). */
 const _BULLET_GLYPH_RE = /^[•◦▪‣⁃●○·・∙◆◇▸➔→§❖–—-]$/
 
+/** SVG 에 "그려진 도형"(채우기/선이 있는 rect·path·ellipse 등)이 있는가.
+ *  PowerPoint 텍스트박스는 <text> 만(투명) 담지만, 도형(사각형·화살표·다이어그램)
+ *  은 fill/stroke 가 있는 shape 요소를 담는다. 이 경우 텍스트로 뽑지 말고 그림
+ *  (이미지)으로 붙이는 게 맞다. */
+export function svgHasDrawnShapes(svgText) {
+  if (!svgText || typeof window === 'undefined' || !window.DOMParser) return false
+  let doc
+  try {
+    doc = new DOMParser().parseFromString(svgText, 'image/svg+xml')
+  } catch {
+    return false
+  }
+  if (!doc || doc.getElementsByTagName('parsererror').length) return false
+  const visible = (v) => v && v !== 'none' && v !== 'transparent'
+  for (const tag of ['rect', 'path', 'ellipse', 'circle', 'polygon', 'polyline', 'line']) {
+    for (const el of Array.from(doc.getElementsByTagName(tag))) {
+      const fill = (el.getAttribute('fill') || '').trim().toLowerCase()
+      const stroke = (el.getAttribute('stroke') || '').trim().toLowerCase()
+      const style = (el.getAttribute('style') || '').toLowerCase()
+      if (
+        visible(fill) ||
+        visible(stroke) ||
+        (/fill\s*:/.test(style) && !/fill\s*:\s*none/.test(style)) ||
+        (/stroke\s*:/.test(style) && !/stroke\s*:\s*none/.test(style))
+      ) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
 /** <text> 의 화면 좌표(x,y) — PPT 는 transform="translate(x y)" 로 배치한다. */
 function _svgTextPos(el) {
   const tr = el.getAttribute('transform') || ''

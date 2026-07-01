@@ -12,8 +12,10 @@
 
 const MAX_DEPTH = 5
 
-// 머리표 → 깊이(글자). RichText.PREFIX_TO_DEPTH 와 취지를 맞춘다.
-const BULLET_RE = /^([-*•·◦▪▸➔→–])\s+/
+// 머리표 → 깊이(글자). 워드·PPT·마크다운이 쓰는 다양한 불릿 글리프를 폭넓게
+// 잡아 제거한다 — 여기서 원문 불릿을 못 떼면, 위젯이 자기 depth 글리프(■/-/·)를
+// 또 붙여 "불릿이 두 개" 로 보인다. RichText.PREFIX_TO_DEPTH 와 취지를 맞춘다.
+const BULLET_RE = /^([-*•◦▪‣⁃●○·・–—■□▢▷◆◇▸➔→§❖])\s+/
 
 /** 한 줄에서 (깊이, 텍스트) 추출. 앞 공백/탭(들여쓰기)과 머리표를 깊이로 흡수. */
 function lineToItem(rawLine) {
@@ -46,18 +48,20 @@ function isTableSeparator(line) {
 /** 표처럼 보이는 줄인가 — 마크다운 파이프 또는 탭 구분(엑셀/시트). */
 function looksTabular(line) {
   if (isTableSeparator(line)) return true
-  if (line.includes('\t')) return true
+  // 앞뒤 공백을 뗀 뒤에도 탭이 남아 있으면(=값 사이 구분 탭) 표 행으로 본다.
+  // PPT·워드의 "들여쓰기용 앞쪽 탭"만 있는 줄은 표로 오인하지 않는다.
+  if (line.trim().includes('\t')) return true
   // 파이프가 2개 이상이면 마크다운 표 행으로 본다(단일 | 인 문장 오검출 방지).
   return (line.match(/\|/g) || []).length >= 2
 }
 
 /** 표 행 한 줄 → 셀 배열. 마크다운(파이프)·TSV(탭) 모두 처리. */
 function splitTableRow(line) {
-  if (line.includes('\t') && !line.includes('|')) {
-    return line.split('\t').map((c) => c.trim())
+  const trimmed = line.trim()
+  if (trimmed.includes('\t') && !trimmed.includes('|')) {
+    return trimmed.split('\t').map((c) => c.trim())
   }
-  let s = line.trim()
-  s = s.replace(/^\|/, '').replace(/\|$/, '')
+  const s = trimmed.replace(/^\|/, '').replace(/\|$/, '')
   return s.split('|').map((c) => c.trim())
 }
 
@@ -111,7 +115,12 @@ function summarize(s) {
  * @returns {Array<{type, content, kind, preview}>}
  */
 export function parseTextToWidgets(text) {
-  const src = (text ?? '').replace(/\r\n?/g, '\n')
+  const src = (text ?? '')
+    .replace(/\r\n?/g, '\n')
+    // PPT·일부 앱은 줄바꿈에 세로탭(\v)·폼피드(\f)·줄/문단 분리자(U+2028/2029)·
+    // NEL(U+0085)을 쓴다. 이걸 개행으로 정규화하지 않으면 여러 줄이 한 덩어리로
+    // 붙어 붙여넣기→위젯 분해가 제대로 안 된다.
+    .replace(/[\v\f\u2028\u2029\u0085]/g, '\n')
   const lines = src.split('\n')
   const segments = []
 

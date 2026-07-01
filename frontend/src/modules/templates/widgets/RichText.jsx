@@ -667,7 +667,7 @@ export function RichTextEditor({ props, content, onChange, readOnly, onInsertWid
         items={items}
         numbering={numbering}
         onChange={patchItems}
-        placeholder={props.placeholder || '대표 문장을 입력하세요. Tab 상세 들여쓰기 · / 위젯 추가 · @ 보고서·부서 멘션 · # 그림·표 참조'}
+        placeholder={props.placeholder || '부가 기능 : Tab 상세 들여쓰기 · / 위젯 추가 · @ 보고서·부서 멘션 · # 그림·표 참조'}
         bodyClassFor={bodyClassFor}
         bodyStyleFor={bodyStyleFor}
         baseSizeFor={baseSizeFor}

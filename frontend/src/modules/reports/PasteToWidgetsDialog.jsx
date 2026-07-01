@@ -57,19 +57,25 @@ export function PasteToWidgetsDialog({ open, onOpenChange, onConfirm }) {
     // 있으면 기본 동작(텍스트가 textarea 로 들어가고 onChange 가 파싱)에 맡긴다.
     if (files.length || html.trim()) {
       e.preventDefault()
-      let segs = html.trim()
-        ? parseHtmlToWidgets(html)
-        : plain.trim()
-          ? parseTextToWidgets(plain)
-          : []
-      for (const f of files) {
-        segs.push({
-          type: 'image',
-          blob: f,
-          alt: f.name || '',
-          kind: '이미지',
-          preview: f.name || '이미지',
-        })
+      let segs = []
+      if (html.trim()) segs = parseHtmlToWidgets(html)
+      if (segs.length === 0 && plain.trim()) segs = parseTextToWidgets(plain)
+      // 클립보드의 이미지 파일 처리 — PPT 텍스트박스(도형)를 복사하면 그 도형을
+      // 그린 PNG 가 이미지로 함께 온다. 이미 텍스트/표 세그먼트가 있으면 그 이미지는
+      // "도형 렌더" 일 가능성이 커서 버린다(텍스트 우선). 텍스트가 전혀 없을 때만
+      // (순수 이미지 복사) 이미지 위젯으로 추가한다. 워드 본문에 인라인으로 박힌
+      // 이미지는 HTML <img> 로 파싱돼 별도 처리되므로 여기 영향 없음.
+      const hasTextSeg = segs.some((s) => s.type !== 'image')
+      if (!hasTextSeg) {
+        for (const f of files) {
+          segs.push({
+            type: 'image',
+            blob: f,
+            alt: f.name || '',
+            kind: '이미지',
+            preview: f.name || '이미지',
+          })
+        }
       }
       setRich(segs)
       setText('')

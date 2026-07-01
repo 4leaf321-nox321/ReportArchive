@@ -17,6 +17,7 @@ import {
   ChevronRight,
   ChevronUp,
   ClipboardPaste,
+  ClipboardType,
   Paintbrush,
   Copy,
   Activity,
@@ -74,6 +75,7 @@ import { Skeleton } from '@/shared/components/ui/skeleton'
 import { Input } from '@/shared/components/ui/input'
 import { InlineReportView } from '@/modules/composites/InlineReportView'
 import { Textarea } from '@/shared/components/ui/textarea'
+import { PasteToWidgetsDialog } from './PasteToWidgetsDialog'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/components/ui/popover'
 import {
@@ -349,6 +351,8 @@ export default function ReportDetailPage() {
   // 다른 보고서 위젯 가져오기 모달 — 값 = { pageIdx, anchorId?, direction? } |
   // null(닫힘). anchorId 가 있으면 그 블록 기준 방향에 삽입(화살표), 없으면 끝에 추가.
   const [importTarget, setImportTarget] = useState(null)
+  // 붙여넣기→위젯 분해(④) 대화상자 대상 — { pageIdx } | null. 열림 여부 겸 대상.
+  const [pasteWidgetsTarget, setPasteWidgetsTarget] = useState(null)
   // Import template picker — when an imported draft carries a template_id
   // we can't resolve (the AI/skill placeholder "TEMPLATE_ID_HERE", or a
   // template that doesn't exist in this workspace), we can't render its
@@ -1166,6 +1170,21 @@ export default function ReportDetailPage() {
         }
         return
       }
+      // Ctrl/⌘+Enter — 이어쓰기: 선택 위젯 아래(없으면 현재 페이지 끝)에 긴 글
+      // 위젯을 만들고 커서 이동. 이 전역 핸들러는 contenteditable 포커스 시
+      // early-return 하므로, 긴 글을 "타이핑 중"인 경우는 BlockEditorCard 의
+      // onKeyDown 이 담당한다(여긴 표·차트 등 비텍스트 위젯 선택/무선택 상태).
+      if (key === 'enter') {
+        // 위젯 카드 안에 포커스가 있으면 그 카드의 onKeyDown 이 이미 처리한다
+        // (중복 삽입 방지). 여긴 카드 밖(본문 선택만·무포커스) 경로만 담당.
+        if (ae instanceof HTMLElement && ae.closest('[data-report-widget-card]')) {
+          return
+        }
+        e.preventDefault()
+        if (activeBlock) insertTextBlockAfter(activeBlock.pageIdx, activeBlock.blockId)
+        else insertTextBlockAfter(safeCurrentRef.current, null)
+        return
+      }
       if (key === 'c') {
         if (!activeBlock) return
         // 사용자가 위젯 안의 텍스트를 선택해 둔 상태면 그쪽 복사가
@@ -1723,14 +1742,14 @@ export default function ReportDetailPage() {
    *  (e.g. 'rich_text', 'table'); `defaultProps` comes from the catalog so
    *  the new block has a usable starting state. The generated id is unique
    *  within the page so layout overrides / content keys stay clean. */
-  function addExtraBlock(pageIdx, widgetType, defaultProps = {}) {
+  function addExtraBlock(pageIdx, widgetType, defaultProps = {}, presetId = null, seedContent = null) {
     setDraft((d) => {
       if (!d) return d
       const page = d.pages[pageIdx]
       if (!page) return d
       const tpl = getCachedTemplate(pageTemplateMap, page)
       const existingIds = collectPageBlockIds(page, tpl)
-      const id = freshExtraId(widgetType, existingIds)
+      const id = presetId ?? freshExtraId(widgetType, existingIds)
       const newBlock = {
         id,
         type: widgetType,
@@ -1754,7 +1773,17 @@ export default function ReportDetailPage() {
         : page.block_sections
       // 새 위젯 "제목 생략" 기본값 — 이 type 에 대해 기억된 값이 on 이면 새
       // 블록의 content 에 미리 박는다(report 는 content 가 블록과 분리 저장).
+      // seedContent(붙여넣기→위젯 분해)가 주어지면 그 내용을 그대로 시드하되,
+      // 제목 생략 기본값이 켜져 있으면 함께 얹는다.
       const skipSeed = getCaptionSkip(widgetType)
+      const finalSeed =
+        seedContent != null
+          ? skipSeed
+            ? { caption_skip_autofill: true, ...seedContent }
+            : seedContent
+          : skipSeed
+            ? { caption_skip_autofill: true }
+            : null
       const nextPages = d.pages.map((p, i) =>
         i === pageIdx
           ? {
@@ -1762,11 +1791,11 @@ export default function ReportDetailPage() {
               extra_blocks: [...(p.extra_blocks ?? []), newBlock],
               blocks_order: nextOrder,
               ...(defaultSection ? { block_sections: nextSections } : {}),
-              ...(skipSeed
+              ...(finalSeed
                 ? {
                     content: {
                       ...(p.content ?? {}),
-                      [id]: { caption_skip_autofill: true },
+                      [id]: finalSeed,
                     },
                   }
                 : {}),
@@ -1874,7 +1903,7 @@ export default function ReportDetailPage() {
    *  shrunk or its row changed) and the new block — extras don't have a
    *  template layout to fall back on, so without an override the new
    *  block would render at default size/position. */
-  function addExtraBlockAt(pageIdx, widgetType, defaultProps, anchorId, direction, importExtra = null) {
+  function addExtraBlockAt(pageIdx, widgetType, defaultProps, anchorId, direction, importExtra = null, presetId = null) {
     setDraft((d) => {
       if (!d) return d
       const page = d.pages[pageIdx]
@@ -1898,7 +1927,7 @@ export default function ReportDetailPage() {
       const anchorLayout = resolvedLayout(anchor)
 
       const existingIds = collectPageBlockIds(page, tpl)
-      const id = freshExtraId(widgetType, existingIds)
+      const id = presetId ?? freshExtraId(widgetType, existingIds)
       const newBlock = { id, type: widgetType, props: { ...defaultProps } }
 
       // 가져오기(importExtra)면 원본 content·단락구분을 그대로 복사하고, 아니면
@@ -2016,6 +2045,73 @@ export default function ReportDetailPage() {
       )
       return { ...d, pages: nextPages }
     })
+  }
+
+  /** 방금 추가한 블록에 스크롤+포커스. 블록 마운트가 setDraft 이후 비동기라
+   *  block-<id> 안의 첫 contenteditable 을 몇 프레임 재시도하며 잡는다(코멘트
+   *  점프의 getElementById 패턴 재사용). 없으면 조용히 포기. */
+  function focusExtraBlock(pageIdx, blockId) {
+    setActiveBlock({ pageIdx, blockId })
+    setCurrentPage((p) => (p === pageIdx ? p : clamp(pageIdx, 0, (draftRef.current?.pages?.length ?? 1) - 1)))
+    let tries = 0
+    function attempt() {
+      const host = document.getElementById(`block-${blockId}`)
+      const editable = host?.querySelector('[contenteditable="true"]')
+      if (editable) {
+        editable.focus()
+        host?.scrollIntoView({ block: 'nearest' })
+        return
+      }
+      if (tries++ < 8) requestAnimationFrame(attempt)
+    }
+    setTimeout(() => requestAnimationFrame(attempt), 60)
+  }
+
+  /** 지정 위젯(anchorId) 아래에 새 위젯을 삽입하고, 텍스트 계열이면 커서를 옮긴다.
+   *  anchorId 가 null 이면 페이지 끝에 추가(빈 페이지/전역 단축키). 새 id 를
+   *  미리 발급해(최신 draftRef 기준) 포커스 대상으로 쓴다. 슬래시커맨드(①)와
+   *  키보드 이어쓰기(②) 공용 진입점. */
+  function insertWidgetAfter(pageIdx, anchorId, type) {
+    const page = draftRef.current?.pages?.[pageIdx]
+    if (!page) return
+    const tpl = getCachedTemplate(pageTemplateMap, page)
+    const existingIds = collectPageBlockIds(page, tpl)
+    const newId = freshExtraId(type, existingIds)
+    const defaults = widgetCatalog?.byType?.[type]?.default_props ?? {}
+    if (anchorId) {
+      addExtraBlockAt(pageIdx, type, defaults, anchorId, 'down', null, newId)
+    } else {
+      addExtraBlock(pageIdx, type, defaults, newId)
+    }
+    // 텍스트 계열(rich_text·heading)만 contenteditable 포커스; 나머지는 선택만.
+    if (INLINE_EDITABLE_WIDGETS.has(type)) focusExtraBlock(pageIdx, newId)
+    else setActiveBlock({ pageIdx, blockId: newId })
+  }
+
+  /** 키보드 이어쓰기(②) — 아래에 긴 글(rich_text) 위젯을 만들고 커서 이동. */
+  function insertTextBlockAfter(pageIdx, anchorId) {
+    insertWidgetAfter(pageIdx, anchorId, 'rich_text')
+  }
+
+  /** 붙여넣기→위젯 분해(④) — 세그먼트 배열을 페이지 끝에 순서대로 추가하고
+   *  각 위젯 content 를 시드한다. id 를 미리 발급(같은 배치 내 충돌 방지)하고,
+   *  첫 위젯에 포커스/스크롤한다. */
+  function createWidgetsFromSegments(pageIdx, segments) {
+    if (!segments?.length) return
+    const page = draftRef.current?.pages?.[pageIdx]
+    if (!page) return
+    const tpl = getCachedTemplate(pageTemplateMap, page)
+    const used = new Set(collectPageBlockIds(page, tpl))
+    let firstId = null
+    for (const seg of segments) {
+      const id = freshExtraId(seg.type, used)
+      used.add(id)
+      if (!firstId) firstId = id
+      const defaults = widgetCatalog?.byType?.[seg.type]?.default_props ?? {}
+      addExtraBlock(pageIdx, seg.type, defaults, id, seg.content ?? null)
+    }
+    if (firstId) focusExtraBlock(pageIdx, firstId)
+    toast.success(`위젯 ${segments.length}개를 만들었습니다.`)
   }
 
   /** Replace the entire props object for an extra block. PropsPanel hands
@@ -4787,6 +4883,11 @@ export default function ReportDetailPage() {
                       addExtraBlockAt(idx, type, defaults, anchorId, direction)
                     }
                     onAddBlock={(type, defaults) => addExtraBlock(idx, type, defaults)}
+                    onInsertBelow={(anchorId) => insertTextBlockAfter(idx, anchorId)}
+                    onInsertWidgetAfter={(anchorId, type) =>
+                      insertWidgetAfter(idx, anchorId, type)
+                    }
+                    onPasteWidgets={() => setPasteWidgetsTarget({ pageIdx: idx })}
                     onImportFromReport={() => setImportTarget({ pageIdx: idx })}
                     onImportFromReportAt={(anchorId, direction) =>
                       setImportTarget({ pageIdx: idx, anchorId, direction })
@@ -4850,6 +4951,11 @@ export default function ReportDetailPage() {
                       addExtraBlockAt(safeCurrent, type, defaults, anchorId, direction)
                     }
                     onAddBlock={(type, defaults) => addExtraBlock(safeCurrent, type, defaults)}
+                    onInsertBelow={(anchorId) => insertTextBlockAfter(safeCurrent, anchorId)}
+                    onInsertWidgetAfter={(anchorId, type) =>
+                      insertWidgetAfter(safeCurrent, anchorId, type)
+                    }
+                    onPasteWidgets={() => setPasteWidgetsTarget({ pageIdx: safeCurrent })}
                     onImportFromReport={() => setImportTarget({ pageIdx: safeCurrent })}
                     onImportFromReportAt={(anchorId, direction) =>
                       setImportTarget({ pageIdx: safeCurrent, anchorId, direction })
@@ -4937,6 +5043,7 @@ export default function ReportDetailPage() {
                 addExtraBlock(safeCurrent, type, defaults)
               }
               onImportFromReport={() => setImportTarget({ pageIdx: safeCurrent })}
+              onPasteWidgets={() => setPasteWidgetsTarget({ pageIdx: safeCurrent })}
             />
           </div>
         )}
@@ -5085,6 +5192,16 @@ export default function ReportDetailPage() {
         onApplyPatch={(text) => {
           applyPatchToCurrentPage(text)
         }}
+      />
+
+      <PasteToWidgetsDialog
+        open={pasteWidgetsTarget != null}
+        onOpenChange={(v) => {
+          if (!v) setPasteWidgetsTarget(null)
+        }}
+        onConfirm={(segments) =>
+          createWidgetsFromSegments(pasteWidgetsTarget?.pageIdx ?? safeCurrent, segments)
+        }
       />
 
       <ImportTemplatePickerDialog
@@ -9042,6 +9159,12 @@ function PageSection({
   // 자리)에 새 위젯을 추가한다. 부모(ReportDetailPage) 의 addExtraBlock
   // 을 그대로 wrap 해 전달.
   onAddBlock,
+  // 이어쓰기(②) — 이 위젯 아래에 긴 글 위젯 추가+포커스. (anchorId)=>void.
+  onInsertBelow,
+  // 슬래시커맨드(①) — 이 위젯 아래에 고른 위젯 삽입. (anchorId, type)=>void.
+  onInsertWidgetAfter,
+  // 붙여넣기→위젯 분해(④) 진입 — 빈 페이지 "위젯 추가" 팝오버의 버튼용.
+  onPasteWidgets,
   // 빈 페이지 상태 "위젯 추가" 팝오버의 "다른 보고서 위젯 가져오기" 진입.
   onImportFromReport,
   // 블록 사이 화살표(방향 삽입) 팝오버의 "다른 보고서 위젯 가져오기" 진입
@@ -9261,6 +9384,7 @@ function PageSection({
               <EmptyStateAddWidget
                 onAdd={onAddBlock}
                 onImportFromReport={onImportFromReport}
+                onPasteWidgets={onPasteWidgets}
               />
             )}
           </CardContent>
@@ -9504,6 +9628,8 @@ function PageSection({
                     onMeasureContentHeight?.(block.id, px)
                   }
                   onMeasureEditHeight={(px) => handleMeasureEdit(block.id, px)}
+                  onAddBelow={() => onInsertBelow?.(block.id)}
+                  onInsertWidgetAfter={(type) => onInsertWidgetAfter?.(block.id, type)}
                 />
                 )}
                 {showInsertArrows && (
@@ -10645,7 +10771,7 @@ function DirectionalAddArrows({ canInsertHorizontally, onAdd, onImportFromReport
  *  cluster (which owns the fixed positioning + the
  *  `report-detail-floating` class that exporters strip), so this
  *  component is just the Popover/Button — no positioning of its own. */
-function FloatingAddWidget({ onAdd, onImportFromReport }) {
+function FloatingAddWidget({ onAdd, onImportFromReport, onPasteWidgets }) {
   const { catalog, loading } = useWidgetCatalog()
   const [open, setOpen] = useState(false)
   if (loading) return null
@@ -10673,6 +10799,12 @@ function FloatingAddWidget({ onAdd, onImportFromReport }) {
         <ImportFromReportButton
           onClick={() => {
             onImportFromReport?.()
+            setOpen(false)
+          }}
+        />
+        <PasteWidgetsButton
+          onClick={() => {
+            onPasteWidgets?.()
             setOpen(false)
           }}
         />
@@ -10708,12 +10840,32 @@ function ImportFromReportButton({ onClick }) {
   )
 }
 
+/** 위젯 추가 팝오버 — "텍스트로 위젯 만들기"(붙여넣기 분해④) 진입 버튼. */
+function PasteWidgetsButton({ onClick }) {
+  if (!onClick) return null
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="mb-2 w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-left text-sm hover:bg-muted"
+    >
+      <ClipboardType className="h-4 w-4 text-muted-foreground" />
+      <span>
+        텍스트로 위젯 만들기
+        <span className="block text-[11px] text-muted-foreground">
+          워드·마크다운 글을 붙여넣어 제목·문단·목록·표로 한 번에 만듭니다.
+        </span>
+      </span>
+    </button>
+  )
+}
+
 /** Sibling of FloatingAddWidget — sized for inline use inside the empty
  *  state Card (no widget on the page yet). Same popover + WidgetPicker
  *  pattern as the floating button, but a normal-sized outline button so
  *  it fits naturally inside the centered "empty" placeholder instead of
  *  reading like a misplaced floating action. */
-function EmptyStateAddWidget({ onAdd, onImportFromReport }) {
+function EmptyStateAddWidget({ onAdd, onImportFromReport, onPasteWidgets }) {
   const { catalog, loading } = useWidgetCatalog()
   const [open, setOpen] = useState(false)
   if (loading) return null
@@ -10735,6 +10887,12 @@ function EmptyStateAddWidget({ onAdd, onImportFromReport }) {
         <ImportFromReportButton
           onClick={() => {
             onImportFromReport?.()
+            setOpen(false)
+          }}
+        />
+        <PasteWidgetsButton
+          onClick={() => {
+            onPasteWidgets?.()
             setOpen(false)
           }}
         />
@@ -10963,6 +11121,11 @@ function BlockEditorCard({
   reportId,
   pageIndex,
   reportPhase,
+  // 이어쓰기(②) — Ctrl/⌘+Enter 로 이 위젯 아래에 긴 글 위젯 추가.
+  onAddBelow,
+  // 슬래시커맨드(①) — 긴 글 안에서 / 로 고른 위젯을 이 위젯 아래에 삽입.
+  // (type) => void. rich_text Editor 로 그대로 내려 slash 메뉴가 호출한다.
+  onInsertWidgetAfter,
 }) {
   // Pair the right-side comment panel with a visible marker on the
   // body widget that the focused thread is anchored to. focusedAnchor
@@ -11362,6 +11525,17 @@ function BlockEditorCard({
     </div>
   ) : null
 
+  // 이어쓰기(②) — Ctrl/⌘+Enter 를 이 위젯(및 그 안 contenteditable)에서 눌러도
+  // 아래에 긴 글 위젯이 생기도록 카드/제목 래퍼에서 가로챈다. TipTap 은 기본적으로
+  // Mod-Enter 를 소비하지 않아 여기까지 버블한다. capture 없이 버블 단계로 충분.
+  function handleBlockKeyDown(e) {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault()
+      e.stopPropagation()
+      onAddBelow?.()
+    }
+  }
+
   if (block.type === 'heading') {
     const { Editor: HE } = renderer
     // Heading takes an early return (no Card chrome), so it must carry the
@@ -11371,6 +11545,7 @@ function BlockEditorCard({
       <div
         id={exposeBlockIds ? `block-${block.id}` : undefined}
         onClick={onActivate}
+        onKeyDown={handleBlockKeyDown}
         className={cn(
           'group relative h-full flex items-center',
           // Reserve space below the absolute drag-handle bar so the heading
@@ -11482,6 +11657,7 @@ function BlockEditorCard({
       onMouseDown={handleCardMouseDown}
       onClick={handleCardClick}
       onDoubleClick={handleCardDoubleClick}
+      onKeyDown={handleBlockKeyDown}
       className={cn(
         'group relative h-full flex flex-col',
         autoFit ? 'overflow-visible' : 'overflow-hidden',
@@ -11670,6 +11846,8 @@ function BlockEditorCard({
               onChangePropsOverride={onChangePropsOverride}
               autoFit={autoFit}
               readOnly={editorReadOnly}
+              blockId={block.id}
+              onInsertWidgetAfter={onInsertWidgetAfter}
             />
           ) : (
             <p className="text-xs text-muted-foreground italic">

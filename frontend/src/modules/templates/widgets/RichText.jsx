@@ -4,6 +4,8 @@ import DOMPurify from 'dompurify'
 import { AlertTriangle, X } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
+import { cn } from '@/shared/lib/utils'
+import { useWidgetCatalog } from '@/shared/hooks/useWidgetCatalog'
 import { useWidgetRelations } from '@/shared/hooks/useWidgetRelations'
 import { useReportStyle } from '@/shared/reports/ReportStyleContext'
 import { useReportMention } from '@/shared/reports/ReportMentionContext'
@@ -525,7 +527,7 @@ function stillSpansMultipleRows(sel, container) {
 // --------------------------------------------------------------------------- //
 // Editor entrypoint — branches into the outline editor (write) or viewer
 // --------------------------------------------------------------------------- //
-export function RichTextEditor({ props, content, onChange, readOnly }) {
+export function RichTextEditor({ props, content, onChange, readOnly, onInsertWidgetAfter }) {
   const caption = content?.caption ?? ''
   const capPos = captionPositionOf(content)
   const items = useMemo(() => coerceRichTextItems(content), [content])
@@ -665,10 +667,11 @@ export function RichTextEditor({ props, content, onChange, readOnly }) {
         items={items}
         numbering={numbering}
         onChange={patchItems}
-        placeholder={props.placeholder || '대표 문장을 입력하고 Tab으로 상세를 들여쓰세요.'}
+        placeholder={props.placeholder || '대표 문장을 입력하고 Tab으로 상세를 들여쓰세요. (빈 줄에서 / 로 위젯 추가)'}
         bodyClassFor={bodyClassFor}
         bodyStyleFor={bodyStyleFor}
         baseSizeFor={baseSizeFor}
+        onInsertWidgetAfter={onInsertWidgetAfter}
       />
       {(min || max) && (
         <p className="text-[10px] text-muted-foreground text-right">
@@ -850,7 +853,10 @@ function RelationChipStatic({ relation }) {
 // --------------------------------------------------------------------------- //
 // Edit mode — outline with Tab depth, auto-prefix, inline relation picker
 // --------------------------------------------------------------------------- //
-function OutlineEditor({ items, numbering, onChange, placeholder, bodyClassFor, bodyStyleFor, baseSizeFor }) {
+function OutlineEditor({ items, numbering, onChange, placeholder, bodyClassFor, bodyStyleFor, baseSizeFor, onInsertWidgetAfter }) {
+  // 슬래시커맨드(①) — 빈(또는 "/…"만 있는) 행에서 / 로 위젯 삽입. 상태는
+  // { index, query, rect } | null. rect 는 캐럿 위치(메뉴 앵커).
+  const [slash, setSlash] = useState(null)
   // 편집 중에도 글리프 대신 개요 번호를 보여준다(읽기 렌더와 동일한 값).
   const outlineNumbers = numbering ? computeOutlineNumbers(items) : null
   // Each row exposes an imperative handle ({focus, setCaret, getCaret,
@@ -1419,6 +1425,45 @@ function OutlineEditor({ items, numbering, onChange, placeholder, bodyClassFor, 
     // Typing fires onUpdate on every keystroke; coalesce so a typing burst
     // produces a single undo entry (the state from before the burst).
     commitChange(next, { coalesce: true })
+    // 슬래시커맨드(①) — 행 시작이 "/…"(공백 없음)면 위젯 메뉴를 캐럿 위치에 연다.
+    // onInsertWidgetAfter 가 없으면(읽기/미배선) 무시.
+    if (!onInsertWidgetAfter) return
+    const m = /^\/([^\s/]*)$/.exec(text ?? '')
+    if (m) {
+      const rect = currentCaretRect()
+      setSlash({ index: idx, query: m[1], rect })
+    } else {
+      setSlash((s) => (s && s.index === idx ? null : s))
+    }
+  }
+
+  // 캐럿(또는 활성 요소) 화면 좌표 — 슬래시 메뉴 앵커. 접힌 셀렉션도 top/left 는
+  // 유효하다. 없으면 활성 contenteditable 의 rect 로 폴백.
+  function currentCaretRect() {
+    const sel = typeof window !== 'undefined' ? window.getSelection?.() : null
+    if (sel && sel.rangeCount > 0) {
+      const r = sel.getRangeAt(0).getBoundingClientRect()
+      if (r && (r.top || r.left || r.bottom)) return r
+    }
+    return document.activeElement?.getBoundingClientRect?.() ?? null
+  }
+
+  function closeSlash() {
+    setSlash(null)
+  }
+
+  // 슬래시 메뉴에서 위젯 선택 — 트리거 행의 "/query" 텍스트를 비우고, 부모에게
+  // "이 위젯 아래에 고른 위젯 삽입"을 요청한다(부모가 새 위젯에 포커스도 준다).
+  function chooseSlash(type) {
+    const idx = slash?.index ?? null
+    setSlash(null)
+    if (idx != null) {
+      const cleared = items.map((it, i) =>
+        i === idx ? { ...it, text: '', html: '<p></p>' } : it,
+      )
+      commitChange(cleared, { coalesce: false })
+    }
+    onInsertWidgetAfter?.(type)
   }
 
   function setDepth(idx, depth) {
@@ -1796,7 +1841,116 @@ function OutlineEditor({ items, numbering, onChange, placeholder, bodyClassFor, 
           }}
         />
       )}
+      {slash && (
+        <SlashMenu
+          rect={slash.rect}
+          query={slash.query}
+          onSelect={chooseSlash}
+          onClose={closeSlash}
+        />
+      )}
     </div>
+  )
+}
+
+// 슬래시커맨드(①) 위젯 목록 메뉴 — 캐럿 위치에 fixed 로 뜬다. query 로 카탈로그를
+// 필터하고 ↑/↓ 이동·Enter/Tab 선택·Esc/바깥클릭 닫힘. 키 이벤트는 capture 로 잡아
+// 아래 행(ProseMirror)의 기본 동작(줄바꿈·행 이동)보다 먼저 선점한다.
+function SlashMenu({ rect, query, onSelect, onClose }) {
+  const { catalog } = useWidgetCatalog()
+  const q = (query ?? '').trim().toLowerCase()
+  const filtered = useMemo(() => {
+    const widgets = catalog?.widgets ?? []
+    const list = q
+      ? widgets.filter(
+          (w) =>
+            (w.label ?? '').toLowerCase().includes(q) ||
+            (w.type ?? '').toLowerCase().includes(q) ||
+            (w.description ?? '').toLowerCase().includes(q),
+        )
+      : widgets
+    return list.slice(0, 8)
+  }, [catalog, q])
+  const [active, setActive] = useState(0)
+  useEffect(() => {
+    setActive(0)
+  }, [q])
+  const menuRef = useRef(null)
+  const activeRef = useRef(0)
+  activeRef.current = active
+  const filteredRef = useRef(filtered)
+  filteredRef.current = filtered
+
+  useEffect(() => {
+    function onKey(e) {
+      const list = filteredRef.current
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        e.stopPropagation()
+        setActive((a) => Math.min(a + 1, Math.max(0, list.length - 1)))
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        e.stopPropagation()
+        setActive((a) => Math.max(a - 1, 0))
+      } else if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        e.stopPropagation()
+        const w = list[activeRef.current]
+        if (w) onSelect(w.type)
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        onClose()
+      }
+    }
+    function onDown(e) {
+      if (menuRef.current && !menuRef.current.contains(e.target)) onClose()
+    }
+    document.addEventListener('keydown', onKey, true)
+    document.addEventListener('mousedown', onDown, true)
+    return () => {
+      document.removeEventListener('keydown', onKey, true)
+      document.removeEventListener('mousedown', onDown, true)
+    }
+  }, [onSelect, onClose])
+
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1024
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 768
+  const top = Math.max(8, Math.min((rect?.bottom ?? 120) + 4, vh - 264))
+  const left = Math.max(8, Math.min(rect?.left ?? 120, vw - 240))
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      onMouseDown={(e) => e.stopPropagation()}
+      style={{ position: 'fixed', top, left, zIndex: 70 }}
+      className="min-w-[13rem] max-h-[15.5rem] overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+    >
+      {filtered.length === 0 ? (
+        <div className="px-2 py-3 text-center text-xs text-muted-foreground">
+          일치하는 위젯이 없습니다.
+        </div>
+      ) : (
+        filtered.map((w, i) => (
+          <button
+            key={w.type}
+            type="button"
+            onMouseEnter={() => setActive(i)}
+            onClick={() => onSelect(w.type)}
+            className={cn(
+              'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm',
+              i === active ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50',
+            )}
+          >
+            <span className="truncate">{w.label}</span>
+            <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+              {w.type}
+            </span>
+          </button>
+        ))
+      )}
+    </div>,
+    document.body,
   )
 }
 

@@ -322,6 +322,19 @@ export function isFetchableImageSrc(src) {
  *  복사할 때 text/plain·text/html 없이 image/svg+xml + 래스터 이미지만 클립보드에
  *  담는데, SVG 는 XML 이라 <text>/<tspan> 안에 실제 글자가 들어 있다. 이를 뽑아
  *  문단/목록으로 만든다(글자가 없으면 [] → 호출부가 이미지로 폴백). */
+const _BULLET_GLYPH_RE = /^[•◦▪‣⁃●○·・∙◆◇▸➔→§❖–—-]$/
+
+/** <text> 의 화면 좌표(x,y) — PPT 는 transform="translate(x y)" 로 배치한다. */
+function _svgTextPos(el) {
+  const tr = el.getAttribute('transform') || ''
+  const m = /translate\(\s*(-?[\d.]+)[ ,]+(-?[\d.]+)/.exec(tr)
+  if (m) return { x: parseFloat(m[1]) || 0, y: parseFloat(m[2]) || 0 }
+  return {
+    x: parseFloat(el.getAttribute('x') || '0') || 0,
+    y: parseFloat(el.getAttribute('y') || '0') || 0,
+  }
+}
+
 export function parseSvgToWidgets(svgText) {
   if (!svgText || typeof window === 'undefined' || !window.DOMParser) return []
   let doc
@@ -331,21 +344,46 @@ export function parseSvgToWidgets(svgText) {
     return []
   }
   if (!doc || doc.getElementsByTagName('parsererror').length) return []
-  const lines = []
-  for (const t of Array.from(doc.getElementsByTagName('text'))) {
-    // <text> 안의 <tspan> 은 보통 줄 단위 → 각각 한 줄로. 없으면 text 통째로.
-    const tspans = Array.from(t.children).filter(
-      (c) => (c.localName || c.tagName || '').toLowerCase() === 'tspan',
-    )
-    if (tspans.length) {
-      for (const ts of tspans) {
-        const s = (ts.textContent || '').replace(/\s+/g, ' ').trim()
-        if (s) lines.push(s)
-      }
-    } else {
-      const s = (t.textContent || '').replace(/\s+/g, ' ').trim()
-      if (s) lines.push(s)
+
+  // 각 <text> 를 run(좌표+글자)으로. PPT 는 한 시각적 줄을 여러 <text> 로 쪼갠다
+  // (특히 불릿 글리프 "•" 를 텍스트와 별도 <text> 로) → y 로 줄을 묶고 x 로 정렬.
+  const runs = Array.from(doc.getElementsByTagName('text'))
+    .map((el) => {
+      const { x, y } = _svgTextPos(el)
+      return { x, y, text: (el.textContent || '').replace(/\s+/g, ' ').trim() }
+    })
+    .filter((r) => r.text)
+  if (!runs.length) return []
+  runs.sort((a, b) => a.y - b.y || a.x - b.x)
+
+  const Y_TOL = 8 // 같은 줄로 볼 y 오차(px)
+  const groups = []
+  let cur = null
+  for (const r of runs) {
+    if (cur && Math.abs(r.y - cur.y) <= Y_TOL) cur.runs.push(r)
+    else {
+      cur = { y: r.y, runs: [r] }
+      groups.push(cur)
     }
+  }
+
+  const lines = []
+  for (const g of groups) {
+    g.runs.sort((a, b) => a.x - b.x)
+    let bulleted = false
+    const parts = []
+    for (const r of g.runs) {
+      // 줄 맨 앞의 단독 불릿 글리프는 마커로 취급(텍스트에서 뺀다 → 목록 depth).
+      if (parts.length === 0 && _BULLET_GLYPH_RE.test(r.text)) {
+        bulleted = true
+        continue
+      }
+      parts.push(r.text)
+    }
+    const text = parts.join(' ').replace(/\s+/g, ' ').trim()
+    if (!text) continue
+    // 불릿 줄은 "- " 를 붙여 parseTextToWidgets 가 depth 1 로 잡게 한다.
+    lines.push((bulleted ? '- ' : '') + text)
   }
   if (!lines.length) return []
   return parseTextToWidgets(lines.join('\n'))

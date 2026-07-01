@@ -47,6 +47,33 @@ export function PasteToWidgetsDialog({ open, onOpenChange, onConfirm }) {
   function handlePaste(e) {
     const cd = e.clipboardData
     if (!cd) return
+    // ⚠️ [임시 진단] 붙여넣기 클립보드 내용을 콘솔에 남긴다 — PPT 텍스트박스가
+    // 어떤 형식(types)에 텍스트/이미지를 담는지 파악용. 확인 뒤 이 블록은 제거.
+    try {
+      const types = Array.from(cd.types || [])
+      // eslint-disable-next-line no-console
+      console.groupCollapsed('%c[paste 진단] types: ' + types.join(', '), 'color:#a21caf')
+      for (const t of types) {
+        const v = cd.getData(t) || ''
+        // eslint-disable-next-line no-console
+        console.log(t, '· len=', v.length, '·', JSON.stringify(v.slice(0, 400)))
+      }
+      // eslint-disable-next-line no-console
+      console.log(
+        'items:',
+        Array.from(cd.items || []).map((it) => ({ kind: it.kind, type: it.type })),
+      )
+      // eslint-disable-next-line no-console
+      console.log(
+        'files:',
+        Array.from(cd.files || []).map((f) => ({ name: f.name, type: f.type, size: f.size })),
+      )
+      // eslint-disable-next-line no-console
+      console.groupEnd()
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[paste 진단] 실패', err)
+    }
     const files = Array.from(cd.items || [])
       .filter((it) => it.kind === 'file' && (it.type || '').startsWith('image/'))
       .map((it) => it.getAsFile())

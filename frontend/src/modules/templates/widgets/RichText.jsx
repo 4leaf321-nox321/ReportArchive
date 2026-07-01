@@ -1425,18 +1425,18 @@ function OutlineEditor({ items, numbering, onChange, placeholder, bodyClassFor, 
     // Typing fires onUpdate on every keystroke; coalesce so a typing burst
     // produces a single undo entry (the state from before the burst).
     commitChange(next, { coalesce: true })
-    // 슬래시커맨드(①) — 캐럿 앞이 "(줄시작|공백)/…"(공백 없는 질의)면 메뉴를
-    // 캐럿 위치에 연다. 줄에 내용이 있어도 새 단어로 "/" 를 시작하면 동작한다
-    // (Notion 방식). onInsertWidgetAfter 가 없으면(읽기/미배선) 무시.
+    // 슬래시커맨드(①) — 행 끝이 "(줄시작|공백)/…"(공백 없는 질의)면 메뉴를 캐럿
+    // 위치에 연다. 줄에 내용이 있어도 새 단어로 "/" 를 시작하면 동작한다(Notion
+    // 방식). 방금 친 "/query" 는 항상 caret(=행 끝)에 있으므로 getCaret 에 의존하지
+    // 않고 전체 text 끝($)에서 매칭한다 — getCaret 이 재시드 타이밍에 어긋나
+    // 내용 있는 줄에서 메뉴가 안 뜨던 문제를 피한다. 미배선(읽기)이면 무시.
     if (!onInsertWidgetAfter) return
-    const ed = inputRefs.current.get(idx)
-    const caret = ed?.getCaret?.() ?? (text ?? '').length
-    const before = (text ?? '').slice(0, caret)
-    const m = /(?:^|\s)\/([^\s/]*)$/.exec(before)
+    const t = text ?? ''
+    const m = /(?:^|\s)\/([^\s/]*)$/.exec(t)
     if (m) {
       const query = m[1]
-      const slashStart = caret - (query.length + 1) // "/" 의 0-based 위치
-      setSlash({ index: idx, query, rect: currentCaretRect(), slashStart, caret })
+      const slashStart = t.length - (query.length + 1) // "/" 의 0-based 위치
+      setSlash({ index: idx, query, rect: currentCaretRect(), slashStart, caret: t.length })
     } else {
       setSlash((s) => (s && s.index === idx ? null : s))
     }

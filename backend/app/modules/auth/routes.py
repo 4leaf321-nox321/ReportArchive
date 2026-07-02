@@ -39,6 +39,25 @@ router = APIRouter()
 
 @router.post("/login")
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    # 도메인 힌트: 시스템 관리자만 "@" 없는 아이디(예: "admin")로 로그인한다.
+    # 일반 사용자가 도메인 없이 아이디만 입력하면 samsung.com 을 붙이라고 안내.
+    identifier = (payload.email or "").strip()
+    if "@" not in identifier:
+        admin = db.execute(
+            select(User).where(User.email == identifier)
+        ).scalar_one_or_none()
+        if not (admin and admin.is_system_admin):
+            access_log_services.record_access(
+                db,
+                email=identifier,
+                success=False,
+                event="login",
+                request=request,
+            )
+            return error_response(
+                "samsung.com 도메인을 함께 입력해주세요.",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
     user = auth_services.authenticate(db, payload.email, payload.password)
     if not user:
         # 실패도 남긴다(미가입 이메일 포함) — 이상 접속 확인용. user_id 없음.

@@ -127,6 +127,17 @@ def _shape_to_segment(shape, *, is_title, slide_no, warnings):
         except Exception:
             return None
 
+    # 어디에도 안 걸린 개체 — 유형을 warnings 에 남긴다(엑셀 임베드(OLE)·SmartArt 등이
+    # "표를 표로 못 읽는" 흔한 원인). 장식/빈 도형은 흔하니 제외해 소음을 줄인다.
+    tname = getattr(stype, "name", "") or ""
+    _NOISE = {"AUTO_SHAPE", "TEXT_BOX", "PLACEHOLDER", "LINE", "FREEFORM", "CONNECTOR"}
+    if tname and tname not in _NOISE:
+        label = tname
+        if tname == "EMBEDDED_OLE_OBJECT":
+            label = "임베드 개체(엑셀 표 등) — PPT 기본 표로 다시 넣어주세요"
+        elif tname == "TABLE":  # 방어적: 여기 오면 안 되지만
+            label = "표(추출 실패)"
+        warnings.append(f"슬라이드 {slide_no}: 지원 안 되는 개체({label}) 건너뜀")
     return None
 
 

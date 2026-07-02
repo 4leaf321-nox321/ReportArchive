@@ -4119,6 +4119,9 @@ export default function ReportDetailPage() {
         warn.length
           ? `PPT를 불러왔습니다 (변환 못 한 요소 ${warn.length}건은 건너뜀). 저장하려면 “저장”.`
           : 'PPT를 불러왔습니다. 저장하려면 “저장” 버튼을 눌러주세요.',
+        warn.length
+          ? { description: warn.slice(0, 6).join('\n'), duration: 12000 }
+          : undefined,
       )
     } catch (err) {
       toast.error(

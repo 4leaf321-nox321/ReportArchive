@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 from app.database import SessionLocal
 from app.main import app
 from app.modules.auth.services import create_access_token
-from app.modules.reports.models import Report
 
 ADMIN = 2
 
@@ -50,18 +49,24 @@ def _make_pptx() -> bytes:
     return buf.getvalue()
 
 
-def _drop(rid):
+def _drop_files(file_ids):
+    if not file_ids:
+        return
+    from app.modules.files.models import File
+
     db = SessionLocal()
     try:
-        r = db.get(Report, rid)
-        if r:
-            db.delete(r)
-            db.commit()
+        for fid in file_ids:
+            f = db.get(File, fid)
+            if f:
+                db.delete(f)
+        db.commit()
     finally:
         db.close()
 
 
-def test_import_pptx_creates_widgets():
+def test_import_pptx_returns_draft():
+    """PPTX → report_archive_draft_v1 draft(보고서 미생성). 4종 위젯·이미지 file_id 확인."""
     c = TestClient(app)
     data = _make_pptx()
     r = c.post(
@@ -76,32 +81,19 @@ def test_import_pptx_creates_widgets():
         },
     )
     assert r.status_code in (200, 201), r.text
-    rid = r.json()["data"]["id"]
-    try:
-        db = SessionLocal()
-        try:
-            rep = db.get(Report, rid)
-            assert rep is not None
-            page = (rep.pages or [{}])[0]
-            extra = page.get("extra_blocks") or []
-            content = page.get("content") or {}
-            types = {b.get("type") for b in extra}
-            assert "heading" in types, types
-            assert "rich_text" in types, types
-            assert "table" in types, types
-            assert "image" in types, types
-            # 이미지 위젯 content 에 file_id 가 들어갔는지.
-            img_ids = [b["id"] for b in extra if b.get("type") == "image"]
-            assert img_ids
-            img_content = content.get(img_ids[0]) or {}
-            files = img_content.get("files") or []
-            assert files and files[0].get("file_id"), img_content
-            # 슬라이드 제목이 페이지 이름으로.
-            assert page.get("name") == "제목 슬라이드"
-        finally:
-            db.close()
-    finally:
-        _drop(rid)
+    draft = r.json()["data"]["draft"]
+    assert draft["_type"] == "report_archive_draft_v1"
+    page = draft["pages"][0]
+    extra = page.get("extra_blocks") or []
+    content = page.get("content") or {}
+    types = {b.get("type") for b in extra}
+    assert {"heading", "rich_text", "table", "image"} <= types, types
+    img_ids = [b["id"] for b in extra if b.get("type") == "image"]
+    assert img_ids
+    files = (content.get(img_ids[0]) or {}).get("files") or []
+    assert files and files[0].get("file_id"), content.get(img_ids[0])
+    assert page.get("name") == "제목 슬라이드"
+    _drop_files([f["file_id"] for f in files])
 
 
 def test_import_pptx_requires_auth():

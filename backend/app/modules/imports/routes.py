@@ -15,8 +15,7 @@ from app.database import get_db
 from app.modules.files import services as files_services
 from app.modules.imports.pptx_parser import parse_pptx
 from app.modules.reports import ai_authoring
-from app.modules.reports import services as report_services
-from app.modules.reports.schemas import ReportCreate, ReportPage
+from app.modules.reports.schemas import ReportPage
 from app.modules.templates import services as template_services
 from app.modules.templates.models import Template
 from app.shared.auth import CurrentUser, get_current_user
@@ -147,23 +146,13 @@ async def import_pptx(
             "가져올 내용이 없습니다(지원하는 텍스트·표·이미지를 찾지 못함).", status_code=400
         )
 
+    # 새 보고서를 만들지 않고 **draft(report_archive_draft_v1)** 로 돌려준다 —
+    # 프론트가 편집 화면에서 이걸 현재 문서에 페이지로 이어 붙인다(appendImportedAsNewPages).
+    # 이미지는 이미 업로드돼(file_id) draft content 에 박혀 있으므로 그대로 쓴다.
     title = (file.filename or "가져온 문서").rsplit(".", 1)[0][:200] or "가져온 문서"
-    report_create = ReportCreate(
-        template_id=tpl.template_id,
-        template_version=tpl.version,
-        title=title,
-        pages=pages,
-        tags=[],
-    )
-    try:
-        report = report_services.create_report(db, ws, report_create, owner_user_id=uid)
-    except ValueError as exc:
-        return error_response(str(exc), status_code=400)
-
-    return created_response(
-        data={
-            "id": report.id,
-            "workspace_slug": report.workspace_slug,
-            "warnings": warnings,
-        }
-    )
+    draft = {
+        "_type": "report_archive_draft_v1",
+        "title": title,
+        "pages": [p.model_dump() for p in pages],
+    }
+    return created_response(data={"draft": draft, "warnings": warnings})

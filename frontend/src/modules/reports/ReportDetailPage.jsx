@@ -79,6 +79,7 @@ import { Textarea } from '@/shared/components/ui/textarea'
 import { PasteToWidgetsDialog } from './PasteToWidgetsDialog'
 import { isFetchableImageSrc } from './pasteToWidgets'
 import { uploadFile } from '@/shared/api/files'
+import { importPptx } from '@/shared/api/imports'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/components/ui/popover'
 import {
@@ -1117,6 +1118,9 @@ export default function ReportDetailPage() {
   // stays stable across the loading → ready transition (the button itself
   // is rendered after the early-returns below).
   const fileInputRef = useRef(null)
+  // PPT 가져오기(현재 문서에 페이지로 이어 붙이기)용 파일 입력.
+  const pptxInputRef = useRef(null)
+  const [pptxImporting, setPptxImporting] = useState(false)
 
   // Auto-fit content-height cache. Per page, per block: the natural pixel
   // height of the block's *read-only* (view-mode) render. Lifted up here so
@@ -4100,6 +4104,31 @@ export default function ReportDetailPage() {
     }
   }
 
+  // PPT(.pptx) 가져오기 — 백엔드가 휴리스틱 변환한 draft(페이지)를 받아 현재 문서에
+  // 새 페이지로 이어 붙인다(이미지는 서버가 업로드해 file_id 로 박아 옴). 저장은 사용자가.
+  async function handleImportPptx(e) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file || pptxImporting) return
+    setPptxImporting(true)
+    try {
+      const res = await importPptx(file)
+      const warn = res?.warnings ?? []
+      await appendImportedAsNewPages(JSON.stringify(res.draft))
+      toast.success(
+        warn.length
+          ? `PPT를 불러왔습니다 (변환 못 한 요소 ${warn.length}건은 건너뜀). 저장하려면 “저장”.`
+          : 'PPT를 불러왔습니다. 저장하려면 “저장” 버튼을 눌러주세요.',
+      )
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err?.message || 'PPT 가져오기 실패',
+      )
+    } finally {
+      setPptxImporting(false)
+    }
+  }
+
 
   // Driven by performPdfPrint — when not printing the context value is 1
   // so screen rendering uses the chart's default font sizes; while
@@ -4681,6 +4710,13 @@ export default function ReportDetailPage() {
                 <Upload className="mr-2 h-3.5 w-3.5" />
                 JSON에서 불러오기
               </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={() => pptxInputRef.current?.click()}
+                disabled={pptxImporting}
+              >
+                <Presentation className="mr-2 h-3.5 w-3.5" />
+                {pptxImporting ? 'PPT 불러오는 중…' : 'PPT에서 불러오기'}
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <input
@@ -4688,6 +4724,13 @@ export default function ReportDetailPage() {
             type="file"
             accept="application/json,.json"
             onChange={handleLocalLoad}
+            className="hidden"
+          />
+          <input
+            ref={pptxInputRef}
+            type="file"
+            accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            onChange={handleImportPptx}
             className="hidden"
           />
 

@@ -29,6 +29,7 @@ from app.modules.entities.routes import (
 )
 from app.modules.files.routes import router as files_router
 from app.modules.folders.routes import router as folders_router
+from app.modules.imports.routes import router as imports_router
 from app.modules.grants.routes import router as grants_router
 from app.modules.members.routes import router as members_router
 from app.modules.mounts.routes import router as mounts_router
@@ -102,6 +103,7 @@ def register_routers(app: FastAPI) -> None:
         tags=["template-metrics"],
     )
     app.include_router(files_router, prefix="/api/files", tags=["files"])
+    app.include_router(imports_router, prefix="/api/imports", tags=["imports"])
     app.include_router(embed_router, prefix="/api/embed", tags=["embed"])
     app.include_router(
         section_taxonomy_router,

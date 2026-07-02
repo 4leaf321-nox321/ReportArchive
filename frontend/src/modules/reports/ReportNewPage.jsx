@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowRight, FileCode2, Search, Sparkles } from 'lucide-react'
+import { ArrowRight, FileCode2, FileUp, Search, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { Button } from '@/shared/components/ui/button'
@@ -16,6 +16,7 @@ import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { listPresets, newReportFromPreset } from '@/shared/api/presets'
+import { importPptx } from '@/shared/api/imports'
 import { listTemplates } from '@/shared/api/templates'
 import { listTemplateCategories } from '@/shared/api/templateCategories'
 import { cn } from '@/shared/lib/utils'
@@ -171,6 +172,35 @@ export default function ReportNewPage() {
     }
   }
 
+  // PPT 가져오기 — .pptx 업로드 → 휴리스틱 변환된 새 초안으로 이동(프리셋 시작과 동일).
+  const importInputRef = useRef(null)
+  const [importing, setImporting] = useState(false)
+
+  async function handleImportFile(e) {
+    const file = e.target.files?.[0]
+    e.target.value = '' // 같은 파일 다시 선택 가능하게
+    if (!file || importing) return
+    setImporting(true)
+    try {
+      const res = await importPptx(file)
+      const warn = res?.warnings ?? []
+      toast.success(
+        warn.length
+          ? `가져왔습니다 (변환 못 한 요소 ${warn.length}건은 건너뜀).`
+          : '문서를 가져왔습니다.',
+      )
+      navigate(`/w/${res.workspace_slug}/reports/${res.id}`, {
+        state: { startEditing: true },
+      })
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err?.message || 'PPT 가져오기에 실패했습니다.',
+      )
+    } finally {
+      setImporting(false)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4 p-6 lg:h-[calc(100vh-3.5rem)]">
       <PageHeader
@@ -183,6 +213,29 @@ export default function ReportNewPage() {
         ]}
         className="shrink-0"
       />
+
+      <div className="shrink-0 flex items-center justify-end gap-2 -mt-2">
+        <span className="text-xs text-muted-foreground">
+          기존 PPT 파일을 위젯 보고서로 불러오기:
+        </span>
+        <input
+          ref={importInputRef}
+          type="file"
+          accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+          onChange={handleImportFile}
+          className="hidden"
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1.5"
+          disabled={importing}
+          onClick={() => importInputRef.current?.click()}
+        >
+          <FileUp className="h-3.5 w-3.5" />
+          {importing ? '가져오는 중…' : 'PPT 가져오기'}
+        </Button>
+      </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
         {/* ① 분류 + 소속 */}

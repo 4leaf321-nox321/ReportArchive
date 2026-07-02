@@ -96,6 +96,44 @@ def test_import_pptx_returns_draft():
     _drop_files([f["file_id"] for f in files])
 
 
+def test_parse_pptx_overlay_fills_merged_form_table():
+    """표지 양식 패턴: 표는 라벨+빈 병합 값칸, 값은 위에 겹친 텍스트박스.
+    좌표 매칭으로 값칸을 채우고 텍스트박스는 별도 문단으로 남기지 않아야 한다.
+    """
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+
+    from app.modules.imports.pptx_parser import parse_pptx
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # Blank
+    # 1행 3열 표: [라벨][값(병합 2칸, 빈칸)]
+    tbl = slide.shapes.add_table(
+        1, 3, Inches(0), Inches(0), Inches(6), Inches(0.5)
+    ).table
+    for i in range(3):
+        tbl.columns[i].width = Inches(2)  # c0:0-2, c1:2-4, c2:4-6
+    tbl.cell(0, 0).text = "과제명"
+    tbl.cell(0, 1).merge(tbl.cell(0, 2))  # 값칸 병합(빈칸)
+    # 값 텍스트박스를 병합 값칸(c1) 위에 겹쳐 놓는다.
+    b1 = slide.shapes.add_textbox(Inches(2.1), Inches(0.05), Inches(3), Inches(0.4))
+    b1.text_frame.text = "낙하 시뮬레이션"
+    b1.text_frame.paragraphs[0].font.size = Pt(12)
+
+    buf = BytesIO()
+    prs.save(buf)
+    res = parse_pptx(buf.getvalue())
+    seg_types = [s["type"] for s in res["pages"][0]["segments"]]
+    assert seg_types == ["table"], seg_types  # 텍스트박스가 문단으로 새지 않음
+    t = res["pages"][0]["segments"][0]["content"]
+    flat = [c["label"] for c in t["columns"]] + [
+        v for row in t["rows"] for v in row.values()
+    ]
+    assert "낙하 시뮬레이션" in flat, flat
+    assert "과제명" in flat, flat
+    assert "열 2" not in flat and "열 3" not in flat, flat  # 병합 빈칸 → 채워짐
+
+
 def test_import_pptx_requires_auth():
     c = TestClient(app)
     r = c.post(

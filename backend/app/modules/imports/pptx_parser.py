@@ -69,6 +69,74 @@ def _table_segment(rows):
     return {"type": "table", "content": {"columns": columns, "rows": body}}
 
 
+def _table_grid(tbl, overlay=None):
+    """표를 문자열 격자로. 병합 원점(origin)의 텍스트를 span 영역 전체로 채운다
+    (python-pptx 는 원점에만 텍스트를 주므로 그대로 두면 양식형 표가 빈칸투성이가 됨).
+    overlay={(r,c): text} 는 표 위에 겹쳐 놓은 텍스트박스에서 뽑은 값칸 내용으로,
+    비어 있는 셀에만 채운다(병합 값칸이면 span 전체로).
+    """
+    nr, nc = len(tbl.rows), len(tbl.columns)
+    grid = [["" for _ in range(nc)] for _ in range(nr)]
+
+    def put(r, c, txt):
+        if not txt:
+            return
+        cell = tbl.cell(r, c)
+        try:
+            origin = cell.is_merge_origin
+        except Exception:
+            origin = False
+        if origin:
+            try:
+                sh, sw = cell.span_height, cell.span_width
+            except Exception:
+                sh = sw = 1
+            for dr in range(sh or 1):
+                for dc in range(sw or 1):
+                    if r + dr < nr and c + dc < nc and not grid[r + dr][c + dc]:
+                        grid[r + dr][c + dc] = txt
+        elif not grid[r][c]:
+            grid[r][c] = txt
+
+    # 원본 셀 텍스트(라벨)
+    for r in range(nr):
+        for c in range(nc):
+            put(r, c, (tbl.cell(r, c).text or "").strip())
+    # 겹쳐 놓은 값
+    for (r, c), txt in (overlay or {}).items():
+        if 0 <= r < nr and 0 <= c < nc:
+            put(r, c, txt)
+    return grid
+
+
+def _table_geom(shape):
+    """표 셀 격자의 누적 좌표(행 top 경계 · 열 left 경계, EMU)."""
+    tbl = shape.table
+    top = shape.top or 0
+    left = shape.left or 0
+    row_tops = [top]
+    for row in tbl.rows:
+        row_tops.append(row_tops[-1] + (row.height or 0))
+    col_lefts = [left]
+    for col in tbl.columns:
+        col_lefts.append(col_lefts[-1] + (col.width or 0))
+    return row_tops, col_lefts
+
+
+def _locate_cell(row_tops, col_lefts, top, left):
+    """(top,left) 점이 들어가는 (행,열). 격자 밖이면 None."""
+    r = c = None
+    for i in range(len(row_tops) - 1):
+        if row_tops[i] <= top < row_tops[i + 1]:
+            r = i
+            break
+    for j in range(len(col_lefts) - 1):
+        if col_lefts[j] <= left < col_lefts[j + 1]:
+            c = j
+            break
+    return (r, c) if r is not None and c is not None else None
+
+
 def _shape_to_segment(shape, *, is_title, slide_no, warnings):
     from pptx.enum.shapes import MSO_SHAPE_TYPE
 
@@ -96,10 +164,7 @@ def _shape_to_segment(shape, *, is_title, slide_no, warnings):
     # 표
     if getattr(shape, "has_table", False):
         try:
-            tbl = shape.table
-            nr, nc = len(tbl.rows), len(tbl.columns)
-            rows = [[(tbl.cell(r, c).text or "") for c in range(nc)] for r in range(nr)]
-            return _table_segment(rows)
+            return _table_segment(_table_grid(shape.table, overlay=None))
         except Exception:
             warnings.append(f"슬라이드 {slide_no}: 표 추출 실패 1건")
             return None
@@ -169,15 +234,75 @@ def parse_pptx(data: bytes) -> dict:
 
         shapes = _flatten(slide.shapes)
         shapes.sort(key=_pos)
+
+        # 표 위에 겹쳐 놓은 값 텍스트박스를 셀로 흡수한다(표지 양식이 흔한 패턴:
+        # 표는 라벨+빈 값칸, 실제 값은 위에 얹은 텍스트박스). 각 텍스트박스의
+        # 좌상단이 어느 표의 빈 셀에 들어가면 그 셀 값으로 넣고 별도 문단으로는
+        # 내보내지 않는다.
+        tables = []  # (shape_id, shape, row_tops, col_lefts, bbox, overlay)
+        for shape in shapes:
+            if not getattr(shape, "has_table", False):
+                continue
+            try:
+                row_tops, col_lefts = _table_geom(shape)
+                bbox = (row_tops[0], col_lefts[0], row_tops[-1], col_lefts[-1])
+                tables.append([shape.shape_id, shape, row_tops, col_lefts, bbox, {}])
+            except Exception:
+                pass
+
+        consumed = set()
+        if tables:
+            for shape in shapes:
+                try:
+                    sid = shape.shape_id
+                except Exception:
+                    continue
+                if sid == title_id or getattr(shape, "has_table", False):
+                    continue
+                if not getattr(shape, "has_text_frame", False):
+                    continue
+                txt = (shape.text_frame.text or "").strip()
+                if not txt:
+                    continue
+                top, left = _pos(shape)
+                for tid, tshape, row_tops, col_lefts, bbox, overlay in tables:
+                    t0, l0, t1, l1 = bbox
+                    if not (t0 <= top < t1 and l0 <= left < l1):
+                        continue
+                    rc = _locate_cell(row_tops, col_lefts, top, left)
+                    if rc is None:
+                        continue
+                    r, c = rc
+                    # 이미 라벨이 있는 셀은 건드리지 않고 문단으로 남긴다.
+                    if (tshape.table.cell(r, c).text or "").strip():
+                        continue
+                    overlay.setdefault((r, c), txt)
+                    consumed.add(sid)
+                    break
+
+        overlay_by_table = {t[0]: t[5] for t in tables}
+
         segments = []
         for shape in shapes:
             try:
-                is_title = title_id is not None and shape.shape_id == title_id
+                sid = shape.shape_id
             except Exception:
-                is_title = False
-            seg = _shape_to_segment(
-                shape, is_title=is_title, slide_no=si, warnings=warnings
-            )
+                sid = None
+            if sid is not None and sid in consumed:
+                continue
+            if getattr(shape, "has_table", False):
+                try:
+                    seg = _table_segment(
+                        _table_grid(shape.table, overlay=overlay_by_table.get(sid))
+                    )
+                except Exception:
+                    warnings.append(f"슬라이드 {si}: 표 추출 실패 1건")
+                    seg = None
+            else:
+                is_title = title_id is not None and sid == title_id
+                seg = _shape_to_segment(
+                    shape, is_title=is_title, slide_no=si, warnings=warnings
+                )
             if seg:
                 segments.append(seg)
         pages.append({"name": name, "segments": segments})

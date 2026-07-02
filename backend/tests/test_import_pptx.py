@@ -134,6 +134,48 @@ def test_parse_pptx_overlay_fills_merged_form_table():
     assert "열 2" not in flat and "열 3" not in flat, flat  # 병합 빈칸 → 채워짐
 
 
+def test_parse_pptx_reads_embedded_excel_table():
+    """엑셀에서 붙여넣은 임베드(OLE, .xlsx) 표를 표 세그먼트로 읽는다."""
+    import openpyxl
+    from pptx import Presentation
+    from pptx.enum.shapes import PROG_ID
+    from pptx.util import Inches
+
+    from app.modules.imports.pptx_parser import parse_pptx
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["이름", "점수"])
+    ws.append(["철수", 90])
+    ws.append(["영희", 85])
+    xbuf = BytesIO()
+    wb.save(xbuf)
+    xbuf.seek(0)
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    slide.shapes.add_ole_object(
+        xbuf,
+        PROG_ID.XLSX,
+        left=Inches(1),
+        top=Inches(1),
+        width=Inches(4),
+        height=Inches(2),
+    )
+    pbuf = BytesIO()
+    prs.save(pbuf)
+
+    res = parse_pptx(pbuf.getvalue())
+    segs = res["pages"][0]["segments"]
+    tables = [s for s in segs if s["type"] == "table"]
+    assert tables, [s["type"] for s in segs]
+    t = tables[0]["content"]
+    assert [c["label"] for c in t["columns"]] == ["이름", "점수"], t["columns"]
+    body = [tuple(r[c["key"]] for c in t["columns"]) for r in t["rows"]]
+    assert ("철수", "90") in body, body
+    assert ("영희", "85") in body, body
+
+
 def test_import_pptx_requires_auth():
     c = TestClient(app)
     r = c.post(

@@ -137,6 +137,72 @@ def _locate_cell(row_tops, col_lefts, top, left):
     return (r, c) if r is not None and c is not None else None
 
 
+_MAX_XLSX_ROWS = 500
+
+
+def _excel_ole_segment(shape, *, slide_no, warnings):
+    """엑셀에서 붙여넣은 임베드(OLE) 표 → table 세그먼트.
+
+    PPTX 안에는 원본 파일이 통째로 들어있어(`ole_format.blob`) 신형 .xlsx 는
+    openpyxl 로 열어 표로 읽는다. 구형 .xls(OLE 복합문서)는 못 읽어 안내만 남긴다.
+    """
+    of = getattr(shape, "ole_format", None)
+    if of is None:
+        return None
+    try:
+        prog = of.prog_id or ""
+        blob = of.blob
+    except Exception:
+        return None
+    if not blob:
+        return None
+    if not (prog.startswith("Excel") or blob[:2] == b"PK"):
+        # 엑셀이 아닌 임베드 개체(워드 문서 등) — 못 읽음
+        warnings.append(
+            f"슬라이드 {slide_no}: 지원 안 되는 임베드 개체({prog or '알 수 없음'}) 건너뜀"
+        )
+        return None
+    if blob[:2] != b"PK":
+        warnings.append(
+            f"슬라이드 {slide_no}: 구형 엑셀(.xls) 임베드 표는 못 읽음 "
+            "— PPT 「표 삽입」으로 다시 넣어주세요"
+        )
+        return None
+    try:
+        import openpyxl
+
+        wb = openpyxl.load_workbook(BytesIO(blob), read_only=True, data_only=True)
+        ws = wb.active
+        rows = []
+        truncated = False
+        for row in ws.iter_rows(values_only=True):
+            rows.append(["" if v is None else str(v).strip() for v in row])
+            if len(rows) >= _MAX_XLSX_ROWS:
+                truncated = True
+                break
+        wb.close()
+    except Exception:
+        warnings.append(f"슬라이드 {slide_no}: 엑셀 임베드 표 읽기 실패 1건")
+        return None
+    # 빈 행 제거 + 우측 빈 열 트림
+    rows = [r for r in rows if any(c for c in r)]
+    if not rows:
+        return None
+    width = 0
+    for r in rows:
+        last = 0
+        for i, c in enumerate(r):
+            if c:
+                last = i + 1
+        width = max(width, last)
+    rows = [r[:width] for r in rows]
+    if truncated:
+        warnings.append(
+            f"슬라이드 {slide_no}: 엑셀 임베드 표가 커서 {_MAX_XLSX_ROWS}행까지만 가져옴"
+        )
+    return _table_segment(rows)
+
+
 def _shape_to_segment(shape, *, is_title, slide_no, warnings):
     from pptx.enum.shapes import MSO_SHAPE_TYPE
 
@@ -192,15 +258,22 @@ def _shape_to_segment(shape, *, is_title, slide_no, warnings):
         except Exception:
             return None
 
-    # 어디에도 안 걸린 개체 — 유형을 warnings 에 남긴다(엑셀 임베드(OLE)·SmartArt 등이
+    # 엑셀에서 붙여넣은 임베드(OLE) 표 → 표로 읽어들임
+    seg = _excel_ole_segment(shape, slide_no=slide_no, warnings=warnings)
+    if seg:
+        return seg
+
+    # 어디에도 안 걸린 개체 — 유형을 warnings 에 남긴다(SmartArt·구형 임베드 등이
     # "표를 표로 못 읽는" 흔한 원인). 장식/빈 도형은 흔하니 제외해 소음을 줄인다.
     tname = getattr(stype, "name", "") or ""
-    _NOISE = {"AUTO_SHAPE", "TEXT_BOX", "PLACEHOLDER", "LINE", "FREEFORM", "CONNECTOR"}
+    # EMBEDDED_OLE_OBJECT 는 위 _excel_ole_segment 가 전담(자체 안내) → 중복 제외.
+    _NOISE = {
+        "AUTO_SHAPE", "TEXT_BOX", "PLACEHOLDER", "LINE",
+        "FREEFORM", "CONNECTOR", "EMBEDDED_OLE_OBJECT",
+    }
     if tname and tname not in _NOISE:
         label = tname
-        if tname == "EMBEDDED_OLE_OBJECT":
-            label = "임베드 개체(엑셀 표 등) — PPT 기본 표로 다시 넣어주세요"
-        elif tname == "TABLE":  # 방어적: 여기 오면 안 되지만
+        if tname == "TABLE":  # 방어적: 여기 오면 안 되지만
             label = "표(추출 실패)"
         warnings.append(f"슬라이드 {slide_no}: 지원 안 되는 개체({label}) 건너뜀")
     return None

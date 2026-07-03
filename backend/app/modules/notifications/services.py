@@ -53,6 +53,10 @@ def create_notification(
     db.add(row)
     db.flush()
     _enforce_cap(db, user_id=recipient_user_id)
+    # 옵트인 이메일 팬아웃(부가 채널 — 실패해도 알림 생성엔 영향 없음).
+    from app.modules.notifications.email_fanout import maybe_enqueue_email
+
+    maybe_enqueue_email(db, row)
     return row
 
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { User, KeyRound, Building2 } from 'lucide-react'
+import { User, KeyRound, Building2, Mail } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
@@ -16,7 +16,7 @@ const ROLE_LABEL = { manager: '매니저', user: '사용자' }
 const ROLE_VARIANT = { manager: 'default', user: 'outline' }
 
 export default function ProfilePage() {
-  const { me, refresh } = useAuth()
+  const { me, refresh, updatePreferences } = useAuth()
 
   if (!me?.user) {
     return (
@@ -26,12 +26,84 @@ export default function ProfilePage() {
 
   return (
     <div className="p-6 space-y-6 max-w-2xl">
-      <PageHeader title="프로필" description="계정 정보 + 비밀번호 변경" />
+      <PageHeader title="프로필" description="계정 정보 · 알림 · 비밀번호 변경" />
 
       <ProfileForm me={me} onSaved={refresh} />
+      <NotificationEmailCard me={me} onChange={updatePreferences} />
       <PasswordForm />
       <MembershipsCard memberships={me.memberships} />
     </div>
+  )
+}
+
+// 이메일 알림 수신 설정. preferences.email_notifications 를 부분 패치로 저장한다.
+const EMAIL_NOTIF_OPTIONS = [
+  { value: 'off', label: '받지 않음', hint: '앱 안 알림(🔔)만 받습니다. (기본)' },
+  { value: 'important', label: '중요 알림만', hint: '멘션·답글·내 보고서 게시·편집자 추가·종합 포함 등' },
+  { value: 'all', label: '모든 알림', hint: '모든 종류의 알림을 이메일로도 받습니다.' },
+]
+
+function NotificationEmailCard({ me, onChange }) {
+  const current = me.preferences?.email_notifications || 'off'
+  const [value, setValue] = useState(current)
+  const noEmail = !me.user.email || !me.user.email.includes('@')
+
+  useEffect(() => {
+    setValue(me.preferences?.email_notifications || 'off')
+  }, [me.preferences?.email_notifications])
+
+  function pick(next) {
+    if (next === value) return
+    setValue(next) // 낙관적
+    Promise.resolve(onChange({ email_notifications: next }))
+      .then(() => toast.success('이메일 알림 설정을 저장했습니다.'))
+      .catch(() => {
+        setValue(current)
+        toast.error('설정 저장 실패')
+      })
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Mail className="h-4 w-4 text-muted-foreground" />
+          <CardTitle className="text-base">이메일 알림</CardTitle>
+        </div>
+        <CardDescription>
+          중요한 알림을 회사 이메일({me.user.email || '이메일 미설정'})로도 받을지
+          선택합니다. 앱 안 알림은 설정과 무관하게 항상 표시됩니다.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {noEmail && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            이 계정은 이메일 주소가 없어 이메일 알림을 받을 수 없습니다.
+          </div>
+        )}
+        {EMAIL_NOTIF_OPTIONS.map((opt) => (
+          <label
+            key={opt.value}
+            className={`flex cursor-pointer items-start gap-3 rounded-md border p-3 text-sm ${
+              value === opt.value ? 'border-primary bg-primary/5' : 'border-input'
+            } ${noEmail ? 'cursor-not-allowed opacity-60' : ''}`}
+          >
+            <input
+              type="radio"
+              name="email-notif"
+              className="mt-0.5 h-4 w-4 accent-primary"
+              checked={value === opt.value}
+              disabled={noEmail}
+              onChange={() => pick(opt.value)}
+            />
+            <span>
+              <span className="font-medium">{opt.label}</span>
+              <span className="block text-xs text-muted-foreground">{opt.hint}</span>
+            </span>
+          </label>
+        ))}
+      </CardContent>
+    </Card>
   )
 }
 

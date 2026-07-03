@@ -166,6 +166,29 @@ class PasswordResetRequest(Base):
     user: Mapped[User | None] = relationship("User", foreign_keys=[user_id])
 
 
+class PasswordResetToken(Base):
+    """셀프 비밀번호 재설정 토큰. 이메일로 보낸 링크의 원문 토큰은 DB에 두지 않고
+    sha256 해시만 저장한다(PersonalAccessToken 과 같은 패턴). 만료(expires_at)·
+    1회용(used_at)이며, 확인 엔드포인트가 해시로 조회해 소비한다."""
+
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+    user: Mapped[User] = relationship("User", foreign_keys=[user_id])
+
+
 class PersonalAccessToken(Base):
     """개인 액세스 토큰 (MCP 등 외부 클라이언트가 Bearer 로 사용). 평문 토큰은 발급
     시 1회만 보여주고 DB 엔 sha256 해시만 둔다. 취소(revoked_at)·만료(expires_at)

@@ -26,6 +26,15 @@ export async function requestPasswordReset({ email }) {
   return extractData(res)
 }
 
+/** 이메일 링크의 토큰으로 새 비밀번호 설정(셀프 재설정). */
+export async function confirmPasswordReset({ token, newPassword }) {
+  const res = await apiClient.post('/api/auth/password-reset/confirm', {
+    token,
+    new_password: newPassword,
+  })
+  return extractData(res)
+}
+
 export async function register({ email, name, password, workspaceSlug } = {}) {
   const body = { email, name, password }
   if (workspaceSlug) body.workspace_slug = workspaceSlug

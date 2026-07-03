@@ -16,6 +16,7 @@ from app.modules.auth import services as auth_services
 from app.modules.auth.schemas import (
     LoginRequest,
     LoginResponse,
+    PasswordResetConfirm,
     PasswordResetRequestCreate,
     PublicWorkspace,
     RegisteredUser,
@@ -97,14 +98,43 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
 def request_password_reset(
     payload: PasswordResetRequestCreate, db: Session = Depends(get_db)
 ):
-    """공개 '비밀번호 찾기' 접수. 부서/시스템 관리자가 본인 확인 후 임시 비번을
-    발급하는 큐에 쌓는다(이메일 발송 인프라가 없어 관리자 중개 방식).
+    """공개 '비밀번호 찾기' 접수.
 
-    보안: 이메일 가입 여부를 응답으로 노출하지 않는다(항상 202). 같은 이메일의
-    pending 요청이 이미 있으면 중복 생성하지 않는다(레이트리밋 겸 큐 정리).
+    메일 발송이 가능하면(mailer.is_active) 가입 계정에 재설정 링크를 이메일로
+    보낸다(셀프 재설정). 발송 불가 환경이면 기존처럼 관리자 중개 큐에 쌓는다.
+
+    보안: 이메일 가입 여부를 응답으로 노출하지 않는다(항상 202/동일 메시지).
     """
-    email = payload.email.strip().lower()
+    from app.mailer import service as mail_service
 
+    email = payload.email.strip().lower()
+    user = db.execute(
+        select(User).where(User.email == email)
+    ).scalar_one_or_none()
+
+    if mail_service.is_active():
+        # 셀프 재설정 — 가입 계정에만 실제 발송(미가입이면 조용히 넘어감).
+        if user is not None and user.is_active and "@" in (user.email or ""):
+            raw = auth_services.create_password_reset_token(db, user)
+            base = settings.email_base_url
+            reset_url = f"{base}/reset-password?token={raw}" if base else raw
+            mail_service.enqueue_email(
+                db,
+                to=user.email,
+                template="password_reset",
+                context={
+                    "url": reset_url,
+                    "name": user.name,
+                    "expires_minutes": auth_services.PASSWORD_RESET_EXPIRE_MINUTES,
+                },
+            )
+            db.commit()
+        return success_response(
+            data=None,
+            message="해당 이메일로 가입된 계정이 있으면 비밀번호 재설정 링크를 보냈습니다.",
+        )
+
+    # 폴백: 관리자 중개 큐(메일 인프라 미설정). 같은 이메일 pending 중복 방지.
     existing = db.execute(
         select(PasswordResetRequest).where(
             PasswordResetRequest.email == email,
@@ -112,9 +142,6 @@ def request_password_reset(
         )
     ).first()
     if existing is None:
-        user = db.execute(
-            select(User).where(User.email == email)
-        ).scalar_one_or_none()
         db.add(
             PasswordResetRequest(
                 email=email,
@@ -123,11 +150,36 @@ def request_password_reset(
             )
         )
         db.commit()
-
-    # 항상 동일한 안내 — 존재/미존재 구분 불가.
     return success_response(
         data=None,
         message="요청이 접수되었습니다. 부서 관리자가 확인 후 처리합니다.",
+    )
+
+
+@router.post("/password-reset/confirm")
+def confirm_password_reset(
+    payload: PasswordResetConfirm, request: Request, db: Session = Depends(get_db)
+):
+    """이메일 링크의 토큰으로 새 비밀번호를 설정한다. 토큰은 1회용·만료."""
+    user = auth_services.consume_password_reset_token(db, payload.token.strip())
+    if user is None:
+        return error_response(
+            "링크가 만료되었거나 이미 사용되었습니다. 다시 요청해주세요.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    user.password_hash = auth_services.hash_password(payload.new_password)
+    user.must_change_password = False
+    db.commit()
+    access_log_services.record_access(
+        db,
+        email=user.email,
+        success=True,
+        event="password_reset",
+        user_id=user.id,
+        request=request,
+    )
+    return success_response(
+        data=None, message="비밀번호가 변경되었습니다. 새 비밀번호로 로그인하세요."
     )
 
 

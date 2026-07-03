@@ -10,6 +10,6 @@
   - status() — 관리자 화면용 설정 상태
   - OUTBOX — mock 백엔드가 채우는 테스트용 발송 기록
 """
-from app.mailer.service import OUTBOX, enqueue_email, send_now, status
+from app.mailer.service import OUTBOX, enqueue_email, is_active, send_now, status
 
-__all__ = ["OUTBOX", "enqueue_email", "send_now", "status"]
+__all__ = ["OUTBOX", "enqueue_email", "is_active", "send_now", "status"]

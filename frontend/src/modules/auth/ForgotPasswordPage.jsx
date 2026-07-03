@@ -54,8 +54,9 @@ export default function ForgotPasswordPage() {
           </div>
           <CardTitle className="text-xl">비밀번호 찾기</CardTitle>
           <CardDescription>
-            가입한 이메일로 재설정을 요청하면 부서 관리자가 확인 후 임시
-            비밀번호를 발급합니다.
+            가입한 이메일로 비밀번호 재설정 링크를 보내드립니다. (메일 발송이
+            준비되지 않은 환경에서는 부서 관리자가 확인 후 임시 비밀번호를
+            발급합니다.)
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -64,9 +65,9 @@ export default function ForgotPasswordPage() {
               <div className="flex items-start gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-3 text-sm">
                 <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                 <div>
-                  요청이 접수되었습니다. 부서 관리자가 확인 후 임시 비밀번호를
-                  발급해 드립니다. 발급되면 임시 비밀번호로 로그인한 뒤 새
-                  비밀번호를 설정하세요.
+                  요청이 접수되었습니다. 가입된 계정이면 재설정 링크를 이메일로
+                  보내드립니다 — 메일함(스팸함 포함)을 확인하세요. 메일이 오지
+                  않으면 부서 관리자가 임시 비밀번호를 발급해 드립니다.
                 </div>
               </div>
               <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">

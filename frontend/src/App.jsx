@@ -21,6 +21,7 @@ import { DEFAULT_WORKSPACE } from '@/shared/workspace/workspaces'
 import LoginPage from '@/modules/auth/LoginPage'
 import SignupPage from '@/modules/auth/SignupPage'
 import ForgotPasswordPage from '@/modules/auth/ForgotPasswordPage'
+import ResetPasswordPage from '@/modules/auth/ResetPasswordPage'
 import ForcePasswordChangePage from '@/modules/auth/ForcePasswordChangePage'
 import ProfilePage from '@/modules/profile/ProfilePage'
 import WorkspaceHomePage from '@/modules/workspace/WorkspaceHomePage'
@@ -112,6 +113,7 @@ const router = createBrowserRouter(
       <Route path="/login" element={<LoginPage />} />
       <Route path="/signup" element={<SignupPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       {/* 인증됐지만 임시 비번 → 새 비번 강제 설정. AuthedShell 밖이라 리다이렉트
           루프가 없고, 자체적으로 me/로딩을 가드한다. */}
       <Route path="/force-password-change" element={<ForcePasswordChangePage />} />

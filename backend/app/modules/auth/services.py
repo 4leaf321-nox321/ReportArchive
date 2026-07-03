@@ -32,6 +32,57 @@ def verify_password(plain: str, hashed: Optional[str]) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Password reset tokens (셀프 재설정 — 이메일 링크)
+# --------------------------------------------------------------------------- #
+PASSWORD_RESET_EXPIRE_MINUTES = 30
+
+
+def _hash_reset_token(raw: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def create_password_reset_token(db: Session, user: User) -> str:
+    """원문 토큰을 반환(이메일 링크용). DB엔 해시만 저장. 커밋은 호출자."""
+    import secrets
+
+    from app.modules.users.models import PasswordResetToken
+
+    raw = secrets.token_urlsafe(32)
+    row = PasswordResetToken(
+        user_id=user.id,
+        token_hash=_hash_reset_token(raw),
+        expires_at=datetime.utcnow()
+        + timedelta(minutes=PASSWORD_RESET_EXPIRE_MINUTES),
+    )
+    db.add(row)
+    db.flush()
+    return raw
+
+
+def consume_password_reset_token(db: Session, raw: str) -> Optional[User]:
+    """유효한(미사용·미만료) 토큰이면 소비(used_at 기록)하고 대상 User 반환.
+    실패 시 None. 커밋은 호출자."""
+    from app.modules.users.models import PasswordResetToken
+
+    if not raw:
+        return None
+    row = db.execute(
+        select(PasswordResetToken).where(
+            PasswordResetToken.token_hash == _hash_reset_token(raw)
+        )
+    ).scalar_one_or_none()
+    if row is None or row.used_at is not None:
+        return None
+    if row.expires_at < datetime.utcnow():
+        return None
+    row.used_at = datetime.utcnow()
+    db.flush()
+    return db.get(User, row.user_id)
+
+
+# --------------------------------------------------------------------------- #
 # JWT
 # --------------------------------------------------------------------------- #
 def create_access_token(user_id: int) -> str:

@@ -137,6 +137,16 @@ def _smtp_login_send(smtp, msg, envelope_from: str, recipients: list[str]) -> No
     smtp.send_message(msg, from_addr=envelope_from, to_addrs=recipients)
 
 
+def is_active() -> bool:
+    """실제로 메일을 전달할 수 있는 상태인가. smtp 는 호스트가 설정돼야 하고,
+    console/mock 은 항상 활성(로그/캡처). 비활성이면 호출부가 관리자 중개 등
+    폴백을 쓴다."""
+    backend = (settings.email_backend or "console").strip().lower()
+    if backend == "smtp":
+        return bool(settings.smtp_host.strip())
+    return backend in ("console", "mock")
+
+
 def status() -> dict:
     """관리자 화면용 메일러 설정 상태(비밀은 노출 안 함)."""
     backend = (settings.email_backend or "console").strip().lower()

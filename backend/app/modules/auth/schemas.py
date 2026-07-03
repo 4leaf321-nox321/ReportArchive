@@ -30,6 +30,13 @@ class PasswordResetRequestCreate(BaseModel):
     email: EmailStr
 
 
+class PasswordResetConfirm(BaseModel):
+    """이메일 링크의 토큰으로 새 비밀번호 설정."""
+
+    token: str = Field(..., min_length=1, max_length=256)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
 class RegisterRequest(BaseModel):
     email: EmailStr
     name: str = Field(..., min_length=1, max_length=128)

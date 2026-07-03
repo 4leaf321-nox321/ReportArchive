@@ -43,6 +43,10 @@ from app.modules.entities.schemas import (
     EntityUsageResponse,
     EntityYearsResponse,
     EntityYearsUpdate,
+    PropertyDefCreate,
+    PropertyDefListResponse,
+    PropertyDefRead,
+    PropertyDefUpdate,
     RelationTypeCreate,
     RelationTypeListResponse,
     RelationTypeRead,
@@ -104,6 +108,7 @@ def _to_read(row, usage_count: Optional[int] = None) -> EntityRead:
         created_by_user_id=row.created_by_user_id,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        properties=row.properties or {},
         usage_count=usage_count,
     )
 
@@ -187,6 +192,81 @@ def delete_entity_type(
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     return success_response(data=None, message=f"'{name}' 축이 삭제됐습니다.")
+
+
+# ─── 속성 정의 (property_defs) — 축의 객체 속성 스키마 (온톨로지 강화 A0) ──── #
+@entity_types_router.get("/{type_id}/properties")
+def list_type_properties(
+    type_id: int,
+    _actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """축의 속성 정의 목록. 인증만 — 프론트가 동적 속성 폼을 렌더하는 데 쓴다."""
+    if not services.get_type(db, type_id):
+        return not_found_response(f"엔티티 축을 찾을 수 없습니다: {type_id}")
+    defs = services.list_property_defs(db, owner_kind="entity_type", owner_id=type_id)
+    return success_response(
+        data=PropertyDefListResponse(
+            items=[PropertyDefRead.model_validate(d) for d in defs]
+        )
+    )
+
+
+@entity_types_router.post("/{type_id}/properties", status_code=201)
+def create_type_property(
+    type_id: int,
+    payload: PropertyDefCreate,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 축에 속성 정의 추가."""
+    _require_admin(actor)
+    if not services.get_type(db, type_id):
+        return not_found_response(f"엔티티 축을 찾을 수 없습니다: {type_id}")
+    try:
+        row = services.create_property_def(
+            db, owner_kind="entity_type", owner_id=type_id, payload=payload
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return created_response(data=PropertyDefRead.model_validate(row))
+
+
+@entity_types_router.patch("/{type_id}/properties/{def_id}")
+def update_type_property(
+    type_id: int,
+    def_id: int,
+    payload: PropertyDefUpdate,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 속성 정의 수정."""
+    _require_admin(actor)
+    row = services.get_property_def(db, def_id)
+    if row is None or row.owner_kind != "entity_type" or row.owner_id != type_id:
+        return not_found_response(f"속성 정의를 찾을 수 없습니다: {def_id}")
+    try:
+        row = services.update_property_def(db, row, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return success_response(data=PropertyDefRead.model_validate(row))
+
+
+@entity_types_router.delete("/{type_id}/properties/{def_id}")
+def delete_type_property(
+    type_id: int,
+    def_id: int,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 속성 정의 삭제. 기존 엔티티의 properties 값은 남지만 응답에서
+    검증 대상이 아니게 된다(soft — 값 보존)."""
+    _require_admin(actor)
+    row = services.get_property_def(db, def_id)
+    if row is None or row.owner_kind != "entity_type" or row.owner_id != type_id:
+        return not_found_response(f"속성 정의를 찾을 수 없습니다: {def_id}")
+    services.delete_property_def(db, row)
+    return success_response(data=None, message="속성 정의가 삭제됐습니다.")
 
 
 @entity_types_router.post("/{type_id}/merge-candidates")

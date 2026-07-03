@@ -42,6 +42,56 @@ class EntityTypeUpdate(BaseModel):
     temporal_kind: Optional[EntityTemporalKind] = None
 
 
+class PropertyDefRead(BaseModel):
+    """속성 정의 한 줄 (온톨로지 강화 A0). 프론트가 이 스키마로 동적 입력 폼을
+    렌더한다."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    owner_kind: str
+    owner_id: int
+    key: str
+    label: str
+    data_type: str
+    unit: Optional[str] = None
+    required: bool = False
+    multi: bool = False
+    enum_options: Optional[list] = None
+    ref_type_slug: Optional[str] = None
+    sort_order: int = 0
+    help: Optional[str] = None
+
+
+class PropertyDefListResponse(BaseModel):
+    items: list[PropertyDefRead]
+
+
+class PropertyDefCreate(BaseModel):
+    key: str = Field(..., min_length=1, max_length=48)
+    label: str = Field(..., min_length=1, max_length=64)
+    data_type: str = Field(..., min_length=1, max_length=16)
+    unit: Optional[str] = Field(default=None, max_length=24)
+    required: bool = False
+    multi: bool = False
+    enum_options: Optional[list] = None
+    ref_type_slug: Optional[str] = Field(default=None, max_length=32)
+    sort_order: int = 0
+    help: Optional[str] = Field(default=None, max_length=255)
+
+
+class PropertyDefUpdate(BaseModel):
+    label: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    data_type: Optional[str] = Field(default=None, min_length=1, max_length=16)
+    unit: Optional[str] = Field(default=None, max_length=24)
+    required: Optional[bool] = None
+    multi: Optional[bool] = None
+    enum_options: Optional[list] = None
+    ref_type_slug: Optional[str] = Field(default=None, max_length=32)
+    sort_order: Optional[int] = None
+    help: Optional[str] = Field(default=None, max_length=255)
+
+
 class EntityAliasRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -175,6 +225,8 @@ class EntityRead(BaseModel):
     created_by_user_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
+    # 객체 속성 (온톨로지 강화 A0). record 축에서만 의미. 기본 {}.
+    properties: dict = Field(default_factory=dict)
     # 관리 페이지에서만 채움 (admin route 가 with_usage=True 로 호출).
     # picker 경로에서는 None — 매 행마다 COUNT 서브쿼리를 돌리는 비용을
     # 의도적으로 회피. 화면에 "사용 중인 보고서 N건" 으로 노출.
@@ -223,6 +275,8 @@ class EntityCreate(BaseModel):
     value: str = Field(..., min_length=1, max_length=255)
     code: Optional[str] = Field(default=None, max_length=64)
     description: str = Field(default="", max_length=2000)
+    # 객체 속성 (A0). 축의 property_defs 로 검증된다. 미정의 키/형식 오류면 400.
+    properties: Optional[dict] = None
 
 
 class EntityUpdate(BaseModel):
@@ -237,6 +291,8 @@ class EntityUpdate(BaseModel):
     # 연도 세트는 이 스키마가 아니라 PUT /entities/{id}/years 로 관리.
     valid_from_year: Optional[int] = Field(default=None, ge=1900, le=2200)
     valid_to_year: Optional[int] = Field(default=None, ge=1900, le=2200)
+    # 객체 속성 (A0). 키를 보내면 축 스키마로 검증 후 통째로 교체한다.
+    properties: Optional[dict] = None
 
 
 class EntityYearsResponse(BaseModel):

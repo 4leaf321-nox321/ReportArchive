@@ -28,6 +28,7 @@ from app.modules.entities.models import (
     EntityTemporalKind,
     EntityType,
     EntityYear,
+    PropertyDef,
     RelationType,
     ReportEntity,
 )
@@ -36,6 +37,8 @@ from app.modules.entities.schemas import (
     EntityTypeCreate,
     EntityTypeUpdate,
     EntityUpdate,
+    PropertyDefCreate,
+    PropertyDefUpdate,
     RelationTypeCreate,
     RelationTypeUpdate,
 )
@@ -376,6 +379,207 @@ def list_by_ids(db: Session, ids: list[int]) -> list[Entity]:
     )
 
 
+# --------------------------------------------------------------------------- #
+# 속성 정의(property_defs) + 값 검증 (온톨로지 강화 A0)
+# --------------------------------------------------------------------------- #
+PROPERTY_DATA_TYPES = {
+    "text", "longtext", "number", "date", "year", "bool", "enum", "entity_ref", "url",
+}
+_KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _enum_values(enum_options) -> set:
+    """enum_options([{value,label}] 또는 ["a","b"]) → 허용 값 집합."""
+    out = set()
+    for opt in enum_options or []:
+        out.add(opt.get("value") if isinstance(opt, dict) else opt)
+    return out
+
+
+def list_property_defs(db: Session, *, owner_kind: str, owner_id: int) -> list[PropertyDef]:
+    return list(
+        db.execute(
+            select(PropertyDef)
+            .where(PropertyDef.owner_kind == owner_kind, PropertyDef.owner_id == owner_id)
+            .order_by(PropertyDef.sort_order, PropertyDef.id)
+        ).scalars()
+    )
+
+
+def get_property_def(db: Session, def_id: int) -> Optional[PropertyDef]:
+    return db.get(PropertyDef, def_id)
+
+
+def _check_data_type(dt: str, enum_options, ref_type_slug: str | None, db: Session) -> None:
+    if dt not in PROPERTY_DATA_TYPES:
+        raise ValueError(f"알 수 없는 data_type: {dt}")
+    if dt == "enum" and not _enum_values(enum_options):
+        raise ValueError("enum 속성은 enum_options 가 필요합니다.")
+    if dt == "entity_ref" and ref_type_slug:
+        ax = db.execute(
+            select(EntityType).where(EntityType.slug == ref_type_slug)
+        ).scalar_one_or_none()
+        if ax is None:
+            raise ValueError(f"ref_type_slug 축을 찾을 수 없습니다: {ref_type_slug}")
+
+
+def create_property_def(
+    db: Session, *, owner_kind: str, owner_id: int, payload: PropertyDefCreate
+) -> PropertyDef:
+    key = payload.key.strip()
+    if not _KEY_RE.match(key):
+        raise ValueError("key 는 소문자로 시작하는 [a-z0-9_] 여야 합니다.")
+    dt = payload.data_type.strip()
+    _check_data_type(dt, payload.enum_options, payload.ref_type_slug, db)
+    dup = db.execute(
+        select(PropertyDef).where(
+            PropertyDef.owner_kind == owner_kind,
+            PropertyDef.owner_id == owner_id,
+            PropertyDef.key == key,
+        )
+    ).scalar_one_or_none()
+    if dup is not None:
+        raise ValueError(f"이미 있는 속성 키: {key}")
+    row = PropertyDef(
+        owner_kind=owner_kind,
+        owner_id=owner_id,
+        key=key,
+        label=payload.label.strip(),
+        data_type=dt,
+        unit=(payload.unit or "").strip() or None,
+        required=payload.required,
+        multi=payload.multi,
+        enum_options=payload.enum_options,
+        ref_type_slug=(payload.ref_type_slug or "").strip() or None,
+        sort_order=payload.sort_order,
+        help=(payload.help or "").strip() or None,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def update_property_def(
+    db: Session, row: PropertyDef, payload: PropertyDefUpdate
+) -> PropertyDef:
+    data = payload.model_dump(exclude_unset=True)
+    dt = data.get("data_type", row.data_type)
+    enum_opts = data.get("enum_options", row.enum_options)
+    ref_slug = data.get("ref_type_slug", row.ref_type_slug)
+    if "data_type" in data or "enum_options" in data or "ref_type_slug" in data:
+        _check_data_type((dt or "").strip(), enum_opts, ref_slug, db)
+    for field in (
+        "label", "data_type", "unit", "required", "multi",
+        "enum_options", "ref_type_slug", "sort_order", "help",
+    ):
+        if field in data:
+            val = data[field]
+            if field in ("label", "data_type"):
+                val = (val or "").strip()
+            elif field in ("unit", "ref_type_slug", "help"):
+                val = (val or "").strip() or None
+            setattr(row, field, val)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def delete_property_def(db: Session, row: PropertyDef) -> None:
+    db.delete(row)
+    db.commit()
+
+
+def _validate_one(defn: PropertyDef, value, db: Session):
+    """단일 값 1개를 data_type 에 맞춰 검증·정규화. 실패 시 ValueError."""
+    dt = defn.data_type
+    label = defn.label
+    if dt in ("text", "longtext", "url"):
+        if not isinstance(value, str):
+            raise ValueError(f"{label} 은(는) 문자열이어야 합니다.")
+        v = value.strip()
+        if dt == "url" and v and not re.match(r"^https?://", v):
+            raise ValueError(f"{label} 은(는) http(s):// URL 이어야 합니다.")
+        return v
+    if dt == "number":
+        if isinstance(value, bool):
+            raise ValueError(f"{label} 은(는) 숫자여야 합니다.")
+        if isinstance(value, (int, float)):
+            return value
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{label} 은(는) 숫자여야 합니다.")
+    if dt == "year":
+        try:
+            iv = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{label} 은(는) 연도(정수)여야 합니다.")
+        if not (1900 <= iv <= 2200):
+            raise ValueError(f"{label} 연도 범위가 올바르지 않습니다.")
+        return iv
+    if dt == "bool":
+        if isinstance(value, bool):
+            return value
+        raise ValueError(f"{label} 은(는) true/false 여야 합니다.")
+    if dt == "enum":
+        if value not in _enum_values(defn.enum_options):
+            raise ValueError(f"{label} 은(는) 허용된 선택지가 아닙니다: {value}")
+        return value
+    if dt == "date":
+        from datetime import date
+
+        try:
+            date.fromisoformat(str(value))
+        except ValueError:
+            raise ValueError(f"{label} 은(는) YYYY-MM-DD 형식이어야 합니다.")
+        return str(value)
+    if dt == "entity_ref":
+        try:
+            rid = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{label} 은(는) 엔티티 id 여야 합니다.")
+        ref = db.get(Entity, rid)
+        if ref is None:
+            raise ValueError(f"{label} 이(가) 가리키는 엔티티가 없습니다: {rid}")
+        if defn.ref_type_slug and ref.entity_type and ref.entity_type.slug != defn.ref_type_slug:
+            raise ValueError(f"{label} 은(는) '{defn.ref_type_slug}' 축이어야 합니다.")
+        return rid
+    raise ValueError(f"알 수 없는 data_type: {dt}")
+
+
+def validate_properties(db: Session, type_row: EntityType, properties) -> dict:
+    """properties dict 를 축의 property_defs 로 검증·정규화. 미정의 키·형식 오류·
+    필수 누락 시 ValueError. 반환값을 entities.properties 에 저장한다."""
+    props = properties or {}
+    if not isinstance(props, dict):
+        raise ValueError("properties 는 객체(dict)여야 합니다.")
+    defs = {
+        d.key: d
+        for d in list_property_defs(db, owner_kind="entity_type", owner_id=type_row.id)
+    }
+    unknown = set(props) - set(defs)
+    if unknown:
+        raise ValueError(f"정의되지 않은 속성: {', '.join(sorted(unknown))}")
+    out: dict = {}
+    for key, defn in defs.items():
+        raw = props.get(key)
+        empty = raw is None or raw == "" or raw == []
+        if empty:
+            if defn.required:
+                raise ValueError(f"필수 속성 누락: {defn.label}({key})")
+            continue
+        if defn.multi:
+            if not isinstance(raw, list):
+                raise ValueError(f"{defn.label} 은(는) 배열이어야 합니다.")
+            out[key] = [_validate_one(defn, x, db) for x in raw]
+        else:
+            if isinstance(raw, list):
+                raise ValueError(f"{defn.label} 은(는) 단일 값이어야 합니다.")
+            out[key] = _validate_one(defn, raw, db)
+    return out
+
+
 def create_entity(
     db: Session, payload: EntityCreate, *, creator_user_id: int
 ) -> Entity:
@@ -412,6 +616,9 @@ def create_entity(
             f"(패턴: {type_row.value_pattern})."
         )
 
+    #   4) 속성(A0)이 오면 축 스키마로 검증. 미정의 키·형식·필수 누락 시 ValueError.
+    props = validate_properties(db, type_row, payload.properties) if payload.properties else {}
+
     code = (payload.code or "").strip() or None
     row = Entity(
         type_id=payload.type_id,
@@ -420,6 +627,7 @@ def create_entity(
         description=(payload.description or "").strip(),
         status=EntityStatus.active,
         created_by_user_id=creator_user_id,
+        properties=props,
     )
     db.add(row)
     db.commit()
@@ -468,6 +676,9 @@ def update_entity(db: Session, row: Entity, payload: EntityUpdate) -> Entity:
         row.valid_from_year = data["valid_from_year"]
     if "valid_to_year" in data:
         row.valid_to_year = data["valid_to_year"]
+    # 속성(A0). 키를 보내면 축 스키마로 검증 후 통째로 교체(null 이면 {} 로 초기화).
+    if "properties" in data:
+        row.properties = validate_properties(db, row.entity_type, data["properties"] or {})
 
     db.commit()
     db.refresh(row)

@@ -151,6 +151,35 @@ class Settings(BaseSettings):
     # 우회(trust_env=False). 외부 OpenAI 등 프록시 경유가 필요한 환경이면 .env 로 false.
     llm_no_proxy: bool = Field(default=True)
 
+    # --- 이메일 발송 (메일러 — SMTP 클라이언트) ---
+    # 플랫폼은 메일 *서버*가 아니라, 기존 SMTP 릴레이에 접속해 나가는 메일만 보낸다.
+    # 백엔드: "smtp"(운영 — 실제 발송) | "console"(개발 — 로그만) | "mock"(테스트 —
+    # OUTBOX 캡처). 기본 console → **.env 로 켜기 전까지 실제 발송 없음**(llm_backend·
+    # embedding_backend 와 같은 안전 패턴). 모든 발송은 send_email 잡으로 큐 경유.
+    email_backend: str = Field(default="console")
+    # 사내 SMTP 릴레이 주소. 인프라/IT 팀에서 받는다. 비우면 smtp 백엔드라도 발송 불가.
+    smtp_host: str = Field(default="")
+    smtp_port: int = Field(default=587)
+    # TLS 방식: "none"(평문·내부망 릴레이) | "starttls"(587 표준) | "ssl"(465).
+    smtp_tls_mode: str = Field(default="starttls")
+    # 인증 — 내부 무인증 릴레이면 비워둔다(있으면 LOGIN). 둘 다 있어야 로그인 시도.
+    smtp_user: str = Field(default="")
+    smtp_password: str = Field(default="")
+    smtp_timeout_s: float = Field(default=20.0)
+    # 발신 주소 / 회신 주소. 운영에선 사내 정책에 맞는 no-reply 주소로 .env 지정.
+    email_from: str = Field(default="ReportArchive <no-reply@reportarchive.local>")
+    email_reply_to: str = Field(default="")
+    # 메일 본문 링크(비밀번호 재설정 등)의 기준 URL. 비우면 cors_origins 첫 항목 사용.
+    app_base_url: str = Field(default="")
+
+    @property
+    def email_base_url(self) -> str:
+        """메일 링크용 프론트엔드 기준 URL. app_base_url 우선, 없으면 CORS 첫 항목."""
+        if self.app_base_url.strip():
+            return self.app_base_url.strip().rstrip("/")
+        origins = self.cors_origin_list
+        return origins[0].rstrip("/") if origins else ""
+
     @property
     def is_development(self) -> bool:
         return self.app_env.lower() == "development"

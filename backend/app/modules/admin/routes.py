@@ -240,6 +240,52 @@ def runtime_tuning_set(
     return success_response(data=data)
 
 
+# ─── 메일러(SMTP) — 상태 + 테스트 발송 ──────────────────────────────────── #
+
+
+class TestEmailPayload(BaseModel):
+    # 비우면 요청한 관리자 본인 이메일로 보낸다.
+    to: str | None = Field(default=None, max_length=255)
+
+
+@router.get("/mailer")
+def mailer_status(
+    _: CurrentUser = Depends(require_system_admin),
+):
+    """메일러 설정 상태(백엔드·SMTP 호스트·TLS·인증 여부). 비밀은 노출 안 함."""
+    from app.mailer import service as mail_service
+
+    return success_response(data=mail_service.status())
+
+
+@router.post("/mailer/test")
+def mailer_test(
+    payload: TestEmailPayload,
+    db: Session = Depends(get_db),
+    me: CurrentUser = Depends(require_system_admin),
+):
+    """테스트 메일 즉시 발송(큐 경유 아님 — 관리자가 설정을 바로 검증하도록).
+    smtp 백엔드 발송 실패는 그대로 에러로 돌려준다."""
+    from app.config import settings
+    from app.mailer import service as mail_service
+    from app.mailer import templates as mail_templates
+
+    to = (payload.to or "").strip() or me.user.email
+    if not to or "@" not in to:
+        return error_response("보낼 이메일 주소가 없습니다.", status_code=400)
+    subject, html, text = mail_templates.render(
+        "test", {"backend": settings.email_backend}
+    )
+    try:
+        result = mail_service.send_now(to=to, subject=subject, html=html, text=text)
+    except Exception as e:  # noqa: BLE001 — 설정 검증용, 원인 그대로 노출
+        return error_response(f"발송 실패: {e}", status_code=502)
+    return success_response(
+        data={"to": to, **result},
+        message=f"{to} 로 테스트 메일을 보냈습니다({result.get('backend')}).",
+    )
+
+
 # ─── Report link kinds — admin CRUD ──────────────────────────────────────── #
 #
 # 일반 사용자용 list 는 /api/reports/link-kinds (reports router). 여기는

@@ -52,6 +52,21 @@ export async function setRuntimeTuning(key, value) {
 }
 
 /**
+ * 메일러(SMTP) 설정 상태. Admin-only.
+ * Returns: { backend, configured, from, smtp_host, smtp_port, tls_mode, auth, base_url }
+ */
+export async function getMailerStatus() {
+  const res = await apiClient.get(`${BASE}/mailer`)
+  return extractData(res)
+}
+
+/** 테스트 메일 즉시 발송. to 를 비우면 본인 이메일로. Admin-only. */
+export async function sendTestEmail(to) {
+  const res = await apiClient.post(`${BASE}/mailer/test`, { to: to || null })
+  return extractData(res)
+}
+
+/**
  * 어느 보고서·종합보고에서도 참조하지 않는 업로드 파일(오펀) 목록. Admin-only.
  * Returns: {
  *   items: [{id, filename, mime_type, size, owner_user_id, workspace_slug, uploaded_at}],

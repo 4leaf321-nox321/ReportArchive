@@ -5,8 +5,10 @@ import {
   Cpu,
   Database,
   HardDrive,
+  Mail,
   MemoryStick,
   RefreshCw,
+  Send,
   Server,
   Sliders,
 } from 'lucide-react'
@@ -26,9 +28,11 @@ import { Skeleton } from '@/shared/components/ui/skeleton'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useAsync } from '@/shared/hooks/useAsync'
 import {
+  getMailerStatus,
   getRuntimeTuning,
   getServerInfo,
   getStorageStats,
+  sendTestEmail,
   setRuntimeTuning,
 } from '@/shared/api/admin'
 
@@ -72,9 +76,108 @@ export default function ServerPage() {
         description="호스트 스펙 · 업로드 디스크 잔여 용량 · 앱 footprint. 잔여 용량이 안전 마진 이하로 떨어지면 업로드는 자동 거부됩니다."
       />
       <SpecSection />
+      <MailerSection />
       <TuningSection />
       <StorageSection />
     </div>
+  )
+}
+
+/** 메일러(SMTP) 상태 + 테스트 발송. 백엔드가 console/mock 이면 실제 발송 없이
+ *  로그/캡처만 되고, smtp 로 켜야 실제로 나간다. 운영자가 .env 설정을 바로
+ *  검증할 수 있게 '테스트 메일 보내기' 버튼을 둔다. */
+function MailerSection() {
+  const { data, loading, error, reload } = useAsync(() => getMailerStatus(), [])
+  const [to, setTo] = useState('')
+  const [sending, setSending] = useState(false)
+
+  if (loading) return <Skeleton className="h-52 w-full" />
+  if (error) return <ErrorState description={error.message} onRetry={reload} />
+  if (!data) return null
+
+  const backend = data.backend
+  const isSmtp = backend === 'smtp'
+  const ready = isSmtp ? data.configured : true
+
+  async function handleTest() {
+    setSending(true)
+    try {
+      const res = await sendTestEmail(to.trim())
+      toast.success(res?.message || '테스트 메일을 보냈습니다.')
+    } catch (err) {
+      toast.error(err.message || '발송 실패')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const badge = isSmtp
+    ? ready
+      ? { cls: 'border-emerald-300 bg-emerald-50 text-emerald-800', label: 'SMTP 발송' }
+      : { cls: 'border-red-300 bg-red-50 text-red-800', label: '설정 필요' }
+    : backend === 'console'
+      ? { cls: 'border-slate-300 bg-slate-50 text-slate-700', label: 'console(로그만)' }
+      : { cls: 'border-slate-300 bg-slate-50 text-slate-700', label: 'mock(테스트)' }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Mail className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">이메일 발송 (메일러)</CardTitle>
+          </div>
+          <span
+            className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] ${badge.cls}`}
+          >
+            {badge.label}
+          </span>
+        </div>
+        <CardDescription>
+          알림·비밀번호 재설정 메일을 사내 SMTP 릴레이로 발송합니다. 백엔드가{' '}
+          <code className="font-mono text-[11px]">console</code> 이면 실제 발송 없이
+          로그만 남습니다 — 실제 발송은 <code className="font-mono text-[11px]">.env</code>{' '}
+          의 <code className="font-mono text-[11px]">EMAIL_BACKEND=smtp</code> +
+          {' '}<code className="font-mono text-[11px]">SMTP_HOST</code> 설정 후 켜집니다.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isSmtp && !ready && (
+          <div className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-900 flex items-start gap-2">
+            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <div>
+              <strong>SMTP_HOST 가 비어 있습니다.</strong> 사내 릴레이 주소를{' '}
+              <code className="font-mono">.env</code> 에 설정한 뒤 재시작하세요.
+            </div>
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+          <KeyValue label="백엔드" value={backend} mono />
+          <KeyValue label="발신 주소" value={data.from} mono />
+          <KeyValue label="SMTP 호스트" value={data.smtp_host || '(없음)'} mono />
+          <KeyValue label="포트 / TLS" value={`${data.smtp_port} / ${data.tls_mode}`} mono />
+          <KeyValue label="인증" value={data.auth ? '사용' : '없음(무인증)'} />
+          <KeyValue label="링크 기준 URL" value={data.base_url || '(미설정)'} mono />
+        </div>
+        <div className="flex items-end gap-2 pt-1">
+          <div className="flex-1 space-y-1">
+            <label className="text-xs text-muted-foreground">
+              테스트 수신 주소 (비우면 본인 이메일)
+            </label>
+            <Input
+              type="email"
+              placeholder="me@samsung.com"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+            />
+          </div>
+          <Button onClick={handleTest} disabled={sending} className="gap-1.5">
+            <Send className="h-3.5 w-3.5" />
+            {sending ? '보내는 중...' : '테스트 메일 보내기'}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 

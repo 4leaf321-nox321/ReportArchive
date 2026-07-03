@@ -79,6 +79,22 @@ class EntityTemporalKind(str, enum.Enum):
     derived = "derived"
 
 
+class EntityKindClass(str, enum.Enum):
+    """축의 **객체 분류** (온톨로지 강화 A0). 팔란티어식 객체 모델로 승격하기 위한
+    구분 (온톨로지강화_설계.md §2.1):
+
+      reference — 어휘/enum. 속성 거의 없음, picker 선택용(불량종류·단계·시뮬종류).
+      record    — 속성을 가진 인스턴스 객체(부품·과제·공급사·시험실행·실패사례).
+      system    — 기존 1급 테이블(보고서·사용자·부서)을 온톨로지에 투영. entities
+                  행을 만들지 않고 ObjectRef 해석기가 원 테이블에서 라벨을 읽는다.
+
+    기존 7축은 reference 로 시작 → 동작 불변."""
+
+    reference = "reference"
+    record = "record"
+    system = "system"
+
+
 class EntityType(Base):
     """An axis (e.g. 모델명, 부품명, BOM Code).
 
@@ -127,6 +143,14 @@ class EntityType(Base):
         nullable=False,
     )
 
+    # 객체 분류 (온톨로지 강화 A0). 기존 7축은 reference 로 시작 → 동작 불변.
+    # record 축(부품·과제 등)만 값에 properties 를 담고, system 축은 원 테이블 투영.
+    kind_class: Mapped[EntityKindClass] = mapped_column(
+        Enum(EntityKindClass, name="entity_kind_class_enum"),
+        default=EntityKindClass.reference,
+        nullable=False,
+    )
+
 
 class Entity(Base):
     """A single value within one axis (e.g. type=모델, value="A1234")."""
@@ -164,6 +188,13 @@ class Entity(Base):
     valid_from_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     valid_to_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # 객체 속성 (온톨로지 강화 A0). key=property_defs.key, 값=축 스키마에 맞는
+    # 스칼라/배열. record 축에서만 의미. 기본 {} 라 기존 값 무영향. 저장 시
+    # 서비스 레이어가 소속 축의 property_defs 로 검증(다음 스텝).
+    properties: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+
     created_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -179,6 +210,44 @@ class Entity(Base):
     )
     created_by: Mapped["User | None"] = relationship(
         "User", foreign_keys=[created_by_user_id], lazy="joined"
+    )
+
+
+class PropertyDef(Base):
+    """속성 정의 (온톨로지 강화 A0). 엔티티 타입(축) 또는 관계 타입에 붙는
+    속성 스키마 한 줄. 폴리모픽 소유자 — owner_kind/owner_id 로 소속을 가리키되
+    FK는 없다(entity_relations.relation 과 같은 서비스-정합 패턴).
+
+    엔티티/관계 저장 시 이 정의로 properties(JSONB)를 검증한다(다음 스텝).
+    data_type/owner_kind 는 String — PG enum 확장 고통을 피하고 서비스에서 검증
+    (data_type 은 geo/file_ref 등으로 늘어날 수 있음).
+    """
+
+    __tablename__ = "property_defs"
+    __table_args__ = (
+        UniqueConstraint("owner_kind", "owner_id", "key", name="uq_property_defs_owner_key"),
+        Index("ix_property_defs_owner", "owner_kind", "owner_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # 'entity_type' | 'relation_type'
+    owner_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    key: Mapped[str] = mapped_column(String(48), nullable=False)
+    label: Mapped[str] = mapped_column(String(64), nullable=False)
+    # text|longtext|number|date|year|bool|enum|entity_ref|url
+    data_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    unit: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    required: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    multi: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # data_type=enum 일 때 선택지 [{value,label}]
+    enum_options: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # data_type=entity_ref 일 때 대상 축 slug
+    ref_type_slug: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    help: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
     )
 
 

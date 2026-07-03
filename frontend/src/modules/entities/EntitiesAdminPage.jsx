@@ -40,6 +40,7 @@ import { Skeleton } from '@/shared/components/ui/skeleton'
 import { DataTable } from '@/shared/components/DataTable'
 import { EntityGraphDialog } from './EntityGraphDialog'
 import { MergeCandidatesDialog } from './MergeCandidatesDialog'
+import { PropertyDefsDialog } from './PropertyDefsDialog'
 import { cn } from '@/shared/lib/utils'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { ErrorState } from '@/shared/components/ErrorState'
@@ -472,6 +473,7 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
   const [includeDeprecated, setIncludeDeprecated] = useState(true)
   const [deleteAxisOpen, setDeleteAxisOpen] = useState(false)
   const [govOpen, setGovOpen] = useState(false)
+  const [propsDefOpen, setPropsDefOpen] = useState(false)
   const [aliasTarget, setAliasTarget] = useState(null)
   const [relTarget, setRelTarget] = useState(null)
   const [graphTarget, setGraphTarget] = useState(null)
@@ -764,6 +766,14 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
           variant="ghost"
           size="sm"
           className="ml-auto h-6 px-2 text-xs"
+          onClick={() => setPropsDefOpen(true)}
+        >
+          속성 정의
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 px-2 text-xs"
           onClick={() => setGovOpen(true)}
         >
           입력 거버넌스 편집
@@ -794,6 +804,12 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
             setGovOpen(false)
             onAxisUpdated?.()
           }}
+        />
+      )}
+      {propsDefOpen && (
+        <PropertyDefsDialog
+          type={type}
+          onClose={() => setPropsDefOpen(false)}
         />
       )}
       {aliasTarget && (

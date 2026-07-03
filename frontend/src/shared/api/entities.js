@@ -188,18 +188,26 @@ export async function listEntities({
  * existing canonical row, so the picker's "+ 새로 추가" can fire
  * optimistically without a pre-check.
  */
-export async function createEntity({ type_id, value, code, description = '' } = {}) {
+export async function createEntity({
+  type_id,
+  value,
+  code,
+  description = '',
+  properties,
+} = {}) {
   const body = { type_id, value, description }
   if (code !== undefined) body.code = code
+  if (properties !== undefined) body.properties = properties
   const res = await apiClient.post(BASE, body)
   return extractData(res)
 }
 
 /** Admin-only: rename / restamp / deprecate / restore + lifecycle 유효구간(p56).
- * validFromYear/validToYear 에 null 을 명시하면 해제(개방), undefined 면 미변경. */
+ * validFromYear/validToYear 에 null 을 명시하면 해제(개방), undefined 면 미변경.
+ * properties 를 보내면 축 스키마로 검증 후 통째로 교체(A0). */
 export async function updateEntity(
   id,
-  { value, code, description, status, validFromYear, validToYear } = {},
+  { value, code, description, status, validFromYear, validToYear, properties } = {},
 ) {
   const body = {}
   if (value !== undefined) body.value = value
@@ -208,7 +216,37 @@ export async function updateEntity(
   if (status !== undefined) body.status = status
   if (validFromYear !== undefined) body.valid_from_year = validFromYear
   if (validToYear !== undefined) body.valid_to_year = validToYear
+  if (properties !== undefined) body.properties = properties
   const res = await apiClient.patch(`${BASE}/${id}`, body)
+  return extractData(res)
+}
+
+// ─── 속성 정의 (property_defs) — 축의 객체 속성 스키마 (온톨로지 강화 A0) ──── #
+
+/** 축의 속성 정의 목록(인증만). 프론트가 동적 속성 폼을 렌더하는 데 쓴다. */
+export async function listTypeProperties(typeId) {
+  const res = await apiClient.get(`${TYPES_BASE}/${typeId}/properties`)
+  return extractData(res)
+}
+
+/** Admin-only: 축에 속성 정의 추가. */
+export async function createTypeProperty(typeId, payload) {
+  const res = await apiClient.post(`${TYPES_BASE}/${typeId}/properties`, payload)
+  return extractData(res)
+}
+
+/** Admin-only: 속성 정의 수정(보낸 필드만). */
+export async function updateTypeProperty(typeId, defId, payload) {
+  const res = await apiClient.patch(
+    `${TYPES_BASE}/${typeId}/properties/${defId}`,
+    payload,
+  )
+  return extractData(res)
+}
+
+/** Admin-only: 속성 정의 삭제. */
+export async function deleteTypeProperty(typeId, defId) {
+  const res = await apiClient.delete(`${TYPES_BASE}/${typeId}/properties/${defId}`)
   return extractData(res)
 }
 

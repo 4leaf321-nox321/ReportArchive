@@ -66,17 +66,20 @@ function PropertyField({ def, value, onChange }) {
   return (
     <div className={`space-y-1${fullSpan ? ' col-span-full' : ''}`}>
       {labelEl}
-      {isMulti ? (
-        <MultiField
-          def={def}
-          value={Array.isArray(value) ? value : []}
-          onChange={onChange}
-        />
-      ) : (
-        <SingleWidget def={def} value={value} onChange={onChange} />
-      )}
+      <PropertyValueInput def={def} value={value} onChange={onChange} />
       {def.help && <p className="text-[11px] text-muted-foreground">{def.help}</p>}
     </div>
+  )
+}
+
+/** 라벨 없이 값 입력 위젯만 — 레코드 표 위젯의 셀 등에서 재사용. data_type·multi 에
+ *  맞는 위젯을 고른다. */
+export function PropertyValueInput({ def, value, onChange }) {
+  const isMulti = def.multi && def.data_type !== 'bool'
+  return isMulti ? (
+    <MultiField def={def} value={Array.isArray(value) ? value : []} onChange={onChange} />
+  ) : (
+    <SingleWidget def={def} value={value} onChange={onChange} />
   )
 }
 

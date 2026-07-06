@@ -807,6 +807,52 @@ RECORD: WidgetDescriptor = {
 }
 
 
+def _record_table_content(props: dict) -> dict:
+    # 레코드 표 — 한 위젯에 여러 건(행=객체). 블록 레벨 axis_slug(=capability 표식),
+    # rows 각 항목이 객체 하나. 저장 훅이 rows 를 순회해 upsert 하고 entity_id 를
+    # 행마다 되심는다.
+    return {
+        "type": "object",
+        "properties": {
+            "axis_slug": {"type": "string", "maxLength": 32},
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "maxLength": 255},
+                        "properties": {"type": "object"},
+                        "entity_id": {"type": ["integer", "null"]},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
+RECORD_TABLE: WidgetDescriptor = {
+    "type": "record_table",
+    "label": "객체 레코드 표",
+    "description": (
+        "한 보고서에 여러 record 객체를 표로 기록(행=객체, 열=속성). 저장 시 각 행이 "
+        "온톨로지 객체로 생성/갱신되고, 이 보고서가 근거로 남는다."
+    ),
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "maxLength": 200},
+            "axis_slug": {"type": "string", "maxLength": 32},
+        },
+        "additionalProperties": False,
+    },
+    "content_schema_for": _record_table_content,
+    "default_props": {"label": "객체 레코드 표"},
+}
+
+
 # --------------------------------------------------------------------------- #
 # 7. image — 이미지 1~N장
 # --------------------------------------------------------------------------- #
@@ -3735,6 +3781,7 @@ WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
         BULLETED_LIST,
         TABLE,
         RECORD,
+        RECORD_TABLE,
         IMAGE,
         ATTACHMENT,
         VIDEO,
@@ -3818,6 +3865,7 @@ REF_CATEGORY_BY_TYPE: dict[str, Optional[str]] = {
     "raci_matrix": "raci",
     # 객체 레코드 — 번호 참조 대상 아님(객체 자체가 프로필로 참조됨). MVP: None.
     "record": None,
+    "record_table": None,
     # 그림 (images, charts, diagrams — anything primarily visual)
     "image": "figure",
     "chart": "figure",

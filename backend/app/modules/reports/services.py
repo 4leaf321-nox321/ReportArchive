@@ -1446,8 +1446,24 @@ def _materialize_record_widgets(db: Session, report, creator_user_id) -> set:
     # 2단계로 나눈다 — upsert 가 내부 commit 을 하며 report.content 를 expire 시켜
     # (expire_on_commit) in-place 변경이 날아가므로, 먼저 다 upsert 하고(plan 수집)
     # 그 다음에 되심는다.
-    #   plan: (loc, block_id, entity_id)  loc = ("content",) | ("page", i)
+    #   plan: (loc, block_id, row_idx | None, entity_id). row_idx=None → 단건 레코드,
+    #   정수 → 레코드 표(record_table)의 그 행. loc = ("content",) | ("page", i).
     plan: list = []
+
+    def _upsert(axis_slug, item):
+        """item = {name, properties, entity_id}. 검증 실패는 400 으로 surface."""
+        try:
+            return entity_services.upsert_record_entity(
+                db,
+                axis_slug=axis_slug,
+                name=item.get("name"),
+                properties=item.get("properties") or {},
+                entity_id=item.get("entity_id"),
+                creator_user_id=creator_user_id,
+            )
+        except ValueError as exc:
+            nm = item.get("name") or "(이름 없음)"
+            raise ValueError(f"객체 레코드 '{nm}': {exc}") from exc
 
     def _scan(cmap, loc):
         if not isinstance(cmap, dict):
@@ -1455,23 +1471,21 @@ def _materialize_record_widgets(db: Session, report, creator_user_id) -> set:
         for bid, content in cmap.items():
             if not isinstance(content, dict) or "axis_slug" not in content:
                 continue
-            try:
-                ent = entity_services.upsert_record_entity(
-                    db,
-                    axis_slug=content.get("axis_slug"),
-                    name=content.get("name"),
-                    properties=content.get("properties") or {},
-                    entity_id=content.get("entity_id"),
-                    creator_user_id=creator_user_id,
-                )
-            except ValueError as exc:
-                # 속성 검증 실패(예: 숫자 필드에 문자) — 조용히 넘기면 객체가 안
-                # 만들어지는데 사용자는 모른다. 명확히 400 으로 올려 고치게 한다.
-                # 본문은 이미 커밋됐으니(훅은 main commit 이후) 값만 고쳐 재저장하면 된다.
-                nm = content.get("name") or "(이름 없음)"
-                raise ValueError(f"객체 레코드 '{nm}': {exc}") from exc
-            if ent is not None:
-                plan.append((loc, bid, ent.id))
+            axis = content.get("axis_slug")
+            rows = content.get("rows")
+            if isinstance(rows, list):
+                # 레코드 표 — 각 행이 객체 하나.
+                for i, row in enumerate(rows):
+                    if not isinstance(row, dict):
+                        continue
+                    ent = _upsert(axis, row)
+                    if ent is not None:
+                        plan.append((loc, bid, i, ent.id))
+            else:
+                # 단건 레코드.
+                ent = _upsert(axis, content)
+                if ent is not None:
+                    plan.append((loc, bid, None, ent.id))
 
     _scan(report.content, ("content",))
     if isinstance(report.pages, list):
@@ -1479,7 +1493,7 @@ def _materialize_record_widgets(db: Session, report, creator_user_id) -> set:
             if isinstance(pg, dict):
                 _scan(pg.get("content"), ("page", i))
 
-    ids = {eid for (_, _, eid) in plan}
+    ids = {eid for (_, _, _, eid) in plan}
     if not plan:
         return ids
 
@@ -1494,22 +1508,35 @@ def _materialize_record_widgets(db: Session, report, creator_user_id) -> set:
     new_pages = (
         copy.deepcopy(report.pages) if isinstance(report.pages, list) else None
     )
-    changed = False
-    for loc, bid, eid in plan:
+
+    def _block_at(loc, bid):
         if loc[0] == "content" and new_content is not None:
-            blk = new_content.get(bid)
-        elif loc[0] == "page" and new_pages is not None:
+            return new_content.get(bid)
+        if loc[0] == "page" and new_pages is not None:
             i = loc[1]
-            blk = (
-                new_pages[i].get("content", {}).get(bid)
-                if i < len(new_pages) and isinstance(new_pages[i], dict)
-                else None
-            )
+            if i < len(new_pages) and isinstance(new_pages[i], dict):
+                return (new_pages[i].get("content") or {}).get(bid)
+        return None
+
+    changed = False
+    for loc, bid, row_idx, eid in plan:
+        blk = _block_at(loc, bid)
+        if not isinstance(blk, dict):
+            continue
+        if row_idx is None:
+            if blk.get("entity_id") != eid:
+                blk["entity_id"] = eid
+                changed = True
         else:
-            blk = None
-        if isinstance(blk, dict) and blk.get("entity_id") != eid:
-            blk["entity_id"] = eid
-            changed = True
+            rows = blk.get("rows")
+            if (
+                isinstance(rows, list)
+                and row_idx < len(rows)
+                and isinstance(rows[row_idx], dict)
+                and rows[row_idx].get("entity_id") != eid
+            ):
+                rows[row_idx]["entity_id"] = eid
+                changed = True
 
     if changed:
         if new_content is not None:

@@ -2,12 +2,18 @@
 // 등)을 고르고 이름+속성을 채우면, 보고서 저장 시 백엔드 훅이 그 값으로 entity
 // 객체를 upsert 하고 entity_id 를 content 에 되심는다. 위젯은 그 객체의 인-컨텍스트
 // 편집기 — content = { axis_slug, name, properties, entity_id }.
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Boxes, ArrowUpRight } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
+import { Badge } from '@/shared/components/ui/badge'
 import { useAsync } from '@/shared/hooks/useAsync'
-import { listEntityTypes, listTypeProperties } from '@/shared/api/entities'
+import {
+  listEntities,
+  listEntityTypes,
+  listTypeProperties,
+} from '@/shared/api/entities'
 import {
   EntityPropertiesFields,
   PropertiesSummary,
@@ -15,18 +21,79 @@ import {
 } from '@/modules/entities/EntityPropertiesFields'
 import { AlertTriangle } from 'lucide-react'
 
-function useRecordAxes() {
+export function useRecordAxes() {
   const { data } = useAsync(() => listEntityTypes(), [])
   const items = data?.items ?? []
   return items.filter((t) => t.kind_class === 'record')
 }
 
-function useAxisDefs(axis) {
+export function useAxisDefs(axis) {
   const { data } = useAsync(
     () => (axis?.id ? listTypeProperties(axis.id) : Promise.resolve({ items: [] })),
     [axis?.id],
   )
   return data?.items ?? []
+}
+
+/**
+ * 이름 = 검색 콤보박스. 열면 그 축의 기존 객체 목록이 뜨고, 검색해 고르면 **기존
+ * 객체에 연결**(entity_id + 그 객체의 속성까지 불러옴 — 저장 시 덮어쓰기 사고 방지).
+ * 목록에 없는 이름을 입력하면 entity_id 를 비워 **저장 시 새 객체로 생성**한다.
+ *   onPick({ name, entityId, properties? })  — properties 는 기존 선택 시에만.
+ */
+export function RecordNamePicker({ axisId, name, onPick }) {
+  const [open, setOpen] = useState(false)
+  const q = name ?? ''
+  const { data } = useAsync(
+    () =>
+      open && axisId
+        ? listEntities({ typeId: axisId, q: q.trim() || undefined, limit: 20 })
+        : Promise.resolve({ items: [] }),
+    [open, q, axisId],
+  )
+  const results = data?.items ?? []
+  const exact = results.some(
+    (r) => String(r.value).trim().toLowerCase() === q.trim().toLowerCase(),
+  )
+
+  return (
+    <div className="relative">
+      <Input
+        value={q}
+        onChange={(e) => onPick({ name: e.target.value, entityId: null })}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder="이름 검색 또는 새로 입력…"
+      />
+      {open && (results.length > 0 || q.trim()) && (
+        <div className="absolute z-20 mt-1 max-h-44 w-full overflow-y-auto rounded-md border bg-popover shadow-md">
+          {results.map((r) => (
+            <button
+              key={r.id}
+              type="button"
+              // onMouseDown: input blur 보다 먼저 실행돼 선택이 안전하게 등록.
+              onMouseDown={(e) => {
+                e.preventDefault()
+                onPick({ name: r.value, entityId: r.id, properties: r.properties || {} })
+                setOpen(false)
+              }}
+              className="flex w-full items-center justify-between gap-2 px-2 py-1 text-left text-sm hover:bg-accent"
+            >
+              <span className="truncate">{r.value}</span>
+              <Badge variant="outline" className="shrink-0 text-[9px]">
+                기존
+              </Badge>
+            </button>
+          ))}
+          {q.trim() && !exact && (
+            <div className="border-t px-2 py-1 text-[11px] text-muted-foreground">
+              「{q.trim()}」 — 저장 시 <strong>새 객체</strong>로 생성
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 /** 템플릿 설정 — 라벨 + (선택) 축 고정. 축을 고정하면 작성자는 못 바꾼다. */
@@ -151,10 +218,16 @@ export function RecordEditor({ props, content, onChange, readOnly }) {
         <Label className="text-xs">
           이름 <span className="text-amber-600">*</span>
         </Label>
-        <Input
-          value={name}
-          onChange={(e) => patch({ name: e.target.value })}
-          placeholder="예: 낙하시험 2025-03"
+        <RecordNamePicker
+          axisId={axis?.id}
+          name={name}
+          onPick={({ name: nm, entityId, properties: props }) =>
+            patch({
+              name: nm,
+              entity_id: entityId,
+              ...(props !== undefined ? { properties: props } : {}),
+            })
+          }
         />
       </div>
       {axisSlug ? (

@@ -25,6 +25,11 @@ import { KeyValuePropsPanel, KeyValuePreview, KeyValueEditor } from './KeyValue'
 import { BulletedListPropsPanel, BulletedListPreview, BulletedListEditor } from './BulletedList'
 import { TablePropsPanel, TablePreview, TableEditor } from './Table'
 import { RecordPropsPanel, RecordPreview, RecordEditor } from './Record'
+import {
+  RecordTablePropsPanel,
+  RecordTablePreview,
+  RecordTableEditor,
+} from './RecordTable'
 import { ImagePropsPanel, ImagePreview, ImageEditor } from './Image'
 import { AttachmentPropsPanel, AttachmentPreview, AttachmentEditor } from './Attachment'
 import { VideoPropsPanel, VideoPreview, VideoEditor } from './Video'
@@ -91,6 +96,12 @@ export const WIDGET_RENDERERS = {
     PropsPanel: RecordPropsPanel,
     Preview: RecordPreview,
     Editor: RecordEditor,
+  },
+  record_table: {
+    Icon: Boxes,
+    PropsPanel: RecordTablePropsPanel,
+    Preview: RecordTablePreview,
+    Editor: RecordTableEditor,
   },
   image: {
     Icon: Image,

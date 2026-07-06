@@ -155,3 +155,62 @@ def test_materialize_record_widget_hook():
             db.delete(r)
             db.commit()
         db.close()
+
+
+def test_materialize_record_table_hook():
+    """레코드 표 위젯 — 여러 행이 각각 객체로 upsert 되고 entity_id 가 행별로 되심긴다."""
+    c = TestClient(app)
+    sfx = uuid.uuid4().hex[:8]
+    tpl = c.get("/api/templates", headers=_hw()).json()["data"][0]
+    rid = c.post(
+        "/api/reports", headers=_hw(),
+        json={"template_id": tpl["template_id"], "template_version": tpl["version"],
+              "title": "RECT-" + sfx, "tags": []},
+    ).json()["data"]["id"]
+    made = []
+    try:
+        db = SessionLocal()
+        rep = db.get(Report, rid)
+        rep.content = {
+            "tbl1": {
+                "axis_slug": "incident",
+                "rows": [
+                    {"name": "INC-A-" + sfx, "properties": {"impact": "중대"}},
+                    {"name": "INC-B-" + sfx, "properties": {"impact": "경미"}},
+                ],
+            }
+        }
+        db.commit()
+
+        ids = report_services._materialize_record_widgets(db, rep, ADMIN)
+        assert len(ids) == 2, ids
+        made = list(ids)
+
+        db.refresh(rep)
+        rows = rep.content["tbl1"]["rows"]
+        assert rows[0]["entity_id"] in ids and rows[1]["entity_id"] in ids
+        assert rows[0]["entity_id"] != rows[1]["entity_id"]
+
+        # 두 객체가 incident 축으로 생성됨
+        for eid in ids:
+            e = ent_services.get_entity(db, eid)
+            assert e.entity_type.slug == "incident" and e.value.startswith("INC-")
+
+        # 태그(union) — 둘 다 붙는다
+        report_services.add_entities_to_report(db, rep, list(ids))
+        db.refresh(rep)
+        assert ids <= {x.id for x in rep.entities}
+
+        # 멱등 재실행 — 같은 두 객체
+        ids2 = report_services._materialize_record_widgets(db, rep, ADMIN)
+        assert ids2 == ids
+        db.close()
+    finally:
+        for eid in made:
+            c.delete(f"/api/entities/{eid}", headers=_h())
+        db = SessionLocal()
+        r = db.get(Report, rid)
+        if r:
+            db.delete(r)
+            db.commit()
+        db.close()

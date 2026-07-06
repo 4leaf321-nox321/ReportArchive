@@ -106,6 +106,7 @@ def create_type(db: Session, payload: EntityTypeCreate) -> EntityType:
         multi=bool(payload.multi),
         sort_order=sort_order,
         description=(payload.description or "").strip(),
+        kind_class=payload.kind_class,
     )
     db.add(row)
     db.commit()
@@ -124,6 +125,9 @@ def update_type(db: Session, row: EntityType, payload: EntityTypeUpdate) -> Enti
 
     if "temporal_kind" in data and data["temporal_kind"] is not None:
         row.temporal_kind = data["temporal_kind"]
+
+    if "kind_class" in data and data["kind_class"] is not None:
+        row.kind_class = data["kind_class"]
 
     if "value_pattern" in data:
         raw = (data["value_pattern"] or "").strip()

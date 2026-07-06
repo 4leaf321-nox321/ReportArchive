@@ -356,6 +356,8 @@ function NewAxisDialog({ existingSlugs, onClose, onCreated }) {
   const [icon, setIcon] = useState('')
   const [multi, setMulti] = useState(true)
   const [description, setDescription] = useState('')
+  // 객체 분류 (A0.3). reference=단순 어휘/태그, record=속성 갖는 객체(프로필·속성폼 개방).
+  const [kindClass, setKindClass] = useState('reference')
   const [submitting, setSubmitting] = useState(false)
 
   // label → slug 추정: 영문자만 남기고 lower-case + dash 정리. 한글
@@ -389,6 +391,7 @@ function NewAxisDialog({ existingSlugs, onClose, onCreated }) {
         icon: icon.trim(),
         multi,
         description: description.trim(),
+        kind_class: kindClass,
       })
       toast.success(`'${created.label}' 축 추가됨`)
       onCreated(created)
@@ -491,6 +494,22 @@ function NewAxisDialog({ existingSlugs, onClose, onCreated }) {
               className="mt-1"
               placeholder="이 축이 무엇을 분류하는지 — picker 에 hover 도움말로도 노출됨"
             />
+          </div>
+          <div>
+            <Label className="text-xs">객체 분류 (A0.3)</Label>
+            <select
+              value={kindClass}
+              onChange={(e) => setKindClass(e.target.value)}
+              className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+            >
+              <option value="reference">어휘(reference) — 단순 태그·선택지</option>
+              <option value="record">레코드(record) — 속성 갖는 객체(과제·공급사 등)</option>
+            </select>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {kindClass === 'record'
+                ? '값마다 속성을 정의하고 객체 프로필로 볼 수 있습니다. 「속성 정의」에서 스키마를 정하세요.'
+                : '보고서에 붙이는 이름표 수준의 통제어휘입니다.'}
+            </p>
           </div>
         </div>
         <DialogFooter>
@@ -826,6 +845,14 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
         <span className="text-muted-foreground">
           연도: {TEMPORAL_KIND_LABEL[type.temporal_kind] ?? '연도 무관'}
         </span>
+        {type.kind_class && type.kind_class !== 'reference' && (
+          <>
+            <span className="text-muted-foreground/50">·</span>
+            <Badge variant="secondary" className="text-[10px]">
+              {type.kind_class === 'record' ? '레코드 객체' : '시스템'}
+            </Badge>
+          </>
+        )}
         <Button
           variant="ghost"
           size="sm"
@@ -1128,6 +1155,7 @@ function AxisGovernanceDialog({ type, onClose, onSaved }) {
   const [temporalKind, setTemporalKind] = useState(
     type.temporal_kind ?? 'evergreen',
   )
+  const [kindClass, setKindClass] = useState(type.kind_class ?? 'reference')
   const [test, setTest] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -1161,6 +1189,7 @@ function AxisGovernanceDialog({ type, onClose, onSaved }) {
         entryPolicy: policy,
         valuePattern: trimmedPattern, // 빈 문자열이면 백엔드가 제약 해제
         temporalKind,
+        kindClass,
       })
       toast.success(`'${type.label}' 입력 거버넌스 저장됨`)
       onSaved?.()
@@ -1286,6 +1315,31 @@ function AxisGovernanceDialog({ type, onClose, onSaved }) {
                 '값마다 적용 연도를 명시 배정합니다(모델). 새 값은 올해로 시작.'}
               {temporalKind === 'derived' &&
                 '별도 입력 없이, 그 값이 쓰인 보고서의 연도로 자동 판정합니다(관리비 0).'}
+            </p>
+          </div>
+
+          {/* 객체 분류 (A0.3) — record 로 올리면 속성/객체 프로필이 열린다. */}
+          <div className="space-y-1.5">
+            <Label className="text-xs" htmlFor="kind-class">
+              객체 분류
+            </Label>
+            <select
+              id="kind-class"
+              value={kindClass}
+              onChange={(e) => setKindClass(e.target.value)}
+              className="h-8 w-full rounded-md border bg-background px-2 text-sm"
+            >
+              <option value="reference">어휘(reference) — 단순 태그·선택지</option>
+              <option value="record">레코드(record) — 속성 갖는 객체</option>
+              <option value="system">시스템(system) — 원 테이블 투영(고급)</option>
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              {kindClass === 'reference' &&
+                '보고서에 붙이는 이름표 수준의 통제어휘입니다.'}
+              {kindClass === 'record' &&
+                '값마다 속성을 정의하고 객체 프로필로 봅니다(과제·공급사·시험 등). 「속성 정의」에서 스키마를 정하세요.'}
+              {kindClass === 'system' &&
+                '보고서·사용자·부서 같은 원 테이블을 투영하는 축(A0.3 스텝2~). 값은 여기서 만들지 않습니다.'}
             </p>
           </div>
         </div>

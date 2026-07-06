@@ -104,13 +104,15 @@ export async function createEntityType({
  */
 export async function updateEntityType(
   id,
-  { entryPolicy, valuePattern, temporalKind } = {},
+  { entryPolicy, valuePattern, temporalKind, kindClass } = {},
 ) {
   const body = {}
   if (entryPolicy !== undefined) body.entry_policy = entryPolicy
   if (valuePattern !== undefined) body.value_pattern = valuePattern
   // 시간 차원 정책 (p56): evergreen|lifecycle|yearly|derived.
   if (temporalKind !== undefined) body.temporal_kind = temporalKind
+  // 객체 분류 (A0.3): reference|record|system.
+  if (kindClass !== undefined) body.kind_class = kindClass
   const res = await apiClient.patch(`${TYPES_BASE}/${id}`, body)
   return extractData(res)
 }

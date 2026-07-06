@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.modules.entities.models import (
     EntityEntryPolicy,
+    EntityKindClass,
     EntityStatus,
     EntityTemporalKind,
 )
@@ -31,6 +32,8 @@ class EntityTypeRead(BaseModel):
     value_pattern: Optional[str] = None
     # 시간 차원 정책 (p56). 연도 필터의 적용 방식을 축 단위로 결정.
     temporal_kind: EntityTemporalKind = EntityTemporalKind.evergreen
+    # 객체 분류 (온톨로지 강화 A0.3). reference=어휘/record=속성 객체/system=투영.
+    kind_class: EntityKindClass = EntityKindClass.reference
 
 
 class EntityTypeUpdate(BaseModel):
@@ -40,6 +43,7 @@ class EntityTypeUpdate(BaseModel):
     entry_policy: Optional[EntityEntryPolicy] = None
     value_pattern: Optional[str] = Field(default=None, max_length=255)
     temporal_kind: Optional[EntityTemporalKind] = None
+    kind_class: Optional[EntityKindClass] = None
 
 
 class PropertyDefRead(BaseModel):
@@ -222,6 +226,8 @@ class EntityTypeCreate(BaseModel):
     multi: bool = True
     sort_order: Optional[int] = Field(default=None, ge=0, le=10_000)
     description: str = Field(default="", max_length=2000)
+    # 객체 분류 (A0.3). 기본 reference — record 로 만들면 속성/객체 프로필이 열린다.
+    kind_class: EntityKindClass = EntityKindClass.reference
 
 
 class EntityRead(BaseModel):

@@ -1,0 +1,328 @@
+"""온톨로지 에이전트 도구 카탈로그 (tool-calling 설계 §2).
+
+LLM에게 노출하는 4개 읽기 도구 — 전부 기존 서비스에 매핑한다:
+  list_object_types  — 온톨로지 지도(타입·속성·관계)              → list_types 등
+  search_objects     — 타입+속성+관계로 객체 검색(결정적)          → search_entities (Phase C)
+  get_object         — 객체 프로필(속성·관계·관련보고서)           → get_entity/list_relations
+  search_reports     — 텍스트/의미 근거 검색(벡터 RAG를 도구화)     → hybrid_search
+
+각 도구 = (OpenAI 함수 스키마, executor). executor(db, actor, args) → ToolResult:
+  {"content": <LLM에 줄 요약 dict>, "objects": [...], "reports": [...]}.
+결과는 상위 N + total 로 **크기를 제한**(토큰 폭주·환각 방지). 보고서는
+hybrid_search 가 가시성 게이팅하므로 권한 밖 근거는 못 들어간다.
+"""
+from __future__ import annotations
+
+from sqlalchemy.orm import Session
+
+from app.ai import search as ai_search
+from app.modules.entities import services as ent
+
+# 결과 크기 상한 — LLM 컨텍스트/환각 방지.
+_SEARCH_LIMIT = 15
+_REPORTS_LIMIT = 8
+_RELATIONS_LIMIT = 25
+
+
+class ToolResult(dict):
+    """{"content": dict, "objects": list, "reports": list}. content 만 LLM 에게
+    가고, objects/reports 는 오케스트레이터가 인용으로 누적한다."""
+
+
+def _ok(content: dict, *, objects=None, reports=None) -> ToolResult:
+    return ToolResult(content=content, objects=objects or [], reports=reports or [])
+
+
+def _err(msg: str) -> ToolResult:
+    return ToolResult(content={"error": msg}, objects=[], reports=[])
+
+
+# --------------------------------------------------------------------------- #
+# list_object_types — 온톨로지 지도
+# --------------------------------------------------------------------------- #
+def _exec_list_object_types(db: Session, actor, args: dict) -> ToolResult:
+    types = ent.list_types(db)
+    otypes = []
+    for t in types:
+        defs = ent.list_property_defs(db, owner_kind="entity_type", owner_id=t.id)
+        props = []
+        for d in defs:
+            p = {"key": d.key, "label": d.label, "data_type": d.data_type}
+            if getattr(d, "enum_options", None):
+                p["enum_values"] = [
+                    o.get("value") for o in d.enum_options if isinstance(o, dict)
+                ]
+            if getattr(d, "ref_type_slug", None):
+                p["ref_type"] = d.ref_type_slug
+            props.append(p)
+        otypes.append({
+            "slug": t.slug,
+            "label": t.label,
+            "kind": str(getattr(t.kind_class, "value", t.kind_class)),
+            "description": t.description or None,
+            "properties": props,
+        })
+    rels = [
+        {
+            "slug": r.slug,
+            "label": r.label,
+            "directed": r.directed,
+            "src_types": list(r.src_axis_slugs or []),
+            "dst_types": list(r.dst_axis_slugs or []),
+        }
+        for r in ent.list_relation_types(db)
+    ]
+    return _ok({"object_types": otypes, "relation_types": rels})
+
+
+# --------------------------------------------------------------------------- #
+# search_objects — 타입+속성+관계 필터
+# --------------------------------------------------------------------------- #
+def _exec_search_objects(db: Session, actor, args: dict) -> ToolResult:
+    type_slug = args.get("type")
+    type_id = None
+    if type_slug:
+        t = ent.get_type_by_slug(db, type_slug)
+        if not t:
+            return _err(f"알 수 없는 객체 종류: {type_slug!r}. list_object_types 로 확인하세요.")
+        type_id = t.id
+    limit = min(int(args.get("limit") or _SEARCH_LIMIT), _SEARCH_LIMIT)
+    try:
+        items, total = ent.search_entities(
+            db,
+            type_id=type_id,
+            q=args.get("q"),
+            props=args.get("props"),
+            relations=args.get("relations"),
+            year=args.get("year"),
+            limit=limit,
+        )
+    except Exception as exc:  # noqa: BLE001 — 필터 형식 오류를 LLM 에게 알려 재시도.
+        return _err(f"검색 실패(필터 형식 확인): {exc}")
+
+    rows, objs = [], []
+    for e in items:
+        tslug = e.entity_type.slug if e.entity_type else None
+        rows.append({
+            "id": e.id, "value": e.value, "type": tslug,
+            "properties": e.properties or {},
+        })
+        objs.append({"type": tslug, "id": str(e.id), "label": e.value})
+    return _ok(
+        {"items": rows, "total": total, "shown": len(rows),
+         "truncated": total > len(rows)},
+        objects=objs,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# get_object — 객체 프로필(속성·관계·관련보고서)
+# --------------------------------------------------------------------------- #
+def _exec_get_object(db: Session, actor, args: dict) -> ToolResult:
+    otype = args.get("type")
+    oid = str(args.get("id")) if args.get("id") is not None else None
+    if not otype or not oid:
+        return _err("type 과 id 가 필요합니다.")
+
+    resolved = ent.resolve_object(db, otype, oid)
+    if not resolved:
+        return _err(f"객체를 찾을 수 없습니다: {otype}:{oid}")
+
+    content = {
+        "type": resolved.get("type"),
+        "id": resolved.get("id"),
+        "label": resolved.get("label"),
+        "kind": resolved.get("kind_class"),
+    }
+    objs = [{"type": resolved.get("type"), "id": str(resolved.get("id")),
+             "label": resolved.get("label")}]
+    reports_prov = []
+
+    # entity(reference/record) 면 속성·관계·관련보고서까지.
+    if str(resolved.get("kind_class")) != "system":
+        try:
+            eid = int(oid)
+        except (TypeError, ValueError):
+            eid = None
+        if eid is not None:
+            row = ent.get_entity(db, eid)
+            if row:
+                content["properties"] = row.properties or {}
+                content["relations"] = _relation_summary(db, eid)
+                reps, reports_prov = _related_reports(db, actor, eid)
+                content["reports"] = reps
+    return _ok(content, objects=objs, reports=reports_prov)
+
+
+def _relation_summary(db: Session, entity_id: int) -> list:
+    """이 엔티티의 관계를 방향·상대값과 함께 요약(상한)."""
+    parents, children = ent.list_relations(db, entity_id=entity_id)
+    out = []
+    for r in parents:  # 이 값이 src
+        o = ent.get_entity(db, r.dst_entity_id)
+        if o:
+            out.append({"relation": r.relation, "direction": "out",
+                        "object": {"id": o.id, "value": o.value,
+                                   "type": o.entity_type.slug if o.entity_type else None}})
+        if len(out) >= _RELATIONS_LIMIT:
+            return out
+    for r in children:  # 이 값이 dst
+        o = ent.get_entity(db, r.src_entity_id)
+        if o:
+            out.append({"relation": r.relation, "direction": "in",
+                        "object": {"id": o.id, "value": o.value,
+                                   "type": o.entity_type.slug if o.entity_type else None}})
+        if len(out) >= _RELATIONS_LIMIT:
+            break
+    return out
+
+
+def _related_reports(db: Session, actor, entity_id: int):
+    """이 엔티티를 태깅한 보고서 중 요청자가 볼 수 있는 것(가시성 교집합)."""
+    from app.modules.reports.services import all_visible_report_ids
+
+    rows = ent.list_report_links_for_entity(db, entity_id=entity_id)
+    visible = all_visible_report_ids(db, actor.user.id)
+    reps, prov = [], []
+    for r in rows:
+        if r.id not in visible:
+            continue
+        reps.append({"report_id": r.id, "title": r.title,
+                     "workspace_slug": r.workspace_slug})
+        prov.append({"report_id": r.id, "title": r.title,
+                     "workspace_slug": r.workspace_slug})
+        if len(reps) >= _REPORTS_LIMIT:
+            break
+    return reps, prov
+
+
+# --------------------------------------------------------------------------- #
+# search_reports — 벡터 RAG(hybrid_search)를 도구화
+# --------------------------------------------------------------------------- #
+def _exec_search_reports(db: Session, actor, args: dict) -> ToolResult:
+    query = (args.get("query") or "").strip()
+    if not query:
+        return _err("query 가 필요합니다.")
+    limit = min(int(args.get("limit") or _REPORTS_LIMIT), _REPORTS_LIMIT)
+    hits = ai_search.hybrid_search(db, query, actor, limit=limit, snippet_chars=300)
+    rows, prov = [], []
+    for h in hits:
+        rows.append({"report_id": h["report_id"], "title": h.get("title"),
+                     "snippet": h.get("snippet")})
+        prov.append({"report_id": h["report_id"], "title": h.get("title"),
+                     "workspace_slug": h.get("workspace_slug"),
+                     "block_id": h.get("block_id"), "page_idx": h.get("page_idx")})
+    return _ok({"reports": rows, "count": len(rows)}, reports=prov)
+
+
+# --------------------------------------------------------------------------- #
+# 카탈로그 — 스키마 + dispatch
+# --------------------------------------------------------------------------- #
+def _fn(name, description, properties, required=None) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required or [],
+            },
+        },
+    }
+
+
+_PROP_FILTER = {
+    "type": "array",
+    "description": "속성 필터. 각 원소 {key, op, value}. op: eq|gte|lte|between|contains.",
+    "items": {
+        "type": "object",
+        "properties": {
+            "key": {"type": "string"},
+            "op": {"type": "string"},
+            "value": {},
+        },
+        "required": ["key", "value"],
+    },
+}
+_REL_FILTER = {
+    "type": "array",
+    "description": "관계 필터. 각 원소 {relation, dst_id} — 이 관계로 dst_id 객체와 연결된 것만.",
+    "items": {
+        "type": "object",
+        "properties": {
+            "relation": {"type": "string"},
+            "dst_id": {"type": "integer"},
+        },
+        "required": ["relation", "dst_id"],
+    },
+}
+
+# (스키마, executor) — 이름 순.
+_CATALOG = {
+    "list_object_types": (
+        _fn(
+            "list_object_types",
+            "온톨로지 지도. 검색 가능한 객체 종류(타입)와 각 타입의 속성 key·데이터타입"
+            "(enum이면 허용값)·관계 종류를 반환한다. 다른 도구로 쿼리를 만들기 전에 먼저 호출해 "
+            "어휘(타입 slug·속성 key·관계 slug)를 확인하라.",
+            {},
+        ),
+        _exec_list_object_types,
+    ),
+    "search_objects": (
+        _fn(
+            "search_objects",
+            "타입+속성+관계로 온톨로지 객체를 검색한다(결정적 필터). 예: 특정 종류 중 "
+            "속성이 조건에 맞거나 특정 객체와 관계된 것. 반환: 객체 목록(id·값·속성) + 총건수.",
+            {
+                "type": {"type": "string", "description": "객체 종류 slug(list_object_types 참고)."},
+                "q": {"type": "string", "description": "이름/코드/설명 부분검색(선택)."},
+                "props": _PROP_FILTER,
+                "relations": _REL_FILTER,
+                "year": {"type": "integer", "description": "자료연도(선택)."},
+                "limit": {"type": "integer"},
+            },
+        ),
+        _exec_search_objects,
+    ),
+    "get_object": (
+        _fn(
+            "get_object",
+            "객체 하나의 프로필 — 속성, 연결된 객체(관계 방향·상대), 이 객체를 근거로 하는 "
+            "보고서(권한 내). type 과 id 로 지목한다(search_objects 결과의 type·id).",
+            {
+                "type": {"type": "string"},
+                "id": {"type": "string"},
+            },
+            required=["type", "id"],
+        ),
+        _exec_get_object,
+    ),
+    "search_reports": (
+        _fn(
+            "search_reports",
+            "보고서 본문을 의미+키워드로 검색한다(텍스트 근거). 객체 구조로 답이 안 나오는 "
+            "서술형·정성 질문이나, 객체의 근거 문서를 찾을 때 사용. 반환: 관련 보고서 발췌.",
+            {
+                "query": {"type": "string"},
+                "limit": {"type": "integer"},
+            },
+            required=["query"],
+        ),
+        _exec_search_reports,
+    ),
+}
+
+# LLM 에 넘길 스키마 목록.
+TOOL_SCHEMAS = [schema for schema, _ in _CATALOG.values()]
+
+
+def run_tool(db: Session, actor, name: str, args: dict) -> ToolResult:
+    """이름으로 도구 실행. 알 수 없는 이름은 error content(LLM 이 복구하게)."""
+    entry = _CATALOG.get(name)
+    if not entry:
+        return _err(f"알 수 없는 도구: {name!r}")
+    _, executor = entry
+    return executor(db, actor, args or {})

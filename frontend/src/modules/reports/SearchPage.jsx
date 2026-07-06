@@ -13,7 +13,7 @@ import { Input } from '@/shared/components/ui/input'
 import { Button } from '@/shared/components/ui/button'
 import { searchReports, semanticSearchReports } from '@/modules/reports/api'
 import { ObjectSearch } from '@/modules/entities/ObjectSearch'
-import { askAi } from '@/shared/api/ai'
+import { askAi, askAgent } from '@/shared/api/ai'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { EntityFilterControl } from './EntityFilterControl'
 
@@ -40,6 +40,13 @@ const ASK_MODE = {
   label: '질문하기',
   icon: MessageCircleQuestion,
   hint: '아카이브 보고서를 근거로 답변 (출처 인용)',
+}
+// 온톨로지 에이전트 모드 (tool-calling). 객체·관계를 도구로 조사해 답변.
+const AGENT_MODE = {
+  key: 'agent',
+  label: '에이전트',
+  icon: Network,
+  hint: '온톨로지(객체·관계)를 스스로 조사해 답변 (추론 과정·근거 표시)',
 }
 
 /** 검색어의 각 단어(공백 분리)를 <mark> 로 강조. 대소문자 무시, 모든 일치. */
@@ -84,8 +91,10 @@ export default function SearchPage() {
   const { me } = useAuth()
   const hasRagQa = !!me?.ai_features?.includes('rag_qa')
   const isAsk = mode === 'ask'
+  const isAgent = mode === 'agent'
+  const isAskLike = isAsk || isAgent // LLM 호출 모드(질문하기·에이전트) 공통
   const modes = useMemo(
-    () => (hasRagQa ? [...MODES, ASK_MODE] : MODES),
+    () => (hasRagQa ? [...MODES, ASK_MODE, AGENT_MODE] : MODES),
     [hasRagQa],
   )
   const [askLoading, setAskLoading] = useState(false)
@@ -212,11 +221,9 @@ export default function SearchPage() {
     setAskLoading(true)
     setAskError(null)
     try {
-      const res = await askAi({
-        query: q,
-        graph: graphMode,
-        signal: controller.signal,
-      })
+      const res = isAgent
+        ? await askAgent({ query: q, signal: controller.signal })
+        : await askAi({ query: q, graph: graphMode, signal: controller.signal })
       setAskResult(res)
     } catch (e) {
       // 사용자가 중단(abort)한 경우는 에러로 표시하지 않는다.
@@ -232,7 +239,7 @@ export default function SearchPage() {
       askAbortRef.current = null
       setAskLoading(false)
     }
-  }, [input, askLoading, graphMode])
+  }, [input, askLoading, graphMode, isAgent])
 
   const cancelAsk = useCallback(() => {
     askAbortRef.current?.abort()
@@ -295,15 +302,17 @@ export default function SearchPage() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
-            if (isAsk && e.key === 'Enter' && !e.nativeEvent.isComposing) {
+            if (isAskLike && e.key === 'Enter' && !e.nativeEvent.isComposing) {
               e.preventDefault()
               submitAsk()
             }
           }}
           placeholder={
-            isAsk
-              ? '아카이브에 질문하기 (예: 낙하 시험에서 가장 취약한 부품은?) — Enter'
-              : '제목·본문에서 검색 (표·긴 글 등 위젯 내용 포함)'
+            isAgent
+              ? '온톨로지에 묻기 (예: A공급사 부품 중 낙하시험 실패한 게 물린 과제는?) — Enter'
+              : isAsk
+                ? '아카이브에 질문하기 (예: 낙하 시험에서 가장 취약한 부품은?) — Enter'
+                : '제목·본문에서 검색 (표·긴 글 등 위젯 내용 포함)'
           }
           className="h-11 pl-9 text-base"
         />
@@ -350,8 +359,8 @@ export default function SearchPage() {
         <span className="text-xs text-muted-foreground">{activeHint}</span>
       </div>
 
-      {/* 질문하기(RAG Q&A) 패널 — 답변 카드 + 출처 인용 칩. */}
-      {isAsk && (
+      {/* 질문하기(RAG Q&A)·에이전트 패널 — 답변 카드 + 출처 인용(+ 에이전트 추론과정). */}
+      {isAskLike && (
         <div className="mt-1">
           {askLoading && (
             <div className="flex items-center gap-3 py-10 text-sm text-muted-foreground">
@@ -398,9 +407,47 @@ export default function SearchPage() {
                     ))}
                   </div>
                 )}
+                {askResult.objects?.length > 0 && (
+                  <div className="mb-3 flex flex-wrap items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                      <Network className="h-3.5 w-3.5" /> 관련 객체
+                    </span>
+                    {askResult.objects.map((o) => (
+                      <button
+                        key={`${o.type}:${o.id}`}
+                        type="button"
+                        onClick={() => navigate(`/objects/${o.type}/${o.id}`)}
+                        title={`${o.type} · ${o.label}`}
+                        className="rounded-full border bg-muted/40 px-2 py-0.5 text-[11px] hover:bg-muted"
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <div className="whitespace-pre-wrap text-sm leading-relaxed">
                   {askResult.answer}
                 </div>
+                {askResult.trace?.length > 0 && (
+                  <details className="mt-3 border-t pt-3">
+                    <summary className="cursor-pointer text-[11px] font-medium text-muted-foreground">
+                      추론 과정 ({askResult.trace.length}단계)
+                    </summary>
+                    <ol className="mt-1.5 flex flex-col gap-1">
+                      {askResult.trace.map((t, i) => (
+                        <li
+                          key={i}
+                          className="flex items-start gap-2 text-[11px] text-muted-foreground"
+                        >
+                          <span className="mt-0.5 shrink-0 rounded bg-muted px-1 font-mono text-[10px]">
+                            {i + 1}
+                          </span>
+                          <span className="min-w-0">{t.summary}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  </details>
+                )}
                 {askResult.citations?.length > 0 && (
                   <div className="mt-3 border-t pt-3">
                     <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">
@@ -467,7 +514,7 @@ export default function SearchPage() {
         </div>
       )}
 
-      {!isAsk && (
+      {!isAskLike && (
         <>
       {/* 필터 줄 — 엔티티 태그(D-2, 값의 적용연도는 태그 picker 안에서) +
           자료연도(보고서 작성연도, p56). 둘은 독립적으로 AND 결합. */}

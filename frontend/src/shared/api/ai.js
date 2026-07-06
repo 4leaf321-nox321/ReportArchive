@@ -37,6 +37,23 @@ export async function askAi({ query, limit = 8, graph = false, signal } = {}) {
   return extractData(res)
 }
 
+/**
+ * 온톨로지 에이전트(tool-calling) — LLM이 온톨로지 도구를 스스로 호출해 다단계
+ * 조사 후 근거·추론과정과 함께 답변.
+ *   { answer, citations:[{n, report_id, title, workspace_slug}],
+ *     objects:[{type, id, label}], trace:[{hop, tool, args, summary}],
+ *     no_evidence, model, backend }
+ * 'rag_qa' 엔티틀먼트 재사용. LLM이 tools 미지원이면 도구 없이 1턴으로 degrade.
+ */
+export async function askAgent({ query, maxHops = 6, signal } = {}) {
+  const res = await apiClient.post(
+    '/api/ai/agent',
+    { query, max_hops: maxHops },
+    { signal },
+  )
+  return extractData(res)
+}
+
 // --- B300 접근 제어(엔티틀먼트, §E) — 전부 시스템 관리자 전용 -------------------
 
 /** 모든 B300 기능 grant 목록. `{ items: [{id, feature, subject_kind, user_id,

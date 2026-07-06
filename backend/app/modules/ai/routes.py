@@ -153,6 +153,44 @@ async def ask(
 
 
 # --------------------------------------------------------------------------- #
+# 온톨로지 에이전트 — tool-calling(팔란티어식). 온톨로지 도구로 다단계 조사.
+# --------------------------------------------------------------------------- #
+class AgentPayload(BaseModel):
+    query: str = Field(..., min_length=1, max_length=2000)
+    max_hops: int = Field(default=6, ge=1, le=10)
+
+
+@router.post("/agent")
+async def agent_ask(
+    payload: AgentPayload,
+    actor=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """자연어 질문 → LLM이 온톨로지 도구(list_object_types/search_objects/
+    get_object/search_reports)를 스스로 호출해 조사 → 근거·추론과정과 함께 답변.
+
+    게이트(§E): 'rag_qa' 엔티틀먼트 재사용. 데이터 권한은 도구 실행이 보장(보고서는
+    가시성 게이팅). LLM이 tools 미지원이면 도구 없이 1턴으로 degrade(무해).
+    sync 루프라 스레드풀에서 실행(요청 이벤트루프 비블로킹). LLM 실패는 502."""
+    from starlette.concurrency import run_in_threadpool
+
+    from app.ai import agent
+    from app.ai.entitlements import ai_enabled_for
+
+    if not ai_enabled_for(db, actor.user, "rag_qa"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "AI 질문하기 권한이 없습니다."
+        )
+    try:
+        data = await run_in_threadpool(
+            agent.run_agent, db, actor, payload.query, max_hops=payload.max_hops
+        )
+    except LLMError as exc:
+        return error_response(f"AI 응답 실패: {exc}", status_code=502)
+    return success_response(data=data)
+
+
+# --------------------------------------------------------------------------- #
 # E. 접근 제어(엔티틀먼트) — 선별 유저/조직만 B300 기능 사용 (B300_보조AI_설계.md §E)
 # 전부 시스템 관리자 전용. "AI 접근" 탭이 읽고 쓴다.
 # --------------------------------------------------------------------------- #

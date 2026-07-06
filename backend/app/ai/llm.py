@@ -65,6 +65,9 @@ class ChatResult:
     raw: dict
     # 'stop'|'length'|... — 'length' 면 토큰 한도에서 잘림(미완 JSON 원인). 없으면 None.
     finish_reason: Optional[str] = None
+    # function-calling 응답의 도구 호출 목록: [{id, name, arguments(파싱된 dict)}].
+    # 도구를 안 쓰거나 백엔드 미지원이면 None. 에이전트 루프(agent.py)가 소비한다.
+    tool_calls: Optional[list] = None
 
 
 Message = dict  # {"role": "user"|"system"|"assistant", "content": str}
@@ -176,6 +179,8 @@ def _chat_openai(
     reasoning_effort: Optional[str],
     timeout: float,
     json_mode: bool = False,
+    tools: Optional[list] = None,
+    tool_choice: str = "auto",
 ) -> ChatResult:
     """OpenAI 호환 `/v1/chat/completions`. base_url 은 /v1 까지 포함한다고 가정."""
     base = settings.llm_base_url.rstrip("/")
@@ -186,6 +191,11 @@ def _chat_openai(
     }
     if temperature is not None:
         body["temperature"] = temperature
+    if tools:
+        # function-calling — GLM/Qwen 등 지원 모델. tool 결과 메시지(role:"tool")도
+        # messages 에 그대로 실려 온다(에이전트 루프가 조립).
+        body["tools"] = tools
+        body["tool_choice"] = tool_choice
     if json_mode:
         body["response_format"] = {"type": "json_object"}  # 유효 JSON 강제(vLLM/sglang)
     # GLM reasoning 모델 — 서버 chat_template 에 reasoning_effort 전달.
@@ -249,8 +259,10 @@ def _parse_openai_response(data: dict, *, fallback_model: str) -> ChatResult:
     reasoning = msg.get("reasoning_content") or msg.get("reasoning")
     if isinstance(reasoning, str):
         reasoning = reasoning.strip() or None
-    if not content and not reasoning:
-        raise LLMError("openai 호환 응답에 content/reasoning 둘 다 없음")
+    tool_calls = _parse_tool_calls(msg.get("tool_calls"))
+    # 도구 호출만 있고 content 가 비는 건 정상(function-calling 턴) — 이 경우 통과.
+    if not content and not reasoning and not tool_calls:
+        raise LLMError("openai 호환 응답에 content/reasoning/tool_calls 가 모두 없음")
     return ChatResult(
         content=content,
         reasoning=reasoning,
@@ -259,7 +271,30 @@ def _parse_openai_response(data: dict, *, fallback_model: str) -> ChatResult:
         backend="openai",
         raw=data,
         finish_reason=(choices[0] or {}).get("finish_reason"),
+        tool_calls=tool_calls,
     )
+
+
+def _parse_tool_calls(raw) -> Optional[list]:
+    """OpenAI 호환 message.tool_calls → [{id, name, arguments(dict)}].
+
+    arguments 는 JSON 문자열로 오므로 관대하게 파싱(깨지면 {} 로). 도구 호출이
+    없으면 None."""
+    if not raw or not isinstance(raw, list):
+        return None
+    out = []
+    for tc in raw:
+        fn = (tc or {}).get("function") or {}
+        args_raw = fn.get("arguments")
+        if isinstance(args_raw, dict):
+            args = args_raw
+        else:
+            try:
+                args = _json.loads(args_raw) if args_raw else {}
+            except (ValueError, TypeError):
+                args = {}
+        out.append({"id": tc.get("id"), "name": fn.get("name"), "arguments": args})
+    return out or None
 
 
 # --- 스트리밍(취소 가능) 백엔드 --------------------------------------------
@@ -507,6 +542,8 @@ def chat(
     reasoning_effort: Optional[str] = None,
     timeout: Optional[float] = None,
     json_mode: bool = False,
+    tools: Optional[list] = None,
+    tool_choice: str = "auto",
 ) -> ChatResult:
     """채팅 메시지 → ChatResult. 백엔드는 settings.llm_backend 로 결정.
 
@@ -514,6 +551,8 @@ def chat(
     reasoning_effort: 미지정 시 settings.llm_reasoning_effort 사용(openai 전용).
     json_mode: True 면 서버에 유효 JSON 출력을 강제(openai response_format /
         ollama format). 형식 일탈을 줄이는 가장 확실한 수단. mock 은 무시.
+    tools: function-calling 도구 스키마(OpenAI 형식). 지원 백엔드(openai/GLM)만
+        사용 — 응답 tool_calls 는 ChatResult.tool_calls 로. mock/ollama 는 무시.
     """
     backend = (settings.llm_backend or "mock").lower()
     model = model or settings.llm_model
@@ -534,6 +573,7 @@ def chat(
         return _chat_openai(
             messages, model=model, temperature=temperature, max_tokens=max_tokens,
             reasoning_effort=effort, timeout=timeout, json_mode=json_mode,
+            tools=tools, tool_choice=tool_choice,
         )
     raise LLMError(f"알 수 없는 LLM_BACKEND: {backend!r} (openai|ollama|mock)")
 

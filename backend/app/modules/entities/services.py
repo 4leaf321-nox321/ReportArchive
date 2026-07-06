@@ -22,12 +22,14 @@ from app.modules.entities.models import (
     EntityAlias,
     EntityEntryPolicy,
     EntityMerge,
+    EntityKindClass,
     EntityMergeDismissal,
     EntityRelation,
     EntityStatus,
     EntityTemporalKind,
     EntityType,
     EntityYear,
+    ObjectLink,
     PropertyDef,
     RelationType,
     ReportEntity,
@@ -1467,3 +1469,145 @@ def list_report_links_for_entity(db: Session, *, entity_id: int) -> list:
         .order_by(Report.updated_at.desc())
     )
     return list(db.execute(stmt).all())
+
+
+# --------------------------------------------------------------------------- #
+# Cross-kind 링크 (A0.3 스텝2) — ObjectRef 해석 + object_links
+# --------------------------------------------------------------------------- #
+# ObjectRef = (type, id:str). type 은 entity 축 slug(reference/record) 또는 system
+# 축 slug('dept' 등). system 은 entities 행이 없고 원 테이블을 투영한다.
+
+def resolve_object(db: Session, obj_type: str, obj_id: str) -> Optional[dict]:
+    """ObjectRef 를 균일한 표시형으로 해석. 모르는 타입/대상은 None.
+    반환: {type, id, kind_class, label, url, icon, deleted}."""
+    type_row = get_type_by_slug(db, obj_type)
+    if type_row is None:
+        return None
+
+    if type_row.kind_class == EntityKindClass.system:
+        if obj_type == "dept":
+            from app.modules.workspaces.models import Workspace
+
+            ws = db.get(Workspace, obj_id)
+            if ws is None:
+                return None
+            return {
+                "type": "dept", "id": obj_id, "kind_class": "system",
+                "label": ws.name, "url": f"/w/{obj_id}", "icon": type_row.icon,
+                "deleted": False,
+            }
+        # 다른 system 타입(user/report)은 후속 스텝에서.
+        return None
+
+    # entity(reference/record) — id 는 정수.
+    try:
+        eid = int(obj_id)
+    except (TypeError, ValueError):
+        return None
+    ent = get_entity(db, eid)
+    if ent is None or (ent.entity_type and ent.entity_type.slug != obj_type):
+        return None
+    return {
+        "type": obj_type, "id": obj_id, "kind_class": type_row.kind_class.value,
+        "label": ent.value, "url": f"/entities/{eid}", "icon": type_row.icon,
+        "deleted": ent.status == EntityStatus.deprecated,
+    }
+
+
+def add_object_link(
+    db: Session,
+    *,
+    src: Entity,
+    dst_type: str,
+    dst_id: str,
+    relation: str,
+    creator_user_id: Optional[int] = None,
+    properties: Optional[dict] = None,
+    evidence_report_id: Optional[int] = None,
+    evidence_note: Optional[str] = None,
+) -> ObjectLink:
+    """엔티티 src → system 객체(dst_type/dst_id) 링크 추가 (A0.3 스텝2).
+    relation_types 카탈로그로 검증 — 허용 타입인지, 축 제약(src=src 엔티티 축,
+    dst=dst_type)에 맞는지. 대상이 실재하는지 ObjectRef 로 확인. 속성/근거는
+    A0.2 로직 재사용. 이미 있으면 멱등(속성/근거 넘어오면 갱신)."""
+    rtype = get_relation_type(db, relation)
+    if rtype is None:
+        raise ValueError(f"지원하지 않는 관계 종류입니다: {relation}")
+
+    src_slug = src.entity_type.slug if src.entity_type else None
+    if rtype.src_axis_slugs and src_slug not in rtype.src_axis_slugs:
+        raise ValueError(
+            f"'{rtype.label}' 관계의 출발 축이 아닙니다(허용: {', '.join(rtype.src_axis_slugs)})."
+        )
+    if rtype.dst_axis_slugs and dst_type not in rtype.dst_axis_slugs:
+        raise ValueError(
+            f"'{rtype.label}' 관계의 도착 축이 아닙니다(허용: {', '.join(rtype.dst_axis_slugs)})."
+        )
+    if resolve_object(db, dst_type, dst_id) is None:
+        raise ValueError(f"대상 객체를 찾을 수 없습니다: {dst_type}/{dst_id}")
+
+    validated = validate_relation_properties(db, rtype, properties)
+    _validate_evidence_report(db, evidence_report_id)
+
+    src_type = src_slug or ""
+    src_id = str(src.id)
+    existing = db.execute(
+        select(ObjectLink).where(
+            ObjectLink.src_type == src_type,
+            ObjectLink.src_id == src_id,
+            ObjectLink.dst_type == dst_type,
+            ObjectLink.dst_id == dst_id,
+            ObjectLink.relation == relation,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.properties = validated
+        if evidence_report_id is not None or evidence_note is not None:
+            existing.evidence_report_id = evidence_report_id
+            existing.evidence_note = evidence_note
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    row = ObjectLink(
+        src_type=src_type, src_id=src_id, dst_type=dst_type, dst_id=dst_id,
+        relation=relation, properties=validated,
+        evidence_report_id=evidence_report_id, evidence_note=evidence_note,
+        created_by_user_id=creator_user_id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def list_object_links_for_entity(
+    db: Session, *, entity_id: int, axis_slug: str
+) -> tuple[list[ObjectLink], list[ObjectLink]]:
+    """(outgoing, incoming) — 이 엔티티가 한쪽 끝인 object_links. outgoing = src,
+    incoming = dst. axis_slug 는 이 엔티티의 축(=src_type/dst_type 매칭용)."""
+    sid = str(entity_id)
+    outgoing = list(
+        db.execute(
+            select(ObjectLink).where(
+                ObjectLink.src_type == axis_slug, ObjectLink.src_id == sid
+            )
+        ).scalars()
+    )
+    incoming = list(
+        db.execute(
+            select(ObjectLink).where(
+                ObjectLink.dst_type == axis_slug, ObjectLink.dst_id == sid
+            )
+        ).scalars()
+    )
+    return outgoing, incoming
+
+
+def get_object_link(db: Session, link_id: int) -> Optional[ObjectLink]:
+    return db.get(ObjectLink, link_id)
+
+
+def delete_object_link(db: Session, row: ObjectLink) -> None:
+    db.delete(row)
+    db.commit()

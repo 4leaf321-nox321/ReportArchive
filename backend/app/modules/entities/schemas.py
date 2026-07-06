@@ -343,6 +343,43 @@ class EntityProfileReport(BaseModel):
     updated_at: datetime
 
 
+class ObjectRefRead(BaseModel):
+    """어떤 종류 객체든 균일하게 해석한 표시형 (A0.3 스텝2). system(부서 등)은
+    원 테이블 투영, entity 는 값. 프론트가 label/url 로 칩·노드를 그린다."""
+
+    type: str
+    id: str
+    kind_class: str
+    label: str
+    url: Optional[str] = None
+    icon: str = ""
+    deleted: bool = False
+
+
+class ObjectLinkItem(BaseModel):
+    """object_links 한 건 + 해석된 상대(ObjectRef). 프로필의 system 링크 섹션용."""
+
+    link_id: int
+    relation: str
+    direction: str  # 'out' = 이 객체 → 상대, 'in' = 상대 → 이 객체
+    target: ObjectRefRead
+    properties: dict = Field(default_factory=dict)
+    evidence_report_id: Optional[int] = None
+    evidence_note: Optional[str] = None
+    evidence_report_title: Optional[str] = None
+
+
+class ObjectLinkCreate(BaseModel):
+    """엔티티 → system 객체 링크 생성 (A0.3 스텝2)."""
+
+    dst_type: str
+    dst_id: str
+    relation: str
+    properties: Optional[dict] = None
+    evidence_report_id: Optional[int] = None
+    evidence_note: Optional[str] = Field(default=None, max_length=500)
+
+
 class EntityProfileResponse(BaseModel):
     """객체 프로필(Phase A) 조합 응답 — 흩어진 정보를 한 번에 모은다. 마이그레이션
     없이 기존 서비스(상세·별칭·연도·관계·태깅보고서)를 집약. 관계도는 별도
@@ -352,6 +389,8 @@ class EntityProfileResponse(BaseModel):
     aliases: list[EntityAliasRead] = Field(default_factory=list)
     years: list[int] = Field(default_factory=list)
     relations: EntityRelationsResponse
+    # cross-kind 링크 (A0.3 스텝2) — 부서 등 system 객체 연결(해석됨).
+    system_links: list[ObjectLinkItem] = Field(default_factory=list)
     reports: list[EntityProfileReport] = Field(default_factory=list)
     # 가시성 적용 후 총계(reports 가 잘렸는지 안내용).
     report_count: int = 0

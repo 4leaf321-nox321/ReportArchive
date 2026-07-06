@@ -32,6 +32,9 @@ from app.modules.entities.schemas import (
     EntityMergeValidateRequest,
     EntityProfileReport,
     EntityProfileResponse,
+    ObjectLinkCreate,
+    ObjectLinkItem,
+    ObjectRefRead,
     EntityRead,
     EntityRelationCreate,
     EntityRelationItem,
@@ -850,6 +853,40 @@ def list_entity_relations(
     return success_response(data=_relations_response(db, entity_id))
 
 
+def _object_link_item(db, link, direction, other, title_cache) -> ObjectLinkItem:
+    """object_links 행 + 해석된 상대(ObjectRef) → 응답 아이템 (A0.3 스텝2)."""
+    return ObjectLinkItem(
+        link_id=link.id,
+        relation=link.relation,
+        direction=direction,
+        target=ObjectRefRead(**other),
+        properties=link.properties or {},
+        evidence_report_id=link.evidence_report_id,
+        evidence_note=link.evidence_note,
+        evidence_report_title=_evidence_title(db, link.evidence_report_id, title_cache),
+    )
+
+
+def _system_links_for(db, row) -> list[ObjectLinkItem]:
+    """이 엔티티의 object_links(양방향) → 상대를 ObjectRef 로 해석해 아이템화.
+    해석 실패(삭제된 대상 등)는 건너뛴다."""
+    axis = row.entity_type.slug if row.entity_type else ""
+    outgoing, incoming = services.list_object_links_for_entity(
+        db, entity_id=row.id, axis_slug=axis
+    )
+    cache: dict = {}
+    items: list[ObjectLinkItem] = []
+    for link in outgoing:
+        other = services.resolve_object(db, link.dst_type, link.dst_id)
+        if other:
+            items.append(_object_link_item(db, link, "out", other, cache))
+    for link in incoming:
+        other = services.resolve_object(db, link.src_type, link.src_id)
+        if other:
+            items.append(_object_link_item(db, link, "in", other, cache))
+    return items
+
+
 @entities_router.get("/{entity_id}/profile")
 def get_entity_profile(
     entity_id: int,
@@ -892,6 +929,7 @@ def get_entity_profile(
             aliases=[EntityAliasRead.model_validate(a) for a in aliases],
             years=years,
             relations=relations,
+            system_links=_system_links_for(db, row),
             reports=reports,
             report_count=len(reports),
         )
@@ -982,6 +1020,67 @@ def delete_entity_relation(
     return success_response(data=None, message="관계가 삭제됐습니다.")
 
 
+# ─── object_links — entity ↔ system 객체(부서 등) 링크 (A0.3 스텝2) ─────────── #
+@entities_router.get("/{entity_id}/object-links")
+def list_entity_object_links(
+    entity_id: int,
+    _actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """이 엔티티의 cross-kind 링크(해석됨) — 인증-only. 프로필과 같은 아이템 형태."""
+    row = services.get_entity(db, entity_id)
+    if not row:
+        return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
+    return success_response(data={"items": _system_links_for(db, row)})
+
+
+@entities_router.post("/{entity_id}/object-links", status_code=201)
+def add_entity_object_link(
+    entity_id: int,
+    payload: ObjectLinkCreate,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 이 엔티티(src) → system 객체(dst_type/dst_id) 링크 추가."""
+    _require_admin(actor)
+    src = services.get_entity(db, entity_id)
+    if not src:
+        return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
+    try:
+        link = services.add_object_link(
+            db,
+            src=src,
+            dst_type=payload.dst_type,
+            dst_id=payload.dst_id,
+            relation=payload.relation,
+            creator_user_id=actor.user.id,
+            properties=payload.properties,
+            evidence_report_id=payload.evidence_report_id,
+            evidence_note=payload.evidence_note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    other = services.resolve_object(db, link.dst_type, link.dst_id)
+    return created_response(data=_object_link_item(db, link, "out", other, {}))
+
+
+@entities_router.delete("/{entity_id}/object-links/{link_id}")
+def delete_entity_object_link(
+    entity_id: int,
+    link_id: int,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — cross-kind 링크 삭제. entity_id 가 링크의 한쪽이어야 한다."""
+    _require_admin(actor)
+    link = services.get_object_link(db, link_id)
+    sid = str(entity_id)
+    if not link or (link.src_id != sid and link.dst_id != sid):
+        return not_found_response(f"링크를 찾을 수 없습니다: {link_id}")
+    services.delete_object_link(db, link)
+    return success_response(data=None, message="링크가 삭제됐습니다.")
+
+
 @entities_router.get("/{entity_id}/graph")
 def entity_subgraph(
     entity_id: int,
@@ -1027,3 +1126,24 @@ def delete_entity(
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     return success_response(data=None, message=f"'{name}' 삭제 완료.")
+
+
+# --------------------------------------------------------------------------- #
+# objects router — `/api/objects` (ObjectRef 해석, A0.3 스텝2)
+# --------------------------------------------------------------------------- #
+objects_router = APIRouter()
+
+
+@objects_router.get("/{obj_type}/{obj_id}")
+def resolve_object_ref(
+    obj_type: str,
+    obj_id: str,
+    _actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """어떤 종류 객체든 균일한 표시형(ObjectRef)으로 해석 — 인증-only. 그래프·
+    프로필이 종류 안 가리고 노드/칩을 그리는 통합 진입점. 모르는 타입/대상은 404."""
+    ref = services.resolve_object(db, obj_type, obj_id)
+    if ref is None:
+        return not_found_response(f"객체를 찾을 수 없습니다: {obj_type}/{obj_id}")
+    return success_response(data=ObjectRefRead(**ref))

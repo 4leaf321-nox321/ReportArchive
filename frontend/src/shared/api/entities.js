@@ -75,9 +75,19 @@ export async function deleteRelationTypeProperty(slug, defId) {
  *
  *   { items: EntityTypeRead[] }
  */
-export async function listEntityTypes() {
+/**
+ * 축 목록. 기본은 **system 축(부서 등, A0.3) 제외** — 그것들은 값을 담지 않는
+ * 투영 표식이라 태깅 picker·값 관리·탐색에 나오면 안 된다. cross-kind 링크 대상
+ * 판단이 필요한 곳(관계 다이얼로그)만 `includeSystem: true` 로 전체를 받는다.
+ */
+export async function listEntityTypes({ includeSystem = false } = {}) {
   const res = await apiClient.get(TYPES_BASE)
-  return extractData(res)
+  const data = extractData(res)
+  if (includeSystem) return data
+  return {
+    ...data,
+    items: (data?.items ?? []).filter((t) => t.kind_class !== 'system'),
+  }
 }
 
 /**
@@ -206,6 +216,39 @@ export async function deleteEntityRelation(entityId, relationId) {
  */
 export async function getEntityProfile(entityId) {
   const res = await apiClient.get(`${BASE}/${entityId}/profile`)
+  return extractData(res)
+}
+
+// ─── cross-kind 링크 (A0.3 스텝2) — object_links + ObjectRef ─────────────── #
+
+/** 어떤 종류 객체든 균일한 표시형(ObjectRef)으로 해석. `{type,id,kind_class,label,url,icon,deleted}`. */
+export async function resolveObject(type, id) {
+  const res = await apiClient.get(`/api/objects/${type}/${encodeURIComponent(id)}`)
+  return extractData(res)
+}
+
+/** 이 엔티티의 cross-kind 링크(해석됨) 목록. `{ items: ObjectLinkItem[] }`. */
+export async function listObjectLinks(entityId) {
+  const res = await apiClient.get(`${BASE}/${entityId}/object-links`)
+  return extractData(res)
+}
+
+/** Admin-only — 이 엔티티(src) → system 객체(dstType/dstId) 링크 추가. */
+export async function addObjectLink(
+  entityId,
+  { dstType, dstId, relation, properties, evidenceReportId, evidenceNote } = {},
+) {
+  const body = { dst_type: dstType, dst_id: String(dstId), relation }
+  if (properties !== undefined) body.properties = properties
+  if (evidenceReportId !== undefined) body.evidence_report_id = evidenceReportId
+  if (evidenceNote !== undefined) body.evidence_note = evidenceNote
+  const res = await apiClient.post(`${BASE}/${entityId}/object-links`, body)
+  return extractData(res)
+}
+
+/** Admin-only — cross-kind 링크 삭제. */
+export async function deleteObjectLink(entityId, linkId) {
+  const res = await apiClient.delete(`${BASE}/${entityId}/object-links/${linkId}`)
   return extractData(res)
 }
 

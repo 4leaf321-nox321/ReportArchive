@@ -5,7 +5,14 @@
 // (GET /api/entities/{id}/profile)를 렌더한다. "문서 중심 → 객체 중심" 전환의 얼굴.
 import { useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { FileText, Network, Tag, Calendar, ArrowUpRight } from 'lucide-react'
+import {
+  FileText,
+  Network,
+  Tag,
+  Calendar,
+  ArrowUpRight,
+  Building2,
+} from 'lucide-react'
 import { Badge } from '@/shared/components/ui/badge'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { ErrorState } from '@/shared/components/ErrorState'
@@ -82,6 +89,12 @@ export function ObjectProfile({ entityId, onOpenEntity }) {
         relations={profile.relations}
         relTypeLabels={relTypeLabels}
         onOpen={open}
+      />
+
+      <SystemLinks
+        links={profile.system_links}
+        relTypeLabels={relTypeLabels}
+        onOpen={(url) => url && navigate(url)}
       />
 
       <RelatedReports
@@ -270,6 +283,37 @@ function RelatedObjects({ relations, relTypeLabels, onOpen }) {
           })}
         </div>
       )}
+    </Section>
+  )
+}
+
+/** cross-kind 링크(A0.3 스텝2) — 부서 등 system 객체. 해석된 label·url 로 칩,
+ *  클릭 시 대상(예: 부서 → /w/slug)으로 이동. 링크가 없으면 섹션 자체를 숨긴다. */
+function SystemLinks({ links, relTypeLabels, onOpen }) {
+  const items = links ?? []
+  if (items.length === 0) return null
+  return (
+    <Section icon={Building2} title="관련 조직" count={items.length}>
+      <div className="flex flex-wrap gap-1.5">
+        {items.map((it) => (
+          <button
+            key={it.link_id}
+            type="button"
+            onClick={() => onOpen(it.target?.url)}
+            disabled={!it.target?.url}
+            className="group inline-flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-sm hover:bg-accent disabled:opacity-60"
+            title={it.evidence_note || undefined}
+          >
+            <span className="text-[10px] text-muted-foreground">
+              {relTypeLabels.get(it.relation) ?? it.relation}
+            </span>
+            <span className="truncate">{it.target?.label ?? it.target?.id}</span>
+            {it.target?.url && (
+              <ArrowUpRight className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100" />
+            )}
+          </button>
+        ))}
+      </div>
     </Section>
   )
 }

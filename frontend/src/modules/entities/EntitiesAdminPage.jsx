@@ -53,9 +53,14 @@ import { PageHeader } from '@/shared/components/PageHeader'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { searchReports } from '@/modules/reports/api'
+import { listWorkspaces } from '@/shared/api/workspaces'
+import { WorkspaceCombobox } from '@/shared/components/WorkspaceCombobox'
 import {
   addEntityAlias,
   addEntityRelation,
+  addObjectLink,
+  listObjectLinks,
+  deleteObjectLink,
   createEntity,
   createEntityType,
   deleteEntity,
@@ -143,6 +148,9 @@ export default function EntitiesAdminPage() {
     reload: reloadTypes,
   } = useAsync(() => listEntityTypes(), [])
   const types = typesResp?.items ?? []
+  // system 축(부서 등, A0.3)은 값을 담지 않는 투영 표식 — 값 관리 탭에서 숨긴다
+  // (관계 다이얼로그가 내부적으로만 참조). slug 충돌 검사엔 전체 types 를 쓴다.
+  const shownTypes = types.filter((t) => t.kind_class !== 'system')
   const [axisSlug, setAxisSlug] = useState(null)
   const [newAxisOpen, setNewAxisOpen] = useState(false)
   const [relTypesOpen, setRelTypesOpen] = useState(false)
@@ -150,10 +158,10 @@ export default function EntitiesAdminPage() {
   // Pick the first axis once the list arrives. Falls through cleanly on
   // re-mount because we treat null as "no axis chosen yet".
   useEffect(() => {
-    if (axisSlug == null && types.length > 0) {
-      setAxisSlug(types[0].slug)
+    if (axisSlug == null && shownTypes.length > 0) {
+      setAxisSlug(shownTypes[0].slug)
     }
-  }, [types, axisSlug])
+  }, [shownTypes, axisSlug])
 
   if (typesLoading) {
     return (
@@ -208,7 +216,7 @@ export default function EntitiesAdminPage() {
         className="flex gap-4 items-start"
       >
         <TabsList className="flex flex-col items-stretch h-auto w-44 shrink-0 max-h-[calc(100vh-180px)] overflow-y-auto">
-          {types.map((t) => (
+          {shownTypes.map((t) => (
             <TabsTrigger
               key={t.slug}
               value={t.slug}
@@ -219,7 +227,7 @@ export default function EntitiesAdminPage() {
           ))}
         </TabsList>
         <div className="flex-1 min-w-0">
-          {types.map((t) => (
+          {shownTypes.map((t) => (
             <TabsContent key={t.slug} value={t.slug} className="mt-0">
               {/* Mount fresh per axis (key on slug) so search/toggle/state
                   resets when the admin switches tabs — keeps the mental
@@ -233,7 +241,7 @@ export default function EntitiesAdminPage() {
                     // 다른 축으로 자동 전환 — 삭제 직후 사라진 탭에
                     // 머무를 수 없으므로 첫 번째로 이동(없으면 null).
                     // reloadTypes 가 끝나면 자연스럽게 첫 축이 재진입.
-                    const remaining = types.filter((x) => x.id !== t.id)
+                    const remaining = shownTypes.filter((x) => x.id !== t.id)
                     setAxisSlug(remaining[0]?.slug ?? null)
                     reloadTypes()
                   }}
@@ -1503,12 +1511,72 @@ function RelationsDialog({ type, entity, onClose }) {
   // A0.2 — 편집 중인 링크(속성/근거) row | null. 관계종류 slug → 링크 속성정의.
   const [editingRel, setEditingRel] = useState(null)
   const [defsBySlug, setDefsBySlug] = useState({})
+  // A0.3 스텝2 — system 축(부서 등) + cross-kind 링크(object_links).
+  const [sysAxes, setSysAxes] = useState(() => new Set())
+  const [orgWorkspaces, setOrgWorkspaces] = useState([])
+  const [objectLinks, setObjectLinks] = useState([])
 
   useEffect(() => {
     listRelationTypes()
       .then((res) => setRelTypes(res?.items ?? []))
       .catch(() => setRelTypes([]))
+    listEntityTypes({ includeSystem: true })
+      .then((res) =>
+        setSysAxes(
+          new Set(
+            (res?.items ?? [])
+              .filter((t) => t.kind_class === 'system')
+              .map((t) => t.slug),
+          ),
+        ),
+      )
+      .catch(() => {})
+    listWorkspaces()
+      .then((res) =>
+        setOrgWorkspaces(
+          (res ?? []).filter((w) => w.kind === 'org' && !w.virtual),
+        ),
+      )
+      .catch(() => setOrgWorkspaces([]))
   }, [])
+
+  async function reloadLinks() {
+    try {
+      const res = await listObjectLinks(entity.id)
+      setObjectLinks(res?.items ?? [])
+    } catch {
+      setObjectLinks([])
+    }
+  }
+  useEffect(() => {
+    reloadLinks()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entity.id])
+
+  async function addObjectTarget(dstType, dstId) {
+    setSubmitting(true)
+    try {
+      await addObjectLink(entity.id, { dstType, dstId, relation: selectedRel })
+      await reloadLinks()
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err?.message || '링크 추가 실패',
+      )
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function removeObjectLink(linkId) {
+    try {
+      await deleteObjectLink(entity.id, linkId)
+      await reloadLinks()
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err?.message || '링크 삭제 실패',
+      )
+    }
+  }
 
   // slug → 관계 종류 메타(라벨·역라벨·도착축 제약). 표시·검색 좁힘에 쓴다.
   const relTypeBySlug = useMemo(() => {
@@ -1517,6 +1585,12 @@ function RelationsDialog({ type, entity, onClose }) {
     return m
   }, [relTypes])
   const selectedRelType = relTypeBySlug.get(selectedRel) ?? null
+  // 선택한 관계 종류의 도착축이 system(부서 등)이면 그 slug — 대상 picker 가
+  // 엔티티 검색 대신 워크스페이스 드롭다운이 되고, 추가는 object_link 로 간다.
+  const dstSysType = useMemo(() => {
+    const dsts = selectedRelType?.dst_axis_slugs ?? []
+    return dsts.find((s) => sysAxes.has(s)) ?? null
+  }, [selectedRelType, sysAxes])
 
   async function reload() {
     try {
@@ -1674,21 +1748,35 @@ function RelationsDialog({ type, entity, onClose }) {
                 </option>
               ))}
             </select>
-            <div className="relative flex-1">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder={
-                  selectedRelType?.dst_axis_slugs?.length
-                    ? `대상 검색 (${selectedRelType.dst_axis_slugs.join('·')})…`
-                    : '대상 값 검색 (전체 축)…'
-                }
-                className="h-8 pl-7 text-sm"
-              />
-            </div>
+            {dstSysType ? (
+              // 도착축이 system(부서) — 다른 부서 선택 GUI 와 동일한 검색+트리
+              // 콤보박스. 고르면 즉시 링크 생성(value 는 항상 비워 "추가" 모드).
+              <div className="flex-1">
+                <WorkspaceCombobox
+                  workspaces={orgWorkspaces}
+                  value=""
+                  onChange={(slug) => slug && addObjectTarget(dstSysType, slug)}
+                  disabled={submitting || orgWorkspaces.length === 0}
+                  placeholder="담당 부서 선택..."
+                />
+              </div>
+            ) : (
+              <div className="relative flex-1">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={
+                    selectedRelType?.dst_axis_slugs?.length
+                      ? `대상 검색 (${selectedRelType.dst_axis_slugs.join('·')})…`
+                      : '대상 값 검색 (전체 축)…'
+                  }
+                  className="h-8 pl-7 text-sm"
+                />
+              </div>
+            )}
           </div>
-          {query.trim() && (
+          {!dstSysType && query.trim() && (
             <div className="max-h-40 overflow-y-auto rounded-md border">
               {searching ? (
                 <p className="px-3 py-2 text-center text-xs text-muted-foreground">
@@ -1747,6 +1835,43 @@ function RelationsDialog({ type, entity, onClose }) {
             onEdit={setEditingRel}
           />
         </div>
+
+        {/* cross-kind 링크 (A0.3 스텝2) — 부서 등 system 객체 */}
+        {objectLinks.length > 0 && (
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">
+              조직 링크 (부서 등)
+            </Label>
+            <div className="max-h-40 overflow-y-auto rounded-md border">
+              {objectLinks.map((it) => (
+                <div
+                  key={it.link_id}
+                  className="flex items-center justify-between gap-2 border-b px-2.5 py-1.5 text-sm last:border-b-0"
+                >
+                  <span className="flex items-center gap-1.5 truncate">
+                    <Badge className="shrink-0 text-[9px]">
+                      {relTypeBySlug?.get(it.relation)?.label ?? it.relation}
+                    </Badge>
+                    <span className="truncate">
+                      {it.target?.label ?? it.target?.id}
+                    </span>
+                    <Badge variant="outline" className="shrink-0 text-[9px]">
+                      {it.target?.type}
+                    </Badge>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => removeObjectLink(it.link_id)}
+                    className="shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    title="링크 삭제"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
           </>
         )}
 

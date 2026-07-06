@@ -25,6 +25,7 @@ from app.modules.activities.routes import router as activities_router
 from app.modules.entities.routes import (
     entities_router,
     entity_types_router,
+    objects_router,
     relation_types_router,
 )
 from app.modules.files.routes import router as files_router
@@ -88,6 +89,7 @@ def register_routers(app: FastAPI) -> None:
         prefix="/api/entities",
         tags=["entities"],
     )
+    app.include_router(objects_router, prefix="/api/objects", tags=["objects"])
     app.include_router(prompts_router, prefix="/api/prompts", tags=["prompts"])
     app.include_router(composites_router, prefix="/api/composites", tags=["composites"])
     app.include_router(

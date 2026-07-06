@@ -495,3 +495,46 @@ class EntityMerge(Base):
     merged_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow, nullable=False
     )
+
+
+class ObjectLink(Base):
+    """Cross-kind 링크 (온톨로지 강화 A0.3 스텝2, 안 B). entity ↔ **system 객체**
+    (부서=workspace 등, `entities` 테이블 밖)를 잇는다. entity↔entity 는 여전히
+    `entity_relations` 가 담고, 여기엔 한쪽 끝이 system 인 링크만 온다.
+
+    식별자가 정수(entity id·report id)와 문자열(workspace slug) 섞여 있어 `*_id`
+    는 **문자열(varchar)** — ObjectRef=(type, id:str). relation 은 relation_types
+    카탈로그에서 검증(축 제약을 cross-kind 로 일반화). 속성/근거는 A0.2 재사용.
+    """
+
+    __tablename__ = "object_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "src_type", "src_id", "dst_type", "dst_id", "relation",
+            name="uq_object_links",
+        ),
+        Index("ix_object_links_src", "src_type", "src_id"),
+        Index("ix_object_links_dst", "dst_type", "dst_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # ObjectRef 타입 = entity 축 slug(예 'project') 또는 system 축 slug('dept'…).
+    src_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    src_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    dst_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    dst_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    relation: Mapped[str] = mapped_column(String(32), nullable=False)
+    # 링크 속성/근거 (A0.2 스키마 재사용).
+    properties: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    evidence_report_id: Mapped[int | None] = mapped_column(
+        ForeignKey("reports.id", ondelete="SET NULL"), nullable=True
+    )
+    evidence_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )

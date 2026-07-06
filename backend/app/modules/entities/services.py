@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import Float, and_, cast, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1680,3 +1680,123 @@ def upsert_record_entity(
     db.commit()
     db.refresh(ent)
     return ent
+
+
+# --------------------------------------------------------------------------- #
+# 객체 중심 검색 (Phase C) — 타입 + 속성(JSONB) + 관계로 엔티티 필터
+# --------------------------------------------------------------------------- #
+def _prop_where(defn: PropertyDef, op: str, value):
+    """속성 하나에 대한 WHERE 조건. data_type 에 맞춰 JSONB 텍스트를 캐스팅/비교.
+    지원 안 되는 조합이면 None(무시)."""
+    key = defn.key
+    txt = Entity.properties[key].astext  # JSONB -> text
+    dt = defn.data_type
+
+    if defn.multi and op == "has":
+        # 배열 속성 — JSONB @> [value] (값 포함).
+        return Entity.properties[key].contains([value])
+
+    if dt == "number":
+        num = cast(txt, Float)
+        try:
+            if op == "gte":
+                return num >= float(value)
+            if op == "lte":
+                return num <= float(value)
+            if op == "between" and isinstance(value, (list, tuple)) and len(value) == 2:
+                return num.between(float(value[0]), float(value[1]))
+            return num == float(value)
+        except (TypeError, ValueError):
+            return None
+    if dt in ("date", "year"):
+        # YYYY-MM-DD / 정수연도 문자열은 사전식 비교가 곧 시간순.
+        v = str(value)
+        if op == "gte":
+            return txt >= v
+        if op == "lte":
+            return txt <= v
+        if op == "between" and isinstance(value, (list, tuple)) and len(value) == 2:
+            return txt.between(str(value[0]), str(value[1]))
+        return txt == v
+    if dt == "bool":
+        return txt == ("true" if value in (True, "true", "True", 1, "1") else "false")
+    # text / enum / url / entity_ref
+    if op == "in" and isinstance(value, (list, tuple)):
+        return txt.in_([str(v) for v in value])
+    if op == "contains":
+        return func.lower(txt).like(f"%{str(value).strip().lower()}%")
+    return txt == str(value)
+
+
+def search_entities(
+    db: Session,
+    *,
+    type_id: Optional[int] = None,
+    q: Optional[str] = None,
+    props: Optional[list] = None,
+    relations: Optional[list] = None,
+    year: Optional[int] = None,
+    include_deprecated: bool = False,
+    sort: str = "value",
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[Entity], int]:
+    """객체 중심 검색 (Phase C). 타입 + 이름/코드/설명(q) + 속성(JSONB) + 관계 +
+    연도 로 엔티티를 필터. 속성/관계 필터는 type_id 기준. (엔티티 tags 로 보고서를
+    찾는 search_reports 와 반대 — 여기선 객체 자체를 찾는다.) 반환: (items, total)."""
+    stmt = select(Entity)
+    if type_id is not None:
+        stmt = stmt.where(Entity.type_id == type_id)
+    if not include_deprecated:
+        stmt = stmt.where(Entity.status == EntityStatus.active)
+    if q:
+        needle = f"%{q.strip().lower()}%"
+        stmt = stmt.where(
+            or_(
+                func.lower(Entity.value).like(needle),
+                func.lower(Entity.code).like(needle),
+                func.lower(Entity.description).like(needle),
+            )
+        )
+
+    # 속성 필터 — 축 property_defs 로 data_type 을 알아 캐스팅.
+    if props and type_id is not None:
+        defs = {
+            d.key: d
+            for d in list_property_defs(db, owner_kind="entity_type", owner_id=type_id)
+        }
+        for f in props:
+            key = f.get("key") if isinstance(f, dict) else f.key
+            op = (f.get("op") if isinstance(f, dict) else f.op) or "eq"
+            value = f.get("value") if isinstance(f, dict) else f.value
+            defn = defs.get(key)
+            if defn is None or value in (None, "", []):
+                continue
+            cond = _prop_where(defn, op, value)
+            if cond is not None:
+                stmt = stmt.where(cond)
+
+    # 관계 필터 — dst 에 (relation 종류로) 연결된 src.
+    for rf in relations or []:
+        dst = rf.get("dst_id") if isinstance(rf, dict) else rf.dst_id
+        rel = rf.get("relation") if isinstance(rf, dict) else rf.relation
+        if dst is None:
+            continue
+        sub = select(EntityRelation.src_entity_id).where(
+            EntityRelation.dst_entity_id == dst
+        )
+        if rel:
+            sub = sub.where(EntityRelation.relation == rel)
+        stmt = stmt.where(Entity.id.in_(sub))
+
+    if year is not None:
+        stmt = stmt.where(_temporal_year_filter(year))
+
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+
+    if sort == "created":
+        stmt = stmt.order_by(Entity.created_at.desc())
+    else:
+        stmt = stmt.order_by(Entity.value)
+    stmt = stmt.limit(limit).offset(offset)
+    return list(db.execute(stmt).scalars()), total

@@ -11,6 +11,7 @@ import {
 import { Input } from '@/shared/components/ui/input'
 import { Button } from '@/shared/components/ui/button'
 import { searchReports, semanticSearchReports } from '@/modules/reports/api'
+import { ObjectSearch } from '@/modules/entities/ObjectSearch'
 import { askAi } from '@/shared/api/ai'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { EntityFilterControl } from './EntityFilterControl'
@@ -76,6 +77,8 @@ export default function SearchPage() {
   const [loading, setLoading] = useState(false)
   const [offset, setOffset] = useState(0)
   const [mode, setMode] = useState('keyword')
+  // 검색 대상 — 보고서(기존) vs 객체(Phase C 온톨로지 검색).
+  const [target, setTarget] = useState('reports')
   // RAG Q&A — 권한(ai_features)이 있을 때만 "질문하기" 모드 노출.
   const { me } = useAuth()
   const hasRagQa = !!me?.ai_features?.includes('rag_qa')
@@ -236,12 +239,47 @@ export default function SearchPage() {
   const showEmpty = !loading && canSearch && total === 0
   const activeHint = modes.find((m) => m.key === mode)?.hint
 
+  const targetToggle = (
+    <div className="mb-3 inline-flex rounded-md border p-0.5">
+      {[
+        { key: 'reports', label: '보고서' },
+        { key: 'objects', label: '객체' },
+      ].map((t) => (
+        <button
+          key={t.key}
+          type="button"
+          onClick={() => setTarget(t.key)}
+          aria-pressed={target === t.key}
+          className={`rounded px-3 py-1 text-xs font-medium transition-colors ${
+            target === t.key
+              ? 'bg-primary text-primary-foreground'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  )
+
+  if (target === 'objects') {
+    return (
+      <div className="mx-auto w-full max-w-5xl px-4 py-6">
+        <h1 className="mb-3 flex items-center gap-2 text-lg font-semibold">
+          <Search className="h-5 w-5" /> 검색
+        </h1>
+        {targetToggle}
+        <ObjectSearch />
+      </div>
+    )
+  }
+
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-6">
       <h1 className="mb-3 flex items-center gap-2 text-lg font-semibold">
-        <Search className="h-5 w-5" />
-        보고서 검색
+        <Search className="h-5 w-5" /> 검색
       </h1>
+      {targetToggle}
 
       <div className="relative mb-3">
         <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />

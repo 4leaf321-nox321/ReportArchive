@@ -8,13 +8,13 @@
 // 클릭하면 그 값으로 시드를 바꿔 제자리에서 이어 탐색한다(ObjectProfile 재사용).
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Loader2, Search, Boxes, ArrowUpRight } from 'lucide-react'
+import { Loader2, Search, Boxes, ArrowUpRight, Network } from 'lucide-react'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { Button } from '@/shared/components/ui/button'
 import { Combobox } from '@/shared/components/Combobox'
 import { cn } from '@/shared/lib/utils'
 import { listEntityTypes, listEntities } from '@/shared/api/entities'
-import { ObjectProfile } from './ObjectProfilePage'
+import { ObjectProfile, EntityGraphPanel } from './ObjectProfilePage'
 
 const CURRENT_YEAR = new Date().getFullYear()
 // 연도 드롭다운 후보 — 올해부터 9년 전까지. "전체"는 null 로 표현.
@@ -177,11 +177,11 @@ export default function EntityExplorePage() {
           </div>
         </aside>
 
-        {/* 우측 — 선택한 값의 프로필(속성·관련객체·관련보고서·관계도). 관련객체
-            칩·관계도 노드를 클릭하면 시드를 그 값으로 바꿔 제자리에서 이어 탐색. */}
-        <div className="min-w-0 flex-1 overflow-y-auto">
+        {/* 우측 — 프로필(좌) | 관계도(우) 좌우 분할. 관계도는 남는 폭 전체를 크게 채운다.
+            관련객체 칩·노드 클릭 시 시드를 바꿔 제자리 순회(system 노드는 그 객체로 이동). */}
+        <div className="flex min-w-0 flex-1">
           {seed == null ? (
-            <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
+            <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
               <Boxes className="h-8 w-8 opacity-40" />
               <p>
                 왼쪽에서 {typeLabelById.get(typeId) ?? '값'}을(를) 골라 프로필을
@@ -189,22 +189,49 @@ export default function EntityExplorePage() {
               </p>
             </div>
           ) : (
-            <div className="p-4">
-              <div className="mb-3 flex justify-end">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => navigate(`/entities/${seed.id}`)}
-                  title="이 프로필을 전체 화면으로 열기"
-                >
-                  전체 화면 <ArrowUpRight className="ml-1 h-3.5 w-3.5" />
-                </Button>
+            <>
+              {/* 프로필 (좌) */}
+              <div className="flex min-w-0 flex-1 flex-col border-r">
+                <div className="flex items-center gap-2 border-b px-3 py-2">
+                  <span className="truncate text-sm font-medium">{seed.value}</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="ml-auto shrink-0"
+                    onClick={() => navigate(`/entities/${seed.id}`)}
+                    title="이 프로필을 전체 화면으로 열기"
+                  >
+                    전체 화면 <ArrowUpRight className="ml-1 h-3.5 w-3.5" />
+                  </Button>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                  <ObjectProfile
+                    entityId={seed.id}
+                    hideGraph
+                    onOpenEntity={(id, label) => setSeed({ id, value: label })}
+                  />
+                </div>
               </div>
-              <ObjectProfile
-                entityId={seed.id}
-                onOpenEntity={(id, label) => setSeed({ id, value: label })}
-              />
-            </div>
+
+              {/* 관계도 (우) */}
+              <div className="flex min-w-0 flex-1 flex-col">
+                <div className="flex items-center gap-2 border-b px-3 py-2 text-sm font-medium text-muted-foreground">
+                  <Network className="h-4 w-4" /> 관계도
+                </div>
+                <div className="min-h-0 flex-1">
+                  <EntityGraphPanel
+                    entityId={seed.id}
+                    onNodeClick={(node) => {
+                      if (node?.kind === 'system' && node.refType) {
+                        navigate(`/objects/${node.refType}/${node.refId}`)
+                      } else if (node?.id != null && node.id !== seed.id) {
+                        setSeed({ id: node.id, value: node.label })
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+            </>
           )}
         </div>
       </div>

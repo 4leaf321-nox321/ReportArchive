@@ -36,8 +36,9 @@ import { EntityGraphView } from './EntityGraphView'
  *   onOpenEntity(id, label)  — 관련객체 칩·관계도 노드 클릭 시. 라우트 페이지는
  *     `/entities/:id` 로 이동, 탐색 페이지는 시드를 그 값으로 바꿔 제자리 순회.
  *     생략하면 아무 동작 안 함(정적 표시).
+ *   hideGraph  — 관계도 섹션 숨김(탐색 페이지가 별도 탭에서 크게 그릴 때).
  */
-export function ObjectProfile({ entityId, onOpenEntity }) {
+export function ObjectProfile({ entityId, onOpenEntity, hideGraph = false }) {
   const navigate = useNavigate()
 
   // 프로필 조합(별칭·연도·관계·태깅보고서) — id 바뀌면 재조회.
@@ -62,10 +63,10 @@ export function ObjectProfile({ entityId, onOpenEntity }) {
     return m
   }, [relTypesRes])
 
-  // 2단계 관계도 — 별도 호출(중복 방지). id 바뀌면 재조회.
+  // 2단계 관계도 — 별도 호출(중복 방지). id 바뀌면 재조회. hideGraph 면 건너뜀.
   const { data: graph } = useAsync(
-    () => getEntityGraph(entityId, { depth: 2 }),
-    [entityId],
+    () => (hideGraph ? Promise.resolve(null) : getEntityGraph(entityId, { depth: 2 })),
+    [entityId, hideGraph],
   )
 
   const entity = profile?.entity
@@ -105,19 +106,64 @@ export function ObjectProfile({ entityId, onOpenEntity }) {
         onOpen={(r) => navigate(`/w/${r.workspace_slug}/reports/${r.id}`)}
       />
 
-      <GraphSection
-        graph={graph}
-        centerId={entityId}
-        relTypeLabels={relTypeLabels}
-        onNodeClick={(node) => {
-          if (node?.kind === 'system' && node.refType) {
-            navigate(`/objects/${node.refType}/${node.refId}`)
-          } else if (node?.id != null && node.id !== entityId) {
-            open(node.id, node.label)
-          }
-        }}
-      />
+      {!hideGraph && (
+        <GraphSection
+          graph={graph}
+          centerId={entityId}
+          relTypeLabels={relTypeLabels}
+          onNodeClick={(node) => {
+            if (node?.kind === 'system' && node.refType) {
+              navigate(`/objects/${node.refType}/${node.refId}`)
+            } else if (node?.id != null && node.id !== entityId) {
+              open(node.id, node.label)
+            }
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+/**
+ * 관계도만 컨테이너 전체 크기로 그리는 패널 — 「기준정보 탐색」의 관계도 탭용.
+ * getEntityGraph + 관계 라벨을 자체 로드하고 EntityGraphView 로 h-full 렌더.
+ *   onNodeClick(node) — 호출자가 순회/이동 결정.
+ */
+export function EntityGraphPanel({ entityId, onNodeClick }) {
+  const { data: graph } = useAsync(
+    () => getEntityGraph(entityId, { depth: 2 }),
+    [entityId],
+  )
+  const { data: relTypesRes } = useAsync(() => listRelationTypes(), [])
+  const relTypeLabels = useMemo(() => {
+    const m = new Map()
+    for (const rt of relTypesRes?.items ?? []) m.set(rt.slug, rt.label)
+    return m
+  }, [relTypesRes])
+
+  if (!graph) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        불러오는 중…
+      </div>
+    )
+  }
+  if ((graph.edges?.length ?? 0) === 0) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-1 text-sm text-muted-foreground">
+        <Network className="h-6 w-6 opacity-40" />
+        그릴 관계가 없습니다.
+      </div>
+    )
+  }
+  return (
+    <EntityGraphView
+      graph={graph}
+      centerId={entityId}
+      relTypeLabels={relTypeLabels}
+      active
+      onNodeClick={onNodeClick}
+    />
   )
 }
 

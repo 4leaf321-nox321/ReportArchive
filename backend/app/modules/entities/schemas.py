@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -298,6 +298,43 @@ class EntitySuggestResponse(BaseModel):
 
 class EntityListResponse(BaseModel):
     items: list[EntityRead]
+
+
+# ─── 객체 중심 검색 (Phase C) ────────────────────────────────────────────── #
+class EntityPropFilter(BaseModel):
+    """속성 필터 한 개. op 는 data_type 에 맞게 서비스가 해석:
+    text/enum: eq·contains·in / number·date·year: eq·gte·lte·between / bool: is /
+    multi(배열): has. value 는 스칼라 또는 between/in 은 리스트."""
+
+    key: str
+    op: str = "eq"
+    value: Any = None
+
+
+class EntityRelationFilter(BaseModel):
+    """관계 필터 — dst_id 에 (relation 종류로) 연결된 객체만. relation 미지정=아무 관계."""
+
+    dst_id: int
+    relation: Optional[str] = None
+
+
+class EntitySearchRequest(BaseModel):
+    """객체 중심 검색 요청 (Phase C). 속성/관계 필터는 축(type_id) 기준이라야 의미."""
+
+    type_id: Optional[int] = None
+    q: Optional[str] = None
+    props: list[EntityPropFilter] = Field(default_factory=list)
+    relations: list[EntityRelationFilter] = Field(default_factory=list)
+    year: Optional[int] = None
+    include_deprecated: bool = False
+    sort: str = "value"  # value | created
+    limit: int = Field(default=50, ge=1, le=200)
+    offset: int = Field(default=0, ge=0)
+
+
+class EntitySearchResponse(BaseModel):
+    items: list[EntityRead]
+    total: int
 
 
 class EntityCreate(BaseModel):

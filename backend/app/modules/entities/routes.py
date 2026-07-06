@@ -32,6 +32,8 @@ from app.modules.entities.schemas import (
     EntityMergeValidateRequest,
     EntityProfileReport,
     EntityProfileResponse,
+    EntitySearchRequest,
+    EntitySearchResponse,
     ObjectLinkCreate,
     ObjectLinkItem,
     ObjectRefRead,
@@ -549,6 +551,32 @@ def list_entities(
     else:
         items = [_to_read(r) for r in rows]
     return success_response(data=EntityListResponse(items=items))
+
+
+@entities_router.post("/search")
+def search_entities(
+    payload: EntitySearchRequest,
+    _actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """객체 중심 검색 (Phase C) — 인증-only. 타입 + 이름(q) + 속성(JSONB) + 관계 +
+    연도 로 객체를 찾는다. 속성/관계 필터는 type_id 기준이라야 의미. 반환:
+    `{ items: EntityRead[], total }`(정렬·페이지 적용)."""
+    rows, total = services.search_entities(
+        db,
+        type_id=payload.type_id,
+        q=payload.q,
+        props=[p.model_dump() for p in payload.props],
+        relations=[r.model_dump() for r in payload.relations],
+        year=payload.year,
+        include_deprecated=payload.include_deprecated,
+        sort=payload.sort,
+        limit=payload.limit,
+        offset=payload.offset,
+    )
+    return success_response(
+        data=EntitySearchResponse(items=[_to_read(r) for r in rows], total=total)
+    )
 
 
 @entities_router.post("", status_code=201)

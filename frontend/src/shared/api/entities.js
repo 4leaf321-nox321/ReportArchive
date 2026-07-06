@@ -218,6 +218,17 @@ export async function deleteEntityRelation(entityId, relationId) {
 }
 
 /**
+ * 객체 중심 검색 (Phase C) — 타입 + 이름 + 속성(JSONB) + 관계 필터로 객체를 찾는다.
+ *   filters: { type_id, q, props:[{key,op,value}], relations:[{relation,dst_id}],
+ *             year, include_deprecated, sort, limit, offset }
+ *   → { items: EntityRead[], total }
+ */
+export async function searchEntities(filters = {}) {
+  const res = await apiClient.post(`${BASE}/search`, filters)
+  return extractData(res)
+}
+
+/**
  * 객체 프로필(Phase A) — 인증-only 조합. 흩어진 정보를 한 번에:
  *   {
  *     entity, aliases:[{id,alias}], years:[int],

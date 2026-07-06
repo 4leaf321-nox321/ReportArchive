@@ -23,14 +23,17 @@ export async function chatAiDiag({ prompt, reasoningEffort = null }) {
 
 /**
  * 아카이브 RAG Q&A (§A) — 질문 → 검색 → 출처 인용 답변.
- *   { answer, citations:[{n, report_id, title, workspace_slug, block_id, page_idx, snippet, used}],
- *     no_evidence, model, backend }
+ *   { answer, citations:[{n, report_id, title, workspace_slug, block_id, page_idx,
+ *                         snippet, used, author, date, graph, objects}],
+ *     no_evidence, model, backend, seeds:[{id, value, type_slug, type_label, via}] }
  * 'rag_qa' 엔티틀먼트 없으면 403, 근거 약하면 no_evidence=true.
+ *   graph=true → GraphRAG(온톨로지 그래프 근거 블렌드): seeds(다룬 객체) + 출처에
+ *   작성자·날짜, 그래프 근거엔 연결 객체(objects)·graph 플래그가 실린다.
  */
-export async function askAi({ query, limit = 8, signal } = {}) {
+export async function askAi({ query, limit = 8, graph = false, signal } = {}) {
   // signal: AbortController.signal — 사용자가 "중단"하면 요청을 끊고, 서버도
   // 연결 끊김을 감지해 LLM 생성을 멈춘다.
-  const res = await apiClient.post('/api/ai/ask', { query, limit }, { signal })
+  const res = await apiClient.post('/api/ai/ask', { query, limit, graph }, { signal })
   return extractData(res)
 }
 

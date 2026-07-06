@@ -7,6 +7,7 @@ import {
   Sparkles,
   Type,
   MessageCircleQuestion,
+  Network,
 } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Button } from '@/shared/components/ui/button'
@@ -88,8 +89,10 @@ export default function SearchPage() {
     [hasRagQa],
   )
   const [askLoading, setAskLoading] = useState(false)
-  const [askResult, setAskResult] = useState(null) // {answer, citations, no_evidence}
+  const [askResult, setAskResult] = useState(null) // {answer, citations, no_evidence, seeds}
   const [askError, setAskError] = useState(null)
+  // GraphRAG — 온톨로지 그래프 근거 블렌드(질문이 다룬 객체→연결 이웃 근거 우선).
+  const [graphMode, setGraphMode] = useState(false)
   // 엔티티 태그 필터(D-2) — 본문/의미 검색을 메타데이터로 좁힌다("본문 X AND 모델=A1234").
   // 키워드·의미 두 모드 모두 적용.
   const [entityFilter, setEntityFilter] = useState([])
@@ -209,7 +212,11 @@ export default function SearchPage() {
     setAskLoading(true)
     setAskError(null)
     try {
-      const res = await askAi({ query: q, signal: controller.signal })
+      const res = await askAi({
+        query: q,
+        graph: graphMode,
+        signal: controller.signal,
+      })
       setAskResult(res)
     } catch (e) {
       // 사용자가 중단(abort)한 경우는 에러로 표시하지 않는다.
@@ -225,7 +232,7 @@ export default function SearchPage() {
       askAbortRef.current = null
       setAskLoading(false)
     }
-  }, [input, askLoading])
+  }, [input, askLoading, graphMode])
 
   const cancelAsk = useCallback(() => {
     askAbortRef.current?.abort()
@@ -325,6 +332,21 @@ export default function SearchPage() {
             )
           })}
         </div>
+        {isAsk && (
+          <label
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs"
+            title="온톨로지 그래프로 답합니다 — 질문이 다룬 객체와 연결된 이웃 객체의 보고서를 근거로 우선합니다"
+          >
+            <input
+              type="checkbox"
+              checked={graphMode}
+              onChange={(e) => setGraphMode(e.target.checked)}
+              className="h-3 w-3"
+            />
+            <Network className="h-3.5 w-3.5" />
+            그래프 근거
+          </label>
+        )}
         <span className="text-xs text-muted-foreground">{activeHint}</span>
       </div>
 
@@ -358,6 +380,24 @@ export default function SearchPage() {
               </p>
             ) : (
               <div className="rounded-lg border bg-card p-4">
+                {askResult.seeds?.length > 0 && (
+                  <div className="mb-3 flex flex-wrap items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                      <Network className="h-3.5 w-3.5" /> 다룬 객체
+                    </span>
+                    {askResult.seeds.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => navigate(`/entities/${s.id}`)}
+                        title={`${s.type_label || s.type_slug} · ${s.value}`}
+                        className="rounded-full border bg-muted/40 px-2 py-0.5 text-[11px] hover:bg-muted"
+                      >
+                        {s.value}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <div className="whitespace-pre-wrap text-sm leading-relaxed">
                   {askResult.answer}
                 </div>
@@ -388,9 +428,29 @@ export default function SearchPage() {
                             [{c.n}]
                           </span>
                           <span className="min-w-0 flex-1">
-                            <span className="block truncate text-xs font-medium">
-                              {c.title || `보고서 ${c.report_id}`}
+                            <span className="flex items-center gap-1.5">
+                              <span className="truncate text-xs font-medium">
+                                {c.title || `보고서 ${c.report_id}`}
+                              </span>
+                              {c.graph && (
+                                <span
+                                  className="inline-flex shrink-0 items-center gap-0.5 rounded bg-primary/10 px-1 text-[9px] font-medium text-primary"
+                                  title="온톨로지 그래프로 연결된 근거"
+                                >
+                                  <Network className="h-2.5 w-2.5" /> 그래프
+                                </span>
+                              )}
                             </span>
+                            {(c.author || c.date) && (
+                              <span className="block text-[10px] text-muted-foreground">
+                                {[c.author, c.date].filter(Boolean).join(' · ')}
+                              </span>
+                            )}
+                            {c.objects?.length > 0 && (
+                              <span className="block truncate text-[10px] text-primary/80">
+                                연결 객체: {c.objects.join(', ')}
+                              </span>
+                            )}
                             {c.snippet && (
                               <span className="block truncate text-[11px] text-muted-foreground">
                                 {c.snippet}

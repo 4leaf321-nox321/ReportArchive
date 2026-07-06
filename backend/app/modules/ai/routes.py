@@ -112,6 +112,8 @@ def diag_chat(payload: DiagChatPayload, _: User = Depends(require_system_admin))
 class AskPayload(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
     limit: int = Field(default=8, ge=1, le=20)
+    # graph=True → GraphRAG: 온톨로지 그래프 근거를 순수 벡터와 블렌드(GraphRAG_설계.md).
+    graph: bool = False
 
 
 @router.post("/ask")
@@ -139,7 +141,7 @@ async def ask(
         )
     try:
         data = await qa.ask_archive_cancellable(
-            db, actor, payload.query, limit=payload.limit,
+            db, actor, payload.query, limit=payload.limit, graph=payload.graph,
             should_cancel=request.is_disconnected,
         )
     except LLMCancelled:

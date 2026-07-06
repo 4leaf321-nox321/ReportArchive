@@ -548,16 +548,13 @@ def _validate_one(defn: PropertyDef, value, db: Session):
     raise ValueError(f"알 수 없는 data_type: {dt}")
 
 
-def validate_properties(db: Session, type_row: EntityType, properties) -> dict:
-    """properties dict 를 축의 property_defs 로 검증·정규화. 미정의 키·형식 오류·
-    필수 누락 시 ValueError. 반환값을 entities.properties 에 저장한다."""
+def _validate_props(db: Session, defs_list, properties) -> dict:
+    """properties dict 를 주어진 property_defs 목록으로 검증·정규화. 미정의 키·
+    형식 오류·필수 누락 시 ValueError. entity_type / relation_type 공통 코어."""
     props = properties or {}
     if not isinstance(props, dict):
         raise ValueError("properties 는 객체(dict)여야 합니다.")
-    defs = {
-        d.key: d
-        for d in list_property_defs(db, owner_kind="entity_type", owner_id=type_row.id)
-    }
+    defs = {d.key: d for d in defs_list}
     unknown = set(props) - set(defs)
     if unknown:
         raise ValueError(f"정의되지 않은 속성: {', '.join(sorted(unknown))}")
@@ -578,6 +575,27 @@ def validate_properties(db: Session, type_row: EntityType, properties) -> dict:
                 raise ValueError(f"{defn.label} 은(는) 단일 값이어야 합니다.")
             out[key] = _validate_one(defn, raw, db)
     return out
+
+
+def validate_properties(db: Session, type_row: EntityType, properties) -> dict:
+    """엔티티(entity_type) 속성 검증. 반환값을 entities.properties 에 저장한다."""
+    return _validate_props(
+        db,
+        list_property_defs(db, owner_kind="entity_type", owner_id=type_row.id),
+        properties,
+    )
+
+
+def validate_relation_properties(
+    db: Session, rtype: "RelationType", properties
+) -> dict:
+    """링크(relation_type) 속성 검증 (A0.2). 반환값을 entity_relations.properties
+    에 저장한다. 관계 종류에 정의된 property_defs(owner_kind='relation_type')로 검증."""
+    return _validate_props(
+        db,
+        list_property_defs(db, owner_kind="relation_type", owner_id=rtype.id),
+        properties,
+    )
 
 
 def create_entity(
@@ -1087,6 +1105,16 @@ def delete_relation_type(db: Session, row: RelationType) -> int:
     return removed_id
 
 
+def _validate_evidence_report(db: Session, report_id: Optional[int]) -> None:
+    """근거 보고서 id 가 실재하는지 확인 (A0.2). None 이면 통과."""
+    if report_id is None:
+        return
+    from app.modules.reports.models import Report
+
+    if db.get(Report, report_id) is None:
+        raise ValueError(f"근거 보고서를 찾을 수 없습니다: {report_id}")
+
+
 def add_relation(
     db: Session,
     *,
@@ -1094,15 +1122,24 @@ def add_relation(
     dst: Entity,
     relation: str = RELATION_PART_OF,
     creator_user_id: Optional[int] = None,
+    properties: Optional[dict] = None,
+    evidence_report_id: Optional[int] = None,
+    evidence_note: Optional[str] = None,
 ) -> EntityRelation:
     """src --relation--> dst 추가. 관계 종류는 relation_types 레지스트리(p55)에서
     조회·검증한다 — 허용 타입인지, 축 제약(src_axis_slugs/dst_axis_slugs)에 맞는지,
-    acyclic 타입이면 순환이 안 되는지. 자기참조·중복도 막는다. 이미 있으면 멱등 반환."""
+    acyclic 타입이면 순환이 안 되는지. 자기참조·중복도 막는다.
+
+    A0.2: 링크 속성(relation_type 스키마로 검증)·근거 보고서(provenance)를 함께
+    저장한다. 이미 있으면 멱등 — 단, 속성/근거가 넘어오면 그 값으로 갱신 후 반환."""
     rtype = get_relation_type(db, relation)
     if rtype is None:
         raise ValueError(f"지원하지 않는 관계 종류입니다: {relation}")
     if src.id == dst.id:
         raise ValueError("자기 자신과는 관계를 맺을 수 없습니다.")
+
+    validated_props = validate_relation_properties(db, rtype, properties)
+    _validate_evidence_report(db, evidence_report_id)
 
     # 축 제약 — 타입이 허용 축을 지정했으면 src/dst 의 축이 그 안이어야 한다.
     src_slug = src.entity_type.slug if src.entity_type else None
@@ -1124,6 +1161,15 @@ def add_relation(
         )
     ).scalar_one_or_none()
     if existing is not None:
+        # 멱등이되, 넘어온 속성/근거는 반영(재-add 로 근거 붙이기 지원).
+        if properties is not None:
+            existing.properties = validated_props
+        if evidence_report_id is not None:
+            existing.evidence_report_id = evidence_report_id
+        if evidence_note is not None:
+            existing.evidence_note = evidence_note
+        db.commit()
+        db.refresh(existing)
         return existing
 
     # 순환 가드는 acyclic 타입만(part_of·supersedes 등). 비acyclic 타입(tested_by 등)은
@@ -1135,6 +1181,9 @@ def add_relation(
         src_entity_id=src.id,
         dst_entity_id=dst.id,
         relation=relation,
+        properties=validated_props,
+        evidence_report_id=evidence_report_id,
+        evidence_note=evidence_note,
         created_by_user_id=creator_user_id,
     )
     db.add(row)
@@ -1145,6 +1194,34 @@ def add_relation(
 
 def get_relation(db: Session, relation_id: int) -> Optional[EntityRelation]:
     return db.get(EntityRelation, relation_id)
+
+
+_UNSET = object()
+
+
+def update_relation(
+    db: Session,
+    row: EntityRelation,
+    *,
+    properties=_UNSET,
+    evidence_report_id=_UNSET,
+    evidence_note=_UNSET,
+) -> EntityRelation:
+    """링크의 속성/근거 수정 (A0.2). 넘긴 필드만 반영(_UNSET=미변경). properties 는
+    관계 종류 스키마로 검증 후 통째로 교체. evidence_report_id 존재 확인."""
+    if properties is not _UNSET:
+        rtype = get_relation_type(db, row.relation)
+        if rtype is None:
+            raise ValueError(f"지원하지 않는 관계 종류입니다: {row.relation}")
+        row.properties = validate_relation_properties(db, rtype, properties)
+    if evidence_report_id is not _UNSET:
+        _validate_evidence_report(db, evidence_report_id)
+        row.evidence_report_id = evidence_report_id
+    if evidence_note is not _UNSET:
+        row.evidence_note = evidence_note
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 def list_relations(
@@ -1364,6 +1441,25 @@ def list_reports_using_entity(db: Session, *, entity_id: int) -> list:
         select(Report.id, Report.title, Report.workspace_slug, Report.updated_at)
         .join(ReportEntity, ReportEntity.report_id == Report.id)
         .where(ReportEntity.entity_id == entity_id)
+        .order_by(Report.updated_at.desc())
+    )
+    return list(db.execute(stmt).all())
+
+
+def list_report_links_for_entity(db: Session, *, entity_id: int) -> list:
+    """객체 프로필(Phase A)용 — 이 값을 태깅한 보고서 (id, title, workspace_slug,
+    updated_at) 최신순. 관리자 삭제 다이얼로그용 `list_reports_using_entity` 와 달리
+    **소프트삭제(휴지통) 보고서는 제외**한다. 가시성 교집합은 라우트가
+    `reports.services.all_visible_report_ids` 로 적용 — 여기선 전역 조인만."""
+    from app.modules.reports.models import Report  # local to avoid cycle
+
+    stmt = (
+        select(Report.id, Report.title, Report.workspace_slug, Report.updated_at)
+        .join(ReportEntity, ReportEntity.report_id == Report.id)
+        .where(
+            ReportEntity.entity_id == entity_id,
+            Report.deleted_at.is_(None),
+        )
         .order_by(Report.updated_at.desc())
     )
     return list(db.execute(stmt).all())

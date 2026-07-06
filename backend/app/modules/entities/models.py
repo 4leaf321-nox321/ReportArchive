@@ -408,6 +408,15 @@ class EntityRelation(Base):
     relation: Mapped[str] = mapped_column(
         String(32), default=RELATION_PART_OF, nullable=False
     )
+    # 링크 속성 (A0.2, p65). relation_type 의 property_defs 로 검증. 기본 {}.
+    properties: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    # 근거 보고서 (provenance) — 이 링크를 주장한 보고서. 보고서 삭제 시 NULL.
+    evidence_report_id: Mapped[int | None] = mapped_column(
+        ForeignKey("reports.id", ondelete="SET NULL"), nullable=True
+    )
+    evidence_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

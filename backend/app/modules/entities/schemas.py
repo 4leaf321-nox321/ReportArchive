@@ -119,6 +119,12 @@ class EntityRelationItem(BaseModel):
     type_id: int
     type_slug: str
     code: Optional[str] = None
+    # 링크 속성/근거 (A0.2). properties 는 relation_type 스키마로 검증된 값.
+    properties: dict = Field(default_factory=dict)
+    evidence_report_id: Optional[int] = None
+    evidence_note: Optional[str] = None
+    # 근거 보고서 제목 — 라우트가 채움(있을 때). 목록에서 라벨로 표시용.
+    evidence_report_title: Optional[str] = None
 
 
 class EntityRelationsResponse(BaseModel):
@@ -131,6 +137,19 @@ class EntityRelationsResponse(BaseModel):
 class EntityRelationCreate(BaseModel):
     dst_entity_id: int
     relation: str = "part_of"
+    # 링크 속성/근거 (A0.2). 미지정이면 각각 {} / NULL.
+    properties: Optional[dict] = None
+    evidence_report_id: Optional[int] = None
+    evidence_note: Optional[str] = Field(default=None, max_length=500)
+
+
+class EntityRelationUpdate(BaseModel):
+    """링크 속성/근거 수정 (A0.2). 보낸 필드만 반영(exclude_unset). properties 를
+    보내면 관계 종류 스키마로 검증 후 통째로 교체."""
+
+    properties: Optional[dict] = None
+    evidence_report_id: Optional[int] = None
+    evidence_note: Optional[str] = Field(default=None, max_length=500)
 
 
 class RelationTypeRead(BaseModel):
@@ -305,6 +324,31 @@ class EntityYearsUpdate(BaseModel):
     """Admin-only — 연도 세트 전체 교체(replace). 빈 리스트면 전부 해제."""
 
     years: list[int] = Field(default_factory=list)
+
+
+class EntityProfileReport(BaseModel):
+    """프로필의 '관련 보고서' 한 줄 — 이 객체를 태깅한 (가시성 필터된) 보고서."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    workspace_slug: str
+    updated_at: datetime
+
+
+class EntityProfileResponse(BaseModel):
+    """객체 프로필(Phase A) 조합 응답 — 흩어진 정보를 한 번에 모은다. 마이그레이션
+    없이 기존 서비스(상세·별칭·연도·관계·태깅보고서)를 집약. 관계도는 별도
+    `/graph` 엔드포인트를 프론트가 호출하므로 여기 포함하지 않는다."""
+
+    entity: EntityRead
+    aliases: list[EntityAliasRead] = Field(default_factory=list)
+    years: list[int] = Field(default_factory=list)
+    relations: EntityRelationsResponse
+    reports: list[EntityProfileReport] = Field(default_factory=list)
+    # 가시성 적용 후 총계(reports 가 잘렸는지 안내용).
+    report_count: int = 0
 
 
 class EntityMergeRequest(BaseModel):

@@ -32,6 +32,42 @@ export async function deleteRelationType(slug) {
   return extractData(res)
 }
 
+// ─── 관계 종류(링크)의 속성 정의 (A0.2) ─────────────────────────────────── #
+// 엔티티 축의 /properties 와 대칭. owner_kind='relation_type', slug 로 조회.
+// 여기 정의한 스키마로 그 종류 링크의 properties 가 검증된다.
+
+/** 관계 종류의 링크 속성 정의 목록(인증만) — 링크 속성 폼 렌더용. */
+export async function listRelationTypeProperties(slug) {
+  const res = await apiClient.get(`${RELATION_TYPES_BASE}/${slug}/properties`)
+  return extractData(res)
+}
+
+/** Admin-only — 관계 종류에 링크 속성 정의 추가. */
+export async function createRelationTypeProperty(slug, payload) {
+  const res = await apiClient.post(
+    `${RELATION_TYPES_BASE}/${slug}/properties`,
+    payload,
+  )
+  return extractData(res)
+}
+
+/** Admin-only — 링크 속성 정의 수정(보낸 필드만). */
+export async function updateRelationTypeProperty(slug, defId, payload) {
+  const res = await apiClient.patch(
+    `${RELATION_TYPES_BASE}/${slug}/properties/${defId}`,
+    payload,
+  )
+  return extractData(res)
+}
+
+/** Admin-only — 링크 속성 정의 삭제(기존 링크 값은 보존). */
+export async function deleteRelationTypeProperty(slug, defId) {
+  const res = await apiClient.delete(
+    `${RELATION_TYPES_BASE}/${slug}/properties/${defId}`,
+  )
+  return extractData(res)
+}
+
 /**
  * List the axes (모델 / 부품 / BOM / 단계 / 불량 / 시험 / 시뮬레이션 등).
  * 시드된 7개 + admin 이 직접 추가한 것까지 포함. 세션 동안 큰 변동은
@@ -117,18 +153,57 @@ export async function listEntityRelations(entityId) {
   return extractData(res)
 }
 
-/** Admin-only — 상위(part_of) 추가. entityId 가 자식, dstEntityId 가 부모. */
-export async function addEntityRelation(entityId, dstEntityId, relation = 'part_of') {
-  const res = await apiClient.post(`${BASE}/${entityId}/relations`, {
-    dst_entity_id: dstEntityId,
-    relation,
-  })
+/**
+ * Admin-only — 관계 추가. entityId 가 src, dstEntityId 가 dst.
+ * A0.2: 링크 속성(`properties`)·근거(`evidenceReportId`/`evidenceNote`)를
+ * 함께 실을 수 있다(미지정=각각 {} / NULL).
+ */
+export async function addEntityRelation(
+  entityId,
+  dstEntityId,
+  relation = 'part_of',
+  { properties, evidenceReportId, evidenceNote } = {},
+) {
+  const body = { dst_entity_id: dstEntityId, relation }
+  if (properties !== undefined) body.properties = properties
+  if (evidenceReportId !== undefined) body.evidence_report_id = evidenceReportId
+  if (evidenceNote !== undefined) body.evidence_note = evidenceNote
+  const res = await apiClient.post(`${BASE}/${entityId}/relations`, body)
+  return extractData(res)
+}
+
+/**
+ * Admin-only — 링크 속성/근거 수정 (A0.2). `patch` 에 담긴 키만 반영:
+ *   { properties?, evidence_report_id?, evidence_note? }
+ * properties 를 보내면 관계 종류 스키마로 검증 후 통째로 교체. evidence_report_id
+ * 를 명시적 null 로 보내면 근거 해제.
+ */
+export async function updateEntityRelation(entityId, relationId, patch) {
+  const res = await apiClient.patch(
+    `${BASE}/${entityId}/relations/${relationId}`,
+    patch,
+  )
   return extractData(res)
 }
 
 /** Admin-only — 관계 삭제(자식·부모 어느 쪽 화면에서든). */
 export async function deleteEntityRelation(entityId, relationId) {
   const res = await apiClient.delete(`${BASE}/${entityId}/relations/${relationId}`)
+  return extractData(res)
+}
+
+/**
+ * 객체 프로필(Phase A) — 인증-only 조합. 흩어진 정보를 한 번에:
+ *   {
+ *     entity, aliases:[{id,alias}], years:[int],
+ *     relations:{ parents:[EntityRelationItem], children:[EntityRelationItem] },
+ *     reports:[{id,title,workspace_slug,updated_at}],  // 가시성 필터됨
+ *     report_count,                                    // 필터 후 총계
+ *   }
+ * 관계도는 별도 `getEntityGraph` 를 프로필 화면이 따로 호출한다(중복 방지).
+ */
+export async function getEntityProfile(entityId) {
+  const res = await apiClient.get(`${BASE}/${entityId}/profile`)
   return extractData(res)
 }
 

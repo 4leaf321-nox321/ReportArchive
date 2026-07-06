@@ -30,10 +30,13 @@ from app.modules.entities.schemas import (
     EntityMergeDismissRequest,
     EntityMergeRequest,
     EntityMergeValidateRequest,
+    EntityProfileReport,
+    EntityProfileResponse,
     EntityRead,
     EntityRelationCreate,
     EntityRelationItem,
     EntityRelationsResponse,
+    EntityRelationUpdate,
     EntityTypeCreate,
     EntityTypeListResponse,
     EntityTypeRead,
@@ -409,6 +412,91 @@ def delete_relation_type(
     return success_response(data=None, message=f"'{label}' 관계 종류가 삭제됐습니다.")
 
 
+# ─── 관계 속성 정의 — 링크가 나르는 속성 스키마 (A0.2) ────────────────────── #
+# entity-types 의 /properties 와 대칭. owner_kind='relation_type'. slug 로 조회.
+@relation_types_router.get("/{slug}/properties")
+def list_relation_type_properties(
+    slug: str,
+    _actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """관계 종류의 링크 속성 정의 목록(인증만) — 프론트 링크 속성 폼 렌더용."""
+    rtype = services.get_relation_type(db, slug)
+    if not rtype:
+        return not_found_response(f"관계 종류를 찾을 수 없습니다: {slug}")
+    defs = services.list_property_defs(
+        db, owner_kind="relation_type", owner_id=rtype.id
+    )
+    return success_response(
+        data=PropertyDefListResponse(
+            items=[PropertyDefRead.model_validate(d) for d in defs]
+        )
+    )
+
+
+@relation_types_router.post("/{slug}/properties", status_code=201)
+def create_relation_type_property(
+    slug: str,
+    payload: PropertyDefCreate,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 관계 종류에 링크 속성 정의 추가."""
+    _require_admin(actor)
+    rtype = services.get_relation_type(db, slug)
+    if not rtype:
+        return not_found_response(f"관계 종류를 찾을 수 없습니다: {slug}")
+    try:
+        row = services.create_property_def(
+            db, owner_kind="relation_type", owner_id=rtype.id, payload=payload
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return created_response(data=PropertyDefRead.model_validate(row))
+
+
+@relation_types_router.patch("/{slug}/properties/{def_id}")
+def update_relation_type_property(
+    slug: str,
+    def_id: int,
+    payload: PropertyDefUpdate,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 링크 속성 정의 수정."""
+    _require_admin(actor)
+    rtype = services.get_relation_type(db, slug)
+    if not rtype:
+        return not_found_response(f"관계 종류를 찾을 수 없습니다: {slug}")
+    row = services.get_property_def(db, def_id)
+    if row is None or row.owner_kind != "relation_type" or row.owner_id != rtype.id:
+        return not_found_response(f"속성 정의를 찾을 수 없습니다: {def_id}")
+    try:
+        row = services.update_property_def(db, row, payload)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return success_response(data=PropertyDefRead.model_validate(row))
+
+
+@relation_types_router.delete("/{slug}/properties/{def_id}")
+def delete_relation_type_property(
+    slug: str,
+    def_id: int,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 링크 속성 정의 삭제(기존 링크 값은 보존)."""
+    _require_admin(actor)
+    rtype = services.get_relation_type(db, slug)
+    if not rtype:
+        return not_found_response(f"관계 종류를 찾을 수 없습니다: {slug}")
+    row = services.get_property_def(db, def_id)
+    if row is None or row.owner_kind != "relation_type" or row.owner_id != rtype.id:
+        return not_found_response(f"속성 정의를 찾을 수 없습니다: {def_id}")
+    services.delete_property_def(db, row)
+    return success_response(data=None, message="속성 정의가 삭제됐습니다.")
+
+
 # --------------------------------------------------------------------------- #
 # entities router — `/api/entities`
 # --------------------------------------------------------------------------- #
@@ -695,8 +783,8 @@ def delete_entity_alias(
     return success_response(data=None, message=f"별칭 '{label}' 삭제됨.")
 
 
-def _relation_item(counterpart, rel) -> EntityRelationItem:
-    """관계 행 + 상대 엔티티 → 응답 아이템."""
+def _relation_item(counterpart, rel, evidence_title=None) -> EntityRelationItem:
+    """관계 행 + 상대 엔티티 → 응답 아이템. A0.2: 링크 속성/근거 포함."""
     return EntityRelationItem(
         relation_id=rel.id,
         relation=rel.relation,
@@ -705,7 +793,45 @@ def _relation_item(counterpart, rel) -> EntityRelationItem:
         type_id=counterpart.type_id,
         type_slug=counterpart.entity_type.slug if counterpart.entity_type else "",
         code=counterpart.code,
+        properties=rel.properties or {},
+        evidence_report_id=rel.evidence_report_id,
+        evidence_note=rel.evidence_note,
+        evidence_report_title=evidence_title,
     )
+
+
+def _evidence_title(db: Session, report_id, cache: dict):
+    """근거 보고서 제목 해석 (작은 캐시로 목록 N+1 완화). 없으면 None."""
+    if report_id is None:
+        return None
+    if report_id not in cache:
+        from app.modules.reports.models import Report
+
+        r = db.get(Report, report_id)
+        cache[report_id] = r.title if r else None
+    return cache[report_id]
+
+
+def _relations_response(db: Session, entity_id: int) -> EntityRelationsResponse:
+    """이 엔티티의 모든 관계(종류 불문, p55) → parents/children 아이템.
+    관계 라우트와 프로필 라우트가 공유한다(A0.2 링크 속성/근거 포함)."""
+    parents, children = services.list_relations(db, entity_id=entity_id)
+    title_cache: dict = {}
+    parent_items = []
+    for r in parents:
+        cp = services.get_entity(db, r.dst_entity_id)
+        if cp:
+            parent_items.append(
+                _relation_item(cp, r, _evidence_title(db, r.evidence_report_id, title_cache))
+            )
+    child_items = []
+    for r in children:
+        cp = services.get_entity(db, r.src_entity_id)
+        if cp:
+            child_items.append(
+                _relation_item(cp, r, _evidence_title(db, r.evidence_report_id, title_cache))
+            )
+    return EntityRelationsResponse(parents=parent_items, children=child_items)
 
 
 @entities_router.get("/{entity_id}/relations")
@@ -721,19 +847,54 @@ def list_entity_relations(
     row = services.get_entity(db, entity_id)
     if not row:
         return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
-    parents, children = services.list_relations(db, entity_id=entity_id)
-    parent_items = []
-    for r in parents:
-        cp = services.get_entity(db, r.dst_entity_id)
-        if cp:
-            parent_items.append(_relation_item(cp, r))
-    child_items = []
-    for r in children:
-        cp = services.get_entity(db, r.src_entity_id)
-        if cp:
-            child_items.append(_relation_item(cp, r))
+    return success_response(data=_relations_response(db, entity_id))
+
+
+@entities_router.get("/{entity_id}/profile")
+def get_entity_profile(
+    entity_id: int,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """객체 프로필(Phase A) — 인증-only 읽기. 흩어진 정보를 한 번에 모은다:
+    상세·별칭·연도·관계(속성/근거 포함)·이 값을 태깅한 보고서(가시성 교집합).
+    관계도는 프론트가 별도 `/graph` 를 호출한다(중복 방지). 마이그레이션 0.
+
+    보고서는 요청자가 볼 수 있는 것만 — 사용자 중심 가시성(활성 워크스페이스 무관,
+    멤버십 기반)으로 교집합해 전역 유출을 막는다."""
+    from app.modules.reports.services import all_visible_report_ids
+
+    row = services.get_entity(db, entity_id)
+    if not row:
+        return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
+
+    aliases = services.list_aliases(db, entity_id=entity_id)
+    years = services.get_entity_years(db, entity_id)
+    relations = _relations_response(db, entity_id)
+
+    # 태깅 보고서 ∩ 가시성(휴지통 제외는 서비스가 처리).
+    rows = services.list_report_links_for_entity(db, entity_id=entity_id)
+    visible = all_visible_report_ids(db, actor.user.id)
+    reports = [
+        EntityProfileReport(
+            id=r.id,
+            title=r.title,
+            workspace_slug=r.workspace_slug,
+            updated_at=r.updated_at,
+        )
+        for r in rows
+        if r.id in visible
+    ]
+
     return success_response(
-        data=EntityRelationsResponse(parents=parent_items, children=child_items)
+        data=EntityProfileResponse(
+            entity=_to_read(row),
+            aliases=[EntityAliasRead.model_validate(a) for a in aliases],
+            years=years,
+            relations=relations,
+            reports=reports,
+            report_count=len(reports),
+        )
     )
 
 
@@ -762,10 +923,44 @@ def add_entity_relation(
             dst=dst,
             relation=payload.relation,
             creator_user_id=actor.user.id,
+            properties=payload.properties,
+            evidence_report_id=payload.evidence_report_id,
+            evidence_note=payload.evidence_note,
         )
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    return created_response(data=_relation_item(dst, rel))
+    return created_response(
+        data=_relation_item(dst, rel, _evidence_title(db, rel.evidence_report_id, {}))
+    )
+
+
+@entities_router.patch("/{entity_id}/relations/{relation_id}")
+def update_entity_relation(
+    entity_id: int,
+    relation_id: int,
+    payload: EntityRelationUpdate,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 링크 속성/근거 수정 (A0.2). entity_id 는 관계의 한쪽이어야
+    한다. 보낸 필드만 반영(properties 는 관계 종류 스키마로 검증 후 교체)."""
+    _require_admin(actor)
+    rel = services.get_relation(db, relation_id)
+    if not rel or (
+        rel.src_entity_id != entity_id and rel.dst_entity_id != entity_id
+    ):
+        return not_found_response(f"관계를 찾을 수 없습니다: {relation_id}")
+    provided = payload.model_dump(exclude_unset=True)
+    kwargs = {k: provided[k] for k in ("properties", "evidence_report_id", "evidence_note") if k in provided}
+    try:
+        rel = services.update_relation(db, rel, **kwargs)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    other_id = rel.dst_entity_id if rel.src_entity_id == entity_id else rel.src_entity_id
+    counterpart = services.get_entity(db, other_id)
+    return success_response(
+        data=_relation_item(counterpart, rel, _evidence_title(db, rel.evidence_report_id, {}))
+    )
 
 
 @entities_router.delete("/{entity_id}/relations/{relation_id}")

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
   ExternalLink,
+  FileText,
   Link2Off,
   Lock,
   LockOpen,
@@ -15,6 +16,7 @@ import {
   Trash2,
   Combine,
   GitMerge,
+  X,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
@@ -41,10 +43,16 @@ import { DataTable } from '@/shared/components/DataTable'
 import { EntityGraphDialog } from './EntityGraphDialog'
 import { MergeCandidatesDialog } from './MergeCandidatesDialog'
 import { PropertyDefsDialog } from './PropertyDefsDialog'
+import {
+  EntityPropertiesFields,
+  PropertiesSummary,
+  missingRequiredProps,
+} from './EntityPropertiesFields'
 import { cn } from '@/shared/lib/utils'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { useAsync } from '@/shared/hooks/useAsync'
+import { searchReports } from '@/modules/reports/api'
 import {
   addEntityAlias,
   addEntityRelation,
@@ -61,9 +69,18 @@ import {
   listEntityTypes,
   listEntityUsage,
   listRelationTypes,
+  listTypeProperties,
+  createTypeProperty,
+  updateTypeProperty,
+  deleteTypeProperty,
   createRelationType,
   updateRelationType,
   deleteRelationType,
+  listRelationTypeProperties,
+  createRelationTypeProperty,
+  updateRelationTypeProperty,
+  deleteRelationTypeProperty,
+  updateEntityRelation,
   mergeEntity,
   setEntityYears,
   unlinkEntityFromAllReports,
@@ -78,6 +95,33 @@ const TEMPORAL_KIND_LABEL = {
   lifecycle: '유효구간',
   yearly: '연도별 배정',
   derived: '자동 추론',
+}
+
+// PropertyDefsDialog 의 owner 설정 — 폴리모픽 property_defs(A0)를 축/관계종류
+// 어느 쪽으로도 관리하게 API 를 주입한다.
+function entityTypeOwner(type) {
+  return {
+    depKey: `type:${type.id}`,
+    label: type.label,
+    description:
+      '이 축(객체 종류)의 속성 스키마를 정합니다. 여기서 정의한 속성으로 각 값(객체)의 속성이 검증됩니다. (예: 부품 → 재질·중량)',
+    list: () => listTypeProperties(type.id),
+    create: (payload) => createTypeProperty(type.id, payload),
+    update: (defId, payload) => updateTypeProperty(type.id, defId, payload),
+    remove: (defId) => deleteTypeProperty(type.id, defId),
+  }
+}
+function relationTypeOwner(rt) {
+  return {
+    depKey: `rel:${rt.slug}`,
+    label: `${rt.label} (링크)`,
+    description:
+      '이 관계 종류(링크)가 나르는 속성 스키마를 정합니다. 여기서 정의한 속성으로 각 링크의 속성이 검증됩니다. (예: 시험됨 → 시험일자·결과)',
+    list: () => listRelationTypeProperties(rt.slug),
+    create: (payload) => createRelationTypeProperty(rt.slug, payload),
+    update: (defId, payload) => updateRelationTypeProperty(rt.slug, defId, payload),
+    remove: (defId) => deleteRelationTypeProperty(rt.slug, defId),
+  }
 }
 
 /**
@@ -489,6 +533,14 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
     [type.id, includeDeprecated, reloadKey],
   )
   const rows = data?.items ?? []
+  // 축의 속성 스키마(A0.1). record 축이면 목록 요약칩·편집 폼이 이걸로 렌더
+  // 된다. reference 축(정의 0개)이면 빈 배열 → 관련 UI 전부 비표시(additive).
+  // reloadKey 를 deps 에 넣어 속성 정의 편집 후에도 갱신.
+  const { data: propDefsData } = useAsync(
+    () => listTypeProperties(type.id),
+    [type.id, reloadKey],
+  )
+  const propertyDefs = propDefsData?.items ?? []
   // Client-side search across value/code/description — DataTable has its
   // own search box but we surface one in the toolbar above so it lives
   // alongside the "비활성 포함" toggle.
@@ -576,6 +628,18 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
           </span>
         ),
       },
+      // 속성 요약 (A0.1) — 정의된 속성이 있는 record 축에서만 노출.
+      ...(propertyDefs.length > 0
+        ? [
+            {
+              key: '_properties',
+              header: '속성',
+              render: (r) => (
+                <PropertiesSummary defs={propertyDefs} properties={r.properties} />
+              ),
+            },
+          ]
+        : []),
       {
         key: '_actions',
         header: '',
@@ -682,7 +746,7 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
         ),
       },
     ],
-    [],
+    [propertyDefs],
   )
 
   return (
@@ -808,8 +872,9 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
       )}
       {propsDefOpen && (
         <PropertyDefsDialog
-          type={type}
+          owner={entityTypeOwner(type)}
           onClose={() => setPropsDefOpen(false)}
+          onChanged={reload}
         />
       )}
       {aliasTarget && (
@@ -837,6 +902,7 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
         <EditDialog
           mode="create"
           type={type}
+          defs={propertyDefs}
           onClose={() => setCreateOpen(false)}
           onSaved={() => {
             setCreateOpen(false)
@@ -848,6 +914,7 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
         <EditDialog
           mode="edit"
           type={type}
+          defs={propertyDefs}
           target={editTarget}
           onClose={() => setEditTarget(null)}
           onSaved={() => {
@@ -1379,6 +1446,9 @@ function RelationsDialog({ type, entity, onClose }) {
   // 관계 종류 레지스트리(p55) + 추가 시 선택한 종류. 기본 part_of.
   const [relTypes, setRelTypes] = useState([])
   const [selectedRel, setSelectedRel] = useState('part_of')
+  // A0.2 — 편집 중인 링크(속성/근거) row | null. 관계종류 slug → 링크 속성정의.
+  const [editingRel, setEditingRel] = useState(null)
+  const [defsBySlug, setDefsBySlug] = useState({})
 
   useEffect(() => {
     listRelationTypes()
@@ -1409,6 +1479,32 @@ function RelationsDialog({ type, entity, onClose }) {
     reload()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entity.id])
+
+  // 관계에 등장하는 종류별 링크 속성 정의를 지연 로드(요약칩·편집 폼용). 종류당 1회.
+  useEffect(() => {
+    if (!rel) return undefined
+    const slugs = new Set([...rel.parents, ...rel.children].map((r) => r.relation))
+    const missing = [...slugs].filter((s) => !(s in defsBySlug))
+    if (missing.length === 0) return undefined
+    let cancelled = false
+    Promise.all(
+      missing.map((s) =>
+        listRelationTypeProperties(s)
+          .then((res) => [s, res?.items ?? []])
+          .catch(() => [s, []]),
+      ),
+    ).then((pairs) => {
+      if (cancelled) return
+      setDefsBySlug((prev) => {
+        const next = { ...prev }
+        for (const [s, defs] of pairs) next[s] = defs
+        return next
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [rel, defsBySlug])
 
   // 상위 후보 검색 — 전체 축에서(부모는 보통 다른 축). 자기 자신·이미 상위인
   // 것은 제외.
@@ -1489,6 +1585,22 @@ function RelationsDialog({ type, entity, onClose }) {
           </DialogDescription>
         </DialogHeader>
 
+        {editingRel ? (
+          <RelationEditor
+            entityId={entity.id}
+            rel={editingRel}
+            defs={defsBySlug[editingRel.relation] ?? []}
+            relLabel={
+              relTypeBySlug.get(editingRel.relation)?.label ?? editingRel.relation
+            }
+            onCancel={() => setEditingRel(null)}
+            onSaved={async () => {
+              setEditingRel(null)
+              await reload()
+            }}
+          />
+        ) : (
+          <>
         {/* 관계 추가 — 종류 선택 + 대상 검색 */}
         <div className="space-y-1.5">
           <Label className="text-xs">관계 추가</Label>
@@ -1561,7 +1673,9 @@ function RelationsDialog({ type, entity, onClose }) {
             items={rel?.parents}
             empty="나가는 관계가 없습니다."
             relTypeBySlug={relTypeBySlug}
+            defsBySlug={defsBySlug}
             onRemove={removeRelation}
+            onEdit={setEditingRel}
           />
         </div>
 
@@ -1574,9 +1688,13 @@ function RelationsDialog({ type, entity, onClose }) {
             items={rel?.children}
             empty="들어오는 관계가 없습니다."
             relTypeBySlug={relTypeBySlug}
+            defsBySlug={defsBySlug}
             onRemove={removeRelation}
+            onEdit={setEditingRel}
           />
         </div>
+          </>
+        )}
 
         <DialogFooter>
           <Button variant="outline" size="sm" onClick={onClose}>
@@ -1588,7 +1706,7 @@ function RelationsDialog({ type, entity, onClose }) {
   )
 }
 
-function RelationList({ items, empty, onRemove, relTypeBySlug }) {
+function RelationList({ items, empty, onRemove, onEdit, relTypeBySlug, defsBySlug }) {
   if (items == null) {
     return (
       <p className="rounded-md border px-3 py-2 text-center text-xs text-muted-foreground">
@@ -1604,31 +1722,234 @@ function RelationList({ items, empty, onRemove, relTypeBySlug }) {
     )
   }
   return (
-    <div className="max-h-40 overflow-y-auto rounded-md border">
-      {items.map((it) => (
-        <div
-          key={it.relation_id}
-          className="flex items-center justify-between gap-2 border-b px-2.5 py-1.5 text-sm last:border-b-0"
-        >
-          <span className="flex items-center gap-1.5 truncate">
-            <Badge className="shrink-0 text-[9px]">
-              {relTypeBySlug?.get(it.relation)?.label ?? it.relation}
-            </Badge>
-            <span className="truncate">{it.value}</span>
-            <Badge variant="outline" className="shrink-0 text-[9px]">
-              {it.type_slug}
-            </Badge>
+    <div className="max-h-56 overflow-y-auto rounded-md border">
+      {items.map((it) => {
+        const defs = defsBySlug?.[it.relation] ?? []
+        const props = it.properties ?? {}
+        const hasProps = Object.keys(props).length > 0
+        const hasEvidence = it.evidence_report_id != null || it.evidence_note
+        return (
+          <div
+            key={it.relation_id}
+            className="space-y-1 border-b px-2.5 py-1.5 text-sm last:border-b-0"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="flex items-center gap-1.5 truncate">
+                <Badge className="shrink-0 text-[9px]">
+                  {relTypeBySlug?.get(it.relation)?.label ?? it.relation}
+                </Badge>
+                <span className="truncate">{it.value}</span>
+                <Badge variant="outline" className="shrink-0 text-[9px]">
+                  {it.type_slug}
+                </Badge>
+              </span>
+              <span className="flex shrink-0 items-center">
+                {onEdit && (
+                  <button
+                    type="button"
+                    onClick={() => onEdit(it)}
+                    className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                    title="링크 속성·근거 편집"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onRemove(it.relation_id)}
+                  className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                  title="관계 삭제"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </span>
+            </div>
+            {(hasProps || hasEvidence) && (
+              <div className="space-y-0.5 pl-1">
+                {hasProps && <PropertiesSummary defs={defs} properties={props} />}
+                {hasEvidence && (
+                  <div
+                    className="flex items-center gap-1 text-[11px] text-muted-foreground"
+                    title={it.evidence_note || undefined}
+                  >
+                    <FileText className="h-3 w-3 shrink-0" />
+                    <span className="truncate">
+                      {it.evidence_report_id != null
+                        ? it.evidence_report_title || `보고서 #${it.evidence_report_id}`
+                        : it.evidence_note}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * 링크(관계) 하나의 속성/근거 편집 (A0.2). 관계 종류의 property_defs(defs)로
+ * 동적 속성 폼(축 편집과 동일한 EntityPropertiesFields 재사용)을 렌더하고, 근거
+ * 보고서(provenance)와 자유 메모를 붙인다. 저장은 updateEntityRelation(PATCH):
+ * properties 는 통째 교체(정의 없으면 {}), evidence 는 값/해제 그대로 반영.
+ */
+function RelationEditor({ entityId, rel, defs, relLabel, onCancel, onSaved }) {
+  const [properties, setProperties] = useState(rel.properties ?? {})
+  const [evidenceReportId, setEvidenceReportId] = useState(
+    rel.evidence_report_id ?? null,
+  )
+  const [evidenceTitle, setEvidenceTitle] = useState(
+    rel.evidence_report_title ?? null,
+  )
+  const [evidenceNote, setEvidenceNote] = useState(rel.evidence_note ?? '')
+  const [submitting, setSubmitting] = useState(false)
+  const missing = missingRequiredProps(defs, properties)
+  const canSave = missing.length === 0 && !submitting
+
+  async function handleSave() {
+    if (!canSave) return
+    setSubmitting(true)
+    try {
+      await updateEntityRelation(entityId, rel.relation_id, {
+        properties: defs.length ? properties : {},
+        evidence_report_id: evidenceReportId,
+        evidence_note: evidenceNote.trim() || null,
+      })
+      toast.success('링크 저장됨')
+      await onSaved()
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err?.message || '저장 실패')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">
+        <div className="flex items-center gap-1.5">
+          <Badge className="shrink-0 text-[9px]">{relLabel}</Badge>
+          <span className="truncate font-medium">{rel.value}</span>
+          <Badge variant="outline" className="shrink-0 text-[9px]">
+            {rel.type_slug}
+          </Badge>
+        </div>
+      </div>
+
+      {defs.length > 0 ? (
+        <EntityPropertiesFields
+          defs={defs}
+          value={properties}
+          onChange={setProperties}
+        />
+      ) : (
+        <p className="text-[11px] text-muted-foreground">
+          이 관계 종류에는 정의된 링크 속성이 없습니다. (관계 종류 관리 → 속성 정의)
+        </p>
+      )}
+
+      {/* 근거(provenance) — 이 링크를 주장한 보고서 + 자유 메모 */}
+      <div className="space-y-1.5">
+        <Label className="text-xs">근거 보고서 (선택)</Label>
+        <EvidenceReportPicker
+          reportId={evidenceReportId}
+          title={evidenceTitle}
+          onPick={(r) => {
+            setEvidenceReportId(r?.id ?? null)
+            setEvidenceTitle(r?.title ?? null)
+          }}
+        />
+        <Textarea
+          value={evidenceNote}
+          onChange={(e) => setEvidenceNote(e.target.value)}
+          rows={2}
+          maxLength={500}
+          placeholder="근거 메모(선택) — 이 링크를 주장하는 출처·조건 등"
+          className="text-sm"
+        />
+      </div>
+
+      {missing.length > 0 && (
+        <p className="text-[11px] text-destructive">필수 속성을 채워주세요.</p>
+      )}
+
+      <div className="flex justify-end gap-2 pt-1">
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          <X className="mr-1 h-3.5 w-3.5" /> 취소
+        </Button>
+        <Button size="sm" onClick={handleSave} disabled={!canSave}>
+          {submitting ? '저장 중...' : '저장'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/** 근거 보고서 picker — 제목·본문 전문검색(가시 범위 내)으로 하나 고른다.
+ *  선택 시 id 를 저장하고 라벨은 세션 동안 제목으로 표시. 해제 가능. */
+function EvidenceReportPicker({ reportId, title, onPick }) {
+  const [q, setQ] = useState('')
+  const { data } = useAsync(
+    () =>
+      q.trim().length >= 1
+        ? searchReports(q.trim(), { limit: 12 })
+        : Promise.resolve({ results: [] }),
+    [q],
+  )
+  const results = data?.results ?? []
+
+  if (reportId != null) {
+    return (
+      <div className="flex items-center gap-2">
+        <Badge variant="secondary" className="gap-1 text-[11px]">
+          <FileText className="h-3 w-3" />
+          <span className="max-w-[16rem] truncate">
+            {title || `보고서 #${reportId}`}
           </span>
           <button
             type="button"
-            onClick={() => onRemove(it.relation_id)}
-            className="shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-            title="관계 삭제"
+            onClick={() => onPick(null)}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="근거 해제"
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <X className="h-3 w-3" />
           </button>
+        </Badge>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-1">
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="보고서 제목·본문 검색…"
+          className="h-8 pl-7 text-sm"
+        />
+      </div>
+      {q.trim() && results.length > 0 && (
+        <div className="max-h-40 overflow-y-auto rounded-md border">
+          {results.map(({ report }) => (
+            <button
+              key={report.id}
+              type="button"
+              onClick={() => {
+                onPick(report)
+                setQ('')
+              }}
+              className="flex w-full items-center gap-2 px-2 py-1 text-left text-sm hover:bg-accent"
+            >
+              <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="truncate">{report.title}</span>
+            </button>
+          ))}
         </div>
-      ))}
+      )}
     </div>
   )
 }
@@ -1638,13 +1959,16 @@ function RelationList({ items, empty, onRemove, relTypeBySlug }) {
  * (value/code/description) and the only differences are the title and
  * the submit handler. `mode="create"` ignores `target`.
  */
-function EditDialog({ mode, type, target, onClose, onSaved }) {
+function EditDialog({ mode, type, defs = [], target, onClose, onSaved }) {
   const isCreate = mode === 'create'
   const isLifecycle = type.temporal_kind === 'lifecycle'
   const isYearly = type.temporal_kind === 'yearly'
   const [value, setValue] = useState(target?.value ?? '')
   const [code, setCode] = useState(target?.code ?? '')
   const [description, setDescription] = useState(target?.description ?? '')
+  // 객체 속성 (A0.1). 편집 시 기존 값에서 시드. 정의 없으면 폼 미표시.
+  const [properties, setProperties] = useState(target?.properties ?? {})
+  const missingProps = missingRequiredProps(defs, properties)
   // lifecycle 유효구간 — 빈 문자열 = 개방(NULL).
   const [fromYear, setFromYear] = useState(
     target?.valid_from_year != null ? String(target.valid_from_year) : '',
@@ -1684,7 +2008,7 @@ function EditDialog({ mode, type, target, onClose, onSaved }) {
   }, [yearsText])
 
   const trimmedValue = value.trim()
-  const canSubmit = trimmedValue.length > 0 && !submitting
+  const canSubmit = trimmedValue.length > 0 && missingProps.length === 0 && !submitting
 
   function yearOrNull(s) {
     const t = s.trim()
@@ -1703,6 +2027,7 @@ function EditDialog({ mode, type, target, onClose, onSaved }) {
           value: trimmedValue,
           code: code.trim() || undefined,
           description: description.trim(),
+          properties: defs.length ? properties : undefined,
         })
         // 연도 데이터는 별도 경로 — 생성된 id 로 후속 반영.
         if (isLifecycle && (fromYear.trim() || toYear.trim())) {
@@ -1718,6 +2043,7 @@ function EditDialog({ mode, type, target, onClose, onSaved }) {
           value: trimmedValue,
           code: code.trim() || '',
           description: description.trim(),
+          ...(defs.length ? { properties } : {}),
           ...(isLifecycle
             ? {
                 validFromYear: yearOrNull(fromYear),
@@ -1749,7 +2075,7 @@ function EditDialog({ mode, type, target, onClose, onSaved }) {
             </DialogDescription>
           )}
         </DialogHeader>
-        <div className="space-y-3">
+        <div className="max-h-[65vh] space-y-3 overflow-y-auto pr-1">
           <div>
             <Label className="text-xs">값</Label>
             <Input
@@ -1780,6 +2106,13 @@ function EditDialog({ mode, type, target, onClose, onSaved }) {
               className="mt-1"
             />
           </div>
+
+          {/* 객체 속성 (A0.1 스텝3b) — 축 스키마가 있으면 동적 폼. */}
+          <EntityPropertiesFields
+            defs={defs}
+            value={properties}
+            onChange={setProperties}
+          />
 
           {/* lifecycle 축 — 유효구간(도입~폐지). 비우면 개방. (p56) */}
           {isLifecycle && (
@@ -2169,6 +2502,7 @@ function formatDate(iso) {
 function RelationTypesDialog({ axes, onClose }) {
   const [items, setItems] = useState(null) // null=loading
   const [editing, setEditing] = useState(null) // null | {} (new) | row (edit)
+  const [propDefsRt, setPropDefsRt] = useState(null) // 링크 속성정의 편집 대상(관계종류)
 
   async function reload() {
     try {
@@ -2295,6 +2629,14 @@ function RelationTypesDialog({ axes, onClose }) {
                       </div>
                       <button
                         type="button"
+                        onClick={() => setPropDefsRt(rt)}
+                        className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                        title="링크 속성 정의 — 이 관계가 나르는 속성 스키마"
+                      >
+                        <Tags className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => setEditing(rt)}
                         className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
                         title="편집"
@@ -2317,6 +2659,12 @@ function RelationTypesDialog({ axes, onClose }) {
           </div>
         )}
       </DialogContent>
+      {propDefsRt && (
+        <PropertyDefsDialog
+          owner={relationTypeOwner(propDefsRt)}
+          onClose={() => setPropDefsRt(null)}
+        />
+      )}
     </Dialog>
   )
 }

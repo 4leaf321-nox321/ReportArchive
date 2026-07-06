@@ -15,12 +15,6 @@ import { Badge } from '@/shared/components/ui/badge'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { ErrorState } from '@/shared/components/ErrorState'
-import {
-  listTypeProperties,
-  createTypeProperty,
-  updateTypeProperty,
-  deleteTypeProperty,
-} from '@/shared/api/entities'
 
 // 백엔드 PROPERTY_DATA_TYPES 와 일치.
 const DATA_TYPES = [
@@ -36,15 +30,29 @@ const DATA_TYPES = [
 ]
 const TYPE_LABEL = Object.fromEntries(DATA_TYPES.map((d) => [d.value, d.label]))
 
-/** 축(entity_type)의 속성 정의를 관리하는 관리자 다이얼로그 (온톨로지 강화 A0).
- *  여기서 정의한 스키마로 그 축 엔티티의 properties 가 검증된다. */
-export function PropertyDefsDialog({ type, onClose, onChanged }) {
+/**
+ * 속성 정의를 관리하는 관리자 다이얼로그 (온톨로지 강화 A0). 소유자(owner)가
+ * 축(entity_type, A0.1)이든 관계 종류(relation_type 링크, A0.2)든 동일하게 쓴다 —
+ * 백엔드 property_defs 가 폴리모픽(owner_kind)이라 스키마·검증이 같기 때문.
+ *
+ * owner: {
+ *   depKey,        // useAsync 재조회 키(안정 식별자, 예: type.id / rt.slug)
+ *   label,         // 다이얼로그 제목의 대상 이름
+ *   description,   // 설명 문구(문자열 or JSX)
+ *   list()         → Promise<{ items }>   // 정의 목록
+ *   create(payload)→ Promise              // payload = { key, ...def }
+ *   update(defId, payload) → Promise
+ *   remove(defId)  → Promise
+ * }
+ * 여기서 정의한 스키마로 해당 소유자의 properties 가 검증된다.
+ */
+export function PropertyDefsDialog({ owner, onClose, onChanged }) {
   const [reloadKey, setReloadKey] = useState(0)
   const [editing, setEditing] = useState(null) // null | 'new' | def object
 
   const { data, loading, error } = useAsync(
-    () => listTypeProperties(type.id),
-    [type.id, reloadKey],
+    () => owner.list(),
+    [owner.depKey, reloadKey],
   )
   const defs = data?.items ?? []
 
@@ -56,7 +64,7 @@ export function PropertyDefsDialog({ type, onClose, onChanged }) {
   async function handleDelete(def) {
     if (!window.confirm(`'${def.label}' 속성 정의를 삭제할까요? (기존 값은 남습니다)`)) return
     try {
-      await deleteTypeProperty(type.id, def.id)
+      await owner.remove(def.id)
       toast.success('속성 정의 삭제됨')
       reload()
     } catch (err) {
@@ -68,11 +76,8 @@ export function PropertyDefsDialog({ type, onClose, onChanged }) {
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>속성 정의 — {type.label}</DialogTitle>
-          <DialogDescription>
-            이 축(객체 종류)의 속성 스키마를 정합니다. 여기서 정의한 속성으로
-            각 값(객체)의 속성이 검증됩니다. (예: 부품 → 재질·중량)
-          </DialogDescription>
+          <DialogTitle>속성 정의 — {owner.label}</DialogTitle>
+          <DialogDescription>{owner.description}</DialogDescription>
         </DialogHeader>
 
         {error ? (
@@ -81,7 +86,7 @@ export function PropertyDefsDialog({ type, onClose, onChanged }) {
           <Skeleton className="h-40" />
         ) : editing ? (
           <PropertyDefForm
-            type={type}
+            owner={owner}
             def={editing === 'new' ? null : editing}
             onCancel={() => setEditing(null)}
             onSaved={() => {
@@ -156,7 +161,7 @@ export function PropertyDefsDialog({ type, onClose, onChanged }) {
   )
 }
 
-function PropertyDefForm({ type, def, onCancel, onSaved }) {
+function PropertyDefForm({ owner, def, onCancel, onSaved }) {
   const isEdit = Boolean(def)
   const [key, setKey] = useState(def?.key ?? '')
   const [label, setLabel] = useState(def?.label ?? '')
@@ -196,10 +201,10 @@ function PropertyDefForm({ type, def, onCancel, onSaved }) {
         ref_type_slug: dataType === 'entity_ref' ? refSlug.trim() || null : null,
       }
       if (isEdit) {
-        await updateTypeProperty(type.id, def.id, payload)
+        await owner.update(def.id, payload)
         toast.success('속성 정의 수정됨')
       } else {
-        await createTypeProperty(type.id, { key: key.trim(), ...payload })
+        await owner.create({ key: key.trim(), ...payload })
         toast.success('속성 정의 추가됨')
       }
       onSaved()

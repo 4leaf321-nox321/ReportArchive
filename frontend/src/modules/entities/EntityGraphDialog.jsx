@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Share2 } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Share2, ArrowUpRight } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -7,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/shared/components/ui/dialog'
+import { Button } from '@/shared/components/ui/button'
 import { getEntityGraph, listRelationTypes } from '@/shared/api/entities'
 import { EntityGraphView } from './EntityGraphView'
 
@@ -23,6 +25,7 @@ import { EntityGraphView } from './EntityGraphView'
  *   onClose()
  */
 export function EntityGraphDialog({ entityId, label, onClose }) {
+  const navigate = useNavigate()
   const [graph, setGraph] = useState(null) // null=loading
   const [relTypes, setRelTypes] = useState([])
   const [seed, setSeed] = useState({ id: entityId, label }) // 노드 클릭 시 재중심
@@ -63,9 +66,24 @@ export function EntityGraphDialog({ entityId, label, onClose }) {
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="flex h-[80vh] max-h-[80vh] w-[80vw] max-w-[80vw] flex-col overflow-hidden">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Share2 className="h-4 w-4" /> 관계도 — {seed.label ?? seed.id}
-          </DialogTitle>
+          <div className="flex items-center justify-between gap-2 pr-6">
+            <DialogTitle className="flex items-center gap-2">
+              <Share2 className="h-4 w-4" /> 관계도 — {seed.label ?? seed.id}
+            </DialogTitle>
+            {seed.id != null && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                onClick={() => {
+                  onClose()
+                  navigate(`/entities/${seed.id}`)
+                }}
+              >
+                프로필 열기 <ArrowUpRight className="ml-1 h-3.5 w-3.5" />
+              </Button>
+            )}
+          </div>
           <DialogDescription>
             이 값 주변 2단계 관계 그래프. 노드를 끌어 배치하고 휠로 확대/축소하며,
             노드를 클릭하면 그 값 중심으로 다시 그립니다. 다이아몬드 = 엔티티(축별

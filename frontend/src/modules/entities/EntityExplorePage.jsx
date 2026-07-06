@@ -3,38 +3,33 @@
 // 있던 관계도 시각화를 누구나 들어오는 진입점으로 연다. 백엔드가 호출자 권한에
 // 따라 노출을 가르므로(비관리자=active 기준정보만), 프론트는 평범히 호출한다.
 //
-// 좌측: 축(모델/부품/…) 선택 + 값 검색 → 시드 고르기. 우측: 그 값 주변 2단계
-// 관계 그래프. 그래프 노드를 클릭하면 그 값을 새 시드로 삼아 이어서 탐색한다.
+// 좌측: 축(모델/부품/…) 선택 + 값 검색 → 값 고르기. 우측: 그 값의 **객체 프로필**
+// (속성·관련객체·관련보고서·2단계 관계도)을 인라인으로. 관련객체 칩·관계도 노드를
+// 클릭하면 그 값으로 시드를 바꿔 제자리에서 이어 탐색한다(ObjectProfile 재사용).
 import { useEffect, useMemo, useState } from 'react'
-import { Loader2, Search, Boxes } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Loader2, Search, Boxes, ArrowUpRight } from 'lucide-react'
 import { PageHeader } from '@/shared/components/PageHeader'
+import { Button } from '@/shared/components/ui/button'
 import { cn } from '@/shared/lib/utils'
-import {
-  listEntityTypes,
-  listEntities,
-  getEntityGraph,
-  listRelationTypes,
-} from '@/shared/api/entities'
-import { EntityGraphView } from './EntityGraphView'
+import { listEntityTypes, listEntities } from '@/shared/api/entities'
+import { ObjectProfile } from './ObjectProfilePage'
 
 const CURRENT_YEAR = new Date().getFullYear()
 // 연도 드롭다운 후보 — 올해부터 9년 전까지. "전체"는 null 로 표현.
 const YEAR_OPTIONS = Array.from({ length: 10 }, (_, i) => CURRENT_YEAR - i)
 
 export default function EntityExplorePage() {
+  const navigate = useNavigate()
   const [types, setTypes] = useState([]) // 축 catalog
   const [typeId, setTypeId] = useState(null) // 선택된 축
   const [q, setQ] = useState('')
   const [year, setYear] = useState(CURRENT_YEAR) // null = 전체
   const [results, setResults] = useState([])
   const [searching, setSearching] = useState(false)
-  const [seed, setSeed] = useState(null) // {id, value} — 중심 값
+  const [seed, setSeed] = useState(null) // {id, value} — 선택된 값(프로필 대상)
 
-  const [graph, setGraph] = useState(null) // null=미로딩/로딩
-  const [graphError, setGraphError] = useState(false)
-  const [relTypeLabels, setRelTypeLabels] = useState(() => new Map())
-
-  // 축 catalog + 관계 종류 라벨 — 1회 로드.
+  // 축 catalog — 1회 로드.
   useEffect(() => {
     let cancelled = false
     listEntityTypes()
@@ -45,14 +40,6 @@ export default function EntityExplorePage() {
         if (items.length > 0) setTypeId((cur) => cur ?? items[0].id)
       })
       .catch(() => !cancelled && setTypes([]))
-    listRelationTypes()
-      .then((res) => {
-        if (cancelled) return
-        const m = new Map()
-        for (const rt of res?.items ?? []) m.set(rt.slug, rt.label)
-        setRelTypeLabels(m)
-      })
-      .catch(() => {})
     return () => {
       cancelled = true
     }
@@ -91,23 +78,6 @@ export default function EntityExplorePage() {
     }
   }, [typeId, q, year, yearApplies])
 
-  // 시드 주변 서브그래프.
-  useEffect(() => {
-    if (seed?.id == null) {
-      setGraph(null)
-      return undefined
-    }
-    let cancelled = false
-    setGraph(null)
-    setGraphError(false)
-    getEntityGraph(seed.id, { depth: 2 })
-      .then((g) => !cancelled && setGraph(g))
-      .catch(() => !cancelled && setGraphError(true))
-    return () => {
-      cancelled = true
-    }
-  }, [seed?.id])
-
   const typeLabelById = useMemo(
     () => new Map(types.map((t) => [t.id, t.label])),
     [types],
@@ -118,7 +88,7 @@ export default function EntityExplorePage() {
       <div className="shrink-0 border-b bg-background p-4">
         <PageHeader
           title="기준정보 탐색"
-          description="모델·부품·시험 등 기준정보가 서로 어떻게 연결됐는지 살펴봅니다. 값을 골라 관계도를 보고, 노드를 클릭해 이어서 탐색하세요."
+          description="모델·부품·시험 등 기준정보가 서로 어떻게 연결됐는지 살펴봅니다. 값을 고르면 그 객체의 프로필(속성·관련 객체·관련 보고서·관계도)이 열리고, 칩·노드를 클릭해 이어서 탐색하세요."
         />
       </div>
 
@@ -209,36 +179,34 @@ export default function EntityExplorePage() {
           </div>
         </aside>
 
-        {/* 우측 — 관계 그래프 */}
-        <div className="min-w-0 flex-1 p-3">
+        {/* 우측 — 선택한 값의 프로필(속성·관련객체·관련보고서·관계도). 관련객체
+            칩·관계도 노드를 클릭하면 시드를 그 값으로 바꿔 제자리에서 이어 탐색. */}
+        <div className="min-w-0 flex-1 overflow-y-auto">
           {seed == null ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
               <Boxes className="h-8 w-8 opacity-40" />
               <p>
-                왼쪽에서 {typeLabelById.get(typeId) ?? '값'}을(를) 골라 관계도를
-                탐색하세요.
+                왼쪽에서 {typeLabelById.get(typeId) ?? '값'}을(를) 골라 프로필을
+                봅니다.
               </p>
             </div>
-          ) : graphError ? (
-            <div className="flex h-full items-center justify-center text-sm text-destructive">
-              그래프를 불러오지 못했습니다.
-            </div>
-          ) : graph === null ? (
-            <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> 불러오는 중…
-            </div>
           ) : (
-            <EntityGraphView
-              graph={graph}
-              centerId={seed.id}
-              relTypeLabels={relTypeLabels}
-              active
-              onNodeClick={(node) =>
-                node?.id != null &&
-                node.id !== seed.id &&
-                setSeed({ id: node.id, value: node.label })
-              }
-            />
+            <div className="p-4">
+              <div className="mb-3 flex justify-end">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigate(`/entities/${seed.id}`)}
+                  title="이 프로필을 전체 화면으로 열기"
+                >
+                  전체 화면 <ArrowUpRight className="ml-1 h-3.5 w-3.5" />
+                </Button>
+              </div>
+              <ObjectProfile
+                entityId={seed.id}
+                onOpenEntity={(id, label) => setSeed({ id, value: label })}
+              />
+            </div>
           )}
         </div>
       </div>

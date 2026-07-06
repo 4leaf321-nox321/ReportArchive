@@ -43,6 +43,7 @@ import OrphanFilesAdminPage from '@/modules/admin/OrphanFilesAdminPage'
 import DashboardMetricsAdminPage from '@/modules/admin/DashboardMetricsAdminPage'
 import EntitiesAdminPage from '@/modules/entities/EntitiesAdminPage'
 import EntityExplorePage from '@/modules/entities/EntityExplorePage'
+import ObjectProfilePage from '@/modules/entities/ObjectProfilePage'
 import VocListPage from '@/modules/voc/VocListPage'
 import VocDetailPage from '@/modules/voc/VocDetailPage'
 import AiSettingsPage from '@/modules/ai_settings/AiSettingsPage'
@@ -151,6 +152,7 @@ const router = createBrowserRouter(
             threads on reports the actor owns. */}
         <Route path="/personal/inbox" element={<InboxPage />} />
         <Route path="/entities" element={<EntityExplorePage />} />
+        <Route path="/entities/:entityId" element={<ObjectProfilePage />} />
         <Route path="/templates" element={<TemplatesPage />} />
         <Route path="/templates/new" element={<TemplateEditorPage />} />
         <Route path="/templates/:templateId/edit" element={<TemplateEditorPage />} />

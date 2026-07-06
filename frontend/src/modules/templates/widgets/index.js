@@ -24,6 +24,7 @@ import { RichTextPropsPanel, RichTextPreview, RichTextEditor } from './RichText'
 import { KeyValuePropsPanel, KeyValuePreview, KeyValueEditor } from './KeyValue'
 import { BulletedListPropsPanel, BulletedListPreview, BulletedListEditor } from './BulletedList'
 import { TablePropsPanel, TablePreview, TableEditor } from './Table'
+import { RecordPropsPanel, RecordPreview, RecordEditor } from './Record'
 import { ImagePropsPanel, ImagePreview, ImageEditor } from './Image'
 import { AttachmentPropsPanel, AttachmentPreview, AttachmentEditor } from './Attachment'
 import { VideoPropsPanel, VideoPreview, VideoEditor } from './Video'
@@ -84,6 +85,12 @@ export const WIDGET_RENDERERS = {
     PropsPanel: TablePropsPanel,
     Preview: TablePreview,
     Editor: TableEditor,
+  },
+  record: {
+    Icon: Boxes,
+    PropsPanel: RecordPropsPanel,
+    Preview: RecordPreview,
+    Editor: RecordEditor,
   },
   image: {
     Icon: Image,

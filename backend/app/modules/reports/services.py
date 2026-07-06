@@ -984,12 +984,16 @@ def create_report(
     # ids raise ValueError → route maps to 400). Refresh again so the
     # eager-loaded `entities` relationship reflects the new links on the
     # response.
+    record_ids = _materialize_record_widgets(db, report, owner_user_id)
     if payload.entity_ids is not None:
+        merged = list(dict.fromkeys([*payload.entity_ids, *record_ids]))
         entity_services.set_report_entities(
-            db, report_id=report.id, entity_ids=payload.entity_ids
+            db, report_id=report.id, entity_ids=merged
         )
         db.commit()
         db.refresh(report)
+    elif record_ids:
+        add_entities_to_report(db, report, list(record_ids))
     return report
 
 
@@ -1415,13 +1419,106 @@ def update_report(
     # clear). Errors here propagate as ValueError and are mapped to 400
     # by the route layer; the report's scalar/page edits stay committed
     # so a bad entity id doesn't roll back the rest of the save.
+    # 객체 레코드 위젯(A0.3 입력경로) → entity upsert + entity_id 되심기. 만들어진
+    # 객체는 보고서 태그(union)로 붙여 프로필 "관련 보고서"에 자동 노출한다.
+    record_ids = _materialize_record_widgets(db, report, updated_by_user_id)
+
     if "entity_ids" in data:
+        merged = list(dict.fromkeys([*(data["entity_ids"] or []), *record_ids]))
         entity_services.set_report_entities(
-            db, report_id=report.id, entity_ids=data["entity_ids"] or []
+            db, report_id=report.id, entity_ids=merged
         )
         db.commit()
         db.refresh(report)
+    elif record_ids:
+        add_entities_to_report(db, report, list(record_ids))
     return report
+
+
+def _materialize_record_widgets(db: Session, report, creator_user_id) -> set:
+    """보고서의 '객체 레코드' 위젯을 훑어 record entity 를 upsert 하고, 만들어진
+    entity_id 를 위젯 content 에 되심는다. 위젯 식별은 **content 에 axis_slug 가
+    있는지**(capability 기준 — 위젯 문서 §9). content 맵은 block_id 로만 키잉돼
+    type 을 안 담으므로 이 표식으로 record 블록을 가려낸다. upsert 실패(속성 검증
+    등)는 건너뛰어 보고서 저장을 막지 않는다. 반환: 태그할 entity id 집합.
+
+    본문 저장(main commit) 이후에 돈다 — upsert 가 내부 commit 을 하기 때문."""
+    # 2단계로 나눈다 — upsert 가 내부 commit 을 하며 report.content 를 expire 시켜
+    # (expire_on_commit) in-place 변경이 날아가므로, 먼저 다 upsert 하고(plan 수집)
+    # 그 다음에 되심는다.
+    #   plan: (loc, block_id, entity_id)  loc = ("content",) | ("page", i)
+    plan: list = []
+
+    def _scan(cmap, loc):
+        if not isinstance(cmap, dict):
+            return
+        for bid, content in cmap.items():
+            if not isinstance(content, dict) or "axis_slug" not in content:
+                continue
+            try:
+                ent = entity_services.upsert_record_entity(
+                    db,
+                    axis_slug=content.get("axis_slug"),
+                    name=content.get("name"),
+                    properties=content.get("properties") or {},
+                    entity_id=content.get("entity_id"),
+                    creator_user_id=creator_user_id,
+                )
+            except ValueError as exc:
+                # 속성 검증 실패(예: 숫자 필드에 문자) — 조용히 넘기면 객체가 안
+                # 만들어지는데 사용자는 모른다. 명확히 400 으로 올려 고치게 한다.
+                # 본문은 이미 커밋됐으니(훅은 main commit 이후) 값만 고쳐 재저장하면 된다.
+                nm = content.get("name") or "(이름 없음)"
+                raise ValueError(f"객체 레코드 '{nm}': {exc}") from exc
+            if ent is not None:
+                plan.append((loc, bid, ent.id))
+
+    _scan(report.content, ("content",))
+    if isinstance(report.pages, list):
+        for i, pg in enumerate(report.pages):
+            if isinstance(pg, dict):
+                _scan(pg.get("content"), ("page", i))
+
+    ids = {eid for (_, _, eid) in plan}
+    if not plan:
+        return ids
+
+    # 되심기 — **deepcopy 후** entity_id 를 써넣는다. content 를 in-place 로 고치면
+    # 그게 SQLAlchemy 의 커밋 스냅샷이라 재할당해도 "변경 없음"으로 보여 flush 안 됨.
+    # 독립 복사본을 만들어 넣어야 identity·value 둘 다 달라져 flush 된다(JSONB 함정).
+    import copy
+
+    new_content = (
+        copy.deepcopy(report.content) if isinstance(report.content, dict) else None
+    )
+    new_pages = (
+        copy.deepcopy(report.pages) if isinstance(report.pages, list) else None
+    )
+    changed = False
+    for loc, bid, eid in plan:
+        if loc[0] == "content" and new_content is not None:
+            blk = new_content.get(bid)
+        elif loc[0] == "page" and new_pages is not None:
+            i = loc[1]
+            blk = (
+                new_pages[i].get("content", {}).get(bid)
+                if i < len(new_pages) and isinstance(new_pages[i], dict)
+                else None
+            )
+        else:
+            blk = None
+        if isinstance(blk, dict) and blk.get("entity_id") != eid:
+            blk["entity_id"] = eid
+            changed = True
+
+    if changed:
+        if new_content is not None:
+            report.content = new_content
+        if new_pages is not None:
+            report.pages = new_pages
+        db.commit()
+        db.refresh(report)
+    return ids
 
 
 def add_entities_to_report(

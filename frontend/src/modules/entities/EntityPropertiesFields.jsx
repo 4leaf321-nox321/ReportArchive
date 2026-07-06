@@ -33,14 +33,21 @@ export function EntityPropertiesFields({ defs, value, onChange }) {
   return (
     <div className="space-y-3 rounded-md border bg-muted/20 p-3">
       <div className="text-xs font-medium text-muted-foreground">속성</div>
-      {defs.map((d) => (
-        <PropertyField
-          key={d.id}
-          def={d}
-          value={props[d.key]}
-          onChange={(v) => setKey(d.key, v)}
-        />
-      ))}
+      {/* 컨테이너 폭에 맞춰 자동 다열 — 넓으면 여러 열, 좁으면(위젯 등) 한 열.
+          속성이 많아도 가로로 흘러 세로 스크롤을 줄인다. */}
+      <div
+        className="grid gap-x-4 gap-y-3"
+        style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}
+      >
+        {defs.map((d) => (
+          <PropertyField
+            key={d.id}
+            def={d}
+            value={props[d.key]}
+            onChange={(v) => setKey(d.key, v)}
+          />
+        ))}
+      </div>
     </div>
   )
 }
@@ -54,8 +61,10 @@ function PropertyField({ def, value, onChange }) {
     </Label>
   )
   const isMulti = def.multi && def.data_type !== 'bool'
+  // 긴 텍스트·다중값은 넓게 — 그리드에서 전체 열을 차지.
+  const fullSpan = def.data_type === 'longtext' || isMulti
   return (
-    <div className="space-y-1">
+    <div className={`space-y-1${fullSpan ? ' col-span-full' : ''}`}>
       {labelEl}
       {isMulti ? (
         <MultiField
@@ -223,6 +232,7 @@ function MultiField({ def, value, onChange }) {
  */
 function EntityRefPicker({ def, value, onChange }) {
   const [q, setQ] = useState('')
+  const [open, setOpen] = useState(false)
   const [picked, setPicked] = useState(null) // { id, label } — 세션 기억
 
   const { data: typesData } = useAsync(() => listEntityTypes(), [])
@@ -231,12 +241,14 @@ function EntityRefPicker({ def, value, onChange }) {
     return (typesData?.items ?? []).find((t) => t.slug === def.ref_type_slug)?.id
   }, [typesData, def.ref_type_slug])
 
-  const { data: resData } = useAsync(
+  // 열려 있으면 항상 로드 — 빈 검색어면 **목록 브라우징**(처음 30개), 타이핑하면
+  // 서버 검색으로 좁힌다. 뭐가 있는지 몰라도 열어서 고를 수 있게.
+  const { data: resData, loading } = useAsync(
     () =>
-      q.trim().length >= 1
-        ? listEntities({ typeId: refTypeId, q: q.trim(), limit: 15 })
+      open
+        ? listEntities({ typeId: refTypeId, q: q.trim() || undefined, limit: 30 })
         : Promise.resolve({ items: [] }),
-    [q, refTypeId],
+    [open, q, refTypeId],
   )
   const results = resData?.items ?? []
 
@@ -262,34 +274,61 @@ function EntityRefPicker({ def, value, onChange }) {
     )
   }
 
+  function select(r) {
+    onChange(r.id)
+    setPicked({ id: r.id, label: r.value })
+    setQ('')
+    setOpen(false)
+  }
+
   return (
     <div className="space-y-1">
       <Input
         value={q}
         onChange={(e) => setQ(e.target.value)}
+        onFocus={() => setOpen(true)}
+        // 항목 클릭이 먼저 등록되도록 살짝 지연 후 닫는다.
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
         placeholder={
-          def.ref_type_slug ? `${def.ref_type_slug} 검색…` : '객체 검색…'
+          def.ref_type_slug
+            ? `${def.ref_type_slug} — 검색하거나 열어서 선택…`
+            : '객체 검색하거나 열어서 선택…'
         }
       />
-      {q.trim() && results.length > 0 && (
-        <div className="max-h-40 overflow-y-auto rounded-md border">
-          {results.map((r) => (
-            <button
-              key={r.id}
-              type="button"
-              onClick={() => {
-                onChange(r.id)
-                setPicked({ id: r.id, label: r.value })
-                setQ('')
-              }}
-              className="flex w-full items-center gap-2 px-2 py-1 text-left text-sm hover:bg-accent"
-            >
-              <span className="font-medium">{r.value}</span>
-              {r.code && (
-                <code className="text-[11px] text-muted-foreground">{r.code}</code>
-              )}
-            </button>
-          ))}
+      {open && (
+        <div className="max-h-48 overflow-y-auto rounded-md border">
+          {loading ? (
+            <p className="px-3 py-2 text-center text-xs text-muted-foreground">
+              불러오는 중…
+            </p>
+          ) : results.length === 0 ? (
+            <p className="px-3 py-2 text-center text-xs text-muted-foreground">
+              {q.trim() ? '일치하는 객체가 없습니다.' : '선택할 객체가 없습니다.'}
+            </p>
+          ) : (
+            results.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                // onMouseDown: input blur 보다 먼저 실행돼 선택이 안전하게 등록됨.
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  select(r)
+                }}
+                className="flex w-full items-center gap-2 px-2 py-1 text-left text-sm hover:bg-accent"
+              >
+                <span className="font-medium">{r.value}</span>
+                {r.code && (
+                  <code className="text-[11px] text-muted-foreground">{r.code}</code>
+                )}
+              </button>
+            ))
+          )}
+          {!loading && results.length >= 30 && (
+            <p className="border-t px-3 py-1 text-center text-[10px] text-muted-foreground">
+              처음 30개만 표시 — 검색으로 좁히세요
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -347,4 +386,44 @@ export function missingRequiredProps(defs, properties) {
       out.push(d.key)
   }
   return out
+}
+
+/**
+ * 속성 값 형식 검증 — 백엔드 `validate_properties` 규칙을 클라이언트에 미러링해
+ * **입력 중 즉시** 오류를 보여주기 위함(저장 때까지 미루지 않게). 반환:
+ * `[{ key, label, message }]` (문제 있는 것만). 빈 값은 required 만 오류.
+ */
+export function recordPropertyErrors(defs, properties) {
+  const props = properties ?? {}
+  const errors = []
+  const one = (d, raw) => {
+    const empty =
+      raw === undefined || raw === null || raw === '' || (Array.isArray(raw) && raw.length === 0)
+    if (empty) return d.required ? '필수 입력' : null
+    if (d.data_type === 'number') {
+      if (String(raw).trim() === '' || Number.isNaN(Number(raw))) return '숫자여야 합니다'
+    } else if (d.data_type === 'year') {
+      const n = Number(raw)
+      if (!Number.isInteger(n)) return '연도(정수)여야 합니다'
+    } else if (d.data_type === 'enum') {
+      const opts = (d.enum_options ?? []).map((o) => (typeof o === 'object' ? o.value : o))
+      if (!opts.map(String).includes(String(raw))) return '선택지에 없는 값입니다'
+    }
+    return null
+  }
+  for (const d of defs ?? []) {
+    const raw = props[d.key]
+    let message = null
+    if (d.multi && Array.isArray(raw)) {
+      for (const item of raw) {
+        message = one(d, item)
+        if (message) break
+      }
+      if (!message && d.required && raw.length === 0) message = '필수 입력'
+    } else {
+      message = one(d, raw)
+    }
+    if (message) errors.push({ key: d.key, label: d.label, message })
+  }
+  return errors
 }

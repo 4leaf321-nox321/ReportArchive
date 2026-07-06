@@ -15,6 +15,8 @@ import { Badge } from '@/shared/components/ui/badge'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { ErrorState } from '@/shared/components/ErrorState'
+import { Combobox } from '@/shared/components/Combobox'
+import { listEntityTypes } from '@/shared/api/entities'
 
 // 백엔드 PROPERTY_DATA_TYPES 와 일치.
 const DATA_TYPES = [
@@ -177,6 +179,14 @@ function PropertyDefForm({ owner, def, onCancel, onSaved }) {
   const [refSlug, setRefSlug] = useState(def?.ref_type_slug ?? '')
   const [submitting, setSubmitting] = useState(false)
 
+  // 참조 축 선택지 — slug 를 외우지 않게 라벨로 고르는 콤보박스. system 축은
+  // listEntityTypes 가 기본 제외(entity_ref 는 실제 값이 있는 축만 가리킴).
+  const { data: typesRes } = useAsync(() => listEntityTypes(), [])
+  const axisOptions = [
+    { value: '', label: '(제한 없음 — 아무 객체)' },
+    ...(typesRes?.items ?? []).map((t) => ({ value: t.slug, label: t.label })),
+  ]
+
   const keyValid = isEdit || /^[a-z][a-z0-9_]*$/.test(key)
   const canSubmit = keyValid && label.trim() && !submitting
 
@@ -272,12 +282,17 @@ function PropertyDefForm({ owner, def, onCancel, onSaved }) {
       )}
       {dataType === 'entity_ref' && (
         <div className="space-y-1">
-          <Label className="text-xs">참조 축 slug (선택 — 비우면 아무 객체)</Label>
-          <Input
+          <Label className="text-xs">참조 객체 종류 (비우면 아무 객체)</Label>
+          <Combobox
+            options={axisOptions}
             value={refSlug}
-            onChange={(e) => setRefSlug(e.target.value)}
-            placeholder="supplier"
+            onChange={(v) => setRefSlug(v || '')}
+            placeholder="(제한 없음 — 아무 객체)"
+            searchPlaceholder="객체 종류 검색..."
           />
+          <p className="text-[11px] text-muted-foreground">
+            이 속성이 가리킬 객체의 종류를 고릅니다. 비우면 어떤 종류든 참조 가능.
+          </p>
         </div>
       )}
 

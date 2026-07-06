@@ -761,6 +761,53 @@ TABLE: WidgetDescriptor = {
 
 
 # --------------------------------------------------------------------------- #
+# 6.5 record — 객체 레코드 위젯 (온톨로지 A0.3 입력경로). 보고서에 record 축
+#      (시험실행·실패사례 등) 객체를 속성과 함께 기록하면, 저장 시 그 값으로
+#      entity 객체가 upsert 되고(reports/services._materialize_record_widgets),
+#      만들어진 entity_id 가 content 에 되심긴다. 위젯은 그 객체의 "인-컨텍스트
+#      편집기". content 에 axis_slug 가 있으면 record 위젯 — 저장 훅이 그 표식으로
+#      식별한다(위젯 문서 §9 capability 기준).
+# --------------------------------------------------------------------------- #
+def _record_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            # 어느 record 축(entity_type slug)의 객체인지. 이게 있으면 record 위젯.
+            "axis_slug": {"type": "string", "maxLength": 32},
+            # 객체 이름(값). 작성자 직접 입력(필수).
+            "name": {"type": "string", "maxLength": 255},
+            # 축 property_defs 로 검증되는 속성 값 묶음(자유 객체 — validate_properties 가 검증).
+            "properties": {"type": "object"},
+            # 저장 훅이 upsert 후 되심는 entity id. 재편집 시 이 객체를 갱신(중복 방지).
+            "entity_id": {"type": ["integer", "null"]},
+        },
+        "additionalProperties": False,
+    }
+
+
+RECORD: WidgetDescriptor = {
+    "type": "record",
+    "label": "객체 레코드",
+    "description": (
+        "시험실행·실패사례 같은 record 객체를 속성과 함께 기록. 저장 시 그 값으로 "
+        "온톨로지 객체가 생성/갱신되고, 이 보고서가 근거로 남는다."
+    ),
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "maxLength": 200},
+            # 템플릿이 축을 미리 고정하고 싶을 때(선택). 비우면 작성자가 고른다.
+            "axis_slug": {"type": "string", "maxLength": 32},
+        },
+        "additionalProperties": False,
+    },
+    "content_schema_for": _record_content,
+    "default_props": {"label": "객체 레코드"},
+}
+
+
+# --------------------------------------------------------------------------- #
 # 7. image — 이미지 1~N장
 # --------------------------------------------------------------------------- #
 def _image_content(props: dict) -> dict:
@@ -3687,6 +3734,7 @@ WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
         KEY_VALUE,
         BULLETED_LIST,
         TABLE,
+        RECORD,
         IMAGE,
         ATTACHMENT,
         VIDEO,
@@ -3768,6 +3816,8 @@ REF_CATEGORY_BY_TYPE: dict[str, Optional[str]] = {
     "comparison": "comparison",
     "key_value": "keyvalue",
     "raci_matrix": "raci",
+    # 객체 레코드 — 번호 참조 대상 아님(객체 자체가 프로필로 참조됨). MVP: None.
+    "record": None,
     # 그림 (images, charts, diagrams — anything primarily visual)
     "image": "figure",
     "chart": "figure",

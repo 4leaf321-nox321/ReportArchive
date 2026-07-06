@@ -1630,3 +1630,53 @@ def get_object_link(db: Session, link_id: int) -> Optional[ObjectLink]:
 def delete_object_link(db: Session, row: ObjectLink) -> None:
     db.delete(row)
     db.commit()
+
+
+# --------------------------------------------------------------------------- #
+# Record 위젯 입력경로 (A0.3) — 보고서의 객체 레코드 위젯 → entity upsert
+# --------------------------------------------------------------------------- #
+def upsert_record_entity(
+    db: Session,
+    *,
+    axis_slug: str,
+    name: Optional[str],
+    properties: Optional[dict] = None,
+    entity_id: Optional[int] = None,
+    creator_user_id: int,
+) -> Optional[Entity]:
+    """객체 레코드 위젯 저장 훅용 upsert. record 축의 값(name)+속성으로 entity 를
+    생성/갱신한다. 우선순위: (1) entity_id 로 기존 객체 갱신 → (2) 같은 축·같은
+    이름이면 그 객체 갱신(무료 중복 방지) → (3) 신규 생성. record 축이 아니거나
+    이름이 비면 None(위젯이 축 미선택 등 → 건너뜀). 속성 검증 실패는 ValueError."""
+    type_row = get_type_by_slug(db, (axis_slug or "").strip())
+    if type_row is None or type_row.kind_class != EntityKindClass.record:
+        return None
+    value = (name or "").strip()
+    if not value:
+        return None
+
+    ent: Optional[Entity] = None
+    if entity_id is not None:
+        cand = get_entity(db, entity_id)
+        if cand is not None and cand.type_id == type_row.id:
+            ent = cand
+    if ent is None:
+        ent = resolve_existing(db, type_id=type_row.id, value=value)
+
+    if ent is None:
+        # 신규 — create_entity 가 속성 검증까지 처리.
+        return create_entity(
+            db,
+            EntityCreate(type_id=type_row.id, value=value, properties=properties or {}),
+            creator_user_id=creator_user_id,
+        )
+
+    # 기존 갱신 — 속성 교체 + (안전하면) 이름 동기화.
+    ent.properties = validate_properties(db, type_row, properties or {})
+    if value and value != ent.value:
+        clash = find_by_value_ci(db, type_id=type_row.id, value=value)
+        if clash is None or clash.id == ent.id:
+            ent.value = value
+    db.commit()
+    db.refresh(ent)
+    return ent

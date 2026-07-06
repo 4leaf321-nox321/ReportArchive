@@ -2335,9 +2335,108 @@ function EditDialog({ mode, type, defs = [], target, onClose, onSaved }) {
     }
   }
 
+  const hasProps = defs.length > 0
+  // 기본 정보 필드 묶음 — 속성 유무에 따라 단일/2단 배치에서 재사용.
+  const basicFields = (
+    <div className="space-y-3">
+      <div>
+        <Label className="text-xs">값</Label>
+        <Input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          maxLength={255}
+          className="mt-1 h-9"
+          autoFocus
+        />
+      </div>
+      <div>
+        <Label className="text-xs">코드 (선택)</Label>
+        <Input
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          maxLength={64}
+          className="mt-1 h-9"
+          placeholder="예: AX-001"
+        />
+      </div>
+      <div>
+        <Label className="text-xs">설명 (선택)</Label>
+        <Textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          maxLength={2000}
+          rows={4}
+          className="mt-1"
+        />
+      </div>
+
+      {/* lifecycle 축 — 유효구간(도입~폐지). 비우면 개방. (p56) */}
+      {isLifecycle && (
+        <div>
+          <Label className="text-xs">유효 연도 구간 (선택)</Label>
+          <div className="mt-1 flex items-center gap-2">
+            <Input
+              value={fromYear}
+              onChange={(e) => setFromYear(e.target.value)}
+              inputMode="numeric"
+              placeholder="시작 (예: 2022)"
+              className="h-9"
+            />
+            <span className="text-muted-foreground">~</span>
+            <Input
+              value={toYear}
+              onChange={(e) => setToYear(e.target.value)}
+              inputMode="numeric"
+              placeholder="종료 (비우면 진행중)"
+              className="h-9"
+            />
+          </div>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            비우면 그쪽이 개방됩니다(시작 비움=이전부터, 종료 비움=진행중).
+          </p>
+        </div>
+      )}
+
+      {/* yearly 축 — 적용 연도 세트. 쉼표/공백 구분. (p56) */}
+      {isYearly && (
+        <div>
+          <Label className="text-xs">적용 연도</Label>
+          <Input
+            value={yearsText}
+            onChange={(e) => setYearsText(e.target.value)}
+            placeholder="예: 2024, 2025"
+            className="mt-1 h-9"
+          />
+          <div className="mt-1 flex flex-wrap items-center gap-1">
+            {parsedYears.length === 0 ? (
+              <span className="text-[11px] text-muted-foreground">
+                배정된 연도 없음 — 이 값은 연도 필터에서 숨겨집니다.
+              </span>
+            ) : (
+              parsedYears.map((y) => (
+                <span
+                  key={y}
+                  className="rounded-full border bg-background px-2 py-0.5 text-[11px]"
+                >
+                  {y}
+                </span>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-md">
+      <DialogContent
+        className={cn(
+          'flex max-h-[80vh] flex-col overflow-hidden',
+          // 속성이 있으면 넓게(2단), 없으면 적당히.
+          hasProps ? 'h-[80vh] w-[80vw] max-w-[80vw]' : 'max-w-lg',
+        )}
+      >
         <DialogHeader>
           <DialogTitle>
             {isCreate ? `${type.label} 추가` : `${type.label} 편집`}
@@ -2348,101 +2447,28 @@ function EditDialog({ mode, type, defs = [], target, onClose, onSaved }) {
             </DialogDescription>
           )}
         </DialogHeader>
-        <div className="max-h-[65vh] space-y-3 overflow-y-auto pr-1">
-          <div>
-            <Label className="text-xs">값</Label>
-            <Input
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              maxLength={255}
-              className="mt-1 h-9"
-              autoFocus
-            />
-          </div>
-          <div>
-            <Label className="text-xs">코드 (선택)</Label>
-            <Input
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              maxLength={64}
-              className="mt-1 h-9"
-              placeholder="예: AX-001"
-            />
-          </div>
-          <div>
-            <Label className="text-xs">설명 (선택)</Label>
-            <Textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              maxLength={2000}
-              rows={3}
-              className="mt-1"
-            />
-          </div>
 
-          {/* 객체 속성 (A0.1 스텝3b) — 축 스키마가 있으면 동적 폼. */}
-          <EntityPropertiesFields
-            defs={defs}
-            value={properties}
-            onChange={setProperties}
-          />
-
-          {/* lifecycle 축 — 유효구간(도입~폐지). 비우면 개방. (p56) */}
-          {isLifecycle && (
-            <div>
-              <Label className="text-xs">유효 연도 구간 (선택)</Label>
-              <div className="mt-1 flex items-center gap-2">
-                <Input
-                  value={fromYear}
-                  onChange={(e) => setFromYear(e.target.value)}
-                  inputMode="numeric"
-                  placeholder="시작 (예: 2022)"
-                  className="h-9"
-                />
-                <span className="text-muted-foreground">~</span>
-                <Input
-                  value={toYear}
-                  onChange={(e) => setToYear(e.target.value)}
-                  inputMode="numeric"
-                  placeholder="종료 (비우면 진행중)"
-                  className="h-9"
-                />
+        {hasProps ? (
+          // 2단 — 왼쪽 기본 정보, 오른쪽 속성. 각 열 독립 스크롤.
+          <div className="grid min-h-0 flex-1 gap-6 overflow-hidden md:grid-cols-[22rem_1fr]">
+            <div className="min-h-0 space-y-2 overflow-y-auto pr-2">
+              <div className="text-xs font-semibold text-muted-foreground">
+                기본 정보
               </div>
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                비우면 그쪽이 개방됩니다(시작 비움=이전부터, 종료 비움=진행중).
-              </p>
+              {basicFields}
             </div>
-          )}
-
-          {/* yearly 축 — 적용 연도 세트. 쉼표/공백 구분. (p56) */}
-          {isYearly && (
-            <div>
-              <Label className="text-xs">적용 연도</Label>
-              <Input
-                value={yearsText}
-                onChange={(e) => setYearsText(e.target.value)}
-                placeholder="예: 2024, 2025"
-                className="mt-1 h-9"
+            <div className="min-h-0 overflow-y-auto pr-1">
+              <EntityPropertiesFields
+                defs={defs}
+                value={properties}
+                onChange={setProperties}
               />
-              <div className="mt-1 flex flex-wrap items-center gap-1">
-                {parsedYears.length === 0 ? (
-                  <span className="text-[11px] text-muted-foreground">
-                    배정된 연도 없음 — 이 값은 연도 필터에서 숨겨집니다.
-                  </span>
-                ) : (
-                  parsedYears.map((y) => (
-                    <span
-                      key={y}
-                      className="rounded-full border bg-background px-2 py-0.5 text-[11px]"
-                    >
-                      {y}
-                    </span>
-                  ))
-                )}
-              </div>
             </div>
-          )}
-        </div>
+          </div>
+        ) : (
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1">{basicFields}</div>
+        )}
+
         <DialogFooter>
           <Button variant="ghost" size="sm" onClick={onClose}>
             취소

@@ -126,3 +126,43 @@ def test_bulk_import_objects_props_relations():
             c.delete(f"/api/entity-types/{proj_id}", headers=ADMIN)
         if sup_id:
             c.delete(f"/api/entity-types/{sup_id}", headers=ADMIN)
+
+
+def test_paste_rows_import():
+    """붙여넣기(표) 임포트 — 파일 없이 columns/rows JSON 으로 생성."""
+    c = TestClient(app)
+    sfx = uuid.uuid4().hex[:8]
+    tid = None
+    made = []
+    try:
+        tid = c.post("/api/entity-types", headers=ADMIN,
+                     json={"slug": "paste_" + sfx, "label": "붙여넣기축",
+                           "kind_class": "record"}).json()["data"]["id"]
+        c.post(f"/api/entity-types/{tid}/properties", headers=ADMIN,
+               json={"key": "budget", "label": "예산", "data_type": "number"})
+        a, b = "PA-" + sfx, "PB-" + sfx
+        body = {
+            "columns": ["c0", "c1"],
+            "rows": [[a, "3"], [b, "9"]],
+            "mapping": {
+                "type_id": tid, "value_column": "c0",
+                "property_columns": {"c1": "budget"},
+                "relation_columns": [], "dry_run": False,
+            },
+        }
+        r = c.post("/api/entities/import/rows", headers=ADMIN, json=body)
+        assert r.status_code == 200, r.text
+        s = r.json()["data"]["summary"]
+        assert s["create"] == 2 and s["committed"] is True, s
+        made = [i["id"] for i in _find(c, tid, "P")]
+        assert len(made) == 2, made
+    finally:
+        for eid in made:
+            c.delete(f"/api/entities/{eid}", headers=ADMIN)
+        if tid:
+            rp = c.get(f"/api/entity-types/{tid}/properties", headers=ADMIN)
+            if rp.status_code == 200:
+                for pd in rp.json()["data"]["items"]:
+                    c.delete(f"/api/entity-types/{tid}/properties/{pd['id']}",
+                             headers=ADMIN)
+            c.delete(f"/api/entity-types/{tid}", headers=ADMIN)

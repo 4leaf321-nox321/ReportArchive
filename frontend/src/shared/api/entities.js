@@ -248,6 +248,13 @@ export async function runEntityImport(file, mapping) {
   return extractData(res)
 }
 
+/** 붙여넣기(표) 임포트 — 파일 없이 columns(합성 헤더)/rows + 매핑. 응답은
+ *  runEntityImport 와 동일. mapping.dry_run 으로 미리보기/커밋. */
+export async function importEntityRows({ columns, rows, mapping }) {
+  const res = await apiClient.post(`${BASE}/import/rows`, { columns, rows, mapping })
+  return extractData(res)
+}
+
 /**
  * 객체 프로필(Phase A) — 인증-only 조합. 흩어진 정보를 한 번에:
  *   {

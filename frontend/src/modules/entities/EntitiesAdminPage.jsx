@@ -19,6 +19,7 @@ import {
   Combine,
   GitMerge,
   Upload,
+  ClipboardPaste,
   X,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -45,6 +46,7 @@ import { Skeleton } from '@/shared/components/ui/skeleton'
 import { DataTable } from '@/shared/components/DataTable'
 import { EntityGraphDialog } from './EntityGraphDialog'
 import { EntityImportDialog } from './EntityImportDialog'
+import { EntityPasteDialog } from './EntityPasteDialog'
 import { MergeCandidatesDialog } from './MergeCandidatesDialog'
 import { PropertyDefsDialog } from './PropertyDefsDialog'
 import {
@@ -158,7 +160,6 @@ export default function EntitiesAdminPage() {
   const [axisSlug, setAxisSlug] = useState(null)
   const [newAxisOpen, setNewAxisOpen] = useState(false)
   const [relTypesOpen, setRelTypesOpen] = useState(false)
-  const [importOpen, setImportOpen] = useState(false)
 
   // Pick the first axis once the list arrives. Falls through cleanly on
   // re-mount because we treat null as "no axis chosen yet".
@@ -217,14 +218,6 @@ export default function EntitiesAdminPage() {
         description="보고서를 태깅하는 N축 통제어휘. 사용자가 picker 에서 추가한 값을 정리/머지/비활성화 합니다."
         actions={
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setImportOpen(true)}
-            >
-              <Upload className="mr-1 h-3.5 w-3.5" />
-              가져오기
-            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -293,6 +286,7 @@ export default function EntitiesAdminPage() {
                 <AxisPanel
                   key={t.slug}
                   type={t}
+                  allTypes={types}
                   onAxisUpdated={reloadTypes}
                   onAxisDeleted={() => {
                     // 다른 축으로 자동 전환 — 삭제 직후 사라진 탭에
@@ -329,13 +323,6 @@ export default function EntitiesAdminPage() {
           onClose={() => setRelTypesOpen(false)}
         />
       )}
-
-      <EntityImportDialog
-        open={importOpen}
-        onOpenChange={setImportOpen}
-        types={types}
-        onImported={reloadTypes}
-      />
     </div>
   )
 }
@@ -602,11 +589,13 @@ function NewAxisDialog({ existingSlugs, onClose, onCreated }) {
  * mutations (create/update/merge/delete) reload only the current axis,
  * not the whole page.
  */
-function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
+function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
   const [reloadKey, setReloadKey] = useState(0)
   const [query, setQuery] = useState('')
   const [includeDeprecated, setIncludeDeprecated] = useState(true)
   const [deleteAxisOpen, setDeleteAxisOpen] = useState(false)
+  const [pasteOpen, setPasteOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const [govOpen, setGovOpen] = useState(false)
   const [propsDefOpen, setPropsDefOpen] = useState(false)
   const [aliasTarget, setAliasTarget] = useState(null)
@@ -876,6 +865,26 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
             <Plus className="mr-1 h-3.5 w-3.5" />
             추가
           </Button>
+          {/* 이 축에 여러 건을 한꺼번에 — 붙여넣기(표) / 파일(엑셀·CSV). 종류는
+              현재 축으로 고정된다. */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setPasteOpen(true)}
+            title="엑셀에서 복사한 여러 행을 표에 붙여넣어 한꺼번에 등록"
+          >
+            <ClipboardPaste className="mr-1 h-3.5 w-3.5" />
+            표로 입력
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setImportOpen(true)}
+            title="엑셀·CSV 파일로 가져오기"
+          >
+            <Upload className="mr-1 h-3.5 w-3.5" />
+            가져오기
+          </Button>
           {/* 이 축 자체를 통째로 삭제. 값이 남아 있으면 백엔드가 400으로
               막고, 다이얼로그가 그 안내를 그대로 보여준다. */}
           <Button
@@ -1041,6 +1050,20 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
           onChanged={reload}
         />
       )}
+      <EntityPasteDialog
+        open={pasteOpen}
+        onOpenChange={setPasteOpen}
+        types={allTypes}
+        fixedType={type}
+        onImported={reload}
+      />
+      <EntityImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        types={allTypes}
+        fixedType={type}
+        onImported={reload}
+      />
       {deleteTarget && (
         <DeleteConfirmDialog
           target={deleteTarget}

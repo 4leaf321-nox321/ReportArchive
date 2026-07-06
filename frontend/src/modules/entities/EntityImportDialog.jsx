@@ -24,7 +24,7 @@ const SELECT_CLS =
  * 흐름: 파일·축 선택 → 열 매핑(값·속성·관계) → 미리보기(dry_run) → 가져오기(커밋).
  * types = 대상 후보 축(record/reference). 커밋 성공 시 onImported() 로 목록 새로고침.
  */
-export function EntityImportDialog({ open, onOpenChange, types, onImported }) {
+export function EntityImportDialog({ open, onOpenChange, types, fixedType, onImported }) {
   const [file, setFile] = useState(null)
   const [columns, setColumns] = useState([])
   const [rowCount, setRowCount] = useState(0)
@@ -40,11 +40,12 @@ export function EntityImportDialog({ open, onOpenChange, types, onImported }) {
   // 다이얼로그 열릴 때 관계 종류 로드 + 상태 초기화.
   useEffect(() => {
     if (!open) return
-    setFile(null); setColumns([]); setRowCount(0); setTypeId('')
+    setFile(null); setColumns([]); setRowCount(0)
+    setTypeId(fixedType ? String(fixedType.id) : '')
     setValueColumn(''); setPropDefs([]); setPropMap({}); setRelCols([])
     setPreview(null)
     listRelationTypes().then((r) => setRelTypes(r?.items ?? [])).catch(() => {})
-  }, [open])
+  }, [open, fixedType?.id])
 
   // 축 바뀌면 속성 정의 로드(속성 매핑 대상).
   useEffect(() => {
@@ -136,18 +137,24 @@ export function EntityImportDialog({ open, onOpenChange, types, onImported }) {
               onChange={(e) => onPickFile(e.target.files?.[0] ?? null)}
               className="text-xs"
             />
-            <select
-              value={typeId}
-              onChange={(e) => setTypeId(e.target.value)}
-              className={SELECT_CLS}
-            >
-              <option value="">종류 선택…</option>
-              {recordTypes.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
+            {fixedType ? (
+              <span className="rounded-md border bg-muted/40 px-2.5 py-1 text-xs font-medium">
+                {fixedType.label}
+              </span>
+            ) : (
+              <select
+                value={typeId}
+                onChange={(e) => setTypeId(e.target.value)}
+                className={SELECT_CLS}
+              >
+                <option value="">종류 선택…</option>
+                {recordTypes.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            )}
             {columns.length > 0 && (
               <span className="text-xs text-muted-foreground">
                 {rowCount}행 · {columns.length}열
@@ -264,7 +271,7 @@ export function EntityImportDialog({ open, onOpenChange, types, onImported }) {
           )}
 
           {/* 3. 미리보기 결과 */}
-          {preview && <PreviewResult preview={preview} />}
+          {preview && <ImportPreviewResult preview={preview} />}
 
           {/* 액션 */}
           {columns.length > 0 && typeId && (
@@ -293,7 +300,7 @@ function updateRel(setRelCols, i, patch) {
   setRelCols((r) => r.map((row, j) => (j === i ? { ...row, ...patch } : row)))
 }
 
-function PreviewResult({ preview }) {
+export function ImportPreviewResult({ preview }) {
   const s = preview.summary ?? {}
   return (
     <div className="rounded-md border">

@@ -363,6 +363,14 @@ class EntityImportMapping(BaseModel):
     dry_run: bool = True                           # True=미리보기(쓰기 없음)
 
 
+class EntityImportRowsRequest(BaseModel):
+    """붙여넣기(표) 임포트 — 파일 대신 열/행을 JSON 으로. columns 는 합성 헤더
+    (c0,c1…)이고 mapping 이 그 헤더로 값·속성·관계를 가리킨다."""
+    mapping: EntityImportMapping
+    columns: list[str]
+    rows: list[list[str]]
+
+
 class EntityUpdate(BaseModel):
     """Admin-only edits. `value` rename is allowed but a clash check
     runs in the service layer. `status` is the deprecate/restore toggle."""

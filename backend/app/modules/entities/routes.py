@@ -37,6 +37,7 @@ from app.modules.entities.schemas import (
     EntityAliasRead,
     EntityCreate,
     EntityImportMapping,
+    EntityImportRowsRequest,
     EntityListResponse,
     EntityMergeDismissRequest,
     EntityMergeRequest,
@@ -635,6 +636,28 @@ async def import_entities(
         result = import_service.run_import(
             db, mapping=payload, rows=rows,
             creator_user_id=actor.user.id, dry_run=payload.dry_run,
+        )
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    return success_response(data=result)
+
+
+@entities_router.post("/import/rows")
+def import_rows(
+    payload: EntityImportRowsRequest,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """붙여넣기(표) 임포트 — 파일 없이 열/행 JSON 으로. 각 행을 헤더로 dict 화해
+    파일 임포트와 같은 run_import 로 처리. mapping.dry_run=True 면 미리보기. 관리자 전용."""
+    from app.modules.entities import import_service
+
+    _require_admin(actor)
+    rows = [dict(zip(payload.columns, r)) for r in payload.rows]
+    try:
+        result = import_service.run_import(
+            db, mapping=payload.mapping, rows=rows,
+            creator_user_id=actor.user.id, dry_run=payload.mapping.dry_run,
         )
     except ValueError as exc:
         return error_response(str(exc), status_code=400)

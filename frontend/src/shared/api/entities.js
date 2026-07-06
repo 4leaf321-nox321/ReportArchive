@@ -228,6 +228,26 @@ export async function searchEntities(filters = {}) {
   return extractData(res)
 }
 
+/** 벌크 임포트 — 업로드 시트의 헤더+샘플(열 매핑 UI용). 관리자 전용.
+ *  → { columns:[str], sample:[{header:value}], row_count } */
+export async function inspectEntityImport(file) {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await apiClient.post(`${BASE}/import/inspect`, form)
+  return extractData(res)
+}
+
+/** 벌크 임포트 실행 — 시트 + 매핑(JSON). mapping.dry_run=true 면 미리보기(쓰기 없음).
+ *  → { summary:{total,create,update,error,linked,link_unresolved,committed},
+ *      rows:[{row,value,status,messages,relations}] } */
+export async function runEntityImport(file, mapping) {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('mapping', JSON.stringify(mapping))
+  const res = await apiClient.post(`${BASE}/import`, form)
+  return extractData(res)
+}
+
 /**
  * 객체 프로필(Phase A) — 인증-only 조합. 흩어진 정보를 한 번에:
  *   {

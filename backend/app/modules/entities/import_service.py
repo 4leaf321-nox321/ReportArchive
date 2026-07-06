@@ -1,0 +1,162 @@
+"""엔티티 벌크 임포트 (데이터 채우기 v1) — 엑셀/CSV 시트로 객체+속성+관계 시딩.
+
+관리자가 축(entity_type)을 고르고 시트를 올리면, 각 행을 그 축의 객체로 생성/갱신
+하고(값=이름, 지정 열=속성), 관계열은 대상 축에서 값으로 객체를 찾아 링크한다.
+전부 기존 서비스 재사용 — upsert_record_entity / create_entity(속성 검증) + add_relation
+(관계·축 제약 검증). dry_run=True면 검증만(쓰기 없음)해 미리보기를 돌려준다.
+
+행별로 관대하게 처리(한 행 실패가 전체를 막지 않음) — 쓰기 서비스가 행마다
+커밋하므로 부분 성공이 그대로 남는다. 관계 대상을 못 찾으면 그 링크만 건너뛰고
+경고를 남긴다(객체 자체는 생성).
+"""
+from __future__ import annotations
+
+import csv
+import io
+
+from openpyxl import load_workbook
+from sqlalchemy.orm import Session
+
+from app.modules.entities import services as ent
+from app.modules.entities.models import EntityKindClass
+from app.modules.entities.schemas import EntityCreate, EntityImportMapping
+
+# 한 번에 처리할 행 상한(과도 업로드 방지).
+_MAX_ROWS = 2000
+
+
+def parse_sheet(filename: str, content: bytes) -> tuple[list[str], list[dict]]:
+    """업로드 파일(.csv/.xlsx) → (헤더, 행 dict 목록). 첫 행 = 헤더."""
+    name = (filename or "").lower()
+    if name.endswith(".csv"):
+        text = content.decode("utf-8-sig", errors="replace")
+        raw = list(csv.reader(io.StringIO(text)))
+    elif name.endswith(".xlsx"):
+        wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        ws = wb.active
+        raw = [list(r) for r in ws.iter_rows(values_only=True)]
+    else:
+        raise ValueError("지원 형식이 아닙니다: .csv 또는 .xlsx 파일을 올려주세요.")
+
+    def _s(v) -> str:
+        return "" if v is None else str(v).strip()
+
+    # 완전히 빈 행 제거.
+    raw = [r for r in raw if any(_s(c) for c in r)]
+    if not raw:
+        return [], []
+    headers = [_s(h) for h in raw[0]]
+    rows = []
+    for r in raw[1:]:
+        rows.append({h: (_s(r[i]) if i < len(r) else "") for i, h in enumerate(headers)})
+    return headers, rows
+
+
+def run_import(
+    db: Session,
+    *,
+    mapping: EntityImportMapping,
+    rows: list[dict],
+    creator_user_id: int,
+    dry_run: bool,
+) -> dict:
+    """행 목록 → {summary, rows}. dry_run 이면 검증만(쓰기 없음)."""
+    type_row = ent.get_type(db, mapping.type_id)
+    if type_row is None:
+        raise ValueError(f"축을 찾을 수 없습니다: {mapping.type_id}")
+    if len(rows) > _MAX_ROWS:
+        raise ValueError(f"한 번에 최대 {_MAX_ROWS}행까지 가능합니다(현재 {len(rows)}행).")
+
+    # 관계열의 대상 축을 미리 resolve(열마다 1회).
+    rel_cols = [(rc, ent.get_type_by_slug(db, rc.target_type))
+                for rc in mapping.relation_columns]
+    is_record = type_row.kind_class == EntityKindClass.record
+
+    out, counts = [], {"create": 0, "update": 0, "error": 0,
+                       "linked": 0, "link_unresolved": 0}
+
+    for idx, row in enumerate(rows, start=1):
+        value = (row.get(mapping.value_column) or "").strip()
+        if not value:
+            out.append(_row(idx, "", "error", ["값(이름) 칸이 비었습니다."]))
+            counts["error"] += 1
+            continue
+
+        props = {}
+        for header, key in mapping.property_columns.items():
+            cell = (row.get(header) or "").strip()
+            if cell:
+                props[key] = cell
+
+        status = "update" if ent.resolve_existing(
+            db, type_id=type_row.id, value=value) else "create"
+
+        # 속성 검증(쓰기 전) — 실패하면 그 행은 error.
+        try:
+            ent.validate_properties(db, type_row, props)
+        except ValueError as exc:
+            out.append(_row(idx, value, "error", [f"속성 오류: {exc}"]))
+            counts["error"] += 1
+            continue
+
+        # 관계열 미리보기 — 대상 resolve 여부.
+        rel_view = []
+        for rc, target_type in rel_cols:
+            tval = (row.get(rc.column) or "").strip()
+            if not tval:
+                continue
+            if target_type is None:
+                rel_view.append({"column": rc.column, "relation": rc.relation,
+                                 "target": tval, "resolved": False,
+                                 "message": f"대상 축 없음: {rc.target_type}"})
+                continue
+            found = ent.resolve_existing(db, type_id=target_type.id, value=tval)
+            rel_view.append({"column": rc.column, "relation": rc.relation,
+                             "target": tval, "resolved": found is not None,
+                             "message": None if found else "대상 객체 없음 — 링크 건너뜀"})
+
+        messages = []
+        if not dry_run:
+            try:
+                if is_record:
+                    entity = ent.upsert_record_entity(
+                        db, axis_slug=type_row.slug, name=value,
+                        properties=props, creator_user_id=creator_user_id)
+                else:
+                    entity = ent.create_entity(
+                        db, EntityCreate(type_id=type_row.id, value=value,
+                                         properties=props or None),
+                        creator_user_id=creator_user_id)
+            except ValueError as exc:
+                out.append(_row(idx, value, "error", [f"저장 실패: {exc}"], rel_view))
+                counts["error"] += 1
+                continue
+            # 관계 링크 — 대상 찾은 것만. imported=src, target=dst.
+            for rc, target_type in rel_cols:
+                tval = (row.get(rc.column) or "").strip()
+                if not tval or target_type is None:
+                    continue
+                target = ent.resolve_existing(db, type_id=target_type.id, value=tval)
+                if target is None:
+                    continue
+                try:
+                    ent.add_relation(db, src=entity, dst=target,
+                                     relation=rc.relation,
+                                     creator_user_id=creator_user_id)
+                    counts["linked"] += 1
+                except ValueError as exc:
+                    messages.append(f"관계 '{rc.relation}'→{tval}: {exc}")
+
+        counts[status] += 1
+        counts["link_unresolved"] += sum(1 for r in rel_view if not r["resolved"])
+        out.append(_row(idx, value, status, messages, rel_view))
+
+    return {
+        "summary": {**counts, "total": len(rows), "committed": not dry_run},
+        "rows": out,
+    }
+
+
+def _row(idx, value, status, messages, relations=None) -> dict:
+    return {"row": idx, "value": value, "status": status,
+            "messages": messages, "relations": relations or []}

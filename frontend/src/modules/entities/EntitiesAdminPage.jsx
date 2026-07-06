@@ -18,6 +18,7 @@ import {
   Trash2,
   Combine,
   GitMerge,
+  Upload,
   X,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -43,6 +44,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { DataTable } from '@/shared/components/DataTable'
 import { EntityGraphDialog } from './EntityGraphDialog'
+import { EntityImportDialog } from './EntityImportDialog'
 import { MergeCandidatesDialog } from './MergeCandidatesDialog'
 import { PropertyDefsDialog } from './PropertyDefsDialog'
 import {
@@ -156,6 +158,7 @@ export default function EntitiesAdminPage() {
   const [axisSlug, setAxisSlug] = useState(null)
   const [newAxisOpen, setNewAxisOpen] = useState(false)
   const [relTypesOpen, setRelTypesOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
 
   // Pick the first axis once the list arrives. Falls through cleanly on
   // re-mount because we treat null as "no axis chosen yet".
@@ -214,6 +217,14 @@ export default function EntitiesAdminPage() {
         description="보고서를 태깅하는 N축 통제어휘. 사용자가 picker 에서 추가한 값을 정리/머지/비활성화 합니다."
         actions={
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setImportOpen(true)}
+            >
+              <Upload className="mr-1 h-3.5 w-3.5" />
+              가져오기
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -318,6 +329,13 @@ export default function EntitiesAdminPage() {
           onClose={() => setRelTypesOpen(false)}
         />
       )}
+
+      <EntityImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        types={types}
+        onImported={reloadTypes}
+      />
     </div>
   )
 }

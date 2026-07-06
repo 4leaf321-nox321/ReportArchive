@@ -14,7 +14,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,6 +36,7 @@ from app.modules.entities.schemas import (
     EntityAliasListResponse,
     EntityAliasRead,
     EntityCreate,
+    EntityImportMapping,
     EntityListResponse,
     EntityMergeDismissRequest,
     EntityMergeRequest,
@@ -577,6 +588,57 @@ def search_entities(
     return success_response(
         data=EntitySearchResponse(items=[_to_read(r) for r in rows], total=total)
     )
+
+
+# --------------------------------------------------------------------------- #
+# 벌크 임포트 (데이터 채우기) — 관리자만. 시트로 객체+속성+관계 시딩.
+# --------------------------------------------------------------------------- #
+@entities_router.post("/import/inspect")
+async def import_inspect(
+    file: UploadFile = File(...),
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """업로드 시트의 헤더+샘플을 돌려준다(열 매핑 UI용). 관리자 전용."""
+    from app.modules.entities import import_service
+
+    _require_admin(actor)
+    content = await file.read()
+    try:
+        headers, rows = import_service.parse_sheet(file.filename or "", content)
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    return success_response(
+        data={"columns": headers, "sample": rows[:5], "row_count": len(rows)}
+    )
+
+
+@entities_router.post("/import")
+async def import_entities(
+    file: UploadFile = File(...),
+    mapping: str = Form(...),
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """시트 + 매핑(JSON) → 객체 생성/갱신 + 관계 링크. mapping.dry_run=True 면
+    미리보기(검증만·쓰기 없음). 관리자 전용. 반환: {summary, rows}."""
+    from app.modules.entities import import_service
+
+    _require_admin(actor)
+    try:
+        payload = EntityImportMapping.model_validate_json(mapping)
+    except ValueError as exc:
+        return error_response(f"매핑 형식 오류: {exc}", status_code=400)
+    content = await file.read()
+    try:
+        _headers, rows = import_service.parse_sheet(file.filename or "", content)
+        result = import_service.run_import(
+            db, mapping=payload, rows=rows,
+            creator_user_id=actor.user.id, dry_run=payload.dry_run,
+        )
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    return success_response(data=result)
 
 
 @entities_router.post("", status_code=201)

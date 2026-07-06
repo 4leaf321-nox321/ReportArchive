@@ -346,6 +346,23 @@ class EntityCreate(BaseModel):
     properties: Optional[dict] = None
 
 
+class ImportRelationCol(BaseModel):
+    """벌크 임포트 관계열 — 시트의 한 열을 대상 축 객체와의 관계로 매핑.
+    imported 객체=src, 그 열 값으로 target_type 축에서 찾은 객체=dst."""
+    column: str          # 시트 헤더
+    relation: str        # 관계 slug (relation_types)
+    target_type: str     # 대상 축 slug
+
+
+class EntityImportMapping(BaseModel):
+    """벌크 임포트 매핑 — 어느 축에, 어떤 열을 값·속성·관계로 넣을지."""
+    type_id: int
+    value_column: str                              # 값(이름) 열
+    property_columns: dict[str, str] = {}          # 헤더 → 속성 key
+    relation_columns: list[ImportRelationCol] = []
+    dry_run: bool = True                           # True=미리보기(쓰기 없음)
+
+
 class EntityUpdate(BaseModel):
     """Admin-only edits. `value` rename is allowed but a clash check
     runs in the service layer. `status` is the deprecate/restore toggle."""

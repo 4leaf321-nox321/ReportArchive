@@ -105,11 +105,15 @@ export function EntityGraphDialog({ entityId, label, onClose }) {
               centerId={seed.id}
               relTypeLabels={relTypeLabels}
               active
-              onNodeClick={(node) =>
-                node?.id != null &&
-                node.id !== seed.id &&
-                setSeed({ id: node.id, label: node.label })
-              }
+              onNodeClick={(node) => {
+                if (node?.kind === 'system' && node.refType) {
+                  // system 객체(부서)는 재중심 대신 그 객체 프로필로 이동.
+                  onClose()
+                  navigate(`/objects/${node.refType}/${node.refId}`)
+                } else if (node?.id != null && node.id !== seed.id) {
+                  setSeed({ id: node.id, label: node.label })
+                }
+              }}
             />
           )}
         </div>

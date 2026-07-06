@@ -37,9 +37,14 @@ class EntityTypeRead(BaseModel):
 
 
 class EntityTypeUpdate(BaseModel):
-    """Admin-only — 축의 입력 거버넌스 수정. 보낸 필드만 반영(부분 수정).
+    """Admin-only — 축 수정. 보낸 필드만 반영(부분 수정). slug 는 식별자라 불변.
     value_pattern 을 빈 문자열/None 으로 보내면 패턴 제약 해제."""
 
+    # 기본 정보 (라벨=탭 이름, 아이콘, 설명, 정렬순서). slug 는 바꿀 수 없다.
+    label: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    icon: Optional[str] = Field(default=None, max_length=32)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    sort_order: Optional[int] = Field(default=None, ge=0, le=10_000)
     entry_policy: Optional[EntityEntryPolicy] = None
     value_pattern: Optional[str] = Field(default=None, max_length=255)
     temporal_kind: Optional[EntityTemporalKind] = None

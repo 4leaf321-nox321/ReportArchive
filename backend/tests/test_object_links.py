@@ -110,6 +110,26 @@ def test_object_links_dept_and_objectref():
             for sl in sys_links
         ), sys_links
 
+        # 5b. (A2) 부서 역방향 — /objects/dept/{slug}/links 에 담당 과제가 incoming
+        r = c.get(f"/api/objects/dept/{dept_slug}/links", headers=_h())
+        assert r.status_code == 200, r.text
+        d = r.json()["data"]
+        assert d["object"]["label"] == dept_name
+        assert any(
+            it["direction"] == "in" and it["target"]["id"] == str(proj_id)
+            for it in d["items"]
+        ), d["items"]
+
+        # 5c. (A1) 엔티티 그래프에 부서 system 노드 + 엣지
+        g = c.get(f"/api/entities/{proj_id}/graph", headers=_h()).json()["data"]
+        assert any(
+            n.get("kind") == "system" and n.get("ref_id") == dept_slug
+            for n in g["nodes"]
+        ), g["nodes"]
+        assert any(
+            str(e["dst"]) == f"dept:{dept_slug}" for e in g["edges"]
+        ), g["edges"]
+
         # 6. 삭제
         r = c.delete(f"/api/entities/{proj_id}/object-links/{link_id}", headers=_h())
         assert r.status_code == 200, r.text

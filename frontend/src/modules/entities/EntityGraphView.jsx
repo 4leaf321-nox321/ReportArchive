@@ -15,6 +15,7 @@ const ForceGraph2D = lazy(() => import('react-force-graph-2d'))
 const EDGE_COLOR = 'rgba(148,163,184,0.55)' // slate-400
 const LABEL_COLOR = '#64748b' // slate-500 — 라이트/다크 캔버스 둘 다 가독
 const CENTER_RING = '#f59e0b' // amber — 중심(조회한) 엔티티 강조
+const SYSTEM_COLOR = '#6b7280' // gray-500 — system 객체(부서 등) 사각 노드
 
 // 컨테이너 크기 추적 — ForceGraph2D 는 명시적 width/height 필요. Radix Dialog
 // 안에서 초기 측정 0 으로 갇히는 걸 동기측정+rAF+ResizeObserver 3중 보강.
@@ -76,6 +77,10 @@ export function EntityGraphView({
         label: n.value,
         axis: n.type_slug,
         isCenter: n.id === centerId,
+        // A0.3 스텝3 — system 노드(부서 등)는 다른 목적지·모양으로.
+        kind: n.kind ?? 'entity',
+        refType: n.ref_type,
+        refId: n.ref_id,
       })),
       links: (graph.edges ?? []).map((e) => ({
         source: e.src,
@@ -88,12 +93,18 @@ export function EntityGraphView({
   function paintNode(node, ctx, globalScale) {
     const r = node.isCenter ? 6 : 5
     ctx.beginPath()
-    ctx.moveTo(node.x, node.y - r)
-    ctx.lineTo(node.x + r, node.y)
-    ctx.lineTo(node.x, node.y + r)
-    ctx.lineTo(node.x - r, node.y)
-    ctx.closePath()
-    ctx.fillStyle = axisColor(node.axis)
+    if (node.kind === 'system') {
+      // system 객체(부서 등) — 사각형으로 구분.
+      ctx.rect(node.x - r, node.y - r, r * 2, r * 2)
+    } else {
+      // 엔티티 — 다이아몬드.
+      ctx.moveTo(node.x, node.y - r)
+      ctx.lineTo(node.x + r, node.y)
+      ctx.lineTo(node.x, node.y + r)
+      ctx.lineTo(node.x - r, node.y)
+      ctx.closePath()
+    }
+    ctx.fillStyle = node.kind === 'system' ? SYSTEM_COLOR : axisColor(node.axis)
     ctx.fill()
     if (node.isCenter) {
       ctx.lineWidth = 2 / globalScale

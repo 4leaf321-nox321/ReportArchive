@@ -11,6 +11,7 @@ import { useNavigate } from 'react-router-dom'
 import { Loader2, Search, Boxes, ArrowUpRight } from 'lucide-react'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { Button } from '@/shared/components/ui/button'
+import { Combobox } from '@/shared/components/Combobox'
 import { cn } from '@/shared/lib/utils'
 import { listEntityTypes, listEntities } from '@/shared/api/entities'
 import { ObjectProfile } from './ObjectProfilePage'
@@ -96,23 +97,20 @@ export default function EntityExplorePage() {
         {/* 좌측 — 축 선택 + 값 검색 + 결과 목록 */}
         <aside className="flex w-72 shrink-0 flex-col border-r">
           <div className="space-y-2 border-b p-3">
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              축
-              <select
-                value={typeId ?? ''}
-                onChange={(e) => {
-                  setTypeId(Number(e.target.value))
+            <div className="space-y-1">
+              <span className="text-xs text-muted-foreground">객체</span>
+              <Combobox
+                options={types.map((t) => ({ value: t.id, label: t.label }))}
+                value={typeId}
+                onChange={(id) => {
+                  setTypeId(Number(id))
                   setResults([])
                 }}
-                className="h-8 flex-1 rounded-md border bg-background px-2 text-xs"
-              >
-                {types.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+                placeholder="객체 선택..."
+                searchPlaceholder="객체 검색..."
+                className="h-8 text-xs"
+              />
+            </div>
             {yearApplies && (
               <label className="flex items-center gap-2 text-xs text-muted-foreground">
                 연도

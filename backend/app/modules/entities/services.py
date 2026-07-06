@@ -122,6 +122,18 @@ def update_type(db: Session, row: EntityType, payload: EntityTypeUpdate) -> Enti
     잘못된 정규식은 ValueError 로 거부해 라우트가 400 으로 surface."""
     data = payload.model_dump(exclude_unset=True)
 
+    if "label" in data and data["label"] is not None:
+        label = data["label"].strip()
+        if not label:
+            raise ValueError("라벨은 비워둘 수 없습니다.")
+        row.label = label
+    if "icon" in data and data["icon"] is not None:
+        row.icon = data["icon"].strip()
+    if "description" in data and data["description"] is not None:
+        row.description = data["description"].strip()
+    if "sort_order" in data and data["sort_order"] is not None:
+        row.sort_order = int(data["sort_order"])
+
     if "entry_policy" in data and data["entry_policy"] is not None:
         row.entry_policy = data["entry_policy"]
 
@@ -1581,27 +1593,34 @@ def add_object_link(
     return row
 
 
-def list_object_links_for_entity(
-    db: Session, *, entity_id: int, axis_slug: str
+def list_object_links_for_ref(
+    db: Session, obj_type: str, obj_id: str
 ) -> tuple[list[ObjectLink], list[ObjectLink]]:
-    """(outgoing, incoming) — 이 엔티티가 한쪽 끝인 object_links. outgoing = src,
-    incoming = dst. axis_slug 는 이 엔티티의 축(=src_type/dst_type 매칭용)."""
-    sid = str(entity_id)
+    """(outgoing, incoming) — 이 ObjectRef(type, id) 가 한쪽 끝인 object_links.
+    outgoing = 이것이 src(예: 과제→부서), incoming = 이것이 dst(예: 부서←과제들).
+    entity·system 양쪽 다 동작(부서 역방향 조회 = incoming)."""
     outgoing = list(
         db.execute(
             select(ObjectLink).where(
-                ObjectLink.src_type == axis_slug, ObjectLink.src_id == sid
+                ObjectLink.src_type == obj_type, ObjectLink.src_id == obj_id
             )
         ).scalars()
     )
     incoming = list(
         db.execute(
             select(ObjectLink).where(
-                ObjectLink.dst_type == axis_slug, ObjectLink.dst_id == sid
+                ObjectLink.dst_type == obj_type, ObjectLink.dst_id == obj_id
             )
         ).scalars()
     )
     return outgoing, incoming
+
+
+def list_object_links_for_entity(
+    db: Session, *, entity_id: int, axis_slug: str
+) -> tuple[list[ObjectLink], list[ObjectLink]]:
+    """엔티티 편의 래퍼 — (axis_slug, str(entity_id)) 로 ref 조회에 위임."""
+    return list_object_links_for_ref(db, axis_slug, str(entity_id))
 
 
 def get_object_link(db: Session, link_id: int) -> Optional[ObjectLink]:

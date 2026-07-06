@@ -1105,7 +1105,40 @@ def entity_subgraph(
         max_depth=depth,
         active_only=not actor.is_admin,
     )
+    _augment_graph_object_links(db, data)
     return success_response(data=data)
+
+
+def _augment_graph_object_links(db, data) -> None:
+    """엔티티 서브그래프에 object_links(부서 등 system 객체)를 1-hop 노드로 얹는다
+    (A0.3 스텝3 A1). system 은 terminal — 재귀 확장 없이 각 엔티티 노드의 나가는
+    링크만 붙인다. system 노드 id 는 `type:id` 문자열(엔티티 정수 id 와 충돌 없음),
+    `kind='system'` + ref/url 로 프론트가 다른 목적지로 이동한다."""
+    added: dict = {}
+    for n in list(data.get("nodes", [])):
+        outgoing, _ = services.list_object_links_for_ref(
+            db, n["type_slug"], str(n["id"])
+        )
+        for link in outgoing:
+            other = services.resolve_object(db, link.dst_type, link.dst_id)
+            if not other:
+                continue
+            key = f"{other['type']}:{other['id']}"
+            if key not in added:
+                added[key] = {
+                    "id": key,
+                    "value": other["label"],
+                    "type_slug": other["type"],
+                    "type_id": None,
+                    "kind": "system",
+                    "ref_type": other["type"],
+                    "ref_id": other["id"],
+                    "url": other.get("url"),
+                }
+            data["edges"].append(
+                {"src": n["id"], "dst": key, "relation": link.relation}
+            )
+    data["nodes"].extend(added.values())
 
 
 @entities_router.delete("/{entity_id}")
@@ -1147,3 +1180,30 @@ def resolve_object_ref(
     if ref is None:
         return not_found_response(f"객체를 찾을 수 없습니다: {obj_type}/{obj_id}")
     return success_response(data=ObjectRefRead(**ref))
+
+
+@objects_router.get("/{obj_type}/{obj_id}/links")
+def object_ref_links(
+    obj_type: str,
+    obj_id: str,
+    _actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """이 객체의 cross-kind 링크(양방향, 해석됨) — 인증-only. 부서(dept)로 부르면
+    incoming 이 '이 부서가 담당한 과제들'(A0.3 스텝3 역방향). 상대는 ObjectRef 로
+    해석해 해석 실패(삭제 등)는 건너뛴다."""
+    ref = services.resolve_object(db, obj_type, obj_id)
+    if ref is None:
+        return not_found_response(f"객체를 찾을 수 없습니다: {obj_type}/{obj_id}")
+    outgoing, incoming = services.list_object_links_for_ref(db, obj_type, obj_id)
+    cache: dict = {}
+    items: list[ObjectLinkItem] = []
+    for link in outgoing:
+        other = services.resolve_object(db, link.dst_type, link.dst_id)
+        if other:
+            items.append(_object_link_item(db, link, "out", other, cache))
+    for link in incoming:
+        other = services.resolve_object(db, link.src_type, link.src_id)
+        if other:
+            items.append(_object_link_item(db, link, "in", other, cache))
+    return success_response(data={"object": ObjectRefRead(**ref), "items": items})

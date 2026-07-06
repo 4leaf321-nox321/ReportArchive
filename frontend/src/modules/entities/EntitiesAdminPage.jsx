@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
+  ChevronUp,
+  ChevronDown,
   ExternalLink,
   FileText,
   Link2Off,
@@ -163,6 +165,29 @@ export default function EntitiesAdminPage() {
     }
   }, [shownTypes, axisSlug])
 
+  const [reordering, setReordering] = useState(false)
+  // 축 순서 바꾸기 — 이웃과 sort_order 를 맞바꾼다(두 번의 PATCH). 동률이면
+  // 인접값 기준으로 재배치해 확실히 갈라준다.
+  async function moveAxis(idx, dir) {
+    const a = shownTypes[idx]
+    const b = shownTypes[idx + dir]
+    if (!a || !b || reordering) return
+    const aOrder = a.sort_order ?? idx
+    const bOrder = b.sort_order ?? idx + dir
+    setReordering(true)
+    try {
+      await Promise.all([
+        updateEntityType(a.id, { sortOrder: bOrder === aOrder ? bOrder + dir : bOrder }),
+        updateEntityType(b.id, { sortOrder: aOrder }),
+      ])
+      await reloadTypes()
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err?.message || '순서 변경 실패')
+    } finally {
+      setReordering(false)
+    }
+  }
+
   if (typesLoading) {
     return (
       <div className="p-6 space-y-4">
@@ -215,15 +240,36 @@ export default function EntitiesAdminPage() {
         onValueChange={setAxisSlug}
         className="flex gap-4 items-start"
       >
-        <TabsList className="flex flex-col items-stretch h-auto w-44 shrink-0 max-h-[calc(100vh-180px)] overflow-y-auto">
-          {shownTypes.map((t) => (
-            <TabsTrigger
-              key={t.slug}
-              value={t.slug}
-              className="justify-start text-xs whitespace-normal text-left"
-            >
-              {t.label}
-            </TabsTrigger>
+        <TabsList className="flex flex-col items-stretch h-auto w-48 shrink-0 max-h-[calc(100vh-180px)] overflow-y-auto">
+          {shownTypes.map((t, i) => (
+            <div key={t.slug} className="flex items-center gap-0.5">
+              <TabsTrigger
+                value={t.slug}
+                className="flex-1 justify-start text-xs whitespace-normal text-left"
+              >
+                {t.label}
+              </TabsTrigger>
+              <div className="flex shrink-0 flex-col">
+                <button
+                  type="button"
+                  disabled={i === 0 || reordering}
+                  onClick={() => moveAxis(i, -1)}
+                  title="위로"
+                  className="rounded p-0.5 text-muted-foreground hover:bg-accent disabled:opacity-30"
+                >
+                  <ChevronUp className="h-3 w-3" />
+                </button>
+                <button
+                  type="button"
+                  disabled={i === shownTypes.length - 1 || reordering}
+                  onClick={() => moveAxis(i, 1)}
+                  title="아래로"
+                  className="rounded p-0.5 text-muted-foreground hover:bg-accent disabled:opacity-30"
+                >
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+              </div>
+            </div>
           ))}
         </TabsList>
         <div className="flex-1 min-w-0">
@@ -875,7 +921,7 @@ function AxisPanel({ type, onAxisDeleted, onAxisUpdated }) {
           className="h-6 px-2 text-xs"
           onClick={() => setGovOpen(true)}
         >
-          입력 거버넌스 편집
+          축 편집
         </Button>
       </div>
 
@@ -1158,6 +1204,10 @@ function UsageList({
  * 바꾼다. 저장 시 백엔드가 정규식 유효성을 재검증한다(여기선 빠른 사전 안내만).
  */
 function AxisGovernanceDialog({ type, onClose, onSaved }) {
+  // 기본 정보 (라벨=탭 이름, 아이콘, 설명). slug 는 식별자라 편집 불가.
+  const [label, setLabel] = useState(type.label ?? '')
+  const [icon, setIcon] = useState(type.icon ?? '')
+  const [description, setDescription] = useState(type.description ?? '')
   const [policy, setPolicy] = useState(type.entry_policy ?? 'open')
   const [pattern, setPattern] = useState(type.value_pattern ?? '')
   const [temporalKind, setTemporalKind] = useState(
@@ -1189,17 +1239,23 @@ function AxisGovernanceDialog({ type, onClose, onSaved }) {
     }
   }, [trimmedPattern, test])
 
+  const trimmedLabel = label.trim()
+  const canSave = !patternError && trimmedLabel.length > 0 && !submitting
+
   async function handleSave() {
-    if (patternError) return
+    if (!canSave) return
     setSubmitting(true)
     try {
       await updateEntityType(type.id, {
+        label: trimmedLabel,
+        icon: icon.trim(),
+        description: description.trim(),
         entryPolicy: policy,
         valuePattern: trimmedPattern, // 빈 문자열이면 백엔드가 제약 해제
         temporalKind,
         kindClass,
       })
-      toast.success(`'${type.label}' 입력 거버넌스 저장됨`)
+      toast.success(`'${trimmedLabel}' 축 저장됨`)
       onSaved?.()
     } catch (err) {
       toast.error(
@@ -1213,14 +1269,56 @@ function AxisGovernanceDialog({ type, onClose, onSaved }) {
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>입력 거버넌스 — {type.label}</DialogTitle>
+          <DialogTitle>
+            축 편집 —{' '}
+            <code className="rounded bg-muted px-1 font-mono text-sm">
+              {type.slug}
+            </code>
+          </DialogTitle>
           <DialogDescription>
-            이 축에 새 값을 추가할 수 있는 조건을 정합니다. 기존 값·태그에는
-            영향이 없습니다.
+            이 축의 이름·아이콘·설명과 입력 조건을 수정합니다. slug 는 식별자라
+            바꿀 수 없고, 기존 값·태그에는 영향이 없습니다.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
+          {/* 기본 정보 — 라벨(탭 이름)·아이콘·설명 */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs">라벨 (탭 이름)</Label>
+              <Input
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                maxLength={64}
+                className="h-8"
+                placeholder="예: 모델"
+              />
+              {trimmedLabel.length === 0 && (
+                <p className="text-[11px] text-destructive">라벨은 비울 수 없습니다.</p>
+              )}
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">아이콘 (선택, Lucide 이름)</Label>
+              <Input
+                value={icon}
+                onChange={(e) => setIcon(e.target.value)}
+                maxLength={32}
+                className="h-8"
+                placeholder="예: Tags"
+              />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">설명 (선택)</Label>
+            <Textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              maxLength={2000}
+              rows={2}
+              placeholder="이 축이 무엇을 분류하는지"
+            />
+          </div>
+
           <div className="space-y-1.5">
             <Label className="text-xs">입력 정책</Label>
             <div className="grid grid-cols-2 gap-2">
@@ -1356,11 +1454,7 @@ function AxisGovernanceDialog({ type, onClose, onSaved }) {
           <Button variant="outline" size="sm" onClick={onClose} disabled={submitting}>
             취소
           </Button>
-          <Button
-            size="sm"
-            onClick={handleSave}
-            disabled={submitting || !!patternError}
-          >
+          <Button size="sm" onClick={handleSave} disabled={!canSave}>
             {submitting ? '저장 중…' : '저장'}
           </Button>
         </DialogFooter>

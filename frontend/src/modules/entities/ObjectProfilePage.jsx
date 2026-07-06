@@ -3,7 +3,7 @@
 // + 관련 객체(관계타입별, 근거 포함) + 이 객체를 태깅한 보고서(가시성 필터) +
 // 2단계 관계도. 스키마 변경 없이 기존 서비스를 집약한 조합 엔드포인트
 // (GET /api/entities/{id}/profile)를 렌더한다. "문서 중심 → 객체 중심" 전환의 얼굴.
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   FileText,
@@ -13,6 +13,7 @@ import {
   ArrowUpRight,
   Building2,
 } from 'lucide-react'
+import { Button } from '@/shared/components/ui/button'
 import { Badge } from '@/shared/components/ui/badge'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { ErrorState } from '@/shared/components/ErrorState'
@@ -20,6 +21,7 @@ import { useAsync } from '@/shared/hooks/useAsync'
 import {
   getEntityProfile,
   getEntityGraph,
+  getObjectLinks,
   listEntityTypes,
   listRelationTypes,
 } from '@/shared/api/entities'
@@ -94,7 +96,7 @@ export function ObjectProfile({ entityId, onOpenEntity }) {
       <SystemLinks
         links={profile.system_links}
         relTypeLabels={relTypeLabels}
-        onOpen={(url) => url && navigate(url)}
+        onOpen={(t) => t && navigate(`/objects/${t.type}/${t.id}`)}
       />
 
       <RelatedReports
@@ -107,9 +109,13 @@ export function ObjectProfile({ entityId, onOpenEntity }) {
         graph={graph}
         centerId={entityId}
         relTypeLabels={relTypeLabels}
-        onNodeClick={(node) =>
-          node?.id != null && node.id !== entityId && open(node.id, node.label)
-        }
+        onNodeClick={(node) => {
+          if (node?.kind === 'system' && node.refType) {
+            navigate(`/objects/${node.refType}/${node.refId}`)
+          } else if (node?.id != null && node.id !== entityId) {
+            open(node.id, node.label)
+          }
+        }}
       />
     </div>
   )
@@ -299,8 +305,8 @@ function SystemLinks({ links, relTypeLabels, onOpen }) {
           <button
             key={it.link_id}
             type="button"
-            onClick={() => onOpen(it.target?.url)}
-            disabled={!it.target?.url}
+            onClick={() => onOpen(it.target)}
+            disabled={!it.target}
             className="group inline-flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-sm hover:bg-accent disabled:opacity-60"
             title={it.evidence_note || undefined}
           >
@@ -308,9 +314,7 @@ function SystemLinks({ links, relTypeLabels, onOpen }) {
               {relTypeLabels.get(it.relation) ?? it.relation}
             </span>
             <span className="truncate">{it.target?.label ?? it.target?.id}</span>
-            {it.target?.url && (
-              <ArrowUpRight className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100" />
-            )}
+            <ArrowUpRight className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100" />
           </button>
         ))}
       </div>
@@ -377,5 +381,115 @@ function GraphSection({ graph, centerId, relTypeLabels, onNodeClick }) {
         </>
       )}
     </Section>
+  )
+}
+
+/**
+ * 일반 객체 프로필 (A0.3 스텝3, ObjectRef 일반화). 라우트 `/objects/:objType/:objId`.
+ * entity 객체는 더 풍부한 `/entities/:id` 로 리다이렉트하고, **system 객체(부서 등)**
+ * 는 여기서 헤더 + "관련 객체"(cross-kind 링크 양방향)를 보여준다. 부서면 담당 과제들이
+ * incoming 으로 뜬다("이 부서가 담당한 것 전부"). object_links(GET /objects/{t}/{id}/links).
+ */
+export function ObjectRefProfilePage() {
+  const { objType, objId } = useParams()
+  const navigate = useNavigate()
+
+  const { data, loading, error, reload } = useAsync(
+    () => getObjectLinks(objType, objId),
+    [objType, objId],
+  )
+  const { data: relTypesRes } = useAsync(() => listRelationTypes(), [])
+  // slug → { label, inverse_label } — incoming 은 역라벨로 보여준다(부서 입장).
+  const relMeta = useMemo(() => {
+    const m = new Map()
+    for (const rt of relTypesRes?.items ?? []) m.set(rt.slug, rt)
+    return m
+  }, [relTypesRes])
+
+  const obj = data?.object
+
+  // entity 객체는 값 프로필(/entities/:id)이 더 풍부 — 그쪽으로 넘긴다.
+  useEffect(() => {
+    if (obj && obj.kind_class !== 'system') {
+      navigate(`/entities/${obj.id}`, { replace: true })
+    }
+  }, [obj, navigate])
+
+  if (error) {
+    return (
+      <div className="mx-auto w-full max-w-4xl px-4 py-6">
+        <ErrorState description={String(error.message ?? error)} onRetry={reload} />
+      </div>
+    )
+  }
+  if (loading || !obj || obj.kind_class !== 'system') {
+    return (
+      <div className="mx-auto w-full max-w-4xl px-4 py-6">
+        <Skeleton className="h-28" />
+      </div>
+    )
+  }
+
+  const items = data.items ?? []
+  return (
+    <div className="mx-auto w-full max-w-4xl px-4 py-6">
+      <section className="mb-6 rounded-lg border bg-card p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Building2 className="h-5 w-5 text-muted-foreground" />
+          <span className="text-lg font-semibold">{obj.label}</span>
+          <Badge variant="outline" className="text-[11px]">
+            {obj.type === 'dept' ? '부서' : obj.type}
+          </Badge>
+          {obj.url && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="ml-auto"
+              onClick={() => navigate(obj.url)}
+            >
+              부서 홈 열기 <ArrowUpRight className="ml-1 h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
+      </section>
+
+      <Section icon={Network} title="관련 객체" count={items.length}>
+        {items.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            이 조직에 연결된 객체가 없습니다.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {items.map((it) => {
+              const rt = relMeta.get(it.relation)
+              const label =
+                it.direction === 'in'
+                  ? rt?.inverse_label ?? it.relation
+                  : rt?.label ?? it.relation
+              return (
+                <button
+                  key={it.link_id}
+                  type="button"
+                  onClick={() =>
+                    navigate(`/objects/${it.target.type}/${it.target.id}`)
+                  }
+                  className="group inline-flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-sm hover:bg-accent"
+                  title={it.evidence_note || undefined}
+                >
+                  <span className="text-[10px] text-muted-foreground">{label}</span>
+                  <span className="truncate">
+                    {it.target?.label ?? it.target?.id}
+                  </span>
+                  <Badge variant="outline" className="text-[9px]">
+                    {it.target?.type}
+                  </Badge>
+                  <ArrowUpRight className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100" />
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </Section>
+    </div>
   )
 }

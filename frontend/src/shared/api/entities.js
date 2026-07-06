@@ -114,9 +114,22 @@ export async function createEntityType({
  */
 export async function updateEntityType(
   id,
-  { entryPolicy, valuePattern, temporalKind, kindClass } = {},
+  {
+    label,
+    icon,
+    description,
+    sortOrder,
+    entryPolicy,
+    valuePattern,
+    temporalKind,
+    kindClass,
+  } = {},
 ) {
   const body = {}
+  if (label !== undefined) body.label = label
+  if (icon !== undefined) body.icon = icon
+  if (description !== undefined) body.description = description
+  if (sortOrder !== undefined) body.sort_order = sortOrder
   if (entryPolicy !== undefined) body.entry_policy = entryPolicy
   if (valuePattern !== undefined) body.value_pattern = valuePattern
   // 시간 차원 정책 (p56): evergreen|lifecycle|yearly|derived.
@@ -230,6 +243,18 @@ export async function resolveObject(type, id) {
 /** 이 엔티티의 cross-kind 링크(해석됨) 목록. `{ items: ObjectLinkItem[] }`. */
 export async function listObjectLinks(entityId) {
   const res = await apiClient.get(`${BASE}/${entityId}/object-links`)
+  return extractData(res)
+}
+
+/**
+ * 어떤 객체든(부서 포함) 그 객체의 cross-kind 링크(양방향, 해석됨).
+ *   `{ object: ObjectRef, items: ObjectLinkItem[] }`
+ * 부서로 부르면 incoming = '이 부서가 담당한 과제들'(역방향). 일반 객체 프로필용.
+ */
+export async function getObjectLinks(type, id) {
+  const res = await apiClient.get(
+    `/api/objects/${type}/${encodeURIComponent(id)}/links`,
+  )
   return extractData(res)
 }
 

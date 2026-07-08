@@ -50,6 +50,11 @@ class MeRead(BaseModel):
     # 아니지만 공개 컨텐츠가 있어 *읽기전용*으로 진입한 외부 열람자면 True.
     # 프런트가 읽기전용 배너·쓰기 affordance 숨김을 그리는 신호.
     public_view: bool = False
+    # 사용자의 "소속(home)" 부서 slug — 권위 있는 소속 신호(User.home_workspace_slug).
+    # 부서를 옮기면 옛 멤버십은 남고 이 값만 새 부서로 갱신되므로, 프런트의 홈/
+    # 기본 부서 판정은 memberships[0](가입 순서=옛 부서일 수 있음)이 아니라 이걸
+    # 써야 한다. 미지정 사용자는 None.
+    home_workspace_slug: Optional[str] = None
     memberships: list[MembershipRead]
     # 시스템 관리자 flag — pulled straight from User.is_system_admin.
     # Distinct from workspace `role`: a 부서 관리자 (role=admin in a

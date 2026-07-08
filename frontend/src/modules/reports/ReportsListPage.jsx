@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
+  BadgeCheck,
   Building2,
   ChevronDown,
   ChevronRight,
@@ -19,6 +20,7 @@ import {
   ShieldQuestion,
   Sparkles,
   Trash2,
+  Undo2,
   Unlink,
   X,
 } from 'lucide-react'
@@ -56,6 +58,9 @@ import {
   listReports,
   moveReportToFolder,
   bulkAiSummary,
+  renameReport,
+  publishReport,
+  unpublishReport,
 } from './api'
 import { setMountFolder } from '@/shared/api/mounts'
 import { BulkSubmitToCompositeDialog } from '@/modules/composites/SubmitToCompositeDialog'
@@ -214,6 +219,8 @@ export default function ReportsListPage() {
   const [bulkMountOpen, setBulkMountOpen] = useState(false)
   const [bulkSubmitOpen, setBulkSubmitOpen] = useState(false)
   const [bulkSuggestOpen, setBulkSuggestOpen] = useState(false)
+  const [bulkPublishOpen, setBulkPublishOpen] = useState(false)
+  const [bulkUnpublishOpen, setBulkUnpublishOpen] = useState(false)
   const [bulkBusy, setBulkBusy] = useState(false)
   // FolderSidebar 의 폴더별 카운트(report_count, uncategorized_count) 는
   // 자체 listFolders 응답에서 오기 때문에, 여기서 보고서를 옮기거나
@@ -239,6 +246,19 @@ export default function ReportsListPage() {
     },
     [slug, patchWorkspace],
   )
+  // 목록에서 제목 즉시 변경(inline rename) — 상세 진입 없이 여러 보고서 이름을
+  // 한 번에 손보기 위함. editingId = 지금 편집 중인 행(없으면 null), editingValue
+  // = 입력 중 텍스트. renameOverrides = 저장 성공한 새 제목을 다음 재조회 전까지
+  // 낙관적으로 덮어쓰는 맵(전체 reload 스켈레톤 깜빡임 회피). savingRename = 저장
+  // 진행 중(중복 커밋 방지). 편집 자격이 있는 행(can_edit·발행 전)만 연다.
+  const [editingId, setEditingId] = useState(null)
+  const [editingValue, setEditingValue] = useState('')
+  const [savingRename, setSavingRename] = useState(false)
+  const [renameOverrides, setRenameOverrides] = useState({})
+  // 단일/더블 클릭 판별용 타이머 — 편집 가능한 제목은 한 번 클릭 시 잠깐 기다렸다
+  // 상세로 이동하고, 더블클릭이 오면 이동을 취소하고 편집을 연다(행 클릭=상세
+  // 진입 동작은 유지하면서 더블클릭=제목 수정을 얹는다).
+  const titleClickTimer = useRef(null)
   // MountDialog opened from the 게시 cell click — `null` = closed.
   // We pass the full report row so the dialog has report.owner_user_id /
   // title without a second fetch. onChanged triggers reload() so the
@@ -300,7 +320,14 @@ export default function ReportsListPage() {
   const templateName = makeTemplateNameLookup(templates)
 
   const myUserId = me?.user?.id
-  const myHomeSlug = me?.memberships?.[0]?.workspace_slug
+  // 소속(home) 부서 — 권위 있는 소속 신호를 최우선. 부서를 옮겨도 옛 멤버십이
+  // 남아 memberships[0] 은 옛 부서일 수 있으므로, home_workspace_slug 를 먼저 쓰고
+  // 없을 때만 첫 부서(비개인) 멤버십으로 폴백한다.
+  const myHomeSlug =
+    me?.home_workspace_slug ||
+    me?.memberships?.find(
+      (m) => !m.workspace_slug?.startsWith('personal-'),
+    )?.workspace_slug
 
   // Workspaces eligible as a "내 소속" scope target — the user's home,
   // every descendant under it (for parent-tier members that want to drill
@@ -330,9 +357,24 @@ export default function ReportsListPage() {
   // collection, just re-ordered.
   useEffect(() => {
     setSelectedIds(new Set())
+    setEditingId(null)
     // trashView 도 포함 — 전체↔휴지통 은 folderQueryValue 가 둘 다 undefined 라
     // 그것만으론 데이터 전환을 못 감지한다(선택 잔류 방지).
   }, [slug, folderQueryValue, entityFilterKey, trashView])
+
+  // 새 목록이 들어오면(재조회) 낙관적 rename 덮어쓰기를 비운다 — 서버 응답에
+  // 이미 새 제목이 반영돼 있으므로 중복/불일치를 남기지 않는다.
+  useEffect(() => {
+    setRenameOverrides({})
+  }, [reports])
+
+  // 언마운트 시 미발화 단일클릭 타이머 정리(예약된 상세 이동 취소).
+  useEffect(
+    () => () => {
+      if (titleClickTimer.current) clearTimeout(titleClickTimer.current)
+    },
+    [],
+  )
 
   // 기간 필터의 lower-bound 를 ISO 문자열로 한 번 계산. 'd30'/'d90'/
   // 'd365' → now - N일, 'y2026' → 2026-01-01. Compare 가 ISO 문자열로
@@ -396,6 +438,9 @@ export default function ReportsListPage() {
     })
     .map((r) => ({
       ...r,
+      // 낙관적 제목 덮어쓰기 — 방금 목록에서 rename 한 값이 다음 재조회 전까지
+      // 즉시 반영되게(검색·정렬도 이 title 을 그대로 본다).
+      title: renameOverrides[r.id] ?? r.title,
       // Flatten the embedded report_type ref into a sortable/searchable
       // string so DataTable's column sort + substring search both work
       // without bespoke comparators. `report_type` itself is kept around
@@ -587,6 +632,61 @@ export default function ReportsListPage() {
     )
   }, [])
 
+  // ── 목록 inline rename 핸들러 ────────────────────────────────────────
+  // Escape 로 취소할 때 뒤따르는 blur 가 다시 커밋하지 않도록 하는 플래그.
+  const skipBlurRef = useRef(false)
+
+  function beginTitleEdit(r) {
+    if (titleClickTimer.current) {
+      clearTimeout(titleClickTimer.current)
+      titleClickTimer.current = null
+    }
+    skipBlurRef.current = false
+    setEditingId(r.id)
+    setEditingValue(r.title ?? '')
+  }
+
+  function cancelTitleEdit() {
+    setEditingId(null)
+    setEditingValue('')
+  }
+
+  async function commitTitleEdit(r) {
+    const next = editingValue.trim()
+    // 빈 값이거나 그대로면 저장 없이 닫는다.
+    if (!next || next === (r.title ?? '')) {
+      cancelTitleEdit()
+      return
+    }
+    setSavingRename(true)
+    try {
+      await renameReport(r.id, next)
+      // 낙관적 반영 — 다음 재조회 전까지 이 제목으로 보이게.
+      setRenameOverrides((m) => ({ ...m, [r.id]: next }))
+      setEditingId(null)
+      setEditingValue('')
+      toast.success('제목을 변경했습니다.')
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err?.message || '제목 변경에 실패했습니다.',
+      )
+      // 편집 상태는 유지 — 사용자가 다시 시도하거나 Esc 로 취소.
+    } finally {
+      setSavingRename(false)
+    }
+  }
+
+  // 편집 가능한 제목의 단일 클릭 — 잠깐 기다렸다 상세로 이동한다. 더블클릭이
+  // 오면 beginTitleEdit 가 이 타이머를 취소하므로 이동 대신 편집이 열린다.
+  function handleTitleClick(e, r) {
+    e.stopPropagation()
+    if (titleClickTimer.current) return
+    titleClickTimer.current = setTimeout(() => {
+      titleClickTimer.current = null
+      navigate(`/w/${slug}/reports/${r.id}`)
+    }, 220)
+  }
+
   // Column widths are pinned so page navigation doesn't reflow them.
   // 제목 stays flexible (no explicit width) so it absorbs whatever
   // space the fixed-width columns don't take. The "max content" of
@@ -619,18 +719,72 @@ export default function ReportsListPage() {
       // instead of squishing the title down to a few characters.
       headerClassName: 'min-w-[260px]',
       cellClassName: 'font-medium truncate min-w-[260px]',
-      render: (r) => (
-        <span className="flex items-center gap-1.5 truncate" title={r.title}>
-          {/* 조직 간 공개 탐색에서 끼어든 다른 조직의 공개 보고서 행 표시(§7.2). */}
-          {r.is_external_public && (
-            <Globe
-              className="h-3.5 w-3.5 shrink-0 text-sky-500"
-              aria-label="다른 조직의 공개 보고서"
+      render: (r) => {
+        // 편집 중인 행 — 인라인 입력. 행 클릭(상세 이동)·체크박스와 섞이지
+        // 않도록 클릭/더블클릭을 모두 stopPropagation.
+        if (editingId === r.id) {
+          return (
+            <input
+              autoFocus
+              value={editingValue}
+              disabled={savingRename}
+              maxLength={255}
+              onChange={(e) => setEditingValue(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  e.currentTarget.blur() // onBlur 가 커밋을 담당
+                } else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  skipBlurRef.current = true // 뒤따르는 blur 커밋 방지
+                  cancelTitleEdit()
+                }
+              }}
+              onBlur={() => {
+                if (skipBlurRef.current) {
+                  skipBlurRef.current = false
+                  return
+                }
+                commitTitleEdit(r)
+              }}
+              className="w-full rounded border border-primary/50 bg-background px-1.5 py-0.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-primary"
             />
-          )}
-          <span className="truncate">{r.title}</span>
-        </span>
-      ),
+          )
+        }
+        // 편집 자격 — 서버가 계산한 can_edit(편집 권한) + 발행 전(finalized 제외)
+        // + 외부 열람자 아님. 자격 있는 행만 더블클릭으로 편집을 연다.
+        const canRename =
+          Boolean(r.can_edit) && r.phase !== 'finalized' && !isPublicView
+        return (
+          <span
+            className={cn(
+              'flex items-center gap-1.5 truncate',
+              canRename && 'cursor-text',
+            )}
+            title={canRename ? '더블클릭하여 제목 수정' : r.title}
+            onClick={canRename ? (e) => handleTitleClick(e, r) : undefined}
+            onDoubleClick={
+              canRename
+                ? (e) => {
+                    e.stopPropagation()
+                    beginTitleEdit(r)
+                  }
+                : undefined
+            }
+          >
+            {/* 조직 간 공개 탐색에서 끼어든 다른 조직의 공개 보고서 행 표시(§7.2). */}
+            {r.is_external_public && (
+              <Globe
+                className="h-3.5 w-3.5 shrink-0 text-sky-500"
+                aria-label="다른 조직의 공개 보고서"
+              />
+            )}
+            <span className="truncate">{r.title}</span>
+          </span>
+        )
+      },
     },
     {
       key: 'template_id',
@@ -892,6 +1046,18 @@ export default function ReportsListPage() {
     runBulk((id) => deleteReport(id), { successWord: '영구 삭제됨' })
   }
 
+  // 일괄 발행/발행 취소 — 각 보고서 단위 publish/unpublish 는 작성자(또는 시스템
+  // 관리자)만 가능하다. 본인 소유가 아닌 선택 항목은 서버가 403 으로 거절 →
+  // Promise.allSettled 의 fail 카운트로 잡혀 토스트에 ok/fail 요약된다. 둘 다
+  // 멱등(이미 발행/미발행이면 그대로) 이라 중복 클릭도 안전하다.
+  function handleBulkPublish() {
+    runBulk((id) => publishReport(id), { successWord: '발행됨' })
+  }
+
+  function handleBulkUnpublish() {
+    runBulk((id) => unpublishReport(id), { successWord: '발행 취소됨' })
+  }
+
   /** Bulk folder change — branches on isOrg because the two scopes use
    *  different routes (Report.folder_id vs ReportMount.folder_id). The
    *  same `folderId === null` sentinel means "uncategorized" in both. */
@@ -1139,8 +1305,18 @@ export default function ReportsListPage() {
                     effectiveSelected.has(r.id) &&
                     (r.mount_workspaces ?? []).length > 0,
                 )}
+                // 선택 항목에 미발행(발행 대상) / 발행됨(발행 취소 대상) 이 하나라도
+                // 있을 때만 각 버튼을 노출해 dead-end 클릭을 막는다.
+                hasUnfinalizedInSelection={list.some(
+                  (r) => effectiveSelected.has(r.id) && r.phase !== 'finalized',
+                )}
+                hasFinalizedInSelection={list.some(
+                  (r) => effectiveSelected.has(r.id) && r.phase === 'finalized',
+                )}
                 onMove={handleBulkMove}
                 onMount={() => setBulkMountOpen(true)}
+                onPublish={() => setBulkPublishOpen(true)}
+                onUnpublish={() => setBulkUnpublishOpen(true)}
                 canSubmitComposite={isOrg}
                 onSubmitComposite={() => setBulkSubmitOpen(true)}
                 onSuggestEntities={() => setBulkSuggestOpen(true)}
@@ -1264,6 +1440,22 @@ export default function ReportsListPage() {
           confirmLabel="영구 삭제"
           variant="destructive"
           onConfirm={handleBulkPurge}
+        />
+        <ConfirmDialog
+          open={bulkPublishOpen}
+          onOpenChange={setBulkPublishOpen}
+          title="발행"
+          description={`선택한 ${effectiveSelected.size}건을 발행합니다. 발행하면 읽기 전용이 되고, 게시된 부서 게시판의 구성원에게 알림이 갑니다. 본인이 작성자인 보고서만 처리되며, 나머지는 건너뜁니다.`}
+          confirmLabel="발행"
+          onConfirm={handleBulkPublish}
+        />
+        <ConfirmDialog
+          open={bulkUnpublishOpen}
+          onOpenChange={setBulkUnpublishOpen}
+          title="발행 취소"
+          description={`선택한 ${effectiveSelected.size}건의 발행을 취소합니다(작성 중 상태로 되돌아가 다시 편집할 수 있습니다). 본인이 작성자인 보고서만 처리되며, 나머지는 건너뜁니다.`}
+          confirmLabel="발행 취소"
+          onConfirm={handleBulkUnpublish}
         />
         <MountDialog
           open={Boolean(mountDialogReport)}
@@ -1514,8 +1706,12 @@ function BulkActionBar({
   canMove,
   workspaceSlug,
   hasMountsInSelection,
+  hasUnfinalizedInSelection,
+  hasFinalizedInSelection,
   onMove,
   onMount,
+  onPublish,
+  onUnpublish,
   canSubmitComposite,
   onSubmitComposite,
   onSuggestEntities,
@@ -1562,6 +1758,36 @@ function BulkActionBar({
           >
             <Unlink className="h-3.5 w-3.5" />
             게시 정리
+          </Button>
+        )}
+        {/* 발행 — 선택 보고서들의 phase 를 finalized 로(작성자만, 서버 게이트).
+            미발행 항목이 하나라도 있을 때만 노출. */}
+        {hasUnfinalizedInSelection && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1"
+            onClick={onPublish}
+            disabled={busy}
+            title="선택한 보고서들을 발행(작성자 본인 것만 처리)"
+          >
+            <BadgeCheck className="h-3.5 w-3.5" />
+            발행
+          </Button>
+        )}
+        {/* 발행 취소 — finalized → drafting(작성자만). 발행된 항목이 하나라도
+            있을 때만 노출. */}
+        {hasFinalizedInSelection && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1"
+            onClick={onUnpublish}
+            disabled={busy}
+            title="선택한 보고서들의 발행을 취소(작성자 본인 것만 처리)"
+          >
+            <Undo2 className="h-3.5 w-3.5" />
+            발행 취소
           </Button>
         )}
         {/* AI 태그 추천 — 선택한 보고서들의 본문에서 태그 후보를 모아 검토

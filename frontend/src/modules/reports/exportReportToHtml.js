@@ -703,7 +703,7 @@ async function capturePageThumbnails(sourceRoot, report = () => {}, signal) {
   report({ phase: 'capture', label: 'html2canvas 로드 중...', current: 0, total: pages.length })
   let html2canvas
   try {
-    const mod = await import('html2canvas')
+    const mod = await import('html2canvas-pro')
     html2canvas = mod.default || mod
   } catch (err) {
     console.warn('[html-export] html2canvas load failed — browse panel will be text-only', err)

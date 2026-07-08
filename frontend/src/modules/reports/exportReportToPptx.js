@@ -1,13 +1,15 @@
 /** 보고서 → PowerPoint(.pptx) 내보내기.
  *
  *  보고서는 "폭 고정·세로로 흐르는 12열 그리드"이고 PPT 는 "고정 크기 슬라이드"라:
- *    1) slideLayout 공용 로직으로 위젯을 '행 그룹'으로 묶고(멀티컬럼 유지) 슬라이드
- *       단위로 나눈다 — **편집 가이드(SlideGuideOverlay)와 완전히 동일한 기준**
- *       (각 위젯의 뷰 높이 + 전체 슬라이드 높이 예산, 여백 없음)이라 "웹 1장,
- *       PPT 2장" 같은 어긋남이 없다.
+ *    1) 위젯을 '행 그룹'으로 묶고(멀티컬럼 유지) 실제 렌더 높이 기준으로 슬라이드
+ *       단위로 나눈다(groupRowsByRenderHeight). 편집 가이드(SlideGuideOverlay)는
+ *       뷰 높이로 근사 표시하지만 분할 규칙·예산은 공유한다.
  *    2) 그리드 폭 → 슬라이드 폭(full-bleed)으로 매핑해 배치(페이지마다 새 슬라이드).
- *    3) 멤버십은 뷰 높이로 정했지만 실제 배치는 렌더 rect 라, 한 슬라이드의 실제
- *       콘텐츠가 슬라이드보다 길면 그 슬라이드만 맞춤 축소(가로 가운데)한다.
+ *       덱 전체가 **같은 스케일**이라 같은 위젯이 슬라이드마다 크기가 달라지지 않고
+ *       화면에서 본 비율 그대로 나온다. 슬라이드보다 길면 통째로 줄이지 않고 넘친
+ *       행을 다음 슬라이드로 넘긴다(짧으면 아래에 자연스러운 여백).
+ *    3) 유일한 예외 — 한 행(거대 위젯) 자체가 슬라이드보다 크면 넘길 곳이 없어
+ *       그 슬라이드만 맞춤 축소(가로 가운데)한다.
  *
  *  위젯 처리(Phase 2):
  *    - 글 위젯(heading/rich_text/bulleted_list/key_value) → 편집 가능한
@@ -43,8 +45,9 @@ function pptxTableBorder(content) {
   return { type: 'solid', pt, color }
 }
 import {
-  groupRowsIntoSlides,
+  groupRowsByRenderHeight,
   measureSlideRows,
+  SLIDE_MARGIN_FRAC,
   slideHeightPx as slideHeightPxFor,
 } from './slideLayout'
 
@@ -56,6 +59,16 @@ const SLIDE_SIZES = {
 }
 const DEFAULT_RATIO = '16:9'
 const TEXT_FONT = '맑은 고딕' // 네이티브 텍스트 기본 글꼴(한글 대응)
+
+// 폰트 크기 기준 그리드 폭(px). 폰트를 **캔버스 폭과 무관하게** 만든다:
+// 실제 그리드 폭이 아니라 항상 이 기준 폭에서 재는 것처럼 pt 를 계산하므로
+// (fontNorm = gridWidthPx/이값 을 곱하면 gridWidthPx 가 상쇄됨) →
+//   폰트 pt = 화면px × (콘텐츠폭 / FONT_REF_GRID_PX) × 72 × scale
+// 즉 26px 제목은 디자인 폭이 1024든 2000이든 항상 같은 pt 가 나온다.
+// 값은 기본 캔버스(≈1024 폭−패딩)에 맞춰, 기존 기본-폭 보고서는 거의 불변.
+// ↑키우려면 값을 낮추고, ↓줄이려면 높인다. 위젯 박스 크기는 안 바뀌므로 너무
+// 키우면 글 많은 박스가 아래로 넘칠 수 있다.
+const FONT_REF_GRID_PX = 1000
 
 function throwIfAborted(signal) {
   if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError')
@@ -123,7 +136,16 @@ function readVisibleCaption(blockEl) {
   // 중간선보다 아래에 있으면 below 로 본다(content 를 안 들고도 DOM 으로 판단).
   const blockRect = blockEl.getBoundingClientRect()
   const below = blockRect.height > 0 && r.top > blockRect.top + blockRect.height / 2
-  return { text, heightPx: r.height || 0, fontPx, below }
+  // 블록 상단 기준 캡션의 top/bottom(px) — 이미지 폴백에서 캡션 영역을 크롭해
+  // '내용만' 남길 때 쓴다.
+  return {
+    text,
+    heightPx: r.height || 0,
+    fontPx,
+    below,
+    topPx: r.top - blockRect.top,
+    bottomPx: r.bottom - blockRect.top,
+  }
 }
 
 /** 캡션 텍스트박스를 위젯 영역 상단(기본) 또는 하단(below)에 얹고, 차지한
@@ -137,6 +159,62 @@ function addCaptionBox(slide, caption, pos, ptPerPx) {
     { x: pos.x, y, w: pos.w, h: capH, valign: 'top', wrap: true, fontFace: TEXT_FONT, margin: 1 },
   )
   return capH
+}
+
+/** 캡션·화면전용(export-skip/overlay) 요소를 뺀 '내용' 요소들이 블록 박스를 넘는
+ *  최대 넘침(px, 상하좌우 ≥0). translate/absolute 로 박스 밖으로 나간 라벨(마일스톤
+ *  아래 라벨 등)을 캡처에 포함시키기 위한 여백. 과도 방지로 각 변 블록 크기까지. */
+function measureContentOverflow(blockEl, rect) {
+  let top = 0
+  let right = 0
+  let bottom = 0
+  let left = 0
+  for (const el of blockEl.querySelectorAll('*')) {
+    if (el.closest('[data-export-skip], [data-export-overlay]')) continue
+    const r = el.getBoundingClientRect()
+    if (r.width < 1 || r.height < 1) continue
+    top = Math.max(top, rect.top - r.top)
+    right = Math.max(right, r.right - rect.right)
+    bottom = Math.max(bottom, r.bottom - rect.bottom)
+    left = Math.max(left, rect.left - r.left)
+  }
+  const cap = Math.max(rect.width, rect.height)
+  return {
+    top: Math.min(cap, Math.max(0, Math.ceil(top))),
+    right: Math.min(cap, Math.max(0, Math.ceil(right))),
+    bottom: Math.min(cap, Math.max(0, Math.ceil(bottom))),
+    left: Math.min(cap, Math.max(0, Math.ceil(left))),
+  }
+}
+
+/** 이미지 폴백 위젯 캡처. 캡션(그림/표 N)은 호출부가 네이티브 텍스트박스로 따로
+ *  얹으므로 여기선 캡션을 **자리만 두고 안 보이게**(hideCaption) 떠서, 위젯 비율을
+ *  그대로 유지한다(크롭 안 함 → 늘어짐·잘림 없음). 박스 밖으로 삐져나온 요소는
+ *  넘친 만큼 캡처 영역을 넓혀 담는다. 반환: { canvas, rect } — rect 는 캔버스가 덮는
+ *  영역(블록 좌상단 기준 px)이라 호출부가 그대로 슬라이드에 매핑해 배치한다. */
+async function captureContentCanvas(blockEl, caption) {
+  const rect = blockEl.getBoundingClientRect()
+  const w = rect.width
+  const h = rect.height
+  const hideCaption = !!(caption && caption.heightPx > 0)
+  if (!(w > 0) || !(h > 0)) {
+    const canvas = await captureBlockToCanvas(blockEl, { scale: 2, hideCaption })
+    return { canvas, rect: { left: 0, top: 0, width: w, height: h } }
+  }
+  const ov = measureContentOverflow(blockEl, rect)
+  const useRegion = ov.top > 1 || ov.right > 1 || ov.bottom > 1 || ov.left > 1
+  const region = useRegion
+    ? { x: -ov.left, y: -ov.top, width: w + ov.left + ov.right, height: h + ov.top + ov.bottom }
+    : null
+  const canvas = await captureBlockToCanvas(blockEl, {
+    scale: 2,
+    hideCaption,
+    ...(region ? { region } : {}),
+  })
+  const cover = region
+    ? { left: -ov.left, top: -ov.top, width: w + ov.left + ov.right, height: h + ov.top + ov.bottom }
+    : { left: 0, top: 0, width: w, height: h }
+  return { canvas, rect: cover }
 }
 
 /** 글 위젯을 네이티브 텍스트박스로 배치 시도(+ 캡션 박스). 성공/빈내용은
@@ -216,6 +294,11 @@ export async function exportReportToPptx({
 } = {}) {
   const ratio = SLIDE_SIZES[slide.ratio] ? slide.ratio : DEFAULT_RATIO
   const dim = SLIDE_SIZES[ratio]
+  // 상하좌우 여백(동일 인치 = 폭 × SLIDE_MARGIN_FRAC). 콘텐츠는 슬라이드 전체가
+  // 아니라 여백을 뺀 안쪽 영역에 배치한다(좌상단 딱 붙음 방지). slideHeightPx 의
+  // 높이 예산도 같은 여백을 반영하므로 가이드와 분할 기준이 일치한다.
+  const margin = dim.w * SLIDE_MARGIN_FRAC
+  const contentW = dim.w - 2 * margin
 
   const pages = gatherPages(draft).filter((p) => p.rows.length > 0)
   const totalBlocks = pages.reduce(
@@ -239,22 +322,30 @@ export async function exportReportToPptx({
     const blockMeta = buildBlockMeta(template, pg.page)
     const content = pg.page?.content ?? {}
 
-    // 편집 가이드와 동일 기준: 전체 슬라이드 높이(여백 없음) 예산 + mirror 뷰 높이.
+    // 편집 가이드와 동일 기준: 여백 반영 콘텐츠영역 높이 예산 + mirror 뷰 높이.
     const slideH = slideHeightPxFor(pg.gridWidthPx, ratio)
     if (!Number.isFinite(slideH) || slideH <= 0) continue
-    const pxPerIn = pg.gridWidthPx / dim.w // full-bleed: 그리드 폭 → 슬라이드 폭
-    const slideGroups = groupRowsIntoSlides(pg.rows, slideH)
+    const pxPerIn = pg.gridWidthPx / contentW // 그리드 폭 → 콘텐츠 영역 폭(여백 안쪽)
+    // 폰트를 캔버스 폭과 무관하게: 이 계수를 ptPerPx 에 곱하면 gridWidthPx 가
+    // 상쇄돼 폰트가 항상 '기준 폭' 기준으로 정해진다(위젯 위치·크기엔 영향 없음
+    // — pos 는 pxPerIn 만 쓰고 폰트만 ptPerPx 를 쓴다).
+    const fontNorm = pg.gridWidthPx / FONT_REF_GRID_PX
+    // 실제 렌더 높이 기준으로 분할 → 넘치는 콘텐츠는 다음 슬라이드로 넘어가고,
+    // 덱 전체가 같은 스케일(위젯 크기 = 화면 그대로)로 유지된다.
+    const slideGroups = groupRowsByRenderHeight(pg.rows, slideH)
 
     for (const slideRows of slideGroups) {
       throwIfAborted(signal)
       const curSlide = pptx.addSlide()
       const originY = slideRows[0].top
-      // 멤버십은 뷰 높이로 정했지만 배치는 실제 rect 라, 한 슬라이드의 실제
-      // 콘텐츠가 슬라이드보다 길면 그 슬라이드만 맞춤 축소(겹침/넘침 방지).
+      // 덱 전체 단일 스케일(scale=1)이 기본 — 넘친 건 패킹 단계에서 이미 다음
+      // 슬라이드로 넘겼다. 유일한 예외: 한 행(거대 위젯) 자체가 슬라이드보다 크면
+      // 넘길 곳이 없어 그 슬라이드만 맞춤 축소(가로 가운데)한다.
       const slabBottom = Math.max(...slideRows.map((r) => r.bottom))
       const slabH = slabBottom - originY
-      const scale = slabH > slideH ? slideH / slabH : 1
-      const offsetXIn = (dim.w * (1 - scale)) / 2 // 축소 시 가로 가운데
+      const scale = slideRows.length === 1 && slabH > slideH ? slideH / slabH : 1
+      // 축소(거대 위젯) 시 콘텐츠 영역 안에서 가로 가운데.
+      const offsetXIn = scale < 1 ? (contentW * (1 - scale)) / 2 : 0
 
       for (const row of slideRows) {
         for (const b of row.blocks) {
@@ -266,13 +357,14 @@ export async function exportReportToPptx({
             label: `위젯 변환 중 (${done + 1}/${totalBlocks})`,
           })
           const pos = {
-            x: offsetXIn + (b.x * scale) / pxPerIn,
-            y: ((b.y - originY) * scale) / pxPerIn,
+            x: margin + offsetXIn + (b.x * scale) / pxPerIn,
+            y: margin + ((b.y - originY) * scale) / pxPerIn,
             w: (b.w * scale) / pxPerIn,
             h: (b.h * scale) / pxPerIn,
           }
           const meta = blockMeta.get(b.id)
-          const ptPerPx = (1 / pxPerIn) * 72 * scale
+          // 폰트만 fontNorm 적용(위치·박스 크기는 위 pos 에서 이미 확정, 불변).
+          const ptPerPx = (1 / pxPerIn) * 72 * scale * fontNorm
           const caption = readVisibleCaption(b.el)
           let placed = false
           if (meta && NATIVE_TEXT_TYPES.has(meta.type)) {
@@ -288,9 +380,19 @@ export async function exportReportToPptx({
             )
           }
           if (!placed) {
-            // 이미지 폴백 — 캡션은 캡처 이미지에 이미 포함되므로 별도 박스 없음.
-            const canvas = await captureBlockToCanvas(b.el, { scale: 2 })
-            curSlide.addImage({ data: canvas.toDataURL('image/png'), ...pos })
+            // 이미지 폴백 — 캡션을 안 보이게 뜬(위젯 비율 유지) 뒤 캔버스가 덮는
+            // 실제 영역(cr) 그대로 슬라이드에 매핑해 배치(늘어짐·잘림 없음).
+            const { canvas, rect: cr } = await captureContentCanvas(b.el, caption)
+            curSlide.addImage({
+              data: canvas.toDataURL('image/png'),
+              x: pos.x + (cr.left * scale) / pxPerIn,
+              y: pos.y + (cr.top * scale) / pxPerIn,
+              w: (cr.width * scale) / pxPerIn,
+              h: (cr.height * scale) / pxPerIn,
+            })
+            // 캡션(그림/표 N)은 표·글 위젯처럼 네이티브 텍스트박스로 **이미지 위에**
+            // 얹는다 — 나중에 add 해야 z-order 상 이미지에 안 가려진다.
+            if (caption) addCaptionBox(curSlide, caption, pos, ptPerPx)
           }
           done += 1
         }

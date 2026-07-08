@@ -417,6 +417,11 @@ class ReportSummary(BaseModel):
     # 짧아(2~3문장) 본문을 그대로 실어 칩 호버에 추가 요청 없이 보여준다. 기본 0.
     has_ai_summary: bool = False
     ai_summary: Optional[str] = None
+    # 목록에서 바로 제목을 고칠 수 있는지(inline rename) — 라우트가 편집 권한
+    # (permissions.can_edit)을 배치로 계산해 채운다. 상세 진입 없이 목록에서
+    # 여러 보고서 제목을 한 번에 바꾸는 흐름의 게이트. 기본 False(권한 미확인/
+    # 외부 열람자). 프런트는 이 값이 True 인 행에만 더블클릭 편집을 연다.
+    can_edit: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -571,6 +576,15 @@ class ReportEntitiesAdd(BaseModel):
     *전체 교체*인 것과 달리 이건 *추가만* 한다."""
 
     entity_ids: list[int] = Field(default_factory=list)
+
+
+class ReportRename(BaseModel):
+    """목록에서의 제목 즉시 변경(inline rename) 요청 바디. 편집 잠금을 잡지 않는
+    가벼운 메타데이터 갱신이라(폴더 이동·AI 요약 적용과 같은 패턴) 제목 하나만
+    받는다 — 본문 편집 세션과 무관. 전체 편집 PATCH(ReportUpdate)와 달리 revision
+    토큰·잠금을 요구하지 않는다."""
+
+    title: str = Field(..., min_length=1, max_length=255)
 
 
 # ───────────────────────────────────────────────────────────────────────── #

@@ -526,6 +526,122 @@ def visible_report_ids(db: Session, actor) -> Optional[set[int]]:
     return base | _owned_report_ids(db, actor.user.id)
 
 
+def editable_report_ids(db: Session, actor, reports: Iterable[Report]) -> set[int]:
+    """목록 행별 편집 가능(can_edit) 여부를 배치로 판정 — permissions.can_edit 과
+    동일한 규칙(sys_admin / hard-lock veto / owner / user edit-grant / workspace
+    edit-grant 하위 도달)을 리스트 전체에 대해 N+1 없이 계산한다. 상세 진입 없이
+    목록에서 제목을 바로 고칠 수 있는지(inline rename)를 게이트하는 데 쓴다.
+
+    한 건짜리 권위 판정은 permissions.can_edit 이 그대로 담당한다(rename 라우트가
+    저장 직전 다시 확인) — 여기서는 목록 affordance 노출용 배치 근사가 아니라
+    같은 규칙의 배치 구현이다."""
+    reports = list(reports)
+    if not reports:
+        return set()
+    user = actor.user
+    ids = [r.id for r in reports]
+    # 1. 시스템 관리자 — 잠금·소유 무관 전부.
+    if user.is_system_admin:
+        return set(ids)
+
+    editable: set[int] = set()
+    # 3. 소유자 — 하드락도 소유자에게는 veto 되지 않는다.
+    for r in reports:
+        if r.owner_user_id == user.id:
+            editable.add(r.id)
+
+    # 2. 하드락 걸린 비소유 보고서는 애초에 후보에서 제외.
+    candidates = [
+        r for r in reports if r.id not in editable and not r.author_lock_enabled
+    ]
+    cand_ids = [r.id for r in candidates]
+    if not cand_ids:
+        return editable
+
+    from app.modules.grants.models import (
+        ContentGrant,
+        GrantLevel,
+        GrantPrincipalType,
+    )
+
+    # 4. user edit grant(구 추가편집자) — report 단위, 배치 IN.
+    editable |= set(
+        db.execute(
+            select(ContentGrant.content_id).where(
+                ContentGrant.content_type == GrantContentType.report,
+                ContentGrant.content_id.in_(cand_ids),
+                ContentGrant.principal_type == GrantPrincipalType.user,
+                ContentGrant.principal_ref == str(user.id),
+                ContentGrant.level == GrantLevel.edit,
+            )
+        ).scalars()
+    )
+
+    # 5. workspace edit grant — 하위 도달(구 coauthor). report_id → grant 부서 slug.
+    remaining = [rid for rid in cand_ids if rid not in editable]
+    if not remaining:
+        return editable
+    rows = db.execute(
+        select(ContentGrant.content_id, ContentGrant.principal_ref).where(
+            ContentGrant.content_type == GrantContentType.report,
+            ContentGrant.content_id.in_(remaining),
+            ContentGrant.principal_type == GrantPrincipalType.workspace,
+            ContentGrant.level == GrantLevel.edit,
+        )
+    ).all()
+    if rows:
+        # reachable_workspace_edit 과 동일: 사용자가 granted 부서 X 또는 그 하위
+        # 부서의 멤버인지(소속 ∩ descendants_inclusive(X)). 부서별 도달 여부를
+        # 한 번만 계산해 캐시한다.
+        member_slugs = grant_services._user_membership_slugs(db, user.id)
+        if member_slugs:
+            reach_cache: dict[str, bool] = {}
+
+            def _reaches(slug: str) -> bool:
+                if slug not in reach_cache:
+                    desc = set(ws_services.get_descendants_inclusive(db, slug))
+                    reach_cache[slug] = bool(member_slugs & desc)
+                return reach_cache[slug]
+
+            for rid, slug in rows:
+                if slug and rid not in editable and _reaches(slug):
+                    editable.add(rid)
+    return editable
+
+
+def resolve_reactivation_phase(db: Session, report: Report):
+    """발행 취소(finalized 해제) 시 되돌아갈 단계를 현재 협업 상태로 판정한다.
+
+    drafting → reviewing 승격 규칙(게시판 게시 or 외부 댓글)과 대칭으로 되돌린다:
+      - 아직 게시판에 게시(mount)돼 있거나, 소유자가 아닌 사람이 연 댓글 스레드가
+        하나라도 있으면 → reviewing (여전히 공개·협업 중이므로 '작성중'은 오해)
+      - 둘 다 없으면(순수 개인 보고서) → drafting
+
+    승격이 mount / 외부 댓글 '최초 발생' 시점에 걸리는 것과 짝을 맞춰, 발행 취소는
+    그 상태가 *지금도 유효한지* 를 보고 같은 기준으로 돌린다."""
+    from app.modules.reports.models import ReportPhase
+    from app.modules.comments.models import CommentThread
+
+    has_mount = (
+        db.execute(
+            select(ReportMount.report_id)
+            .where(ReportMount.report_id == report.id)
+            .limit(1)
+        ).first()
+        is not None
+    )
+    if has_mount:
+        return ReportPhase.reviewing
+
+    # 외부 댓글 — 소유자 본인 메모는 리뷰 신호가 아니므로 제외(승격 규칙과 동일).
+    # owner 가 없으면(엣지) 어떤 스레드든 외부로 간주.
+    q = select(CommentThread.id).where(CommentThread.report_id == report.id)
+    if report.owner_user_id is not None:
+        q = q.where(CommentThread.author_user_id != report.owner_user_id)
+    has_external_comment = db.execute(q.limit(1)).first() is not None
+    return ReportPhase.reviewing if has_external_comment else ReportPhase.drafting
+
+
 def all_visible_report_ids(db: Session, user_id: int) -> set[int]:
     """MCP/검색·읽기용 **사용자 중심** 가시성 — 활성 워크스페이스와 무관, 멤버십 기반.
 

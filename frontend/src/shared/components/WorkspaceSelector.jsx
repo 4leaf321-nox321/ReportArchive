@@ -45,9 +45,26 @@ export function WorkspaceSelector() {
   // Always display the sticky ORG workspace, never the personal one —
   // the selector represents "which 부서를 보는가" and personal pages
   // are deliberately outside that picker.
-  const { orgWorkspace, switchWorkspace, prefs, all, getPath, reload } =
-    useWorkspace()
+  const {
+    orgWorkspace,
+    switchWorkspace,
+    prefs,
+    all,
+    getPath,
+    getDescendantsInclusive,
+    reload,
+  } = useWorkspace()
+  const { me } = useAuth()
   const workspace = orgWorkspace
+
+  // 내 소속(home) 부서 — 하위부서로 내려갈 때 내가 속한 계통을 우선 탄다.
+  // home_workspace_slug 가 권위 있는 신호(부서 이동 시 이 값만 갱신). 없으면
+  // 첫 비개인 멤버십으로 폴백 — RootRedirect 와 동일한 규칙.
+  const homeSlug =
+    me?.home_workspace_slug ||
+    me?.memberships?.find((m) => !m.workspace_slug?.startsWith('personal-'))
+      ?.workspace_slug ||
+    null
   const [open, setOpen] = React.useState(false)
   const [createOpen, setCreateOpen] = React.useState(false)
   const [browserOpen, setBrowserOpen] = React.useState(false)
@@ -79,15 +96,24 @@ export function WorkspaceSelector() {
       .sort(byOrder)
     const idx = siblings.findIndex((w) => w.slug === cur.slug)
     const children = orgs.filter((w) => w.parent_slug === cur.slug).sort(byOrder)
+    // 하위부서로 내려갈 땐 내 소속(home) 부서가 있는 계통을 우선 탄다. 어떤
+    // 자식의 서브트리가 home 을 포함하면 그 자식으로, 없으면 지금처럼 가나다순
+    // 첫 자식으로.
+    const ownedChild =
+      homeSlug != null
+        ? children.find((c) =>
+            getDescendantsInclusive(c.slug).includes(homeSlug),
+          )
+        : null
     return {
       up: cur.parent_slug
         ? orgs.find((w) => w.slug === cur.parent_slug) ?? null
         : null,
-      down: children[0] ?? null,
+      down: ownedChild ?? children[0] ?? null,
       left: idx > 0 ? siblings[idx - 1] : null,
       right: idx >= 0 && idx < siblings.length - 1 ? siblings[idx + 1] : null,
     }
-  }, [orgs, workspace])
+  }, [orgs, workspace, homeSlug, getDescendantsInclusive])
 
   // d-pad 영역(또는 선택 버튼)에 포커스가 있고 드롭다운이 닫혀 있을 때,
   // 화살표 키로도 부서를 전환한다.

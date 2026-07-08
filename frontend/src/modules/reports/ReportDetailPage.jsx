@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import {
   useParams,
   useNavigate,
@@ -62,6 +71,9 @@ import {
   X,
 } from 'lucide-react'
 import GridLayout, { useContainerWidth } from 'react-grid-layout'
+// zoom-to-fit 축소 시 그리드 드래그/리사이즈 포인터 좌표 보정용(main 엔트리엔 없고
+// core 서브패스에만 있음). transform: scale 아래에서 clientX/scale 로 나눠준다.
+import { createScaledStrategy } from 'react-grid-layout/core'
 import { PrintScaleContext } from './printContext'
 import {
   ReportStyleContext,
@@ -194,6 +206,106 @@ import { toast } from 'sonner'
 import { renderPrompt, buildPromptContext } from '@/shared/ai/promptRenderer'
 
 /** 로컬 백업 시각을 "방금 전 / N분 전 / N시간 전 / N일 전"으로 표기. */
+// 현재 zoom-to-fit 배율(1 = 원본). ResizableGrid 가 읽어 그리드 드래그 좌표를
+// 보정한다(createScaledStrategy). 기본 1 이라 provider 밖에서도 안전.
+const ZoomScaleContext = createContext(1)
+
+/**
+ * 보고서 본문을 PPT 편집 캔버스처럼 **비율 유지 균일 축소**(zoom-to-fit)한다.
+ *
+ * 본문(.report-detail-content)은 고정 디자인 폭(min==max = page_width_px)이라,
+ * 가용 폭이 그보다 좁으면 CSS `transform: scale(s)` 로 통째로 줄여 가로·세로가
+ * **함께** 축소된다(리플로우 없음 → 슬라이드 분할이 폭과 무관, 화면=PPT). 폭이
+ * 넉넉하면 s=1(원본, 가운데 정렬).
+ *
+ * transform 은 레이아웃 '박스'는 안 줄이므로(시각적 축소만) 두 가지를 보정한다:
+ *   1) 아래 빈 공간 — 바깥 래퍼 높이를 실제높이×s 로 고정(overflow hidden).
+ *   2) 그리드 드래그 — s 를 context 로 내려 createScaledStrategy 로 포인터 보정.
+ *
+ * useContainerWidth(그리드 폭 측정)는 transform 이전 offsetWidth 를 읽으므로 그리드
+ * 는 항상 디자인 폭에서 배치된다(폭 계산 변경 불필요).
+ *
+ * enabled=false(인쇄/PPT 내보내기)면 s=1 로 원본 폭 렌더 → 캡처·측정이 결정적.
+ */
+function ZoomFitCanvas({
+  designWidthPx,
+  enabled,
+  className,
+  style,
+  onContextMenu,
+  children,
+}) {
+  const outerRef = useRef(null)
+  const innerRef = useRef(null)
+  const [scale, setScale] = useState(1)
+  const [outerHeight, setOuterHeight] = useState(null)
+  const [outerWidth, setOuterWidth] = useState(null)
+
+  useLayoutEffect(() => {
+    if (!enabled) {
+      setScale(1)
+      setOuterHeight(null)
+      setOuterWidth(null)
+      return undefined
+    }
+    const outer = outerRef.current
+    const inner = innerRef.current
+    if (!outer || !inner) return undefined
+    // 실제 가용 폭 = 스크롤 뷰포트의 '보이는' 폭. outer 는 width:100% 지만 Radix
+    // ScrollArea 의 display:table 래퍼 안이라 clientWidth 가 콘텐츠(고정 디자인 폭)
+    // 로 잡혀 뷰포트 폭이 안 나온다 → 뷰포트를 직접 재고 관찰한다(없으면 outer 폴백).
+    const viewport =
+      outer.closest('[data-radix-scroll-area-viewport]') ?? outer.parentElement ?? outer
+    const recompute = () => {
+      const avail = viewport.clientWidth
+      if (!avail || !designWidthPx) return
+      const s = Math.min(1, avail / designWidthPx)
+      setScale(s)
+      // transform 은 레이아웃 '박스'를 안 줄이니(시각 축소만), 축소할 때만 바깥
+      // 박스를 축소 크기로 고정한다 → 오른쪽/아래 빈 레이아웃 여백 제거.
+      // s=1 이면 자연 크기(폭 100% → mx-auto 가운데 정렬).
+      setOuterHeight(s < 1 ? inner.offsetHeight * s : null)
+      setOuterWidth(s < 1 ? avail : null)
+    }
+    recompute()
+    const ro = new ResizeObserver(recompute)
+    ro.observe(viewport)
+    ro.observe(inner)
+    return () => ro.disconnect()
+  }, [enabled, designWidthPx])
+
+  return (
+    <ZoomScaleContext.Provider value={scale}>
+      <div
+        ref={outerRef}
+        style={{
+          width: outerWidth != null ? `${outerWidth}px` : '100%',
+          height: outerHeight ?? undefined,
+          // 축소(s<1) 중일 때만 클립 — transform 이 안 줄인 레이아웃 여백(오른쪽·
+          // 아래)을 숨긴다. 원본(s=1)일 땐 visible 로 둬 위젯의 비-portal 오버플로우
+          // (핸들 등)가 예전처럼 안 잘리게 한다.
+          overflow: scale < 1 ? 'hidden' : undefined,
+        }}
+      >
+        <div
+          ref={innerRef}
+          className={className}
+          style={{
+            ...style,
+            transform: scale !== 1 ? `scale(${scale})` : undefined,
+            // 좁을 땐 mx-auto 여백이 0 이라 좌상단 기준으로 줄이면 [0, 가용폭] 에
+            // 딱 맞고, 넉넉할 땐 s=1 이라 mx-auto 가 가운데 정렬한다.
+            transformOrigin: 'top left',
+          }}
+          onContextMenu={onContextMenu}
+        >
+          {children}
+        </div>
+      </div>
+    </ZoomScaleContext.Provider>
+  )
+}
+
 function formatBackupAge(savedAt) {
   const sec = Math.max(0, Math.floor((Date.now() - savedAt) / 1000))
   if (sec < 60) return '방금 전'
@@ -3773,6 +3885,9 @@ export default function ReportDetailPage() {
     const wasDark = root.classList.contains('dark')
     setPrinting(true)
     setPptxProgress({ phase: 'settle', label: '차트 렌더링 안정화 중...' })
+    // 본문은 min==max 로 항상 고정 디자인 폭이라(위 report-detail-content 스타일),
+    // 창 크기와 무관하게 이미 디자인 폭에서 측정된다 → 여기서 폭을 따로 강제할
+    // 필요가 없다. 슬라이드 분할·위젯 크기가 창과 무관하게 결정적이다.
     try {
       if (wasDark) root.classList.remove('dark')
       // 읽기전용 레이아웃 commit + 다크→라이트 토큰 재계산 대기.
@@ -4957,7 +5072,11 @@ export default function ReportDetailPage() {
         />
 
         <ScrollArea className="flex-1">
-          <div
+          <ZoomFitCanvas
+            // 창이 디자인 폭보다 좁으면 비율 유지 균일 축소(zoom-to-fit). 인쇄/PPT
+            // 내보내기(printing) 때는 꺼서 원본 디자인 폭으로 렌더·측정한다.
+            enabled={!printing}
+            designWidthPx={draft.page_width_px ?? DEFAULT_REPORT_WIDTH_PX}
             className={cn(
               // relative — SlideGuideOverlay 가 inset:0 으로 깔리려면
               // 부모가 positioning ancestor 여야 한다. 다른 위젯/페이지
@@ -4976,7 +5095,19 @@ export default function ReportDetailPage() {
             // (1024px ≈ Tailwind `max-w-5xl`) so reports that pre-date the
             // setting keep their look. Right-click in the empty area below
             // opens the picker.
-            style={{ maxWidth: `${draft.page_width_px ?? DEFAULT_REPORT_WIDTH_PX}px` }}
+            //
+            // min == max → the body is a **fixed-width canvas** at its design
+            // width; it never reflows to the window. ZoomFitCanvas (the parent)
+            // scales it uniformly to fit narrow windows (PowerPoint-style zoom),
+            // so width & height shrink *together* — no reflow. This keeps the
+            // slide guide (and PPT export, which renders this same DOM at s=1)
+            // purely a function of *height*: the slide count no longer wanders
+            // as the window resizes. Fixed page width is how PowerPoint / Slides
+            // model a page too.
+            style={{
+              maxWidth: `${draft.page_width_px ?? DEFAULT_REPORT_WIDTH_PX}px`,
+              minWidth: `${draft.page_width_px ?? DEFAULT_REPORT_WIDTH_PX}px`,
+            }}
             onContextMenu={(e) => {
               // Blocks call `e.preventDefault()` in their own handler and
               // we let that flag bubble up here — when it's set we know a
@@ -5174,7 +5305,7 @@ export default function ReportDetailPage() {
             {effectiveIsEditing && (
               <div className="h-[50vh] print:hidden" aria-hidden="true" />
             )}
-          </div>
+          </ZoomFitCanvas>
         </ScrollArea>
 
         {/* Floating prev/next pager — always reachable on long pages. The
@@ -8718,7 +8849,7 @@ function PageBrowsePanel({
       // three / image loads to settle before we read pixels. Without
       // this, charts often capture as empty boxes.
       await new Promise((r) => setTimeout(r, 450))
-      const { default: html2canvas } = await import('html2canvas')
+      const { default: html2canvas } = await import('html2canvas-pro')
       for (let i = 0; i < pages.length; i++) {
         if (cancelled) return
         const el = container.querySelector(`[data-thumb-page="${i}"]`)
@@ -12374,6 +12505,15 @@ function ResizableGrid({
   const { containerRef, width, mounted } = useContainerWidth({ measureBeforeMount: true })
   const finalItems = isStatic ? items.map((it) => ({ ...it, static: true })) : items
   const effectiveRowGap = Number.isFinite(rowGapPx) ? rowGapPx : REPORT_ROW_GAP
+  // zoom-to-fit 축소 중이면 그리드가 CSS transform: scale 아래 있으므로 드래그/
+  // 리사이즈 포인터 좌표를 scale 로 나눠 보정한다(useContainerWidth 가 재는 그리드
+  // 폭은 transform 이전 값이라 배치 자체는 그대로). 정적(뷰) 모드는 드래그가 없어
+  // 불필요, scale=1 이면 기본 전략(undefined).
+  const zoomScale = useContext(ZoomScaleContext)
+  const positionStrategy = useMemo(
+    () => (!isStatic && zoomScale !== 1 ? createScaledStrategy(zoomScale) : undefined),
+    [isStatic, zoomScale],
+  )
   return (
     <div ref={containerRef} className="w-full">
       {mounted && width > 0 && (
@@ -12402,6 +12542,7 @@ function ResizableGrid({
             // 모서리를 배열 뒤에 둬 코너에서 엣지 선 위에 그려지게 함. 기본값 ['se'].
             handles: ['s', 'e', 'w', 'se', 'sw'],
           }}
+          positionStrategy={positionStrategy}
           onLayoutChange={onLayoutChange}
           onResizeStart={onResizeStart}
           onResize={onResize}

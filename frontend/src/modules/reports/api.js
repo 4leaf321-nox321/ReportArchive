@@ -309,6 +309,14 @@ export async function deleteReport(id) {
   return extractData(res)
 }
 
+// 제목만 바꾸는 가벼운 갱신 — 목록에서 상세 진입 없이 즉시 변경(inline rename).
+// 편집 잠금을 잡지 않으므로 updateReport 와 달리 lock 에러 매핑이 없다.
+// 서버가 can_edit + 발행 전(finalized 제외)을 재확인한다. 반환: {id, title}.
+export async function renameReport(id, title) {
+  const res = await apiClient.patch(`${BASE}/${id}/rename`, { title })
+  return extractData(res)
+}
+
 // 소프트삭제(휴지통으로) — 평소 "삭제"는 이걸 쓴다. 개인 목록에서 숨지만
 // 게시된 부서 게시판엔 남고, restoreReport 로 복구 가능.
 export async function trashReport(id) {

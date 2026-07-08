@@ -13,7 +13,7 @@ import { fetchImageObjectURL } from '@/shared/api/files'
  * actual rendered box for image_pct ↔ pixel conversion).
  */
 export const AuthedImage = forwardRef(function AuthedImage(
-  { fileId, alt = '', className = '' },
+  { fileId, alt = '', className = '', style },
   ref,
 ) {
   const [url, setUrl] = useState(null)
@@ -52,13 +52,16 @@ export const AuthedImage = forwardRef(function AuthedImage(
     return (
       <div
         className={`flex items-center justify-center bg-muted/40 text-muted-foreground ${className}`}
+        style={style}
       >
         <ImageIcon className="h-6 w-6" />
       </div>
     )
   }
   if (!url) {
-    return <div className={`bg-muted/40 animate-pulse ${className}`} />
+    return (
+      <div className={`bg-muted/40 animate-pulse ${className}`} style={style} />
+    )
   }
-  return <img ref={ref} src={url} alt={alt} className={className} />
+  return <img ref={ref} src={url} alt={alt} className={className} style={style} />
 })

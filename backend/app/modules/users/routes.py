@@ -151,6 +151,7 @@ def get_me(
         workspace_slug=active_slug,
         role=active_role,
         public_view=public_view,
+        home_workspace_slug=user.home_workspace_slug,
         memberships=[
             MembershipRead(
                 workspace_slug=m.workspace_slug,

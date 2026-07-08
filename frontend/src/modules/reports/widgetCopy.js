@@ -240,7 +240,7 @@ function neutralizeUnsupportedColors(rootEl) {
 async function downloadWidgetPng(blockId, label) {
   const el = document.getElementById(`block-${blockId}`)
   if (!el) throw new Error('캡처할 위젯 영역을 찾을 수 없습니다.')
-  const html2canvas = (await import('html2canvas')).default
+  const html2canvas = (await import('html2canvas-pro')).default
   const canvas = await html2canvas(el, {
     scale: 2,
     backgroundColor: '#ffffff',

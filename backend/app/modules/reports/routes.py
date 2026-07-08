@@ -25,6 +25,7 @@ from app.modules.reports.schemas import (
     ReportLinkRefMini,
     ReportPage,
     ReportRead,
+    ReportRename,
     ReportSummary,
     ReportUpdate,
     ReportVersionMeta,
@@ -235,11 +236,14 @@ def list_reports(
         scoped = services.visible_report_ids(db, actor) or set()
         external_ids = services.public_report_ids(db) - scoped
     ai_map = _ai_summary_map(db, reports)
+    # 목록에서 바로 제목을 고칠 수 있는 행 — 편집 권한(can_edit)을 배치로 판정.
+    editable = services.editable_report_ids(db, actor, reports)
     payload = []
     for r in reports:
         summary = ReportSummary.model_validate(r)
         if r.id in external_ids:
             summary.is_external_public = True
+        summary.can_edit = r.id in editable
         _apply_ai_summary(summary, r.id, ai_map)
         payload.append(summary)
     return success_response(data=payload)
@@ -1784,9 +1788,12 @@ def unpublish_report(
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
-    """Owner-only: finalized → drafting. Lets the owner make changes
-    after publishing. (Sets to drafting, not reviewing — re-publishing
-    is a deliberate re-trigger.)
+    """Owner-only: finalized 해제. 되돌아갈 단계는 현재 협업 상태로 판정한다
+    (services.resolve_reactivation_phase):
+      - 아직 게시판에 게시돼 있거나 외부 댓글이 있으면 → reviewing(리뷰중)
+      - 순수 개인 보고서면 → drafting(작성중)
+    drafting → reviewing 승격 규칙(게시/외부 댓글)과 대칭. 어느 쪽이든 다시
+    발행하려면 명시적으로 '발행'을 눌러야 한다.
     """
     from app.modules.activities.models import ReportActivityType
     from app.modules.activities.services import record_activity
@@ -1802,13 +1809,18 @@ def unpublish_report(
     if report.phase != ReportPhase.finalized:
         return success_response(data=_read_with_perms(db, actor, report))
 
-    report.phase = ReportPhase.drafting
+    target = services.resolve_reactivation_phase(db, report)
+    report.phase = target
     record_activity(
         db,
         report_id=report.id,
-        type=ReportActivityType.phase_to_drafting,
+        type=(
+            ReportActivityType.phase_to_reviewing
+            if target == ReportPhase.reviewing
+            else ReportActivityType.phase_to_drafting
+        ),
         actor_user_id=actor.user.id,
-        payload={"trigger": "unpublish"},
+        payload={"trigger": "unpublish", "target_phase": target.value},
     )
     db.commit()
     db.refresh(report)
@@ -1941,6 +1953,77 @@ def update_report(
         db.commit()
 
     return success_response(data=_read_with_perms(db, actor, report))
+
+
+@router.patch("/{report_id}/rename")
+def rename_report(
+    report_id: int,
+    payload: ReportRename,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """제목만 바꾸는 가벼운 갱신 — 목록에서의 즉시 변경(inline rename)용. 편집
+    잠금을 잡지 않는다(폴더 이동·AI 요약 적용과 같은 메타데이터 패턴). 게이트는
+    전체 편집 PATCH 와 동일: can_edit + 발행 전(finalized 제외). 제목 변경은 ORM
+    before_update 훅이 search_text·임베딩을 자동 재색인한다."""
+    from app.shared.permissions import can_edit
+    from app.modules.reports.models import ReportPhase
+
+    report = services.get_report(db, report_id)
+    if not report:
+        return not_found_response(f"Report not found: {report_id}")
+    if not services.can_read_report(db, actor, report):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+    decision = can_edit(db, actor.user, report)
+    if not decision.allowed:
+        if decision.role == "locked":
+            reason = report.author_lock_reason or "사유 미기재"
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"작성자가 수정 잠금 상태입니다 (사유: {reason}). 잠금 해제 후 다시 시도하세요.",
+            )
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "이 보고서를 편집할 권한이 없습니다.",
+        )
+    if report.phase == ReportPhase.finalized:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "발행된 보고서는 편집할 수 없습니다. '발행 취소' 후 수정하세요.",
+        )
+
+    new_title = payload.title.strip()
+    if not new_title:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "제목을 입력하세요.")
+    report.title = new_title
+    report.updated_by_user_id = actor.user.id
+    report.revision = (report.revision or 1) + 1
+    db.commit()
+    db.refresh(report)
+
+    # 소유자가 아닌 사람이 이름을 바꾸면 소유자에게 알림(전체 편집 PATCH 와 동일).
+    if (
+        report.owner_user_id is not None
+        and report.owner_user_id != actor.user.id
+    ):
+        from app.modules.notifications.models import NotificationType
+        from app.modules.notifications.services import create_notification
+
+        create_notification(
+            db,
+            recipient_user_id=report.owner_user_id,
+            actor_user_id=actor.user.id,
+            type=NotificationType.report_edited_by_other,
+            ref_table="reports",
+            ref_id=report.id,
+            payload={
+                "report_title": report.title,
+                "editor_role": decision.role,
+            },
+        )
+        db.commit()
+
+    return success_response(data={"id": report.id, "title": report.title})
 
 
 @router.post("/{report_id}/suggest-entities")

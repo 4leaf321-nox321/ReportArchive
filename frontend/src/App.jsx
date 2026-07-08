@@ -77,16 +77,23 @@ function AuthedShell() {
 }
 
 /**
- * `/` redirect — sends the user to their primary workspace based on
- * `me.memberships`. Falls back to the bootstrap default if (somehow) the
- * user has no memberships at all.
+ * `/` redirect — 홈으로 진입하면 무조건 사용자의 **소속(home) 부서**로 보낸다.
+ * home_workspace_slug 가 권위 있는 소속 신호다(부서를 옮기면 옛 멤버십은 남고
+ * 이 값만 갱신됨). 그래서 memberships[0](가입 순서=옛 부서, 심지어 개인 워크
+ * 스페이스일 수도) 대신 이걸 우선한다. home 이 없으면 첫 부서(비개인) 멤버십,
+ * 그것도 없으면 부트스트랩 기본값으로 폴백.
  *
  * `me` is guaranteed loaded here since this is rendered inside ProtectedRoute,
  * which won't render children until `/api/me` resolves.
  */
 function RootRedirect() {
   const { me } = useAuth()
-  const slug = me?.memberships?.[0]?.workspace_slug ?? DEFAULT_WORKSPACE
+  const slug =
+    me?.home_workspace_slug ||
+    me?.memberships?.find(
+      (m) => !m.workspace_slug?.startsWith('personal-'),
+    )?.workspace_slug ||
+    DEFAULT_WORKSPACE
   return <Navigate to={`/w/${slug}`} replace />
 }
 

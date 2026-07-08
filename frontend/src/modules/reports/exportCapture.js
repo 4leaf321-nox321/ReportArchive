@@ -7,7 +7,10 @@
  *   2) 캡션은 살리고(그림 N/표 N 이 이미지에 포함), 액션 버튼·진행률 오버레이
  *      ·표 펼치기 토글 등 화면 전용 chrome 은 제외한다.
  */
-import html2canvas from 'html2canvas'
+// html2canvas-pro: 유지보수되는 드롭인 포크. flex/grid `gap` 을 실제로 렌더하고
+// (구 html2canvas 1.4.1 은 gap 을 무시해 요소 간격이 붙어버렸다) 하단 클리핑·
+// 최신 색 함수(oklch/color())도 개선됐다. API 는 동일.
+import html2canvas from 'html2canvas-pro'
 
 /** 파일명 정규화 — OS 금지문자 제거 + 80자 컷. (exportReportToDocx 와 동일
  *  로직이지만 여기로 옮겨, PPT 내보내기가 무거운 docx 라이브러리를 끌어오지
@@ -133,13 +136,25 @@ function neutralizeUnsupportedColors(rootEl) {
   }
 }
 
-/** 위젯 DOM 엘리먼트를 PNG 캔버스로 캡처. 캡션은 포함, 화면 전용 chrome 은 제외.
+/** 위젯 DOM 엘리먼트를 PNG 캔버스로 캡처. 화면 전용 chrome 은 제외.
+ *  region 을 주면 그 영역(엘리먼트 좌상단 기준 CSS px, 음수 가능)을 캡처한다 —
+ *  translate/absolute 로 박스 밖에 삐져나온 요소(마일스톤 라벨 등)까지 담으려고
+ *  넘친 만큼 넓혀 캡처할 때 쓴다.
+ *  hideCaption=true 면 캡션(그림/표 N)을 visibility:hidden 으로 **자리는 두되 안
+ *  보이게** 한다(호출부가 캡션을 네이티브 텍스트박스로 따로 얹을 때 — 이미지엔 빈
+ *  자리만 남아 위젯 비율이 그대로 유지된다). 기본은 캡션 포함.
  *  반환: html2canvas 캔버스(호출부에서 toDataURL + 가로/세로 사용). */
-export async function captureBlockToCanvas(blockEl, { scale = 2 } = {}) {
+export async function captureBlockToCanvas(
+  blockEl,
+  { scale = 2, region = null, hideCaption = false } = {},
+) {
   if (!blockEl) throw new Error('캡처할 위젯 엘리먼트가 없습니다.')
   const id = blockEl.id || null
   return html2canvas(blockEl, {
     scale,
+    ...(region
+      ? { x: region.x, y: region.y, width: region.width, height: region.height }
+      : {}),
     backgroundColor: '#ffffff',
     logging: false,
     useCORS: true,
@@ -153,6 +168,12 @@ export async function captureBlockToCanvas(blockEl, { scale = 2 } = {}) {
     onclone: (doc) => {
       const target = (id && doc.getElementById(id)) || doc.body
       neutralizeUnsupportedColors(target)
+      if (hideCaption && target.querySelectorAll) {
+        // 캡션은 자리(레이아웃)는 유지하고 렌더만 숨긴다 → 이미지엔 빈 공간.
+        for (const cap of target.querySelectorAll('[data-export-skip="caption"]')) {
+          if (!cap.closest('.report-autofit-mirror')) cap.style.visibility = 'hidden'
+        }
+      }
     },
   })
 }

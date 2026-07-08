@@ -29,7 +29,8 @@ import {
   TextRun,
   WidthType,
 } from 'docx'
-import html2canvas from 'html2canvas'
+// html2canvas-pro: 유지보수 드롭인 포크(flex/grid gap 렌더·클리핑·최신 색 개선).
+import html2canvas from 'html2canvas-pro'
 // Reuse the project's authed axios client so /api/files requests carry
 // the bearer token. Raw `fetch()` wouldn't see the access token without
 // pulling auth helpers in, and the apiClient already handles refresh /

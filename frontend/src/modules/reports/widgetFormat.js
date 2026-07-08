@@ -42,6 +42,7 @@ const WIDGET_FORMAT_FIELDS = {
       'expanded',
       'row_label_width',
       'column_widths',
+      'image_widths',
     ],
   },
   image: { props: [], content: ['aspect_ratio'] },

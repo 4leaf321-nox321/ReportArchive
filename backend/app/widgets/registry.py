@@ -3237,6 +3237,19 @@ def _comparison_content(props: dict) -> dict:  # noqa: ARG001
             },
             "cell_styles": _CELL_STYLES_SCHEMA,
             "cell_html": _CELL_HTML_SCHEMA,
+            # 사용자가 이미지 위 코너 핸들을 드래그해 직접 정한 셀별 이미지
+            # 표시 폭(px). 키는 cell_styles/cell_html 과 동일한 "행key::케이스key"
+            # 규약. 렌더는 이 폭 + height:auto(비율 유지) + max-width:100%(열 폭
+            # 안에서 바운드)로, 행 높이는 이미지에 맞춰 늘어난다. 빠진 키는
+            # 전역 image_max_height_px 를 max-height 상한으로 쓰는 자동 크기.
+            "image_widths": {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "integer",
+                    "minimum": 40,
+                    "maximum": 2000,
+                },
+            },
             # 다중행·병합 헤더(선택). 없으면 columns[].label / cases[].label 1줄 헤더.
             "header": _HEADER_SCHEMA,
             # 읽기 모드 기본 펼침 — true 면 셀이 줄바꿈으로 다 펼쳐진 채 시작

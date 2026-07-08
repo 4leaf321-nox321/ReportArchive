@@ -109,6 +109,31 @@ function clampImageMaxHeightPx(raw) {
   )
 }
 
+// 코너 핸들로 정한 이미지 표시 폭(px)의 허용 범위. 실제 표시는 CSS
+// max-width:100% 로 열 폭 안에서 다시 바운드된다(백엔드 검증 40~2000 과 일치).
+const IMAGE_WIDTH_PX_MIN = 40
+const IMAGE_WIDTH_PX_MAX = 2000
+
+function clampImageWidthPx(raw) {
+  if (!Number.isFinite(raw)) return IMAGE_WIDTH_PX_MIN
+  return Math.min(Math.max(IMAGE_WIDTH_PX_MIN, Math.round(raw)), IMAGE_WIDTH_PX_MAX)
+}
+
+// 비교표 이미지 <img> 인라인 스타일 — 편집/뷰 공용. 코너 핸들로 폭이
+// 정해졌으면 그 폭 + height:auto(비율 유지), 아니면 전역 상한(max-height)
+// 안의 자동 크기. 어느 쪽이든 max-width:100% 로 열 폭 안에서 바운드된다.
+function imageSizeStyle(widthPx, maxHeightPx) {
+  if (Number.isFinite(widthPx)) {
+    return { width: `${widthPx}px`, height: 'auto', maxWidth: '100%' }
+  }
+  return {
+    maxWidth: '100%',
+    maxHeight: `${maxHeightPx}px`,
+    width: 'auto',
+    height: 'auto',
+  }
+}
+
 // --------------------------------------------------------------------------- //
 // Helpers — case/row key generation.                                          //
 //                                                                             //
@@ -310,7 +335,7 @@ export function ComparisonPropsPanel({ props, onChange }) {
           </div>
         )}
         <div>
-          <Label className="text-[10px] uppercase">이미지 행 높이 (px)</Label>
+          <Label className="text-[10px] uppercase">이미지 기본 높이 (px)</Label>
           <Input
             type="number"
             min={IMAGE_MAX_HEIGHT_PX_MIN}
@@ -330,7 +355,8 @@ export function ComparisonPropsPanel({ props, onChange }) {
             className="mt-0.5 h-8 text-xs w-24"
           />
           <p className="mt-0.5 text-[10px] text-muted-foreground">
-            이미지 셀의 최대 높이. 전체화면에서도 이 높이를 넘지 않습니다.
+            아직 크기를 조절하지 않은 이미지의 기본 높이 상한. 이미지 모서리
+            핸들로 크기를 정하면 이 값 대신 그 크기가 쓰입니다.
           </p>
         </div>
       </div>
@@ -547,6 +573,17 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
   // rowLabelColStyle 이 그 값을 우선 사용한다. caseKey === '__row__' 면
   // 행 라벨 컬럼 드래그를 의미.
   const [resizePreview, setResizePreview] = useState(null) // { caseKey, px } | null
+  // 셀별 이미지 표시 폭(px) override — 사용자가 이미지 위 코너 핸들을
+  // 드래그해 직접 정한 값. key 는 "행key::케이스key"(cell_styles 와 동일).
+  // 이미지는 이 폭 + height:auto(비율 유지) + max-width:100%(열 안에서 바운드)
+  // 로 렌더되고, 빠진 key 는 전역 imageMaxHeightPx 상한의 자동 크기.
+  const imageWidths =
+    content?.image_widths && typeof content.image_widths === 'object'
+      ? content.image_widths
+      : {}
+  // 드래그 중인 이미지 셀의 임시 폭 프리뷰 — resizePreview 와 같은 이유로
+  // mousemove 는 로컬 state 만 갱신하고 mouseup 에 한 번 commit.
+  const [imageResizePreview, setImageResizePreview] = useState(null) // { cellKey, px } | null
   // 사용자가 지정한 행 라벨 컬럼 폭 — 미지정 시 ROW_LABEL_DEFAULT_PX 폴백.
   const storedRowLabelWidth = Number.isFinite(content?.row_label_width)
     ? content.row_label_width
@@ -618,6 +655,12 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       Object.keys(merged.column_widths).length === 0
     ) {
       delete merged.column_widths
+    }
+    if (
+      !merged.image_widths ||
+      Object.keys(merged.image_widths).length === 0
+    ) {
+      delete merged.image_widths
     }
     if (!Number.isFinite(merged.row_label_width)) {
       delete merged.row_label_width
@@ -730,6 +773,54 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
     document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }
+
+  /** 한 이미지 셀의 표시 폭(px) — 드래그 프리뷰 > 저장값 > null(=자동 크기).
+   *  null 이면 전역 상한(imageMaxHeightPx)의 자동 크기로 렌더한다. 편집/뷰
+   *  두 모드가 같은 해석을 써서 크기가 일관되게 보인다. */
+  function cellImageWidth(rowKey, colKey) {
+    const cellKey = `${rowKey}::${colKey}`
+    if (imageResizePreview?.cellKey === cellKey) return imageResizePreview.px
+    const stored = imageWidths[cellKey]
+    return Number.isFinite(stored) ? stored : null
+  }
+
+  /** 이미지 표시 폭 commit — 드래그 종료 시 한 번. clamp 후 맵에 기록. */
+  function commitImageWidth(cellKey, px) {
+    if (!Number.isFinite(px)) return
+    patch({
+      image_widths: { ...imageWidths, [cellKey]: clampImageWidthPx(px) },
+    })
+  }
+
+  /** 이미지 위 코너 핸들 mousedown → 드래그로 이미지 표시 폭 조절(비율은
+   *  height:auto 로 자동 유지). startImgEl = 현재 렌더된 이미지 요소로,
+   *  offsetWidth 로 시작 폭을 재 대각선(오른쪽·아래) 드래그 모두 확대. */
+  function startImageResize(cellKey, startImgEl, startEvent) {
+    if (!startImgEl) return
+    const startWidth = startImgEl.offsetWidth
+    const startX = startEvent.clientX
+    const startY = startEvent.clientY
+    function nextWidth(ev) {
+      const delta = Math.max(ev.clientX - startX, ev.clientY - startY)
+      return clampImageWidthPx(startWidth + delta)
+    }
+    function onMove(ev) {
+      setImageResizePreview({ cellKey, px: nextWidth(ev) })
+    }
+    function onUp(ev) {
+      const next = nextWidth(ev)
+      setImageResizePreview(null)
+      commitImageWidth(cellKey, next)
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    document.body.style.cursor = 'nwse-resize'
     document.body.style.userSelect = 'none'
   }
 
@@ -1885,6 +1976,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                               caseKey={c.key}
                               html={cellHtml[`${row.key}::${c.key}`]}
                               imageMaxHeightPx={imageMaxHeightPx}
+                              imageWidthPx={cellImageWidth(row.key, c.key)}
                               fontSizePx={bodyFontPx}
                             />
                           </td>
@@ -1974,7 +2066,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           </div>
         )}
         <EditorOptionNumber
-          label="이미지 행 높이"
+          label="이미지 기본 높이"
           value={imageMaxHeightPx}
           min={IMAGE_MAX_HEIGHT_PX_MIN}
           max={IMAGE_MAX_HEIGHT_PX_MAX}
@@ -2511,6 +2603,14 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                               value={row.values?.[c.key]}
                               onChange={(v) => setCellImage(ri, c.key, v)}
                               maxHeightPx={imageMaxHeightPx}
+                              widthPx={cellImageWidth(row.key, c.key)}
+                              onResizeStart={(imgEl, ev) =>
+                                startImageResize(
+                                  `${row.key}::${c.key}`,
+                                  imgEl,
+                                  ev,
+                                )
+                              }
                             />
                           ) : (
                             <TextCellEditor
@@ -2668,19 +2768,25 @@ function TextCellEditor({
   )
 }
 
-function ImageCellEditor({ value, onChange, maxHeightPx = DEFAULT_IMAGE_MAX_HEIGHT_PX }) {
+function ImageCellEditor({
+  value,
+  onChange,
+  maxHeightPx = DEFAULT_IMAGE_MAX_HEIGHT_PX,
+  widthPx = null,
+  onResizeStart,
+}) {
   const fileId =
     value && typeof value === 'object' && typeof value.file_id === 'string'
       ? value.file_id
       : null
   const [uploading, setUploading] = useState(false)
   const fileInputRef = useRef(null)
-  // The cell uses a fixed height (not aspect-video) so wider tables —
-  // e.g. report-fullscreen mode that drops the page max-width — don't
-  // make image rows grow vertically and create a viewport scroll. The
-  // image itself stays scaled via object-contain so its native ratio
-  // is preserved within the bounded box.
+  // 빈 드롭존은 고정 높이 박스를 유지(드롭 타깃이 너무 납작해지지 않게).
   const cellHeightStyle = { height: `${maxHeightPx}px` }
+  // 이미지 표시 크기 — 코너 핸들로 폭이 정해졌으면 그 폭 + height:auto(비율
+  // 유지), 아니면 전역 상한(max-height) 안의 자동 크기. 어느 쪽이든
+  // max-width:100% 로 열 폭 안에서 바운드되고, 행 높이는 이미지에 맞춰 늘어난다.
+  const imgSizeStyle = imageSizeStyle(widthPx, maxHeightPx)
 
   async function handleFiles(fileList) {
     const incoming = Array.from(fileList || [])
@@ -2731,14 +2837,12 @@ function ImageCellEditor({ value, onChange, maxHeightPx = DEFAULT_IMAGE_MAX_HEIG
 
   if (fileId) {
     return (
-      <div
-        className="relative group/cell rounded-md overflow-hidden border bg-muted/20"
-        style={cellHeightStyle}
-      >
+      <div className="relative group/cell inline-block max-w-full align-top rounded-md overflow-hidden border bg-muted/20">
         <AuthedImage
           fileId={fileId}
           alt={value?.alt}
-          className="absolute inset-0 w-full h-full object-contain"
+          className="block"
+          style={imgSizeStyle}
         />
         <Button
           variant="ghost"
@@ -2749,6 +2853,25 @@ function ImageCellEditor({ value, onChange, maxHeightPx = DEFAULT_IMAGE_MAX_HEIG
         >
           <X className="h-3 w-3" />
         </Button>
+        {/* 코너 드래그 핸들 — 이미지 오른쪽·아래 모서리를 잡고 드래그해 이 셀
+            이미지 표시 크기를 직접 조절(비율 유지). 실제 렌더된 <img> 를
+            넘겨 startImageResize 가 offsetWidth 로 시작 폭을 잰다. 표 셀
+            선택/드래그와 겹치지 않게 stopPropagation. */}
+        {onResizeStart && (
+          <div
+            className="absolute bottom-0 right-0 h-4 w-4 cursor-nwse-resize opacity-0 group-hover/cell:opacity-100"
+            title="이미지 크기 조절 (드래그)"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              const img = e.currentTarget.parentElement?.querySelector('img')
+              onResizeStart(img, e)
+            }}
+          >
+            {/* 우하단 모서리 그립 표식 */}
+            <span className="absolute bottom-0 right-0 h-0 w-0 border-b-[10px] border-l-[10px] border-b-primary/70 border-l-transparent" />
+          </div>
+        )}
       </div>
     )
   }
@@ -2800,6 +2923,7 @@ function ReadOnlyCell({
   caseKey,
   html,
   imageMaxHeightPx = DEFAULT_IMAGE_MAX_HEIGHT_PX,
+  imageWidthPx = null,
   fontSizePx = DEFAULT_BODY_FONT_PX,
 }) {
   const value = row.values?.[caseKey]
@@ -2811,19 +2935,16 @@ function ReadOnlyCell({
     if (typeof value !== 'object' || !value.file_id) {
       return <span className="text-muted-foreground italic">—</span>
     }
-    // Same bounded-height box as the editor — keeps the read view
-    // consistent with what the writer saw, and prevents the
-    // report-fullscreen mode (no page width cap) from making image
-    // rows balloon vertically.
+    // 편집 모드와 같은 크기 해석(imageSizeStyle)을 써서 뷰가 작성 화면과
+    // 일치한다 — 코너 핸들로 정한 폭이 있으면 그 폭, 없으면 전역 상한 안의
+    // 자동 크기. max-width:100% 로 열 폭 안에서 바운드된다.
     return (
-      <div
-        className="relative rounded-md overflow-hidden border bg-muted/10"
-        style={{ height: `${imageMaxHeightPx}px` }}
-      >
+      <div className="inline-block max-w-full align-top rounded-md overflow-hidden border bg-muted/10">
         <AuthedImage
           fileId={value.file_id}
           alt={value.alt}
-          className="absolute inset-0 w-full h-full object-contain"
+          className="block"
+          style={imageSizeStyle(imageWidthPx, imageMaxHeightPx)}
         />
       </div>
     )

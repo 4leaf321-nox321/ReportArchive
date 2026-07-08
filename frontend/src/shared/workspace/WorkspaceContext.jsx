@@ -63,6 +63,15 @@ export function WorkspaceProvider({ children }) {
 
   const isOrg = (s) => s && !s.startsWith('personal-')
   const myPersonalSlug = me?.user?.id ? `personal-${me.user.id}` : null
+  // 소속(home) 부서 — 권위 있는 소속 신호. 부서를 옮기면 옛 멤버십은 남고 이
+  // 값만 갱신되므로, "홈/기본 부서"는 memberships 순서가 아니라 이걸 최우선으로
+  // 쓴다(가입한 옛 부서로 홈이 고정되는 문제 방지).
+  const homeOrgSlug =
+    me?.home_workspace_slug &&
+    isOrg(me.home_workspace_slug) &&
+    slugMap.has(me.home_workspace_slug)
+      ? me.home_workspace_slug
+      : null
   const userFirstOrgSlug = me?.memberships?.find(
     (m) => !m.workspace_slug.startsWith('personal-')
   )?.workspace_slug
@@ -78,6 +87,10 @@ export function WorkspaceProvider({ children }) {
     (s) => isOrg(s) && slugMap.has(s),
   )
   const orgFallback =
+    // 소속(home) 부서를 최우선 — 홈/기본 진입은 무조건 내 소속으로. URL 에 부서가
+    // 명시되면(effectiveSlug=requestedSlug) 그건 그대로 존중되므로, 이 우선순위는
+    // 중립 페이지·최초 랜딩에서만 작동한다(옛 부서 stale 고정 방지).
+    homeOrgSlug ||
     recentOrgSlug ||
     (userFirstOrgSlug && slugMap.has(userFirstOrgSlug) && userFirstOrgSlug) ||
     (slugMap.has(DEFAULT_FALLBACK) && DEFAULT_FALLBACK) ||

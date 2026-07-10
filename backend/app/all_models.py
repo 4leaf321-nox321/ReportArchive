@@ -18,6 +18,7 @@ from app.modules.activities import models as _activities  # noqa: F401
 from app.modules.comments import models as _comments  # noqa: F401
 from app.modules.composite_presets import models as _composite_presets  # noqa: F401
 from app.modules.composites import models as _composites  # noqa: F401
+from app.modules.connectors import models as _connectors  # noqa: F401
 from app.modules.editors import models as _editors  # noqa: F401
 from app.modules.embed import models as _embed  # noqa: F401
 from app.modules.entities import models as _entities  # noqa: F401

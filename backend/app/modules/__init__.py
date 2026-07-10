@@ -15,6 +15,7 @@ from app.modules.ai.routes import router as ai_router
 from app.modules.auth.routes import router as auth_router
 from app.modules.comments.routes import router as comments_router
 from app.modules.composites.routes import router as composites_router
+from app.modules.connectors.routes import router as connectors_router
 from app.modules.composite_presets.routes import router as composite_presets_router
 from app.modules.dashboard.routes import router as dashboard_router
 from app.modules.pins.routes import router as pins_router
@@ -98,6 +99,8 @@ def register_routers(app: FastAPI) -> None:
         tags=["composite-presets"],
     )
     app.include_router(presets_router, prefix="/api/presets", tags=["presets"])
+    # 외부 시스템 연계 커넥터(관리자) — 외부 API → 온톨로지 동기화.
+    app.include_router(connectors_router, prefix="/api/connectors", tags=["connectors"])
     app.include_router(dashboard_router, prefix="/api", tags=["dashboard"])
     app.include_router(
         template_metrics_router,

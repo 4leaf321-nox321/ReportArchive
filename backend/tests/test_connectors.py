@@ -512,3 +512,48 @@ def test_failure_alert_only_on_transition(monkeypatch):
             if obj:
                 cs.delete_source(db, obj)
         db.close()
+
+
+# --- v3.1 OData: nextLink 따라가기 + $filter 증분 -----------------------------
+def test_next_url_pagination_odata(monkeypatch):
+    """OData @odata.nextLink 따라가기 — 통짜 URL을 이어 요청, 없으면 종료."""
+    from app.modules.connectors import fetch as F
+    from app.modules.connectors.schemas import ConnectionConfig, StreamConfig
+
+    page1 = {"value": [{"id": i} for i in range(100)],
+             "@odata.nextLink": "http://x.test/svc/Projects?$skip=100"}
+    page2 = {"value": [{"id": i} for i in range(100, 150)]}  # nextLink 없음 → 종료
+    seq = {"n": 0}
+
+    def fake_req(client, method, url, headers, params, basic):
+        seq["n"] += 1
+        return page1 if seq["n"] == 1 else page2
+
+    monkeypatch.setattr(F, "_request_json", fake_req)
+    conn = ConnectionConfig(base_url="http://x.test")
+    st = StreamConfig(endpoint_path="/svc/Projects", records_path="value",
+                      page_style="next_url", next_url_path="@odata.nextLink")
+    recs = F.fetch_records(conn, st)
+    assert len(recs) == 150, len(recs)
+    assert seq["n"] == 2  # 두 번 요청
+
+
+def test_watermark_filter_template_odata(monkeypatch):
+    """OData $filter 증분 — since 를 식 템플릿에 넣어 파라미터로."""
+    from app.modules.connectors import fetch as F
+    from app.modules.connectors.schemas import ConnectionConfig, StreamConfig
+
+    captured = {}
+
+    def fake_req(client, method, url, headers, params, basic):
+        captured["params"] = params
+        return {"value": []}
+
+    monkeypatch.setattr(F, "_request_json", fake_req)
+    conn = ConnectionConfig(base_url="http://x.test")
+    st = StreamConfig(endpoint_path="/svc/Projects", records_path="value",
+                      incremental=True, watermark_field="Modified",
+                      watermark_param="$filter",
+                      watermark_template="Modified gt {since}")
+    F.fetch_records(conn, st, since="2024-03-01T00:00:00Z")
+    assert captured["params"]["$filter"] == "Modified gt 2024-03-01T00:00:00Z", captured

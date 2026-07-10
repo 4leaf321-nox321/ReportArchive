@@ -36,6 +36,9 @@ def _dig(obj, path: str):
     p = (path or "").strip().lstrip("$").lstrip(".")
     if not p:
         return obj
+    # 리터럴 전체 키 우선 — 키 자체에 '.'이 든 경우(OData @odata.nextLink 등)를 처리.
+    if isinstance(obj, dict) and p in obj:
+        return obj[p]
     cur = obj
     for seg in p.split("."):
         if cur is None:
@@ -111,21 +114,11 @@ def _guard_total(n: int) -> None:
         )
 
 
-def fetch_records(
-    conn: ConnectionConfig, stream: StreamConfig, *, since: str | None = None
-) -> list[dict]:
-    """커넥션+스트림으로 외부 API 호출 → 레코드(dict) 목록. records_path 로 배열 추출.
-    page_style 에 따라 여러 페이지를 이어 가져오고, since 가 있으면 watermark_param 으로
-    "그 이후 변경분"만 요청한다(증분)."""
-    base = (conn.base_url or "").strip()
-    if not base:
-        raise FetchError("base_url 이 비었습니다.")
-    url = urljoin(base if base.endswith("/") else base + "/",
-                  (stream.endpoint_path or "").lstrip("/"))
+def _check_outbound(url: str) -> None:
+    """스킴(http/https) + SSRF allowlist 검증. 매 요청 URL(nextLink 포함)마다 호출."""
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise FetchError("http/https URL 만 허용됩니다.")
-    # SSRF 완화 — allowlist 가 설정돼 있으면 그 호스트로만 나갈 수 있다(비면 전체 허용).
     allow = [
         h.strip().lower()
         for h in (settings.connector_allowed_hosts or "").split(",")
@@ -137,11 +130,33 @@ def fetch_records(
             "관리자에게 CONNECTOR_ALLOWED_HOSTS 설정 확인을 요청하세요."
         )
 
+
+def fetch_records(
+    conn: ConnectionConfig, stream: StreamConfig, *, since: str | None = None
+) -> list[dict]:
+    """커넥션+스트림으로 외부 API 호출 → 레코드(dict) 목록. records_path 로 배열 추출.
+    page_style 에 따라 여러 페이지를 이어 가져오고, since 가 있으면 watermark_param 으로
+    "그 이후 변경분"만 요청한다(증분)."""
+    base = (conn.base_url or "").strip()
+    if not base:
+        raise FetchError("base_url 이 비었습니다.")
+    url = urljoin(base if base.endswith("/") else base + "/",
+                  (stream.endpoint_path or "").lstrip("/"))
+    _check_outbound(url)
+
     headers, basic = _auth_kwargs(conn)
     method = stream.http_method or "GET"
     base_query = dict(stream.query or {})
     if since and stream.watermark_param:
-        base_query[stream.watermark_param] = since
+        # 값에 식이 필요한 API(OData $filter 등)는 템플릿으로. {since}·{field} 치환.
+        if stream.watermark_template:
+            base_query[stream.watermark_param] = (
+                stream.watermark_template
+                .replace("{since}", since)
+                .replace("{field}", stream.watermark_field or "")
+            )
+        else:
+            base_query[stream.watermark_param] = since
 
     style = stream.page_style
     out: list[dict] = []
@@ -173,6 +188,22 @@ def fetch_records(
                 cursor = _dig(payload, stream.cursor_path) if stream.cursor_path else None
                 if not recs or not cursor:
                     break
+        elif style == "next_url":
+            # 응답이 알려주는 "완전한 다음 URL"을 따라간다(OData @odata.nextLink 등).
+            # 첫 요청만 base_query 를 붙이고, 이후 nextLink 는 쿼리를 이미 포함하므로 그대로.
+            next_url = url
+            params = base_query
+            for _ in range(_MAX_PAGES):
+                _check_outbound(next_url)  # 매 홉 SSRF 재검증.
+                payload = _request_json(client, method, next_url, headers, params, basic)
+                recs = _extract_records(payload, stream.records_path)
+                out.extend(recs)
+                _guard_total(len(out))
+                nxt = _dig(payload, stream.next_url_path) if stream.next_url_path else None
+                if not recs or not nxt:
+                    break
+                next_url = urljoin(next_url, str(nxt))  # 상대→절대 해석.
+                params = None
         else:  # none — 단일 요청.
             out = _extract_records(
                 _request_json(client, method, url, headers, base_query, basic),

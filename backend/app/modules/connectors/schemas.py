@@ -53,16 +53,22 @@ class StreamConfig(BaseModel):
     property_map: dict[str, str] = {}              # 속성 slug → 필드 경로
     relation_map: list[RelationMapItem] = []
     # 페이지네이션 (v3) — 응답이 여러 페이지로 나뉠 때. none=단일 요청.
-    page_style: Literal["none", "offset", "page", "cursor"] = "none"
+    #   next_url(v3.1): 응답의 next_url_path 가 가리키는 "완전한 다음 URL"을 따라간다
+    #   (OData @odata.nextLink·GitHub next 등). 파라미터 조립 대신 그 URL 을 그대로 요청.
+    page_style: Literal["none", "offset", "page", "cursor", "next_url"] = "none"
     page_size: int = 100
     page_param: str = "offset"                     # offset 오프셋 / page 페이지번호 파라미터명
     size_param: str = "limit"                      # 페이지 크기 파라미터명
     cursor_path: str = ""                          # cursor: 응답 내 다음 커서 위치(점표기)
     cursor_param: str = "cursor"                   # cursor: 커서를 실어보낼 파라미터명
+    next_url_path: str = ""                        # next_url: 응답 내 다음 URL 위치(예 @odata.nextLink)
     # 증분(watermark) (v3) — 마지막 동기화 이후 바뀐 것만.
     incremental: bool = False
     watermark_field: str = ""                      # 레코드의 변경 기준 필드(예: updatedAt)
-    watermark_param: str = ""                       # since 를 실어보낼 파라미터명(예: updated_since)
+    watermark_param: str = ""                      # since 를 실어보낼 파라미터명(예: updated_since / $filter)
+    #   watermark_template(v3.1): 값에 식이 필요한 API(OData 등)용. {since}·{field} 치환.
+    #   예: "$filter" 파라미터에 "Modified gt {since}". 비면 값=since 그대로.
+    watermark_template: str = ""
 
 
 class SourceConfig(BaseModel):

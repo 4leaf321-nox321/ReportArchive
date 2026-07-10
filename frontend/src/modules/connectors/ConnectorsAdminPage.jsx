@@ -76,9 +76,11 @@ function blankStream() {
     size_param: 'limit',
     cursor_path: '',
     cursor_param: 'cursor',
+    next_url_path: '',
     incremental: false,
     watermark_field: '',
     watermark_param: '',
+    watermark_template: '',
   }
 }
 
@@ -117,9 +119,11 @@ function streamFromConfig(st) {
     size_param: st.size_param || 'limit',
     cursor_path: st.cursor_path || '',
     cursor_param: st.cursor_param || 'cursor',
+    next_url_path: st.next_url_path || '',
     incremental: !!st.incremental,
     watermark_field: st.watermark_field || '',
     watermark_param: st.watermark_param || '',
+    watermark_template: st.watermark_template || '',
   }
 }
 
@@ -167,9 +171,11 @@ function streamToConfig(st) {
     size_param: (st.size_param || 'limit').trim(),
     cursor_path: (st.cursor_path || '').trim(),
     cursor_param: (st.cursor_param || 'cursor').trim(),
+    next_url_path: (st.next_url_path || '').trim(),
     incremental: !!st.incremental,
     watermark_field: (st.watermark_field || '').trim(),
     watermark_param: (st.watermark_param || '').trim(),
+    watermark_template: (st.watermark_template || '').trim(),
   }
 }
 
@@ -517,6 +523,7 @@ function StreamEditor({
                   <option value="offset">offset (오프셋+개수)</option>
                   <option value="page">page (페이지번호+개수)</option>
                   <option value="cursor">cursor (다음 커서)</option>
+                  <option value="next_url">다음 URL 따라가기 (OData nextLink 등)</option>
                 </select>
               </div>
               {(stream.page_style === 'offset' || stream.page_style === 'page') && (
@@ -552,6 +559,13 @@ function StreamEditor({
                 </div>
               </div>
             )}
+            {stream.page_style === 'next_url' && (
+              <div>
+                <Label className="text-xs">다음 URL 경로(응답)</Label>
+                <Input value={stream.next_url_path} onChange={(e) => upd({ next_url_path: e.target.value })} placeholder="@odata.nextLink" />
+                <p className="mt-1 text-xs text-muted-foreground">응답이 알려주는 완전한 다음 URL을 그대로 따라갑니다.</p>
+              </div>
+            )}
 
             {/* 증분 */}
             <label className="flex items-center gap-2 text-sm">
@@ -568,13 +582,23 @@ function StreamEditor({
                 </div>
                 <div>
                   <Label className="text-xs">since 파라미터명</Label>
-                  <Input value={stream.watermark_param} onChange={(e) => upd({ watermark_param: e.target.value })} placeholder="updated_since" />
+                  <Input value={stream.watermark_param} onChange={(e) => upd({ watermark_param: e.target.value })} placeholder="updated_since / $filter" />
                 </div>
               </div>
             )}
             {stream.incremental && (
+              <div>
+                <Label className="text-xs">필터 식 템플릿 (선택 — OData 등)</Label>
+                <Input value={stream.watermark_template} onChange={(e) => upd({ watermark_template: e.target.value })}
+                  placeholder="Modified gt {since}" />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  값에 식이 필요한 API용. `{'{since}'}`·`{'{field}'}`가 치환됩니다. 예: `$filter` 파라미터에 `Modified gt {'{since}'}`. 비우면 값=마지막 시각 그대로.
+                </p>
+              </div>
+            )}
+            {stream.incremental && (
               <p className="text-xs text-muted-foreground">
-                이 필드의 최댓값을 기억해, 다음 동기화 때 그 이후 변경분만 요청합니다. (ISO 날짜·증가 ID 처럼 커지는 값이어야 함)
+                변경 기준 필드의 최댓값을 기억해, 다음 동기화 때 그 이후 변경분만 요청합니다. (ISO 날짜·증가 ID 처럼 커지는 값이어야 함)
               </p>
             )}
           </div>

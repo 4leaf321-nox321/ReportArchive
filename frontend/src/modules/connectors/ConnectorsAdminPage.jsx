@@ -654,6 +654,7 @@ export default function ConnectorsAdminPage() {
   const [result, setResult] = useState(null)
   const [runs, setRuns] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [selStream, setSelStream] = useState(0) // 좌측 리스트에서 선택한 스트림 index
 
   // 축 속성정의 캐시 {typeId: [defs]} (null=로딩 전/중).
   const [axisProps, setAxisProps] = useState({})
@@ -679,12 +680,14 @@ export default function ConnectorsAdminPage() {
     setResult(null)
     setRuns(null)
     setProbeResults({})
+    setSelStream(0)
   }
   async function openEdit(id) {
     setSelectedId(id)
     setResult(null)
     setRuns(null)
     setProbeResults({})
+    setSelStream(0)
     try {
       setDraft(draftFromSource(await getDataSource(id)))
     } catch (err) {
@@ -706,9 +709,12 @@ export default function ConnectorsAdminPage() {
   }
   function addStream() {
     setDraft((d) => ({ ...d, streams: [...d.streams, blankStream()] }))
+    setSelStream(draft ? draft.streams.length : 0) // 새로 추가한 스트림 선택
   }
   function removeStream(i) {
     setDraft((d) => ({ ...d, streams: d.streams.filter((_, j) => j !== i) }))
+    // 삭제 후 남은 범위로 선택 보정.
+    setSelStream((s) => Math.max(0, Math.min(s, (draft?.streams.length ?? 1) - 2)))
   }
 
   async function save() {
@@ -1053,7 +1059,7 @@ export default function ConnectorsAdminPage() {
               </CardContent>
             </Card>
 
-            {/* 스트림들 */}
+            {/* 스트림들 — 좌측 리스트 / 우측 편집 카드 (마스터-디테일) */}
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-medium text-muted-foreground">
                 스트림 (엔드포인트 → 축 매핑) · 위에서부터 순서대로 동기화
@@ -1062,23 +1068,64 @@ export default function ConnectorsAdminPage() {
                 <Plus className="mr-1 h-4 w-4" /> 스트림 추가
               </Button>
             </div>
-            {draft.streams.map((st, i) => (
-              <StreamEditor
-                key={i}
-                stream={st}
-                index={i}
-                axes={axes}
-                axisDefs={st.target_type_id ? axisProps[Number(st.target_type_id)] ?? null : []}
-                relationTypes={relationTypes}
-                onChange={setStream}
-                onRemove={removeStream}
-                onProbe={doProbe}
-                probing={probing === i}
-                probeResult={probeResults[i]}
-                onSuggest={doSuggest}
-                suggesting={suggesting === i}
-              />
-            ))}
+            <div className="flex flex-col gap-4 sm:flex-row">
+              {/* 좌측: 스트림 목록 */}
+              <div className="w-full shrink-0 space-y-1 sm:w-56">
+                {draft.streams.length === 0 ? (
+                  <p className="rounded-md border border-dashed px-2 py-6 text-center text-xs text-muted-foreground">
+                    스트림 없음 — “스트림 추가”
+                  </p>
+                ) : (
+                  draft.streams.map((st, i) => (
+                    <button
+                      key={i}
+                      onClick={() => setSelStream(i)}
+                      className={`flex w-full items-center gap-2 rounded-md border px-3 py-2 text-left ${
+                        i === selStream ? 'border-primary bg-muted/50' : 'hover:bg-muted/30'
+                      }`}
+                    >
+                      <span className="w-4 shrink-0 text-xs text-muted-foreground">{i + 1}</span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium">
+                          {st.label || `스트림 ${i + 1}`}
+                        </span>
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {axisName[Number(st.target_type_id)] || '축 미선택'}
+                        </span>
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+              {/* 우측: 선택한 스트림 편집 카드 */}
+              <div className="min-w-0 flex-1">
+                {draft.streams[selStream] ? (
+                  <StreamEditor
+                    key={selStream}
+                    stream={draft.streams[selStream]}
+                    index={selStream}
+                    axes={axes}
+                    axisDefs={
+                      draft.streams[selStream].target_type_id
+                        ? axisProps[Number(draft.streams[selStream].target_type_id)] ?? null
+                        : []
+                    }
+                    relationTypes={relationTypes}
+                    onChange={setStream}
+                    onRemove={removeStream}
+                    onProbe={doProbe}
+                    probing={probing === selStream}
+                    probeResult={probeResults[selStream]}
+                    onSuggest={doSuggest}
+                    suggesting={suggesting === selStream}
+                  />
+                ) : (
+                  <p className="py-8 text-center text-sm text-muted-foreground">
+                    왼쪽에서 스트림을 선택하거나 “스트림 추가”를 누르세요.
+                  </p>
+                )}
+              </div>
+            </div>
 
             {/* 액션 */}
             <Card>

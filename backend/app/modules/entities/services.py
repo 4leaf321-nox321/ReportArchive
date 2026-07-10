@@ -205,6 +205,24 @@ def find_by_value_ci(
     ).scalar_one_or_none()
 
 
+def find_by_code_ci(db: Session, *, type_id: int, code: str) -> Optional[Entity]:
+    """코드(안정 식별자)로 같은 축 안에서 조회(대소문자 무시). 커넥터가 외부 시스템의
+    불변 코드/ID 로 객체를 매칭할 때 쓴다(표시 이름이 흔들려도 재동기화 시 중복 방지).
+    code 는 유니크가 아니므로 여러 건이면 가장 낮은 id 를 결정적으로 반환."""
+    needle = (code or "").strip().lower()
+    if not needle:
+        return None
+    return (
+        db.execute(
+            select(Entity)
+            .where(Entity.type_id == type_id, func.lower(Entity.code) == needle)
+            .order_by(Entity.id)
+        )
+        .scalars()
+        .first()
+    )
+
+
 def _normalize(s: str) -> str:
     """별칭/값 비교용 정규화 — 앞뒤 공백 제거 + 소문자."""
     return (s or "").strip().lower()
@@ -227,9 +245,16 @@ def find_by_alias(db: Session, *, type_id: int, value: str) -> Optional[Entity]:
     return db.get(Entity, alias.entity_id)
 
 
-def resolve_existing(db: Session, *, type_id: int, value: str) -> Optional[Entity]:
-    """입력값 → 기존 엔티티 resolve. 값 자체 매칭(대소문자 무시) 우선, 없으면
-    별칭으로 흡수. 둘 다 없으면 None(=신규 후보)."""
+def resolve_existing(
+    db: Session, *, type_id: int, value: str, code: Optional[str] = None
+) -> Optional[Entity]:
+    """입력값 → 기존 엔티티 resolve. **code 가 주어지면 코드 매칭 우선**(안정 식별자),
+    없으면 값 매칭(대소문자 무시) → 별칭 흡수. 셋 다 없으면 None(=신규 후보).
+    code 기본값 None 이라 기존 호출부는 동작 불변(값·별칭 매칭)."""
+    if code:
+        hit = find_by_code_ci(db, type_id=type_id, code=code)
+        if hit is not None:
+            return hit
     hit = find_by_value_ci(db, type_id=type_id, value=value)
     if hit is not None:
         return hit
@@ -1642,18 +1667,20 @@ def upsert_record_entity(
     name: Optional[str],
     properties: Optional[dict] = None,
     entity_id: Optional[int] = None,
+    code: Optional[str] = None,
     creator_user_id: int,
 ) -> Optional[Entity]:
-    """객체 레코드 위젯 저장 훅용 upsert. record 축의 값(name)+속성으로 entity 를
-    생성/갱신한다. 우선순위: (1) entity_id 로 기존 객체 갱신 → (2) 같은 축·같은
-    이름이면 그 객체 갱신(무료 중복 방지) → (3) 신규 생성. record 축이 아니거나
-    이름이 비면 None(위젯이 축 미선택 등 → 건너뜀). 속성 검증 실패는 ValueError."""
+    """객체 레코드 위젯·커넥터 저장 훅용 upsert. record 축의 값(name)+속성으로 entity 를
+    생성/갱신한다. 우선순위: (1) entity_id → (2) **code 매칭(안정 식별자, 있으면 우선)**
+    → (3) 같은 축·같은 이름 → (4) 신규 생성. record 축이 아니거나 이름이 비면 None.
+    속성 검증 실패는 ValueError. code 는 신규 생성 시 저장, 기존이 비어 있으면 보강."""
     type_row = get_type_by_slug(db, (axis_slug or "").strip())
     if type_row is None or type_row.kind_class != EntityKindClass.record:
         return None
     value = (name or "").strip()
     if not value:
         return None
+    code = (code or "").strip() or None
 
     ent: Optional[Entity] = None
     if entity_id is not None:
@@ -1661,22 +1688,25 @@ def upsert_record_entity(
         if cand is not None and cand.type_id == type_row.id:
             ent = cand
     if ent is None:
-        ent = resolve_existing(db, type_id=type_row.id, value=value)
+        ent = resolve_existing(db, type_id=type_row.id, value=value, code=code)
 
     if ent is None:
         # 신규 — create_entity 가 속성 검증까지 처리.
         return create_entity(
             db,
-            EntityCreate(type_id=type_row.id, value=value, properties=properties or {}),
+            EntityCreate(type_id=type_row.id, value=value, code=code,
+                         properties=properties or {}),
             creator_user_id=creator_user_id,
         )
 
-    # 기존 갱신 — 속성 교체 + (안전하면) 이름 동기화.
+    # 기존 갱신 — 속성 교체 + (안전하면) 이름 동기화 + code 보강.
     ent.properties = validate_properties(db, type_row, properties or {})
     if value and value != ent.value:
         clash = find_by_value_ci(db, type_id=type_row.id, value=value)
         if clash is None or clash.id == ent.id:
             ent.value = value
+    if code and not ent.code:
+        ent.code = code
     db.commit()
     db.refresh(ent)
     return ent

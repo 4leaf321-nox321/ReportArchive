@@ -133,10 +133,14 @@ def build_rows_and_mapping(
         )
         for i, rm in enumerate(stream.relation_map)
     ]
+    # 코드 매칭(안정 식별자) — match_key='code' + code_path 있으면 코드 열을 실어보낸다.
+    code_column = "__code__" if (stream.match_key == "code" and stream.code_path) else None
 
     rows: list[dict] = []
     for rec in records:
         row = {"__value__": _cell(_dig(rec, stream.value_path))}
+        if code_column:
+            row["__code__"] = _cell(_dig(rec, stream.code_path))
         for slug, path in stream.property_map.items():
             row[f"__p_{slug}"] = _cell(_dig(rec, path))
         for i, rm in enumerate(stream.relation_map):
@@ -148,6 +152,7 @@ def build_rows_and_mapping(
         value_column="__value__",
         property_columns=property_columns,
         relation_columns=relation_columns,
+        code_column=code_column,
         dry_run=dry_run,
     )
     return mapping, rows

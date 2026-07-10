@@ -282,3 +282,64 @@ def test_suggest_llm_with_validation(monkeypatch):
                 for pd in rp.json()["data"]["items"]:
                     c.delete(f"/api/entity-types/{tid}/properties/{pd['id']}", headers=ADMIN)
             c.delete(f"/api/entity-types/{tid}", headers=ADMIN)
+
+
+def test_code_matching_dedup_on_rename(monkeypatch):
+    """코드 매칭(L1') — 같은 코드인데 이름이 바뀌어 재동기화해도 중복 안 만들고 갱신."""
+    c = TestClient(app)
+    sfx = uuid.uuid4().hex[:8]
+    proj_id = sid = None
+    made = []
+    try:
+        proj_id = c.post("/api/entity-types", headers=ADMIN,
+                         json={"slug": "cmproj_" + sfx, "label": "코드매칭과제",
+                               "kind_class": "record"}).json()["data"]["id"]
+        c.post(f"/api/entity-types/{proj_id}/properties", headers=ADMIN,
+               json={"key": "stage", "label": "단계", "data_type": "text"})
+
+        code = "PRJ-1-" + sfx
+        state = {"recs": [{"id": code, "name": "원래이름-" + sfx, "stage": "active"}]}
+        monkeypatch.setattr(conn_services, "fetch_records", lambda conn, st: state["recs"])
+
+        cfg = {
+            "connection": {"base_url": "http://x.test"},
+            "streams": [{
+                "endpoint_path": "/p", "records_path": "",
+                "target_type_id": proj_id, "value_path": "name",
+                "match_key": "code", "code_path": "id",
+                "property_map": {"stage": "stage"},
+            }],
+        }
+        sid = c.post("/api/connectors", headers=ADMIN,
+                     json={"name": "cm-" + sfx, "config": cfg}).json()["data"]["id"]
+
+        # 1차 — 생성.
+        s = c.post(f"/api/connectors/{sid}/sync", headers=ADMIN).json()["data"]["summary"]
+        assert s["create"] == 1, s
+        made = [i["id"] for i in _find(c, proj_id, "원래이름")]
+        assert len(made) == 1
+
+        # 2차 — 같은 코드, 이름만 바뀜 → 갱신(중복 아님).
+        state["recs"] = [{"id": code, "name": "새이름-" + sfx, "stage": "planned"}]
+        s = c.post(f"/api/connectors/{sid}/sync", headers=ADMIN).json()["data"]["summary"]
+        assert s["create"] == 0 and s["update"] == 1, s   # ← 핵심: 재동기화 중복 0
+
+        # 총 1건 — 이름은 새 이름으로 바뀌고 옛 이름은 사라짐(중복 아님).
+        assert len(_find(c, proj_id, "새이름")) == 1
+        assert len(_find(c, proj_id, "원래이름")) == 0
+        # 속성도 갱신.
+        aid = made[0]
+        prof = c.get(f"/api/entities/{aid}/profile", headers=ADMIN).json()["data"]
+        assert prof["entity"]["properties"].get("stage") == "planned", prof["entity"]
+    finally:
+        for eid in made:
+            e = c.get(f"/api/entities/{eid}/relations", headers=ADMIN)
+            c.delete(f"/api/entities/{eid}", headers=ADMIN)
+        if sid:
+            c.delete(f"/api/connectors/{sid}", headers=ADMIN)
+        if proj_id:
+            rp = c.get(f"/api/entity-types/{proj_id}/properties", headers=ADMIN)
+            if rp.status_code == 200:
+                for pd in rp.json()["data"]["items"]:
+                    c.delete(f"/api/entity-types/{proj_id}/properties/{pd['id']}", headers=ADMIN)
+            c.delete(f"/api/entity-types/{proj_id}", headers=ADMIN)

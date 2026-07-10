@@ -65,6 +65,8 @@ function blankStream() {
     records_path: '',
     target_type_id: 0,
     value_path: '',
+    match_key: 'value', // 'value'(이름) | 'code'(안정 식별자)
+    code_path: '',
     prop_paths: {}, // {속성 slug: 필드 경로}
     relation_rows: [],
   }
@@ -95,6 +97,8 @@ function streamFromConfig(st) {
     records_path: st.records_path || '',
     target_type_id: st.target_type_id || 0,
     value_path: st.value_path || '',
+    match_key: st.match_key || 'value',
+    code_path: st.code_path || '',
     prop_paths: { ...(st.property_map || {}) },
     relation_rows: (st.relation_map || []).map((r) => ({ ...r })),
   }
@@ -133,9 +137,9 @@ function streamToConfig(st) {
     query: {},
     records_path: st.records_path.trim(),
     target_type_id: Number(st.target_type_id) || 0,
-    match_key: 'value',
+    match_key: st.match_key === 'code' ? 'code' : 'value',
     value_path: st.value_path.trim(),
-    code_path: '',
+    code_path: (st.code_path || '').trim(),
     property_map,
     relation_map,
   }
@@ -318,6 +322,32 @@ function StreamEditor({
           <Label className="text-xs">값(이름) 필드 경로</Label>
           <PathInput dlId={dlId} value={stream.value_path} onChange={(v) => upd({ value_path: v })} placeholder="name" />
         </div>
+
+        {/* 매칭 기준 — 코드(안정 식별자)로 매칭하면 이름이 바뀌어도 재동기화 시 중복이 안 생김 */}
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs">매칭 기준 (같은 객체 판별)</Label>
+            <select
+              value={stream.match_key}
+              onChange={(e) => upd({ match_key: e.target.value })}
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+            >
+              <option value="value">이름으로 매칭</option>
+              <option value="code">코드(안정 식별자)로 매칭 — 권장</option>
+            </select>
+          </div>
+          {stream.match_key === 'code' && (
+            <div>
+              <Label className="text-xs">코드 필드 경로</Label>
+              <PathInput dlId={dlId} value={stream.code_path} onChange={(v) => upd({ code_path: v })} placeholder="id" />
+            </div>
+          )}
+        </div>
+        {stream.match_key === 'code' && (
+          <p className="-mt-1 text-xs text-muted-foreground">
+            코드가 같으면 같은 객체로 봅니다 — 외부에서 이름이 바뀌어도 재동기화 시 새로 만들지 않고 갱신합니다.
+          </p>
+        )}
 
         {/* 속성 — 대상 축에서 자동 리스트업 */}
         <div>

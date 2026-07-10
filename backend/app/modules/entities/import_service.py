@@ -82,14 +82,21 @@ def run_import(
             counts["error"] += 1
             continue
 
+        # 코드 매칭(안정 식별자) — code_column 이 있으면 이름 대신 코드로 객체를 식별해
+        # 이름이 흔들려도 재동기화 시 중복을 만들지 않는다(L1', 커넥터 code 매칭).
+        code = None
+        if mapping.code_column:
+            code = (row.get(mapping.code_column) or "").strip() or None
+
         props = {}
         for header, key in mapping.property_columns.items():
             cell = (row.get(header) or "").strip()
             if cell:
                 props[key] = cell
 
-        status = "update" if ent.resolve_existing(
-            db, type_id=type_row.id, value=value) else "create"
+        existing = ent.resolve_existing(
+            db, type_id=type_row.id, value=value, code=code)
+        status = "update" if existing else "create"
 
         # 속성 검증(쓰기 전) — 실패하면 그 행은 error.
         try:
@@ -121,11 +128,18 @@ def run_import(
                 if is_record:
                     entity = ent.upsert_record_entity(
                         db, axis_slug=type_row.slug, name=value,
-                        properties=props, creator_user_id=creator_user_id)
+                        properties=props, code=code,
+                        creator_user_id=creator_user_id)
+                elif existing is not None:
+                    # reference 축 기존 — 재사용(+빈 code 보강). 속성은 기존 정책상 유지.
+                    if code and not existing.code:
+                        existing.code = code
+                        db.commit()
+                    entity = existing
                 else:
                     entity = ent.create_entity(
                         db, EntityCreate(type_id=type_row.id, value=value,
-                                         properties=props or None),
+                                         code=code, properties=props or None),
                         creator_user_id=creator_user_id)
             except ValueError as exc:
                 out.append(_row(idx, value, "error", [f"저장 실패: {exc}"], rel_view))

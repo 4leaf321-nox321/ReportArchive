@@ -360,6 +360,7 @@ class EntityImportMapping(BaseModel):
     value_column: str                              # 값(이름) 열
     property_columns: dict[str, str] = {}          # 헤더 → 속성 key
     relation_columns: list[ImportRelationCol] = []
+    code_column: Optional[str] = None              # 있으면 코드(안정 식별자) 매칭
     dry_run: bool = True                           # True=미리보기(쓰기 없음)
 
 

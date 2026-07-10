@@ -153,3 +153,23 @@ export async function searchReportsForPicker(q, limit = 8) {
   const data = extractData(res)
   return (data?.results || []).map((r) => r.report || r)
 }
+
+// --- QA 피드백(👍/👎) — 수집 + 골든셋 승격 --------------------------------------
+
+/** 답변 피드백 저장. rating: 1=👍 / -1=👎. report_ids=인용 보고서. */
+export async function submitFeedback({ query, rating, reportIds = [] }) {
+  const res = await apiClient.post('/api/ai/feedback', {
+    query, rating, report_ids: reportIds,
+  })
+  return extractData(res)
+}
+/** 관리자 요약 {up,down,promotable}. */
+export async function getFeedbackSummary() {
+  const res = await apiClient.get('/api/ai/feedback/summary')
+  return extractData(res)
+}
+/** 👍 피드백을 평가 골든셋으로 승격 → {created}. (관리자) */
+export async function promoteFeedbackToGolden() {
+  const res = await apiClient.post('/api/ai/eval/from-feedback')
+  return extractData(res)
+}

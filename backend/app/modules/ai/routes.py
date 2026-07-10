@@ -12,7 +12,7 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai.llm import LLMCancelled, LLMError, chat, list_models
@@ -347,6 +347,84 @@ def eval_run(
         rerank=payload.rerank or None, hyde=payload.hyde or None,
     )
     return success_response(data=result)
+
+
+# --------------------------------------------------------------------------- #
+# QA 피드백 — 답변 👍/👎 수집 + 👍 를 평가 골든셋으로 승격(로드맵 6 피드백).
+# --------------------------------------------------------------------------- #
+class FeedbackPayload(BaseModel):
+    query: str = Field(..., min_length=1, max_length=2000)
+    rating: int  # 1=👍, -1=👎
+    report_ids: list[int] = Field(default_factory=list)
+
+
+@router.post("/feedback", status_code=201)
+def submit_feedback(
+    payload: FeedbackPayload,
+    actor=Depends(get_current_user), db: Session = Depends(get_db),
+):
+    """답변 품질 피드백 저장. 질문하기 쓰는 누구나(수집만 — 검색을 바꾸지 않음)."""
+    from app.modules.eval.models import QaFeedback
+
+    db.add(QaFeedback(
+        user_id=actor.user.id,
+        query=payload.query.strip(),
+        rating=1 if payload.rating >= 0 else -1,
+        report_ids=payload.report_ids or [],
+    ))
+    db.commit()
+    return success_response(message="피드백 감사합니다.")
+
+
+@router.get("/feedback/summary")
+def feedback_summary(
+    _: User = Depends(require_system_admin), db: Session = Depends(get_db)
+):
+    """관리자 요약 — 👍/👎 수 + 골든셋 승격 가능 건(👍·인용 있고 아직 케이스 없는 질문)."""
+    from app.modules.eval.models import EvalCase, QaFeedback
+
+    up = db.scalar(select(func.count()).select_from(QaFeedback).where(QaFeedback.rating > 0)) or 0
+    down = db.scalar(select(func.count()).select_from(QaFeedback).where(QaFeedback.rating < 0)) or 0
+    existing = {
+        (c.query or "").strip()
+        for c in db.execute(select(EvalCase)).scalars().all()
+    }
+    promotable = {
+        (f.query or "").strip()
+        for f in db.execute(
+            select(QaFeedback).where(QaFeedback.rating > 0)
+        ).scalars().all()
+        if (f.report_ids and (f.query or "").strip()
+            and (f.query or "").strip() not in existing)
+    }
+    return success_response(data={"up": up, "down": down, "promotable": len(promotable)})
+
+
+@router.post("/eval/from-feedback")
+def eval_from_feedback(
+    _: User = Depends(require_system_admin), db: Session = Depends(get_db)
+):
+    """👍 피드백(질문+인용 보고서)을 평가 골든셋으로 승격. 이미 있는 질문은 건너뜀."""
+    from app.modules.eval.models import EvalCase, QaFeedback
+
+    existing = {
+        (c.query or "").strip()
+        for c in db.execute(select(EvalCase)).scalars().all()
+    }
+    by_query: dict[str, set[int]] = {}
+    for f in db.execute(select(QaFeedback).where(QaFeedback.rating > 0)).scalars().all():
+        q = (f.query or "").strip()
+        if not q or q in existing or not f.report_ids:
+            continue
+        by_query.setdefault(q, set()).update(f.report_ids)
+    created = 0
+    for q, rids in by_query.items():
+        db.add(EvalCase(query=q, expect_report_ids=sorted(rids),
+                        expect_entities=[], graph=False))
+        created += 1
+    db.commit()
+    return success_response(data={"created": created},
+                            message=f"{created}건을 골든셋에 추가했습니다.")
 
 
 # --------------------------------------------------------------------------- #

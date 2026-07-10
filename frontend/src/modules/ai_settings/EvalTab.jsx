@@ -11,6 +11,8 @@ import {
   deleteEvalCase,
   runEval,
   searchReportsForPicker,
+  getFeedbackSummary,
+  promoteFeedbackToGolden,
 } from '@/shared/api/ai'
 
 /**
@@ -23,6 +25,7 @@ export function EvalTab() {
   const [result, setResult] = useState(null)
   const [running, setRunning] = useState(false)
   const [cfg, setCfg] = useState({ k: 5, graph: false, rerank: false, hyde: false })
+  const [fb, setFb] = useState(null) // {up,down,promotable}
 
   const load = async () => {
     try {
@@ -30,10 +33,25 @@ export function EvalTab() {
     } catch {
       setCases([])
     }
+    try {
+      setFb(await getFeedbackSummary())
+    } catch {
+      setFb(null)
+    }
   }
   useEffect(() => {
     load()
   }, [])
+
+  const promote = async () => {
+    try {
+      const r = await promoteFeedbackToGolden()
+      toast.success(`${r?.created ?? 0}건을 골든셋에 추가했습니다.`)
+      await load()
+    } catch {
+      toast.error('승격에 실패했습니다.')
+    }
+  }
 
   const addCase = async () => {
     const c = await createEvalCase({ query: '새 질문', expect_report_ids: [], expect_entities: [], graph: false })
@@ -127,9 +145,23 @@ export function EvalTab() {
       {/* 케이스 목록 */}
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold">골든셋 ({cases.length})</h3>
-        <Button size="sm" variant="outline" onClick={addCase}>
-          <Plus className="mr-1 h-3.5 w-3.5" /> 질문 추가
-        </Button>
+        <div className="flex items-center gap-2">
+          {fb && (
+            <span className="text-[11px] text-muted-foreground">
+              피드백 👍 {fb.up} · 👎 {fb.down}
+            </span>
+          )}
+          <Button
+            size="sm" variant="outline" onClick={promote}
+            disabled={!fb || !fb.promotable}
+            title="👍 받은 (질문·인용 보고서)를 골든셋으로"
+          >
+            피드백에서 추가{fb?.promotable ? ` (${fb.promotable})` : ''}
+          </Button>
+          <Button size="sm" variant="outline" onClick={addCase}>
+            <Plus className="mr-1 h-3.5 w-3.5" /> 질문 추가
+          </Button>
+        </div>
       </div>
       <div className="space-y-3">
         {cases.map((c) => (

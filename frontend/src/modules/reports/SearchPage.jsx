@@ -13,6 +13,8 @@ import {
   Wand2,
   ShieldCheck,
   AlertTriangle,
+  ThumbsUp,
+  ThumbsDown,
 } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Button } from '@/shared/components/ui/button'
@@ -23,7 +25,7 @@ import {
   createReportFromAnswer,
 } from '@/modules/reports/api'
 import { ObjectSearch } from '@/modules/entities/ObjectSearch'
-import { askAi, askAgent, getAskOptions } from '@/shared/api/ai'
+import { askAi, askAgent, getAskOptions, submitFeedback } from '@/shared/api/ai'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { EntityFilterControl } from './EntityFilterControl'
 
@@ -121,6 +123,8 @@ export default function SearchPage() {
   const [hydeMode, setHydeMode] = useState(false)
   const [verifyMode, setVerifyMode] = useState(false)
   const [askOpts, setAskOpts] = useState(null) // {rerank_available, hyde_available, verify_available}
+  const [askedQuery, setAskedQuery] = useState('') // 피드백에 붙일 마지막 질문
+  const [feedbackSent, setFeedbackSent] = useState(null) // 1 | -1 | null
   // 엔티티 태그 필터(D-2) — 본문/의미 검색을 메타데이터로 좁힌다("본문 X AND 모델=A1234").
   // 키워드·의미 두 모드 모두 적용.
   const [entityFilter, setEntityFilter] = useState([])
@@ -265,6 +269,8 @@ export default function SearchPage() {
             signal: controller.signal,
           })
       setAskResult(res)
+      setAskedQuery(q)
+      setFeedbackSent(null)
     } catch (e) {
       // 사용자가 중단(abort)한 경우는 에러로 표시하지 않는다.
       if (e?.code === 'ERR_CANCELED' || e?.name === 'CanceledError') {
@@ -280,6 +286,20 @@ export default function SearchPage() {
       setAskLoading(false)
     }
   }, [input, askLoading, graphMode, rerankMode, hydeMode, verifyMode, isAgent])
+
+  const sendFeedback = async (rating) => {
+    if (!askResult || feedbackSent) return
+    setFeedbackSent(rating)
+    try {
+      await submitFeedback({
+        query: askedQuery,
+        rating,
+        reportIds: (askResult.citations || []).map((c) => c.report_id),
+      })
+    } catch {
+      setFeedbackSent(null)
+    }
+  }
 
   const cancelAsk = useCallback(() => {
     askAbortRef.current?.abort()
@@ -657,6 +677,33 @@ export default function SearchPage() {
                       ))}
                     </ol>
                   </details>
+                )}
+                {askResult.answer && !askResult.no_evidence && (
+                  <div className="mt-3 flex items-center gap-2 border-t pt-2 text-[11px] text-muted-foreground">
+                    {feedbackSent ? (
+                      <span>피드백 감사합니다 {feedbackSent > 0 ? '👍' : '👎'}</span>
+                    ) : (
+                      <>
+                        <span>이 답변이 도움이 되었나요?</span>
+                        <button
+                          type="button"
+                          onClick={() => sendFeedback(1)}
+                          className="rounded p-1 hover:bg-muted hover:text-emerald-600"
+                          title="도움이 됨"
+                        >
+                          <ThumbsUp className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => sendFeedback(-1)}
+                          className="rounded p-1 hover:bg-muted hover:text-amber-600"
+                          title="도움 안 됨"
+                        >
+                          <ThumbsDown className="h-3.5 w-3.5" />
+                        </button>
+                      </>
+                    )}
+                  </div>
                 )}
                 {askResult.citations?.length > 0 && (
                   <div className="mt-3 border-t pt-3">

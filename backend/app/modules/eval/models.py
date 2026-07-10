@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -34,4 +34,26 @@ class EvalCase(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class QaFeedback(Base):
+    """AI 질문하기 답변에 대한 사용자 👍/👎. 수집 자체로 가치(품질 신호) +
+    👍 는 (질문, 인용 보고서)를 평가 골든셋으로 승격하는 씨앗. 랭킹 학습(LtR)은
+    데이터가 쌓인 뒤 별도로."""
+
+    __tablename__ = "qa_feedback"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    rating: Mapped[int] = mapped_column(Integer, nullable=False)  # 1=👍, -1=👎
+    # 답변이 근거로 든 인용 보고서 — 👍면 이게 그 질문의 '정답'이 된다.
+    report_ids: Mapped[list[int]] = mapped_column(
+        ARRAY(Integer), nullable=False, server_default="{}"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )

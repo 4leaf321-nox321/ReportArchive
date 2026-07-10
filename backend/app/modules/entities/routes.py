@@ -1284,12 +1284,13 @@ objects_router = APIRouter()
 def resolve_object_ref(
     obj_type: str,
     obj_id: str,
-    _actor: EntityActor = Depends(entity_actor),
+    actor: EntityActor = Depends(entity_actor),
     db: Session = Depends(get_db),
 ):
     """어떤 종류 객체든 균일한 표시형(ObjectRef)으로 해석 — 인증-only. 그래프·
-    프로필이 종류 안 가리고 노드/칩을 그리는 통합 진입점. 모르는 타입/대상은 404."""
-    ref = services.resolve_object(db, obj_type, obj_id)
+    프로필이 종류 안 가리고 노드/칩을 그리는 통합 진입점. 모르는 타입/대상은 404.
+    report 는 요청자 가시성 게이트(actor.user)."""
+    ref = services.resolve_object(db, obj_type, obj_id, actor.user)
     if ref is None:
         return not_found_response(f"객체를 찾을 수 없습니다: {obj_type}/{obj_id}")
     return success_response(data=ObjectRefRead(**ref))
@@ -1299,24 +1300,27 @@ def resolve_object_ref(
 def object_ref_links(
     obj_type: str,
     obj_id: str,
-    _actor: EntityActor = Depends(entity_actor),
+    actor: EntityActor = Depends(entity_actor),
     db: Session = Depends(get_db),
 ):
-    """이 객체의 cross-kind 링크(양방향, 해석됨) — 인증-only. 부서(dept)로 부르면
-    incoming 이 '이 부서가 담당한 과제들'(A0.3 스텝3 역방향). 상대는 ObjectRef 로
-    해석해 해석 실패(삭제 등)는 건너뛴다."""
-    ref = services.resolve_object(db, obj_type, obj_id)
+    """이 객체의 링크(양방향, 해석됨) — 인증-only. 수동 object_links + **FK 파생 관계**
+    (report 작성자·부서·다룬 객체, user 소속·작성 보고서)를 합쳐 돌려준다. 부서(dept)로
+    부르면 incoming 이 '이 부서가 담당한 과제들'. report 는 가시성 게이트(actor.user)."""
+    ref = services.resolve_object(db, obj_type, obj_id, actor.user)
     if ref is None:
         return not_found_response(f"객체를 찾을 수 없습니다: {obj_type}/{obj_id}")
     outgoing, incoming = services.list_object_links_for_ref(db, obj_type, obj_id)
     cache: dict = {}
     items: list[ObjectLinkItem] = []
     for link in outgoing:
-        other = services.resolve_object(db, link.dst_type, link.dst_id)
+        other = services.resolve_object(db, link.dst_type, link.dst_id, actor.user)
         if other:
             items.append(_object_link_item(db, link, "out", other, cache))
     for link in incoming:
-        other = services.resolve_object(db, link.src_type, link.src_id)
+        other = services.resolve_object(db, link.src_type, link.src_id, actor.user)
         if other:
             items.append(_object_link_item(db, link, "in", other, cache))
-    return success_response(data={"object": ObjectRefRead(**ref), "items": items})
+    derived = services.derived_links_for(db, actor.user, obj_type, obj_id)
+    return success_response(
+        data={"object": ObjectRefRead(**ref), "items": items, "derived": derived}
+    )

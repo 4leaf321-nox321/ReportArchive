@@ -12,6 +12,7 @@ import {
   Calendar,
   ArrowUpRight,
   Building2,
+  User as UserIcon,
 } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 import { Badge } from '@/shared/components/ui/badge'
@@ -474,10 +475,12 @@ export function ObjectRefProfilePage() {
 
   const obj = data?.object
 
-  // entity 객체는 값 프로필(/entities/:id)이 더 풍부 — 그쪽으로 넘긴다.
+  // entity 객체는 값 프로필(/entities/:id)로, report 는 보고서 상세로 넘긴다.
   useEffect(() => {
     if (obj && obj.kind_class !== 'system') {
       navigate(`/entities/${obj.id}`, { replace: true })
+    } else if (obj && obj.type === 'report' && obj.url) {
+      navigate(obj.url, { replace: true })
     }
   }, [obj, navigate])
 
@@ -488,7 +491,8 @@ export function ObjectRefProfilePage() {
       </div>
     )
   }
-  if (loading || !obj || obj.kind_class !== 'system') {
+  // report 는 상세로 리다이렉트 중 — dept/user 프로필 UI 를 잠깐도 안 보이게.
+  if (loading || !obj || obj.kind_class !== 'system' || obj.type === 'report') {
     return (
       <div className="mx-auto w-full max-w-4xl px-4 py-6">
         <Skeleton className="h-28" />
@@ -496,17 +500,31 @@ export function ObjectRefProfilePage() {
     )
   }
 
+  const isUser = obj.type === 'user'
+  const typeLabel = obj.type === 'dept' ? '부서' : obj.type === 'user' ? '사용자' : obj.type
+  const HeaderIcon = isUser ? UserIcon : Building2
   const items = data.items ?? []
+  const derived = data.derived ?? []
+  const allLinks = [
+    ...items.map((it) => ({
+      key: `m-${it.link_id}`, relation: it.relation, direction: it.direction,
+      target: it.target, note: it.evidence_note,
+    })),
+    ...derived.map((it, i) => ({
+      key: `d-${i}`, relation: it.relation, direction: it.direction,
+      target: it.object, note: undefined,
+    })),
+  ]
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-6">
       <section className="mb-6 rounded-lg border bg-card p-4">
         <div className="flex flex-wrap items-center gap-2">
-          <Building2 className="h-5 w-5 text-muted-foreground" />
+          <HeaderIcon className="h-5 w-5 text-muted-foreground" />
           <span className="text-lg font-semibold">{obj.label}</span>
           <Badge variant="outline" className="text-[11px]">
-            {obj.type === 'dept' ? '부서' : obj.type}
+            {typeLabel}
           </Badge>
-          {obj.url && (
+          {obj.type === 'dept' && obj.url && (
             <Button
               variant="outline"
               size="sm"
@@ -519,14 +537,14 @@ export function ObjectRefProfilePage() {
         </div>
       </section>
 
-      <Section icon={Network} title="관련 객체" count={items.length}>
-        {items.length === 0 ? (
+      <Section icon={Network} title="관련 객체" count={allLinks.length}>
+        {allLinks.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            이 조직에 연결된 객체가 없습니다.
+            {isUser ? '연결된 객체가 없습니다.' : '이 조직에 연결된 객체가 없습니다.'}
           </p>
         ) : (
           <div className="flex flex-wrap gap-1.5">
-            {items.map((it) => {
+            {allLinks.map((it) => {
               const rt = relMeta.get(it.relation)
               const label =
                 it.direction === 'in'
@@ -534,13 +552,13 @@ export function ObjectRefProfilePage() {
                   : rt?.label ?? it.relation
               return (
                 <button
-                  key={it.link_id}
+                  key={it.key}
                   type="button"
                   onClick={() =>
                     navigate(`/objects/${it.target.type}/${it.target.id}`)
                   }
                   className="group inline-flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-sm hover:bg-accent"
-                  title={it.evidence_note || undefined}
+                  title={it.note || undefined}
                 >
                   <span className="text-[10px] text-muted-foreground">{label}</span>
                   <span className="truncate">

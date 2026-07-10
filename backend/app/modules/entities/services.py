@@ -1514,9 +1514,15 @@ def list_report_links_for_entity(db: Session, *, entity_id: int) -> list:
 # ObjectRef = (type, id:str). type 은 entity 축 slug(reference/record) 또는 system
 # 축 slug('dept' 등). system 은 entities 행이 없고 원 테이블을 투영한다.
 
-def resolve_object(db: Session, obj_type: str, obj_id: str) -> Optional[dict]:
+def resolve_object(
+    db: Session, obj_type: str, obj_id: str, actor=None
+) -> Optional[dict]:
     """ObjectRef 를 균일한 표시형으로 해석. 모르는 타입/대상은 None.
-    반환: {type, id, kind_class, label, url, icon, deleted}."""
+    반환: {type, id, kind_class, label, url, icon, deleted}.
+
+    actor(요청 User) 는 **report 가시성 게이트**용 — report 는 요청자가 볼 수 있는
+    것만 해석하고 권한 밖·actor 없음이면 None(존재 자체 비노출). dept/user/entity 는
+    actor 무시. (설계: system객체확장_user·report투영)."""
     type_row = get_type_by_slug(db, obj_type)
     if type_row is None:
         return None
@@ -1533,7 +1539,41 @@ def resolve_object(db: Session, obj_type: str, obj_id: str) -> Optional[dict]:
                 "label": ws.name, "url": f"/w/{obj_id}", "icon": type_row.icon,
                 "deleted": False,
             }
-        # 다른 system 타입(user/report)은 후속 스텝에서.
+        if obj_type == "user":
+            from app.modules.users.models import User
+
+            try:
+                uid = int(obj_id)
+            except (TypeError, ValueError):
+                return None
+            u = db.get(User, uid)
+            if u is None:
+                return None
+            # 라벨=이름만(email·역할 비노출). 비활성=deleted 표기(감사용 유지).
+            return {
+                "type": "user", "id": obj_id, "kind_class": "system",
+                "label": u.name, "url": f"/objects/user/{obj_id}",
+                "icon": type_row.icon, "deleted": not u.is_active,
+            }
+        if obj_type == "report":
+            from app.modules.reports.models import Report
+            from app.modules.reports.services import all_visible_report_ids
+
+            try:
+                rid = int(obj_id)
+            except (TypeError, ValueError):
+                return None
+            # ★ 가시성 게이트 — 요청자가 볼 수 있는 보고서만(권한 밖·actor 없음 → None).
+            if actor is None or rid not in all_visible_report_ids(db, actor.id):
+                return None
+            r = db.get(Report, rid)
+            if r is None:
+                return None
+            return {
+                "type": "report", "id": obj_id, "kind_class": "system",
+                "label": r.title, "url": f"/reports/{obj_id}",
+                "icon": type_row.icon, "deleted": r.deleted_at is not None,
+            }
         return None
 
     # entity(reference/record) — id 는 정수.
@@ -1549,6 +1589,95 @@ def resolve_object(db: Session, obj_type: str, obj_id: str) -> Optional[dict]:
         "label": ent.value, "url": f"/entities/{eid}", "icon": type_row.icon,
         "deleted": ent.status == EntityStatus.deprecated,
     }
+
+
+_DERIVED_LIMIT = 50
+
+
+def derived_links_for(db: Session, actor, obj_type: str, obj_id: str) -> list[dict]:
+    """FK 파생 관계(저장 0) — report/user 의 온플라이 관계. report 는 가시성 게이트.
+    반환: [{relation, relation_label, direction('out'|'in'), object}]. 상한 _DERIVED_LIMIT.
+    설계: system객체확장_user·report투영 §4."""
+    rel_labels = {rt.slug: rt.label for rt in list_relation_types(db)}
+    out: list[dict] = []
+
+    def add(relation, direction, ref):
+        if ref:
+            out.append({
+                "relation": relation,
+                "relation_label": rel_labels.get(relation, relation),
+                "direction": direction, "object": ref,
+            })
+
+    if obj_type == "report":
+        from app.modules.reports.models import Report
+        from app.modules.reports.services import all_visible_report_ids
+
+        try:
+            rid = int(obj_id)
+        except (TypeError, ValueError):
+            return []
+        if actor is None or rid not in all_visible_report_ids(db, actor.id):
+            return []
+        r = db.get(Report, rid)
+        if r is None:
+            return []
+        if r.owner_user_id:
+            add("authored_by", "out", resolve_object(db, "user", str(r.owner_user_id), actor))
+        led = getattr(r, "last_edited_by_user_id", None)
+        if led and led != r.owner_user_id:
+            add("edited_by", "out", resolve_object(db, "user", str(led), actor))
+        if r.workspace_slug:
+            add("published_in", "out", resolve_object(db, "dept", r.workspace_slug, actor))
+        for ent in (r.entities or [])[:_DERIVED_LIMIT]:
+            if ent.entity_type:
+                add("documents", "out",
+                    resolve_object(db, ent.entity_type.slug, str(ent.id), actor))
+
+    elif obj_type == "user":
+        from app.modules.reports.models import Report
+        from app.modules.reports.services import all_visible_report_ids
+        from app.modules.users.models import User, WorkspaceMember
+
+        try:
+            uid = int(obj_id)
+        except (TypeError, ValueError):
+            return []
+        u = db.get(User, uid)
+        if u is None:
+            return []
+        # member_of → 소속 부서(home + 멤버십).
+        seen: set[str] = set()
+        slugs: list[str] = []
+        if u.home_workspace_slug:
+            slugs.append(u.home_workspace_slug)
+            seen.add(u.home_workspace_slug)
+        for slug in db.scalars(
+            select(WorkspaceMember.workspace_slug).where(WorkspaceMember.user_id == uid)
+        ).all():
+            if slug not in seen:
+                slugs.append(slug)
+                seen.add(slug)
+        for slug in slugs[:_DERIVED_LIMIT]:
+            add("member_of", "out", resolve_object(db, "dept", slug, actor))
+        # 역방향 — 이 사용자가 작성한 '볼 수 있는' 보고서.
+        if actor is not None:
+            visible = all_visible_report_ids(db, actor.id)
+            rep_ids = db.scalars(
+                select(Report.id)
+                .where(Report.owner_user_id == uid, Report.deleted_at.is_(None))
+                .order_by(Report.updated_at.desc())
+                .limit(300)
+            ).all()
+            n = 0
+            for rid in rep_ids:
+                if rid in visible:
+                    add("authored_by", "in", resolve_object(db, "report", str(rid), actor))
+                    n += 1
+                    if n >= _DERIVED_LIMIT:
+                        break
+
+    return out
 
 
 def add_object_link(

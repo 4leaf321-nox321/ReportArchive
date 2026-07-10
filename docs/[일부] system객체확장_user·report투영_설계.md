@@ -1,7 +1,14 @@
 # system 객체 확장 — user·report 온톨로지 투영 설계 (A0.3 후속)
 
-> 상태: **미구현 (설계)** · A0.3(`[일부] 온톨로지_A0.3_설계.md`)의 잔여 = system 객체가
-> 부서(dept)까지만 투영된 것을 **user(사용자)·report(보고서)** 로 확장한다.
+> 상태: **스텝1(파생 투영) 구현됨** (2026-07-10, 마이그 p71) · 스텝2(수동 관계)·스텝3(자동
+> 채우기) 미구현. A0.3의 잔여 = system 객체가 부서(dept)까지만 투영된 것을 **user·report** 로 확장.
+>
+> **스텝1 구현물:** user/report system 축 + 파생 관계 시드(p71). `resolve_object(db,type,id,actor=)`
+> — user(라벨=이름, email 비노출)·**report(가시성 게이트: actor 없음/권한 밖 → None)**.
+> `derived_links_for(db,actor,type,id)` — report(작성자·편집자·게시부서·다룬 객체) / user(소속부서·
+> 작성 보고서 역방향, 가시성 교집합), 상한 50. `GET /api/objects/{t}/{id}[/links]` 가 actor 전달 +
+> `derived` 병합. 프론트 ObjectRefProfilePage: user 렌더(파생 관계 칩)·report→상세 리다이렉트.
+> 테스트 test_system_objects(가시성 게이트·파생·라우트). **저장 0 — 기존 데이터 이관/백필 없음.**
 > 관련: `[일부] 온톨로지_A0.3_설계.md`, `[일부] 엔티티그래프_온톨로지_설계.md`,
 > `[완료] 온톨로지 에이전트_tool-calling_설계.md`, `[완료] MCP온톨로지조사_설계.md`,
 > `[[project_grant_visibility_model]]`.

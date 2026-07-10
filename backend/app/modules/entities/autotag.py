@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai.models import ReportChunk
@@ -152,7 +152,7 @@ def build_term_index(db: Session) -> list[tuple[int, list[str]]]:
 
 
 def entity_ids_in_text(text: str, term_index: list[tuple[int, list[str]]]) -> list[int]:
-    """text 가 언급하는 엔티티 id — 결정적 경계매칭(값·코드·별칭). 청크 단위 태깅용."""
+    """text 가 언급하는 엔티티 id — 결정적 경계매칭(값·코드·별칭, L0). 청크 단위 태깅용."""
     tl = (text or "").lower()
     if not tl:
         return []
@@ -163,6 +163,69 @@ def entity_ids_in_text(text: str, term_index: list[tuple[int, list[str]]]) -> li
                 out.append(eid)
                 break
     return out
+
+
+# --- L1 임베딩 유사도 청크 링크 -------------------------------------------------
+# 엔티티 값 임베딩 캐시 — 매 보고서 임베딩마다 재계산하지 않게 프로세스 내 1벌.
+# 시그니처(활성 개수·최대 id·최근 updated_at)가 바뀌면 무효화(추가/삭제/수정 감지).
+_ENT_EMBED_CACHE: dict = {}
+
+
+def _similar_ids_per_chunk(ids, ent_vecs, chunk_vecs, min_score) -> list[list[int]]:
+    """엔티티 벡터 × 청크 벡터 코사인 → 청크별 임계 이상 엔티티 id. 순수 계산(테스트용)."""
+    ent_mat = np.asarray(ent_vecs, dtype=np.float32)
+    ent_norm = ent_mat / (np.linalg.norm(ent_mat, axis=1, keepdims=True) + 1e-8)
+    chunk_mat = np.asarray(chunk_vecs, dtype=np.float32)
+    chunk_norm = chunk_mat / (np.linalg.norm(chunk_mat, axis=1, keepdims=True) + 1e-8)
+    sim = ent_norm @ chunk_norm.T  # (E, C)
+    return [
+        [ids[e] for e in range(len(ids)) if float(sim[e, c]) >= min_score]
+        for c in range(sim.shape[1])
+    ]
+
+
+def _entity_pool_vectors(db: Session):
+    """활성 엔티티 (id, 값 임베딩) — 프로세스 캐시. 반환: (ids, ent_vecs) 또는 (None, None)."""
+    sig_row = db.execute(
+        select(func.count(Entity.id), func.max(Entity.id), func.max(Entity.updated_at))
+        .where(Entity.status == EntityStatus.active)
+    ).one()
+    sig = (int(sig_row[0] or 0), int(sig_row[1] or 0), str(sig_row[2]))
+    cached = _ENT_EMBED_CACHE.get("pool")
+    if cached and cached[0] == sig:
+        return cached[1], cached[2]
+
+    pool = db.execute(
+        select(Entity.id, Entity.value)
+        .where(Entity.status == EntityStatus.active)
+        .order_by(Entity.id)
+    ).all()[:_MAX_SIMILARITY_CANDIDATES]
+    if not pool:
+        _ENT_EMBED_CACHE["pool"] = (sig, None, None)
+        return None, None
+    from app.ai.embeddings import EmbeddingError, embed_texts
+
+    try:
+        vecs = embed_texts([v for _, v in pool])
+    except EmbeddingError:
+        return None, None  # 실패는 캐시 안 함(다음에 재시도)
+    ids = [pid for pid, _ in pool]
+    _ENT_EMBED_CACHE["pool"] = (sig, ids, vecs)
+    return ids, vecs
+
+
+def l1_chunk_entity_links(db: Session, chunk_vectors) -> list[list[int]]:
+    """각 청크 벡터에 의미 유사한 엔티티 id(L1). embedding_backend=mock 이면 빈 목록.
+    엔티티 값 임베딩은 캐시(변경 시 무효화)해 재인덱스 배치 비용을 줄인다."""
+    n = len(chunk_vectors or [])
+    if n == 0 or (settings.embedding_backend or "mock").lower() == "mock":
+        return [[] for _ in range(n)]
+    ids, ent_vecs = _entity_pool_vectors(db)
+    if not ids:
+        return [[] for _ in range(n)]
+    return _similar_ids_per_chunk(
+        ids, ent_vecs, chunk_vectors, settings.embedding_suggest_min_score
+    )
 
 
 def _similarity(

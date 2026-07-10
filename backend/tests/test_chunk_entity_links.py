@@ -71,3 +71,20 @@ def test_chunks_for_entities_and_visibility_gate(monkeypatch):
             ))
             db.commit()
         db.close()
+
+
+def test_l1_similarity_logic_and_mock_guard(monkeypatch):
+    """L1 임베딩 유사도 — 코사인 임계로 청크별 링크 + mock 백엔드면 빈."""
+    from app.config import settings
+    from app.modules.entities.autotag import (
+        _similar_ids_per_chunk,
+        l1_chunk_entity_links,
+    )
+
+    # 순수 코사인: chunk0~ent100, chunk1~ent200.
+    res = _similar_ids_per_chunk([100, 200], [[1, 0], [0, 1]], [[1, 0.1], [0, 1]], 0.9)
+    assert res == [[100], [200]], res
+
+    # mock 백엔드 → L1 스킵(빈 목록, 청크 수만큼).
+    monkeypatch.setattr(settings, "embedding_backend", "mock")
+    assert l1_chunk_entity_links(SessionLocal(), [[1, 0], [0, 1]]) == [[], []]

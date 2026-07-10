@@ -78,11 +78,17 @@ def embed_report(session: Session, payload: dict) -> dict:
         return {"report_id": report_id, "chunks": 0}
 
     vectors = embed_texts(texts)  # 실패 시 EmbeddingError → 큐가 재시도
-    # 청크↔객체 링크 — 활성 엔티티 카탈로그 1회 로드 후 청크별 결정적 매칭(p74).
-    from app.modules.entities.autotag import build_term_index, entity_ids_in_text
+    # 청크↔객체 링크 — L0(결정적 경계매칭) ∪ L1(임베딩 유사도, mock 이면 빈). p74.
+    from app.modules.entities.autotag import (
+        build_term_index,
+        entity_ids_in_text,
+        l1_chunk_entity_links,
+    )
 
     term_index = build_term_index(session)
+    l1_links = l1_chunk_entity_links(session, vectors)  # 청크별 L1
     for idx, (c, vec) in enumerate(zip(chunks, vectors)):
+        eids = sorted(set(entity_ids_in_text(c.text, term_index)) | set(l1_links[idx]))
         session.add(
             ReportChunk(
                 report_id=report_id,
@@ -92,7 +98,7 @@ def embed_report(session: Session, payload: dict) -> dict:
                 widget_type=c.widget_type,
                 text=c.text,
                 embedding=vec,
-                entity_ids=entity_ids_in_text(c.text, term_index),
+                entity_ids=eids,
                 content_hash=content_hash,
             )
         )

@@ -7,7 +7,7 @@ from app.ai import qa
 def _sem_patch(monkeypatch, sem):
     monkeypatch.setattr(
         qa.ai_search, "top_chunks_for_reports",
-        lambda db, q, order, per_report=3: sem,
+        lambda db, q, order, per_report=3, embed_query=None: sem,
     )
 
 

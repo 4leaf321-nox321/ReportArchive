@@ -125,6 +125,10 @@ class Settings(BaseSettings):
     # 재채점해 상위만 인용. **기본 OFF**(질문당 LLM 1콜 추가). llm_backend 가 mock
     # 이면 자동 무효. 실패/파싱불가 시 1차 순서 그대로(검색이 죽지 않게).
     rag_rerank_enabled: bool = Field(default=False)
+    # RAG Q&A HyDE — 짧고 모호한 질문 대신 LLM 이 지어낸 '가상 답변 문단'을 임베딩해
+    # 시맨틱 검색(질문-문서 어휘 격차 해소). **기본 OFF**(질문당 LLM 1콜 추가). mock 이면
+    # 무효. 키워드·씨앗 링킹은 원 질문 유지(가상문단 오탐 방지). 실패 시 원 질문 폴백.
+    rag_hyde_enabled: bool = Field(default=False)
     # 보고서 저장/수정 시 자동으로 embed_report 잡을 적재할지. **기본 OFF** — pgvector
     # 확장·report_chunks·워커가 모두 준비된 환경에서만 켠다(.env 로 true). 안 그러면
     # 임베딩 미배포(p47만 배포 등) 상태에서 실패 잡이 쌓인다.

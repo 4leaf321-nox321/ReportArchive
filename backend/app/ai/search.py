@@ -134,6 +134,7 @@ def semantic_search(
     entity_rollup: bool = False,
     year: Optional[int] = None,
     snippet_chars: Optional[int] = 200,
+    embed_query: Optional[str] = None,
 ) -> list[dict]:
     """벡터 유사도 검색 — 보고서별 최적(최근접) 청크 기준 상위 limit 개.
 
@@ -144,10 +145,13 @@ def semantic_search(
 
     snippet_chars: 결과 `snippet` 길이 상한(기본 200). None 이면 청크 전문 —
     RAG Q&A 가 인용 컨텍스트로 청크 전체를 받을 때 쓴다.
+    embed_query: 벡터로 임베딩할 텍스트를 query 와 다르게 줄 때(HyDE — 가상 답변
+    문단). None 이면 query 를 임베딩. 스코프·엔티티 필터는 그대로.
     """
     q = (query or "").strip()
     if not q:
         return []
+    vec_text = (embed_query or query or "").strip()
     if scope is _UNSET:
         scope = _visible_scope_ids(db, actor)
         # 직접 호출 경로에서만 엔티티·연도 필터 적용 — hybrid 는 미리 필터한
@@ -157,7 +161,7 @@ def semantic_search(
     if scope is not None and not scope:
         return []
 
-    qvec = embed_one(q)
+    qvec = embed_one(vec_text)
     dist = ReportChunk.embedding.cosine_distance(qvec).label("dist")
     stmt = (
         select(
@@ -202,7 +206,8 @@ def semantic_search(
 
 
 def top_chunks_for_reports(
-    db: Session, query: str, report_ids: list[int], *, per_report: int = 3
+    db: Session, query: str, report_ids: list[int], *, per_report: int = 3,
+    embed_query: Optional[str] = None,
 ) -> list[dict]:
     """이미 뽑힌 보고서들 안에서 질문에 가까운 **청크를 보고서당 여러 개** 고른다.
 
@@ -217,7 +222,7 @@ def top_chunks_for_reports(
     q = (query or "").strip()
     if not q:
         return []
-    qvec = embed_one(q)
+    qvec = embed_one((embed_query or q).strip())
     dist = ReportChunk.embedding.cosine_distance(qvec).label("dist")
     # 보고서당 per_report 개를 담을 만큼 넉넉히 후보를 끌어와(근접 순) 그룹핑한다.
     rows = db.execute(
@@ -312,6 +317,7 @@ def hybrid_search(
     entity_rollup: bool = False,
     year: Optional[int] = None,
     snippet_chars: Optional[int] = 200,
+    embed_query: Optional[str] = None,
 ) -> list[dict]:
     """semantic + keyword 를 RRF 로 합산. 한쪽에만 잡혀도 상위로 끌어올린다.
 
@@ -334,7 +340,7 @@ def hybrid_search(
     sem = semantic_search(
         db, query, actor, limit=max(limit, 50),
         min_score=settings.embedding_hybrid_min_score, scope=scope,
-        snippet_chars=snippet_chars,
+        snippet_chars=snippet_chars, embed_query=embed_query,
     )
     kw_rows = _keyword_search(db, query, scope, limit=max(limit, 50))
 

@@ -48,6 +48,13 @@ _RERANK_SYSTEM = (
     "얼마나 적합한지 0~10 정수로 채점하라. 관련 없으면 0. 출력은 JSON 배열만: "
     '[{"i": 번호, "score": 점수}, ...]. 다른 말·설명 없이 JSON 만 출력하라.'
 )
+# HyDE 가상 답변 문단 생성 프롬프트 — 검색 임베딩용(사실 정확성 불필요).
+_HYDE_SYSTEM = (
+    "당신은 사내 CAE 보고서 아카이브를 돕는다. 사용자 질문에 대해, 실제 보고서에 "
+    "있을 법한 이상적인 '답변 문단'을 한국어로 3~4문장 지어내라. 사실 여부는 중요치 "
+    "않다(검색용 가상 문단이다). 질문의 핵심 용어·동의어·관련 개념을 풍부히 담되, "
+    "머리말 없이 문단만 출력하라."
+)
 
 _SYSTEM = (
     "당신은 사내 CAE 보고서 아카이브 어시스턴트다. 아래 [출처]에 있는 내용만 "
@@ -142,9 +149,14 @@ def _retrieve(db: Session, actor, query: str, *, limit: int, graph: bool = False
     rerank_on = _rerank_enabled()
     pool = limit * _RERANK_MULT if rerank_on else limit
 
+    # HyDE — 시맨틱 검색용 임베딩 텍스트를 가상 답변 문단으로 대체(키워드·씨앗은 원 질문).
+    embed_q = _hyde(q) if _hyde_enabled() else None
+
     # 하이브리드(시맨틱+키워드 RRF) + 청크 전문(snippet_chars=None). 근거 가드
     # 임계(embedding_hybrid_min_score)는 hybrid_search 내부 적용.
-    plain = ai_search.hybrid_search(db, q, actor, limit=pool, snippet_chars=None)
+    plain = ai_search.hybrid_search(
+        db, q, actor, limit=pool, snippet_chars=None, embed_query=embed_q
+    )
 
     if graph:
         # 지연 import — 순수 벡터 경로(graph=False)엔 온톨로지 의존을 끌어들이지 않게.
@@ -159,6 +171,7 @@ def _retrieve(db: Session, actor, query: str, *, limit: int, graph: bool = False
                 graph_hits = ai_search.hybrid_search(
                     db, q, actor, limit=pool,
                     entity_ids=list(expanded_ids), snippet_chars=None,
+                    embed_query=embed_q,
                 )
                 # 텍스트-무관 이웃 — 씨앗/이웃 객체를 **직접 언급하는 구절**(청크↔객체
                 # 링크, p74)도 근거로. 질문과 벡터 안 닮아도 그 객체가 나온 문단을 끌어온다.
@@ -178,7 +191,7 @@ def _retrieve(db: Session, actor, query: str, *, limit: int, graph: bool = False
     # 보고서 단위 랭킹(hits)을 청크 단위 인용으로 넓힌다 — 긴 보고서의 여러 관련
     # 문단을 각각 근거로. 승자 보고서별 청크 목록을 만들고 breadth-first 로 채운다.
     order = [h["report_id"] for h in hits]
-    picked = _pick_chunks(db, q, hits, graph_hits, order, pool)
+    picked = _pick_chunks(db, q, hits, graph_hits, order, pool, embed_query=embed_q)
     # 2차 재랭킹 — 넓은 후보를 LLM 적합도로 재정렬해 상위 limit 만 인용.
     if rerank_on:
         picked = _rerank(q, picked, limit)
@@ -237,6 +250,34 @@ def _rerank_enabled() -> bool:
     )
 
 
+def _hyde_enabled() -> bool:
+    """HyDE on 여부 — 설정 토글 + 생성 LLM 이 mock 이 아닐 때만."""
+    from app.config import settings
+
+    return bool(settings.rag_hyde_enabled) and (
+        (settings.llm_backend or "mock").lower() != "mock"
+    )
+
+
+def _hyde(q: str) -> Optional[str]:
+    """질문 → 시맨틱 검색용 임베딩 텍스트('원 질문 + 가상 답변 문단').
+
+    가상 문단은 문서 공간에 가까워 실제 청크와 매칭이 좋다. 원 질문을 함께 앞에
+    붙여, HyDE 가 엉뚱하게 새더라도 질문 신호를 잃지 않게 앵커링한다. 보강 레이어라
+    LLM 오류·mock 이면 None(호출부가 원 질문 임베딩으로 폴백)."""
+    try:
+        res = chat([
+            {"role": "system", "content": _HYDE_SYSTEM},
+            {"role": "user", "content": q},
+        ])
+    except Exception:  # noqa: BLE001 — 보강 레이어, 어떤 실패든 폴백
+        return None
+    if getattr(res, "backend", "") == "mock":
+        return None
+    text = (res.content or "").strip()
+    return f"{q}\n{text}" if text else None
+
+
 def _parse_rerank_scores(text: str, n: int) -> dict[int, float]:
     """LLM 응답에서 [{"i","score"}] JSON 배열 파싱 → {i: score}. 실패/범위밖은 무시."""
     import json
@@ -292,7 +333,7 @@ def _rerank(q: str, candidates: list[tuple[int, dict]], limit: int) -> list[tupl
 
 def _pick_chunks(
     db: Session, q: str, hits: list[dict], graph_hits: list[dict],
-    order: list[int], limit: int,
+    order: list[int], limit: int, *, embed_query: Optional[str] = None,
 ) -> list[tuple[int, dict]]:
     """승자 보고서들에서 인용할 청크를 고른다 — 보고서당 여러 문단, breadth-first.
 
@@ -301,7 +342,7 @@ def _pick_chunks(
     채운다: 1라운드=각 보고서의 최적 1개(넓이 우선), 이후=상위 보고서의 추가 문단
     (깊이). limit 개까지. 보고서가 hits 뿐이던(청크 없는) 경우 그 대표 스니펫 폴백."""
     sem = ai_search.top_chunks_for_reports(
-        db, q, order, per_report=_CHUNKS_PER_REPORT
+        db, q, order, per_report=_CHUNKS_PER_REPORT, embed_query=embed_query
     )
     rset = set(order)
     by_report: dict[int, list[dict]] = {rid: [] for rid in order}

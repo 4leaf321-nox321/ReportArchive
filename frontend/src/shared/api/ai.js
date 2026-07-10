@@ -100,3 +100,24 @@ export async function deleteAiEntitlement(id) {
   const res = await apiClient.delete(`/api/ai/entitlements/${id}`)
   return extractData(res)
 }
+
+// --- 런타임 튜닝 설정(.env 기본값 + DB override) — 시스템 관리자 전용 -----------
+
+/** 튜닝 설정 목록. `{ settings:[{key,value,default,overridden,type,label,desc,
+ *  group,min,max,step,requires_reindex}] }`. */
+export async function getAiSettings() {
+  const res = await apiClient.get('/api/ai/settings')
+  return extractData(res)
+}
+
+/** override 적용(재시작 불필요). changes={key:value}. 반환 {applied, requires_reindex}. */
+export async function updateAiSettings(changes) {
+  const res = await apiClient.put('/api/ai/settings', { changes })
+  return extractData(res)
+}
+
+/** 한 설정을 .env 기본값으로 되돌림(override 삭제). */
+export async function resetAiSetting(key) {
+  const res = await apiClient.delete(`/api/ai/settings/${key}`)
+  return extractData(res)
+}

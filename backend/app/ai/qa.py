@@ -247,25 +247,27 @@ def _retrieve(
 
 def _rerank_enabled(override: Optional[bool] = None) -> bool:
     """재랭킹 on 여부. 생성 LLM 이 mock 이면 항상 무효(무의미). 그 외엔 요청별
-    override(있으면) 우선, 없으면 설정 기본값. → 사용자가 질문마다 켜고 끌 수 있다."""
+    override(있으면) 우선, 없으면 런타임 설정 기본값. → 사용자가 질문마다 켜고 끈다."""
     from app.config import settings
+    from app.modules.app_settings import store
 
     if (settings.llm_backend or "mock").lower() == "mock":
         return False
     if override is not None:
         return bool(override)
-    return bool(settings.rag_rerank_enabled)
+    return bool(store.get("rag_rerank_enabled"))
 
 
 def _hyde_enabled(override: Optional[bool] = None) -> bool:
-    """HyDE on 여부. mock 이면 무효. override(요청별) 우선, 없으면 설정 기본값."""
+    """HyDE on 여부. mock 이면 무효. override(요청별) 우선, 없으면 런타임 설정 기본값."""
     from app.config import settings
+    from app.modules.app_settings import store
 
     if (settings.llm_backend or "mock").lower() == "mock":
         return False
     if override is not None:
         return bool(override)
-    return bool(settings.rag_hyde_enabled)
+    return bool(store.get("rag_hyde_enabled"))
 
 
 def _hyde(q: str) -> Optional[str]:

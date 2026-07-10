@@ -14,6 +14,7 @@ from __future__ import annotations
 
 # noqa: F401 — 전부 등록 부작용용 import (models.py 보유 모듈 전체)
 from app.modules.access_logs import models as _access_logs  # noqa: F401
+from app.modules.app_settings import models as _app_settings  # noqa: F401
 from app.modules.activities import models as _activities  # noqa: F401
 from app.modules.comments import models as _comments  # noqa: F401
 from app.modules.composite_presets import models as _composite_presets  # noqa: F401

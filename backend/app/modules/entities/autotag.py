@@ -232,12 +232,14 @@ def l1_chunk_entity_links(db: Session, chunk_vectors) -> list[list[int]]:
     ids, ent_vecs = entity_pool_vectors(db)
     if not ids:
         return [[] for _ in range(n)]
+    from app.modules.app_settings import store
+
     return _similar_ids_per_chunk(
         ids,
         ent_vecs,
         chunk_vectors,
-        settings.chunk_link_min_score,
-        top_k=settings.chunk_link_max_per_chunk,
+        store.get("chunk_link_min_score"),
+        top_k=store.get("chunk_link_max_per_chunk"),
     )
 
 

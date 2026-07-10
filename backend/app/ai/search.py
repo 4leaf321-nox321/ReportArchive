@@ -337,9 +337,11 @@ def hybrid_search(
         return []
 
     # 약한/노이즈 시맨틱이 키워드 결과를 오염시키지 않도록 임계값 적용.
+    from app.modules.app_settings import store
+
     sem = semantic_search(
         db, query, actor, limit=max(limit, 50),
-        min_score=settings.embedding_hybrid_min_score, scope=scope,
+        min_score=store.get("embedding_hybrid_min_score"), scope=scope,
         snippet_chars=snippet_chars, embed_query=embed_query,
     )
     kw_rows = _keyword_search(db, query, scope, limit=max(limit, 50))

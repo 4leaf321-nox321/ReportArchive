@@ -159,16 +159,76 @@ async def ask(
 @router.get("/ask/options")
 def ask_options(actor=Depends(get_current_user)):
     """Q&A 검색 옵션의 **현재 기본값** — 프론트 토글 초기화용. 사용자는 이 위에서
-    질문마다 rerank/hyde 를 켜고 끌 수 있다(요청 override). llm_backend 가 mock 이면
-    두 옵션은 무효라 사용 불가로 표시(available=false)."""
+    질문마다 rerank/hyde 를 켜고 끌 수 있다(요청 override). 기본값은 런타임 설정
+    (관리자가 재시작 없이 변경)을 따른다. llm_backend 가 mock 이면 두 옵션은 무효."""
+    from app.modules.app_settings import store
+
     llm_ready = (settings.llm_backend or "mock").lower() != "mock"
     return success_response(data={
         "graph": False,  # graph 는 순수 요청별(서버 기본 off)
-        "rerank": bool(settings.rag_rerank_enabled),
-        "hyde": bool(settings.rag_hyde_enabled),
+        "rerank": bool(store.get("rag_rerank_enabled")),
+        "hyde": bool(store.get("rag_hyde_enabled")),
         "rerank_available": llm_ready,
         "hyde_available": llm_ready,
     })
+
+
+# --------------------------------------------------------------------------- #
+# 런타임 관리자 설정 — .env 를 기본값으로, 재시작 없이 override(app_settings).
+# --------------------------------------------------------------------------- #
+class SettingsUpdatePayload(BaseModel):
+    changes: dict[str, bool | int | float] = Field(default_factory=dict)
+
+
+@router.get("/settings")
+def get_settings(
+    _: User = Depends(require_system_admin), db: Session = Depends(get_db)
+):
+    """튜닝 설정 목록 — 키별 유효값·기본값·override 여부 + 메타(타입·범위·재색인 필요)."""
+    from app.modules.app_settings import store
+
+    return success_response(data={"settings": store.all_effective(db)})
+
+
+@router.put("/settings")
+def update_settings(
+    payload: SettingsUpdatePayload,
+    actor: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """override 적용(재시작 불필요). 알 수 없는 키·범위 밖은 400. 색인 시점 설정은
+    변경돼도 기존 보고서엔 재색인해야 반영(응답에 requires_reindex 로 알림)."""
+    from app.modules.app_settings import store
+
+    try:
+        applied = store.set_many(db, payload.changes, actor.id)
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    reindex = sorted(
+        k for k in applied
+        if store.REGISTRY.get(k, {}).get("requires_reindex")
+    )
+    return success_response(
+        data={"applied": applied, "requires_reindex": reindex},
+        message="설정을 적용했습니다." + (
+            " 재색인 후 반영되는 항목이 있습니다." if reindex else ""
+        ),
+    )
+
+
+@router.delete("/settings/{key}")
+def reset_setting(
+    key: str,
+    _: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """override 삭제 → .env 기본값으로 복귀."""
+    from app.modules.app_settings import store
+
+    if key not in store.REGISTRY:
+        return error_response(f"알 수 없는 설정: {key}", status_code=404)
+    store.reset(db, key)
+    return success_response(message="기본값으로 되돌렸습니다.")
 
 
 # --------------------------------------------------------------------------- #

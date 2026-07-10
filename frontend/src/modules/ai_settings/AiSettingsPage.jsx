@@ -11,6 +11,7 @@ import { SkillTab } from './SkillTab'
 import { DiagnosticsTab } from './DiagnosticsTab'
 import { AccessTab } from './AccessTab'
 import { JobsTab } from './JobsTab'
+import { SearchTuningTab } from './SearchTuningTab'
 import { useAuth } from '@/shared/auth/AuthContext'
 
 /**
@@ -47,6 +48,7 @@ export default function AiSettingsPage() {
           {isAdmin && <TabsTrigger value="diag">연결·진단</TabsTrigger>}
           {isAdmin && <TabsTrigger value="jobs">작업 큐</TabsTrigger>}
           {isAdmin && <TabsTrigger value="access">AI 접근</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="tuning">검색 튜닝</TabsTrigger>}
         </TabsList>
         <TabsContent value="prompts" className="flex-1 min-h-0 mt-4">
           <PromptsTab />
@@ -70,6 +72,11 @@ export default function AiSettingsPage() {
         {isAdmin && (
           <TabsContent value="access" className="flex-1 min-h-0 mt-4 overflow-y-auto">
             <AccessTab />
+          </TabsContent>
+        )}
+        {isAdmin && (
+          <TabsContent value="tuning" className="flex-1 min-h-0 mt-4 overflow-y-auto">
+            <SearchTuningTab />
           </TabsContent>
         )}
       </Tabs>

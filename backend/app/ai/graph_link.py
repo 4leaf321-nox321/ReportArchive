@@ -115,7 +115,9 @@ def _embed_augment(db: Session, query: str, seeds: dict, scores: dict, *, limit:
     except EmbeddingError:
         return  # 임베딩 장애 — 유사도 레이어만 조용히 포기(키워드 결과는 유지).
 
-    ranked = _rank_by_cosine(qvec, ids, ent_vecs, settings.seed_link_min_score)
+    from app.modules.app_settings import store
+
+    ranked = _rank_by_cosine(qvec, ids, ent_vecs, store.get("seed_link_min_score"))
     new_ids = [eid for eid, _ in ranked if eid not in seeds][:limit]
     if not new_ids:
         return

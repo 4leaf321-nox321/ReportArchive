@@ -110,6 +110,13 @@ class Settings(BaseSettings):
     # 기준 ~0.43–0.50)도 거의 다 걸러진다 → 0.45 로 둬 의미 있는 후보가 뜨게 한다.
     # 제안은 검토 후 수락(기본 미선택)이라 약간의 노이즈는 안전.
     embedding_suggest_min_score: float = Field(default=0.45)
+    # 청크↔객체 L1 링크(임베딩 유사도)의 최소 코사인 점수. suggest(0.45)와 달리
+    # 이 링크는 사람 검토 없이 AI 검색 근거로 바로 쓰이므로 더 엄격하게 둔다(정밀
+    # 우선). L0(정확 매칭)가 확실한 건 이미 잡으므로 L1 은 "의미 보강"만 하면 된다.
+    chunk_link_min_score: float = Field(default=0.5)
+    # 청크당 L1 링크 상한(점수 높은 순 top-K). 한 문단이 느슨하게 여러 객체에 붙어
+    # 검색을 오염시키지 않게 최악의 경우를 묶는다. L0 링크는 이 상한과 무관(합집합).
+    chunk_link_max_per_chunk: int = Field(default=8)
     # 보고서 저장/수정 시 자동으로 embed_report 잡을 적재할지. **기본 OFF** — pgvector
     # 확장·report_chunks·워커가 모두 준비된 환경에서만 켠다(.env 로 true). 안 그러면
     # 임베딩 미배포(p47만 배포 등) 상태에서 실패 잡이 쌓인다.

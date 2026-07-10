@@ -85,6 +85,12 @@ def test_l1_similarity_logic_and_mock_guard(monkeypatch):
     res = _similar_ids_per_chunk([100, 200], [[1, 0], [0, 1]], [[1, 0.1], [0, 1]], 0.9)
     assert res == [[100], [200]], res
 
+    # top-K: 세 엔티티 모두 임계 이상이어도 상위 2개만(점수 높은 순).
+    topk = _similar_ids_per_chunk(
+        [1, 2, 3], [[1, 0], [0.9, 0.1], [0.8, 0.2]], [[1, 0]], 0.1, top_k=2
+    )
+    assert topk == [[1, 2]], topk
+
     # mock 백엔드 → L1 스킵(빈 목록, 청크 수만큼).
     monkeypatch.setattr(settings, "embedding_backend", "mock")
     assert l1_chunk_entity_links(SessionLocal(), [[1, 0], [0, 1]]) == [[], []]

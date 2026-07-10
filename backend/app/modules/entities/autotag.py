@@ -171,17 +171,25 @@ def entity_ids_in_text(text: str, term_index: list[tuple[int, list[str]]]) -> li
 _ENT_EMBED_CACHE: dict = {}
 
 
-def _similar_ids_per_chunk(ids, ent_vecs, chunk_vecs, min_score) -> list[list[int]]:
-    """엔티티 벡터 × 청크 벡터 코사인 → 청크별 임계 이상 엔티티 id. 순수 계산(테스트용)."""
+def _similar_ids_per_chunk(
+    ids, ent_vecs, chunk_vecs, min_score, top_k=None
+) -> list[list[int]]:
+    """엔티티 벡터 × 청크 벡터 코사인 → 청크별 임계 이상 엔티티 id(점수 높은 순).
+    top_k 를 주면 청크당 상위 K개만. 순수 계산(테스트용)."""
     ent_mat = np.asarray(ent_vecs, dtype=np.float32)
     ent_norm = ent_mat / (np.linalg.norm(ent_mat, axis=1, keepdims=True) + 1e-8)
     chunk_mat = np.asarray(chunk_vecs, dtype=np.float32)
     chunk_norm = chunk_mat / (np.linalg.norm(chunk_mat, axis=1, keepdims=True) + 1e-8)
     sim = ent_norm @ chunk_norm.T  # (E, C)
-    return [
-        [ids[e] for e in range(len(ids)) if float(sim[e, c]) >= min_score]
-        for c in range(sim.shape[1])
-    ]
+    out: list[list[int]] = []
+    for c in range(sim.shape[1]):
+        col = sim[:, c]
+        hits = [(float(col[e]), ids[e]) for e in range(len(ids)) if float(col[e]) >= min_score]
+        hits.sort(key=lambda t: t[0], reverse=True)  # 점수 높은 순
+        if top_k and top_k > 0:
+            hits = hits[:top_k]
+        out.append([i for _, i in hits])
+    return out
 
 
 def _entity_pool_vectors(db: Session):
@@ -224,7 +232,11 @@ def l1_chunk_entity_links(db: Session, chunk_vectors) -> list[list[int]]:
     if not ids:
         return [[] for _ in range(n)]
     return _similar_ids_per_chunk(
-        ids, ent_vecs, chunk_vectors, settings.embedding_suggest_min_score
+        ids,
+        ent_vecs,
+        chunk_vectors,
+        settings.chunk_link_min_score,
+        top_k=settings.chunk_link_max_per_chunk,
     )
 
 

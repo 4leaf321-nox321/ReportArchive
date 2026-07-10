@@ -216,6 +216,86 @@ async def get_report(report_id: int, ctx: Context) -> dict:
     return await _get(ctx, f"/api/reports/{report_id}")
 
 
+# --------------------------------------------------------------------------- #
+# 온톨로지 조사 — 객체/관계를 스스로 다단계로 파고든다(팔란티어식). 어휘가 확실치
+# 않으면 먼저 list_object_types, 구조적 질문은 search_objects(추측 금지), 상세·관계는
+# get_object, 관계를 여러 단계 타면 get_subgraph, 서술형은 search_reports. 세밀한 제어
+# 없이 완결 답변만 원하면 ask_ontology(서버 에이전트에 위임).
+# --------------------------------------------------------------------------- #
+async def _ontology_tool(ctx, name, args):
+    return await _post(ctx, "/api/ai/ontology/tool", {"name": name, "args": args})
+
+
+@mcp.tool()
+async def list_object_types(ctx: Context) -> dict:
+    """온톨로지 지도 — 검색 가능한 **객체 종류(타입)**와 각 타입의 속성 key·데이터타입
+    (enum이면 허용값)·**관계 종류(relation slug)**를 돌려준다. search_objects/get_object
+    로 쿼리를 만들기 전에 **먼저 호출**해 어휘(타입 slug·속성 key·관계 slug)를 확인하라.
+    반환: {object_types:[{slug,label,kind,properties:[{key,label,data_type,enum_values?,
+    ref_type?}]}], relation_types:[{slug,label,directed,src_types,dst_types}]}."""
+    return await _ontology_tool(ctx, "list_object_types", {})
+
+
+@mcp.tool()
+async def search_objects(
+    ctx: Context,
+    type: str | None = None,
+    q: str | None = None,
+    props: list | None = None,
+    relations: list | None = None,
+    year: int | None = None,
+    limit: int = 15,
+) -> dict:
+    """타입+속성+관계로 온톨로지 객체를 **결정적으로** 검색한다(추측 금지). "속성이
+    조건에 맞는" / "특정 객체와 관계된" 같은 구조적 질문에 쓴다.
+      - type: 객체 종류 slug (list_object_types 참고).
+      - q: 이름/코드/설명 부분검색.
+      - props: 속성 필터 [{key, op, value}] — op ∈ eq|gte|lte|between|contains.
+      - relations: 관계 필터 [{relation, dst_id}] — 이 관계로 dst_id 객체와 연결된 것만.
+      - year: 자료연도.
+    반환: {items:[{id,value,type,properties}], total, shown, truncated}. 상세는 get_object."""
+    args = {
+        "type": type, "q": q, "props": props,
+        "relations": relations, "year": year, "limit": limit,
+    }
+    return await _ontology_tool(
+        ctx, "search_objects", {k: v for k, v in args.items() if v is not None}
+    )
+
+
+@mcp.tool()
+async def get_object(type: str, id: str, ctx: Context) -> dict:
+    """객체 하나의 프로필 — 속성, **연결된 객체(관계 방향·상대)**, 이 객체를 근거로
+    하는 보고서(권한 내). type·id 로 지목한다(search_objects 결과의 type·id). 관계를
+    타고 상대 객체를 get_object 로 이어 조사하면 그래프를 traversal 할 수 있다.
+    반환: {type,id,label,kind,properties,relations:[{relation,direction,object}],reports}."""
+    return await _ontology_tool(ctx, "get_object", {"type": type, "id": id})
+
+
+@mcp.tool()
+async def get_subgraph(
+    entity_id: int, ctx: Context, relations: list | None = None, depth: int = 2
+) -> dict:
+    """엔티티 주변 **서브그래프(노드+엣지)** 를 한 번에 — 양방향 depth hop까지 재귀
+    확장한다. 관계를 여러 단계 타고 넘어가는 "구조 조사"를 get_object 반복 없이 한 콜로
+    끝낼 때 쓴다. relations 로 따라갈 관계 종류를 제한(미지정=전체). entity_id 는
+    search_objects/get_object 가 준 정수 id. 반환: {nodes:[...], edges:[...]}."""
+    params: dict = {"depth": depth}
+    if relations:
+        params["relations"] = relations
+    return await _get(ctx, f"/api/entities/{entity_id}/subgraph", params)
+
+
+@mcp.tool()
+async def ask_ontology(query: str, ctx: Context, max_hops: int = 6) -> dict:
+    """자연어 질문을 던지면 **서버가 온톨로지+보고서를 스스로 다단계 조사**해 근거와
+    함께 답한다(위임). 세밀한 제어 없이 완결 답변이 필요할 때 쓴다 — 직접 단계별로
+    조사하려면 list_object_types/search_objects/get_object 를 쓰라.
+    반환: {answer, citations(보고서), objects(근거 객체), trace(추론과정), no_evidence}.
+    주의: 서버 내부 LLM을 쓰며 다단계라 느릴 수 있고, 'rag_qa' AI 권한이 필요하다."""
+    return await _post(ctx, "/api/ai/agent", {"query": query, "max_hops": max_hops})
+
+
 @mcp.tool()
 async def upload_from_url(ctx: Context, url: str, filename: str | None = None) -> dict:
     """웹 URL 의 파일을 **ReportArchive 서버가 직접 받아** 저장하고 **file_id** 를 돌려준다

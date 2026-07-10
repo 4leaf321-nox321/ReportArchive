@@ -191,6 +191,41 @@ async def agent_ask(
 
 
 # --------------------------------------------------------------------------- #
+# 온톨로지 조사 도구 — 외부(MCP) 에이전트에 프리미티브를 노출. 내부 run_agent 가 쓰는
+# 것과 동일한 읽기 도구(agent_tools)를 그대로 실행해, 외부 AI가 스스로 다단계로
+# 온톨로지/객체/관계를 조사하게 한다. LLM 미호출·읽기 전용이라 인증-only.
+# --------------------------------------------------------------------------- #
+# 외부에 노출할 읽기 도구 화이트리스트(create/update 계열은 절대 노출 안 함).
+_ONTOLOGY_TOOLS = {"list_object_types", "search_objects", "get_object"}
+
+
+class OntologyToolPayload(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    args: dict = Field(default_factory=dict)
+
+
+@router.post("/ontology/tool")
+def ontology_tool(
+    payload: OntologyToolPayload,
+    actor=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """온톨로지 조사 도구 1개 실행 — 외부 AI(MCP)가 스스로 조사하는 프리미티브.
+
+    게이트: 인증-only(엔티틀먼트 불필요) — LLM을 호출하지 않고, 보고서 근거는 도구
+    내부 hybrid_search 가 가시성 게이팅한다(권한 밖 유출 X). 화이트리스트(_ONTOLOGY_TOOLS)
+    밖 이름은 404. sync 도구라 FastAPI 가 스레드풀에서 실행."""
+    from app.ai import agent_tools
+
+    if payload.name not in _ONTOLOGY_TOOLS:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"알 수 없는 도구: {payload.name}"
+        )
+    result = agent_tools.run_tool(db, actor, payload.name, payload.args)
+    return success_response(data=result.get("content", {}))
+
+
+# --------------------------------------------------------------------------- #
 # E. 접근 제어(엔티틀먼트) — 선별 유저/조직만 B300 기능 사용 (B300_보조AI_설계.md §E)
 # 전부 시스템 관리자 전용. "AI 접근" 탭이 읽고 쓴다.
 # --------------------------------------------------------------------------- #

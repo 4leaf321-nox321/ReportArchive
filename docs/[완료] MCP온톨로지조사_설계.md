@@ -1,6 +1,8 @@
 # MCP 온톨로지 조사 설계 — 외부 AI의 자율 온톨로지 탐색
 
-> 상태: **미구현** (설계 확정)
+> 상태: **구현 완료** (2026-07-10) — 설계 A·B 모두. E2E 검증 완료.
+> 구현: `backend/app/modules/ai/routes.py`(POST /api/ai/ontology/tool) ·
+>       `mcp_server/server.py`(list_object_types·search_objects·get_object·get_subgraph·ask_ontology)
 > 목표: 외부 AI(Claude 등)가 MCP를 통해 **온톨로지 구조를 스스로 조사**해 보고서/객체 질문에 답하게 한다.
 > 관련: [완료] MCP보고서작성_설계.md · [미구현] 온톨로지 에이전트_tool-calling_설계.md · [일부] 엔티티그래프_온톨로지_설계.md
 
@@ -181,10 +183,17 @@ async def ask_ontology(query: str, ctx, max_hops: int = 6) -> dict:
 
 ---
 
-## 10. 구현 순서(제안)
+## 10. 구현 순서(제안) — 전부 완료
 
-1. **A-1** 백엔드 `POST /api/ai/ontology/tool` (+ 화이트리스트) — `agent_tools.run_tool` 위임.
-2. **A-2** MCP `list_object_types` / `search_objects` / `get_object` (도크스트링에 `_SYSTEM` 규칙 이식).
-3. **B** MCP `ask_ontology` → `/api/ai/agent` (+ 타임아웃 상향, `rag_qa` 문서화).
-4. **A-3**(선택) MCP `get_subgraph` → `/api/entities/{id}/subgraph`.
-5. `McpTab.jsx`(프론트 도구 안내)·MCP README 갱신.
+1. ✅ **A-1** 백엔드 `POST /api/ai/ontology/tool` (+ 화이트리스트 `_ONTOLOGY_TOOLS`) — `agent_tools.run_tool` 위임, 인증-only.
+2. ✅ **A-2** MCP `list_object_types` / `search_objects` / `get_object` (도크스트링에 `_SYSTEM` 규칙 이식).
+3. ✅ **B** MCP `ask_ontology` → `/api/ai/agent` (`_post` timeout=120s, `rag_qa` 게이트는 문서화).
+4. ✅ **A-3** MCP `get_subgraph` → `/api/entities/{id}/subgraph`.
+5. ⏭️ `McpTab.jsx` — 등록/토큰 안내 화면일 뿐 도구를 열거하지 않음(도구는 docstring 자기설명) → 변경 불필요.
+
+## 11. 검증(구현 후)
+
+- MCP 도구 5종 등록 확인(`mcp.list_tools()` → 19개 중 신규 5개).
+- 백엔드 E2E(`TestClient`, LLM 불필요): `list_object_types`(지도에 타입 노출) · `search_objects`(방금 만든 객체 검색 성공) · `get_object`(속성·관계·보고서 프로필 반환) · 화이트리스트 밖 이름 → 404 · 무인증 → 401 전부 통과.
+- 회귀: `tests/test_agent.py` · `tests/test_entity_graph.py` 7 passed.
+- 설계 B(`ask_ontology`)는 기존 `POST /api/ai/agent`(test_agent.py로 검증됨)를 감싼 것.

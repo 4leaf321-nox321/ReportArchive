@@ -235,6 +235,121 @@ def reset_setting(
 
 
 # --------------------------------------------------------------------------- #
+# RAG 검색 평가 — 골든셋(eval_cases) 관리 + 실행(app/ai/eval.py). 관리자 전용.
+# --------------------------------------------------------------------------- #
+class EvalCasePayload(BaseModel):
+    query: str = Field(..., min_length=1, max_length=2000)
+    expect_report_ids: list[int] = Field(default_factory=list)
+    expect_entities: list[str] = Field(default_factory=list)
+    graph: bool = False
+
+
+class EvalRunPayload(BaseModel):
+    k: int = Field(default=5, ge=1, le=20)
+    graph: bool = False
+    rerank: bool = False
+    hyde: bool = False
+
+
+def _case_view(c) -> dict:
+    return {
+        "id": c.id, "query": c.query,
+        "expect_report_ids": list(c.expect_report_ids or []),
+        "expect_entities": list(c.expect_entities or []),
+        "graph": bool(c.graph),
+    }
+
+
+@router.get("/eval/cases")
+def eval_list_cases(
+    _: User = Depends(require_system_admin), db: Session = Depends(get_db)
+):
+    from app.modules.eval.models import EvalCase
+
+    rows = db.execute(select(EvalCase).order_by(EvalCase.id)).scalars().all()
+    return success_response(data={"cases": [_case_view(c) for c in rows]})
+
+
+@router.post("/eval/cases", status_code=201)
+def eval_create_case(
+    payload: EvalCasePayload,
+    _: User = Depends(require_system_admin), db: Session = Depends(get_db),
+):
+    from app.modules.eval.models import EvalCase
+
+    c = EvalCase(
+        query=payload.query.strip(),
+        expect_report_ids=payload.expect_report_ids,
+        expect_entities=[e.strip() for e in payload.expect_entities if e.strip()],
+        graph=payload.graph,
+    )
+    db.add(c)
+    db.commit()
+    return success_response(data=_case_view(c))
+
+
+@router.put("/eval/cases/{case_id}")
+def eval_update_case(
+    case_id: int, payload: EvalCasePayload,
+    _: User = Depends(require_system_admin), db: Session = Depends(get_db),
+):
+    from app.modules.eval.models import EvalCase
+
+    c = db.get(EvalCase, case_id)
+    if c is None:
+        return error_response("케이스를 찾을 수 없습니다.", status_code=404)
+    c.query = payload.query.strip()
+    c.expect_report_ids = payload.expect_report_ids
+    c.expect_entities = [e.strip() for e in payload.expect_entities if e.strip()]
+    c.graph = payload.graph
+    db.commit()
+    return success_response(data=_case_view(c))
+
+
+@router.delete("/eval/cases/{case_id}")
+def eval_delete_case(
+    case_id: int,
+    _: User = Depends(require_system_admin), db: Session = Depends(get_db),
+):
+    from app.modules.eval.models import EvalCase
+
+    c = db.get(EvalCase, case_id)
+    if c is not None:
+        db.delete(c)
+        db.commit()
+    return success_response(message="삭제했습니다.")
+
+
+@router.post("/eval/run")
+def eval_run(
+    payload: EvalRunPayload,
+    actor: User = Depends(require_system_admin), db: Session = Depends(get_db),
+):
+    """골든셋 전체 평가 실행 → 케이스별·평균 지표. 실행자의 가시성 스코프 기준.
+    임베딩/LLM 이 mock 이면 검색이 비결정적이라 숫자는 참고용."""
+    from types import SimpleNamespace
+
+    from app.ai import eval as rag_eval
+    from app.modules.eval.models import EvalCase
+
+    rows = db.execute(select(EvalCase).order_by(EvalCase.id)).scalars().all()
+    if not rows:
+        return error_response("평가할 케이스가 없습니다. 먼저 골든셋을 추가하세요.",
+                              status_code=400)
+    cases = [_case_view(c) for c in rows]
+    eval_actor = SimpleNamespace(
+        user=SimpleNamespace(id=actor.id),
+        workspace=SimpleNamespace(virtual=False, slug="dx"),
+        public_viewer=False,
+    )
+    result = rag_eval.run_eval(
+        db, eval_actor, cases, k=payload.k, graph=payload.graph,
+        rerank=payload.rerank or None, hyde=payload.hyde or None,
+    )
+    return success_response(data=result)
+
+
+# --------------------------------------------------------------------------- #
 # 온톨로지 에이전트 — tool-calling(팔란티어식). 온톨로지 도구로 다단계 조사.
 # --------------------------------------------------------------------------- #
 class AgentPayload(BaseModel):

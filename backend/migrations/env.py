@@ -17,6 +17,7 @@ from app.database import Base
 # Import models so Alembic can autogenerate migrations against them.
 from app.modules.workspaces import models as _workspaces_models  # noqa: F401
 from app.modules.app_settings import models as _app_settings_models  # noqa: F401
+from app.modules.eval import models as _eval_models  # noqa: F401
 from app.modules.users import models as _users_models  # noqa: F401
 from app.modules.template_categories import models as _categories_models  # noqa: F401
 from app.modules.templates import models as _templates_models  # noqa: F401

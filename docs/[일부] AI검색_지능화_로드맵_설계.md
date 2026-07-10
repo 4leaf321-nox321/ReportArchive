@@ -217,7 +217,9 @@ retrieve/aggregate/expand 도구를 주고 LLM이 **스스로 여러 번 검색*
 > 비교·--json 전후 저장) + `eval/golden_qa.example.json`·`eval/README.md`. 골든셋은
 > 배포별 데이터라 example 만 커밋(working 파일 gitignore). dev mock 은 검색 비결정적→
 > 숫자는 운영에서 유의미, 지표 계산은 tests/test_eval.py 로 결정적 검증(seed_recall 은
-> dev 에서도 측정됨). **다음: 실제 사용 로그 질문·클릭을 골든셋으로 승격.**
+> dev 에서도 측정됨). **프론트 UI(v0.99.0): eval_cases 테이블(p76) + 관리자 API
+> (/api/ai/eval/cases·/run) + AI설정 "평가" 탭(골든셋 편집·정답 보고서 검색 픽커·실행·
+> 점수표). CLI 는 자동화용 유지. 다음: 실제 사용 로그 질문·클릭을 골든셋으로 승격.**
 
 **문제.** dev 임베딩이 mock이라 임계값(0.45·0.5·top-k…)을 **감으로** 정하고
 운영에서만 발현된다. 위 1~6 어느 것도 "좋아졌는지"를 **측정**할 수단이 없다.

@@ -122,3 +122,34 @@ export async function resetAiSetting(key) {
   const res = await apiClient.delete(`/api/ai/settings/${key}`)
   return extractData(res)
 }
+
+// --- RAG 검색 평가(골든셋 + 실행) — 시스템 관리자 전용 --------------------------
+
+/** 평가 케이스 목록. `{ cases:[{id,query,expect_report_ids,expect_entities,graph}] }`. */
+export async function listEvalCases() {
+  const res = await apiClient.get('/api/ai/eval/cases')
+  return extractData(res)
+}
+export async function createEvalCase(body) {
+  const res = await apiClient.post('/api/ai/eval/cases', body)
+  return extractData(res)
+}
+export async function updateEvalCase(id, body) {
+  const res = await apiClient.put(`/api/ai/eval/cases/${id}`, body)
+  return extractData(res)
+}
+export async function deleteEvalCase(id) {
+  const res = await apiClient.delete(`/api/ai/eval/cases/${id}`)
+  return extractData(res)
+}
+/** 평가 실행. opts={k,graph,rerank,hyde} → {cases:[...], aggregate:{...}, config}. */
+export async function runEval(opts = {}) {
+  const res = await apiClient.post('/api/ai/eval/run', { k: 5, ...opts })
+  return extractData(res)
+}
+/** 정답 보고서 픽커용 간단 검색 → [{id,title,workspace_slug}]. */
+export async function searchReportsForPicker(q, limit = 8) {
+  const res = await apiClient.get('/api/reports/search', { params: { q, limit } })
+  const data = extractData(res)
+  return (data?.results || []).map((r) => r.report || r)
+}

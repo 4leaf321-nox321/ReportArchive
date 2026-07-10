@@ -49,6 +49,12 @@ REGISTRY: dict[str, dict] = {
                 "덧붙인다(온톨로지 별칭 재사용, AI 불필요). 즉시 반영.",
         "requires_reindex": False,
     },
+    "rag_aggregate_routing_enabled": {
+        "type": "bool", "group": "질문 이해", "label": "집계 질의 라우팅",
+        "desc": "\"몇 개·목록·비교\" 같은 집계형 질문을 온톨로지 집계로 답한다"
+                "(개수는 계산이라 정확). 신호어 있을 때만 AI 1콜. 불확실하면 일반 검색 폴백.",
+        "requires_reindex": False,
+    },
     "seed_link_min_score": {
         "type": "float", "group": "온톨로지 링킹", "label": "질문→씨앗 의미 임계",
         "min": 0.0, "max": 1.0, "step": 0.01,

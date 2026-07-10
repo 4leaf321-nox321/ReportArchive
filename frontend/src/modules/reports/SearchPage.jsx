@@ -504,6 +504,12 @@ export default function SearchPage() {
                     </Button>
                   </div>
                 )}
+                {askResult.structured && (
+                  <div className="mb-3 inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/5 px-2 py-1 text-[11px] text-primary">
+                    <SlidersHorizontal className="h-3.5 w-3.5" />
+                    온톨로지 집계 — 개수는 계산된 값입니다(볼 수 있는 보고서 기준)
+                  </div>
+                )}
                 {askResult.seeds?.length > 0 && (
                   <div className="mb-3 flex flex-wrap items-center gap-1.5">
                     <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground">

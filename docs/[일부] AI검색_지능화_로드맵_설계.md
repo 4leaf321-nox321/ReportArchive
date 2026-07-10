@@ -96,6 +96,15 @@
 
 ## 3. 집계 / 구조화 질의 라우팅 — 팔란티어 차별점 ★
 
+> 상태: **v1 구현 완료 (v0.95.0)** — `app/ai/structured_qa.py :: maybe_answer`,
+> 설정 `rag_aggregate_routing_enabled`(기본 off). 흐름: 신호어 휴리스틱 게이트 →
+> LLM 추출{aggregate,intent,target,filters,year} → 필터 문자열을 link_query_entities
+> 로 해석 → 가시성∩entity_filter_report_ids(rollup)∩연도 = base → count/list.
+> **개수는 SQL 계산(환각 없음), 가시성 게이팅**. 답변은 결과에서 결정적 조립, 근거
+> 보고서 인용. mock/불확실/미해석/예외 → None(일반 RAG 폴백). ask_archive(_cancellable)
+> 진입부에서 우선 시도. 프론트: 답변에 "온톨로지 집계" 배지. **v2 잔여: group-by/
+> compare(연도별·축별 추이), 목록 페이지네이션.**
+
 **문제.** "2025년 낙하시험 **실패한 과제 몇 개**?", "부서별 시험 건수 **비교**",
 "담당자 X의 과제 **목록**" — RAG는 문단을 긁어올 뿐 **세지·집계·비교를 못 한다.**
 정작 "온톨로지 기반"이라 보고한 강점을 못 살리는 지점.

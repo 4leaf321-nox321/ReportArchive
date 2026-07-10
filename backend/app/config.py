@@ -135,6 +135,10 @@ class Settings(BaseSettings):
     # RAG Q&A 별칭 확장 — 질문이 언급한 엔티티의 다른 표기(정식명·코드·별칭)를 키워드
     # 검색에 덧붙인다(온톨로지 별칭 재사용, LLM 불필요). **기본 OFF**. 시맨틱·씨앗은 원 질문.
     rag_alias_expand_enabled: bool = Field(default=False)
+    # RAG Q&A 집계 라우팅 — "몇 개·목록" 같은 집계형 질문을 온톨로지 SQL 집계로 답한다
+    # (개수는 계산=환각 없음). 집계 신호어 있을 때만 LLM 로 파라미터 추출(비용 bound).
+    # **기본 OFF**. mock/불확실/실패 시 일반 RAG 로 폴백.
+    rag_aggregate_routing_enabled: bool = Field(default=False)
     # 보고서 저장/수정 시 자동으로 embed_report 잡을 적재할지. **기본 OFF** — pgvector
     # 확장·report_chunks·워커가 모두 준비된 환경에서만 켠다(.env 로 true). 안 그러면
     # 임베딩 미배포(p47만 배포 등) 상태에서 실패 잡이 쌓인다.

@@ -1,5 +1,11 @@
 # 온톨로지 에이전트 — 팔란티어식 tool-calling (설계 스케치)
 
+> 상태: **구현 완료 (v0.74.0)** — 커밋 `4397c76`. 도구 4종(list_object_types·
+> search_objects·get_object·search_reports) + 에이전트 루프(`app/ai/agent.py`,
+> `agent_tools.py`) + `POST /api/ai/agent`. 검색 「에이전트」 모드로 노출. 이후
+> **MCP로도 노출**(v0.76.0, `[완료] MCP온톨로지조사_설계.md`) — 외부 AI도 스스로 조사.
+> *(운영 GLM 함수호출은 `scripts/check_tool_calling.py`로 확인 권장; 미지원 시 단일답변 degrade.)*
+>
 > 팔란티어 AIP의 핵심: **온톨로지가 1차 검색 구조이고, LLM은 그 위에서 도구를
 > 호출하는 에이전트**다. 벡터 유사도로 청크를 긁는 게 아니라, LLM이 "객체 검색
 > → 링크 traversal → 속성 필터"를 **함수 호출로 스스로 계획**한다. 속성·링크는

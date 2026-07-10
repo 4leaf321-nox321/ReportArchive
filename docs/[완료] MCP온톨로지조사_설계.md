@@ -4,7 +4,7 @@
 > 구현: `backend/app/modules/ai/routes.py`(POST /api/ai/ontology/tool) ·
 >       `mcp_server/server.py`(list_object_types·search_objects·get_object·get_subgraph·ask_ontology)
 > 목표: 외부 AI(Claude 등)가 MCP를 통해 **온톨로지 구조를 스스로 조사**해 보고서/객체 질문에 답하게 한다.
-> 관련: [완료] MCP보고서작성_설계.md · [미구현] 온톨로지 에이전트_tool-calling_설계.md · [일부] 엔티티그래프_온톨로지_설계.md
+> 관련: [완료] MCP보고서작성_설계.md · [완료] 온톨로지 에이전트_tool-calling_설계.md · [일부] 엔티티그래프_온톨로지_설계.md
 
 ---
 

@@ -69,6 +69,16 @@ function blankStream() {
     code_path: '',
     prop_paths: {}, // {속성 slug: 필드 경로}
     relation_rows: [],
+    // 고급(v3) — 페이지네이션 · 증분
+    page_style: 'none',
+    page_size: 100,
+    page_param: 'offset',
+    size_param: 'limit',
+    cursor_path: '',
+    cursor_param: 'cursor',
+    incremental: false,
+    watermark_field: '',
+    watermark_param: '',
   }
 }
 
@@ -101,6 +111,15 @@ function streamFromConfig(st) {
     code_path: st.code_path || '',
     prop_paths: { ...(st.property_map || {}) },
     relation_rows: (st.relation_map || []).map((r) => ({ ...r })),
+    page_style: st.page_style || 'none',
+    page_size: st.page_size || 100,
+    page_param: st.page_param || 'offset',
+    size_param: st.size_param || 'limit',
+    cursor_path: st.cursor_path || '',
+    cursor_param: st.cursor_param || 'cursor',
+    incremental: !!st.incremental,
+    watermark_field: st.watermark_field || '',
+    watermark_param: st.watermark_param || '',
   }
 }
 
@@ -142,6 +161,15 @@ function streamToConfig(st) {
     code_path: (st.code_path || '').trim(),
     property_map,
     relation_map,
+    page_style: st.page_style || 'none',
+    page_size: Number(st.page_size) || 100,
+    page_param: (st.page_param || 'offset').trim(),
+    size_param: (st.size_param || 'limit').trim(),
+    cursor_path: (st.cursor_path || '').trim(),
+    cursor_param: (st.cursor_param || 'cursor').trim(),
+    incremental: !!st.incremental,
+    watermark_field: (st.watermark_field || '').trim(),
+    watermark_param: (st.watermark_param || '').trim(),
   }
 }
 
@@ -469,6 +497,88 @@ function StreamEditor({
             </div>
           ))}
         </div>
+
+        {/* 고급 — 페이지네이션 · 증분 */}
+        <details className="rounded-md border px-3 py-2">
+          <summary className="cursor-pointer text-xs text-muted-foreground">
+            고급 — 페이지네이션 · 증분 동기화
+          </summary>
+          <div className="mt-3 space-y-3">
+            {/* 페이지네이션 */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">페이지네이션</Label>
+                <select
+                  value={stream.page_style}
+                  onChange={(e) => upd({ page_style: e.target.value })}
+                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                >
+                  <option value="none">없음 (단일 요청)</option>
+                  <option value="offset">offset (오프셋+개수)</option>
+                  <option value="page">page (페이지번호+개수)</option>
+                  <option value="cursor">cursor (다음 커서)</option>
+                </select>
+              </div>
+              {(stream.page_style === 'offset' || stream.page_style === 'page') && (
+                <div>
+                  <Label className="text-xs">페이지 크기</Label>
+                  <Input type="number" min={1} value={stream.page_size}
+                    onChange={(e) => upd({ page_size: e.target.value })} />
+                </div>
+              )}
+            </div>
+            {(stream.page_style === 'offset' || stream.page_style === 'page') && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs">{stream.page_style === 'offset' ? '오프셋' : '페이지'} 파라미터명</Label>
+                  <Input value={stream.page_param} onChange={(e) => upd({ page_param: e.target.value })}
+                    placeholder={stream.page_style === 'offset' ? 'offset' : 'page'} />
+                </div>
+                <div>
+                  <Label className="text-xs">개수 파라미터명</Label>
+                  <Input value={stream.size_param} onChange={(e) => upd({ size_param: e.target.value })} placeholder="limit" />
+                </div>
+              </div>
+            )}
+            {stream.page_style === 'cursor' && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs">다음 커서 경로(응답)</Label>
+                  <Input value={stream.cursor_path} onChange={(e) => upd({ cursor_path: e.target.value })} placeholder="meta.next_cursor" />
+                </div>
+                <div>
+                  <Label className="text-xs">커서 파라미터명</Label>
+                  <Input value={stream.cursor_param} onChange={(e) => upd({ cursor_param: e.target.value })} placeholder="cursor" />
+                </div>
+              </div>
+            )}
+
+            {/* 증분 */}
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={stream.incremental}
+                onChange={(e) => upd({ incremental: e.target.checked })} />
+              증분 동기화 (마지막 이후 바뀐 것만)
+            </label>
+            {stream.incremental && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs">변경 기준 필드</Label>
+                  <PathInput dlId={dlId} value={stream.watermark_field}
+                    onChange={(v) => upd({ watermark_field: v })} placeholder="updatedAt" />
+                </div>
+                <div>
+                  <Label className="text-xs">since 파라미터명</Label>
+                  <Input value={stream.watermark_param} onChange={(e) => upd({ watermark_param: e.target.value })} placeholder="updated_since" />
+                </div>
+              </div>
+            )}
+            {stream.incremental && (
+              <p className="text-xs text-muted-foreground">
+                이 필드의 최댓값을 기억해, 다음 동기화 때 그 이후 변경분만 요청합니다. (ISO 날짜·증가 ID 처럼 커지는 값이어야 함)
+              </p>
+            )}
+          </div>
+        </details>
       </CardContent>
     </Card>
   )

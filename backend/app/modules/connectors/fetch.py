@@ -21,7 +21,8 @@ from app.modules.connectors.schemas import ConnectionConfig, StreamConfig
 from app.modules.entities.schemas import EntityImportMapping, ImportRelationCol
 
 # 한 번에 가져올 레코드 상한(과도 응답 방지) — run_import 의 _MAX_ROWS 와 정렬.
-_MAX_RECORDS = 2000
+_MAX_RECORDS = 20000  # 총 레코드 상한(페이지네이션 포함). 초과 시 증분 유도.
+_MAX_PAGES = 500      # 페이지 루프 runaway 가드.
 _TIMEOUT = 30.0
 
 
@@ -74,8 +75,48 @@ def _auth_kwargs(conn: ConnectionConfig) -> tuple[dict, object | None]:
     return headers, basic
 
 
-def fetch_records(conn: ConnectionConfig, stream: StreamConfig) -> list[dict]:
-    """커넥션+스트림으로 외부 API 호출 → 레코드(dict) 목록. records_path 로 배열 추출."""
+def _request_json(client, method, url, headers, params, basic):
+    """단일 HTTP 요청 → 파싱된 JSON. 실패는 FetchError."""
+    try:
+        resp = client.request(method or "GET", url, headers=headers,
+                              params=params or None, auth=basic)
+    except httpx.HTTPError as exc:
+        raise FetchError(f"요청 실패: {exc}") from exc
+    if resp.status_code >= 400:
+        raise FetchError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise FetchError(f"JSON 파싱 실패: {exc}") from exc
+
+
+def _extract_records(payload, records_path: str) -> list[dict]:
+    """응답에서 records_path 로 레코드 배열 추출(단건 dict 는 1건 배열로 관대 처리)."""
+    records = _dig(payload, records_path)
+    if isinstance(records, dict):
+        records = [records]
+    if not isinstance(records, list):
+        raise FetchError(
+            f"records_path('{records_path}')가 배열이 아닙니다. "
+            "응답에서 레코드 배열의 위치를 점 표기로 지정하세요."
+        )
+    return [r for r in records if isinstance(r, dict)]
+
+
+def _guard_total(n: int) -> None:
+    if n > _MAX_RECORDS:
+        raise FetchError(
+            f"레코드가 상한({_MAX_RECORDS})을 초과했습니다. 증분 동기화(watermark)를 "
+            "설정하거나 대상 범위를 좁히세요."
+        )
+
+
+def fetch_records(
+    conn: ConnectionConfig, stream: StreamConfig, *, since: str | None = None
+) -> list[dict]:
+    """커넥션+스트림으로 외부 API 호출 → 레코드(dict) 목록. records_path 로 배열 추출.
+    page_style 에 따라 여러 페이지를 이어 가져오고, since 가 있으면 watermark_param 으로
+    "그 이후 변경분"만 요청한다(증분)."""
     base = (conn.base_url or "").strip()
     if not base:
         raise FetchError("base_url 이 비었습니다.")
@@ -97,39 +138,48 @@ def fetch_records(conn: ConnectionConfig, stream: StreamConfig) -> list[dict]:
         )
 
     headers, basic = _auth_kwargs(conn)
-    try:
-        with httpx.Client(timeout=_TIMEOUT, follow_redirects=True) as client:
-            resp = client.request(
-                stream.http_method or "GET",
-                url,
-                headers=headers,
-                params=stream.query or None,
-                auth=basic,
-            )
-    except httpx.HTTPError as exc:
-        raise FetchError(f"요청 실패: {exc}") from exc
-    if resp.status_code >= 400:
-        raise FetchError(f"HTTP {resp.status_code}: {resp.text[:200]}")
-    try:
-        payload = resp.json()
-    except ValueError as exc:
-        raise FetchError(f"JSON 파싱 실패: {exc}") from exc
+    method = stream.http_method or "GET"
+    base_query = dict(stream.query or {})
+    if since and stream.watermark_param:
+        base_query[stream.watermark_param] = since
 
-    records = _dig(payload, stream.records_path)
-    if isinstance(records, dict):
-        # 단건 객체를 준 경우 1건 배열로 관대 처리.
-        records = [records]
-    if not isinstance(records, list):
-        raise FetchError(
-            f"records_path('{stream.records_path}')가 배열이 아닙니다. "
-            "응답에서 레코드 배열의 위치를 점 표기로 지정하세요."
-        )
-    if len(records) > _MAX_RECORDS:
-        raise FetchError(
-            f"레코드가 너무 많습니다({len(records)}). 최대 {_MAX_RECORDS}건. "
-            "증분(watermark)·페이지네이션은 후속(v3)입니다."
-        )
-    return [r for r in records if isinstance(r, dict)]
+    style = stream.page_style
+    out: list[dict] = []
+    with httpx.Client(timeout=_TIMEOUT, follow_redirects=True) as client:
+        if style in ("offset", "page"):
+            size = max(1, stream.page_size)
+            n = 0 if style == "offset" else 1
+            for _ in range(_MAX_PAGES):
+                q = {**base_query, stream.page_param: n, stream.size_param: size}
+                recs = _extract_records(
+                    _request_json(client, method, url, headers, q, basic),
+                    stream.records_path,
+                )
+                out.extend(recs)
+                _guard_total(len(out))
+                if not recs or len(recs) < size:
+                    break
+                n = n + size if style == "offset" else n + 1
+        elif style == "cursor":
+            cursor = None
+            for _ in range(_MAX_PAGES):
+                q = dict(base_query)
+                if cursor:
+                    q[stream.cursor_param] = cursor
+                payload = _request_json(client, method, url, headers, q, basic)
+                recs = _extract_records(payload, stream.records_path)
+                out.extend(recs)
+                _guard_total(len(out))
+                cursor = _dig(payload, stream.cursor_path) if stream.cursor_path else None
+                if not recs or not cursor:
+                    break
+        else:  # none — 단일 요청.
+            out = _extract_records(
+                _request_json(client, method, url, headers, base_query, basic),
+                stream.records_path,
+            )
+            _guard_total(len(out))
+    return out
 
 
 def build_rows_and_mapping(

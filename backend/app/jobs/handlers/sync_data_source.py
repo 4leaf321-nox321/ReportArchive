@@ -28,7 +28,11 @@ def sync_data_source(session: Session, payload: dict) -> dict:
     if user_id is None:
         return {"source_id": source_id, "skipped": "no_owner"}
 
+    prior_status = source.last_status  # run_sync 가 갱신하기 전 직전 상태(실패 전이 판정용).
     result = services.run_sync(
         session, source, dry_run=False, triggered_by="schedule", user_id=user_id
     )
+    # 실패 전이 시 소유자에게 메일 알림(메일러 켜져 있을 때). 커밋은 아래.
+    if services.maybe_alert_sync_failure(session, source, result, prior_status=prior_status):
+        session.commit()
     return {"source_id": source_id, **(result.get("summary") or {})}

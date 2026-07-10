@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.modules.connectors.crypto import decrypt_secret, encrypt_secret
 from app.modules.connectors.fetch import (
     FetchError,
+    _dig,
     build_rows_and_mapping,
     fetch_records,
 )
@@ -74,6 +75,17 @@ def from_stored_config(raw: dict | None) -> SourceConfig:
     cfg.connection.auth.token = decrypt_secret(cfg.connection.auth.token)
     cfg.connection.auth.password = decrypt_secret(cfg.connection.auth.password)
     return cfg
+
+
+def _max_watermark(records: list[dict], field: str) -> str | None:
+    """레코드들의 watermark_field 값 중 최댓값(문자열 비교 — ISO 타임스탬프·증가 id 가정).
+    다음 동기화의 since 로 쓴다."""
+    vals = []
+    for r in records:
+        v = _dig(r, field)
+        if v is not None and str(v).strip():
+            vals.append(str(v).strip())
+    return max(vals) if vals else None
 
 
 def _mask(cfg: SourceConfig) -> tuple[SourceConfig, bool]:
@@ -239,7 +251,9 @@ def run_sync(db: Session, source: DataSource, *, dry_run: bool,
     for i, st in enumerate(cfg.streams):
         label = st.label or f"스트림 {i + 1}"
         try:
-            records = fetch_records(cfg.connection, st)
+            # 증분 — 마지막 watermark 이후 변경분만(dry_run 은 전체, 미리보기라).
+            since = (source.sync_state or {}).get(str(i)) if (st.incremental and not dry_run) else None
+            records = fetch_records(cfg.connection, st, since=since)
             mapping, rows = build_rows_and_mapping(st, records, dry_run=dry_run)
             result = run_import(db, mapping=mapping, rows=rows,
                                 creator_user_id=user_id, dry_run=dry_run)
@@ -252,6 +266,15 @@ def run_sync(db: Session, source: DataSource, *, dry_run: bool,
                 "summary": s,
                 "error_rows": [r for r in result["rows"] if r["status"] == "error"][:20],
             })
+            # watermark 전진 — 이번에 받은 레코드의 최댓값을 저장(스트림별 즉시 커밋해
+            # 뒤 스트림 실패에도 진행분 보존).
+            if not dry_run and st.incremental and st.watermark_field:
+                new_wm = _max_watermark(records, st.watermark_field)
+                if new_wm:
+                    state = dict(source.sync_state or {})
+                    state[str(i)] = new_wm
+                    source.sync_state = state
+                    db.commit()
         except (FetchError, ValueError) as exc:
             db.rollback()
             any_failed = True
@@ -270,6 +293,41 @@ def run_sync(db: Session, source: DataSource, *, dry_run: bool,
                     status=("failed" if any_failed else "done"),
                     summary={**agg, "stream_results": stream_results})
     return out
+
+
+def maybe_alert_sync_failure(
+    db: Session, source: DataSource, result: dict, *, prior_status: str | None
+) -> bool:
+    """주기 동기화가 실패했고 **직전엔 실패가 아니었으면**(실패 전이) 소스 소유자에게
+    메일로 알린다 — 분당 스팸 방지(지속 실패는 재알림 안 함). 메일러가 켜져 있을 때만.
+    반환: 알림을 보냈으면 True. 커밋은 호출자."""
+    if prior_status == "failed":
+        return False
+    failed = [s for s in result.get("streams", []) if s.get("error")]
+    if not failed:
+        return False
+
+    from app.mailer import service as mailer
+    from app.modules.users.models import User
+
+    if not mailer.is_active():
+        return False
+    owner = db.get(User, source.created_by_user_id) if source.created_by_user_id else None
+    if owner is None or not getattr(owner, "email", None):
+        return False
+
+    lines = "\n".join(f"- {s['label']}: {s['error']}" for s in failed)
+    mailer.enqueue_email(
+        db,
+        to=owner.email,
+        subject=f"[커넥터] '{source.name}' 동기화 실패 ({len(failed)}개 스트림)",
+        text=(
+            f"데이터소스 '{source.name}'의 주기 동기화에서 {len(failed)}개 스트림이 "
+            f"실패했습니다.\n\n{lines}\n\n관리자 → 외부 시스템 연계에서 확인하세요."
+        ),
+        dedup_key=f"connsyncfail:{source.id}",
+    )
+    return True
 
 
 # --- probe(스트림 단위 샘플) -------------------------------------------------

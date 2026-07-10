@@ -140,7 +140,7 @@ def test_sync_populates_ontology(monkeypatch):
             {"name": b, "status": "planned", "supplier": {"code": "MISSING-" + sfx}},
         ]
         # 외부 fetch 를 canned 레코드로 대체(실 네트워크 없음). (connection, stream) 2인자.
-        monkeypatch.setattr(conn_services, "fetch_records", lambda conn, st: records)
+        monkeypatch.setattr(conn_services, "fetch_records", lambda conn, st, since=None: records)
 
         cfg = {
             "connection": {"base_url": "https://example.test"},
@@ -299,7 +299,7 @@ def test_code_matching_dedup_on_rename(monkeypatch):
 
         code = "PRJ-1-" + sfx
         state = {"recs": [{"id": code, "name": "원래이름-" + sfx, "stage": "active"}]}
-        monkeypatch.setattr(conn_services, "fetch_records", lambda conn, st: state["recs"])
+        monkeypatch.setattr(conn_services, "fetch_records", lambda conn, st, since=None: state["recs"])
 
         cfg = {
             "connection": {"base_url": "http://x.test"},
@@ -392,3 +392,123 @@ def test_allowlist_blocks_disallowed_host(monkeypatch):
         assert False, "차단됐어야 함"
     except FetchError as exc:
         assert "허용되지 않은" in str(exc), str(exc)
+
+
+# --- v3 규모/운영: 페이지네이션 · 증분 · 실패 알림 ---------------------------
+def test_pagination_offset(monkeypatch):
+    """offset 페이지네이션 — 짧은 페이지에서 종료, 전 페이지 누적."""
+    from app.modules.connectors import fetch as F
+    from app.modules.connectors.schemas import ConnectionConfig, StreamConfig
+
+    pages = {0: [{"id": i} for i in range(100)], 100: [{"id": i} for i in range(100, 150)]}
+
+    def fake_req(client, method, url, headers, params, basic):
+        return {"items": pages.get(params.get("offset", 0), [])}
+
+    monkeypatch.setattr(F, "_request_json", fake_req)
+    conn = ConnectionConfig(base_url="http://x.test")
+    st = StreamConfig(endpoint_path="/p", records_path="items", page_style="offset",
+                      page_size=100, page_param="offset", size_param="limit")
+    recs = F.fetch_records(conn, st)
+    assert len(recs) == 150, len(recs)  # 100 + 50(짧은 페이지) → 종료
+
+
+def test_incremental_watermark(monkeypatch):
+    """증분 — since 로 마지막 이후만 요청, watermark 최댓값을 sync_state 에 저장·전진."""
+    from app.database import SessionLocal
+    from app.modules.connectors.models import DataSource
+
+    c = TestClient(app)
+    sfx = uuid.uuid4().hex[:8]
+    proj_id = sid = None
+    made = []
+    captured = {"since": []}
+    try:
+        proj_id = c.post("/api/entity-types", headers=ADMIN,
+                         json={"slug": "incp_" + sfx, "label": "증분과제",
+                               "kind_class": "record"}).json()["data"]["id"]
+        state = {"recs": [{"name": "A-" + sfx, "u": "2024-01-01"},
+                          {"name": "B-" + sfx, "u": "2024-03-01"}]}
+
+        def fake(conn, st, since=None):
+            captured["since"].append(since)
+            return state["recs"]
+
+        monkeypatch.setattr(conn_services, "fetch_records", fake)
+        cfg = {
+            "connection": {"base_url": "http://x.test"},
+            "streams": [{"endpoint_path": "/p", "records_path": "",
+                         "target_type_id": proj_id, "value_path": "name",
+                         "incremental": True, "watermark_field": "u",
+                         "watermark_param": "since"}],
+        }
+        sid = c.post("/api/connectors", headers=ADMIN,
+                     json={"name": "inc-" + sfx, "config": cfg}).json()["data"]["id"]
+
+        # 1차 — since 없음, watermark 최댓값 저장.
+        c.post(f"/api/connectors/{sid}/sync", headers=ADMIN)
+        assert captured["since"][-1] is None
+        db = SessionLocal()
+        try:
+            assert db.get(DataSource, sid).sync_state.get("0") == "2024-03-01"
+        finally:
+            db.close()
+        made = [i["id"] for i in _find(c, proj_id, sfx)]
+
+        # 2차 — 저장된 watermark 를 since 로 전달, 새 최댓값으로 전진.
+        state["recs"] = [{"name": "C-" + sfx, "u": "2024-04-01"}]
+        c.post(f"/api/connectors/{sid}/sync", headers=ADMIN)
+        assert captured["since"][-1] == "2024-03-01"
+        db = SessionLocal()
+        try:
+            assert db.get(DataSource, sid).sync_state.get("0") == "2024-04-01"
+        finally:
+            db.close()
+        made = [i["id"] for i in _find(c, proj_id, sfx)]
+    finally:
+        for eid in made:
+            c.delete(f"/api/entities/{eid}", headers=ADMIN)
+        if sid:
+            c.delete(f"/api/connectors/{sid}", headers=ADMIN)
+        if proj_id:
+            c.delete(f"/api/entity-types/{proj_id}", headers=ADMIN)
+
+
+def test_failure_alert_only_on_transition(monkeypatch):
+    """실패 알림 — 실패 전이(직전 ok→실패)에만 발송, 지속 실패는 재발송 안 함."""
+    from app.database import SessionLocal
+    from app.mailer import service as mailer
+    from app.modules.connectors import services as cs
+    from app.modules.connectors.models import DataSource
+    from app.modules.connectors.schemas import DataSourceCreate
+
+    sent = []
+    monkeypatch.setattr(mailer, "is_active", lambda: True)
+    monkeypatch.setattr(mailer, "enqueue_email", lambda *a, **k: sent.append(k) or 1)
+
+    db = SessionLocal()
+    sfx = uuid.uuid4().hex[:8]
+    src = None
+    try:
+        src = cs.create_source(db, DataSourceCreate(
+            name="falert-" + sfx, kind="rest_json",
+            config={"connection": {"base_url": "http://x.test"},
+                    "streams": [{"endpoint_path": "/p", "target_type_id": 1, "value_path": "n"}]}),
+            user_id=2)
+        failed = {"streams": [{"label": "s", "target_type_id": 1, "error": "boom"}]}
+        ok = {"streams": [{"label": "s", "target_type_id": 1, "summary": {}}]}
+
+        # 전이(직전 done → 실패) → 발송.
+        assert cs.maybe_alert_sync_failure(db, src, failed, prior_status="done") is True
+        assert len(sent) == 1
+        # 지속(직전 이미 실패) → 발송 안 함.
+        assert cs.maybe_alert_sync_failure(db, src, failed, prior_status="failed") is False
+        # 실패 없음 → 발송 안 함.
+        assert cs.maybe_alert_sync_failure(db, src, ok, prior_status="done") is False
+        assert len(sent) == 1
+    finally:
+        if src:
+            obj = db.get(DataSource, src.id)
+            if obj:
+                cs.delete_source(db, obj)
+        db.close()

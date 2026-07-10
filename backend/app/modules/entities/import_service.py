@@ -21,8 +21,9 @@ from app.modules.entities import services as ent
 from app.modules.entities.models import EntityKindClass
 from app.modules.entities.schemas import EntityCreate, EntityImportMapping
 
-# 한 번에 처리할 행 상한(과도 업로드 방지).
-_MAX_ROWS = 2000
+# 한 번에 처리할 행 상한(runaway 가드). 커넥터 페이지네이션/증분 동기화가 큰 배치를
+# 넘길 수 있어 넉넉히 둔다(붙여넣기 UI 는 현실적으로 여기까지 안 감).
+_MAX_ROWS = 20000
 
 
 def parse_sheet(filename: str, content: bytes) -> tuple[list[str], list[dict]]:

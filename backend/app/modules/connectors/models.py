@@ -35,6 +35,9 @@ class DataSource(Base):
     )
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # 증분(watermark) 런타임 상태 — 스트림별 마지막 커서 {'<stream idx>': '<value>'}.
+    # config(정의)와 분리(편집이 커서를 날리지 않게).
+    sync_state: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     schedule_kind: Mapped[str] = mapped_column(
         String(16), nullable=False, default="manual"

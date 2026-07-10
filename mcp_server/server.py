@@ -241,14 +241,16 @@ async def upload_from_url(ctx: Context, url: str, filename: str | None = None) -
 async def upload_file(
     ctx: Context, filename: str, data_base64: str, mime_type: str | None = None
 ) -> dict:
-    """**로컬 파일(작은 이미지)** 을 base64 로 받아 저장하고 **file_id** 를 돌려준다.
-    Claude Code 처럼 로컬 폴더에 접근 가능한 클라이언트가 PC 의 이미지를 바로 올릴 때
-    쓴다. 받은 file_id 를 image/attachment 위젯 content 에 넣는다.
-
-    ⚠️ **작은 이미지 전용** (≈256KB 이하). base64 바이트가 모델 출력 토큰을 그대로
-    소모하므로 큰 파일은 거부된다. 큰 파일·PPT·다수 이미지는 base64 로 올리지 말고:
-      - 웹에 있으면 `upload_from_url`(서버가 직접 다운로드, 크기 제약 없음),
-      - PPT 안의 그림들은 PPT 를 먼저 올린 뒤 `extract_pptx_images` 로 서버에서 분해.
+    """⚠️ **최후수단** — 로컬 **작은 이미지**를 base64 로 받아 저장하고 **file_id** 를
+    돌려준다. base64 바이트가 **모델 출력 토큰을 그대로 소모**하고 ≈256KB 상한이 걸려
+    있으므로, 로컬 파일이면 대부분 아래를 **먼저** 써라:
+      - **셸(Bash)을 쓸 수 있으면(Claude Code 등) → `prepare_upload`** — 바이트가 모델을
+        안 거쳐 토큰 소모·크기 제약이 없다. **로컬 파일 업로드의 기본 경로.**
+      - 웹 URL 이면 → `upload_from_url`(서버가 직접 다운로드).
+      - PPT 안의 그림들은 PPT 를 먼저 올린 뒤 → `extract_pptx_images`.
+    이 도구는 **셸을 못 쓰는 클라이언트가 이미 소용량 이미지 바이트를 손에 쥔** 좁은
+    경우에만 쓴다(예: filesystem MCP 로 읽은 작은 png). 그 외엔 위 경로가 항상 낫다.
+    받은 file_id 는 image/attachment 위젯 content 에 넣는다.
 
     인자: filename(확장자 포함), data_base64(파일 바이트의 base64), mime_type(선택,
     미지정 시 서버가 확장자로 추정). 반환: `{ id(=file_id), filename, mime_type, size, ... }`.
@@ -264,8 +266,8 @@ async def upload_file(
         return {
             "error": (
                 f"파일이 너무 큽니다({len(raw) // 1024}KB). base64 업로드는 "
-                f"{_UPLOAD_BASE64_MAX_BYTES // 1024}KB 이하만 됩니다 — 큰 파일은 "
-                "upload_from_url(웹 URL) 을 쓰거나, PPT 면 먼저 올린 뒤 "
+                f"{_UPLOAD_BASE64_MAX_BYTES // 1024}KB 이하만 됩니다 — 로컬 파일은 "
+                "prepare_upload(셸 curl), 웹 URL 은 upload_from_url, PPT 는 먼저 올린 뒤 "
                 "extract_pptx_images 로 분해하세요."
             )
         }

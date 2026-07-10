@@ -16,6 +16,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from app.config import settings
 from app.modules.connectors.schemas import ConnectionConfig, StreamConfig
 from app.modules.entities.schemas import EntityImportMapping, ImportRelationCol
 
@@ -80,8 +81,20 @@ def fetch_records(conn: ConnectionConfig, stream: StreamConfig) -> list[dict]:
         raise FetchError("base_url 이 비었습니다.")
     url = urljoin(base if base.endswith("/") else base + "/",
                   (stream.endpoint_path or "").lstrip("/"))
-    if urlparse(url).scheme not in ("http", "https"):
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
         raise FetchError("http/https URL 만 허용됩니다.")
+    # SSRF 완화 — allowlist 가 설정돼 있으면 그 호스트로만 나갈 수 있다(비면 전체 허용).
+    allow = [
+        h.strip().lower()
+        for h in (settings.connector_allowed_hosts or "").split(",")
+        if h.strip()
+    ]
+    if allow and (parsed.hostname or "").lower() not in allow:
+        raise FetchError(
+            f"허용되지 않은 호스트입니다: {parsed.hostname}. "
+            "관리자에게 CONNECTOR_ALLOWED_HOSTS 설정 확인을 요청하세요."
+        )
 
     headers, basic = _auth_kwargs(conn)
     try:

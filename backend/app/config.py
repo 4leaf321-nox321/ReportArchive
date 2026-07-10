@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     jwt_access_token_expires_hours: int = Field(default=12)
     jwt_refresh_token_expires_days: int = Field(default=30)
 
+    # --- External connectors (외부 시스템 연계) ---
+    # 커넥터가 outbound 요청을 보낼 수 있는 호스트 allowlist(쉼표 구분). 비어 있으면
+    # 모든 호스트 허용(사내 사설 IP 대상이 정상 용도라 기본은 비어 있음). 운영에서
+    # SSRF 를 좁히려면 대상 시스템 호스트만 나열한다. http/https 스킴은 항상 강제.
+    connector_allowed_hosts: str = Field(default="")
+
     # --- Database ---
     database_url: str = Field(
         default="postgresql+psycopg://postgres:postgres@localhost:5432/report_automation"

@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.modules.connectors.crypto import decrypt_secret, encrypt_secret
 from app.modules.connectors.fetch import (
     FetchError,
     build_rows_and_mapping,
@@ -59,6 +60,22 @@ def _parse_config(raw: dict | None) -> SourceConfig:
     return SourceConfig.model_validate(_normalize_raw(raw))
 
 
+def to_stored_config(cfg: SourceConfig) -> dict:
+    """저장용 dict — 커넥션 시크릿을 암호화(평문 저장 금지). 입력 cfg 는 평문."""
+    stored = cfg.model_copy(deep=True)
+    stored.connection.auth.token = encrypt_secret(stored.connection.auth.token)
+    stored.connection.auth.password = encrypt_secret(stored.connection.auth.password)
+    return stored.model_dump()
+
+
+def from_stored_config(raw: dict | None) -> SourceConfig:
+    """저장값 → 평문 SourceConfig(시크릿 복호). fetch 실행 직전에만 쓴다."""
+    cfg = _parse_config(raw)
+    cfg.connection.auth.token = decrypt_secret(cfg.connection.auth.token)
+    cfg.connection.auth.password = decrypt_secret(cfg.connection.auth.password)
+    return cfg
+
+
 def _mask(cfg: SourceConfig) -> tuple[SourceConfig, bool]:
     """커넥션 시크릿을 지운 사본 + has_secret 플래그. 원본은 건드리지 않는다."""
     masked = cfg.model_copy(deep=True)
@@ -89,8 +106,9 @@ def to_read(source: DataSource) -> DataSourceRead:
 
 
 def _preserve_secrets(new_cfg: SourceConfig, old_raw: dict | None) -> SourceConfig:
-    """갱신 config 의 커넥션 시크릿이 비었으면(=UI 가 마스킹된 값 그대로 보냄) 기존 보존."""
-    old = _parse_config(old_raw)
+    """갱신 config 의 커넥션 시크릿이 비었으면(=UI 가 마스킹된 값 그대로 보냄) 기존 보존.
+    기존은 복호해 평문으로 되살린다(뒤에서 to_stored_config 가 한 번만 재암호화)."""
+    old = from_stored_config(old_raw)
     if not new_cfg.connection.auth.token:
         new_cfg.connection.auth.token = old.connection.auth.token
     if not new_cfg.connection.auth.password:
@@ -121,7 +139,7 @@ def create_source(db: Session, payload: DataSourceCreate, *, user_id: int) -> Da
         name=payload.name.strip(),
         kind=payload.kind,
         enabled=payload.enabled,
-        config=payload.config.model_dump(),
+        config=to_stored_config(payload.config),
         schedule_kind=payload.schedule_kind,
         interval_minutes=payload.interval_minutes,
         next_run_at=_next_run_for(payload.schedule_kind, payload.interval_minutes),
@@ -140,7 +158,7 @@ def update_source(db: Session, source: DataSource, payload: DataSourceUpdate) ->
         source.enabled = payload.enabled
     if payload.config is not None:
         merged = _preserve_secrets(payload.config, source.config)
-        source.config = merged.model_dump()
+        source.config = to_stored_config(merged)
     if payload.schedule_kind is not None:
         source.schedule_kind = payload.schedule_kind
     if payload.interval_minutes is not None:
@@ -204,7 +222,7 @@ def run_sync(db: Session, source: DataSource, *, dry_run: bool,
              triggered_by: str, user_id: int) -> dict:
     """커넥션의 각 스트림을 순서대로 fetch → rows 변환 → run_import(upsert). dry_run
     이면 검증만(쓰기 없음). 스트림별 결과를 모으고 집계 요약을 함께 돌려준다."""
-    cfg = _parse_config(source.config)
+    cfg = from_stored_config(source.config)  # 시크릿 복호(fetch 직전)
 
     run_id = None
     if not dry_run:

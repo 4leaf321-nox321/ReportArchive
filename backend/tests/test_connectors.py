@@ -343,3 +343,52 @@ def test_code_matching_dedup_on_rename(monkeypatch):
                 for pd in rp.json()["data"]["items"]:
                     c.delete(f"/api/entity-types/{proj_id}/properties/{pd['id']}", headers=ADMIN)
             c.delete(f"/api/entity-types/{proj_id}", headers=ADMIN)
+
+
+# --- v3 보안: 시크릿 암호화 + SSRF allowlist ---------------------------------
+def test_secret_encrypted_at_rest():
+    """시크릿은 DB 에 평문이 아니라 enc:v1: 로 암호화 저장되고, 복호하면 원본."""
+    from app.database import SessionLocal
+    from app.modules.connectors.crypto import decrypt_secret
+    from app.modules.connectors.models import DataSource
+
+    c = TestClient(app)
+    sfx = uuid.uuid4().hex[:8]
+    secret = "topsecret-" + sfx
+    sid = None
+    try:
+        cfg = {
+            "connection": {"base_url": "https://x.test",
+                           "auth": {"type": "bearer", "token": secret}},
+            "streams": [{"endpoint_path": "/x", "records_path": "d",
+                         "target_type_id": 1, "value_path": "name"}],
+        }
+        sid = c.post("/api/connectors", headers=ADMIN,
+                     json={"name": "enc-" + sfx, "config": cfg}).json()["data"]["id"]
+        db = SessionLocal()
+        try:
+            stored = db.get(DataSource, sid).config["connection"]["auth"]["token"]
+            assert stored.startswith("enc:v1:"), stored          # 평문 아님
+            assert secret not in stored                          # 원문 노출 안 됨
+            assert decrypt_secret(stored) == secret              # 복호 = 원본
+        finally:
+            db.close()
+    finally:
+        if sid:
+            c.delete(f"/api/connectors/{sid}", headers=ADMIN)
+
+
+def test_allowlist_blocks_disallowed_host(monkeypatch):
+    """CONNECTOR_ALLOWED_HOSTS 가 설정되면 그 밖의 호스트로는 못 나간다."""
+    from app.config import settings
+    from app.modules.connectors.fetch import FetchError, fetch_records
+    from app.modules.connectors.schemas import ConnectionConfig, StreamConfig
+
+    monkeypatch.setattr(settings, "connector_allowed_hosts", "allowed.example.com")
+    conn = ConnectionConfig(base_url="http://blocked.example.com")
+    st = StreamConfig(endpoint_path="/x", records_path="")
+    try:
+        fetch_records(conn, st)
+        assert False, "차단됐어야 함"
+    except FetchError as exc:
+        assert "허용되지 않은" in str(exc), str(exc)

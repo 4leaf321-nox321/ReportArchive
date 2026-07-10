@@ -8,9 +8,11 @@ import {
   Layers,
   Lock,
   Search,
+  Star,
   User,
 } from 'lucide-react'
 import { cn } from '@/shared/lib/utils'
+import { useOrgScopeFavorites } from '@/shared/scope/useOrgScopeFavorites'
 
 // 개인(비공개) 항목 — 소유가 personal-* 뿐(백엔드 is_private_template 와 동일 정의).
 const isPersonalSlug = (s) => String(s).startsWith('personal-')
@@ -114,6 +116,9 @@ export function useScopeCategories(items, { currentUserId, getName, orgWorkspace
       return {
         slug: node.slug,
         name: node.name ?? (getName ? getName(node.slug) : node.slug),
+        // 트리 파생 색(compute_workspace_colors) — 형제끼리 다른 색이라 부서
+        // 식별/형제 구분용 점으로 쓴다(깊이 표현 아님).
+        color: node.color,
         depth,
         ownCount,
         rollupCount,
@@ -260,27 +265,41 @@ export function ScopeCategorySidebar({
   )
 }
 
-/** 검색 일치(이름) 또는 일치하는 자손을 가진 노드만 남기는 가지치기. */
-function filterTreeByName(nodes, q) {
-  if (!q) return nodes
-  const out = []
-  for (const n of nodes) {
-    const kids = filterTreeByName(n.children ?? [], q)
-    if (n.name.toLowerCase().includes(q) || kids.length) {
-      out.push({ ...n, children: kids })
+/** 트리를 slug → { node, pathSlugs, ancestorNames } 로 평탄화(드릴다운/검색/
+ *  즐겨찾기가 공통으로 쓴다). pathSlugs 는 루트부터 자신까지의 slug 체인. */
+function indexTree(nodes) {
+  const map = new Map()
+  const walk = (arr, ancestors) => {
+    for (const n of arr) {
+      const chain = [...ancestors, n]
+      map.set(n.slug, {
+        node: n,
+        pathSlugs: chain.map((c) => c.slug),
+        ancestorNames: ancestors.map((a) => a.name),
+      })
+      if (n.children?.length) walk(n.children, chain)
     }
   }
-  return out
+  walk(nodes ?? [], [])
+  return map
 }
 
-/** "조직별" 계층 트리 — 접기/펼치기 + 검색 + 하위포함 토글. 빈 가지는
- *  useScopeCategories 단계에서 이미 잘려 들어온다(템플릿 있는 가지만). */
+/** "조직별" 계층 트리 — 접기/펼치기(아코디언). 깊이가 가로폭을 잠식해 이름이
+ *  잘리던 문제를, 깊이 표현을 들여쓰기에서 **색 점 + 폰트 농도**로 이양하고
+ *  들여쓰기는 **작게(8px) + 상한(5단계)** 로만 남겨 해소했다. 이름은 말줄임 대신
+ *  **2줄 줄바꿈**(line-clamp-2)이라 어떤 깊이에서도 안 잘린다. 색은 트리 파생
+ *  (compute_workspace_colors)이라 형제 부서를 색으로 구분해준다. 상단엔 계정별
+ *  즐겨찾기(자주 쓰는 부서 바로가기), 검색 시엔 전체 트리를 평면으로 훑어 경로와
+ *  함께 보여준다. 빈 가지는 useScopeCategories 단계에서 이미 잘려 들어온다. */
 function OrgScopeTree({ tree, cat, onChange, rollup, onRollupChange, emptyOrgText }) {
+  const { favorites, toggleFavorite, isFavorite } = useOrgScopeFavorites()
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState(() => new Set())
   const q = query.trim().toLowerCase()
   const searching = q.length > 0
-  const shown = useMemo(() => filterTreeByName(tree, q), [tree, q])
+
+  const index = useMemo(() => indexTree(tree), [tree])
+  const activeSlug = cat.type === 'org' ? cat.slug : null
 
   const toggleCollapse = (slug) =>
     setCollapsed((prev) => {
@@ -290,33 +309,92 @@ function OrgScopeTree({ tree, cat, onChange, rollup, onRollupChange, emptyOrgTex
       return next
     })
 
+  // 즐겨찾기/검색 결과에서 고른 부서를 필터로 선택 + 트리에서 보이도록 조상 펼침.
+  const selectAndReveal = (slug) => {
+    const info = index.get(slug)
+    if (!info) return
+    const selectable = rollup || info.node.ownCount > 0
+    if (selectable) onChange({ type: 'org', slug })
+    setQuery('')
+    const ancestors = info.pathSlugs.slice(0, -1)
+    if (ancestors.length) {
+      setCollapsed((prev) => {
+        const next = new Set(prev)
+        ancestors.forEach((s) => next.delete(s))
+        return next
+      })
+    }
+  }
+
+  const results = useMemo(() => {
+    if (!searching) return []
+    return [...index.values()]
+      .filter((info) => info.node.name.toLowerCase().includes(q))
+      .sort((a, b) => a.node.name.localeCompare(b.node.name))
+  }, [index, q, searching])
+
+  const favoriteInfos = useMemo(
+    () => favorites.map((slug) => index.get(slug)).filter(Boolean),
+    [favorites, index],
+  )
+
   if (tree.length === 0) {
     return <p className="px-2 py-1 text-[11px] text-muted-foreground">{emptyOrgText}</p>
   }
 
+  // 즐겨찾기 별 토글 버튼(행 오른쪽) — hover 시 노출, 즐겨찾기면 상시 노랑.
+  const favButton = (slug) => {
+    const fav = isFavorite(slug)
+    return (
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          toggleFavorite(slug)
+        }}
+        className={cn(
+          'flex h-7 w-4 shrink-0 items-center justify-center transition-opacity',
+          fav
+            ? 'text-amber-500'
+            : 'text-muted-foreground/40 opacity-0 group-hover:opacity-100 focus:opacity-100',
+        )}
+        title={fav ? '즐겨찾기 해제' : '즐겨찾기에 추가'}
+      >
+        <Star className={cn('h-3 w-3', fav && 'fill-current')} />
+      </button>
+    )
+  }
+
+  // 색 점 — 트리 파생 색(형제 구분). 깊이 표현이 아니라 부서 식별용.
+  const colorDot = (color) => (
+    <span
+      className="mt-1 h-2 w-2 shrink-0 rounded-full"
+      style={{ backgroundColor: color || '#64748b' }}
+    />
+  )
+
+  // 아코디언 재귀 렌더 — 캡 들여쓰기(6px×min(depth,5)) + 색 점 + 폰트 농도 + 줄바꿈.
   const renderNodes = (nodes) =>
     nodes.map((n) => {
       const hasKids = (n.children?.length ?? 0) > 0
-      // 검색 중엔 전부 펼친다(일치 결과를 가리지 않도록).
-      const isCollapsed = !searching && collapsed.has(n.slug)
-      // 하위포함이면 모두 선택 가능, 아니면 직접 소유분이 있어야 선택 가능.
+      const isCollapsed = collapsed.has(n.slug)
       const selectable = rollup || n.ownCount > 0
       const count = rollup ? n.rollupCount : n.ownCount
-      const active = cat.type === 'org' && cat.slug === n.slug
+      const active = activeSlug === n.slug
       return (
         <Fragment key={n.slug}>
           <div
             className={cn(
-              'flex items-center rounded-md text-sm transition-colors',
-              active ? 'bg-primary/10 font-medium text-primary' : 'hover:bg-muted',
+              'group flex items-start rounded-md text-sm transition-colors',
+              active ? 'bg-primary/10 text-primary' : 'hover:bg-muted',
             )}
-            style={{ paddingLeft: n.depth * 12 }}
+            style={{ paddingLeft: Math.min(n.depth, 5) * 6 }}
           >
             {hasKids ? (
               <button
                 type="button"
                 onClick={() => toggleCollapse(n.slug)}
-                className="flex h-6 w-5 shrink-0 items-center justify-center text-muted-foreground"
+                className="flex h-7 w-4 shrink-0 items-center justify-center text-muted-foreground"
                 title={isCollapsed ? '펼치기' : '접기'}
               >
                 {isCollapsed ? (
@@ -326,7 +404,7 @@ function OrgScopeTree({ tree, cat, onChange, rollup, onRollupChange, emptyOrgTex
                 )}
               </button>
             ) : (
-              <span className="w-5 shrink-0" />
+              <span className="w-4 shrink-0" />
             )}
             <button
               type="button"
@@ -334,24 +412,74 @@ function OrgScopeTree({ tree, cat, onChange, rollup, onRollupChange, emptyOrgTex
                 selectable ? onChange({ type: 'org', slug: n.slug }) : toggleCollapse(n.slug)
               }
               className={cn(
-                'flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-2 text-left',
+                'flex min-w-0 flex-1 items-start gap-1.5 py-1 pr-1 text-left',
                 !selectable && 'text-muted-foreground',
               )}
               title={n.name}
             >
-              <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate">{n.name}</span>
+              {colorDot(n.color)}
+              <span
+                className={cn(
+                  'line-clamp-2 min-w-0 flex-1 break-words leading-snug',
+                  n.depth === 0 || active ? 'font-medium' : 'font-normal',
+                )}
+              >
+                {n.name}
+              </span>
               {count > 0 && (
-                <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                <span className="mt-0.5 shrink-0 text-[11px] tabular-nums text-muted-foreground">
                   {count}
                 </span>
               )}
             </button>
+            {favButton(n.slug)}
           </div>
           {hasKids && !isCollapsed && renderNodes(n.children)}
         </Fragment>
       )
     })
+
+  // 평면 행(즐겨찾기·검색) — 색 점 + 이름 + 경로(muted) + 건수 + 별. 들여쓰기 없음.
+  const renderFlatRow = (info) => {
+    const n = info.node
+    const selectable = rollup || n.ownCount > 0
+    const count = rollup ? n.rollupCount : n.ownCount
+    const active = activeSlug === n.slug
+    const pathLabel = info.ancestorNames.join(' › ')
+    return (
+      <div
+        key={n.slug}
+        className={cn(
+          'group flex items-start rounded-md text-sm transition-colors',
+          active ? 'bg-primary/10 text-primary' : 'hover:bg-muted',
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => selectAndReveal(n.slug)}
+          className={cn(
+            'flex min-w-0 flex-1 items-start gap-1.5 py-1 pl-1 pr-1 text-left',
+            !selectable && 'text-muted-foreground',
+          )}
+          title={pathLabel ? `${pathLabel} › ${n.name}` : n.name}
+        >
+          {colorDot(n.color)}
+          <span className="min-w-0 flex-1 leading-snug">
+            <span className={cn('break-words', active && 'font-medium')}>{n.name}</span>
+            {pathLabel && (
+              <span className="ml-1 text-[10px] text-muted-foreground">{pathLabel}</span>
+            )}
+          </span>
+          {count > 0 && (
+            <span className="mt-0.5 shrink-0 text-[11px] tabular-nums text-muted-foreground">
+              {count}
+            </span>
+          )}
+        </button>
+        {favButton(n.slug)}
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-1">
@@ -378,10 +506,26 @@ function OrgScopeTree({ tree, cat, onChange, rollup, onRollupChange, emptyOrgTex
           하위포함
         </label>
       </div>
-      {searching && shown.length === 0 ? (
-        <p className="px-2 py-1 text-[11px] text-muted-foreground">검색 결과 없음</p>
+
+      {/* 즐겨찾기 — 자주 쓰는 부서 바로가기(계정별). 검색 중엔 숨김. */}
+      {!searching && favoriteInfos.length > 0 && (
+        <div className="space-y-0.5">
+          <div className="px-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+            즐겨찾기
+          </div>
+          {favoriteInfos.map(renderFlatRow)}
+          <div className="mx-1 border-t pt-0.5" />
+        </div>
+      )}
+
+      {searching ? (
+        results.length === 0 ? (
+          <p className="px-2 py-1 text-[11px] text-muted-foreground">검색 결과 없음</p>
+        ) : (
+          <div className="space-y-0.5">{results.map(renderFlatRow)}</div>
+        )
       ) : (
-        <div>{renderNodes(shown)}</div>
+        <div className="space-y-0.5">{renderNodes(tree)}</div>
       )}
     </div>
   )

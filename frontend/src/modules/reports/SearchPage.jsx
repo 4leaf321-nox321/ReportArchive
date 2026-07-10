@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Button } from '@/shared/components/ui/button'
+import { Markdown } from '@/shared/components/Markdown'
 import { searchReports, semanticSearchReports } from '@/modules/reports/api'
 import { ObjectSearch } from '@/modules/entities/ObjectSearch'
 import { askAi, askAgent } from '@/shared/api/ai'
@@ -425,9 +426,9 @@ export default function SearchPage() {
                     ))}
                   </div>
                 )}
-                <div className="whitespace-pre-wrap text-sm leading-relaxed">
+                <Markdown className="text-sm leading-relaxed">
                   {askResult.answer}
-                </div>
+                </Markdown>
                 {askResult.trace?.length > 0 && (
                   <details className="mt-3 border-t pt-3">
                     <summary className="cursor-pointer text-[11px] font-medium text-muted-foreground">

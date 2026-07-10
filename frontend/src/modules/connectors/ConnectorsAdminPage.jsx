@@ -1068,9 +1068,11 @@ export default function ConnectorsAdminPage() {
                 <Plus className="mr-1 h-4 w-4" /> 스트림 추가
               </Button>
             </div>
-            <div className="flex flex-col gap-4 sm:flex-row">
-              {/* 좌측: 스트림 목록 */}
-              <div className="w-full shrink-0 space-y-1 sm:w-56">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-stretch">
+              {/* 좌측: 스트림 목록 — 우측 카드 높이에 맞춰 내부 세로 스크롤(sm+).
+                  절대위치라 리스트가 행 높이를 키우지 않고 카드가 높이를 주도한다. */}
+              <div className="relative w-full shrink-0 sm:w-56">
+                <div className="space-y-1 sm:absolute sm:inset-0 sm:overflow-y-auto sm:pr-1">
                 {draft.streams.length === 0 ? (
                   <p className="rounded-md border border-dashed px-2 py-6 text-center text-xs text-muted-foreground">
                     스트림 없음 — “스트림 추가”
@@ -1096,6 +1098,7 @@ export default function ConnectorsAdminPage() {
                     </button>
                   ))
                 )}
+                </div>
               </div>
               {/* 우측: 선택한 스트림 편집 카드 */}
               <div className="min-w-0 flex-1">

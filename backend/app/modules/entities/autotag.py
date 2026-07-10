@@ -192,8 +192,9 @@ def _similar_ids_per_chunk(
     return out
 
 
-def _entity_pool_vectors(db: Session):
-    """활성 엔티티 (id, 값 임베딩) — 프로세스 캐시. 반환: (ids, ent_vecs) 또는 (None, None)."""
+def entity_pool_vectors(db: Session):
+    """활성 엔티티 (id, 값 임베딩) — 프로세스 캐시. 반환: (ids, ent_vecs) 또는 (None, None).
+    청크 L1 링크와 질문→씨앗 링킹(graph_link)이 공유해 풀 임베딩을 1벌만 유지한다."""
     sig_row = db.execute(
         select(func.count(Entity.id), func.max(Entity.id), func.max(Entity.updated_at))
         .where(Entity.status == EntityStatus.active)
@@ -228,7 +229,7 @@ def l1_chunk_entity_links(db: Session, chunk_vectors) -> list[list[int]]:
     n = len(chunk_vectors or [])
     if n == 0 or (settings.embedding_backend or "mock").lower() == "mock":
         return [[] for _ in range(n)]
-    ids, ent_vecs = _entity_pool_vectors(db)
+    ids, ent_vecs = entity_pool_vectors(db)
     if not ids:
         return [[] for _ in range(n)]
     return _similar_ids_per_chunk(

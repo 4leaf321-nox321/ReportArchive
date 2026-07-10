@@ -117,6 +117,10 @@ class Settings(BaseSettings):
     # 청크당 L1 링크 상한(점수 높은 순 top-K). 한 문단이 느슨하게 여러 객체에 붙어
     # 검색을 오염시키지 않게 최악의 경우를 묶는다. L0 링크는 이 상한과 무관(합집합).
     chunk_link_max_per_chunk: int = Field(default=8)
+    # 질문→씨앗객체 링킹(GraphRAG 진입점)의 의미검색 최소 코사인. 씨앗은
+    # expand_related 로 이웃까지 번지므로 오탐이 증폭된다 → 정밀 우선(0.5).
+    # lexical 겹침과 무관하게 전체 엔티티 풀(캐시)과 비교해 의미 씨앗을 찾는다.
+    seed_link_min_score: float = Field(default=0.5)
     # 보고서 저장/수정 시 자동으로 embed_report 잡을 적재할지. **기본 OFF** — pgvector
     # 확장·report_chunks·워커가 모두 준비된 환경에서만 켠다(.env 로 true). 안 그러면
     # 임베딩 미배포(p47만 배포 등) 상태에서 실패 잡이 쌓인다.

@@ -141,56 +141,71 @@ def _enabled() -> bool:
     )
 
 
-def _execute(db: Session, actor, q: str, spec: dict) -> Optional[dict]:
-    filters = [str(x) for x in (spec.get("filters") or []) if str(x).strip()]
-    resolved = _resolve_filters(db, filters)
-    if resolved is None:
-        return None  # 필터 해석 실패 → RAG
-    ent_ids, filter_labels = resolved
+def aggregate(
+    db: Session, actor, filters: list[str], year=None, target: str = "report"
+) -> Optional[dict]:
+    """온톨로지 집계 코어(답변 조립·에이전트 도구 공유). filters(문자열)를 엔티티로
+    해석 → 가시성∩엔티티필터∩연도 = base 보고서 → target(보고서 또는 축) 개수/목록.
 
-    year = spec.get("year")
+    반환 {count, unit, target_label, values(전체), report_ids(전체), filters(해석된 라벨),
+    year}. 필터·타깃 해석 실패 시 None. 개수는 SQL 계산(환각 없음)·가시성 게이팅."""
+    resolved = _resolve_filters(db, [str(x) for x in (filters or []) if str(x).strip()])
+    if resolved is None:
+        return None
+    ent_ids, filter_labels = resolved
     try:
         year = int(year) if year is not None else None
     except (ValueError, TypeError):
         year = None
-
     base = _base_reports(db, actor, ent_ids, year)
 
-    intent = "list" if spec.get("intent") == "list" else "count"
-    target = spec.get("target") or "report"
-
-    # 타깃이 특정 축이면 그 축 값(엔티티)을 집계, 아니면 보고서.
-    target_label = "보고서"
-    unit = "건"
-    values: list[str] = []
+    target_label, unit = "보고서", "건"
     if target and target != "report":
         types = {t.slug: t for t in list_types(db)}
         tt = types.get(target) or next(
             (t for t in types.values() if t.label == target), None
         )
         if tt is None:
-            return None  # 타깃 축 해석 실패 → RAG
-        target_label = tt.label
-        unit = "개"
-        if base:
-            values = list(db.execute(
-                select(Entity.value)
-                .join(ReportEntity, ReportEntity.entity_id == Entity.id)
-                .where(
-                    ReportEntity.report_id.in_(base),
-                    Entity.type_id == tt.id,
-                    Entity.status == EntityStatus.active,
-                )
-                .distinct()
-            ).scalars().all())
+            return None  # 타깃 축 해석 실패
+        target_label, unit = tt.label, "개"
+        values = list(db.execute(
+            select(Entity.value)
+            .join(ReportEntity, ReportEntity.entity_id == Entity.id)
+            .where(
+                ReportEntity.report_id.in_(base),
+                Entity.type_id == tt.id,
+                Entity.status == EntityStatus.active,
+            ).distinct()
+        ).scalars().all()) if base else []
         count = len(values)
     else:
-        # 보고서 개수/목록.
         rep_rows = db.execute(
             select(Report.id, Report.title).where(Report.id.in_(base))
         ).all() if base else []
         values = [t or f"보고서 {rid}" for rid, t in rep_rows]
         count = len(base)
+
+    return {
+        "count": count, "unit": unit, "target_label": target_label,
+        "values": values, "report_ids": list(base),
+        "filters": filter_labels, "entity_ids": ent_ids, "year": year,
+    }
+
+
+def _execute(db: Session, actor, q: str, spec: dict) -> Optional[dict]:
+    filters = [str(x) for x in (spec.get("filters") or []) if str(x).strip()]
+    agg = aggregate(db, actor, filters, spec.get("year"), spec.get("target") or "report")
+    if agg is None:
+        return None  # 해석 실패 → RAG
+
+    ent_ids = agg["entity_ids"]
+    filter_labels = agg["filters"]
+    year = agg["year"]
+    intent = "list" if spec.get("intent") == "list" else "count"
+    target = spec.get("target") or "report"
+    target_label, unit = agg["target_label"], agg["unit"]
+    values, count = agg["values"], agg["count"]
+    base = set(agg["report_ids"])
 
     # 조건 설명(투명성) — 필터·연도.
     cond_parts = list(filter_labels)

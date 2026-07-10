@@ -216,6 +216,49 @@ def _exec_search_reports(db: Session, actor, args: dict) -> ToolResult:
 
 
 # --------------------------------------------------------------------------- #
+# aggregate_reports — 보고서-태깅 기준 집계(개수는 계산). structured_qa 재사용.
+# --------------------------------------------------------------------------- #
+_AGG_PREVIEW = 30
+_AGG_CITE = 8
+
+
+def _exec_aggregate_reports(db: Session, actor, args: dict) -> ToolResult:
+    from app.ai import structured_qa
+
+    filters = [str(x) for x in (args.get("filters") or []) if str(x).strip()]
+    target = (args.get("target") or "report").strip() or "report"
+    year = args.get("year")
+    agg = structured_qa.aggregate(db, actor, filters, year, target)
+    if agg is None:
+        return _err("조건(필터/타깃)을 온톨로지 객체로 해석하지 못했습니다. "
+                    "list_object_types 로 타입·값을 확인하거나 search_reports 를 쓰세요.")
+    values = agg["values"]
+    prov = []
+    if agg["report_ids"]:
+        from sqlalchemy import select as _sel
+
+        from app.modules.reports.models import Report as _R
+        rid_cut = agg["report_ids"][:_AGG_CITE]
+        meta = {
+            rid: (title, slug) for rid, title, slug in db.execute(
+                _sel(_R.id, _R.title, _R.workspace_slug).where(_R.id.in_(rid_cut))
+            ).all()
+        }
+        prov = [{"report_id": rid, "title": meta.get(rid, (None, None))[0],
+                 "workspace_slug": meta.get(rid, (None, None))[1]} for rid in rid_cut]
+    return _ok({
+        "count": agg["count"],
+        "target": agg["target_label"],
+        "unit": agg["unit"],
+        "filters": agg["filters"],
+        "year": agg["year"],
+        "values": values[:_AGG_PREVIEW],
+        "values_truncated": len(values) > _AGG_PREVIEW,
+        "note": "볼 수 있는 보고서 기준. 개수는 계산된 값.",
+    }, reports=prov)
+
+
+# --------------------------------------------------------------------------- #
 # 카탈로그 — 스키마 + dispatch
 # --------------------------------------------------------------------------- #
 def _fn(name, description, properties, required=None) -> dict:
@@ -312,6 +355,30 @@ _CATALOG = {
             required=["query"],
         ),
         _exec_search_reports,
+    ),
+    "aggregate_reports": (
+        _fn(
+            "aggregate_reports",
+            "조건에 해당하는 보고서(또는 그 보고서에 태깅된 객체)의 **개수·목록**을 "
+            "센다 — search_objects 가 객체 자체 속성으로 세는 것과 달리, 이건 '어떤 "
+            "값들로 태깅된 보고서'를 기준으로 센다(예: '낙하시험'과 '실패'로 태깅된 "
+            "보고서에 나온 '과제'). 개수는 계산값(정확), 볼 수 있는 보고서만. "
+            "filters=조건 값들(예: [\"낙하시험\",\"실패\"]), target=셀 대상('report' "
+            "또는 축 slug), year=연도(선택).",
+            {
+                "filters": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "조건 값들(태깅). 서로 다른 축은 AND.",
+                },
+                "target": {
+                    "type": "string",
+                    "description": "셀 대상: 'report'(기본) 또는 축 slug(그 축의 값 개수).",
+                },
+                "year": {"type": "integer", "description": "자료연도(선택)."},
+            },
+            required=["filters"],
+        ),
+        _exec_aggregate_reports,
     ),
 }
 

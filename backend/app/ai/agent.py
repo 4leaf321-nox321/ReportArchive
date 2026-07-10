@@ -67,6 +67,9 @@ def _summary(tool: str, args: dict, content: dict) -> str:
         return f"객체 조회 {args.get('type')}:{args.get('id')} → {content.get('label', '')}"
     if tool == "search_reports":
         return f"보고서 검색 → {content.get('count', 0)}건"
+    if tool == "aggregate_reports":
+        conds = " · ".join(args.get("filters") or []) or "전체"
+        return f"집계({conds}) → {content.get('count', '?')}{content.get('unit', '건')}"
     return tool
 
 

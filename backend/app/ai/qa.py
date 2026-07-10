@@ -131,11 +131,15 @@ def _graph_objects(
     return out
 
 
-def _retrieve(db: Session, actor, query: str, *, limit: int, graph: bool = False):
+def _retrieve(
+    db: Session, actor, query: str, *, limit: int, graph: bool = False,
+    rerank: Optional[bool] = None, hyde: Optional[bool] = None,
+):
     """질문 → (질문문, citations, blocks, seeds) 또는 근거 없음 dict.
 
     graph=True 면 씨앗 객체 링킹 → 이웃 확장 → 그래프 근거를 순수 벡터와 블렌드
-    (GraphRAG_설계.md §2). 동기/비동기 ask 양쪽이 공유한다."""
+    (GraphRAG_설계.md §2). rerank/hyde 는 요청별 override(None=설정 기본값).
+    동기/비동기 ask 양쪽이 공유한다."""
     q = (query or "").strip()
     if not q:
         return {"answer": "", "citations": [], "no_evidence": True, "seeds": []}
@@ -146,11 +150,11 @@ def _retrieve(db: Session, actor, query: str, *, limit: int, graph: bool = False
 
     # 재랭킹이 켜져 있으면 후보를 넉넉히(limit×배수) 뽑아 2차 재채점 후 상위 limit
     # 로 절단한다 — 재랭킹이 #9 를 #1 로 끌어올리려면 후보 풀이 넓어야 한다.
-    rerank_on = _rerank_enabled()
+    rerank_on = _rerank_enabled(rerank)
     pool = limit * _RERANK_MULT if rerank_on else limit
 
     # HyDE — 시맨틱 검색용 임베딩 텍스트를 가상 답변 문단으로 대체(키워드·씨앗은 원 질문).
-    embed_q = _hyde(q) if _hyde_enabled() else None
+    embed_q = _hyde(q) if _hyde_enabled(hyde) else None
 
     # 하이브리드(시맨틱+키워드 RRF) + 청크 전문(snippet_chars=None). 근거 가드
     # 임계(embedding_hybrid_min_score)는 hybrid_search 내부 적용.
@@ -241,22 +245,27 @@ def _retrieve(db: Session, actor, query: str, *, limit: int, graph: bool = False
     return q, citations, blocks, seeds
 
 
-def _rerank_enabled() -> bool:
-    """재랭킹 on 여부 — 설정 토글 + 생성 LLM 이 mock 이 아닐 때만(mock 은 무의미)."""
+def _rerank_enabled(override: Optional[bool] = None) -> bool:
+    """재랭킹 on 여부. 생성 LLM 이 mock 이면 항상 무효(무의미). 그 외엔 요청별
+    override(있으면) 우선, 없으면 설정 기본값. → 사용자가 질문마다 켜고 끌 수 있다."""
     from app.config import settings
 
-    return bool(settings.rag_rerank_enabled) and (
-        (settings.llm_backend or "mock").lower() != "mock"
-    )
+    if (settings.llm_backend or "mock").lower() == "mock":
+        return False
+    if override is not None:
+        return bool(override)
+    return bool(settings.rag_rerank_enabled)
 
 
-def _hyde_enabled() -> bool:
-    """HyDE on 여부 — 설정 토글 + 생성 LLM 이 mock 이 아닐 때만."""
+def _hyde_enabled(override: Optional[bool] = None) -> bool:
+    """HyDE on 여부. mock 이면 무효. override(요청별) 우선, 없으면 설정 기본값."""
     from app.config import settings
 
-    return bool(settings.rag_hyde_enabled) and (
-        (settings.llm_backend or "mock").lower() != "mock"
-    )
+    if (settings.llm_backend or "mock").lower() == "mock":
+        return False
+    if override is not None:
+        return bool(override)
+    return bool(settings.rag_hyde_enabled)
 
 
 def _hyde(q: str) -> Optional[str]:
@@ -418,12 +427,15 @@ def _finalize(
 
 
 def ask_archive(
-    db: Session, actor, query: str, *, limit: int = 8, graph: bool = False
+    db: Session, actor, query: str, *, limit: int = 8, graph: bool = False,
+    rerank: Optional[bool] = None, hyde: Optional[bool] = None,
 ) -> dict:
     """질문 → {answer, citations, no_evidence, seeds, ...}. actor 는 검색 권한
     scope 용(.user.id 기반 가시 보고서). 기능 권한 게이트는 호출부에서 이미 통과.
-    graph=True 면 GraphRAG(온톨로지 그래프 근거 블렌드)."""
-    retrieved = _retrieve(db, actor, query, limit=limit, graph=graph)
+    graph=True 면 GraphRAG(온톨로지 그래프 근거 블렌드). rerank/hyde=요청별 override."""
+    retrieved = _retrieve(
+        db, actor, query, limit=limit, graph=graph, rerank=rerank, hyde=hyde
+    )
     if isinstance(retrieved, dict):
         return retrieved
     q, citations, blocks, seeds = retrieved
@@ -439,12 +451,16 @@ async def ask_archive_cancellable(
     *,
     limit: int = 8,
     graph: bool = False,
+    rerank: Optional[bool] = None,
+    hyde: Optional[bool] = None,
     should_cancel: Optional[CancelCheck] = None,
 ) -> dict:
     """ask_archive 의 비동기·취소 가능 버전(라우트가 클라이언트 연결 끊김을
     should_cancel 로 넘긴다). 검색은 동기지만 짧고, 긴 LLM 생성만 스트리밍해
     중간 취소된다. 결과 형태는 ask_archive 와 동일."""
-    retrieved = _retrieve(db, actor, query, limit=limit, graph=graph)
+    retrieved = _retrieve(
+        db, actor, query, limit=limit, graph=graph, rerank=rerank, hyde=hyde
+    )
     if isinstance(retrieved, dict):
         return retrieved
     q, citations, blocks, seeds = retrieved

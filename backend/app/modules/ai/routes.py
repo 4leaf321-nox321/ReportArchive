@@ -114,6 +114,9 @@ class AskPayload(BaseModel):
     limit: int = Field(default=8, ge=1, le=20)
     # graph=True → GraphRAG: 온톨로지 그래프 근거를 순수 벡터와 블렌드(GraphRAG_설계.md).
     graph: bool = False
+    # rerank/hyde: 요청별 override(None=서버 설정 기본값). 사용자가 질문마다 켜고 끔.
+    rerank: bool | None = None
+    hyde: bool | None = None
 
 
 @router.post("/ask")
@@ -142,6 +145,7 @@ async def ask(
     try:
         data = await qa.ask_archive_cancellable(
             db, actor, payload.query, limit=payload.limit, graph=payload.graph,
+            rerank=payload.rerank, hyde=payload.hyde,
             should_cancel=request.is_disconnected,
         )
     except LLMCancelled:
@@ -150,6 +154,21 @@ async def ask(
     except LLMError as exc:
         return error_response(f"AI 응답 실패: {exc}", status_code=502)
     return success_response(data=data)
+
+
+@router.get("/ask/options")
+def ask_options(actor=Depends(get_current_user)):
+    """Q&A 검색 옵션의 **현재 기본값** — 프론트 토글 초기화용. 사용자는 이 위에서
+    질문마다 rerank/hyde 를 켜고 끌 수 있다(요청 override). llm_backend 가 mock 이면
+    두 옵션은 무효라 사용 불가로 표시(available=false)."""
+    llm_ready = (settings.llm_backend or "mock").lower() != "mock"
+    return success_response(data={
+        "graph": False,  # graph 는 순수 요청별(서버 기본 off)
+        "rerank": bool(settings.rag_rerank_enabled),
+        "hyde": bool(settings.rag_hyde_enabled),
+        "rerank_available": llm_ready,
+        "hyde_available": llm_ready,
+    })
 
 
 # --------------------------------------------------------------------------- #

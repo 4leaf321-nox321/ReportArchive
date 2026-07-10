@@ -9,6 +9,8 @@ import {
   Type,
   MessageCircleQuestion,
   Network,
+  SlidersHorizontal,
+  Wand2,
 } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Button } from '@/shared/components/ui/button'
@@ -19,7 +21,7 @@ import {
   createReportFromAnswer,
 } from '@/modules/reports/api'
 import { ObjectSearch } from '@/modules/entities/ObjectSearch'
-import { askAi, askAgent } from '@/shared/api/ai'
+import { askAi, askAgent, getAskOptions } from '@/shared/api/ai'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { EntityFilterControl } from './EntityFilterControl'
 
@@ -112,6 +114,10 @@ export default function SearchPage() {
   const [askError, setAskError] = useState(null)
   // GraphRAG — 온톨로지 그래프 근거 블렌드(질문이 다룬 객체→연결 이웃 근거 우선).
   const [graphMode, setGraphMode] = useState(false)
+  // rerank/hyde 요청별 토글 — 서버 기본값으로 초기화(안 만지면 기본대로).
+  const [rerankMode, setRerankMode] = useState(false)
+  const [hydeMode, setHydeMode] = useState(false)
+  const [askOpts, setAskOpts] = useState(null) // {rerank_available, hyde_available}
   // 엔티티 태그 필터(D-2) — 본문/의미 검색을 메타데이터로 좁힌다("본문 X AND 모델=A1234").
   // 키워드·의미 두 모드 모두 적용.
   const [entityFilter, setEntityFilter] = useState([])
@@ -137,6 +143,22 @@ export default function SearchPage() {
 
   useEffect(() => {
     inputRef.current?.focus()
+  }, [])
+
+  // Q&A 검색 옵션 기본값 로드 → rerank/hyde 토글 초기값. 실패해도 무해(기본 off).
+  useEffect(() => {
+    let alive = true
+    getAskOptions()
+      .then((o) => {
+        if (!alive || !o) return
+        setAskOpts(o)
+        setRerankMode(!!o.rerank)
+        setHydeMode(!!o.hyde)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
   }, [])
 
   // 외부에서 ?q 가 바뀌면(예: 이미 이 페이지에 있는 채로 헤더 검색으로 재진입)
@@ -233,7 +255,11 @@ export default function SearchPage() {
     try {
       const res = isAgent
         ? await askAgent({ query: q, signal: controller.signal })
-        : await askAi({ query: q, graph: graphMode, signal: controller.signal })
+        : await askAi({
+            query: q, graph: graphMode,
+            rerank: rerankMode, hyde: hydeMode,
+            signal: controller.signal,
+          })
       setAskResult(res)
     } catch (e) {
       // 사용자가 중단(abort)한 경우는 에러로 표시하지 않는다.
@@ -249,7 +275,7 @@ export default function SearchPage() {
       askAbortRef.current = null
       setAskLoading(false)
     }
-  }, [input, askLoading, graphMode, isAgent])
+  }, [input, askLoading, graphMode, rerankMode, hydeMode, isAgent])
 
   const cancelAsk = useCallback(() => {
     askAbortRef.current?.abort()
@@ -387,6 +413,36 @@ export default function SearchPage() {
             />
             <Network className="h-3.5 w-3.5" />
             그래프 근거
+          </label>
+        )}
+        {isAsk && askOpts?.rerank_available && (
+          <label
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs"
+            title="검색된 후보 문단을 AI가 질문 적합도로 다시 채점해 상위만 인용합니다 — 정밀도↑, 응답이 조금 느려집니다"
+          >
+            <input
+              type="checkbox"
+              checked={rerankMode}
+              onChange={(e) => setRerankMode(e.target.checked)}
+              className="h-3 w-3"
+            />
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            정밀 재랭킹
+          </label>
+        )}
+        {isAsk && askOpts?.hyde_available && (
+          <label
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs"
+            title="모호한 질문을 '가상 답변 문단'으로 바꿔 검색합니다 — 짧고 애매한 질문의 적중률↑"
+          >
+            <input
+              type="checkbox"
+              checked={hydeMode}
+              onChange={(e) => setHydeMode(e.target.checked)}
+              className="h-3 w-3"
+            />
+            <Wand2 className="h-3.5 w-3.5" />
+            가상답변 검색
           </label>
         )}
         <span className="text-xs text-muted-foreground">{activeHint}</span>

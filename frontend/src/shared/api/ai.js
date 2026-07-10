@@ -30,10 +30,22 @@ export async function chatAiDiag({ prompt, reasoningEffort = null }) {
  *   graph=true → GraphRAG(온톨로지 그래프 근거 블렌드): seeds(다룬 객체) + 출처에
  *   작성자·날짜, 그래프 근거엔 연결 객체(objects)·graph 플래그가 실린다.
  */
-export async function askAi({ query, limit = 8, graph = false, signal } = {}) {
+export async function askAi({
+  query, limit = 8, graph = false, rerank, hyde, signal,
+} = {}) {
   // signal: AbortController.signal — 사용자가 "중단"하면 요청을 끊고, 서버도
   // 연결 끊김을 감지해 LLM 생성을 멈춘다.
-  const res = await apiClient.post('/api/ai/ask', { query, limit, graph }, { signal })
+  // rerank/hyde: 요청별 override. 지정 안 하면(undefined) 서버 기본값을 쓴다.
+  const body = { query, limit, graph }
+  if (rerank !== undefined && rerank !== null) body.rerank = rerank
+  if (hyde !== undefined && hyde !== null) body.hyde = hyde
+  const res = await apiClient.post('/api/ai/ask', body, { signal })
+  return extractData(res)
+}
+
+/** Q&A 검색 옵션 기본값(프론트 토글 초기화용). { graph, rerank, hyde, *_available } */
+export async function getAskOptions() {
+  const res = await apiClient.get('/api/ai/ask/options')
   return extractData(res)
 }
 

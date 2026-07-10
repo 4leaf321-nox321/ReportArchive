@@ -36,4 +36,5 @@ cp -r skill/reportarchive ~/.claude/skills/reportarchive
 ## 도구
 - `list_templates` / `describe_template(template_id, version)`
 - `search_reports(q)` / `get_report(report_id)`
+- `download_file(file_id)` — 파일 바이트를 base64 로(get_report 의 이미지·첨부 로컬 저장, ≈1MB 이하)
 - `create_report_draft(template_id, version, title, blocks)`  ← 핵심(초안 생성)

@@ -29,13 +29,28 @@ API_BASE = os.environ.get("REPORTARCHIVE_API_BASE", "http://localhost:3000").rst
 # 막아두고, 큰 파일/PPT 는 upload_from_url(서버가 직접 받음)로 유도한다.
 _UPLOAD_BASE64_MAX_BYTES = 256 * 1024
 
+# download_file 이 base64 로 되돌려 줄 수 있는 최대 크기. 여긴 반대로 **모델
+# 입력(툴 결과) 토큰**을 먹으므로(1MB ≈ 1.3MB base64 ≈ 수십만 토큰) 상한을 둔다.
+# 넘으면 바이트 없이 메타만 돌려주고 웹 UI 다운로드로 유도. 운영에서 조절 가능.
+_DOWNLOAD_BASE64_MAX_BYTES = int(
+    os.environ.get("MCP_DOWNLOAD_MAX_BYTES", str(1024 * 1024))
+)
+
 # 아웃오브밴드 업로드 라우트 — 일부러 streamable 엔드포인트(/mcp)와 같은 prefix
 # 아래 둔다. FastMCP 가 /mcp 를 정확매칭 Route 로 달기 때문에 /mcp/files/upload 는
 # 충돌 없이 공존하고, 리버스프록시가 이미 잡고 있는 `location /mcp` 가 그대로
 # 커버한다(별도 location·MCP_PUBLIC_BASE 불필요).
 _UPLOAD_ROUTE = "/mcp/files/upload"
 
-mcp = FastMCP("reportarchive")
+# 기본은 SSE(streamable-http 스트림) 응답. 다만 중간에 SSE 를 버퍼링하는 프록시/
+# VPN/보안장비가 끼면 initialize 응답의 첫 바이트가 클라이언트까지 도달하지 못해
+# "무응답 → 타임아웃"이 난다(스트림은 끝나지 않으니 프록시가 붙잡고 안 흘려보냄).
+# MCP_JSON_RESPONSE=1 이면 응답을 **단발 JSON**(Content-Length 완결)으로 돌려
+# 그런 프록시를 통과시킨다. 대가로 처리 중 서버→클라이언트 스트리밍 메시지(진행률/
+# 로그/재개)를 포기하지만, 이 서버는 그 기능들을 쓰지 않으므로 실질 손실이 없다.
+_JSON_RESPONSE = os.environ.get("MCP_JSON_RESPONSE") == "1"
+
+mcp = FastMCP("reportarchive", json_response=_JSON_RESPONSE)
 
 
 def _forward_headers(ctx: Context) -> dict:
@@ -260,6 +275,76 @@ async def upload_file(
     return await _post_multipart(
         ctx, "/api/files", filename=filename, content=raw, mime_type=mime
     )
+
+
+@mcp.tool()
+async def download_file(ctx: Context, file_id: str) -> dict:
+    """저장된 파일(이미지/첨부)의 **바이트를 base64 로 내려받는다**. 보고서를
+    `get_report` 로 조회하면 이미지·첨부는 실제 바이트가 아니라 **file_id 참조**만
+    들어 있는데, 그 file_id 를 이 도구에 넘기면 실제 내용을 받아 로컬에 저장하거나
+    문서에 넣을 수 있다.
+
+    반환(성공): `{ file_id, filename, mime_type, size, is_image, encoding:"base64",
+    data_base64 }`. 로컬에 저장하려면 `data_base64` 를 디코드해 `filename` 으로
+    쓴다(예: 파이썬 `open(filename,"wb").write(base64.b64decode(data_base64))`).
+
+    ⚠️ base64 바이트가 **모델 입력 토큰을 그대로 소모**하므로 큰 파일은 막혀 있다
+    (기본 ≈1MB 초과 시 바이트 없이 `{file_id, filename, mime_type, size, error}` 만
+    반환). 큰 파일은 웹 UI 에서 직접 내려받아야 한다. 파일이 없거나 권한이 없으면
+    `{error}`."""
+    meta = await _get(ctx, f"/api/files/{file_id}/meta")
+    if isinstance(meta, dict) and meta.get("error"):
+        return meta
+    filename = meta.get("filename") or file_id
+    mime = meta.get("mime_type") or "application/octet-stream"
+    size = meta.get("size")
+    if isinstance(size, int) and size > _DOWNLOAD_BASE64_MAX_BYTES:
+        return {
+            "file_id": file_id,
+            "filename": filename,
+            "mime_type": mime,
+            "size": size,
+            "error": (
+                f"파일이 너무 큽니다({size // 1024}KB). base64 다운로드는 "
+                f"{_DOWNLOAD_BASE64_MAX_BYTES // 1024}KB 이하만 됩니다 — 큰 파일은 "
+                "웹 UI 에서 직접 내려받으세요."
+            ),
+        }
+    # 실제 바이트는 표준 envelope 이 아니라 FileResponse(raw) 로 오므로 _get(=_unwrap)
+    # 를 못 쓴다. 원시 GET 으로 .content 를 받는다.
+    async with httpx.AsyncClient(base_url=API_BASE, timeout=120) as client:
+        r = await client.get(
+            f"/api/files/{file_id}", headers=_forward_headers(ctx)
+        )
+    if r.status_code >= 400:
+        try:
+            body = r.json()
+            msg = body.get("message") or f"HTTP {r.status_code}"
+        except Exception:
+            msg = f"HTTP {r.status_code}"
+        return {"error": msg, "status": r.status_code}
+    raw = r.content
+    # 메타 size 를 못 믿는 경우(스트리밍 등) 대비해 실제 길이로 한 번 더 방어.
+    if len(raw) > _DOWNLOAD_BASE64_MAX_BYTES:
+        return {
+            "file_id": file_id,
+            "filename": filename,
+            "mime_type": mime,
+            "size": len(raw),
+            "error": (
+                f"파일이 너무 큽니다({len(raw) // 1024}KB). "
+                f"{_DOWNLOAD_BASE64_MAX_BYTES // 1024}KB 이하만 base64 로 받을 수 있습니다."
+            ),
+        }
+    return {
+        "file_id": file_id,
+        "filename": filename,
+        "mime_type": mime,
+        "size": len(raw),
+        "is_image": bool(meta.get("is_image")),
+        "encoding": "base64",
+        "data_base64": base64.b64encode(raw).decode("ascii"),
+    }
 
 
 @mcp.tool()

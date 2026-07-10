@@ -15,7 +15,8 @@ allowed-tools: mcp__reportarchive__*
 - `mcp__reportarchive__describe_widgets` — 위젯 타입별 상세 작성 룰(특히 `extra_blocks` 로 위젯 직접 만들 때)
 - `mcp__reportarchive__search_reports` — 기존 보고서 전문검색(참고용)
 - `mcp__reportarchive__list_my_drafts` — 내가 만든 작성 중 초안 목록(이어서 수정할 때)
-- `mcp__reportarchive__get_report` — 보고서 1건 조회
+- `mcp__reportarchive__get_report` — 보고서 1건 조회(이미지·첨부는 file_id 참조만)
+- `mcp__reportarchive__download_file` — file_id 로 파일 바이트를 base64 로 내려받기(get_report 의 이미지·첨부를 로컬 저장/재사용할 때, ≈1MB 이하)
 - `mcp__reportarchive__create_report_draft` — 초안 생성
 - `mcp__reportarchive__update_report_draft` — 기존 초안 이어서 수정(병합/추가/제거/전체교체)
 

@@ -1,0 +1,1006 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
+import {
+  Network,
+  Plus,
+  Loader2,
+  RefreshCw,
+  Trash2,
+  Play,
+  Eye,
+  Search,
+  History,
+  Sparkles,
+  X as XIcon,
+} from 'lucide-react'
+import { toast } from 'sonner'
+import { Button } from '@/shared/components/ui/button'
+import { Input } from '@/shared/components/ui/input'
+import { Label } from '@/shared/components/ui/label'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/shared/components/ui/card'
+import { Badge } from '@/shared/components/ui/badge'
+import { PageHeader } from '@/shared/components/PageHeader'
+import { ErrorState } from '@/shared/components/ErrorState'
+import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
+import { useAuth } from '@/shared/auth/AuthContext'
+import { useAsync } from '@/shared/hooks/useAsync'
+import { listEntityTypes, listRelationTypes, listTypeProperties } from '@/shared/api/entities'
+import {
+  listDataSources,
+  getDataSource,
+  createDataSource,
+  updateDataSource,
+  deleteDataSource,
+  probeDataSource,
+  previewDataSource,
+  syncDataSource,
+  listSyncRuns,
+  suggestMapping,
+} from '@/shared/api/connectors'
+
+/** 샘플 레코드를 점표기 leaf 경로 목록으로 평탄화(name, supplier.code …). datalist 자동완성용. */
+function flattenPaths(obj, prefix = '', out = []) {
+  if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+    for (const [k, v] of Object.entries(obj)) flattenPaths(v, prefix ? `${prefix}.${k}` : k, out)
+  } else if (Array.isArray(obj)) {
+    if (obj.length) flattenPaths(obj[0], `${prefix}.0`, out)
+    else if (prefix) out.push(prefix)
+  } else if (prefix) {
+    out.push(prefix)
+  }
+  return out
+}
+
+function blankStream() {
+  return {
+    label: '',
+    endpoint_path: '',
+    http_method: 'GET',
+    records_path: '',
+    target_type_id: 0,
+    value_path: '',
+    prop_paths: {}, // {속성 slug: 필드 경로}
+    relation_rows: [],
+  }
+}
+
+function blankDraft() {
+  return {
+    name: '',
+    enabled: true,
+    schedule_kind: 'manual',
+    interval_minutes: 60,
+    base_url: '',
+    auth_type: 'none',
+    auth_token: '',
+    auth_header: 'X-API-Key',
+    auth_username: '',
+    auth_password: '',
+    has_secret: false,
+    streams: [blankStream()],
+  }
+}
+
+function streamFromConfig(st) {
+  return {
+    label: st.label || '',
+    endpoint_path: st.endpoint_path || '',
+    http_method: st.http_method || 'GET',
+    records_path: st.records_path || '',
+    target_type_id: st.target_type_id || 0,
+    value_path: st.value_path || '',
+    prop_paths: { ...(st.property_map || {}) },
+    relation_rows: (st.relation_map || []).map((r) => ({ ...r })),
+  }
+}
+
+function draftFromSource(s) {
+  const conn = s.config?.connection || {}
+  return {
+    name: s.name,
+    enabled: s.enabled,
+    schedule_kind: s.schedule_kind || 'manual',
+    interval_minutes: s.interval_minutes || 60,
+    base_url: conn.base_url || '',
+    auth_type: conn.auth?.type || 'none',
+    auth_token: '',
+    auth_header: conn.auth?.header || 'X-API-Key',
+    auth_username: conn.auth?.username || '',
+    auth_password: '',
+    has_secret: s.has_secret,
+    streams: (s.config?.streams || []).map(streamFromConfig),
+  }
+}
+
+function streamToConfig(st) {
+  const property_map = {}
+  for (const [slug, path] of Object.entries(st.prop_paths || {})) {
+    if (slug && (path || '').trim()) property_map[slug] = path.trim()
+  }
+  const relation_map = st.relation_rows
+    .filter((r) => r.relation && r.target_type && r.path?.trim())
+    .map((r) => ({ relation: r.relation, target_type: r.target_type, path: r.path.trim() }))
+  return {
+    label: st.label.trim(),
+    endpoint_path: st.endpoint_path.trim(),
+    http_method: st.http_method,
+    query: {},
+    records_path: st.records_path.trim(),
+    target_type_id: Number(st.target_type_id) || 0,
+    match_key: 'value',
+    value_path: st.value_path.trim(),
+    code_path: '',
+    property_map,
+    relation_map,
+  }
+}
+
+function draftToConnection(d) {
+  return {
+    base_url: d.base_url.trim(),
+    auth: {
+      type: d.auth_type,
+      token: d.auth_token,
+      header: d.auth_header,
+      username: d.auth_username,
+      password: d.auth_password,
+    },
+    headers: {},
+  }
+}
+
+function draftToConfig(d) {
+  return { connection: draftToConnection(d), streams: d.streams.map(streamToConfig) }
+}
+
+function StatusBadge({ status }) {
+  if (!status) return <span className="text-xs text-muted-foreground">—</span>
+  const map = {
+    done: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
+    failed: 'bg-red-500/15 text-red-600 dark:text-red-400',
+    running: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
+  }
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${map[status] || 'bg-muted'}`}>
+      {status}
+    </span>
+  )
+}
+
+function SummaryLine({ summary }) {
+  if (!summary) return null
+  const s = summary
+  return (
+    <p className="text-sm text-muted-foreground">
+      스트림 {s.streams} · 총 {s.total} · 생성 {s.create} · 갱신 {s.update} · 오류 {s.error} · 링크{' '}
+      {s.linked}
+      {s.link_unresolved ? ` · 미해결링크 ${s.link_unresolved}` : ''}
+      {s.committed === false ? ' · (미리보기, 쓰기 없음)' : ''}
+    </p>
+  )
+}
+
+/** 필드 경로 입력 — datalist(dlId)로 조회된 키 자동완성. 모듈 스코프 정의(리렌더 시
+ *  포커스 유실 방지). */
+function PathInput({ dlId, value, onChange, placeholder }) {
+  return (
+    <Input
+      list={dlId}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      className="h-8"
+    />
+  )
+}
+
+/** 스트림 1개 편집기. 대상 축을 고르면 그 축의 속성이 자동 리스트업되고, 샘플 조회한
+ *  키가 모든 경로칸에 자동완성(datalist)으로 뜬다. */
+function StreamEditor({
+  stream,
+  index,
+  axes,
+  axisDefs,
+  relationTypes,
+  onChange,
+  onRemove,
+  onProbe,
+  probing,
+  probeResult,
+  onSuggest,
+  suggesting,
+}) {
+  function upd(patch) {
+    onChange(index, { ...stream, ...patch })
+  }
+  function setProp(slug, path) {
+    upd({ prop_paths: { ...stream.prop_paths, [slug]: path } })
+  }
+
+  const dlId = `ff-${index}` // datalist id (조회된 필드 경로)
+  const fieldPaths = useMemo(
+    () => [...new Set(flattenPaths(probeResult?.sample?.[0] ?? {}))].sort(),
+    [probeResult],
+  )
+
+  // 속성 행 = 축 정의 속성(자동) + config 에 있던 추가 slug(하위호환).
+  const defKeys = (axisDefs || []).map((d) => d.key)
+  const extraKeys = Object.keys(stream.prop_paths || {}).filter((k) => !defKeys.includes(k))
+
+  return (
+    <Card>
+      <datalist id={dlId}>
+        {fieldPaths.map((p) => (
+          <option key={p} value={p} />
+        ))}
+      </datalist>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-sm">
+            스트림 {index + 1}
+            {stream.label ? ` · ${stream.label}` : ''}
+          </CardTitle>
+          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => onRemove(index)}>
+            <XIcon className="h-4 w-4" />
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs">라벨(선택)</Label>
+            <Input value={stream.label} onChange={(e) => upd({ label: e.target.value })} placeholder="공급사" />
+          </div>
+          <div>
+            <Label className="text-xs">대상 축</Label>
+            <select
+              value={stream.target_type_id}
+              onChange={(e) => upd({ target_type_id: e.target.value, prop_paths: {} })}
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+            >
+              <option value={0}>— 선택 —</option>
+              {axes.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.label} ({a.slug})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <Label className="text-xs">Endpoint 경로</Label>
+            <Input
+              value={stream.endpoint_path}
+              onChange={(e) => upd({ endpoint_path: e.target.value })}
+              placeholder="/api/suppliers"
+            />
+          </div>
+          <div>
+            <Label className="text-xs">records_path</Label>
+            <Input value={stream.records_path} onChange={(e) => upd({ records_path: e.target.value })} placeholder="data.items" />
+          </div>
+        </div>
+
+        <div className="flex items-end gap-2">
+          <Button variant="outline" size="sm" onClick={() => onProbe(index)} disabled={probing}>
+            {probing ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Search className="mr-1 h-4 w-4" />}
+            샘플 조회
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onSuggest(index)}
+            disabled={suggesting || !probeResult || !stream.target_type_id}
+            title={!probeResult ? '먼저 샘플 조회를 하세요.' : '샘플을 보고 매핑 초안을 자동 제안'}
+          >
+            {suggesting ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Sparkles className="mr-1 h-4 w-4" />}
+            AI 자동 매핑
+          </Button>
+          {fieldPaths.length > 0 && (
+            <span className="pb-1.5 text-xs text-muted-foreground">
+              필드 {fieldPaths.length}개 조회됨 — 칸을 클릭해 고르거나 ‘AI 자동 매핑’으로 한 번에.
+            </span>
+          )}
+        </div>
+        {probeResult && (
+          <pre className="max-h-32 overflow-auto rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
+            {JSON.stringify(probeResult.sample?.[0] ?? {}, null, 2)}
+          </pre>
+        )}
+
+        {/* 값(이름) */}
+        <div>
+          <Label className="text-xs">값(이름) 필드 경로</Label>
+          <PathInput dlId={dlId} value={stream.value_path} onChange={(v) => upd({ value_path: v })} placeholder="name" />
+        </div>
+
+        {/* 속성 — 대상 축에서 자동 리스트업 */}
+        <div>
+          <Label className="text-xs">속성 매핑 {axisDefs ? `(${defKeys.length}개 속성)` : ''}</Label>
+          {!stream.target_type_id ? (
+            <p className="py-1 text-xs text-muted-foreground">대상 축을 먼저 선택하세요.</p>
+          ) : axisDefs === null ? (
+            <p className="py-1 text-xs text-muted-foreground">속성 불러오는 중…</p>
+          ) : defKeys.length === 0 && extraKeys.length === 0 ? (
+            <p className="py-1 text-xs text-muted-foreground">
+              이 축엔 정의된 속성이 없습니다. (엔티티 관리에서 속성을 추가하면 여기 자동으로 뜹니다.)
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              {(axisDefs || []).map((d) => (
+                <div key={d.key} className="flex items-center gap-2">
+                  <div className="w-40 shrink-0 truncate text-sm" title={`${d.label} (${d.key})`}>
+                    {d.label}
+                    <span className="ml-1 text-xs text-muted-foreground">{d.data_type}</span>
+                  </div>
+                  <span className="text-muted-foreground">←</span>
+                  <PathInput
+                    dlId={dlId}
+                    value={stream.prop_paths[d.key] || ''}
+                    onChange={(v) => setProp(d.key, v)}
+                    placeholder="필드 경로 (비우면 매핑 안 함)"
+                  />
+                </div>
+              ))}
+              {extraKeys.map((k) => (
+                <div key={k} className="flex items-center gap-2">
+                  <div className="w-40 shrink-0 truncate text-sm text-muted-foreground" title={k}>
+                    {k}
+                  </div>
+                  <span className="text-muted-foreground">←</span>
+                  <PathInput dlId={dlId} value={stream.prop_paths[k] || ''} onChange={(v) => setProp(k, v)} placeholder="필드 경로" />
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0"
+                    onClick={() => {
+                      const next = { ...stream.prop_paths }
+                      delete next[k]
+                      upd({ prop_paths: next })
+                    }}
+                  >
+                    <XIcon className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* 관계 매핑 */}
+        <div>
+          <div className="mb-1 flex items-center justify-between">
+            <Label className="text-xs">관계 매핑 (관계 · 대상 축 · 필드 경로)</Label>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => upd({ relation_rows: [...stream.relation_rows, { relation: '', target_type: '', path: '' }] })}
+            >
+              <Plus className="h-3.5 w-3.5" /> 추가
+            </Button>
+          </div>
+          {stream.relation_rows.map((r, i) => (
+            <div key={i} className="mb-1.5 flex items-center gap-2">
+              <select
+                value={r.relation}
+                onChange={(e) => {
+                  const rows = [...stream.relation_rows]
+                  rows[i] = { ...rows[i], relation: e.target.value }
+                  upd({ relation_rows: rows })
+                }}
+                className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+              >
+                <option value="">관계</option>
+                {relationTypes.map((rt) => (
+                  <option key={rt.slug} value={rt.slug}>
+                    {rt.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={r.target_type}
+                onChange={(e) => {
+                  const rows = [...stream.relation_rows]
+                  rows[i] = { ...rows[i], target_type: e.target.value }
+                  upd({ relation_rows: rows })
+                }}
+                className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+              >
+                <option value="">대상 축</option>
+                {axes.map((a) => (
+                  <option key={a.id} value={a.slug}>
+                    {a.label}
+                  </option>
+                ))}
+              </select>
+              <PathInput
+                dlId={dlId}
+                value={r.path}
+                onChange={(v) => {
+                  const rows = [...stream.relation_rows]
+                  rows[i] = { ...rows[i], path: v }
+                  upd({ relation_rows: rows })
+                }}
+                placeholder="필드 경로"
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 shrink-0"
+                onClick={() => upd({ relation_rows: stream.relation_rows.filter((_, j) => j !== i) })}
+              >
+                <XIcon className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+/**
+ * 관리자 — 외부 시스템 연계 커넥터. 커넥션(접속) 1개 + 스트림(엔드포인트→축) 여러 개.
+ * 대상 축을 고르면 속성이 자동 리스트업되고, 샘플 조회한 키가 경로칸 자동완성으로 뜬다.
+ */
+export default function ConnectorsAdminPage() {
+  const { me } = useAuth()
+  const isAdmin = me?.is_system_admin === true
+
+  const { data: listData, loading, error, reload } = useAsync(
+    () => (isAdmin ? listDataSources() : Promise.resolve(null)),
+    [isAdmin],
+  )
+  const { data: axesData } = useAsync(() => (isAdmin ? listEntityTypes() : Promise.resolve(null)), [isAdmin])
+  const { data: relData } = useAsync(() => (isAdmin ? listRelationTypes() : Promise.resolve(null)), [isAdmin])
+
+  const sources = useMemo(() => listData?.items ?? [], [listData])
+  const axes = useMemo(() => axesData?.items ?? [], [axesData])
+  const relationTypes = useMemo(() => relData?.items ?? [], [relData])
+  const axisName = useMemo(() => Object.fromEntries(axes.map((a) => [a.id, a.label])), [axes])
+
+  const [selectedId, setSelectedId] = useState(null)
+  const [draft, setDraft] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [busy, setBusy] = useState(null)
+  const [probing, setProbing] = useState(null)
+  const [suggesting, setSuggesting] = useState(null)
+  const [probeResults, setProbeResults] = useState({})
+  const [result, setResult] = useState(null)
+  const [runs, setRuns] = useState(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  // 축 속성정의 캐시 {typeId: [defs]} (null=로딩 전/중).
+  const [axisProps, setAxisProps] = useState({})
+  const loadingAxis = useRef(new Set())
+  function ensureAxisProps(id) {
+    id = Number(id)
+    if (!id || loadingAxis.current.has(id)) return
+    loadingAxis.current.add(id)
+    setAxisProps((p) => ({ ...p, [id]: p[id] ?? null }))
+    listTypeProperties(id)
+      .then((res) => setAxisProps((p) => ({ ...p, [id]: res.items || [] })))
+      .catch(() => setAxisProps((p) => ({ ...p, [id]: [] })))
+  }
+  // draft 의 각 스트림 대상 축 속성을 미리 로드.
+  useEffect(() => {
+    if (!draft) return
+    for (const st of draft.streams) if (st.target_type_id) ensureAxisProps(st.target_type_id)
+  }, [draft])
+
+  function openNew() {
+    setSelectedId('new')
+    setDraft(blankDraft())
+    setResult(null)
+    setRuns(null)
+    setProbeResults({})
+  }
+  async function openEdit(id) {
+    setSelectedId(id)
+    setResult(null)
+    setRuns(null)
+    setProbeResults({})
+    try {
+      setDraft(draftFromSource(await getDataSource(id)))
+    } catch (err) {
+      toast.error(err?.response?.data?.message || '소스를 불러오지 못했습니다.')
+      setSelectedId(null)
+    }
+  }
+  function closeEditor() {
+    setSelectedId(null)
+    setDraft(null)
+    setResult(null)
+    setRuns(null)
+  }
+  function set(field, value) {
+    setDraft((d) => ({ ...d, [field]: value }))
+  }
+  function setStream(i, next) {
+    setDraft((d) => ({ ...d, streams: d.streams.map((s, j) => (j === i ? next : s)) }))
+  }
+  function addStream() {
+    setDraft((d) => ({ ...d, streams: [...d.streams, blankStream()] }))
+  }
+  function removeStream(i) {
+    setDraft((d) => ({ ...d, streams: d.streams.filter((_, j) => j !== i) }))
+  }
+
+  async function save() {
+    if (!draft.name.trim()) return toast.error('이름을 입력하세요.')
+    if (draft.streams.length === 0) return toast.error('스트림을 하나 이상 추가하세요.')
+    if (draft.streams.some((s) => !Number(s.target_type_id)))
+      return toast.error('모든 스트림에 대상 축을 선택하세요.')
+    setSaving(true)
+    try {
+      const body = {
+        name: draft.name.trim(),
+        enabled: draft.enabled,
+        config: draftToConfig(draft),
+        schedule_kind: draft.schedule_kind,
+        interval_minutes: draft.schedule_kind === 'interval' ? Number(draft.interval_minutes) : null,
+      }
+      if (selectedId === 'new') {
+        const created = await createDataSource({ kind: 'rest_json', ...body })
+        toast.success('데이터소스를 등록했습니다.')
+        reload()
+        openEdit(created.id)
+      } else {
+        await updateDataSource(selectedId, body)
+        toast.success('저장했습니다.')
+        reload()
+      }
+    } catch (err) {
+      toast.error(err?.response?.data?.message || '저장에 실패했습니다.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function doProbe(streamIndex) {
+    setProbing(streamIndex)
+    try {
+      const connection = draftToConnection(draft)
+      const stream = streamToConfig(draft.streams[streamIndex])
+      const res = await probeDataSource(connection, stream)
+      setProbeResults((p) => ({ ...p, [streamIndex]: res }))
+      toast.success(`레코드 ${res.record_count}건 · 필드 ${res.fields.length}개`)
+    } catch (err) {
+      toast.error(err?.response?.data?.message || '응답을 가져오지 못했습니다.')
+    } finally {
+      setProbing(null)
+    }
+  }
+
+  async function doSuggest(i) {
+    const st = draft.streams[i]
+    const sample = probeResults[i]?.sample?.[0]
+    if (!Number(st.target_type_id)) return toast.error('대상 축을 먼저 선택하세요.')
+    if (!sample) return toast.error('먼저 샘플 조회를 하세요.')
+    setSuggesting(i)
+    try {
+      const res = await suggestMapping(Number(st.target_type_id), sample)
+      setStream(i, {
+        ...st,
+        value_path: res.value_path || st.value_path,
+        prop_paths: { ...st.prop_paths, ...(res.property_map || {}) },
+        relation_rows:
+          res.relation_map && res.relation_map.length
+            ? res.relation_map.map((r) => ({ relation: r.relation, target_type: r.target_type, path: r.path }))
+            : st.relation_rows,
+      })
+      const n = Object.keys(res.property_map || {}).length
+      toast.success(`AI 매핑 제안 (${res.source === 'llm' ? 'LLM' : '자동 추정'}) — 속성 ${n}개 채움. 확인 후 저장하세요.`)
+    } catch (err) {
+      toast.error(err?.response?.data?.message || '자동 매핑에 실패했습니다.')
+    } finally {
+      setSuggesting(null)
+    }
+  }
+
+  async function doAction(kind) {
+    if (selectedId === 'new') return toast.error('먼저 저장한 뒤 실행하세요.')
+    setBusy(kind)
+    setResult(null)
+    try {
+      const res = kind === 'preview' ? await previewDataSource(selectedId) : await syncDataSource(selectedId)
+      setResult({ kind, ...res })
+      if (kind === 'sync') {
+        toast.success('동기화 완료.')
+        reload()
+      }
+    } catch (err) {
+      toast.error(err?.response?.data?.message || '실행에 실패했습니다.')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function loadRuns() {
+    setBusy('runs')
+    try {
+      const res = await listSyncRuns(selectedId)
+      setRuns(res.items || [])
+    } catch (err) {
+      toast.error(err?.response?.data?.message || '이력을 불러오지 못했습니다.')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function doDelete() {
+    try {
+      await deleteDataSource(selectedId)
+      toast.success('삭제했습니다.')
+      closeEditor()
+      reload()
+    } catch (err) {
+      toast.error(err?.response?.data?.message || '삭제에 실패했습니다.')
+    }
+  }
+
+  if (!isAdmin) {
+    return (
+      <div className="p-6">
+        <PageHeader title="외부 시스템 연계" description="데이터 커넥터" />
+        <ErrorState
+          title="권한 없음"
+          description="시스템 관리자만 접근할 수 있습니다."
+          action={
+            <Button asChild variant="outline">
+              <Link to="/">홈으로</Link>
+            </Button>
+          }
+        />
+      </div>
+    )
+  }
+
+  return (
+    <div className="p-6 space-y-4 max-w-5xl">
+      <PageHeader
+        title="외부 시스템 연계"
+        description="외부 시스템(커넥션)을 한 번 등록하고, 그 아래 여러 스트림(엔드포인트→축 매핑)을 둡니다. 대상 축을 고르면 속성이 자동으로 뜨고, ‘샘플 조회’한 응답의 키가 경로칸 자동완성으로 나옵니다."
+      />
+
+      {selectedId === null ? (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Network className="h-4 w-4" /> 데이터소스
+                </CardTitle>
+                <CardDescription>등록된 외부 연계 목록</CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="ghost" size="sm" onClick={reload} disabled={loading}>
+                  <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                </Button>
+                <Button size="sm" onClick={openNew}>
+                  <Plus className="mr-1 h-4 w-4" /> 새 소스
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <p className="py-8 text-center text-sm text-muted-foreground">불러오는 중…</p>
+            ) : error ? (
+              <ErrorState description={error.message} onRetry={reload} />
+            ) : sources.length === 0 ? (
+              <p className="py-12 text-center text-sm text-muted-foreground">
+                등록된 데이터소스가 없습니다. “새 소스”로 외부 API 를 연결하세요.
+              </p>
+            ) : (
+              <div className="divide-y rounded-md border">
+                {sources.map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => openEdit(s.id)}
+                    className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left hover:bg-muted/40"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium truncate">{s.name}</span>
+                        {!s.enabled && (
+                          <Badge variant="outline" className="text-xs">
+                            비활성
+                          </Badge>
+                        )}
+                        <Badge variant="secondary" className="text-xs">
+                          스트림 {s.config?.streams?.length ?? 0}
+                        </Badge>
+                        {s.schedule_kind === 'interval' && (
+                          <Badge variant="outline" className="text-xs">
+                            주기 {s.interval_minutes}분
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="text-xs text-muted-foreground truncate">{s.config?.connection?.base_url || '—'}</div>
+                    </div>
+                    <div className="flex flex-col items-end gap-0.5 whitespace-nowrap">
+                      <div className="flex items-center gap-2">
+                        <StatusBadge status={s.last_status} />
+                        <span className="text-xs text-muted-foreground">
+                          {s.last_run_at ? s.last_run_at.slice(0, 16).replace('T', ' ') : '미실행'}
+                        </span>
+                      </div>
+                      {s.schedule_kind === 'interval' && s.next_run_at && (
+                        <span className="text-xs text-muted-foreground">
+                          다음 {s.next_run_at.slice(0, 16).replace('T', ' ')}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      ) : (
+        draft && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <Button variant="ghost" size="sm" onClick={closeEditor}>
+                <XIcon className="mr-1 h-4 w-4" /> 목록으로
+              </Button>
+              {selectedId !== 'new' && (
+                <Button variant="ghost" size="sm" className="text-red-600" onClick={() => setConfirmDelete(true)}>
+                  <Trash2 className="mr-1 h-4 w-4" /> 삭제
+                </Button>
+              )}
+            </div>
+
+            {/* 커넥션(접속) */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">커넥션 (접속 — 모든 스트림 공유)</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs">이름</Label>
+                    <Input value={draft.name} onChange={(e) => set('name', e.target.value)} placeholder="사내 PLM" />
+                  </div>
+                  <div className="flex items-end">
+                    <label className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" checked={draft.enabled} onChange={(e) => set('enabled', e.target.checked)} />
+                      활성
+                    </label>
+                  </div>
+                  <div className="col-span-2">
+                    <Label className="text-xs">Base URL</Label>
+                    <Input value={draft.base_url} onChange={(e) => set('base_url', e.target.value)} placeholder="https://plm.corp" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">인증</Label>
+                    <select
+                      value={draft.auth_type}
+                      onChange={(e) => set('auth_type', e.target.value)}
+                      className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                    >
+                      <option value="none">없음</option>
+                      <option value="bearer">Bearer 토큰</option>
+                      <option value="api_key">API Key 헤더</option>
+                      <option value="basic">Basic</option>
+                    </select>
+                  </div>
+                </div>
+
+                {draft.auth_type === 'bearer' && (
+                  <div>
+                    <Label className="text-xs">토큰 {draft.has_secret && '(저장됨 — 비우면 유지)'}</Label>
+                    <Input
+                      type="password"
+                      value={draft.auth_token}
+                      onChange={(e) => set('auth_token', e.target.value)}
+                      placeholder={draft.has_secret ? '••••••• (변경 시에만 입력)' : ''}
+                    />
+                  </div>
+                )}
+                {draft.auth_type === 'api_key' && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label className="text-xs">헤더 이름</Label>
+                      <Input value={draft.auth_header} onChange={(e) => set('auth_header', e.target.value)} />
+                    </div>
+                    <div>
+                      <Label className="text-xs">키 {draft.has_secret && '(저장됨 — 비우면 유지)'}</Label>
+                      <Input
+                        type="password"
+                        value={draft.auth_token}
+                        onChange={(e) => set('auth_token', e.target.value)}
+                        placeholder={draft.has_secret ? '•••••••' : ''}
+                      />
+                    </div>
+                  </div>
+                )}
+                {draft.auth_type === 'basic' && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label className="text-xs">사용자</Label>
+                      <Input value={draft.auth_username} onChange={(e) => set('auth_username', e.target.value)} />
+                    </div>
+                    <div>
+                      <Label className="text-xs">비밀번호 {draft.has_secret && '(저장됨 — 비우면 유지)'}</Label>
+                      <Input
+                        type="password"
+                        value={draft.auth_password}
+                        onChange={(e) => set('auth_password', e.target.value)}
+                        placeholder={draft.has_secret ? '•••••••' : ''}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* 스케줄 */}
+                <div className="grid grid-cols-2 gap-3 border-t pt-3">
+                  <div>
+                    <Label className="text-xs">동기화 스케줄</Label>
+                    <select
+                      value={draft.schedule_kind}
+                      onChange={(e) => set('schedule_kind', e.target.value)}
+                      className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                    >
+                      <option value="manual">수동 (지금 동기화만)</option>
+                      <option value="interval">주기 자동</option>
+                    </select>
+                  </div>
+                  {draft.schedule_kind === 'interval' && (
+                    <div>
+                      <Label className="text-xs">주기(분)</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={draft.interval_minutes}
+                        onChange={(e) => set('interval_minutes', e.target.value)}
+                      />
+                    </div>
+                  )}
+                </div>
+                {draft.schedule_kind === 'interval' && (
+                  <p className="text-xs text-muted-foreground">
+                    저장하면 약 {draft.interval_minutes}분마다 자동 동기화됩니다. (운영에서 스케줄러·워커가 켜져
+                    있어야 실제 실행됩니다.)
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* 스트림들 */}
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-medium text-muted-foreground">
+                스트림 (엔드포인트 → 축 매핑) · 위에서부터 순서대로 동기화
+              </h3>
+              <Button variant="outline" size="sm" onClick={addStream}>
+                <Plus className="mr-1 h-4 w-4" /> 스트림 추가
+              </Button>
+            </div>
+            {draft.streams.map((st, i) => (
+              <StreamEditor
+                key={i}
+                stream={st}
+                index={i}
+                axes={axes}
+                axisDefs={st.target_type_id ? axisProps[Number(st.target_type_id)] ?? null : []}
+                relationTypes={relationTypes}
+                onChange={setStream}
+                onRemove={removeStream}
+                onProbe={doProbe}
+                probing={probing === i}
+                probeResult={probeResults[i]}
+                onSuggest={doSuggest}
+                suggesting={suggesting === i}
+              />
+            ))}
+
+            {/* 액션 */}
+            <Card>
+              <CardContent className="space-y-3 pt-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button onClick={save} disabled={saving}>
+                    {saving && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
+                    저장
+                  </Button>
+                  <Button variant="outline" onClick={() => doAction('preview')} disabled={busy === 'preview' || selectedId === 'new'}>
+                    {busy === 'preview' ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Eye className="mr-1 h-4 w-4" />}
+                    미리보기(dry-run)
+                  </Button>
+                  <Button onClick={() => doAction('sync')} disabled={busy === 'sync' || selectedId === 'new'}>
+                    {busy === 'sync' ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Play className="mr-1 h-4 w-4" />}
+                    지금 동기화
+                  </Button>
+                  <Button variant="ghost" onClick={loadRuns} disabled={busy === 'runs' || selectedId === 'new'}>
+                    <History className="mr-1 h-4 w-4" /> 이력
+                  </Button>
+                </div>
+
+                {(result?.kind === 'preview' || result?.kind === 'sync') && (
+                  <div className="rounded-md border bg-muted/30 p-3">
+                    <p className="mb-1 text-sm font-medium">{result.kind === 'preview' ? '미리보기 결과' : '동기화 결과'}</p>
+                    <SummaryLine summary={result.summary} />
+                    <div className="mt-2 space-y-1">
+                      {(result.streams || []).map((sr, i) => (
+                        <div key={i} className="text-xs">
+                          <span className="font-medium">
+                            {sr.label} · {axisName[sr.target_type_id] || `축#${sr.target_type_id}`}
+                          </span>
+                          {sr.error ? (
+                            <span className="text-red-600"> — 오류: {sr.error}</span>
+                          ) : (
+                            <span className="text-muted-foreground">
+                              {' '}
+                              — 생성 {sr.summary.create} · 갱신 {sr.summary.update} · 오류 {sr.summary.error} · 링크{' '}
+                              {sr.summary.linked}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {runs && (
+                  <div className="rounded-md border">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/40 text-xs text-muted-foreground">
+                        <tr>
+                          <th className="px-2 py-1.5 text-left">시각</th>
+                          <th className="px-2 py-1.5 text-left">상태</th>
+                          <th className="px-2 py-1.5 text-left">트리거</th>
+                          <th className="px-2 py-1.5 text-left">결과</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {runs.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} className="px-2 py-4 text-center text-muted-foreground">
+                              이력이 없습니다.
+                            </td>
+                          </tr>
+                        ) : (
+                          runs.map((r) => (
+                            <tr key={r.id} className="border-t">
+                              <td className="px-2 py-1.5 whitespace-nowrap">{r.started_at?.slice(0, 16).replace('T', ' ')}</td>
+                              <td className="px-2 py-1.5">
+                                <StatusBadge status={r.status} />
+                              </td>
+                              <td className="px-2 py-1.5 text-xs text-muted-foreground">{r.triggered_by}</td>
+                              <td className="px-2 py-1.5 text-xs text-muted-foreground">
+                                {r.error
+                                  ? r.error.slice(0, 60)
+                                  : r.summary
+                                    ? `생성 ${r.summary.create} · 갱신 ${r.summary.update} · 오류 ${r.summary.error}`
+                                    : '—'}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        )
+      )}
+
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title="데이터소스 삭제"
+        description="이 데이터소스와 동기화 이력을 삭제합니다. 이미 온톨로지에 채워진 객체는 지워지지 않습니다. 되돌릴 수 없습니다."
+        variant="destructive"
+        confirmLabel="삭제"
+        onConfirm={doDelete}
+      />
+    </div>
+  )
+}

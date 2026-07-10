@@ -40,6 +40,7 @@ import AccountsAdminPage from '@/modules/admin/AccountsAdminPage'
 import UserSpaceAdminPage from '@/modules/admin/UserSpaceAdminPage'
 import ServerPage from '@/modules/admin/ServerPage'
 import OrphanFilesAdminPage from '@/modules/admin/OrphanFilesAdminPage'
+import ConnectorsAdminPage from '@/modules/connectors/ConnectorsAdminPage'
 import DashboardMetricsAdminPage from '@/modules/admin/DashboardMetricsAdminPage'
 import EntitiesAdminPage from '@/modules/entities/EntitiesAdminPage'
 import EntityExplorePage from '@/modules/entities/EntityExplorePage'
@@ -177,6 +178,7 @@ const router = createBrowserRouter(
         <Route path="/admin/user-spaces" element={<UserSpaceAdminPage />} />
         <Route path="/admin/entities" element={<EntitiesAdminPage />} />
         <Route path="/admin/orphan-files" element={<OrphanFilesAdminPage />} />
+        <Route path="/admin/connectors" element={<ConnectorsAdminPage />} />
         <Route path="/admin/dashboard-metrics" element={<DashboardMetricsAdminPage />} />
         <Route path="/server" element={<ServerPage />} />
 

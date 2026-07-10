@@ -230,6 +230,28 @@ export async function llmAuthorReport(
 }
 
 /**
+ * 검색 '질문하기'·'에이전트' 답변을 구조화 보고서 초안으로 저장(report_authoring
+ * 권한 필요). 서버가 2차 LLM 패스로 위젯(본문·표·차트)을 만들어 작성자 개인 공간에
+ * drafting 초안을 생성한다. 반환: { report, warnings, url }. signal 로 중단.
+ */
+export async function createReportFromAnswer({
+  question = '',
+  answer,
+  citations = [],
+  objects = [],
+  includeSources = true,
+  signal,
+} = {}) {
+  // llm-author 와 동일하게 LLM 호출이 느려 이 호출만 길게(10분) 잡는다.
+  const res = await apiClient.post(
+    `${BASE}/from-answer`,
+    { question, answer, citations, objects, include_sources: includeSources },
+    { timeout: 600000, signal },
+  )
+  return extractData(res)
+}
+
+/**
  * 연결된 local LLM 으로 현재 문서의 위젯 '단락 구분'(section)을 자동 지정
  * (report_authoring 권한 필요). overwrite=true 면 기존 수동 지정도 재지정,
  * false 면 빈 위젯만. 본인 작성 중(drafting) 보고서에 적용 → 성공 시 reload.

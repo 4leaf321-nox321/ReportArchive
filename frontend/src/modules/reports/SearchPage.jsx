@@ -3,6 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom'
 import {
   Search,
   FileText,
+  FilePlus2,
   Loader2,
   Sparkles,
   Type,
@@ -12,7 +13,11 @@ import {
 import { Input } from '@/shared/components/ui/input'
 import { Button } from '@/shared/components/ui/button'
 import { Markdown } from '@/shared/components/Markdown'
-import { searchReports, semanticSearchReports } from '@/modules/reports/api'
+import {
+  searchReports,
+  semanticSearchReports,
+  createReportFromAnswer,
+} from '@/modules/reports/api'
 import { ObjectSearch } from '@/modules/entities/ObjectSearch'
 import { askAi, askAgent } from '@/shared/api/ai'
 import { useAuth } from '@/shared/auth/AuthContext'
@@ -91,6 +96,10 @@ export default function SearchPage() {
   // RAG Q&A — 권한(ai_features)이 있을 때만 "질문하기" 모드 노출.
   const { me } = useAuth()
   const hasRagQa = !!me?.ai_features?.includes('rag_qa')
+  // 답변을 보고서로 저장(2차 LLM 패스) — report_authoring 권한이 있을 때만 노출.
+  const canAuthorReport = !!me?.ai_features?.includes('report_authoring')
+  const [savingReport, setSavingReport] = useState(false)
+  const [saveError, setSaveError] = useState(null)
   const isAsk = mode === 'ask'
   const isAgent = mode === 'agent'
   const isAskLike = isAsk || isAgent // LLM 호출 모드(질문하기·에이전트) 공통
@@ -246,6 +255,29 @@ export default function SearchPage() {
     askAbortRef.current?.abort()
   }, [])
 
+  // 현재 답변을 구조화 보고서 초안으로 저장 → 생성된 초안으로 이동.
+  const saveAsReport = useCallback(async () => {
+    if (!askResult?.answer || savingReport) return
+    setSavingReport(true)
+    setSaveError(null)
+    try {
+      const draft = await createReportFromAnswer({
+        question: input.trim(),
+        answer: askResult.answer,
+        citations: askResult.citations || [],
+        objects: askResult.objects || [],
+      })
+      if (draft?.url) navigate(draft.url)
+      else setSaveError('보고서는 생성됐지만 이동 주소를 받지 못했습니다.')
+    } catch (e) {
+      setSaveError(
+        e?.response?.data?.message || e?.message || '보고서 저장에 실패했습니다.',
+      )
+    } finally {
+      setSavingReport(false)
+    }
+  }, [askResult, savingReport, input, navigate])
+
   const results = data?.results ?? []
   const total = data?.total ?? 0
   // 의미 검색은 오프셋 페이지네이션이 없다(서버가 상위 N개만 RRF로 반환).
@@ -390,6 +422,32 @@ export default function SearchPage() {
               </p>
             ) : (
               <div className="rounded-lg border bg-card p-4">
+                {canAuthorReport && (
+                  <div className="mb-3 flex items-center justify-end gap-2">
+                    {saveError && (
+                      <span className="text-[11px] text-destructive">{saveError}</span>
+                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={saveAsReport}
+                      disabled={savingReport}
+                      title="이 답변을 표·차트 등 위젯 보고서 초안으로 저장합니다"
+                    >
+                      {savingReport ? (
+                        <>
+                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                          보고서 생성 중…
+                        </>
+                      ) : (
+                        <>
+                          <FilePlus2 className="mr-1.5 h-3.5 w-3.5" />
+                          보고서로 저장
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                )}
                 {askResult.seeds?.length > 0 && (
                   <div className="mb-3 flex flex-wrap items-center gap-1.5">
                     <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground">

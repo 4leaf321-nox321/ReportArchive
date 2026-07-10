@@ -1345,6 +1345,208 @@ async def llm_author_report(
     )
 
 
+class AnswerToReportRequest(BaseModel):
+    """검색 '질문하기'·'에이전트' 답변을 보고서 초안으로 저장할 때의 입력."""
+
+    question: str = Field(default="", max_length=2000)
+    answer: str = Field(..., min_length=1)
+    # 근거 인용/객체 — 프롬프트 컨텍스트 + (옵션) 출처 섹션에 쓴다. 느슨한 dict.
+    citations: list[dict] = Field(default_factory=list)
+    objects: list[dict] = Field(default_factory=list)
+    include_sources: bool = True
+
+
+# 검색 답변을 담는 전용 빈 호스트 템플릿(blocks:[]). 모든 위젯은 extra_blocks 로.
+_AI_ANSWER_TEMPLATE_ID = "__ai_answer__"
+
+
+def _ensure_ai_answer_template(db: Session):
+    """답변→보고서용 빈 템플릿(멱등 get-or-create). 전사 공개·게시·최신."""
+    from app.modules.templates.models import Template
+
+    tpl = template_services.get_template(db, _AI_ANSWER_TEMPLATE_ID, 1)
+    if tpl:
+        return tpl
+    tpl = Template(
+        template_id=_AI_ANSWER_TEMPLATE_ID,
+        version=1,
+        name="AI 답변",
+        description="검색 답변을 보고서로 저장할 때 쓰는 빈 템플릿(모든 위젯은 추가 블록).",
+        category="misc",
+        schema={"version": "widget-v1", "blocks": []},
+        owner_workspace_slugs=None,
+        is_published=True,
+        is_latest=True,
+        created_by_user_id=None,
+    )
+    db.add(tpl)
+    db.commit()
+    db.refresh(tpl)
+    return tpl
+
+
+@router.post("/from-answer")
+async def create_report_from_answer(
+    payload: AnswerToReportRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """검색 '질문하기'·'에이전트' 답변을 **구조화 보고서 초안**으로 저장한다.
+    답변+근거를 2차 LLM 패스에 넣어 위젯(제목·본문·표·차트)으로 재구성하고, 빈
+    템플릿에 extra_blocks 로 붙여 create_ai_draft 경로로 개인 공간 초안을 만든다.
+    게이트·취소·재시도·토큰초과 처리는 llm-author 와 동일하다."""
+    import json
+    from app.ai.entitlements import ai_enabled_for
+    from app.ai.jsonio import extract_json
+    from app.ai.llm import LLMCancelled, LLMContextError, LLMError, chat_cancellable
+    from app.config import settings
+
+    token_limit_msg = (
+        "AI가 만들 내용이 모델의 토큰(컨텍스트) 한도를 초과했습니다. 답변이 너무 길면 "
+        "핵심만 남기거나, 관리자에게 모델 토큰 한도 확대를 요청하세요."
+    )
+    if not ai_enabled_for(db, actor.user, "report_authoring"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "보고서 작성(AI) 권한이 없습니다.")
+    if actor.workspace.virtual:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "가상 워크스페이스에선 보고서를 만들 수 없습니다."
+        )
+
+    _ensure_ai_answer_template(db)
+    palette_types = {
+        "heading", "rich_text", "bulleted_list", "key_value", "table", "chart", "pie",
+    }
+    rules = authoring_rules.rules_for_types(palette_types)
+
+    # 근거 출처(프롬프트 컨텍스트 + 옵션 출처 섹션) — 번호·제목·스니펫.
+    src_lines: list[str] = []
+    for c in payload.citations[:12]:
+        if not isinstance(c, dict):
+            continue
+        n = c.get("n") or len(src_lines) + 1
+        title = c.get("title") or c.get("report_id") or ""
+        snippet = (c.get("snippet") or "").strip().replace("\n", " ")
+        src_lines.append(f"[{n}] {title} — {snippet[:200]}")
+    sources_text = "\n".join(src_lines)
+
+    system = (
+        "당신은 사내 보고서 작성 어시스턴트다. 주어진 '질문'과 'AI 답변'(+근거)을 읽고 "
+        "그 내용을 **보고서 위젯으로 재구성**해 **JSON 으로만**(코드블록 없이) 답하라.\n"
+        '형식: {"title": "제목", "extra_blocks": [{"id": "고유키", "type": "위젯타입", '
+        '"props"?: {...}, "content": ...}]}\n\n'
+        "규칙:\n"
+        "- 반드시 extra_blocks 로 위젯을 직접 만들어 내용을 채운다(빈 결과 금지).\n"
+        "- 제목·소제목은 heading, 서술은 rich_text, 나열은 bulleted_list, 키-값은 "
+        "key_value, 표는 table 로.\n"
+        "- 답변에 **수치·비교·추세 데이터가 있으면 chart(막대/선) 또는 pie 로 시각화**"
+        "하라. 단, **답변/근거에 없는 수치를 지어내지 말 것** — 데이터가 없으면 차트 "
+        "대신 서술/표로만.\n"
+        "- 표/차트는 props.columns 로 열을 정의한다. 위젯 content 형식은 [위젯 룰]을 "
+        "정확히 따른다.\n"
+        + (
+            "- 마지막에 heading '출처' + 근거 목록을 bulleted_list 로 넣어라.\n"
+            if payload.include_sources and sources_text
+            else ""
+        )
+        + f"\n[위젯 룰]\n{rules[:6000]}"
+    )
+    user_base = (
+        f"[질문]\n{payload.question or '(질문 없음)'}\n\n[AI 답변]\n{payload.answer}\n"
+        + (f"\n[근거 출처]\n{sources_text}\n" if sources_text else "")
+    )
+
+    max_attempts = max(1, settings.llm_author_max_attempts)
+    last_error = "알 수 없는 오류"
+    for attempt in range(1, max_attempts + 1):
+        if await request.is_disconnected():
+            return error_response("보고서 저장이 취소되었습니다.", status_code=499)
+        msg = user_base
+        if attempt > 1:
+            msg += (
+                f"\n\n[직전 시도가 다음 이유로 실패 — 고쳐서 JSON 만 다시 출력]\n"
+                f"{last_error}\n위젯 content 형식을 정확히 지키고, 코드블록 없이 JSON "
+                "객체만 출력하세요."
+            )
+        try:
+            res = await chat_cancellable(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": msg},
+                ],
+                max_tokens=settings.llm_author_max_tokens,
+                json_mode=settings.llm_author_json_mode,
+                should_cancel=request.is_disconnected,
+            )
+        except LLMCancelled:
+            return error_response("보고서 저장이 취소되었습니다.", status_code=499)
+        except LLMContextError as exc:
+            logger.warning("from-answer 토큰(컨텍스트) 초과: %s", exc)
+            return error_response(token_limit_msg, status_code=502)
+        except LLMError as exc:
+            return error_response(f"보고서 생성 실패(LLM 호출): {exc}", status_code=502)
+
+        finish_reason = getattr(res, "finish_reason", None)
+        truncated = (finish_reason or "").lower() == "length"
+        parsed = extract_json(res.content)
+        if truncated and parsed is None:
+            return error_response(token_limit_msg, status_code=502)
+        if parsed is None:
+            last_error = "응답에서 유효한 JSON 객체를 찾지 못함."
+            continue
+
+        # 빈 템플릿이라 모든 위젯은 extra_block — blocks(dict)에 잘못 넣은 위젯도 살린다.
+        raw_extra = list(parsed.get("extra_blocks") or [])
+        raw_blocks = parsed.get("blocks")
+        if isinstance(raw_blocks, dict):
+            for bid, val in raw_blocks.items():
+                if isinstance(val, dict) and val.get("type"):
+                    raw_extra.append(
+                        {
+                            "id": str(bid),
+                            "type": val.get("type"),
+                            "props": val.get("props") or {},
+                            "content": val.get("content", val),
+                        }
+                    )
+        if not raw_extra:
+            last_error = (
+                "위젯을 하나도 만들지 않았습니다. extra_blocks 로 최소 한 개 위젯을 "
+                "만들어 답변 내용을 채우세요."
+            )
+            continue
+
+        title = (parsed.get("title") or payload.question or "AI 답변 보고서").strip()
+        draft = AiDraftCreate(
+            template_id=_AI_ANSWER_TEMPLATE_ID,
+            template_version=1,
+            title=(title or "AI 답변 보고서")[:255],
+            extra_blocks=raw_extra,
+        )
+        try:
+            result = create_ai_draft(draft, db, actor)
+        except Exception as exc:  # noqa: BLE001 — 스키마/적용 예외도 재시도 대상
+            db.rollback()
+            last_error = f"적용 오류: {exc}"
+            continue
+        code = getattr(result, "status_code", 200)
+        if code < 400:
+            return result  # 성공 — {report, warnings, url}
+        if code in (403, 404, 409):
+            return result
+        db.rollback()
+        try:
+            body = json.loads(bytes(result.body))
+            last_error = body.get("message") or "검증 실패"
+        except Exception:  # noqa: BLE001
+            last_error = "검증 실패"
+
+    return error_response(
+        f"{max_attempts}회 시도 후에도 보고서 형식을 맞추지 못했습니다: {last_error}",
+        status_code=502,
+    )
+
+
 class LlmSectionsRequest(BaseModel):
     # True=모든 위젯 재지정(기존 수동 지정도 교체), False=단락구분 없는 위젯만.
     overwrite: bool = False

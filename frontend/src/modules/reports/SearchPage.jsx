@@ -11,6 +11,8 @@ import {
   Network,
   SlidersHorizontal,
   Wand2,
+  ShieldCheck,
+  AlertTriangle,
 } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Button } from '@/shared/components/ui/button'
@@ -117,7 +119,8 @@ export default function SearchPage() {
   // rerank/hyde 요청별 토글 — 서버 기본값으로 초기화(안 만지면 기본대로).
   const [rerankMode, setRerankMode] = useState(false)
   const [hydeMode, setHydeMode] = useState(false)
-  const [askOpts, setAskOpts] = useState(null) // {rerank_available, hyde_available}
+  const [verifyMode, setVerifyMode] = useState(false)
+  const [askOpts, setAskOpts] = useState(null) // {rerank_available, hyde_available, verify_available}
   // 엔티티 태그 필터(D-2) — 본문/의미 검색을 메타데이터로 좁힌다("본문 X AND 모델=A1234").
   // 키워드·의미 두 모드 모두 적용.
   const [entityFilter, setEntityFilter] = useState([])
@@ -154,6 +157,7 @@ export default function SearchPage() {
         setAskOpts(o)
         setRerankMode(!!o.rerank)
         setHydeMode(!!o.hyde)
+        setVerifyMode(!!o.verify)
       })
       .catch(() => {})
     return () => {
@@ -257,7 +261,7 @@ export default function SearchPage() {
         ? await askAgent({ query: q, signal: controller.signal })
         : await askAi({
             query: q, graph: graphMode,
-            rerank: rerankMode, hyde: hydeMode,
+            rerank: rerankMode, hyde: hydeMode, verify: verifyMode,
             signal: controller.signal,
           })
       setAskResult(res)
@@ -275,7 +279,7 @@ export default function SearchPage() {
       askAbortRef.current = null
       setAskLoading(false)
     }
-  }, [input, askLoading, graphMode, rerankMode, hydeMode, isAgent])
+  }, [input, askLoading, graphMode, rerankMode, hydeMode, verifyMode, isAgent])
 
   const cancelAsk = useCallback(() => {
     askAbortRef.current?.abort()
@@ -445,6 +449,21 @@ export default function SearchPage() {
             가상답변 검색
           </label>
         )}
+        {isAsk && askOpts?.verify_available && (
+          <label
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs"
+            title="답변의 각 주장이 인용 출처에 실제로 뒷받침되는지 AI가 검증합니다 — 환각 차단, 응답이 조금 느려집니다"
+          >
+            <input
+              type="checkbox"
+              checked={verifyMode}
+              onChange={(e) => setVerifyMode(e.target.checked)}
+              className="h-3 w-3"
+            />
+            <ShieldCheck className="h-3.5 w-3.5" />
+            근거 검증
+          </label>
+        )}
         <span className="text-xs text-muted-foreground">{activeHint}</span>
       </div>
 
@@ -549,6 +568,50 @@ export default function SearchPage() {
                 <Markdown className="text-sm leading-relaxed">
                   {askResult.answer}
                 </Markdown>
+                {askResult.verification?.claims?.length > 0 && (
+                  <details className="mt-3 border-t pt-3" open={askResult.verification.unsupported > 0}>
+                    <summary className="flex cursor-pointer items-center gap-1.5 text-[11px] font-medium">
+                      {askResult.verification.unsupported > 0 ? (
+                        <span className="inline-flex items-center gap-1 text-amber-600">
+                          <AlertTriangle className="h-3.5 w-3.5" />
+                          근거 검증 — 근거 불충분 {askResult.verification.unsupported}건
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-emerald-600">
+                          <ShieldCheck className="h-3.5 w-3.5" />
+                          근거 검증 — 모든 주장이 출처로 뒷받침됨
+                        </span>
+                      )}
+                    </summary>
+                    <ul className="mt-1.5 flex flex-col gap-1.5">
+                      {askResult.verification.claims.map((c, i) => (
+                        <li key={i} className="flex items-start gap-2 text-[11px]">
+                          {c.supported ? (
+                            <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                          ) : (
+                            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+                          )}
+                          <span className="min-w-0">
+                            <span className={c.supported ? '' : 'text-amber-700'}>
+                              {c.text}
+                            </span>
+                            {c.supported && c.source != null && (
+                              <span className="ml-1 text-muted-foreground">[{c.source}]</span>
+                            )}
+                            {c.supported && c.quote && (
+                              <span className="mt-0.5 block border-l-2 pl-2 text-muted-foreground">
+                                “{c.quote}”
+                              </span>
+                            )}
+                            {!c.supported && (
+                              <span className="ml-1 text-amber-600">— 출처에서 확인 안 됨</span>
+                            )}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
                 {askResult.trace?.length > 0 && (
                   <details className="mt-3 border-t pt-3">
                     <summary className="cursor-pointer text-[11px] font-medium text-muted-foreground">

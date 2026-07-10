@@ -64,6 +64,15 @@ _DECOMPOSE_SYSTEM = (
 )
 # 별칭 확장 시 질문에 덧붙일 표기 상한(질의 폭주 방지).
 _MAX_ALIAS_TERMS = 12
+# 근거 검증 — 답변의 각 주장이 출처에 뒷받침되는지 사후 판정.
+_VERIFY_SYSTEM = (
+    "너는 엄격한 팩트체커다. [답변]의 각 주장이 [출처]에 실제로 적혀 있어 "
+    "뒷받침되는지만 판정하라. 출처에 없으면 supported=false(추론·상식으로 채우지 "
+    "말 것). 각 주장마다 뒷받침되면 supported=true·출처번호(source)·출처에서 근거가 "
+    "되는 문장(quote)을 원문 그대로. 출력은 JSON 하나만:\n"
+    '{"claims":[{"text":"주장","supported":true,"source":2,"quote":"근거 문장"}]}\n'
+    "설명 없이 JSON 만 출력하라."
+)
 
 _SYSTEM = (
     "당신은 사내 CAE 보고서 아카이브 어시스턴트다. 아래 [출처]에 있는 내용만 "
@@ -332,6 +341,64 @@ def _alias_expand_enabled() -> bool:
     return bool(store.get("rag_alias_expand_enabled"))
 
 
+def _verify_enabled(override: Optional[bool] = None) -> bool:
+    """근거 검증 on 여부. mock 이면 무효. override(요청별) 우선, 없으면 설정 기본값."""
+    from app.config import settings
+    from app.modules.app_settings import store
+
+    if (settings.llm_backend or "mock").lower() == "mock":
+        return False
+    if override is not None:
+        return bool(override)
+    return bool(store.get("rag_verify_enabled"))
+
+
+def _verify(answer: str, blocks: list[str]) -> Optional[dict]:
+    """답변의 각 주장을 출처(blocks)와 대조 → {claims:[{text,supported,source,quote}],
+    unsupported}. 보강 레이어라 mock/오류/파싱실패면 None(답변은 그대로 나간다)."""
+    import json
+
+    if not (answer or "").strip() or not blocks:
+        return None
+    try:
+        res = chat([
+            {"role": "system", "content": _VERIFY_SYSTEM},
+            {"role": "user", "content": f"[출처]\n" + "\n\n".join(blocks) + f"\n\n[답변]\n{answer}"},
+        ])
+    except Exception:  # noqa: BLE001 — 보강 레이어, 어떤 실패든 검증 생략
+        return None
+    if getattr(res, "backend", "") == "mock":
+        return None
+    m = re.search(r"\{.*\}", res.content or "", re.DOTALL)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(0))
+    except (ValueError, TypeError):
+        return None
+    claims: list[dict] = []
+    for c in (data.get("claims") if isinstance(data, dict) else None) or []:
+        if not isinstance(c, dict):
+            continue
+        text = str(c.get("text", "")).strip()
+        if not text:
+            continue
+        src_n = c.get("source")
+        try:
+            src_n = int(src_n) if src_n is not None else None
+        except (ValueError, TypeError):
+            src_n = None
+        claims.append({
+            "text": text,
+            "supported": bool(c.get("supported")),
+            "source": src_n,
+            "quote": str(c.get("quote", "")).strip(),
+        })
+    if not claims:
+        return None
+    return {"claims": claims, "unsupported": sum(1 for c in claims if not c["supported"])}
+
+
 def _parse_json_list(text: str) -> list[str]:
     """LLM 응답에서 JSON 문자열 배열 추출. 실패 시 []."""
     import json
@@ -563,10 +630,11 @@ def _finalize(
 def ask_archive(
     db: Session, actor, query: str, *, limit: int = 8, graph: bool = False,
     rerank: Optional[bool] = None, hyde: Optional[bool] = None,
+    verify: Optional[bool] = None,
 ) -> dict:
     """질문 → {answer, citations, no_evidence, seeds, ...}. actor 는 검색 권한
     scope 용(.user.id 기반 가시 보고서). 기능 권한 게이트는 호출부에서 이미 통과.
-    graph=True 면 GraphRAG(온톨로지 그래프 근거 블렌드). rerank/hyde=요청별 override."""
+    graph=True 면 GraphRAG(온톨로지 그래프 근거 블렌드). rerank/hyde/verify=요청별 override."""
     from app.ai import structured_qa
 
     routed = structured_qa.maybe_answer(db, actor, query)
@@ -580,7 +648,12 @@ def ask_archive(
     q, citations, blocks, seeds = retrieved
     # LLM 호출 — 실패(LLMError)는 위로 전파(라우트가 502). 검색·앱은 무영향.
     res = chat(_qa_messages(q, blocks))
-    return _finalize(res.content or "", citations, res, seeds=seeds)
+    result = _finalize(res.content or "", citations, res, seeds=seeds)
+    if _verify_enabled(verify):
+        v = _verify(result["answer"], blocks)
+        if v:
+            result["verification"] = v
+    return result
 
 
 async def ask_archive_cancellable(
@@ -592,6 +665,7 @@ async def ask_archive_cancellable(
     graph: bool = False,
     rerank: Optional[bool] = None,
     hyde: Optional[bool] = None,
+    verify: Optional[bool] = None,
     should_cancel: Optional[CancelCheck] = None,
 ) -> dict:
     """ask_archive 의 비동기·취소 가능 버전(라우트가 클라이언트 연결 끊김을
@@ -609,4 +683,9 @@ async def ask_archive_cancellable(
         return retrieved
     q, citations, blocks, seeds = retrieved
     res = await chat_cancellable(_qa_messages(q, blocks), should_cancel=should_cancel)
-    return _finalize(res.content or "", citations, res, seeds=seeds)
+    result = _finalize(res.content or "", citations, res, seeds=seeds)
+    if _verify_enabled(verify):
+        v = _verify(result["answer"], blocks)  # 검증 LLM 콜(취소 후 폴백은 _verify 내부)
+        if v:
+            result["verification"] = v
+    return result

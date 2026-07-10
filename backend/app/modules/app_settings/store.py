@@ -55,6 +55,12 @@ REGISTRY: dict[str, dict] = {
                 "(개수는 계산이라 정확). 신호어 있을 때만 AI 1콜. 불확실하면 일반 검색 폴백.",
         "requires_reindex": False,
     },
+    "rag_verify_enabled": {
+        "type": "bool", "group": "답변 신뢰", "label": "근거 검증 기본값",
+        "desc": "생성된 답변의 각 주장이 인용 출처에 실제로 뒷받침되는지 검증하고 "
+                "미달 주장을 표시(답변당 AI 1콜). 사용자 질문별 override 가능.",
+        "requires_reindex": False,
+    },
     "seed_link_min_score": {
         "type": "float", "group": "온톨로지 링킹", "label": "질문→씨앗 의미 임계",
         "min": 0.0, "max": 1.0, "step": 0.01,

@@ -31,14 +31,15 @@ export async function chatAiDiag({ prompt, reasoningEffort = null }) {
  *   작성자·날짜, 그래프 근거엔 연결 객체(objects)·graph 플래그가 실린다.
  */
 export async function askAi({
-  query, limit = 8, graph = false, rerank, hyde, signal,
+  query, limit = 8, graph = false, rerank, hyde, verify, signal,
 } = {}) {
   // signal: AbortController.signal — 사용자가 "중단"하면 요청을 끊고, 서버도
   // 연결 끊김을 감지해 LLM 생성을 멈춘다.
-  // rerank/hyde: 요청별 override. 지정 안 하면(undefined) 서버 기본값을 쓴다.
+  // rerank/hyde/verify: 요청별 override. 지정 안 하면(undefined) 서버 기본값.
   const body = { query, limit, graph }
   if (rerank !== undefined && rerank !== null) body.rerank = rerank
   if (hyde !== undefined && hyde !== null) body.hyde = hyde
+  if (verify !== undefined && verify !== null) body.verify = verify
   const res = await apiClient.post('/api/ai/ask', body, { signal })
   return extractData(res)
 }

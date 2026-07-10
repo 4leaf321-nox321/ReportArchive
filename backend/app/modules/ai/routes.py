@@ -114,9 +114,10 @@ class AskPayload(BaseModel):
     limit: int = Field(default=8, ge=1, le=20)
     # graph=True → GraphRAG: 온톨로지 그래프 근거를 순수 벡터와 블렌드(GraphRAG_설계.md).
     graph: bool = False
-    # rerank/hyde: 요청별 override(None=서버 설정 기본값). 사용자가 질문마다 켜고 끔.
+    # rerank/hyde/verify: 요청별 override(None=서버 설정 기본값). 질문마다 켜고 끔.
     rerank: bool | None = None
     hyde: bool | None = None
+    verify: bool | None = None
 
 
 @router.post("/ask")
@@ -145,7 +146,7 @@ async def ask(
     try:
         data = await qa.ask_archive_cancellable(
             db, actor, payload.query, limit=payload.limit, graph=payload.graph,
-            rerank=payload.rerank, hyde=payload.hyde,
+            rerank=payload.rerank, hyde=payload.hyde, verify=payload.verify,
             should_cancel=request.is_disconnected,
         )
     except LLMCancelled:
@@ -168,8 +169,10 @@ def ask_options(actor=Depends(get_current_user)):
         "graph": False,  # graph 는 순수 요청별(서버 기본 off)
         "rerank": bool(store.get("rag_rerank_enabled")),
         "hyde": bool(store.get("rag_hyde_enabled")),
+        "verify": bool(store.get("rag_verify_enabled")),
         "rerank_available": llm_ready,
         "hyde_available": llm_ready,
+        "verify_available": llm_ready,
     })
 
 

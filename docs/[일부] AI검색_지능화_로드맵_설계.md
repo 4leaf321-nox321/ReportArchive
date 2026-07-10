@@ -1,7 +1,7 @@
 # AI 검색 지능화 로드맵 — 다음 7개 개선안
 
 > 진행: **1(재랭킹) v0.90.0 · 2 HyDE v0.91.0 완료. 재랭킹·HyDE 요청별 토글 노출
-> v0.92.0**. **2 전체 완료(HyDE·분해·별칭 확장 v0.94).** 3~7 미구현.
+> v0.92.0**. **2 완료(v0.94) · 3 집계 v1(v0.95) · 4 근거검증(v0.96).** 5~7 미구현.
 > 별건 완료: **런타임 관리자 설정 저장소 v0.93.0** — app_settings 테이블(p75) +
 > store(타입드 REGISTRY·.env 기본값+DB override·45초 캐시) + 관리자 API
 > (/api/ai/settings) + "검색 튜닝" 탭. index-time 노브(chunk_link_*)는 '재색인 필요'
@@ -133,6 +133,13 @@
 ---
 
 ## 4. 답변 근거 검증 (faithfulness) + 문장 단위 하이라이트
+
+> 상태: **구현 완료 (v0.96.0)** — `qa._verify`/`_verify_enabled`, 설정
+> `rag_verify_enabled`(기본 off) + 요청별 override(AskPayload.verify, 프론트 "근거
+> 검증" 체크박스). 답변 생성 후 검증 LLM 패스: 각 주장이 출처에 뒷받침되는지 판정
+> → {claims:[{text,supported,source,quote}], unsupported}. 미달 주장 경고 + 근거
+> 문장(quote) 표시. mock/오류/파싱실패 시 검증 생략(답변은 그대로). ask_archive
+> (_cancellable) 에서 _finalize 뒤 부착. 집계 라우팅 경로는 검증 안 함(개수는 계산값).
 
 **문제.** LLM이 출처에 없는 내용을 그럴듯하게 지어낼 수 있다(환각). 인용도
 청크(문단) 단위라 "정확히 어느 문장이 근거인지"는 사용자가 다시 찾아야 한다.

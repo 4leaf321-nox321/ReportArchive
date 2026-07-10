@@ -139,6 +139,10 @@ class Settings(BaseSettings):
     # (개수는 계산=환각 없음). 집계 신호어 있을 때만 LLM 로 파라미터 추출(비용 bound).
     # **기본 OFF**. mock/불확실/실패 시 일반 RAG 로 폴백.
     rag_aggregate_routing_enabled: bool = Field(default=False)
+    # RAG Q&A 근거 검증 — 생성된 답변의 각 주장이 인용 출처에 실제로 뒷받침되는지
+    # 사후 LLM 검증(환각 차단). 미달 주장 표시 + 근거 문장. **기본 OFF**(답변당 LLM 1콜
+    # 추가). mock/실패 시 검증 생략(답변은 그대로). 사용자 질문별 override 가능.
+    rag_verify_enabled: bool = Field(default=False)
     # 보고서 저장/수정 시 자동으로 embed_report 잡을 적재할지. **기본 OFF** — pgvector
     # 확장·report_chunks·워커가 모두 준비된 환경에서만 켠다(.env 로 true). 안 그러면
     # 임베딩 미배포(p47만 배포 등) 상태에서 실패 잡이 쌓인다.

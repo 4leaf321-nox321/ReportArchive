@@ -1,7 +1,14 @@
 # system 객체 확장 — user·report 온톨로지 투영 설계 (A0.3 후속)
 
-> 상태: **스텝1(파생 투영) 구현됨** (2026-07-10, 마이그 p71) · 스텝2(수동 관계)·스텝3(자동
-> 채우기) 미구현. A0.3의 잔여 = system 객체가 부서(dept)까지만 투영된 것을 **user·report** 로 확장.
+> 상태: **스텝1(파생 투영, p71) + 스텝2 일부(led_by, p72) 구현됨** (2026-07-10) · 스텝2 잔여
+> (supersedes/cites 보고서간)·스텝3(자동 채우기) 미구현. A0.3 잔여 = dept까지만 투영된 것을
+> **user·report** 로 확장.
+>
+> **스텝2(수동 관계) — led_by 구현:** 마이그 p72 `led_by`(과제→user) 시드. add_object_link+
+> resolve_object(user) 재사용(엔티티 src→user system dst). 프론트 RelationsDialog: 도착축이
+> user 면 **사용자 검색 Combobox**(searchUsers, 이름·이메일)로 담당 PL 지정 → object_link.
+> 테스트 test_led_by_object_link(생성·조회·축제약). **supersedes/cites(report↔report)는 report
+> 측 UI + system-src 링크 라우트가 필요해 후속.**
 >
 > **스텝1 구현물:** user/report system 축 + 파생 관계 시드(p71). `resolve_object(db,type,id,actor=)`
 > — user(라벨=이름, email 비노출)·**report(가시성 게이트: actor 없음/권한 밖 → None)**.

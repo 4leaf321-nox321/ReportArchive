@@ -61,6 +61,8 @@ import { useAsync } from '@/shared/hooks/useAsync'
 import { searchReports } from '@/modules/reports/api'
 import { listWorkspaces } from '@/shared/api/workspaces'
 import { WorkspaceCombobox } from '@/shared/components/WorkspaceCombobox'
+import { Combobox } from '@/shared/components/Combobox'
+import { searchUsers } from '@/shared/api/members'
 import {
   addEntityAlias,
   addEntityRelation,
@@ -1649,6 +1651,7 @@ function RelationsDialog({ type, entity, onClose }) {
   // A0.3 스텝2 — system 축(부서 등) + cross-kind 링크(object_links).
   const [sysAxes, setSysAxes] = useState(() => new Set())
   const [orgWorkspaces, setOrgWorkspaces] = useState([])
+  const [userOptions, setUserOptions] = useState([]) // led_by 등 user 대상 picker
   const [objectLinks, setObjectLinks] = useState([])
 
   useEffect(() => {
@@ -1673,6 +1676,17 @@ function RelationsDialog({ type, entity, onClose }) {
         ),
       )
       .catch(() => setOrgWorkspaces([]))
+    // led_by 등 user 대상 관계용 — 사용자 목록(이름·이메일로 검색·구분).
+    searchUsers({ limit: 300 })
+      .then((res) =>
+        setUserOptions(
+          (res ?? []).map((u) => ({
+            value: String(u.id),
+            label: u.email ? `${u.name} (${u.email})` : u.name,
+          })),
+        ),
+      )
+      .catch(() => setUserOptions([]))
   }, [])
 
   async function reloadLinks() {
@@ -1883,18 +1897,33 @@ function RelationsDialog({ type, entity, onClose }) {
                 </option>
               ))}
             </select>
-            {dstSysType ? (
-              // 도착축이 system(부서) — 다른 부서 선택 GUI 와 동일한 검색+트리
-              // 콤보박스. 고르면 즉시 링크 생성(value 는 항상 비워 "추가" 모드).
+            {dstSysType === 'dept' ? (
+              // 도착축이 부서(system) — 부서 선택 콤보박스. 고르면 즉시 링크 생성.
               <div className="flex-1">
                 <WorkspaceCombobox
                   workspaces={orgWorkspaces}
                   value=""
-                  onChange={(slug) => slug && addObjectTarget(dstSysType, slug)}
+                  onChange={(slug) => slug && addObjectTarget('dept', slug)}
                   disabled={submitting || orgWorkspaces.length === 0}
                   placeholder="담당 부서 선택..."
                 />
               </div>
+            ) : dstSysType === 'user' ? (
+              // 도착축이 사용자(system) — led_by(담당 PL) 등. 사용자 검색 콤보박스.
+              <div className="flex-1">
+                <Combobox
+                  options={userOptions}
+                  value=""
+                  onChange={(uid) => uid && addObjectTarget('user', String(uid))}
+                  disabled={submitting || userOptions.length === 0}
+                  placeholder="담당자 선택..."
+                  searchPlaceholder="이름·이메일 검색..."
+                />
+              </div>
+            ) : dstSysType ? (
+              <p className="flex-1 text-xs text-muted-foreground">
+                이 관계의 대상({dstSysType})은 아직 이 화면에서 지정할 수 없습니다.
+              </p>
             ) : (
               <div className="relative flex-1">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />

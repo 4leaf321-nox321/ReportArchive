@@ -106,3 +106,38 @@ def test_objects_route_user_and_report():
     data = rr.json()["data"]
     assert data["object"]["type"] == "report"
     assert "derived" in data  # 파생 관계 포함
+
+
+def test_led_by_object_link():
+    """스텝2 수동 관계 — 과제(project) → 담당 PL(user) object_link 생성·조회."""
+    import uuid as _uuid
+
+    c = TestClient(app)
+    sfx = _uuid.uuid4().hex[:8]
+    # project 축 id.
+    types = c.get("/api/entity-types", headers=ADMIN).json()["data"]["items"]
+    proj_axis = next((t["id"] for t in types if t["slug"] == "project"), None)
+    assert proj_axis, "project 축 시드 누락"
+
+    pid = link_id = None
+    try:
+        pid = c.post("/api/entities", headers=ADMIN,
+                     json={"type_id": proj_axis, "value": "PL과제-" + sfx}).json()["data"]["id"]
+        # led_by → user 2 (담당 PL).
+        r = c.post(f"/api/entities/{pid}/object-links", headers=ADMIN,
+                   json={"dst_type": "user", "dst_id": "2", "relation": "led_by"})
+        assert r.status_code == 201, r.text
+        # 조회 — led_by → user 링크가 뜬다.
+        items = c.get(f"/api/entities/{pid}/object-links", headers=ADMIN).json()["data"]["items"]
+        led = [x for x in items if x["relation"] == "led_by"]
+        assert led and led[0]["target"]["type"] == "user", items
+        link_id = led[0]["link_id"]
+        # 축 제약 위반 — led_by 대상은 user 여야(dept 는 거부).
+        bad = c.post(f"/api/entities/{pid}/object-links", headers=ADMIN,
+                     json={"dst_type": "dept", "dst_id": "dx", "relation": "led_by"})
+        assert bad.status_code == 400, bad.text
+    finally:
+        if pid and link_id:
+            c.delete(f"/api/entities/{pid}/object-links/{link_id}", headers=ADMIN)
+        if pid:
+            c.delete(f"/api/entities/{pid}", headers=ADMIN)

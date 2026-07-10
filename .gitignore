@@ -84,3 +84,6 @@ deploy/ai_offline/
 Thumbs.db
 desktop.ini
 *.log
+
+# RAG 평가 골든셋(배포별 데이터 — example 만 커밋)
+backend/eval/golden_qa.json

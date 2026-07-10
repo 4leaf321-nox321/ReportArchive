@@ -1,0 +1,19 @@
+{
+  "_comment": "RAG 평가 골든셋 — 이 파일을 golden_qa.json 으로 복사해 '이 배포의' 실제 질문과 기대 보고서 id 로 채우세요. report_id 는 배포마다 다릅니다.",
+  "cases": [
+    {
+      "id": "q1",
+      "query": "낙하 시험에서 실패한 사례",
+      "expect_report_ids": [101, 205],
+      "expect_entities": ["낙하 시험"],
+      "graph": false
+    },
+    {
+      "id": "q2",
+      "query": "배터리 셀 용량 개선 결과",
+      "expect_report_ids": [312],
+      "expect_entities": ["배터리"],
+      "graph": true
+    }
+  ]
+}

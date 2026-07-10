@@ -1,7 +1,8 @@
 # AI 검색 지능화 로드맵 — 다음 7개 개선안
 
 > 진행: **1(재랭킹) v0.90.0 · 2 HyDE v0.91.0 완료. 재랭킹·HyDE 요청별 토글 노출
-> v0.92.0**. **2(v0.94)·3집계v1(v0.95)·4근거검증(v0.96)·5다중홉(v0.97) 완료.** 6·7 미구현.
+> v0.92.0**. **2(v0.94)·3집계v1(v0.95)·4근거검증(v0.96)·5다중홉(v0.97)·7평가(v0.98) 완료.**
+> 6(랭킹신호) 미구현. 3의 v2(group-by/compare) 여지.
 > 별건 완료: **런타임 관리자 설정 저장소 v0.93.0** — app_settings 테이블(p75) +
 > store(타입드 REGISTRY·.env 기본값+DB override·45초 캐시) + 관리자 API
 > (/api/ai/settings) + "검색 튜닝" 탭. index-time 노브(chunk_link_*)는 '재색인 필요'
@@ -209,6 +210,14 @@ retrieve/aggregate/expand 도구를 주고 LLM이 **스스로 여러 번 검색*
 ---
 
 ## 7. 평가 하네스 — 튜닝의 토대 (먼저 깔면 좋음)
+
+> 상태: **구현 완료 (v0.98.0)** — `app/ai/eval.py`(recall@k·precision@k·MRR·
+> seed_recall 순수 함수 + evaluate_case/run_eval, `qa._retrieve` 로 파이프라인 랭킹
+> 추출) + `scripts/eval_rag.py` CLI(--user/--k/--graph/--rerank/--hyde, 설정 조합
+> 비교·--json 전후 저장) + `eval/golden_qa.example.json`·`eval/README.md`. 골든셋은
+> 배포별 데이터라 example 만 커밋(working 파일 gitignore). dev mock 은 검색 비결정적→
+> 숫자는 운영에서 유의미, 지표 계산은 tests/test_eval.py 로 결정적 검증(seed_recall 은
+> dev 에서도 측정됨). **다음: 실제 사용 로그 질문·클릭을 골든셋으로 승격.**
 
 **문제.** dev 임베딩이 mock이라 임계값(0.45·0.5·top-k…)을 **감으로** 정하고
 운영에서만 발현된다. 위 1~6 어느 것도 "좋아졌는지"를 **측정**할 수단이 없다.

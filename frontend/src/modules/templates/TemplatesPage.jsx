@@ -307,7 +307,7 @@ export default function TemplatesPage() {
                 // 시스템 관리자에게만 모든 사용자의 개인(비공개) 템플릿을
                 // 한 칸으로 묶어 노출(일반 사용자는 자기 것뿐이라 숨김).
                 showPrivate={isSysAdmin}
-                className="sticky top-6 w-44 shrink-0 self-start border-r pr-2"
+                className="sticky top-6 w-52 shrink-0 self-start border-r pr-2"
               />
               {/* ── 좌측: 템플릿 목록 (sticky) ── */}
               <aside className="sticky top-6 w-64 shrink-0 self-start">
@@ -732,7 +732,7 @@ function CompositePresetsPanel({
           mineLabel="개인 (내 양식)"
           emptyOrgText="조직 양식이 없습니다."
           showPrivate={isAdmin}
-          className="sticky top-6 w-44 shrink-0 self-start border-r pr-2"
+          className="sticky top-6 w-52 shrink-0 self-start border-r pr-2"
         />
         <div className="min-w-0 flex-1">
           {filtered.length === 0 ? (

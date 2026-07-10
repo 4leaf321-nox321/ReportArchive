@@ -98,7 +98,11 @@
 
 ## 3. 집계 / 구조화 질의 라우팅 — 팔란티어 차별점 ★
 
-> 상태: **v1 구현 완료 (v0.95.0)** — `app/ai/structured_qa.py :: maybe_answer`,
+> 상태: **v1(v0.95.0) + v2 group-by/compare(v0.101.0) 완료.** v2 = 차원별 분해:
+> `aggregate_grouped(...group_by='year'|축slug)` → groups[{label,count}]. LLM 추출에
+> group_by 추가, `_execute_grouped`, 프론트 SearchPage CSS 막대 렌더. 그룹 합==총계 검증.
+>
+> v1: `app/ai/structured_qa.py :: maybe_answer`,
 > 설정 `rag_aggregate_routing_enabled`(기본 off). 흐름: 신호어 휴리스틱 게이트 →
 > LLM 추출{aggregate,intent,target,filters,year} → 필터 문자열을 link_query_entities
 > 로 해석 → 가시성∩entity_filter_report_ids(rollup)∩연도 = base → count/list.

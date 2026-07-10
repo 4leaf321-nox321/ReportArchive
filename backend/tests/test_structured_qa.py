@@ -55,3 +55,27 @@ def test_extract_parse_and_non_aggregate(monkeypatch):
         assert sq.maybe_answer(db, _actor(), "이거 몇 개나 되나 궁금") is None
     finally:
         db.close()
+
+
+def test_grouped_sum_equals_total():
+    """group-by 그룹 합 == v1 총계 (실 데이터). report_entities 없으면 스킵."""
+    from sqlalchemy import func, select
+    from app.ai import structured_qa as sq
+    from app.database import SessionLocal
+    from app.modules.entities.models import Entity, ReportEntity
+
+    db = SessionLocal()
+    try:
+        row = db.execute(
+            select(ReportEntity.entity_id, func.count())
+            .group_by(ReportEntity.entity_id).order_by(func.count().desc()).limit(1)
+        ).first()
+        if not row:
+            return
+        ent = db.get(Entity, row[0])
+        v1 = sq.aggregate(db, _actor(), [ent.value], None, "report")
+        g = sq.aggregate_grouped(db, _actor(), [ent.value], None, "report", "year")
+        assert g is not None and g["grouped"] is True
+        assert sum(x["count"] for x in g["groups"]) == v1["count"]
+    finally:
+        db.close()

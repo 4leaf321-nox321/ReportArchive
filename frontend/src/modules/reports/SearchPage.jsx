@@ -568,6 +568,32 @@ export default function SearchPage() {
                 <Markdown className="text-sm leading-relaxed">
                   {askResult.answer}
                 </Markdown>
+                {askResult.aggregate?.groups?.length > 0 && (
+                  <div className="mt-3 space-y-1.5 border-t pt-3">
+                    <p className="text-[11px] font-medium text-muted-foreground">
+                      {askResult.aggregate.group_label}별 {askResult.aggregate.target_label}
+                    </p>
+                    {(() => {
+                      const gs = askResult.aggregate.groups
+                      const max = Math.max(1, ...gs.map((g) => g.count))
+                      return gs.map((g) => (
+                        <div key={g.label} className="flex items-center gap-2 text-xs">
+                          <span className="w-24 shrink-0 truncate text-right text-muted-foreground" title={g.label}>
+                            {g.label}
+                          </span>
+                          <span
+                            className="h-4 rounded bg-primary/70"
+                            style={{ width: `${(g.count / max) * 100}%`, minWidth: g.count ? '4px' : 0 }}
+                          />
+                          <span className="shrink-0 tabular-nums font-medium">
+                            {g.count}
+                            {askResult.aggregate.unit}
+                          </span>
+                        </div>
+                      ))
+                    })()}
+                  </div>
+                )}
                 {askResult.verification?.claims?.length > 0 && (
                   <details className="mt-3 border-t pt-3" open={askResult.verification.unsupported > 0}>
                     <summary className="flex cursor-pointer items-center gap-1.5 text-[11px] font-medium">

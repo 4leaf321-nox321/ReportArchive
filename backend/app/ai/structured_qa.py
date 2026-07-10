@@ -46,12 +46,15 @@ _EXTRACT_SYSTEM = (
     "비교)인지 판별하고, 그렇다면 구조화 파라미터를 뽑아라. 출력은 JSON 하나만.\n"
     '형식: {"aggregate": true|false, "intent": "count"|"list", '
     '"target": "report" 또는 아래 타입 slug 중 하나, '
-    '"filters": ["조건값", ...], "year": 정수 또는 null}\n'
+    '"filters": ["조건값", ...], "year": 정수 또는 null, '
+    '"group_by": null 또는 "year" 또는 축 slug}\n'
     "- aggregate=false 면 나머지는 무시된다(단순 조회/설명 질문).\n"
     "- target: 무엇을 세거나 나열하나. 보고서면 \"report\", 특정 축(과제·부품 등)의 "
     "값을 세면 그 축의 slug.\n"
     "- filters: 조건이 되는 값들(예: 시험종류·결과·모델명). 질문에 나온 표현 그대로.\n"
     "- year: 연도 조건(없으면 null).\n"
+    "- group_by: '연도별·부서별·종류별' 처럼 **쪼개서/비교해서** 세라면 그 기준"
+    "('year' 또는 축 slug), 아니면 null.\n"
     "설명 없이 JSON 만 출력하라."
 )
 
@@ -192,8 +195,163 @@ def aggregate(
     }
 
 
+def _resolve_target(db: Session, target: str):
+    """target slug → EntityType. 'report'/빈값 → None(보고서). 축인데 못 찾으면 ValueError."""
+    if not target or target == "report":
+        return None
+    types = {t.slug: t for t in list_types(db)}
+    tt = types.get(target) or next((t for t in types.values() if t.label == target), None)
+    if tt is None:
+        raise ValueError(f"unknown axis: {target}")
+    return tt
+
+
+def _count_for(db: Session, report_ids, tt):
+    """report_ids 의 (count, values). tt None → 보고서 수, 아니면 그 축 distinct 값 수."""
+    if not report_ids:
+        return 0, []
+    if tt is None:
+        return len(report_ids), []
+    values = list(db.execute(
+        select(Entity.value)
+        .join(ReportEntity, ReportEntity.entity_id == Entity.id)
+        .where(
+            ReportEntity.report_id.in_(report_ids),
+            Entity.type_id == tt.id,
+            Entity.status == EntityStatus.active,
+        ).distinct()
+    ).scalars().all())
+    return len(values), values
+
+
+def aggregate_grouped(
+    db: Session, actor, filters: list[str], year, target: str, group_by: str
+) -> Optional[dict]:
+    """차원(group_by='year' 또는 축 slug)으로 쪼갠 그룹별 집계(v2 group-by/compare).
+    반환 {grouped, groups:[{label,count}], group_label, target_label, unit, ...}. 실패 시 None."""
+    resolved = _resolve_filters(db, [str(x) for x in (filters or []) if str(x).strip()])
+    if resolved is None:
+        return None
+    ent_ids, filter_labels = resolved
+    try:
+        year = int(year) if year is not None else None
+    except (ValueError, TypeError):
+        year = None
+    base = _base_reports(db, actor, ent_ids, year)
+    try:
+        tt = _resolve_target(db, target)
+    except ValueError:
+        return None
+    unit = "개" if tt else "건"
+    target_label = tt.label if tt else "보고서"
+
+    groups: dict[str, set[int]] = {}
+    if group_by == "year":
+        group_label = "연도"
+        rows = db.execute(
+            select(Report.id, Report.report_date).where(Report.id.in_(base))
+        ).all() if base else []
+        for rid, rdate in rows:
+            groups.setdefault(str(rdate.year) if rdate else "미상", set()).add(rid)
+    else:
+        try:
+            gt = _resolve_target(db, group_by)
+        except ValueError:
+            return None
+        if gt is None:
+            return None  # group_by='report' 는 무의미
+        group_label = gt.label
+        rows = db.execute(
+            select(ReportEntity.report_id, Entity.value)
+            .join(Entity, Entity.id == ReportEntity.entity_id)
+            .where(
+                ReportEntity.report_id.in_(base),
+                Entity.type_id == gt.id,
+                Entity.status == EntityStatus.active,
+            )
+        ).all() if base else []
+        for rid, val in rows:
+            groups.setdefault(val, set()).add(rid)
+
+    out = [{"label": lbl, "count": _count_for(db, rids, tt)[0]}
+           for lbl, rids in groups.items()]
+    if group_by == "year":
+        out.sort(key=lambda g: g["label"])
+    else:
+        out.sort(key=lambda g: g["count"], reverse=True)
+    return {
+        "grouped": True, "groups": out, "group_label": group_label,
+        "target_label": target_label, "unit": unit,
+        "filters": filter_labels, "entity_ids": ent_ids, "year": year,
+        "report_ids": list(base),
+    }
+
+
+def _citations(db: Session, report_ids: list[int]) -> list[dict]:
+    """근거 보고서 인용(상한). 집계 답변 공통."""
+    cite_ids = list(report_ids)[:_MAX_CITATIONS]
+    if not cite_ids:
+        return []
+    meta = {
+        rid: (title, slug)
+        for rid, title, slug in db.execute(
+            select(Report.id, Report.title, Report.workspace_slug)
+            .where(Report.id.in_(cite_ids))
+        ).all()
+    }
+    out = []
+    for i, rid in enumerate(cite_ids, start=1):
+        title, slug = meta.get(rid, (None, None))
+        out.append({"n": i, "report_id": rid, "title": title,
+                    "workspace_slug": slug, "graph": True})
+    return out
+
+
+def _execute_grouped(db, actor, filters, spec, group_by) -> Optional[dict]:
+    """group-by/compare(v2) — 차원별 그룹 집계 + 막대 렌더용 groups 반환."""
+    agg = aggregate_grouped(
+        db, actor, filters, spec.get("year"), spec.get("target") or "report", group_by
+    )
+    if agg is None:
+        return None
+    filter_labels = agg["filters"]
+    year = agg["year"]
+    groups = agg["groups"]
+    tl, unit, glabel = agg["target_label"], agg["unit"], agg["group_label"]
+
+    cond_parts = list(filter_labels)
+    if year is not None:
+        cond_parts.append(f"{year}년")
+    cond = " · ".join(cond_parts) if cond_parts else "전체"
+
+    if not groups:
+        answer = f"조건({cond})에 해당하는 {tl}가 없습니다."
+    else:
+        lines = "\n".join(f"- {g['label']}: {g['count']}{unit}"
+                          for g in groups[:_MAX_LIST_PREVIEW])
+        answer = (f"조건({cond})에 해당하는 {tl}를 {glabel}별로 집계했습니다:\n{lines}"
+                  "\n\n(볼 수 있는 보고서 기준.)")
+    return {
+        "answer": answer,
+        "citations": _citations(db, agg["report_ids"]),
+        "no_evidence": False,
+        "seeds": [{"id": e, "value": lbl}
+                  for e, lbl in zip(agg["entity_ids"], filter_labels)],
+        "structured": True,
+        "aggregate": {
+            "intent": "group", "grouped": True, "group_label": glabel,
+            "groups": groups, "target_label": tl, "unit": unit,
+            "filters": filter_labels, "year": year,
+        },
+        "backend": "structured",
+    }
+
+
 def _execute(db: Session, actor, q: str, spec: dict) -> Optional[dict]:
     filters = [str(x) for x in (spec.get("filters") or []) if str(x).strip()]
+    group_by = (spec.get("group_by") or "").strip()
+    if group_by:
+        return _execute_grouped(db, actor, filters, spec, group_by)
     agg = aggregate(db, actor, filters, spec.get("year"), spec.get("target") or "report")
     if agg is None:
         return None  # 해석 실패 → RAG
@@ -224,31 +382,13 @@ def _execute(db: Session, actor, q: str, spec: dict) -> Optional[dict]:
         body = f"조건({cond})에 해당하는 {target_label}는 {count}{unit}입니다."
     answer = body + "\n\n(볼 수 있는 보고서 기준으로 집계했습니다.)"
 
-    # 근거 보고서 인용.
-    cite_ids = list(base)[:_MAX_CITATIONS]
-    citations = []
-    if cite_ids:
-        meta = {
-            rid: (title, slug)
-            for rid, title, slug in db.execute(
-                select(Report.id, Report.title, Report.workspace_slug)
-                .where(Report.id.in_(cite_ids))
-            ).all()
-        }
-        for i, rid in enumerate(cite_ids, start=1):
-            title, slug = meta.get(rid, (None, None))
-            citations.append({
-                "n": i, "report_id": rid, "title": title,
-                "workspace_slug": slug, "graph": True,
-            })
-
     seeds = [
         {"id": eid, "value": lab}
         for eid, lab in zip(ent_ids, filter_labels)
     ]
     return {
         "answer": answer,
-        "citations": citations,
+        "citations": _citations(db, list(base)),
         "no_evidence": False,
         "seeds": seeds,
         "structured": True,

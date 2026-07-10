@@ -84,11 +84,15 @@ _SYSTEM = (
 _CITE_RE = re.compile(r"\[(\d+)\]")
 
 
-def _blend(plain: list[dict], graph_hits: list[dict], limit: int) -> list[dict]:
+def _blend(
+    plain: list[dict], graph_hits: list[dict], limit: int,
+    boosts: Optional[dict] = None,
+) -> list[dict]:
     """순수 벡터 히트 + 그래프 근거 히트를 report_id 로 병합.
 
     그래프 히트는 rrf_score×_GRAPH_BOOST 로 끌어올리고 `graph=True` 로 표시한다.
-    양쪽에 있으면 graph=True + max(점수). 정렬 후 상위 `limit`."""
+    양쪽에 있으면 graph=True + max(점수). boosts(랭킹 신호=최신성·권위)가 오면 최종
+    점수에 곱한다(관련도 × 신호). 정렬 후 상위 `limit`."""
     by_id: dict[int, dict] = {}
     for h in plain:
         by_id[h["report_id"]] = {
@@ -105,8 +109,64 @@ def _blend(plain: list[dict], graph_hits: list[dict], limit: int) -> list[dict]:
                 cur["hit"] = h
         else:
             by_id[rid] = {"hit": h, "score": boosted, "graph": True}
+    if boosts:
+        for rid, x in by_id.items():
+            x["score"] *= boosts.get(rid, 1.0)
     ranked = sorted(by_id.values(), key=lambda x: x["score"], reverse=True)[:limit]
     return [{**x["hit"], "graph": x["graph"]} for x in ranked]
+
+
+# 권위 포화 상수 — 피인용 count/(count+K) 로 0..1 정규화(몇 건이면 이미 상당).
+_AUTHORITY_SATURATION = 3.0
+
+
+def _boost_value(recency: float, authority: float, w_rec: float, w_auth: float) -> float:
+    """관련도에 곱할 랭킹 신호 배수 = 1 + w_rec·recency + w_auth·authority. 순수(테스트용)."""
+    return 1.0 + w_rec * recency + w_auth * authority
+
+
+def _ranking_boosts(db: Session, report_ids: list[int]) -> dict[int, float]:
+    """report_id → 랭킹 신호 배수(최신성·권위). 가중치가 모두 0이면 {}(무효과 빠른 경로).
+
+    최신성 = 0.5**(경과일/반감기) ∈ (0,1]. 권위 = 피인용수/(피인용수+K) ∈ [0,1)."""
+    from app.modules.app_settings import store
+
+    w_rec = float(store.get("rag_recency_weight") or 0.0)
+    w_auth = float(store.get("rag_authority_weight") or 0.0)
+    if (w_rec <= 0 and w_auth <= 0) or not report_ids:
+        return {}
+    ids = list(report_ids)
+
+    recency: dict[int, float] = {}
+    if w_rec > 0:
+        from datetime import date
+
+        half = max(1, int(store.get("rag_recency_halflife_days") or 365))
+        today = date.today()
+        for rid, rdate in db.execute(
+            select(Report.id, Report.report_date).where(Report.id.in_(ids))
+        ).all():
+            if rdate is None:
+                continue
+            age = max(0, (today - rdate).days)
+            recency[rid] = 0.5 ** (age / half)
+
+    authority: dict[int, float] = {}
+    if w_auth > 0:
+        from sqlalchemy import func as safunc
+
+        from app.modules.reports.models import ReportLink
+        for rid, cnt in db.execute(
+            select(ReportLink.to_report_id, safunc.count())
+            .where(ReportLink.to_report_id.in_(ids))
+            .group_by(ReportLink.to_report_id)
+        ).all():
+            authority[rid] = cnt / (cnt + _AUTHORITY_SATURATION)
+
+    return {
+        rid: _boost_value(recency.get(rid, 0.0), authority.get(rid, 0.0), w_rec, w_auth)
+        for rid in ids
+    }
 
 
 def _hydrate_authors(db: Session, report_ids: list[int]) -> dict[int, dict]:
@@ -220,7 +280,10 @@ def _retrieve(
                     db, list(expanded_ids), actor, limit=pool,
                 )
 
-    hits = _blend(plain, graph_hits, pool)
+    # 랭킹 신호(최신성·권위) — 후보 보고서에 배수 계산(가중치 0이면 무효과).
+    cand_ids = {h["report_id"] for h in plain} | {h["report_id"] for h in graph_hits}
+    boosts = _ranking_boosts(db, list(cand_ids))
+    hits = _blend(plain, graph_hits, pool, boosts=boosts)
     if not hits:
         return {
             "answer": "관련 보고서를 찾지 못했습니다.",

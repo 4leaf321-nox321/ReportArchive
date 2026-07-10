@@ -143,6 +143,12 @@ class Settings(BaseSettings):
     # 사후 LLM 검증(환각 차단). 미달 주장 표시 + 근거 문장. **기본 OFF**(답변당 LLM 1콜
     # 추가). mock/실패 시 검증 생략(답변은 그대로). 사용자 질문별 override 가능.
     rag_verify_enabled: bool = Field(default=False)
+    # RAG 랭킹 신호 — 관련도 외에 최신성·권위를 가중. **기본 0(효과 없음)** — 켜면
+    # 관련도를 누를 위험이 있으니 평가 탭으로 전후 측정하며 조금씩 올린다.
+    # 최종점수 = 관련도 × (1 + w_recency·최신성 + w_authority·권위).
+    rag_recency_weight: float = Field(default=0.0)      # 최신성 가중(0=끔)
+    rag_recency_halflife_days: int = Field(default=365)  # 최신성 반감기(일)
+    rag_authority_weight: float = Field(default=0.0)     # 권위(피인용) 가중(0=끔)
     # 보고서 저장/수정 시 자동으로 embed_report 잡을 적재할지. **기본 OFF** — pgvector
     # 확장·report_chunks·워커가 모두 준비된 환경에서만 켠다(.env 로 true). 안 그러면
     # 임베딩 미배포(p47만 배포 등) 상태에서 실패 잡이 쌓인다.

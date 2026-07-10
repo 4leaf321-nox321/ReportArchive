@@ -87,6 +87,26 @@ REGISTRY: dict[str, dict] = {
         "desc": "한 문단이 연결될 객체 수 상한. **색인 시점 적용** — 재색인 필요.",
         "requires_reindex": True,
     },
+    "rag_recency_weight": {
+        "type": "float", "group": "랭킹 신호", "label": "최신성 가중",
+        "min": 0.0, "max": 2.0, "step": 0.1,
+        "desc": "최근 보고서를 순위에서 끌어올린다(0=끔). 관련도를 누를 수 있으니 "
+                "평가 탭으로 전후 측정하며 조금씩 올릴 것. 즉시 반영.",
+        "requires_reindex": False,
+    },
+    "rag_recency_halflife_days": {
+        "type": "int", "group": "랭킹 신호", "label": "최신성 반감기(일)",
+        "min": 30, "max": 3650, "step": 30,
+        "desc": "이 일수만큼 지나면 최신성 점수가 절반. 짧을수록 최근을 더 강조.",
+        "requires_reindex": False,
+    },
+    "rag_authority_weight": {
+        "type": "float", "group": "랭킹 신호", "label": "권위(피인용) 가중",
+        "min": 0.0, "max": 2.0, "step": 0.1,
+        "desc": "다른 보고서에 많이 인용된 보고서를 끌어올린다(0=끔). 평가로 측정하며 "
+                "조정. 즉시 반영.",
+        "requires_reindex": False,
+    },
 }
 
 _TTL = 45.0  # 초 — 재시작 없이 반영하되 요청마다 DB 히트는 피하는 절충

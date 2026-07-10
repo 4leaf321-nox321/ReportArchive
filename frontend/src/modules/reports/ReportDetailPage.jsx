@@ -94,6 +94,7 @@ import { uploadFile } from '@/shared/api/files'
 import { importPptx } from '@/shared/api/imports'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/components/ui/popover'
+import { WorkspaceTreeSelect } from '@/shared/components/WorkspaceTreeSelect'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -104,7 +105,6 @@ import {
 } from '@/shared/components/ui/dropdown-menu'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { ErrorState } from '@/shared/components/ErrorState'
-import { WorkspaceMultiSelect } from '@/shared/components/WorkspaceMultiSelect'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useAsync } from '@/shared/hooks/useAsync'
@@ -5403,13 +5403,9 @@ export default function ReportDetailPage() {
         sourceTitle={draft?.title ?? ''}
         templateId={draft?.pages?.[0]?.template_id ?? null}
         templateVersion={draft?.pages?.[0]?.template_version ?? null}
-        orgOptions={(me?.memberships ?? [])
-          .map((m) => m.workspace_slug)
-          .filter((s) => s && !s.startsWith('personal-'))
-          .map((slug) => ({
-            slug,
-            name: (workspaces ?? []).find((w) => w.slug === slug)?.name ?? slug,
-          }))}
+        orgWorkspaces={(workspaces ?? []).filter(
+          (w) => w.kind === 'org' && !w.virtual,
+        )}
         onConfirm={onSavePreset}
       />
 
@@ -6299,12 +6295,20 @@ function ReportSavePresetDialog({
   sourceTitle,
   templateId,
   templateVersion,
-  orgOptions,
+  orgWorkspaces,
   onConfirm,
 }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [scope, setScope] = useState('') // '' = 전사, 그 외 = workspace slug
+  // 공개 범위 = 소유 조직 slug 집합. 비어 있으면 전사 공개(모든 조직).
+  const [scopeSlugs, setScopeSlugs] = useState(() => new Set())
+  const toggleScope = (slug) =>
+    setScopeSlugs((prev) => {
+      const next = new Set(prev)
+      if (next.has(slug)) next.delete(slug)
+      else next.add(slug)
+      return next
+    })
   const [submitting, setSubmitting] = useState(false)
   const [templateName, setTemplateName] = useState('')
 
@@ -6313,7 +6317,7 @@ function ReportSavePresetDialog({
       const base = (sourceTitle ?? '').trim()
       setName(base ? `${base} 프리셋` : '')
       setDescription('')
-      setScope('')
+      setScopeSlugs(new Set())
       setSubmitting(false)
     }
   }, [open, sourceTitle])
@@ -6345,8 +6349,12 @@ function ReportSavePresetDialog({
     if (!trimmed) return
     setSubmitting(true)
     try {
-      // 전사 = null, 특정 조직 = [slug]
-      await onConfirm(trimmed, description.trim(), scope ? [scope] : null)
+      // 전사 = null, 특정 조직(들) = slug 배열
+      await onConfirm(
+        trimmed,
+        description.trim(),
+        scopeSlugs.size ? [...scopeSlugs] : null,
+      )
     } catch {
       setSubmitting(false)
     }
@@ -6398,24 +6406,17 @@ function ReportSavePresetDialog({
             />
           </div>
           <div className="space-y-1.5">
-            <label htmlFor="preset-scope" className="text-sm font-medium">
-              공개 범위
-            </label>
-            <select
-              id="preset-scope"
-              value={scope}
-              onChange={(e) => setScope(e.target.value)}
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-            >
-              <option value="">전사 공개 (모든 조직)</option>
-              {(orgOptions ?? []).map((o) => (
-                <option key={o.slug} value={o.slug}>
-                  {o.name}
-                </option>
-              ))}
-            </select>
+            <span className="text-sm font-medium">공개 범위</span>
+            <WorkspaceTreeSelect
+              orgWorkspaces={orgWorkspaces}
+              selected={scopeSlugs}
+              onToggle={toggleScope}
+              autoExpandSlugs={[...scopeSlugs]}
+              searchPlaceholder="부서명 / slug 검색 (비우면 트리 보기)"
+              maxHeightClass="max-h-52"
+            />
             <p className="text-[11px] text-muted-foreground">
-              특정 조직을 고르면 그 조직 트리에서만 이 프리셋이 보입니다.
+              고른 조직(들)의 트리에서만 이 프리셋이 보입니다. 아무 것도 고르지 않으면 전사 공개(모든 조직).
             </p>
           </div>
           <div className="flex justify-end gap-2">
@@ -7528,11 +7529,21 @@ function SaveAsTemplateDialog({
             {!isPrivate &&
               (isManager ? (
                 <>
-                  <WorkspaceMultiSelect
-                    value={ownerWs}
-                    onChange={setOwnerWs}
-                    workspaces={workspaces}
-                    myUserId={myUserId}
+                  <WorkspaceTreeSelect
+                    orgWorkspaces={(workspaces ?? []).filter(
+                      (w) => w.kind === 'org' && !w.virtual,
+                    )}
+                    selected={new Set(ownerWs)}
+                    onToggle={(slug) =>
+                      setOwnerWs((prev) =>
+                        prev.includes(slug)
+                          ? prev.filter((s) => s !== slug)
+                          : [...prev, slug],
+                      )
+                    }
+                    autoExpandSlugs={ownerWs}
+                    searchPlaceholder="부서명 / slug 검색 (비우면 트리 보기)"
+                    maxHeightClass="max-h-52"
                   />
                   <p className="text-[10px] text-muted-foreground">
                     여러 부서 선택 가능. 비워두면 전사 공유.

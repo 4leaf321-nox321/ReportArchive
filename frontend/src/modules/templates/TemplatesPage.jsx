@@ -31,6 +31,7 @@ import {
   ScopeCategorySidebar,
   useScopeCategories,
 } from '@/shared/components/ScopeCategories'
+import { WorkspaceTreeSelect } from '@/shared/components/WorkspaceTreeSelect'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Textarea } from '@/shared/components/ui/textarea'
@@ -875,7 +876,15 @@ function CompositePresetEditDialog({ preset, orgOptions, onClose, onSaved }) {
   const open = Boolean(preset)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [scope, setScope] = useState('') // '' = 전사
+  // 공개 범위 = 소유 조직 slug 집합. 비어 있으면 전사 공개.
+  const [scopeSlugs, setScopeSlugs] = useState(() => new Set())
+  const toggleScope = (wsSlug) =>
+    setScopeSlugs((prev) => {
+      const next = new Set(prev)
+      if (next.has(wsSlug)) next.delete(wsSlug)
+      else next.add(wsSlug)
+      return next
+    })
   const [groups, setGroups] = useState([]) // [{ id, name }]
   const [submitting, setSubmitting] = useState(false)
   const nextId = useRef(0)
@@ -884,7 +893,7 @@ function CompositePresetEditDialog({ preset, orgOptions, onClose, onSaved }) {
     if (!preset) return
     setName(preset.name ?? '')
     setDescription(preset.description ?? '')
-    setScope((preset.owner_workspace_slugs ?? [])[0] ?? '')
+    setScopeSlugs(new Set(preset.owner_workspace_slugs ?? []))
     nextId.current = 0
     setGroups(
       (preset.groups ?? []).map((g) => ({ id: nextId.current++, name: g })),
@@ -930,7 +939,7 @@ function CompositePresetEditDialog({ preset, orgOptions, onClose, onSaved }) {
       await updateCompositePreset(preset.id, {
         name: trimmedName,
         description: description.trim(),
-        owner_workspace_slugs: scope ? [scope] : null,
+        owner_workspace_slugs: scopeSlugs.size ? [...scopeSlugs] : null,
         groups: cleanGroups,
       })
       toast.success('양식이 수정되었습니다.')
@@ -978,22 +987,18 @@ function CompositePresetEditDialog({ preset, orgOptions, onClose, onSaved }) {
               />
             </div>
             <div className="space-y-1.5">
-              <label htmlFor="cp-edit-scope" className="text-sm font-medium">
-                공개 범위
-              </label>
-              <select
-                id="cp-edit-scope"
-                value={scope}
-                onChange={(e) => setScope(e.target.value)}
-                className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-              >
-                <option value="">전사 공개 (모든 조직)</option>
-                {(orgOptions ?? []).map((o) => (
-                  <option key={o.slug} value={o.slug}>
-                    {o.name}
-                  </option>
-                ))}
-              </select>
+              <span className="text-sm font-medium">공개 범위</span>
+              <WorkspaceTreeSelect
+                orgWorkspaces={orgOptions}
+                selected={scopeSlugs}
+                onToggle={toggleScope}
+                autoExpandSlugs={[...scopeSlugs]}
+                searchPlaceholder="부서명 / slug 검색 (비우면 트리 보기)"
+                maxHeightClass="max-h-52"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                고른 조직(들)의 트리에서만 이 양식이 보입니다. 비우면 전사 공개.
+              </p>
             </div>
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">

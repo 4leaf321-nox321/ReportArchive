@@ -13,7 +13,7 @@ import { PageHeader } from '@/shared/components/PageHeader'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { ScrollArea } from '@/shared/components/ui/scroll-area'
-import { WorkspaceMultiSelect } from '@/shared/components/WorkspaceMultiSelect'
+import { WorkspaceTreeSelect } from '@/shared/components/WorkspaceTreeSelect'
 import { useAsync } from '@/shared/hooks/useAsync'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
@@ -409,13 +409,24 @@ export default function TemplateEditorPage() {
                         (isManager ? (
                           <>
                             <div className="mt-2">
-                              <WorkspaceMultiSelect
-                                value={draft.owner_workspace_slugs}
-                                onChange={(next) =>
-                                  setDraft({ ...draft, owner_workspace_slugs: next })
-                                }
-                                workspaces={workspaces}
-                                myUserId={me?.user?.id}
+                              <WorkspaceTreeSelect
+                                orgWorkspaces={(workspaces ?? []).filter(
+                                  (w) => w.kind === 'org' && !w.virtual,
+                                )}
+                                selected={new Set(draft.owner_workspace_slugs ?? [])}
+                                onToggle={(wsSlug) => {
+                                  const cur = draft.owner_workspace_slugs ?? []
+                                  const next = cur.includes(wsSlug)
+                                    ? cur.filter((s) => s !== wsSlug)
+                                    : [...cur, wsSlug]
+                                  setDraft({
+                                    ...draft,
+                                    owner_workspace_slugs: next.length ? next : null,
+                                  })
+                                }}
+                                autoExpandSlugs={draft.owner_workspace_slugs ?? []}
+                                searchPlaceholder="부서명 / slug 검색 (비우면 트리 보기)"
+                                maxHeightClass="max-h-52"
                               />
                             </div>
                             <p className="mt-1 text-[10px] text-muted-foreground">

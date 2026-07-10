@@ -34,6 +34,7 @@ import { Skeleton } from '@/shared/components/ui/skeleton'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { SharePopover } from '@/shared/components/SharePopover'
 import { ErrorState } from '@/shared/components/ErrorState'
+import { WorkspaceTreeSelect } from '@/shared/components/WorkspaceTreeSelect'
 import { useWorkspace } from '@/shared/workspace/WorkspaceContext'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { useAsync } from '@/shared/hooks/useAsync'
@@ -1346,13 +1347,9 @@ export default function CompositeDetailPage() {
         sourceTitle={composite.title}
         groupCount={knownGroups.length}
         summaryCount={(draft.summary_widgets ?? []).length}
-        orgOptions={(me?.memberships ?? [])
-          .map((m) => m.workspace_slug)
-          .filter((s) => s && !s.startsWith('personal-'))
-          .map((wsSlug) => ({
-            slug: wsSlug,
-            name: (workspaces ?? []).find((w) => w.slug === wsSlug)?.name ?? wsSlug,
-          }))}
+        orgWorkspaces={(workspaces ?? []).filter(
+          (w) => w.kind === 'org' && !w.virtual,
+        )}
         onConfirm={onSavePreset}
       />
 
@@ -1460,12 +1457,20 @@ function CompositeSavePresetDialog({
   sourceTitle,
   groupCount,
   summaryCount,
-  orgOptions,
+  orgWorkspaces,
   onConfirm,
 }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [scope, setScope] = useState('') // '' = 전사, 그 외 = workspace slug
+  // 공개 범위 = 소유 조직 slug 집합. 비어 있으면 전사 공개(모든 조직).
+  const [scopeSlugs, setScopeSlugs] = useState(() => new Set())
+  const toggleScope = (slug) =>
+    setScopeSlugs((prev) => {
+      const next = new Set(prev)
+      if (next.has(slug)) next.delete(slug)
+      else next.add(slug)
+      return next
+    })
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
@@ -1473,7 +1478,7 @@ function CompositeSavePresetDialog({
       const base = (sourceTitle ?? '').trim()
       setName(base ? `${base} 양식` : '')
       setDescription('')
-      setScope('')
+      setScopeSlugs(new Set())
       setSubmitting(false)
     }
   }, [open, sourceTitle])
@@ -1484,8 +1489,12 @@ function CompositeSavePresetDialog({
     if (!trimmed) return
     setSubmitting(true)
     try {
-      // 전사 = null, 특정 조직 = [slug]
-      await onConfirm(trimmed, description.trim(), scope ? [scope] : null)
+      // 전사 = null, 특정 조직(들) = slug 배열
+      await onConfirm(
+        trimmed,
+        description.trim(),
+        scopeSlugs.size ? [...scopeSlugs] : null,
+      )
     } catch {
       setSubmitting(false)
     }
@@ -1530,24 +1539,17 @@ function CompositeSavePresetDialog({
             />
           </div>
           <div className="space-y-1.5">
-            <label htmlFor="composite-preset-scope" className="text-sm font-medium">
-              공개 범위
-            </label>
-            <select
-              id="composite-preset-scope"
-              value={scope}
-              onChange={(e) => setScope(e.target.value)}
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-            >
-              <option value="">전사 공개 (모든 조직)</option>
-              {(orgOptions ?? []).map((o) => (
-                <option key={o.slug} value={o.slug}>
-                  {o.name}
-                </option>
-              ))}
-            </select>
+            <span className="text-sm font-medium">공개 범위</span>
+            <WorkspaceTreeSelect
+              orgWorkspaces={orgWorkspaces}
+              selected={scopeSlugs}
+              onToggle={toggleScope}
+              autoExpandSlugs={[...scopeSlugs]}
+              searchPlaceholder="부서명 / slug 검색 (비우면 트리 보기)"
+              maxHeightClass="max-h-52"
+            />
             <p className="text-[11px] text-muted-foreground">
-              특정 조직을 고르면 그 조직 트리에서만 이 양식이 보입니다.
+              고른 조직(들)의 트리에서만 이 양식이 보입니다. 아무 것도 고르지 않으면 전사 공개(모든 조직).
             </p>
           </div>
           <div className="flex justify-end gap-2">

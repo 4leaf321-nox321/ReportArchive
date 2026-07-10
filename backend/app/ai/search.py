@@ -80,6 +80,7 @@ def chunks_for_entities(db: Session, entity_ids, actor, *, limit: int = 10) -> l
     rows = db.execute(
         select(
             ReportChunk.report_id, ReportChunk.chunk_index,
+            ReportChunk.block_id, ReportChunk.page_idx,
             ReportChunk.text, ReportChunk.entity_ids, Report.title,
         )
         .join(Report, Report.id == ReportChunk.report_id)
@@ -88,11 +89,13 @@ def chunks_for_entities(db: Session, entity_ids, actor, *, limit: int = 10) -> l
     ).all()
     seed = set(ids)
     scored: list[tuple[int, dict]] = []
-    for report_id, chunk_index, text, ceids, title in rows:
+    for report_id, chunk_index, block_id, page_idx, text, ceids, title in rows:
         overlap = len(seed.intersection(ceids or []))
         scored.append((overlap, {
             "report_id": report_id,
             "chunk_index": chunk_index,
+            "block_id": block_id,
+            "page_idx": page_idx,
             "title": title,
             "snippet": text,
             "rrf_score": 0.5 + 0.1 * overlap,  # 근거 base 점수(_blend 가 부스트)
@@ -196,6 +199,51 @@ def semantic_search(
         r["title"] = m.get("title")
         r["workspace_slug"] = m.get("workspace_slug")
     return results
+
+
+def top_chunks_for_reports(
+    db: Session, query: str, report_ids: list[int], *, per_report: int = 3
+) -> list[dict]:
+    """이미 뽑힌 보고서들 안에서 질문에 가까운 **청크를 보고서당 여러 개** 고른다.
+
+    hybrid_search 는 보고서 단위(보고서별 최적 청크 1개)로 랭킹한다. RAG Q&A 는
+    긴 보고서의 여러 관련 문단을 각각 인용하고 싶으므로, 승자 보고서들에 대해
+    2단계로 청크를 재조회한다(코사인 근접 순, 보고서당 per_report 개 상한).
+    반환: [{report_id, chunk_index, block_id, page_idx, snippet(전문), score}].
+    """
+    rids = [int(r) for r in (report_ids or [])]
+    if not rids or per_report <= 0:
+        return []
+    q = (query or "").strip()
+    if not q:
+        return []
+    qvec = embed_one(q)
+    dist = ReportChunk.embedding.cosine_distance(qvec).label("dist")
+    # 보고서당 per_report 개를 담을 만큼 넉넉히 후보를 끌어와(근접 순) 그룹핑한다.
+    rows = db.execute(
+        select(
+            ReportChunk.report_id, ReportChunk.chunk_index,
+            ReportChunk.block_id, ReportChunk.page_idx, ReportChunk.text, dist,
+        )
+        .where(ReportChunk.report_id.in_(rids))
+        .order_by(dist)
+        .limit(len(rids) * per_report * 3)
+    ).all()
+    per: dict[int, int] = {}
+    out: list[dict] = []
+    for report_id, chunk_index, block_id, page_idx, text, d in rows:
+        if per.get(report_id, 0) >= per_report:
+            continue
+        per[report_id] = per.get(report_id, 0) + 1
+        out.append({
+            "report_id": report_id,
+            "chunk_index": chunk_index,
+            "block_id": block_id,
+            "page_idx": page_idx,
+            "snippet": text or "",
+            "score": round(1.0 - float(d), 4),
+        })
+    return out
 
 
 def _keyword_search(db: Session, query: str, scope: Optional[set[int]], *, limit: int):

@@ -36,6 +36,9 @@ _GRAPH_BOOST = 1.5
 _MAX_SEEDS = 6
 # 출처에 표시할 연결 객체값 상한.
 _MAX_OBJECTS_PER_SOURCE = 5
+# 한 보고서에서 인용할 최대 청크(구절) 수 — 긴 보고서의 여러 관련 문단을 각각
+# 인용하되, 한 보고서가 출처를 독식하지 않게 상한. breadth-first 로 채워 넓이 우선.
+_CHUNKS_PER_REPORT = 3
 
 _SYSTEM = (
     "당신은 사내 CAE 보고서 아카이브 어시스턴트다. 아래 [출처]에 있는 내용만 "
@@ -158,21 +161,28 @@ def _retrieve(db: Session, actor, query: str, *, limit: int, graph: bool = False
             "seeds": seeds,
         }
 
-    report_ids = [h["report_id"] for h in hits]
-    authors = _hydrate_authors(db, report_ids)
-    objs = _graph_objects(
-        db, [h["report_id"] for h in hits if h.get("graph")], expanded_ids
-    )
+    # 보고서 단위 랭킹(hits)을 청크 단위 인용으로 넓힌다 — 긴 보고서의 여러 관련
+    # 문단을 각각 근거로. 승자 보고서별 청크 목록을 만들고 breadth-first 로 채운다.
+    order = [h["report_id"] for h in hits]
+    picked = _pick_chunks(db, q, hits, graph_hits, order, limit)
+
+    report_ids = [rid for rid, _ in picked]
+    authors = _hydrate_authors(db, list(dict.fromkeys(report_ids)))
+    graph_reports = {h["report_id"] for h in hits if h.get("graph")}
+    objs = _graph_objects(db, list(graph_reports), expanded_ids)
+
+    titles = {h["report_id"]: h.get("title") for h in hits}
+    slugs = {h["report_id"]: h.get("workspace_slug") for h in hits}
 
     citations, blocks = [], []
-    for i, h in enumerate(hits, start=1):
-        rid = h["report_id"]
-        full = h.get("snippet") or ""
-        title = h.get("title") or f"보고서 {rid}"
+    for i, (rid, c) in enumerate(picked, start=1):
+        full = c.get("snippet") or ""
+        title = titles.get(rid) or f"보고서 {rid}"
         meta = authors.get(rid, {})
         author = meta.get("author")
         date = meta.get("date")
         linked = objs.get(rid, [])
+        is_graph = rid in graph_reports
         # 출처 헤더에 작성자·날짜(+그래프 근거면 연결객체)를 실어 LLM 도 provenance 인지.
         head = f"보고서: {title}"
         if author:
@@ -186,18 +196,80 @@ def _retrieve(db: Session, actor, query: str, *, limit: int, graph: bool = False
             {
                 "n": i,
                 "report_id": rid,
-                "title": h.get("title"),
-                "workspace_slug": h.get("workspace_slug"),
-                "block_id": h.get("block_id"),
-                "page_idx": h.get("page_idx"),
+                "title": titles.get(rid),
+                "workspace_slug": slugs.get(rid),
+                "block_id": c.get("block_id"),
+                "page_idx": c.get("page_idx"),
+                "chunk_index": c.get("chunk_index"),
                 "snippet": full[:200],
                 "author": author,
                 "date": date,
-                "graph": bool(h.get("graph")),
+                "graph": is_graph,
                 "objects": linked,
             }
         )
     return q, citations, blocks, seeds
+
+
+def _pick_chunks(
+    db: Session, q: str, hits: list[dict], graph_hits: list[dict],
+    order: list[int], limit: int,
+) -> list[tuple[int, dict]]:
+    """승자 보고서들에서 인용할 청크를 고른다 — 보고서당 여러 문단, breadth-first.
+
+    ① 각 보고서의 질문-근접 청크(top_chunks_for_reports) + ② 그 보고서를 통과한
+    그래프(객체-언급) 청크를 합쳐 보고서별 순서목록을 만든 뒤, 라운드로빈으로
+    채운다: 1라운드=각 보고서의 최적 1개(넓이 우선), 이후=상위 보고서의 추가 문단
+    (깊이). limit 개까지. 보고서가 hits 뿐이던(청크 없는) 경우 그 대표 스니펫 폴백."""
+    sem = ai_search.top_chunks_for_reports(
+        db, q, order, per_report=_CHUNKS_PER_REPORT
+    )
+    rset = set(order)
+    by_report: dict[int, list[dict]] = {rid: [] for rid in order}
+    seen: set[tuple[int, int]] = set()
+
+    def _add(rid, c):
+        ci = c.get("chunk_index")
+        key = (rid, ci if ci is not None else -1 - len(seen))
+        if key in seen or len(by_report[rid]) >= _CHUNKS_PER_REPORT:
+            return
+        seen.add(key)
+        by_report[rid].append(c)
+
+    for c in sem:  # 시맨틱 근접 순
+        if c["report_id"] in rset:
+            _add(c["report_id"], c)
+    # 그래프(객체-언급) 청크 — 질문과 벡터 안 닮아도 그 객체가 나온 문단.
+    for g in sorted(graph_hits, key=lambda x: x.get("rrf_score", 0.0), reverse=True):
+        rid = g.get("report_id")
+        if rid in rset and g.get("chunk_index") is not None:
+            _add(rid, g)
+    # 청크가 하나도 안 잡힌 보고서: 블렌드 히트의 대표 스니펫으로 폴백(빈 출처 방지).
+    hit_by_id = {h["report_id"]: h for h in hits}
+    for rid in order:
+        if not by_report[rid]:
+            h = hit_by_id.get(rid, {})
+            by_report[rid].append({
+                "report_id": rid, "chunk_index": h.get("chunk_index"),
+                "block_id": h.get("block_id"), "page_idx": h.get("page_idx"),
+                "snippet": h.get("snippet") or "",
+            })
+
+    picked: list[tuple[int, dict]] = []
+    round_i = 0
+    while len(picked) < limit:
+        added = False
+        for rid in order:
+            lst = by_report[rid]
+            if round_i < len(lst):
+                picked.append((rid, lst[round_i]))
+                added = True
+                if len(picked) >= limit:
+                    break
+        if not added:
+            break
+        round_i += 1
+    return picked
 
 
 def _qa_messages(q: str, blocks: list[str]) -> list[dict]:

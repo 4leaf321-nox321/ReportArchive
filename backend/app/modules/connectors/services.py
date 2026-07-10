@@ -22,6 +22,7 @@ from app.modules.connectors.fetch import (
     fetch_records,
 )
 from app.modules.connectors.models import DataSource, SyncRun
+from app.modules.connectors.provenance import record_provenance
 from app.modules.connectors.schemas import (
     DataSourceCreate,
     DataSourceRead,
@@ -266,6 +267,11 @@ def run_sync(db: Session, source: DataSource, *, dry_run: bool,
                 "summary": s,
                 "error_rows": [r for r in result["rows"] if r["status"] == "error"][:20],
             })
+            # 계보 — 이번에 채운 객체에 출처(소스·run) 태깅.
+            if not dry_run:
+                eids = [r["entity_id"] for r in result["rows"] if r.get("entity_id")]
+                record_provenance(db, entity_ids=eids,
+                                  data_source_id=source.id, sync_run_id=run_id)
             # watermark 전진 — 이번에 받은 레코드의 최댓값을 저장(스트림별 즉시 커밋해
             # 뒤 스트림 실패에도 진행분 보존).
             if not dry_run and st.incremental and st.watermark_field:

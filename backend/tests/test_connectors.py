@@ -618,3 +618,47 @@ def test_relation_target_code_matching(monkeypatch):
             c.delete(f"/api/entity-types/{proj_id}", headers=ADMIN)
         if sup_id:
             c.delete(f"/api/entity-types/{sup_id}", headers=ADMIN)
+
+
+def test_provenance_tagging(monkeypatch):
+    """계보 — 동기화가 채운 객체에 출처(소스) 태깅, 재동기화는 중복 없이 갱신."""
+    c = TestClient(app)
+    sfx = uuid.uuid4().hex[:8]
+    proj_id = sid = None
+    made = []
+    try:
+        proj_id = c.post("/api/entity-types", headers=ADMIN,
+                         json={"slug": "provp_" + sfx, "label": "계보과제",
+                               "kind_class": "record"}).json()["data"]["id"]
+        records = [{"name": "과제A-" + sfx}, {"name": "과제B-" + sfx}]
+        monkeypatch.setattr(conn_services, "fetch_records", lambda conn, st, since=None: records)
+        cfg = {"connection": {"base_url": "http://x.test"},
+               "streams": [{"endpoint_path": "/p", "records_path": "",
+                            "target_type_id": proj_id, "value_path": "name"}]}
+        sid = c.post("/api/connectors", headers=ADMIN,
+                     json={"name": "prov-" + sfx, "config": cfg}).json()["data"]["id"]
+
+        c.post(f"/api/connectors/{sid}/sync", headers=ADMIN)
+        made = [i["id"] for i in _find(c, proj_id, "과제")]
+        aid = made[0]
+
+        r = c.get(f"/api/connectors/objects/{aid}/provenance", headers=ADMIN)
+        assert r.status_code == 200, r.text
+        items = r.json()["data"]["items"]
+        assert len(items) == 1, items
+        assert items[0]["source_name"] == "prov-" + sfx
+        assert items[0]["data_source_id"] == sid
+        first_seen = items[0]["first_seen"]
+
+        # 재동기화 — 중복 없이 upsert(first_seen 유지).
+        c.post(f"/api/connectors/{sid}/sync", headers=ADMIN)
+        items2 = c.get(f"/api/connectors/objects/{aid}/provenance", headers=ADMIN).json()["data"]["items"]
+        assert len(items2) == 1, items2  # 중복 없음
+        assert items2[0]["first_seen"] == first_seen  # 최초 유입 시각 유지
+    finally:
+        for eid in made:
+            c.delete(f"/api/entities/{eid}", headers=ADMIN)
+        if sid:
+            c.delete(f"/api/connectors/{sid}", headers=ADMIN)
+        if proj_id:
+            c.delete(f"/api/entity-types/{proj_id}", headers=ADMIN)

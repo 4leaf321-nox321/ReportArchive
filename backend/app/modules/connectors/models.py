@@ -58,6 +58,30 @@ class DataSource(Base):
     )
 
 
+class EntityProvenance(Base):
+    """동기화가 채운 객체의 출처 — (객체, 소스) 당 1행. 여러 소스가 같은 객체를 다룰 수
+    있어 UNIQUE(entity_id, data_source_id). 코어 entities 를 안 건드리는 별도 테이블."""
+
+    __tablename__ = "entity_provenance"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entity_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False
+    )
+    data_source_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False
+    )
+    last_sync_run_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("sync_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
 class SyncRun(Base):
     """동기화 1회 실행 이력. summary 는 run_import 의 카운트(create/update/error…)."""
 

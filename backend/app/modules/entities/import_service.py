@@ -167,7 +167,8 @@ def run_import(
 
         counts[status] += 1
         counts["link_unresolved"] += sum(1 for r in rel_view if not r["resolved"])
-        out.append(_row(idx, value, status, messages, rel_view))
+        eid = entity.id if (not dry_run and entity is not None) else None
+        out.append(_row(idx, value, status, messages, rel_view, entity_id=eid))
 
     return {
         "summary": {**counts, "total": len(rows), "committed": not dry_run},
@@ -175,6 +176,7 @@ def run_import(
     }
 
 
-def _row(idx, value, status, messages, relations=None) -> dict:
+def _row(idx, value, status, messages, relations=None, entity_id=None) -> dict:
     return {"row": idx, "value": value, "status": status,
-            "messages": messages, "relations": relations or []}
+            "messages": messages, "relations": relations or [],
+            "entity_id": entity_id}

@@ -54,6 +54,12 @@ export async function listSyncRuns(id) {
   return extractData(await apiClient.get(`${BASE}/${id}/runs`))
 }
 
+/** 객체 계보(출처) — 이 객체를 채운 소스들. 인증만.
+ *  { items: [{ data_source_id, source_name, last_sync_run_id, first_seen, last_seen }] } */
+export async function getObjectProvenance(entityId) {
+  return extractData(await apiClient.get(`${BASE}/objects/${entityId}/provenance`))
+}
+
 /** AI 자동 매핑 — 샘플 레코드 + 대상 축 → 매핑 초안 제안(LLM→휴리스틱 폴백, 검증됨).
  *  { value_path, property_map:{slug:path}, relation_map:[...], source:'llm'|'heuristic' } */
 export async function suggestMapping(targetTypeId, sample) {

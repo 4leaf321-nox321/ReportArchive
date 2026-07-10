@@ -25,6 +25,7 @@ import {
   listEntityTypes,
   listRelationTypes,
 } from '@/shared/api/entities'
+import { getObjectProvenance } from '@/shared/api/connectors'
 import { EntityGraphView } from './EntityGraphView'
 
 /**
@@ -68,6 +69,12 @@ export function ObjectProfile({ entityId, onOpenEntity, hideGraph = false }) {
     () => (hideGraph ? Promise.resolve(null) : getEntityGraph(entityId, { depth: 2 })),
     [entityId, hideGraph],
   )
+  // 계보(출처) — 외부 커넥터가 채운 객체면 소스가 뜬다(없으면 빈 목록).
+  const { data: provData } = useAsync(
+    () => getObjectProvenance(entityId).catch(() => ({ items: [] })),
+    [entityId],
+  )
+  const provenance = provData?.items ?? []
 
   const entity = profile?.entity
   const axis = entity ? axisBySlug.get(entity.type_slug) : null
@@ -87,6 +94,19 @@ export function ObjectProfile({ entityId, onOpenEntity, hideGraph = false }) {
   return (
     <div className="space-y-6">
       <HeaderCard entity={entity} axis={axis} profile={profile} />
+
+      {provenance.length > 0 && (
+        <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">출처</span>{' '}
+          {provenance.map((p, i) => (
+            <span key={p.data_source_id}>
+              {i > 0 && ' · '}
+              {p.source_name}
+              <span className="opacity-70"> ({p.last_seen.slice(0, 16).replace('T', ' ')} 동기화)</span>
+            </span>
+          ))}
+        </div>
+      )}
 
       <RelatedObjects
         relations={profile.relations}

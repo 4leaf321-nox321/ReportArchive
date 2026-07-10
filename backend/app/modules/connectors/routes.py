@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.modules.connectors import services, suggest
+from app.modules.connectors import provenance, services, suggest
 from app.modules.connectors.fetch import FetchError
 from app.modules.connectors.schemas import (
     DataSourceCreate,
@@ -31,7 +31,7 @@ from app.modules.connectors.schemas import (
     SyncRunListResponse,
 )
 from app.modules.users.models import User
-from app.shared.auth import require_system_admin
+from app.shared.auth import get_current_user_no_workspace, require_system_admin
 from app.shared.responses import error_response, not_found_response, success_response
 
 router = APIRouter()
@@ -169,6 +169,18 @@ def sync_now(
     except (FetchError, ValueError) as exc:
         return error_response(str(exc), status_code=400)
     return success_response(data=result)
+
+
+@router.get("/objects/{entity_id}/provenance")
+def object_provenance(
+    entity_id: int,
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user_no_workspace),
+):
+    """이 객체를 채운 소스들(계보). 인증만 — 객체 프로필의 '출처' 표시에 쓴다."""
+    return success_response(
+        data={"items": provenance.list_provenance_for_entity(db, entity_id)}
+    )
 
 
 @router.get("/{source_id}/runs")

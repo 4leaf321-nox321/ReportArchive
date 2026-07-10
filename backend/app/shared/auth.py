@@ -165,6 +165,12 @@ def _resolve_role(db: Session, user_id: int, workspace_slug: str) -> Optional[Ro
     return None
 
 
+def resolve_role(db: Session, user_id: int, workspace_slug: str) -> Optional[Role]:
+    """공개 래퍼 — 계정이 특정 워크스페이스에서 갖는 역할(트리 상속 반영). 활성부서
+    (X-Workspace) 와 무관하게 '계정' 권한을 판정할 때 쓴다(예: 템플릿 소속 부서 지정)."""
+    return _resolve_role(db, user_id, workspace_slug)
+
+
 # --------------------------------------------------------------------------- #
 # FastAPI dependencies
 # --------------------------------------------------------------------------- #

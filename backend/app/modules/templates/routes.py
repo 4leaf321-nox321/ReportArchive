@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -17,9 +16,13 @@ from app.modules.templates.schemas import (
     TemplateScopeUpdate,
     TemplateVersionSummary,
 )
-from app.modules.users.models import Role, WorkspaceMember
 from app.modules.workspaces import services as ws_services
-from app.shared.auth import CurrentUser, get_current_user, require_manager, resolve_role
+from app.shared.auth import (
+    CurrentUser,
+    assert_can_scope_to,
+    get_current_user,
+    require_manager,
+)
 from app.shared.responses import created_response, not_found_response, success_response
 
 router = APIRouter()
@@ -36,69 +39,10 @@ def _is_own_personal_template(actor: CurrentUser, template) -> bool:
     return (template.owner_workspace_slugs or []) == [_own_personal_slug(actor)]
 
 
-def _is_manager_anywhere(db: Session, user_id: int) -> bool:
-    """계정이 '어느 부서든' 매니저 멤버십을 가졌나 — 전사 공개 템플릿 생성 허용용."""
-    return (
-        db.execute(
-            select(WorkspaceMember.workspace_slug)
-            .where(
-                WorkspaceMember.user_id == user_id,
-                WorkspaceMember.role == Role.manager,
-            )
-            .limit(1)
-        ).first()
-        is not None
-    )
-
-
 def _assert_can_create_template(db: Session, actor: CurrentUser, owner_slugs) -> None:
-    """신규 템플릿 생성(+ 소속 부서 지정) 권한 — **활성부서(X-Workspace)와 무관하게
-    계정 권한** 기준. 소속 부서는 모달에서 명시적으로 고르므로 컨텍스트가 아니라
-    계정의 멤버십(트리 상속 반영)으로 판정한다.
-
-    - 개인(비공개): 본인 personal 워크스페이스 단독 소유는 누구나.
-    - 시스템 관리자: 제한 없음.
-    - 매니저: 내가 매니저인 부서(그 부서 또는 조상에 manager 멤버십) + 그 하위 전체를
-      원하는 만큼(다중) 소유 가능. 전사(빈 소유)는 계정이 어느 부서든 매니저면 허용.
-    - 일반 멤버: 내 멤버십 서브트리(속한 부서 또는 그 하위) 안의 **한 부서**만 소유.
-    """
-    if actor.public_viewer:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "권한이 없습니다.")
-    owners = list(owner_slugs or [])
-    personal = _own_personal_slug(actor)
-    # 개인(비공개) — 본인 personal 단독 소유만, 부서/전사 제약 없음.
-    if owners == [personal]:
-        return
-    # 시스템 관리자 — 모든 부서 소유 가능.
-    if actor.user.is_system_admin:
-        return
-
-    def _role_on(slug: str):
-        return resolve_role(db, actor.user.id, slug)
-
-    # 매니저: 지정한 모든 부서를 계정이 매니저로 관리하면 허용(다중 가능).
-    if owners and all(_role_on(s) == Role.manager for s in owners):
-        return
-    # 전사 공개(빈 소유): 계정이 어느 부서든 매니저면 허용.
-    if not owners:
-        if _is_manager_anywhere(db, actor.user.id):
-            return
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "전사 공개 템플릿은 매니저만 만들 수 있습니다.",
-        )
-    # 일반 멤버: 내 멤버십 서브트리 안의 한 부서만.
-    if len(owners) == 1 and _role_on(owners[0]) is not None:
-        return
-
-    # 거부 — slug 는 UUID 형일 수 있어 부서 이름으로 표기.
-    by_name = {w.slug: w.name for w in ws_services.list_workspaces(db)}
-    labels = ", ".join(f"'{by_name.get(s, s)}'" for s in owners if s != personal)
-    raise HTTPException(
-        status.HTTP_403_FORBIDDEN,
-        f"다음 부서에는 템플릿을 만들 수 없습니다: {labels}. "
-        "(매니저는 관리 부서·그 하위를 여러 곳, 일반 멤버는 소속 부서 한 곳만 지정할 수 있습니다.)",
-    )
+    """신규 템플릿 생성(+ 소속 부서 지정) 권한 — 계정 기준(활성부서 무관). 프리셋·
+    종합보고 양식과 동일 규칙이라 공용 `assert_can_scope_to` 에 위임한다."""
+    assert_can_scope_to(db, actor, owner_slugs, resource="템플릿")
 
 
 def _assert_can_manage_template(actor: CurrentUser, template) -> None:

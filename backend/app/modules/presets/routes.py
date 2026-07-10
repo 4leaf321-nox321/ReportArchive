@@ -21,7 +21,12 @@ from app.modules.presets.schemas import (
     PresetUpdateFromReport,
 )
 from app.modules.reports import services as report_services
-from app.shared.auth import CurrentUser, get_current_user, require_writer
+from app.shared.auth import (
+    CurrentUser,
+    assert_can_scope_to,
+    get_current_user,
+    require_writer,
+)
 from app.shared.responses import (
     created_response,
     not_found_response,
@@ -69,6 +74,8 @@ def create_preset(
         )
     if not report_services.can_read_report(db, actor, source):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+    # 공개 범위(소유 부서)는 계정 권한 기준으로 검증(템플릿과 동일 규칙).
+    assert_can_scope_to(db, actor, payload.owner_workspace_slugs, resource="프리셋")
     preset = services.create_from_report(
         db, source, payload, created_by_user_id=actor.user.id
     )
@@ -140,6 +147,9 @@ def update_preset(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "이 양식을 수정할 권한이 없습니다."
         )
+    # 공개 범위를 바꾸는 경우에만 소유 부서 권한 검증.
+    if "owner_workspace_slugs" in payload.model_fields_set:
+        assert_can_scope_to(db, actor, payload.owner_workspace_slugs, resource="프리셋")
     preset = services.update(db, preset, payload)
     return success_response(data=PresetSummary.model_validate(preset))
 

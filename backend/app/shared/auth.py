@@ -171,6 +171,69 @@ def resolve_role(db: Session, user_id: int, workspace_slug: str) -> Optional[Rol
     return _resolve_role(db, user_id, workspace_slug)
 
 
+def assert_can_scope_to(db: Session, actor, owner_slugs, *, resource: str = "항목") -> None:
+    """공개 범위(소유 부서) 지정 권한 — **활성부서(X-Workspace)와 무관하게 계정 멤버십
+    (트리 상속) 기준**. 소속 부서는 UI 에서 명시적으로 고르므로 컨텍스트가 아니라 계정의
+    권한으로 판정한다. 템플릿·프리셋·종합보고 양식이 **동일 규칙**을 공유한다.
+
+    - 개인(비공개): 본인 personal 워크스페이스 단독 소유는 누구나.
+    - 시스템 관리자: 제한 없음.
+    - 매니저: 내가 매니저인 부서(그 부서/조상에 manager 멤버십) + 그 하위 전체를 여러
+      곳(다중) 소유 가능. 전사(빈 소유)는 계정이 어느 부서든 매니저면 허용.
+    - 일반 멤버: 내 멤버십 서브트리(속한 부서 또는 그 하위) 안의 **한 부서**만 소유.
+
+    위반 시 403(`resource` 이름으로 안내). `owner_slugs` 는 slug 배열(빈=전사) 또는 None.
+    """
+    if getattr(actor, "public_viewer", False):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "권한이 없습니다.")
+    owners = list(owner_slugs or [])
+    personal = f"personal-{actor.user.id}"
+    if owners == [personal]:
+        return
+    if actor.user.is_system_admin:
+        return
+
+    def _role_on(slug: str):
+        return _resolve_role(db, actor.user.id, slug)
+
+    # 매니저: 지정한 모든 부서를 계정이 매니저로 관리하면 허용(다중 가능).
+    if owners and all(_role_on(s) == Role.manager for s in owners):
+        return
+    # 전사 공개(빈 소유): 계정이 어느 부서든 매니저면 허용.
+    if not owners:
+        is_mgr_anywhere = (
+            db.execute(
+                select(WorkspaceMember.workspace_slug)
+                .where(
+                    WorkspaceMember.user_id == actor.user.id,
+                    WorkspaceMember.role == Role.manager,
+                )
+                .limit(1)
+            ).first()
+            is not None
+        )
+        if is_mgr_anywhere:
+            return
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"전사 공개 {resource}은(는) 매니저만 만들 수 있습니다.",
+        )
+    # 일반 멤버: 내 멤버십 서브트리 안의 한 부서만.
+    if len(owners) == 1 and _role_on(owners[0]) is not None:
+        return
+
+    # 거부 — slug 는 UUID 형일 수 있어 부서 이름으로 표기.
+    from app.modules.workspaces import services as ws_services
+
+    by_name = {w.slug: w.name for w in ws_services.list_workspaces(db)}
+    labels = ", ".join(f"'{by_name.get(s, s)}'" for s in owners if s != personal)
+    raise HTTPException(
+        status.HTTP_403_FORBIDDEN,
+        f"다음 부서에는 {resource}을(를) 만들 수 없습니다: {labels}. "
+        "(매니저는 관리 부서·그 하위를 여러 곳, 일반 멤버는 소속 부서 한 곳만 지정할 수 있습니다.)",
+    )
+
+
 # --------------------------------------------------------------------------- #
 # FastAPI dependencies
 # --------------------------------------------------------------------------- #

@@ -37,6 +37,18 @@ REGISTRY: dict[str, dict] = {
                 "사용자 질문별 override 가능, 이 값은 기본값.",
         "requires_reindex": False,
     },
+    "rag_decompose_enabled": {
+        "type": "bool", "group": "질문 이해", "label": "질문 분해",
+        "desc": "복합 질문을 하위 질문들로 쪼개 각각 검색 후 근거를 합친다(질문당 "
+                "AI 1콜). HyDE 와 동시에 켜지면 분해가 우선.",
+        "requires_reindex": False,
+    },
+    "rag_alias_expand_enabled": {
+        "type": "bool", "group": "질문 이해", "label": "별칭·약어 확장",
+        "desc": "질문이 언급한 객체의 다른 표기(정식명·코드·별칭)를 키워드 검색에 "
+                "덧붙인다(온톨로지 별칭 재사용, AI 불필요). 즉시 반영.",
+        "requires_reindex": False,
+    },
     "seed_link_min_score": {
         "type": "float", "group": "온톨로지 링킹", "label": "질문→씨앗 의미 임계",
         "min": 0.0, "max": 1.0, "step": 0.01,

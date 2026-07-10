@@ -1,7 +1,7 @@
 # AI 검색 지능화 로드맵 — 다음 7개 개선안
 
 > 진행: **1(재랭킹) v0.90.0 · 2 HyDE v0.91.0 완료. 재랭킹·HyDE 요청별 토글 노출
-> v0.92.0**(사용자가 질문마다 켜고 끔, 서버 설정=기본값). 2의 분해·확장, 3~7 미구현.
+> v0.92.0**. **2 전체 완료(HyDE·분해·별칭 확장 v0.94).** 3~7 미구현.
 > 별건 완료: **런타임 관리자 설정 저장소 v0.93.0** — app_settings 테이블(p75) +
 > store(타입드 REGISTRY·.env 기본값+DB override·45초 캐시) + 관리자 API
 > (/api/ai/settings) + "검색 튜닝" 탭. index-time 노브(chunk_link_*)는 '재색인 필요'
@@ -66,11 +66,13 @@
 
 ## 2. 질문 이해 / 재작성 (HyDE · 분해 · 확장)
 
-> 상태: **HyDE 구현 완료 (v0.91.0)** — `qa._hyde`/`_hyde_enabled`, 설정
-> `rag_hyde_enabled`(기본 off). '원 질문+가상 답변 문단'을 임베딩(앵커링).
-> 시맨틱 검색(보고서·청크)만 적용, **키워드·씨앗 링킹은 원 질문 유지**. mock/오류
-> 시 원 질문 폴백. `semantic_search`/`hybrid_search`/`top_chunks_for_reports` 에
-> `embed_query` 인자 추가. **잔여: 질문 분해·동의어 확장(2·3).**
+> 상태: **완료** — HyDE(v0.91.0) + 질문 분해·별칭 확장(v0.94.0).
+> - HyDE: `qa._hyde`, `embed_query` 인자(시맨틱만). '원 질문+가상 문단' 앵커링.
+> - 질문 분해(v0.94): `qa._decompose`, 설정 `rag_decompose_enabled`. 복합 질문을
+>   하위 질문(≤3)으로 쪼개 각각 검색 후 report_id union. HyDE 와 동시 on 이면 분해 우선.
+> - 별칭 확장(v0.94): `qa._alias_expand`, 설정 `rag_alias_expand_enabled`. 질문이
+>   언급한 엔티티의 정식명·코드·별칭을 키워드 검색에만 덧붙임(온톨로지 별칭 재사용,
+>   LLM 불필요). `hybrid_search` 에 `keyword_query` 인자. 셋 다 mock/오류 시 폴백.
 
 **문제.** 짧거나 모호한 질문("그거 왜 깨졌어?")은 임베딩·키워드 신호가 약하다.
 다중 조건 질문("2024년 방수시험 통과했고 낙하는 실패한 과제")은 한 벡터로 뭉개진다.

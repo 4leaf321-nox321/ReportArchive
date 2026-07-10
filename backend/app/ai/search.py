@@ -318,6 +318,7 @@ def hybrid_search(
     year: Optional[int] = None,
     snippet_chars: Optional[int] = 200,
     embed_query: Optional[str] = None,
+    keyword_query: Optional[str] = None,
 ) -> list[dict]:
     """semantic + keyword 를 RRF 로 합산. 한쪽에만 잡혀도 상위로 끌어올린다.
 
@@ -344,7 +345,8 @@ def hybrid_search(
         min_score=store.get("embedding_hybrid_min_score"), scope=scope,
         snippet_chars=snippet_chars, embed_query=embed_query,
     )
-    kw_rows = _keyword_search(db, query, scope, limit=max(limit, 50))
+    # 별칭 확장(keyword_query)이 오면 키워드 검색만 그 확장 질의로(시맨틱은 원 질의).
+    kw_rows = _keyword_search(db, keyword_query or query, scope, limit=max(limit, 50))
 
     sem_ids = {item["report_id"] for item in sem}
     kw_ids = {rid for rid, _ in kw_rows}

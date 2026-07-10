@@ -129,6 +129,12 @@ class Settings(BaseSettings):
     # 시맨틱 검색(질문-문서 어휘 격차 해소). **기본 OFF**(질문당 LLM 1콜 추가). mock 이면
     # 무효. 키워드·씨앗 링킹은 원 질문 유지(가상문단 오탐 방지). 실패 시 원 질문 폴백.
     rag_hyde_enabled: bool = Field(default=False)
+    # RAG Q&A 질문 분해 — 복합 질문을 LLM 이 하위 질문들로 쪼개 각각 검색 후 근거 union.
+    # **기본 OFF**(질문당 LLM 1콜). mock/실패 시 원 질문 1개. HyDE 와 동시 on 이면 분해 우선.
+    rag_decompose_enabled: bool = Field(default=False)
+    # RAG Q&A 별칭 확장 — 질문이 언급한 엔티티의 다른 표기(정식명·코드·별칭)를 키워드
+    # 검색에 덧붙인다(온톨로지 별칭 재사용, LLM 불필요). **기본 OFF**. 시맨틱·씨앗은 원 질문.
+    rag_alias_expand_enabled: bool = Field(default=False)
     # 보고서 저장/수정 시 자동으로 embed_report 잡을 적재할지. **기본 OFF** — pgvector
     # 확장·report_chunks·워커가 모두 준비된 환경에서만 켠다(.env 로 true). 안 그러면
     # 임베딩 미배포(p47만 배포 등) 상태에서 실패 잡이 쌓인다.

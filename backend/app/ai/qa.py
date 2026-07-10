@@ -55,6 +55,15 @@ _HYDE_SYSTEM = (
     "않다(검색용 가상 문단이다). 질문의 핵심 용어·동의어·관련 개념을 풍부히 담되, "
     "머리말 없이 문단만 출력하라."
 )
+# 질문 분해 — 복합 질문을 독립 검색 가능한 하위 질문들로.
+_MAX_SUBQUESTIONS = 3
+_DECOMPOSE_SYSTEM = (
+    "복합 질문을 독립적으로 검색 가능한 하위 질문들로 분해하라. 단순 질문이면 그대로 "
+    "1개만 반환한다. 최대 3개, 각 하위질문은 완결된 한국어 문장. 출력은 JSON 문자열 "
+    '배열만: ["하위질문1", "하위질문2"]. 다른 말·설명 없이 JSON 만 출력하라.'
+)
+# 별칭 확장 시 질문에 덧붙일 표기 상한(질의 폭주 방지).
+_MAX_ALIAS_TERMS = 12
 
 _SYSTEM = (
     "당신은 사내 CAE 보고서 아카이브 어시스턴트다. 아래 [출처]에 있는 내용만 "
@@ -153,14 +162,33 @@ def _retrieve(
     rerank_on = _rerank_enabled(rerank)
     pool = limit * _RERANK_MULT if rerank_on else limit
 
-    # HyDE — 시맨틱 검색용 임베딩 텍스트를 가상 답변 문단으로 대체(키워드·씨앗은 원 질문).
-    embed_q = _hyde(q) if _hyde_enabled(hyde) else None
+    # 질문 이해 — 분해(복합질문→하위질문 union) vs HyDE(가상답변 임베딩). 둘 다 켜지면
+    # 분해 우선(하위질문이 이미 구체적이라 HyDE 불필요). 별칭 확장은 독립(키워드만 보강).
+    alias_on = _alias_expand_enabled()
+    if _decompose_enabled():
+        subqs = _decompose(q)          # 최대 N, 실패 시 [q]
+        embed_q = None                 # 청크 랭킹은 원 질문 벡터
+        embed_of: dict[str, Optional[str]] = {sq: None for sq in subqs}
+    else:
+        embed_q = _hyde(q) if _hyde_enabled(hyde) else None
+        subqs = [q]
+        embed_of = {q: embed_q}
+    kw_full = _alias_expand(db, q) if alias_on else None
 
-    # 하이브리드(시맨틱+키워드 RRF) + 청크 전문(snippet_chars=None). 근거 가드
-    # 임계(embedding_hybrid_min_score)는 hybrid_search 내부 적용.
-    plain = ai_search.hybrid_search(
-        db, q, actor, limit=pool, snippet_chars=None, embed_query=embed_q
-    )
+    # 하이브리드(시맨틱+키워드 RRF) + 청크 전문(snippet_chars=None). (분해된) 하위질문
+    # 마다 검색해 report_id 로 union(최대 rrf 점수). 근거 가드 임계는 hybrid_search 내부.
+    plain_by_report: dict[int, dict] = {}
+    for sq in subqs:
+        kw_q = kw_full if sq == q else (_alias_expand(db, sq) if alias_on else None)
+        for h in ai_search.hybrid_search(
+            db, sq, actor, limit=pool, snippet_chars=None,
+            embed_query=embed_of.get(sq), keyword_query=kw_q,
+        ):
+            rid = h["report_id"]
+            cur = plain_by_report.get(rid)
+            if cur is None or h.get("rrf_score", 0.0) > cur.get("rrf_score", 0.0):
+                plain_by_report[rid] = h
+    plain = list(plain_by_report.values())
 
     if graph:
         # 지연 import — 순수 벡터 경로(graph=False)엔 온톨로지 의존을 끌어들이지 않게.
@@ -175,7 +203,7 @@ def _retrieve(
                 graph_hits = ai_search.hybrid_search(
                     db, q, actor, limit=pool,
                     entity_ids=list(expanded_ids), snippet_chars=None,
-                    embed_query=embed_q,
+                    embed_query=embed_q, keyword_query=kw_full,
                 )
                 # 텍스트-무관 이웃 — 씨앗/이웃 객체를 **직접 언급하는 구절**(청크↔객체
                 # 링크, p74)도 근거로. 질문과 벡터 안 닮아도 그 객체가 나온 문단을 끌어온다.
@@ -287,6 +315,110 @@ def _hyde(q: str) -> Optional[str]:
         return None
     text = (res.content or "").strip()
     return f"{q}\n{text}" if text else None
+
+
+def _decompose_enabled() -> bool:
+    from app.config import settings
+    from app.modules.app_settings import store
+
+    return bool(store.get("rag_decompose_enabled")) and (
+        (settings.llm_backend or "mock").lower() != "mock"
+    )
+
+
+def _alias_expand_enabled() -> bool:
+    from app.modules.app_settings import store
+
+    return bool(store.get("rag_alias_expand_enabled"))
+
+
+def _parse_json_list(text: str) -> list[str]:
+    """LLM 응답에서 JSON 문자열 배열 추출. 실패 시 []."""
+    import json
+
+    m = re.search(r"\[.*\]", text or "", re.DOTALL)
+    if not m:
+        return []
+    try:
+        arr = json.loads(m.group(0))
+    except (ValueError, TypeError):
+        return []
+    return [s for s in arr if isinstance(s, str)] if isinstance(arr, list) else []
+
+
+def _decompose(q: str) -> list[str]:
+    """복합 질문 → 하위 질문 리스트(최대 _MAX_SUBQUESTIONS). 보강 레이어라 mock/오류/
+    빈응답이면 [q](원 질문 1개)로 폴백 — 검색이 죽지 않게."""
+    try:
+        res = chat([
+            {"role": "system", "content": _DECOMPOSE_SYSTEM},
+            {"role": "user", "content": q},
+        ])
+    except Exception:  # noqa: BLE001 — 보강 레이어, 어떤 실패든 폴백
+        return [q]
+    if getattr(res, "backend", "") == "mock":
+        return [q]
+    subs = [s.strip() for s in _parse_json_list(res.content or "") if s.strip()]
+    return subs[:_MAX_SUBQUESTIONS] or [q]
+
+
+def _alias_expand(db: Session, q: str) -> Optional[str]:
+    """질문이 언급한 엔티티의 다른 표기(정식명·코드·별칭)를 질문에 덧붙인다.
+
+    온톨로지 별칭 재사용(LLM 불필요) — 질문이 약어로 물어도 정식명만 쓴 보고서를
+    키워드로 찾게 한다. 언급 판정은 경계매칭(부분문자열 오탐 방지). 없으면 None."""
+    from sqlalchemy import or_, select as sa_select
+
+    from app.modules.entities.autotag import _boundary_hit
+    from app.modules.entities.models import Entity, EntityAlias, EntityStatus
+
+    ql = q.lower()
+    toks = [t for t in re.findall(r"[0-9A-Za-z가-힣]+", q) if len(t) >= 2]
+    if not toks:
+        return None
+    like = [f"%{t}%" for t in toks]
+    # 후보 엔티티(값/코드 또는 별칭이 질문 토큰과 겹침) — 상한으로 스캔 bound.
+    cand: set[int] = set()
+    for (eid,) in db.execute(
+        sa_select(Entity.id).where(
+            Entity.status == EntityStatus.active,
+            or_(*[Entity.value.ilike(p) for p in like]),
+        ).limit(200)
+    ).all():
+        cand.add(eid)
+    for (eid,) in db.execute(
+        sa_select(EntityAlias.entity_id).where(
+            or_(*[EntityAlias.alias.ilike(p) for p in like])
+        ).limit(200)
+    ).all():
+        cand.add(eid)
+    if not cand:
+        return None
+    # 후보들의 모든 표기(값·코드·별칭) 로드.
+    names: dict[int, set[str]] = {}
+    for eid, value, code in db.execute(
+        sa_select(Entity.id, Entity.value, Entity.code).where(Entity.id.in_(cand))
+    ).all():
+        s = names.setdefault(eid, set())
+        for n in (value, code):
+            if n:
+                s.add(n)
+    for eid, alias in db.execute(
+        sa_select(EntityAlias.entity_id, EntityAlias.alias).where(
+            EntityAlias.entity_id.in_(cand)
+        )
+    ).all():
+        names.setdefault(eid, set()).add(alias)
+    # 실제 언급된 엔티티(표기 하나라도 경계매칭)의 '아직 질문에 없는' 표기를 확장.
+    extra: list[str] = []
+    for nameset in names.values():
+        if not any(_boundary_hit(n.lower(), ql) for n in nameset):
+            continue
+        for n in nameset:
+            if n.lower() not in ql and n not in extra:
+                extra.append(n)
+    extra = extra[:_MAX_ALIAS_TERMS]
+    return q + " " + " ".join(extra) if extra else None
 
 
 def _parse_rerank_scores(text: str, n: int) -> dict[int, float]:

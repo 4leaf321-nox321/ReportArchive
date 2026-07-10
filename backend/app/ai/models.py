@@ -15,6 +15,7 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    ARRAY,
     BigInteger,
     Boolean,
     DateTime,
@@ -160,6 +161,12 @@ class ReportChunk(Base):
     # 차원은 settings.embedding_dim 과 마이그레이션의 Vector(N) 가 일치해야 함.
     embedding: Mapped[list[float]] = mapped_column(
         Vector(settings.embedding_dim), nullable=False
+    )
+
+    # 이 청크가 언급하는 온톨로지 객체(entities) id — 임베딩 시 결정적 매칭으로 채움.
+    # GraphRAG 가 "객체 이웃의 정확한 구절"을 문단 단위로 끌어오는 데 쓴다(p74).
+    entity_ids: Mapped[list[int]] = mapped_column(
+        ARRAY(Integer), nullable=False, default=list, server_default="{}"
     )
 
     # 보고서 본문 해시(재임베딩 스킵 판단용 — 같은 해시면 다시 안 만듦).

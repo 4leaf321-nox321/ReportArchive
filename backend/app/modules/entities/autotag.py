@@ -124,6 +124,47 @@ def _deterministic(
     return out
 
 
+def build_term_index(db: Session) -> list[tuple[int, list[str]]]:
+    """활성 엔티티 카탈로그 → [(entity_id, [소문자 terms(값·코드·별칭)])]. 청크마다
+    재로드하지 않도록 보고서 임베딩 1회당 한 번 만들어 청크 전체가 공유한다."""
+    rows = db.execute(
+        select(Entity.id, Entity.value, Entity.code).where(
+            Entity.status == EntityStatus.active
+        )
+    ).all()
+    alias_map: dict[int, list[str]] = {}
+    for ent_id, normalized in db.execute(
+        select(EntityAlias.entity_id, EntityAlias.normalized)
+    ).all():
+        alias_map.setdefault(ent_id, []).append(normalized)
+    index: list[tuple[int, list[str]]] = []
+    for eid, value, code in rows:
+        terms: list[str] = []
+        if value:
+            terms.append(value.strip().lower())
+        if code:
+            terms.append(code.strip().lower())
+        terms.extend(alias_map.get(eid, []))
+        terms = [t for t in dict.fromkeys(terms) if t and len(t) >= _MIN_TERM_LEN]
+        if terms:
+            index.append((eid, terms))
+    return index
+
+
+def entity_ids_in_text(text: str, term_index: list[tuple[int, list[str]]]) -> list[int]:
+    """text 가 언급하는 엔티티 id — 결정적 경계매칭(값·코드·별칭). 청크 단위 태깅용."""
+    tl = (text or "").lower()
+    if not tl:
+        return []
+    out: list[int] = []
+    for eid, terms in term_index:
+        for term in terms:
+            if _boundary_hit(term, tl):
+                out.append(eid)
+                break
+    return out
+
+
 def _similarity(
     db: Session,
     *,

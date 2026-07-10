@@ -143,6 +143,11 @@ def _retrieve(db: Session, actor, query: str, *, limit: int, graph: bool = False
                     db, q, actor, limit=limit,
                     entity_ids=list(expanded_ids), snippet_chars=None,
                 )
+                # 텍스트-무관 이웃 — 씨앗/이웃 객체를 **직접 언급하는 구절**(청크↔객체
+                # 링크, p74)도 근거로. 질문과 벡터 안 닮아도 그 객체가 나온 문단을 끌어온다.
+                graph_hits += ai_search.chunks_for_entities(
+                    db, list(expanded_ids), actor, limit=limit,
+                )
 
     hits = _blend(plain, graph_hits, limit)
     if not hits:

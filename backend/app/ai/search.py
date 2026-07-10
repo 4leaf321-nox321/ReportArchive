@@ -63,6 +63,44 @@ def _visible_scope_ids(db: Session, actor) -> Optional[set[int]]:
     return all_visible_report_ids(db, actor.user.id)
 
 
+def chunks_for_entities(db: Session, entity_ids, actor, *, limit: int = 10) -> list[dict]:
+    """씨앗 객체를 **직접 언급하는 청크**를 벡터-무관하게 가져온다(청크↔객체 링크, p74).
+    질문과 벡터 유사하지 않아도 그 객체가 나온 구절이면 근거로 끌어온다 — GraphRAG 의
+    '텍스트-무관 이웃' 리트리브. 가시성 게이팅. 겹치는 객체 수로 랭킹.
+    반환: hybrid_search 와 같은 모양 [{report_id, chunk_index, title, snippet, rrf_score}]."""
+    ids = [int(e) for e in (entity_ids or [])]
+    if not ids:
+        return []
+    scope = _visible_scope_ids(db, actor)
+    if scope is not None and not scope:
+        return []
+    conds = [ReportChunk.entity_ids.op("&&")(ids), Report.deleted_at.is_(None)]
+    if scope is not None:
+        conds.append(ReportChunk.report_id.in_(scope))
+    rows = db.execute(
+        select(
+            ReportChunk.report_id, ReportChunk.chunk_index,
+            ReportChunk.text, ReportChunk.entity_ids, Report.title,
+        )
+        .join(Report, Report.id == ReportChunk.report_id)
+        .where(and_(*conds))
+        .limit(limit * 4)
+    ).all()
+    seed = set(ids)
+    scored: list[tuple[int, dict]] = []
+    for report_id, chunk_index, text, ceids, title in rows:
+        overlap = len(seed.intersection(ceids or []))
+        scored.append((overlap, {
+            "report_id": report_id,
+            "chunk_index": chunk_index,
+            "title": title,
+            "snippet": text,
+            "rrf_score": 0.5 + 0.1 * overlap,  # 근거 base 점수(_blend 가 부스트)
+        }))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [d for _, d in scored[:limit]]
+
+
 def _hydrate_meta(db: Session, report_ids: list[int]) -> dict[int, dict]:
     """결과로 내보낼 보고서별 표시 메타(제목 + 워크스페이스 slug).
 

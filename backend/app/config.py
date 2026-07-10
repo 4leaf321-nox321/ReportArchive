@@ -121,6 +121,10 @@ class Settings(BaseSettings):
     # expand_related 로 이웃까지 번지므로 오탐이 증폭된다 → 정밀 우선(0.5).
     # lexical 겹침과 무관하게 전체 엔티티 풀(캐시)과 비교해 의미 씨앗을 찾는다.
     seed_link_min_score: float = Field(default=0.5)
+    # RAG Q&A 2차 재랭킹 — 넉넉히 검색한 후보 청크를 생성 LLM 으로 질문 적합도
+    # 재채점해 상위만 인용. **기본 OFF**(질문당 LLM 1콜 추가). llm_backend 가 mock
+    # 이면 자동 무효. 실패/파싱불가 시 1차 순서 그대로(검색이 죽지 않게).
+    rag_rerank_enabled: bool = Field(default=False)
     # 보고서 저장/수정 시 자동으로 embed_report 잡을 적재할지. **기본 OFF** — pgvector
     # 확장·report_chunks·워커가 모두 준비된 환경에서만 켠다(.env 로 true). 안 그러면
     # 임베딩 미배포(p47만 배포 등) 상태에서 실패 잡이 쌓인다.

@@ -39,6 +39,15 @@ _MAX_OBJECTS_PER_SOURCE = 5
 # 한 보고서에서 인용할 최대 청크(구절) 수 — 긴 보고서의 여러 관련 문단을 각각
 # 인용하되, 한 보고서가 출처를 독식하지 않게 상한. breadth-first 로 채워 넓이 우선.
 _CHUNKS_PER_REPORT = 3
+# 재랭킹 후보 배수 — limit×배수 만큼 뽑아 재채점 후 상위 limit.
+_RERANK_MULT = 3
+# 재랭킹 프롬프트에 넣는 청크당 본문 길이 상한(토큰 폭주 방지).
+_RERANK_SNIPPET_CHARS = 500
+_RERANK_SYSTEM = (
+    "당신은 검색 결과 재랭커다. 사용자 질문에 대해 각 문단이 '답의 근거'로 "
+    "얼마나 적합한지 0~10 정수로 채점하라. 관련 없으면 0. 출력은 JSON 배열만: "
+    '[{"i": 번호, "score": 점수}, ...]. 다른 말·설명 없이 JSON 만 출력하라.'
+)
 
 _SYSTEM = (
     "당신은 사내 CAE 보고서 아카이브 어시스턴트다. 아래 [출처]에 있는 내용만 "
@@ -128,9 +137,14 @@ def _retrieve(db: Session, actor, query: str, *, limit: int, graph: bool = False
     expanded_ids: set[int] = set()
     graph_hits: list[dict] = []
 
+    # 재랭킹이 켜져 있으면 후보를 넉넉히(limit×배수) 뽑아 2차 재채점 후 상위 limit
+    # 로 절단한다 — 재랭킹이 #9 를 #1 로 끌어올리려면 후보 풀이 넓어야 한다.
+    rerank_on = _rerank_enabled()
+    pool = limit * _RERANK_MULT if rerank_on else limit
+
     # 하이브리드(시맨틱+키워드 RRF) + 청크 전문(snippet_chars=None). 근거 가드
     # 임계(embedding_hybrid_min_score)는 hybrid_search 내부 적용.
-    plain = ai_search.hybrid_search(db, q, actor, limit=limit, snippet_chars=None)
+    plain = ai_search.hybrid_search(db, q, actor, limit=pool, snippet_chars=None)
 
     if graph:
         # 지연 import — 순수 벡터 경로(graph=False)엔 온톨로지 의존을 끌어들이지 않게.
@@ -143,16 +157,16 @@ def _retrieve(db: Session, actor, query: str, *, limit: int, graph: bool = False
             expanded_ids = set(expanded)
             if expanded_ids:
                 graph_hits = ai_search.hybrid_search(
-                    db, q, actor, limit=limit,
+                    db, q, actor, limit=pool,
                     entity_ids=list(expanded_ids), snippet_chars=None,
                 )
                 # 텍스트-무관 이웃 — 씨앗/이웃 객체를 **직접 언급하는 구절**(청크↔객체
                 # 링크, p74)도 근거로. 질문과 벡터 안 닮아도 그 객체가 나온 문단을 끌어온다.
                 graph_hits += ai_search.chunks_for_entities(
-                    db, list(expanded_ids), actor, limit=limit,
+                    db, list(expanded_ids), actor, limit=pool,
                 )
 
-    hits = _blend(plain, graph_hits, limit)
+    hits = _blend(plain, graph_hits, pool)
     if not hits:
         return {
             "answer": "관련 보고서를 찾지 못했습니다.",
@@ -164,7 +178,10 @@ def _retrieve(db: Session, actor, query: str, *, limit: int, graph: bool = False
     # 보고서 단위 랭킹(hits)을 청크 단위 인용으로 넓힌다 — 긴 보고서의 여러 관련
     # 문단을 각각 근거로. 승자 보고서별 청크 목록을 만들고 breadth-first 로 채운다.
     order = [h["report_id"] for h in hits]
-    picked = _pick_chunks(db, q, hits, graph_hits, order, limit)
+    picked = _pick_chunks(db, q, hits, graph_hits, order, pool)
+    # 2차 재랭킹 — 넓은 후보를 LLM 적합도로 재정렬해 상위 limit 만 인용.
+    if rerank_on:
+        picked = _rerank(q, picked, limit)
 
     report_ids = [rid for rid, _ in picked]
     authors = _hydrate_authors(db, list(dict.fromkeys(report_ids)))
@@ -209,6 +226,68 @@ def _retrieve(db: Session, actor, query: str, *, limit: int, graph: bool = False
             }
         )
     return q, citations, blocks, seeds
+
+
+def _rerank_enabled() -> bool:
+    """재랭킹 on 여부 — 설정 토글 + 생성 LLM 이 mock 이 아닐 때만(mock 은 무의미)."""
+    from app.config import settings
+
+    return bool(settings.rag_rerank_enabled) and (
+        (settings.llm_backend or "mock").lower() != "mock"
+    )
+
+
+def _parse_rerank_scores(text: str, n: int) -> dict[int, float]:
+    """LLM 응답에서 [{"i","score"}] JSON 배열 파싱 → {i: score}. 실패/범위밖은 무시."""
+    import json
+
+    m = re.search(r"\[.*\]", text or "", re.DOTALL)
+    if not m:
+        return {}
+    try:
+        arr = json.loads(m.group(0))
+    except (ValueError, TypeError):
+        return {}
+    out: dict[int, float] = {}
+    for item in arr if isinstance(arr, list) else []:
+        try:
+            i = int(item["i"])
+            s = float(item["score"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if 1 <= i <= n:
+            out[i] = s
+    return out
+
+
+def _rerank(q: str, candidates: list[tuple[int, dict]], limit: int) -> list[tuple[int, dict]]:
+    """후보 청크를 생성 LLM 으로 질문 적합도 재채점 → 상위 limit.
+
+    재랭킹은 **보강 레이어**다 — LLM 오류·파싱 실패·mock 응답이면 1차 순서 상위
+    limit 로 조용히 폴백해 검색이 절대 죽지 않게 한다(최종 답변 생성과 달리 예외를
+    위로 던지지 않는다)."""
+    if len(candidates) <= limit:
+        return candidates  # 재정렬 이득 없음
+    lines = []
+    for i, (_rid, c) in enumerate(candidates, start=1):
+        snip = (c.get("snippet") or "").replace("\n", " ")[:_RERANK_SNIPPET_CHARS]
+        lines.append(f"[{i}] {snip}")
+    messages = [
+        {"role": "system", "content": _RERANK_SYSTEM},
+        {"role": "user", "content": f"질문: {q}\n\n문단들:\n" + "\n".join(lines)},
+    ]
+    try:
+        res = chat(messages)
+    except Exception:  # noqa: BLE001 — 보강 레이어, 어떤 실패든 폴백
+        return candidates[:limit]
+    if getattr(res, "backend", "") == "mock":
+        return candidates[:limit]
+    scores = _parse_rerank_scores(res.content or "", len(candidates))
+    if not scores:
+        return candidates[:limit]
+    # 점수 desc, 동점은 1차 순서 유지(안정). 점수 없는 후보는 0 취급 → 뒤로.
+    order = sorted(range(len(candidates)), key=lambda k: (-scores.get(k + 1, 0.0), k))
+    return [candidates[k] for k in order[:limit]]
 
 
 def _pick_chunks(

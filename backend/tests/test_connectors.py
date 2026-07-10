@@ -557,3 +557,64 @@ def test_watermark_filter_template_odata(monkeypatch):
                       watermark_template="Modified gt {since}")
     F.fetch_records(conn, st, since="2024-03-01T00:00:00Z")
     assert captured["params"]["$filter"] == "Modified gt 2024-03-01T00:00:00Z", captured
+
+
+def test_relation_target_code_matching(monkeypatch):
+    """관계 대상 코드 매칭 — 대상 이름이 달라도 코드가 같으면 링크된다."""
+    c = TestClient(app)
+    sfx = uuid.uuid4().hex[:8]
+    proj_id = sup_id = sid = None
+    rel = "rtc_" + sfx
+    rel_created = False
+    made = []
+    try:
+        proj_id = c.post("/api/entity-types", headers=ADMIN,
+                         json={"slug": "rtcp_" + sfx, "label": "관계과제",
+                               "kind_class": "record"}).json()["data"]["id"]
+        sup_id = c.post("/api/entity-types", headers=ADMIN,
+                        json={"slug": "rtcs_" + sfx, "label": "관계공급사",
+                              "kind_class": "record"}).json()["data"]["id"]
+        c.post("/api/relation-types", headers=ADMIN,
+               json={"slug": rel, "label": "관계공급", "directed": True})
+        rel_created = True
+        # 공급사: 이름="LG에너지솔루션", 코드="SUP-A".
+        c.post("/api/entities", headers=ADMIN,
+               json={"type_id": sup_id, "value": "LG에너지솔루션-" + sfx, "code": "SUP-A-" + sfx})
+
+        # 과제 레코드의 supplier.name 은 다르게("엘지에너지"), code 는 SUP-A.
+        records = [{"name": "과제A-" + sfx,
+                    "supplier": {"code": "SUP-A-" + sfx, "name": "엘지에너지-" + sfx}}]
+        monkeypatch.setattr(conn_services, "fetch_records", lambda conn, st, since=None: records)
+
+        cfg = {
+            "connection": {"base_url": "http://x.test"},
+            "streams": [{"endpoint_path": "/p", "records_path": "",
+                         "target_type_id": proj_id, "value_path": "name",
+                         "relation_map": [{"relation": rel, "target_type": "rtcs_" + sfx,
+                                           "path": "supplier.code", "match_key": "code"}]}],
+        }
+        sid = c.post("/api/connectors", headers=ADMIN,
+                     json={"name": "rtc-" + sfx, "config": cfg}).json()["data"]["id"]
+
+        s = c.post(f"/api/connectors/{sid}/sync", headers=ADMIN).json()["data"]["summary"]
+        # 이름이 달라도 코드로 대상을 찾아 링크됨.
+        assert s["create"] == 1 and s["linked"] == 1, s
+        assert s["link_unresolved"] == 0, s
+        made = [i["id"] for i in _find(c, proj_id, "과제A")]
+    finally:
+        for eid in made:
+            rr = c.get(f"/api/entities/{eid}/relations", headers=ADMIN)
+            if rr.status_code == 200:
+                for p in rr.json()["data"]["parents"]:
+                    c.delete(f"/api/entities/{eid}/relations/{p['relation_id']}", headers=ADMIN)
+            c.delete(f"/api/entities/{eid}", headers=ADMIN)
+        if sid:
+            c.delete(f"/api/connectors/{sid}", headers=ADMIN)
+        for it in (_find(c, sup_id, "LG에너지솔루션") if sup_id else []):
+            c.delete(f"/api/entities/{it['id']}", headers=ADMIN)
+        if rel_created:
+            c.delete(f"/api/relation-types/{rel}", headers=ADMIN)
+        if proj_id:
+            c.delete(f"/api/entity-types/{proj_id}", headers=ADMIN)
+        if sup_id:
+            c.delete(f"/api/entity-types/{sup_id}", headers=ADMIN)

@@ -223,7 +223,8 @@ def build_rows_and_mapping(
         property_columns[f"__p_{slug}"] = slug
     relation_columns = [
         ImportRelationCol(
-            column=f"__r_{i}", relation=rm.relation, target_type=rm.target_type
+            column=f"__r_{i}", relation=rm.relation, target_type=rm.target_type,
+            match_key=rm.match_key,
         )
         for i, rm in enumerate(stream.relation_map)
     ]

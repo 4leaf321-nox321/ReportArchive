@@ -112,7 +112,7 @@ function streamFromConfig(st) {
     match_key: st.match_key || 'value',
     code_path: st.code_path || '',
     prop_paths: { ...(st.property_map || {}) },
-    relation_rows: (st.relation_map || []).map((r) => ({ ...r })),
+    relation_rows: (st.relation_map || []).map((r) => ({ match_key: 'value', ...r })),
     page_style: st.page_style || 'none',
     page_size: st.page_size || 100,
     page_param: st.page_param || 'offset',
@@ -152,7 +152,10 @@ function streamToConfig(st) {
   }
   const relation_map = st.relation_rows
     .filter((r) => r.relation && r.target_type && r.path?.trim())
-    .map((r) => ({ relation: r.relation, target_type: r.target_type, path: r.path.trim() }))
+    .map((r) => ({
+      relation: r.relation, target_type: r.target_type, path: r.path.trim(),
+      match_key: r.match_key === 'code' ? 'code' : 'value',
+    }))
   return {
     label: st.label.trim(),
     endpoint_path: st.endpoint_path.trim(),
@@ -443,7 +446,7 @@ function StreamEditor({
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => upd({ relation_rows: [...stream.relation_rows, { relation: '', target_type: '', path: '' }] })}
+              onClick={() => upd({ relation_rows: [...stream.relation_rows, { relation: '', target_type: '', path: '', match_key: 'value' }] })}
             >
               <Plus className="h-3.5 w-3.5" /> 추가
             </Button>
@@ -490,8 +493,21 @@ function StreamEditor({
                   rows[i] = { ...rows[i], path: v }
                   upd({ relation_rows: rows })
                 }}
-                placeholder="필드 경로"
+                placeholder={r.match_key === 'code' ? '코드 필드 경로' : '필드 경로'}
               />
+              <select
+                value={r.match_key || 'value'}
+                onChange={(e) => {
+                  const rows = [...stream.relation_rows]
+                  rows[i] = { ...rows[i], match_key: e.target.value }
+                  upd({ relation_rows: rows })
+                }}
+                title="대상 객체를 이름으로 찾을지, 코드(안정 식별자)로 찾을지"
+                className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+              >
+                <option value="value">이름</option>
+                <option value="code">코드</option>
+              </select>
               <Button
                 variant="ghost"
                 size="icon"

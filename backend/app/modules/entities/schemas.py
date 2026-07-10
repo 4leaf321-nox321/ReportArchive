@@ -352,6 +352,7 @@ class ImportRelationCol(BaseModel):
     column: str          # 시트 헤더
     relation: str        # 관계 slug (relation_types)
     target_type: str     # 대상 축 slug
+    match_key: str = "value"  # 'value'(이름) | 'code'(안정 식별자) — 대상 찾는 기준
 
 
 class EntityImportMapping(BaseModel):

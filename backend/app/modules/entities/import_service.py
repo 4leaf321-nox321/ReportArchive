@@ -118,7 +118,9 @@ def run_import(
                                  "target": tval, "resolved": False,
                                  "message": f"대상 축 없음: {rc.target_type}"})
                 continue
-            found = ent.resolve_existing(db, type_id=target_type.id, value=tval)
+            # 관계 대상도 코드로 매칭 가능(match_key='code' 면 값을 코드로 간주).
+            rc_code = tval if getattr(rc, "match_key", "value") == "code" else None
+            found = ent.resolve_existing(db, type_id=target_type.id, value=tval, code=rc_code)
             rel_view.append({"column": rc.column, "relation": rc.relation,
                              "target": tval, "resolved": found is not None,
                              "message": None if found else "대상 객체 없음 — 링크 건너뜀"})
@@ -151,7 +153,8 @@ def run_import(
                 tval = (row.get(rc.column) or "").strip()
                 if not tval or target_type is None:
                     continue
-                target = ent.resolve_existing(db, type_id=target_type.id, value=tval)
+                rc_code = tval if getattr(rc, "match_key", "value") == "code" else None
+                target = ent.resolve_existing(db, type_id=target_type.id, value=tval, code=rc_code)
                 if target is None:
                     continue
                 try:

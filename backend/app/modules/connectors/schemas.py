@@ -30,6 +30,7 @@ class RelationMapItem(BaseModel):
     relation: str          # 관계 slug (relation_types)
     target_type: str       # 대상 축 slug
     path: str              # 레코드 내 필드 경로(점 표기, 예 supplier.code)
+    match_key: Literal["value", "code"] = "value"  # 대상 찾는 기준(이름/코드)
 
 
 class ConnectionConfig(BaseModel):

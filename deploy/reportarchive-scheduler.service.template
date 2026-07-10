@@ -1,0 +1,23 @@
+[Unit]
+Description=Report Archive — scheduler tick (enqueue due data-source syncs)
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=@@USER@@
+Group=@@USER@@
+WorkingDirectory=@@INSTALL_DIR@@
+
+# 매분 due 한 데이터소스(주기 동기화)를 큐에 적재만 한다 — 실제 동기화는 워커
+# (reportarchive-worker.service)가 sync_data_source 핸들러로 처리. dedup 으로
+# 이전 동기화가 아직 안 끝났으면 중복 적재하지 않는다(스케줄러 코드 내부).
+ExecStart=/usr/bin/apptainer exec \
+    --bind @@INSTALL_DIR@@/.env:/opt/app/backend/.env:ro \
+    @@INSTALL_DIR@@/app.sif /opt/app/venv/bin/python \
+    /opt/app/backend/scripts/scheduler_tick.py
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=false
+PrivateTmp=true

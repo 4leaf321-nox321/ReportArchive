@@ -47,6 +47,13 @@ WORKER_SERVICE_NAME="reportarchive-worker"
 WORKER_SERVICE_UNIT="/etc/systemd/system/${WORKER_SERVICE_NAME}.service"
 WORKER_ENABLED="${WORKER_ENABLED:-1}"
 
+# 주기 스케줄러 (systemd 타이머, 매분) — due 한 데이터소스 동기화를 큐에 적재.
+# 워커가 처리하므로 워커와 짝이며 기본값도 워커와 동일(워커 꺼지면 스케줄러도 무의미).
+SCHEDULER_SERVICE_NAME="reportarchive-scheduler"
+SCHEDULER_SERVICE_UNIT="/etc/systemd/system/${SCHEDULER_SERVICE_NAME}.service"
+SCHEDULER_TIMER_UNIT="/etc/systemd/system/${SCHEDULER_SERVICE_NAME}.timer"
+SCHEDULER_ENABLED="${SCHEDULER_ENABLED:-$WORKER_ENABLED}"
+
 # MCP server (Claude 연동) — 선택. 별도 venv + 별도 systemd 유닛.
 MCP_SERVICE_NAME="reportarchive-mcp"
 MCP_SERVICE_UNIT="/etc/systemd/system/${MCP_SERVICE_NAME}.service"
@@ -224,6 +231,31 @@ setup_worker() {
     info "Worker: $WORKER_SERVICE_NAME (백그라운드 잡 처리 — 오펀 정리·AI 임베딩 등)"
 }
 
+# ── 주기 스케줄러 (systemd 타이머, 매분) — 워커와 짝. 비치명적. ──
+render_scheduler_units() {
+    [[ -f "$HERE/reportarchive-scheduler.service.template" \
+       && -f "$HERE/reportarchive-scheduler.timer.template" ]] \
+        || { warn "scheduler 템플릿 없음 — 스케줄러 건너뜀"; return 1; }
+    info "Rendering scheduler systemd units → $SCHEDULER_SERVICE_UNIT (+ .timer)"
+    sed -e "s|@@USER@@|$OPERATOR|g" \
+        -e "s|@@INSTALL_DIR@@|$INSTALL_DIR|g" \
+        "$HERE/reportarchive-scheduler.service.template" > "$SCHEDULER_SERVICE_UNIT"
+    # 타이머 템플릿은 치환 자리표시자가 없어 그대로 복사.
+    cp "$HERE/reportarchive-scheduler.timer.template" "$SCHEDULER_TIMER_UNIT"
+    chmod 644 "$SCHEDULER_SERVICE_UNIT" "$SCHEDULER_TIMER_UNIT"
+    systemctl daemon-reload
+}
+
+setup_scheduler() {
+    [[ "$SCHEDULER_ENABLED" == "1" ]] || { info "스케줄러 비활성(SCHEDULER_ENABLED=0) — 건너뜀"; return 0; }
+    render_scheduler_units || return 0
+    # 활성화·기동은 .timer 로(oneshot .service 는 타이머가 매분 트리거).
+    systemctl enable "${SCHEDULER_SERVICE_NAME}.timer" >/dev/null 2>&1 || true
+    systemctl restart "${SCHEDULER_SERVICE_NAME}.timer" \
+        || warn "스케줄러 타이머 기동 실패 — 'journalctl -u ${SCHEDULER_SERVICE_NAME}.timer' 확인"
+    info "Scheduler: ${SCHEDULER_SERVICE_NAME}.timer (매분 — 데이터소스 주기 동기화 적재)"
+}
+
 # ───────────────────────── subcommands ──────────────────────
 cmd_prepare() {
     info "Installing OS packages (apptainer, postgresql)"
@@ -280,6 +312,7 @@ cmd_install() {
     systemctl --no-pager --lines=5 status "$SERVICE_NAME" || true
 
     setup_worker || warn "워커 설정 건너뜀(비치명적)"
+    setup_scheduler || warn "스케줄러 설정 건너뜀(비치명적)"
     setup_mcp || warn "MCP 설정 건너뜀(비치명적)"
 
     cat <<MSG
@@ -289,6 +322,7 @@ cmd_install() {
   Health:  curl http://localhost:3000/api/health
   Seed login: admin / 32167  (change immediately)
   Worker:  sudo systemctl status $WORKER_SERVICE_NAME   (백그라운드 잡)
+  Scheduler: sudo systemctl status ${SCHEDULER_SERVICE_NAME}.timer  (주기 동기화)
   MCP:     sudo systemctl status $MCP_SERVICE_NAME   (Claude 연동, 선택)
 MSG
 }
@@ -301,6 +335,7 @@ cmd_update() {
     systemctl stop "$SERVICE_NAME" || true
     # 워커도 같은 app.sif 를 쓰고 마이그레이션 중 잡을 돌리면 안 되므로 함께 중지.
     systemctl stop "$WORKER_SERVICE_NAME" 2>/dev/null || true
+    systemctl stop "${SCHEDULER_SERVICE_NAME}.timer" 2>/dev/null || true
 
     if [[ -f "$INSTALL_DIR/app.sif" ]]; then
         info "Backing up previous SIF → app.sif.prev"
@@ -316,6 +351,7 @@ cmd_update() {
 
     # 워커 + MCP 도 함께 갱신(유닛 재렌더 + 새 SIF 로 재기동). 비치명적.
     setup_worker || warn "워커 설정 건너뜀(비치명적)"
+    setup_scheduler || warn "스케줄러 설정 건너뜀(비치명적)"
     setup_mcp || warn "MCP 설정 건너뜀(비치명적)"
 
     cat <<MSG
@@ -342,6 +378,7 @@ MSG
     info "Stopping service"
     systemctl stop "$SERVICE_NAME" || true
     systemctl stop "$WORKER_SERVICE_NAME" 2>/dev/null || true
+    systemctl stop "${SCHEDULER_SERVICE_NAME}.timer" 2>/dev/null || true
 
     info "Dropping + recreating database '$DB_NAME'"
     sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL
@@ -371,6 +408,7 @@ SQL
     systemctl --no-pager --lines=5 status "$SERVICE_NAME" || true
 
     setup_worker || warn "워커 설정 건너뜀(비치명적)"
+    setup_scheduler || warn "스케줄러 설정 건너뜀(비치명적)"
 
     cat <<MSG
 
@@ -384,6 +422,8 @@ cmd_status() {
     echo
     echo "--- worker (백그라운드 잡) ---"
     systemctl --no-pager --lines=5 status "$WORKER_SERVICE_NAME" 2>/dev/null || echo "(워커 유닛 없음 — WORKER_ENABLED=0 또는 미설치)"
+    echo "--- scheduler (주기 동기화 타이머) ---"
+    systemctl --no-pager --lines=5 status "${SCHEDULER_SERVICE_NAME}.timer" 2>/dev/null || echo "(스케줄러 타이머 없음 — SCHEDULER_ENABLED=0 또는 미설치)"
     echo
     echo "--- /api/health ---"
     curl -fsS http://localhost:3000/api/health 2>/dev/null || echo "(no response)"

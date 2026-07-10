@@ -1,0 +1,12 @@
+[Unit]
+Description=Report Archive — scheduler tick (timer, every minute)
+
+[Timer]
+# 부팅 60초 후 첫 실행, 이후 매 60초. 데이터소스 주기 동기화의 심장 박동.
+# (경보·이메일 다이제스트 등 Phase D 스케줄 작업도 나중에 같은 tick 에 태울 수 있다.)
+OnBootSec=60
+OnUnitActiveSec=60
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

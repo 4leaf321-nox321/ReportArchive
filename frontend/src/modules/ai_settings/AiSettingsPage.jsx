@@ -1,4 +1,5 @@
 import { Sparkles } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
 import {
   Tabs,
   TabsContent,
@@ -13,6 +14,7 @@ import { AccessTab } from './AccessTab'
 import { JobsTab } from './JobsTab'
 import { SearchTuningTab } from './SearchTuningTab'
 import { EvalTab } from './EvalTab'
+import { AlertsTab } from './AlertsTab'
 import { useAuth } from '@/shared/auth/AuthContext'
 
 /**
@@ -25,9 +27,29 @@ import { useAuth } from '@/shared/auth/AuthContext'
  * Page is unscoped to a workspace — prompts are global vocabulary,
  * shared across all workspaces (same scoping as 보고서 종류 / VOC).
  */
+const PUBLIC_TABS = ['prompts', 'mcp', 'skill']
+const ADMIN_TABS = ['diag', 'jobs', 'access', 'tuning', 'eval', 'alerts']
+
 export default function AiSettingsPage() {
   const { me } = useAuth()
   const isAdmin = Boolean(me?.is_system_admin)
+  // 활성 탭을 URL 쿼리(?tab=)에 동기화 — 보고서 등으로 이동했다 뒤로가기 하면
+  // 원래 탭이 복원된다(전엔 uncontrolled 라 항상 프롬프트로 리셋). replace 로
+  // 탭 전환이 히스토리를 어지럽히지 않게 한다.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const available = isAdmin ? [...PUBLIC_TABS, ...ADMIN_TABS] : PUBLIC_TABS
+  const raw = searchParams.get('tab')
+  const tab = available.includes(raw) ? raw : 'prompts'
+  const onTabChange = (value) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.set('tab', value)
+        return next
+      },
+      { replace: true },
+    )
+  }
   return (
     <div className="flex h-full flex-col gap-4 p-6">
       <div className="flex items-center gap-2">
@@ -41,7 +63,11 @@ export default function AiSettingsPage() {
         “스킬 생성” 탭을 사용하세요.
       </p>
 
-      <Tabs defaultValue="prompts" className="flex flex-1 min-h-0 flex-col">
+      <Tabs
+        value={tab}
+        onValueChange={onTabChange}
+        className="flex flex-1 min-h-0 flex-col"
+      >
         <TabsList className="w-fit">
           <TabsTrigger value="prompts">프롬프트</TabsTrigger>
           <TabsTrigger value="mcp">MCP 토큰</TabsTrigger>
@@ -51,6 +77,7 @@ export default function AiSettingsPage() {
           {isAdmin && <TabsTrigger value="access">AI 접근</TabsTrigger>}
           {isAdmin && <TabsTrigger value="tuning">검색 튜닝</TabsTrigger>}
           {isAdmin && <TabsTrigger value="eval">평가</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="alerts">경보</TabsTrigger>}
         </TabsList>
         <TabsContent value="prompts" className="flex-1 min-h-0 mt-4">
           <PromptsTab />
@@ -84,6 +111,11 @@ export default function AiSettingsPage() {
         {isAdmin && (
           <TabsContent value="eval" className="flex-1 min-h-0 mt-4 overflow-y-auto">
             <EvalTab />
+          </TabsContent>
+        )}
+        {isAdmin && (
+          <TabsContent value="alerts" className="flex-1 min-h-0 mt-4 overflow-y-auto">
+            <AlertsTab />
           </TabsContent>
         )}
       </Tabs>

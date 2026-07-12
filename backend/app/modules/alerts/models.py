@@ -34,6 +34,14 @@ class AlertRule(Base):
     probe_key: Mapped[str] = mapped_column(String(64), nullable=False)
     params: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     severity: Mapped[str] = mapped_column(String(16), nullable=False, default="info")
+    # 스케줄(커넥터 DataSource 와 동형) — 'manual'=수동만, 'interval'=주기 자동.
+    schedule_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="manual"
+    )
+    interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )

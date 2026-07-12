@@ -38,6 +38,11 @@ def _to_read(db: Session, rule) -> AlertRuleRead:
         probe_key=rule.probe_key,
         params=rule.params or {},
         severity=rule.severity,
+        schedule_kind=rule.schedule_kind,
+        interval_minutes=rule.interval_minutes,
+        next_run_at=rule.next_run_at,
+        last_run_at=rule.last_run_at,
+        last_status=rule.last_status,
         firing_count=services.firing_count(db, rule.id),
     )
 
@@ -63,7 +68,11 @@ def update_rule(
         return not_found_response("규칙을 찾을 수 없습니다.")
     patch = payload.model_dump(exclude_unset=True)
     rule = services.update_rule(
-        db, rule, enabled=patch.get("enabled"), params=patch.get("params")
+        db, rule,
+        enabled=patch.get("enabled"),
+        params=patch.get("params"),
+        schedule_kind=patch.get("schedule_kind"),
+        interval_minutes=patch.get("interval_minutes"),
     )
     return success_response(data=_to_read(db, rule).model_dump())
 

@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.jobs.queue import enqueue
+from app.modules.alerts.models import AlertRule
 from app.modules.connectors.models import DataSource
 
 
@@ -60,6 +61,73 @@ def run_scheduler_tick(session: Session) -> dict:
             # 이전 동기화 잡이 아직 대기/실행 중 — 이번 주기는 건너뛰되 next_run 은 민다.
             session.rollback()
             again = session.get(DataSource, source_id)
+            if again is not None:
+                again.next_run_at = next_run
+                session.commit()
+            skipped += 1
+
+    return {
+        "due": len(due),
+        "enqueued": enqueued,
+        "skipped": skipped,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def next_alert_run(kind: str, interval_minutes, now) -> datetime:
+    """다음 실행 시각. interval=상대 간격, weekly=다음 주 월요일 00:00,
+    monthly=다음 달 1일 00:00(주초·달 초 앵커). now 는 tz-aware UTC."""
+    if kind == "weekly":
+        days_ahead = (7 - now.weekday()) % 7 or 7  # 항상 미래의 월요일
+        return (now + timedelta(days=days_ahead)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+    if kind == "monthly":
+        if now.month == 12:
+            return now.replace(year=now.year + 1, month=1, day=1,
+                               hour=0, minute=0, second=0, microsecond=0)
+        return now.replace(month=now.month + 1, day=1,
+                           hour=0, minute=0, second=0, microsecond=0)
+    return now + timedelta(minutes=interval_minutes or 1440)
+
+
+def run_alerts_scheduler_tick(session: Session) -> dict:
+    """due 한 경보 규칙을 run_alert_rule 잡으로 적재하고 next_run_at 을 민다
+    (Phase D 2단계). 커넥터 tick 과 동형 — dedup_key 로 이전 실행이 아직 대기/실행
+    중이면 이번 주기는 건너뛴다. 실제 평가는 워커(handlers/run_alert_rule)가 처리.
+    schedule_kind: interval(간격)·weekly(주초)·monthly(달 초)."""
+    due = list(
+        session.scalars(
+            select(AlertRule).where(
+                AlertRule.enabled.is_(True),
+                AlertRule.schedule_kind != "manual",
+                AlertRule.next_run_at.is_not(None),
+                AlertRule.next_run_at <= func.now(),
+            )
+        ).all()
+    )
+
+    enqueued = 0
+    skipped = 0
+    for rule in due:
+        next_run = next_alert_run(
+            rule.schedule_kind, rule.interval_minutes, datetime.now(timezone.utc)
+        )
+        rule_id = rule.id
+        try:
+            enqueue(
+                session,
+                "run_alert_rule",
+                {"rule_id": rule_id},
+                dedup_key=f"alert-rule-{rule_id}",
+                max_attempts=1,
+            )
+            rule.next_run_at = next_run
+            session.commit()
+            enqueued += 1
+        except IntegrityError:
+            session.rollback()
+            again = session.get(AlertRule, rule_id)
             if again is not None:
                 again.next_run_at = next_run
                 session.commit()

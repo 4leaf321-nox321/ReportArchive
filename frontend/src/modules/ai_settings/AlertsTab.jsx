@@ -22,6 +22,25 @@ const PAGE_SIZE = 50
 
 const PHASE_LABEL = { drafting: '작성중', reviewing: '리뷰중', finalized: '발행완료' }
 
+const INTERVAL_LABEL = { 60: '매시간', 360: '6시간마다', 1440: '매일' }
+
+// 규칙의 스케줄을 사람이 읽는 라벨로.
+function scheduleLabel(rule) {
+  if (rule.schedule_kind === 'interval')
+    return INTERVAL_LABEL[rule.interval_minutes] || `${rule.interval_minutes}분마다`
+  if (rule.schedule_kind === 'weekly') return '매주(주초)'
+  if (rule.schedule_kind === 'monthly') return '매달(달 초)'
+  return '꺼짐(수동만)'
+}
+
+// 편집 상태 → 드롭다운 인코딩 값(interval 은 iN).
+function scheduleValue(edit) {
+  if (edit.schedule_kind === 'interval') return `i${edit.interval_minutes}`
+  if (edit.schedule_kind === 'weekly') return 'weekly'
+  if (edit.schedule_kind === 'monthly') return 'monthly'
+  return 'manual'
+}
+
 // 규칙(프로브)별 설명·표시 메타. 대상 날짜 컬럼이 프로브마다 다르다(생성 vs 수정).
 const PROBE_META = {
   untagged_reports: {
@@ -138,6 +157,8 @@ function RulePanel({ rule, onRulesChanged }) {
     days: rule.params?.days ?? 7,
     mounted_only: rule.params?.mounted_only ?? true,
     enabled: rule.enabled,
+    schedule_kind: rule.schedule_kind ?? 'manual',
+    interval_minutes: rule.interval_minutes ?? 1440,
   })
   const [firing, setFiring] = useState(null) // { items, total }
   const [offset, setOffset] = useState(0)
@@ -167,6 +188,8 @@ function RulePanel({ rule, onRulesChanged }) {
       await updateAlertRule(rule.id, {
         enabled: edit.enabled,
         params: { days, mounted_only: edit.mounted_only },
+        schedule_kind: edit.schedule_kind,
+        interval_minutes: edit.interval_minutes,
       })
       toast.success('저장했습니다.')
       onRulesChanged?.()
@@ -202,6 +225,13 @@ function RulePanel({ rule, onRulesChanged }) {
     <Card>
       <CardContent className="space-y-4 pt-5">
         {meta.desc && <p className="text-sm text-muted-foreground">{meta.desc}</p>}
+        <p className="text-xs text-muted-foreground">
+          {`자동 실행: ${scheduleLabel(rule)}`}
+          {' · '}
+          {rule.last_run_at
+            ? `마지막 실행 ${fmtTime(rule.last_run_at)}`
+            : '아직 자동 실행된 적 없음'}
+        </p>
 
         {/* 조정 가능한 값 */}
         <div className="flex flex-wrap items-end gap-4">
@@ -230,6 +260,32 @@ function RulePanel({ rule, onRulesChanged }) {
               onChange={(ev) => setEdit((s) => ({ ...s, enabled: ev.target.checked }))}
             />
             규칙 사용
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="text-muted-foreground">자동 실행</span>
+            <select
+              value={scheduleValue(edit)}
+              onChange={(ev) => {
+                const v = ev.target.value
+                if (v === 'manual') setEdit((s) => ({ ...s, schedule_kind: 'manual' }))
+                else if (v === 'weekly') setEdit((s) => ({ ...s, schedule_kind: 'weekly' }))
+                else if (v === 'monthly') setEdit((s) => ({ ...s, schedule_kind: 'monthly' }))
+                else
+                  setEdit((s) => ({
+                    ...s,
+                    schedule_kind: 'interval',
+                    interval_minutes: Number(v.slice(1)),
+                  }))
+              }}
+              className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+            >
+              <option value="manual">끔(수동만)</option>
+              <option value="i60">매시간</option>
+              <option value="i360">6시간마다</option>
+              <option value="i1440">매일</option>
+              <option value="weekly">매주(주초)</option>
+              <option value="monthly">매달(달 초)</option>
+            </select>
           </label>
           <Button size="sm" variant="outline" onClick={onSave} disabled={busy}>
             <Save className="mr-1.5 h-3.5 w-3.5" />

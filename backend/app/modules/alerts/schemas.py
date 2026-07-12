@@ -14,6 +14,11 @@ class AlertRuleRead(BaseModel):
     probe_key: str
     params: dict
     severity: str
+    schedule_kind: str = "manual"
+    interval_minutes: Optional[int] = None
+    next_run_at: Optional[datetime] = None
+    last_run_at: Optional[datetime] = None
+    last_status: Optional[str] = None
     firing_count: int = 0  # 현재 발화 중인 대상 수(파생 — 상태 테이블 카운트)
 
     class Config:
@@ -28,6 +33,8 @@ class AlertRuleUpdate(BaseModel):
     """프론트에서 조정 가능한 값만. 보낸 필드만 반영(exclude_unset)."""
     enabled: Optional[bool] = None
     params: Optional[dict] = None  # {days:int, mounted_only:bool}
+    schedule_kind: Optional[str] = None  # 'manual' | 'interval'
+    interval_minutes: Optional[int] = None
 
 
 class RunResult(BaseModel):

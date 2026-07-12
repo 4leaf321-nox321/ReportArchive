@@ -23,7 +23,10 @@ load_dotenv(BACKEND_ROOT / ".env")
 # DataSource 매퍼 configure(FK 대상 모델 포함) — 전체 모델 등록.
 import app.all_models  # noqa: E402,F401
 from app.database import SessionLocal  # noqa: E402
-from app.jobs.scheduler import run_scheduler_tick  # noqa: E402
+from app.jobs.scheduler import (  # noqa: E402
+    run_alerts_scheduler_tick,
+    run_scheduler_tick,
+)
 
 
 def main() -> int:
@@ -33,6 +36,11 @@ def main() -> int:
         print(
             f"[scheduler] due={r['due']} enqueued={r['enqueued']} "
             f"skipped={r['skipped']} at={r['at']}"
+        )
+        a = run_alerts_scheduler_tick(session)
+        print(
+            f"[scheduler:alerts] due={a['due']} enqueued={a['enqueued']} "
+            f"skipped={a['skipped']} at={a['at']}"
         )
     finally:
         session.close()

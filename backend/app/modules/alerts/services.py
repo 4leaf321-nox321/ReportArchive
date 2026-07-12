@@ -201,14 +201,29 @@ def firing_count(db: Session, rule_id: int) -> int:
     )
 
 
-def update_rule(db: Session, rule: AlertRule, *, enabled=None, params=None) -> AlertRule:
-    """프론트 조정 — enabled 토글, params(days·finalized_only) 병합."""
+def update_rule(
+    db: Session,
+    rule: AlertRule,
+    *,
+    enabled=None,
+    params=None,
+    schedule_kind=None,
+    interval_minutes=None,
+) -> AlertRule:
+    """프론트 조정 — enabled 토글, params 병합, 스케줄(자동 실행) 설정."""
     if enabled is not None:
         rule.enabled = bool(enabled)
     if params is not None:
         merged = dict(rule.params or {})
         merged.update(params)
         rule.params = merged
+    if schedule_kind is not None:
+        rule.schedule_kind = schedule_kind
+        # 자동 실행으로 켜는데 다음 실행 시각이 없으면 즉시 due 로(첫 실행 바로).
+        if schedule_kind in ("interval", "weekly", "monthly") and rule.next_run_at is None:
+            rule.next_run_at = datetime.utcnow()
+    if interval_minutes is not None:
+        rule.interval_minutes = int(interval_minutes)
     db.commit()
     db.refresh(rule)
     return rule
@@ -290,6 +305,8 @@ def run_rule(db: Session, rule: AlertRule) -> dict:
             s.last_seen_at = now
             resolved += 1
 
+    rule.last_run_at = now
+    rule.last_status = "ok"
     db.commit()
 
     return {

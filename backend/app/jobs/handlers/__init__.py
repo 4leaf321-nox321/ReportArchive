@@ -14,3 +14,4 @@ from app.jobs.handlers import reindex_embeddings  # noqa: F401  (등록 부작�
 from app.jobs.handlers import summarize_report  # noqa: F401  (등록 부작용)
 from app.jobs.handlers import send_email  # noqa: F401  (등록 부작용)
 from app.jobs.handlers import sync_data_source  # noqa: F401  (등록 부작용)
+from app.jobs.handlers import run_alert_rule  # noqa: F401  (등록 부작용)

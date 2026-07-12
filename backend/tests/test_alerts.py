@@ -84,6 +84,64 @@ def test_disabled_rule_fires_nothing(monkeypatch):
         db.close()
 
 
+def test_scheduler_tick_enqueues_due_rule(monkeypatch):
+    """due 한 interval 규칙 → run_alert_rule 잡 적재 + next_run_at 미래로 밀림."""
+    from datetime import datetime
+
+    from sqlalchemy import text
+
+    from app.jobs.scheduler import run_alerts_scheduler_tick
+
+    db = SessionLocal()
+    rule = AlertRule(
+        name="_sched", enabled=True, probe_key="_test_probe", params={},
+        severity="info", schedule_kind="interval", interval_minutes=60,
+        next_run_at=datetime(2020, 1, 1),  # 확실히 과거 → due
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    try:
+        monkeypatch.setitem(services.PROBES, "_test_probe", lambda _db, _p: [])
+        r = run_alerts_scheduler_tick(db)
+        assert r["enqueued"] >= 1
+        db.refresh(rule)
+        assert rule.next_run_at is not None and rule.next_run_at.year >= 2026  # 밀림
+        n = db.execute(
+            text(
+                "SELECT count(*) FROM jobs WHERE type='run_alert_rule' "
+                "AND status='pending' AND payload->>'rule_id' = :rid"
+            ),
+            {"rid": str(rule.id)},
+        ).scalar_one()
+        assert n >= 1
+    finally:
+        db.execute(
+            text("DELETE FROM jobs WHERE payload->>'rule_id' = :rid AND type='run_alert_rule'"),
+            {"rid": str(rule.id)},
+        )
+        db.query(AlertRuleState).filter_by(rule_id=rule.id).delete()
+        db.delete(rule)
+        db.commit()
+        db.close()
+
+
+def test_next_alert_run_anchors():
+    """주초=다음 월요일 00:00, 달 초=다음 달 1일 00:00, interval=상대 간격."""
+    from datetime import datetime, timezone
+
+    from app.jobs.scheduler import next_alert_run
+
+    now = datetime(2026, 7, 15, 10, 30, tzinfo=timezone.utc)  # 수요일
+    wk = next_alert_run("weekly", None, now)
+    assert wk.weekday() == 0 and wk > now
+    assert (wk.hour, wk.minute, wk.second) == (0, 0, 0)
+    mo = next_alert_run("monthly", None, now)
+    assert mo.day == 1 and mo.month == 8 and mo > now
+    iv = next_alert_run("interval", 120, now)
+    assert iv > now
+
+
 def test_untagged_probe_shape():
     """실 dev 데이터 — 개수는 비결정적이라 단언 안 하고 형태만 검증."""
     db = SessionLocal()

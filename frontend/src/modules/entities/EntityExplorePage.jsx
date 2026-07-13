@@ -8,7 +8,15 @@
 // 클릭하면 그 값으로 시드를 바꿔 제자리에서 이어 탐색한다(ObjectProfile 재사용).
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Loader2, Search, Boxes, ArrowUpRight, Network } from 'lucide-react'
+import {
+  Loader2,
+  Search,
+  Boxes,
+  ArrowUpRight,
+  Network,
+  Maximize2,
+  Minimize2,
+} from 'lucide-react'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { Button } from '@/shared/components/ui/button'
 import { Combobox } from '@/shared/components/Combobox'
@@ -29,6 +37,17 @@ export default function EntityExplorePage() {
   const [results, setResults] = useState([])
   const [searching, setSearching] = useState(false)
   const [seed, setSeed] = useState(null) // {id, value} — 선택된 값(프로필 대상)
+  const [graphMax, setGraphMax] = useState(false) // 관계도 전체화면 오버레이
+
+  // 전체화면일 때 ESC 로 닫기(Radix 모달이 아니라 일반 오버레이라 window 리스너).
+  useEffect(() => {
+    if (!graphMax) return undefined
+    const onKey = (e) => {
+      if (e.key === 'Escape') setGraphMax(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [graphMax])
 
   // 축 catalog — 1회 로드.
   useEffect(() => {
@@ -213,10 +232,40 @@ export default function EntityExplorePage() {
                 </div>
               </div>
 
-              {/* 관계도 (우) */}
-              <div className="flex min-w-0 flex-1 flex-col">
+              {/* 관계도 (우). graphMax 면 이 칼럼만 fixed 오버레이로 전환 —
+                  className 만 바뀌므로 EntityGraphPanel 은 리마운트되지 않아
+                  3D 위치·확장 상태가 그대로 유지된다. */}
+              <div
+                className={cn(
+                  'flex flex-col bg-background',
+                  graphMax
+                    ? 'fixed inset-0 z-50'
+                    : 'min-w-0 flex-1',
+                )}
+              >
                 <div className="flex items-center gap-2 border-b px-3 py-2 text-sm font-medium text-muted-foreground">
                   <Network className="h-4 w-4" /> 관계도
+                  {graphMax && (
+                    <span className="truncate font-normal text-foreground">
+                      · {seed.value}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setGraphMax((v) => !v)}
+                    className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-xs font-normal hover:bg-accent"
+                    title={graphMax ? '축소 (ESC)' : '관계도 넓게 보기'}
+                  >
+                    {graphMax ? (
+                      <>
+                        <Minimize2 className="h-3.5 w-3.5" /> 축소
+                      </>
+                    ) : (
+                      <>
+                        <Maximize2 className="h-3.5 w-3.5" /> 넓게
+                      </>
+                    )}
+                  </button>
                 </div>
                 <div className="min-h-0 flex-1">
                   <EntityGraphPanel

@@ -139,7 +139,9 @@ export function Graph3DView({
         kind: n.kind ?? 'entity',
         refType: n.ref_type,
         refId: n.ref_id,
-        degree: degree[n.id] || 0,
+        degree: degree[n.id] || 0, // 화면에 보이는 연결 수(노드 크기용)
+        // 서버가 준 실제 총 이웃 수(=미로드 이웃 판정용). 없으면 null.
+        totalDegree: typeof n.degree === 'number' ? n.degree : null,
       }
       const cached = cache.get(n.id)
       if (cached) {
@@ -288,11 +290,30 @@ export function Graph3DView({
   const hasNodes = graphData.nodes.length > 0
   const focusedNode =
     focusId != null ? graphData.nodes.find((n) => n.id === focusId) : null
+
+  // 집중 노드의 "이미 로드된 엔티티 이웃 수" — 서버가 준 총 이웃 수와 비교해
+  // 미로드 이웃이 남았는지 판정(system 이웃은 확장 대상이 아니라 제외).
+  const focusLoadedNeighbors = useMemo(() => {
+    if (focusId == null) return 0
+    const kindById = new Map(graphData.nodes.map((n) => [n.id, n.kind]))
+    const s = new Set()
+    for (const l of graphData.links) {
+      const a = endId(l.source)
+      const b = endId(l.target)
+      if (a === focusId && kindById.get(b) === 'entity') s.add(b)
+      else if (b === focusId && kindById.get(a) === 'entity') s.add(a)
+    }
+    return s.size
+  }, [focusId, graphData])
+
   const canExpand =
     focusedNode &&
     focusedNode.kind === 'entity' &&
     !expandedIds.has(focusedNode.id) &&
-    graphData.nodes.length < NODE_CAP
+    graphData.nodes.length < NODE_CAP &&
+    // 실제 총 이웃 수를 알면 '더 있을 때만' 노출. 모르면(구서버) 종전처럼 노출.
+    (focusedNode.totalDegree == null ||
+      focusLoadedNeighbors < focusedNode.totalDegree)
 
   return (
     <div

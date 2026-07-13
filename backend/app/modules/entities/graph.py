@@ -185,6 +185,36 @@ def neighbors(
     return out
 
 
+def _neighbor_counts(
+    db: Session,
+    ids: list[int],
+    *,
+    relations: Optional[list[str]],
+    active_only: bool,
+) -> dict[int, int]:
+    """각 노드의 **실제 총 이웃 수**(중복 제거·양방향). 서브그래프에 실린 노드가
+    화면 밖(미로드) 이웃을 더 가졌는지 프론트가 판정하는 신호 — 관계도 '이웃 확장'
+    버튼을 '더 있을 때만' 띄우는 데 쓴다. active_only/relations 를 서브그래프와
+    동일하게 적용해, 확장하면 실제로 나올 이웃만 센다."""
+    if not ids:
+        return {}
+    er = EntityRelation
+    out = select(er.src_entity_id.label("node"), er.dst_entity_id.label("nbr")).where(
+        er.src_entity_id.in_(ids)
+    )
+    inc = select(er.dst_entity_id.label("node"), er.src_entity_id.label("nbr")).where(
+        er.dst_entity_id.in_(ids)
+    )
+    if relations:
+        out = out.where(er.relation.in_(relations))
+        inc = inc.where(er.relation.in_(relations))
+    u = out.union_all(inc).subquery("pairs")
+    q = select(u.c.node, sa.func.count(sa.distinct(u.c.nbr))).group_by(u.c.node)
+    if active_only:
+        q = q.where(u.c.nbr.in_(_active_entity_ids()))
+    return {node: cnt for node, cnt in db.execute(q).all()}
+
+
 def subgraph(
     db: Session,
     seed_ids: Iterable[int],
@@ -215,8 +245,13 @@ def subgraph(
         .join(EntityType, EntityType.id == Entity.type_id)
         .where(Entity.id.in_(node_ids))
     ).all()
+    # 노드별 실제 총 이웃 수 — 화면 밖 이웃이 남았는지(=확장하면 더 나오는지) 신호.
+    degrees = _neighbor_counts(
+        db, [i for (i, _v, _t, _s) in nrows],
+        relations=relations, active_only=active_only,
+    )
     nodes = [
-        {"id": i, "value": v, "type_id": t, "type_slug": s}
+        {"id": i, "value": v, "type_id": t, "type_slug": s, "degree": degrees.get(i, 0)}
         for (i, v, t, s) in nrows
     ]
 

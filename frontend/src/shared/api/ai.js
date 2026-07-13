@@ -1,4 +1,9 @@
-import { apiClient, extractData } from './client'
+import {
+  apiClient,
+  extractData,
+  getAccessToken,
+  getCurrentWorkspace,
+} from './client'
 
 /** 현재 LLM 설정 요약(비밀 제외) — 진단 탭 상태 카드. 시스템 관리자 전용 엔드포인트. */
 export async function getAiDiagConfig() {
@@ -67,6 +72,60 @@ export async function askAgent({ query, history = [], maxHops = 6, signal } = {}
     { signal },
   )
   return extractData(res)
+}
+
+// SSE 스트리밍 에이전트 — axios(단일응답)로는 스트림을 못 받아 fetch+ReadableStream 을
+// 쓴다. onEvent(evt) 로 {type:'rewrite'|'progress'|'token'|'done'|'error', ...} 를 순차 전달.
+// signal 로 중단(연결 끊김 → 서버 생성 중단). resolve 는 스트림 종료 시.
+export async function askAgentStream({
+  query,
+  history = [],
+  maxHops = 6,
+  signal,
+  onEvent,
+} = {}) {
+  const base = import.meta.env.VITE_API_BASE_URL || ''
+  const token = getAccessToken()
+  const ws = getCurrentWorkspace()
+  const headers = { 'Content-Type': 'application/json' }
+  if (token) headers.Authorization = `Bearer ${token}`
+  if (ws) headers['X-Workspace-Slug'] = ws
+
+  const resp = await fetch(`${base}/api/ai/agent/stream`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ query, max_hops: maxHops, history }),
+    signal,
+  })
+  if (!resp.ok || !resp.body) {
+    throw new Error(`스트리밍 시작 실패 (${resp.status})`)
+  }
+
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    // eslint-disable-next-line no-await-in-loop
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    let sep
+    while ((sep = buf.indexOf('\n\n')) >= 0) {
+      const chunk = buf.slice(0, sep)
+      buf = buf.slice(sep + 2)
+      for (const line of chunk.split('\n')) {
+        const s = line.trim()
+        if (!s.startsWith('data:')) continue
+        const data = s.slice(5).trim()
+        if (!data) continue
+        try {
+          onEvent?.(JSON.parse(data))
+        } catch {
+          /* 파싱 실패한 청크는 무시 */
+        }
+      }
+    }
+  }
 }
 
 // --- 대화형 검색 — 저장된 대화 CRUD(사용자별 private) ------------------------

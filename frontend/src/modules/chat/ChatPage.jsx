@@ -16,7 +16,7 @@ import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
 import { Markdown } from '@/shared/components/Markdown'
 import {
-  askAgent,
+  askAgentStream,
   listConversations,
   getConversation,
   createConversation,
@@ -104,31 +104,68 @@ export default function ChatPage() {
       .filter((m) => m.content)
       .slice(-HISTORY_TURNS)
     const afterUser = [...messages, { role: 'user', content: q }]
-    setMessages(afterUser)
+    // 스트리밍 placeholder — 진행 상황·토큰 이벤트로 실시간 갱신.
+    setMessages([
+      ...afterUser,
+      { role: 'assistant', content: '', result: null, streaming: true, progress: [], rewritten: null },
+    ])
     setBusy(true)
     const controller = new AbortController()
     abortRef.current = controller
+
+    const updateLast = (fn) =>
+      setMessages((prev) => {
+        if (prev.length === 0) return prev
+        const copy = prev.slice()
+        copy[copy.length - 1] = fn(copy[copy.length - 1])
+        return copy
+      })
+
+    let liveContent = ''
+    const progress = []
+    let doneResult = null
     try {
-      const result = await askAgent({ query: q, history, signal: controller.signal })
+      await askAgentStream({
+        query: q,
+        history,
+        signal: controller.signal,
+        onEvent: (evt) => {
+          if (evt.type === 'rewrite') {
+            updateLast((m) => ({ ...m, rewritten: evt.query }))
+          } else if (evt.type === 'progress') {
+            progress.push(evt.summary)
+            updateLast((m) => ({ ...m, progress: [...progress] }))
+          } else if (evt.type === 'token') {
+            liveContent += evt.text || ''
+            updateLast((m) => ({ ...m, content: liveContent }))
+          } else if (evt.type === 'done') {
+            doneResult = evt
+            updateLast((m) => ({
+              ...m,
+              content: evt.answer || liveContent,
+              result: evt,
+              streaming: false,
+            }))
+          } else if (evt.type === 'error') {
+            updateLast((m) => ({ ...m, content: evt.message || '답변 생성 실패', streaming: false }))
+          }
+        },
+      })
+      // 저장 — 스트리밍 플래그 없는 최종 메시지로 정규화.
       const finalMsgs = [
         ...afterUser,
-        { role: 'assistant', content: result.answer || '', result },
+        { role: 'assistant', content: doneResult?.answer || liveContent, result: doneResult },
       ]
       setMessages(finalMsgs)
-      persist(finalMsgs)
+      if (doneResult) persist(finalMsgs)
     } catch (err) {
-      const canceled = err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError'
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: canceled ? '(중단됨)' : '답변 생성에 실패했습니다.',
-          result: null,
-        },
-      ])
-      if (!canceled) {
-        toast.error(err?.response?.data?.message || err?.message || '답변 생성 실패')
-      }
+      const canceled = err?.name === 'AbortError'
+      updateLast((m) => ({
+        ...m,
+        content: m.content || (canceled ? '(중단됨)' : '답변 생성에 실패했습니다.'),
+        streaming: false,
+      }))
+      if (!canceled) toast.error(err?.message || '답변 생성 실패')
     } finally {
       setBusy(false)
       abortRef.current = null
@@ -247,11 +284,6 @@ export default function ChatPage() {
             {messages.map((m, i) => (
               <MessageBubble key={i} m={m} navigate={navigate} />
             ))}
-            {busy && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" /> 조사 중…
-              </div>
-            )}
             <div ref={endRef} />
           </div>
         </div>
@@ -298,9 +330,43 @@ function MessageBubble({ m, navigate }) {
         {m.result ? (
           <AssistantAnswer r={m.result} navigate={navigate} />
         ) : (
-          <p className="text-sm text-muted-foreground">{m.content}</p>
+          <StreamingView m={m} />
         )}
       </div>
+    </div>
+  )
+}
+
+function StreamingView({ m }) {
+  return (
+    <div>
+      {m.rewritten && (
+        <p className="mb-2 text-[11px] text-muted-foreground">
+          이렇게 이해했어요: <span className="italic">“{m.rewritten}”</span>
+        </p>
+      )}
+      {m.progress?.length > 0 && (
+        <div className="mb-2 flex flex-col gap-0.5">
+          {m.progress.map((p, i) => (
+            <span
+              key={i}
+              className="flex items-center gap-1.5 text-[11px] text-muted-foreground"
+            >
+              <span className="h-1 w-1 shrink-0 rounded-full bg-muted-foreground/40" />
+              {p}
+            </span>
+          ))}
+        </div>
+      )}
+      {m.content ? (
+        <Markdown className="text-sm leading-relaxed">{m.content}</Markdown>
+      ) : (
+        m.streaming && (
+          <span className="inline-flex items-center gap-1 text-sm text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> 조사 중…
+          </span>
+        )
+      )}
     </div>
   )
 }

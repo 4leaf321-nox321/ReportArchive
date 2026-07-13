@@ -757,3 +757,43 @@ def delete_conversation(
     if conv is not None:
         conv_svc.delete(db, conv)
     return success_response(data=None, message="대화를 삭제했습니다.")
+
+
+@router.post("/agent/stream")
+async def agent_stream(
+    payload: AgentPayload,
+    request: Request,
+    actor=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """에이전트 답변을 SSE 로 스트리밍 — 진행 상황(progress)·답변 토큰(token)·최종(done).
+    rag_qa 게이트. 프론트 abort → 연결끊김 → 생성 중단(should_cancel). 이벤트는
+    `data: {json}\\n\\n` 한 줄씩."""
+    import json as _sse_json
+
+    from fastapi.responses import StreamingResponse
+
+    from app.ai import agent
+    from app.ai.entitlements import ai_enabled_for
+
+    if not ai_enabled_for(db, actor.user, "rag_qa"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "AI 질문하기 권한이 없습니다.")
+
+    async def gen():
+        try:
+            async for evt in agent.run_agent_stream(
+                db, actor, payload.query, history=payload.history[-12:],
+                max_hops=payload.max_hops, should_cancel=request.is_disconnected,
+            ):
+                yield f"data: {_sse_json.dumps(evt, ensure_ascii=False)}\n\n"
+        except LLMCancelled:
+            return  # 연결 끊김 — 클라이언트는 이미 떠남
+        except Exception as exc:  # noqa: BLE001 — 스트림 안에서 오류를 이벤트로 전달
+            payload_err = {"type": "error", "message": f"AI 응답 실패: {exc}"}
+            yield f"data: {_sse_json.dumps(payload_err, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

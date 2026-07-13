@@ -80,6 +80,11 @@ export function setCurrentWorkspace(slug) {
   currentWorkspaceSlug = slug
 }
 
+/** 현재 워크스페이스 슬러그(fetch 기반 SSE 등 axios 우회 요청이 헤더를 직접 붙일 때). */
+export function getCurrentWorkspace() {
+  return currentWorkspaceSlug
+}
+
 export function setOnUnauthorized(handler) {
   onUnauthorized = handler
 }

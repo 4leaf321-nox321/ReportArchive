@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json as _json
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Optional
+from typing import AsyncIterator, Awaitable, Callable, Optional
 
 import httpx
 
@@ -608,3 +608,97 @@ def list_models(*, timeout: Optional[float] = None) -> list[str]:
     except httpx.HTTPError as exc:
         raise LLMError(f"모델 목록 조회 실패: {exc}") from exc
     return []
+
+
+async def astream_chat(
+    messages: list[Message],
+    *,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+    reasoning_effort: Optional[str] = None,
+    timeout: Optional[float] = None,
+    should_cancel: Optional[CancelCheck] = None,
+) -> AsyncIterator[str]:
+    """답변 content 델타를 순차 yield(스트리밍 답변 생성용 — tools 없음).
+
+    chat_cancellable 과 같은 스트림 배관을 쓰되, 청크를 누적해 반환하는 대신 그대로
+    yield 한다(SSE 로 브라우저에 밀어주기 위함). should_cancel() 이 True 면 매 청크에서
+    LLMCancelled. 백엔드가 mock 이면 스텁 답변을 한 번에 yield(dev/테스트)."""
+    backend = (settings.llm_backend or "mock").lower()
+    model = model or settings.llm_model
+    max_tokens = max_tokens or settings.llm_max_tokens
+    timeout = timeout or settings.llm_timeout_s
+    effort = reasoning_effort if reasoning_effort is not None else (
+        settings.llm_reasoning_effort or None
+    )
+
+    if backend == "mock":
+        await _maybe_cancel(should_cancel)
+        yield _chat_mock(messages, model=model).content
+        return
+
+    if backend == "ollama":
+        base = settings.llm_base_url.rstrip("/")
+        options: dict = {"num_predict": max_tokens}
+        if temperature is not None:
+            options["temperature"] = temperature
+        body = {"model": model, "messages": messages, "stream": True, "options": options}
+        async with httpx.AsyncClient(
+            timeout=timeout, trust_env=not settings.llm_no_proxy
+        ) as client:
+            async with client.stream("POST", f"{base}/api/chat", json=body) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    await _maybe_cancel(should_cancel)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        evt = _json.loads(line)
+                    except ValueError:
+                        continue
+                    tok = (evt.get("message") or {}).get("content")
+                    if tok:
+                        yield tok
+                    if evt.get("done"):
+                        break
+        return
+
+    # openai 호환(운영 GLM·dev llama-server)
+    base = settings.llm_base_url.rstrip("/")
+    headers = {"Content-Type": "application/json"}
+    if settings.llm_api_key:
+        headers["Authorization"] = f"Bearer {settings.llm_api_key}"
+    body = {"model": model, "messages": messages, "max_tokens": max_tokens, "stream": True}
+    if temperature is not None:
+        body["temperature"] = temperature
+    if effort:
+        body["chat_template_kwargs"] = {"reasoning_effort": effort}
+    async with httpx.AsyncClient(
+        timeout=timeout, trust_env=not settings.llm_no_proxy
+    ) as client:
+        async with client.stream(
+            "POST", f"{base}/chat/completions", json=body, headers=headers,
+        ) as resp:
+            if resp.status_code >= 400:
+                detail = (await resp.aread()).decode(errors="replace")
+                raise LLMError(f"openai 스트림 실패({resp.status_code}): {detail[:300]}")
+            async for line in resp.aiter_lines():
+                await _maybe_cancel(should_cancel)
+                line = line.strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    evt = _json.loads(data)
+                except ValueError:
+                    continue
+                ch0 = (evt.get("choices") or [{}])[0] or {}
+                delta = (ch0.get("delta") or {}).get("content")
+                if delta:
+                    yield delta
+                if ch0.get("finish_reason"):
+                    break

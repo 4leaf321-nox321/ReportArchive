@@ -197,3 +197,87 @@ def _result(answer, citations, objects, trace, *, no_evidence,
         "model": model,
         "backend": backend,
     }
+
+
+async def run_agent_stream(db, actor, query: str, *, history=None,
+                           max_hops: int = _MAX_HOPS, should_cancel=None):
+    """run_agent 의 스트리밍 버전 — 진행 상황 + 최종 답변 토큰을 이벤트로 yield.
+
+    이벤트 dict: {type:'rewrite'|'progress'|'token'|'done', ...}. 도구 조사(sync·DB)는
+    threadpool 로, 최종 답변은 astream_chat 로 토큰 단위 스트리밍(tools 없이). 도구가
+    끝나면(또는 max_hops) Phase 2 에서 근거를 바탕으로 답을 생성·스트리밍한다.
+    should_cancel: 비동기 콜백(연결 끊김) — True 면 중단."""
+    from starlette.concurrency import run_in_threadpool
+
+    from app.ai import qa
+    from app.ai.llm import astream_chat
+
+    q = (query or "").strip()
+    if not q:
+        yield {"type": "done", "answer": "", "citations": [], "objects": [],
+               "trace": [], "no_evidence": True}
+        return
+
+    standalone = qa._contextualize(history, q)
+    if standalone != q:
+        yield {"type": "rewrite", "query": standalone}
+
+    messages = [
+        {"role": "system", "content": _SYSTEM},
+        *_history_messages(history),
+        {"role": "user", "content": standalone},
+    ]
+    trace: list[dict] = []
+    reports: dict[int, dict] = {}
+    objects: dict[str, dict] = {}
+
+    # Phase 1 — 도구 조사(진행 상황 방출). 최종 답변은 Phase 2 에서 스트리밍.
+    for hop in range(1, max_hops):
+        if should_cancel and await should_cancel():
+            return
+        last = await run_in_threadpool(
+            chat, messages, tools=agent_tools.TOOL_SCHEMAS,
+        )
+        if not last.tool_calls:
+            break
+        messages.append(_assistant_tool_msg(last))
+        for tc in last.tool_calls:
+            name, args = tc.get("name"), (tc.get("arguments") or {})
+            result = await run_in_threadpool(agent_tools.run_tool, db, actor, name, args)
+            content = result.get("content", {})
+            for o in result.get("objects", []):
+                objects[f"{o['type']}:{o['id']}"] = o
+            for r in result.get("reports", []):
+                reports.setdefault(r["report_id"], r)
+            summary = _summary(name, args, content)
+            trace.append({"hop": hop, "tool": name, "args": args, "summary": summary})
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.get("id") or f"call_{hop}",
+                "content": json.dumps(content, ensure_ascii=False),
+            })
+            yield {"type": "progress", "summary": summary}
+
+    # Phase 2 — 최종 답변 토큰 스트리밍(tools 없음).
+    yield {"type": "progress", "summary": "답 정리 중…"}
+    answer_parts: list[str] = []
+    async for tok in astream_chat(messages, should_cancel=should_cancel):
+        answer_parts.append(tok)
+        yield {"type": "token", "text": tok}
+    answer = "".join(answer_parts).strip()
+
+    citations = [{"n": i, **r} for i, r in enumerate(reports.values(), start=1)]
+    result_objects = list(objects.values())
+    done = {
+        "type": "done", "answer": answer, "citations": citations,
+        "objects": result_objects, "trace": trace,
+        "no_evidence": not citations and not result_objects,
+    }
+    if standalone != q:
+        done["rewritten_query"] = standalone
+    blocks = _verify_blocks(citations)
+    if blocks and qa._verify_enabled():
+        v = await run_in_threadpool(qa._verify, answer, blocks)
+        if v:
+            done["verification"] = v
+    yield done

@@ -78,6 +78,42 @@ def test_run_agent_injects_history(monkeypatch):
     assert msgs[-1]["content"] == "STANDALONE"  # 현재(재작성) 질문이 마지막
 
 
+def test_run_agent_stream_events(monkeypatch):
+    """스트리밍 — 도구 없이 답변 → progress(답 정리) + token들 + done."""
+    import asyncio
+
+    import app.ai.llm as llm
+
+    monkeypatch.setattr(qa, "_contextualize", lambda h, q: q)
+
+    class NoToolRes:
+        tool_calls = None
+        content = ""
+        model = "m"
+        backend = "b"
+
+    monkeypatch.setattr(agent, "chat", lambda messages, tools=None: NoToolRes())
+
+    async def fake_astream(messages, should_cancel=None):
+        for t in ["안", "녕"]:
+            yield t
+
+    monkeypatch.setattr(llm, "astream_chat", fake_astream)
+
+    async def collect():
+        out = []
+        async for e in agent.run_agent_stream(db=None, actor=None, query="안녕"):
+            out.append(e)
+        return out
+
+    evts = asyncio.run(collect())
+    types = [e["type"] for e in evts]
+    assert "token" in types
+    assert types[-1] == "done"
+    assert evts[-1]["answer"] == "안녕"
+    assert "".join(e["text"] for e in evts if e["type"] == "token") == "안녕"
+
+
 def test_run_agent_no_history_no_rewrite(monkeypatch):
     # 히스토리 없으면 재작성 없음 → rewritten_query 미포함.
     def fake_chat(messages, tools=None, tool_choice=None):

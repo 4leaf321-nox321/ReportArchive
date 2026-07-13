@@ -153,9 +153,10 @@ export function ObjectProfile({ entityId, onOpenEntity, hideGraph = false }) {
  */
 export function EntityGraphPanel({ entityId, onNodeClick }) {
   const [mode, setMode] = useState('2d') // '2d' | '3d' — 3D 는 공간 이동으로 넓게 조망
+  // 3D 는 여유 공간을 살려 더 깊게(3홉) 펼친다 — 2D 는 2홉(엉킴 방지).
   const { data: graph } = useAsync(
-    () => getEntityGraph(entityId, { depth: 2 }),
-    [entityId],
+    () => getEntityGraph(entityId, { depth: mode === '3d' ? 3 : 2 }),
+    [entityId, mode],
   )
   const { data: relTypesRes } = useAsync(() => listRelationTypes(), [])
   const relTypeLabels = useMemo(() => {

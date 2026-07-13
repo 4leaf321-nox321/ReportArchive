@@ -1,6 +1,10 @@
 import { lazy, Suspense, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
+import SpriteText from 'three-spritetext'
 import { axisColor } from '@/shared/reports/graphColors'
+
+const LABEL_COLOR = '#cbd5e1' // slate-300 — 어두운 배경 위 라벨
+const LABEL_CENTER = '#fbbf24' // amber — 중심 라벨
 
 // react-force-graph-3d 는 무겁고(three 기반) 3D 모드에서만 쓰므로 lazy 로 분리.
 // EntityGraphView(2D)와 같은 props·데이터 shape 를 받는 3D 버전 — 공간을 이동/회전하며
@@ -58,6 +62,12 @@ export function Graph3DView({
 
   const graphData = useMemo(() => {
     if (!graph) return { nodes: [], links: [] }
+    // 노드별 연결 수(degree) — 크기·라벨 강조에. 많이 연결된 게 크게 보이면 구조가 읽힌다.
+    const degree = {}
+    for (const e of graph.edges ?? []) {
+      degree[e.src] = (degree[e.src] || 0) + 1
+      degree[e.dst] = (degree[e.dst] || 0) + 1
+    }
     return {
       nodes: (graph.nodes ?? []).map((n) => ({
         id: n.id,
@@ -67,6 +77,7 @@ export function Graph3DView({
         kind: n.kind ?? 'entity',
         refType: n.ref_type,
         refId: n.ref_id,
+        degree: degree[n.id] || 0,
       })),
       links: (graph.edges ?? []).map((e) => ({
         source: e.src,
@@ -105,9 +116,21 @@ export function Graph3DView({
             height={size.height}
             backgroundColor={BG_COLOR}
             nodeColor={nodeColor}
-            nodeVal={(n) => (n.isCenter ? 6 : 3)}
+            nodeVal={(n) =>
+              n.isCenter ? 9 : Math.max(2, 2 + Math.sqrt(n.degree || 0) * 1.3)
+            }
             nodeOpacity={0.95}
             nodeLabel={(n) => n.label ?? ''}
+            nodeThreeObjectExtend
+            nodeThreeObject={(n) => {
+              const s = new SpriteText(n.label || '')
+              s.color = n.isCenter ? LABEL_CENTER : LABEL_COLOR
+              s.textHeight = n.isCenter ? 5 : 3.5
+              s.fontWeight = n.isCenter ? '600' : '400'
+              s.material.depthWrite = false // 노드 뒤에 가려도 읽히게
+              s.position.set(0, -7, 0) // 노드 아래
+              return s
+            }}
             linkColor={() => EDGE_COLOR}
             linkOpacity={0.5}
             linkWidth={0.5}

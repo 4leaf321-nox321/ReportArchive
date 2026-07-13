@@ -79,6 +79,10 @@ class NotificationType(str, enum.Enum):
     report_phase_to_reviewing = "report.phase_to_reviewing"
     report_phase_to_finalized = "report.phase_to_finalized"
 
+    # Phase D 경보 — 규칙이 새로 발화(신규 대상 진입). payload: {rule_name, fired,
+    # firing, probe_key, report_title(=rule_name), excerpt}. ref=(alert_rules, rule_id).
+    alert_firing = "alert.firing"
+
 
 class Notification(Base):
     __tablename__ = "notifications"

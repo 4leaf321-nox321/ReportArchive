@@ -17,6 +17,7 @@ import {
   Lock,
   MessageCircle,
   Send,
+  Siren,
   Trash2,
   Unlock,
 } from 'lucide-react'
@@ -57,6 +58,8 @@ const TYPE_META = {
   'composite.included': { icon: Layers, color: 'text-indigo-600', label: '종합에 포함됨' },
   'composite.cited_upward': { icon: Layers, color: 'text-indigo-700', label: '상위 종합 인용' },
   'composite.published': { icon: CircleCheck, color: 'text-blue-600', label: '종합 발행됨' },
+  // Phase D 경보 — /admin/alerts?rule={ref_id} 로 이동.
+  'alert.firing': { icon: Siren, color: 'text-red-600', label: '경보' },
 }
 
 const TABS = [
@@ -402,6 +405,10 @@ function deepLinkFor(n) {
     const ws = n.workspace_slug
     if (!ws) return null
     return `/w/${ws}/composites/${n.ref_id}`
+  }
+  // Phase D 경보 — 규칙별 경보 페이지로.
+  if (n.ref_table === 'alert_rules' && n.ref_id) {
+    return `/admin/alerts?rule=${n.ref_id}`
   }
   return null
 }

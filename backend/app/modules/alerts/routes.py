@@ -81,12 +81,13 @@ def update_rule(
 def run_rule(
     rule_id: int,
     db: Session = Depends(get_db),
-    _admin: User = Depends(require_system_admin),
+    admin: User = Depends(require_system_admin),
 ):
     rule = services.get_rule(db, rule_id)
     if rule is None:
         return not_found_response("규칙을 찾을 수 없습니다.")
-    result = services.run_rule(db, rule)
+    # actor=실행한 관리자 → 본인은 알림 self-skip(다른 관리자에겐 새 발화 알림).
+    result = services.run_rule(db, rule, actor_user_id=admin.id)
     return success_response(data=RunResult(**result).model_dump())
 
 

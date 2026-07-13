@@ -65,6 +65,53 @@ def test_run_rule_state_machine(monkeypatch):
         db.close()
 
 
+def test_run_rule_notifies_admins_on_new_firing(monkeypatch):
+    """새 발화 → 시스템 관리자에게 알림. 재실행(새 발화 없음)엔 알림 0."""
+    from sqlalchemy import func, select, text
+
+    from app.modules.notifications.models import Notification, NotificationType
+    from app.modules.users.models import User
+
+    db = SessionLocal()
+    rule = AlertRule(name="_notif", enabled=True, probe_key="_test_probe",
+                     params={}, severity="info")
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    admins = db.execute(
+        select(func.count()).select_from(User).where(User.is_system_admin.is_(True))
+    ).scalar_one()
+
+    def n_notifs():
+        return db.execute(
+            select(func.count()).select_from(Notification).where(
+                Notification.type == NotificationType.alert_firing,
+                Notification.ref_id == rule.id,
+            )
+        ).scalar_one()
+
+    try:
+        current = [_target(1)]
+        monkeypatch.setitem(services.PROBES, "_test_probe",
+                            lambda _db, _p: list(current))
+        base = n_notifs()
+        services.run_rule(db, rule)  # actor None → 전체 관리자
+        assert n_notifs() - base == admins  # 새 발화 1 → 관리자 수만큼
+        # 재실행 — 같은 대상(새 발화 0) → 알림 증가 없음.
+        mid = n_notifs()
+        services.run_rule(db, rule)
+        assert n_notifs() == mid
+    finally:
+        db.execute(
+            text("DELETE FROM notifications WHERE ref_table='alert_rules' AND ref_id=:r"),
+            {"r": rule.id},
+        )
+        db.query(AlertRuleState).filter_by(rule_id=rule.id).delete()
+        db.delete(rule)
+        db.commit()
+        db.close()
+
+
 def test_disabled_rule_fires_nothing(monkeypatch):
     db = SessionLocal()
     rule = AlertRule(name="_t2", enabled=False, probe_key="_test_probe",

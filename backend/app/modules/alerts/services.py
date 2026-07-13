@@ -253,9 +253,45 @@ def evaluate_rule(db: Session, rule: AlertRule) -> list[dict]:
     return probe(db, rule.params or {})
 
 
-def run_rule(db: Session, rule: AlertRule) -> dict:
+def _notify_new_firings(db: Session, rule: AlertRule, fired: int, firing_total: int,
+                        actor_user_id) -> None:
+    """새 발화(신규 진입)가 있으면 시스템 관리자에게 인앱 알림(요약) 1건씩.
+    이메일 팬아웃은 create_notification 내부에서 옵트인 사용자에게 자동 처리.
+    새로 걸린 것만 알리므로 기존 백로그·반복 실행으로 스팸 나지 않는다(diff)."""
+    if fired <= 0:
+        return
+    from app.modules.notifications.models import NotificationType
+    from app.modules.notifications.services import create_notification
+    from app.modules.users.models import User
+
+    admins = list(
+        db.execute(select(User.id).where(User.is_system_admin.is_(True))).scalars()
+    )
+    payload = {
+        "rule_name": rule.name,
+        "fired": fired,
+        "firing": firing_total,
+        "probe_key": rule.probe_key,
+        # NotificationRow 가 읽는 표시 필드(제목=규칙명, 요약=건수).
+        "report_title": rule.name,
+        "excerpt": f"새로 {fired}건 발화 · 현재 {firing_total}건",
+    }
+    for uid in admins:
+        create_notification(
+            db,
+            recipient_user_id=uid,
+            type=NotificationType.alert_firing,
+            ref_table="alert_rules",
+            ref_id=rule.id,
+            actor_user_id=actor_user_id,
+            payload=payload,
+        )
+
+
+def run_rule(db: Session, rule: AlertRule, *, actor_user_id=None) -> dict:
     """규칙 1회 실행 — 프로브 → 직전 상태와 diff → 발화/해소 반영.
-    RunResult 형태의 dict 반환. 비활성 규칙은 평가하지 않는다(발화 0)."""
+    RunResult 형태의 dict 반환. 비활성 규칙은 평가하지 않는다(발화 0).
+    새 발화가 있으면 관리자에게 알림(actor 는 self-skip — 수동 실행자 본인 제외)."""
     now = datetime.utcnow()
 
     targets = evaluate_rule(db, rule) if rule.enabled else []
@@ -307,12 +343,15 @@ def run_rule(db: Session, rule: AlertRule) -> dict:
 
     rule.last_run_at = now
     rule.last_status = "ok"
+    db.flush()  # 방금 add/변경한 발화 상태를 반영해야 카운트가 맞다(autoflush off 대비).
+    firing_total = firing_count(db, rule.id)
+    _notify_new_firings(db, rule, fired, firing_total, actor_user_id)
     db.commit()
 
     return {
         "checked": len(targets),
         "fired": fired,
         "resolved": resolved,
-        "firing": firing_count(db, rule.id),
+        "firing": firing_total,
         "capped": capped,
     }

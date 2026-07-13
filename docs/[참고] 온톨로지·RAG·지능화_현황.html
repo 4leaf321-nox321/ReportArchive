@@ -1,0 +1,862 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReportArchive — 온톨로지·RAG·지능화 현황</title>
+<style>*{margin:0}</style>
+</head>
+<body>
+<style>
+  :root{
+    --bg:#eef0f4; --surface:#fbfcfe; --surface-2:#f3f5f9; --surface-3:#e9edf3;
+    --ink:#1b2230; --ink-soft:#56607a; --ink-faint:#8a93a8;
+    --line:#dbe0ea; --line-soft:#e6eaf1;
+    --accent:#0e7c8b; --accent-ink:#0a5e69; --accent-soft:#e0f0f2;
+    --done:#1f9d63; --done-soft:#e3f4ea;
+    --prog:#c9821f; --prog-soft:#f7ecd8;
+    --plan:#6e7a96; --plan-soft:#eaedf3;
+    --grade:#116273;
+    --font-sans:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+    --font-mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --font-serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"Noto Serif KR",serif;
+    --maxw:1080px;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0b0f16; --surface:#131924; --surface-2:#0f141d; --surface-3:#1a2130;
+      --ink:#e6ebf3; --ink-soft:#9aa6bc; --ink-faint:#5e6a83;
+      --line:#232c3b; --line-soft:#1b2330;
+      --accent:#3ed0de; --accent-ink:#8fe6ef; --accent-soft:#10333a;
+      --done:#35c07e; --done-soft:#0f2a1e;
+      --prog:#e3a33e; --prog-soft:#2c2313;
+      --plan:#8794b1; --plan-soft:#1a2130;
+      --grade:#2ab6c8;
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#eef0f4; --surface:#fbfcfe; --surface-2:#f3f5f9; --surface-3:#e9edf3;
+    --ink:#1b2230; --ink-soft:#56607a; --ink-faint:#8a93a8;
+    --line:#dbe0ea; --line-soft:#e6eaf1;
+    --accent:#0e7c8b; --accent-ink:#0a5e69; --accent-soft:#e0f0f2;
+    --done:#1f9d63; --done-soft:#e3f4ea;
+    --prog:#c9821f; --prog-soft:#f7ecd8;
+    --plan:#6e7a96; --plan-soft:#eaedf3; --grade:#116273;
+  }
+  :root[data-theme="dark"]{
+    --bg:#0b0f16; --surface:#131924; --surface-2:#0f141d; --surface-3:#1a2130;
+    --ink:#e6ebf3; --ink-soft:#9aa6bc; --ink-faint:#5e6a83;
+    --line:#232c3b; --line-soft:#1b2330;
+    --accent:#3ed0de; --accent-ink:#8fe6ef; --accent-soft:#10333a;
+    --done:#35c07e; --done-soft:#0f2a1e;
+    --prog:#e3a33e; --prog-soft:#2c2313;
+    --plan:#8794b1; --plan-soft:#1a2130; --grade:#2ab6c8;
+  }
+
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:var(--font-sans); line-height:1.7;
+    -webkit-font-smoothing:antialiased; font-size:16px;
+  }
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 24px}
+  a{color:var(--accent-ink); text-decoration:none}
+  a:hover{text-decoration:underline}
+  h1,h2,h3{text-wrap:balance; line-height:1.2; margin:0}
+  p{margin:0}
+
+  .mono{font-family:var(--font-mono)}
+  .eyebrow{
+    font-family:var(--font-mono); font-size:.72rem; letter-spacing:.18em;
+    text-transform:uppercase; color:var(--accent-ink); font-weight:600;
+  }
+
+  /* ---------- sticky ribbon ---------- */
+  .ribbon{
+    position:sticky; top:0; z-index:30;
+    background:color-mix(in srgb, var(--surface) 88%, transparent);
+    backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--line);
+  }
+  .ribbon-in{
+    max-width:var(--maxw); margin:0 auto; padding:10px 24px;
+    display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+  }
+  .ribbon .brand{display:flex; align-items:center; gap:9px; font-weight:700; font-size:.9rem; letter-spacing:-.01em}
+  .brand .dot{width:9px; height:9px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 3px var(--accent-soft)}
+  .ribbon .ver{
+    font-family:var(--font-mono); font-size:.72rem; color:var(--ink-soft);
+    border:1px solid var(--line); border-radius:6px; padding:3px 8px;
+  }
+  .ribbon .spacer{flex:1}
+  .themebtn{
+    font-family:var(--font-mono); font-size:.7rem; letter-spacing:.05em;
+    color:var(--ink-soft); background:var(--surface-2); border:1px solid var(--line);
+    border-radius:7px; padding:5px 10px; cursor:pointer;
+  }
+  .themebtn:hover{color:var(--ink); border-color:var(--accent)}
+
+  /* ---------- hero ---------- */
+  .hero{position:relative; overflow:hidden; border-bottom:1px solid var(--line)}
+  #net{position:absolute; inset:0; width:100%; height:100%; display:block}
+  .hero-grad{
+    position:absolute; inset:0; pointer-events:none;
+    background:radial-gradient(120% 90% at 78% 8%, transparent 40%, var(--bg) 92%);
+  }
+  .hero-in{position:relative; z-index:2; padding:78px 0 66px}
+  .hero h1{
+    font-size:clamp(2.3rem,5.6vw,3.75rem); font-weight:800; letter-spacing:-.025em;
+    margin:16px 0 0; max-width:15ch;
+  }
+  .hero h1 .flip{color:var(--accent-ink)}
+  .hero .lede{
+    margin-top:22px; max-width:56ch; font-size:1.12rem; color:var(--ink-soft);
+  }
+  .hero .lede b{color:var(--ink); font-weight:600}
+  .hero-meta{
+    margin-top:30px; display:flex; gap:10px; flex-wrap:wrap;
+    font-family:var(--font-mono); font-size:.74rem;
+  }
+  .chip{
+    display:inline-flex; align-items:center; gap:7px;
+    border:1px solid var(--line); background:color-mix(in srgb,var(--surface) 70%, transparent);
+    border-radius:999px; padding:6px 13px; color:var(--ink-soft);
+  }
+  .chip .sq{width:8px; height:8px; border-radius:2px}
+  .sq.done{background:var(--done)} .sq.prog{background:var(--prog)} .sq.plan{background:var(--plan)}
+
+  /* ---------- section scaffolding ---------- */
+  section{padding:64px 0; border-bottom:1px solid var(--line-soft)}
+  .sec-head{max-width:64ch; margin-bottom:36px}
+  .sec-head h2{font-size:clamp(1.55rem,3.2vw,2.15rem); font-weight:750; letter-spacing:-.02em; margin-top:10px}
+  .sec-head p{margin-top:12px; color:var(--ink-soft); font-size:1.03rem}
+  .kicker{display:flex; align-items:center; gap:11px}
+  .kicker .num{font-family:var(--font-mono); font-size:.72rem; color:var(--ink-faint)}
+  .kicker .rule{height:1px; width:34px; background:var(--accent); opacity:.6}
+
+  /* ---------- pills ---------- */
+  .pill{
+    display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
+    font-family:var(--font-mono); font-size:.68rem; font-weight:600; letter-spacing:.02em;
+    border-radius:999px; padding:3px 9px 3px 8px; border:1px solid transparent;
+  }
+  .pill::before{content:""; width:6px; height:6px; border-radius:50%}
+  .pill.done{color:var(--done); background:var(--done-soft); border-color:color-mix(in srgb,var(--done) 30%,transparent)}
+  .pill.done::before{background:var(--done)}
+  .pill.prog{color:var(--prog); background:var(--prog-soft); border-color:color-mix(in srgb,var(--prog) 32%,transparent)}
+  .pill.prog::before{background:var(--prog)}
+  .pill.plan{color:var(--plan); background:var(--plan-soft); border-color:color-mix(in srgb,var(--plan) 30%,transparent)}
+  .pill.plan::before{background:var(--plan)}
+
+  /* ---------- concept cards (ontology triad) ---------- */
+  .triad{display:grid; grid-template-columns:repeat(3,1fr); gap:16px}
+  .tcard{
+    background:var(--surface); border:1px solid var(--line); border-radius:14px;
+    padding:22px 20px; position:relative; overflow:hidden;
+  }
+  .tcard .glyph{font-family:var(--font-mono); font-size:.72rem; color:var(--accent-ink); letter-spacing:.12em; text-transform:uppercase}
+  .tcard h3{margin-top:8px; font-size:1.25rem; font-weight:750; letter-spacing:-.01em}
+  .tcard p{margin-top:10px; color:var(--ink-soft); font-size:.95rem}
+  .tcard .ex{
+    margin-top:14px; font-family:var(--font-mono); font-size:.76rem; color:var(--ink);
+    background:var(--surface-2); border:1px solid var(--line-soft); border-radius:8px; padding:9px 11px;
+  }
+  .tcard .ex span{color:var(--accent-ink)}
+
+  .fourup{display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-top:24px}
+  .step{
+    background:var(--surface-2); border:1px solid var(--line-soft); border-radius:12px; padding:16px 15px;
+  }
+  .step .n{font-family:var(--font-mono); font-size:.72rem; color:var(--accent-ink); font-weight:700}
+  .step h4{margin:8px 0 5px; font-size:.98rem; font-weight:700}
+  .step p{font-size:.85rem; color:var(--ink-soft); line-height:1.55}
+
+  /* ---------- glossary ---------- */
+  .gloss{display:grid; grid-template-columns:repeat(2,1fr); gap:14px}
+  .g{
+    background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:18px 18px 16px;
+    display:flex; flex-direction:column; gap:9px;
+  }
+  .g-top{display:flex; align-items:center; justify-content:space-between; gap:12px}
+  .g-top h3{font-size:1.06rem; font-weight:730; letter-spacing:-.01em}
+  .g .plain{color:var(--ink-soft); font-size:.93rem; line-height:1.6}
+  .g .impl{
+    font-family:var(--font-mono); font-size:.74rem; color:var(--ink-soft);
+    border-top:1px dashed var(--line); padding-top:9px; margin-top:2px;
+  }
+  .g .impl b{color:var(--accent-ink); font-weight:600}
+
+  /* ---------- pipeline diagram ---------- */
+  .pipe{
+    background:var(--surface-2); border:1px solid var(--line); border-radius:16px;
+    padding:26px 22px; overflow-x:auto;
+  }
+  .pipe-grid{min-width:640px; display:grid; gap:14px}
+  .prow{display:flex; align-items:stretch; gap:12px; flex-wrap:nowrap}
+  .node{
+    flex:1; background:var(--surface); border:1px solid var(--line); border-radius:11px;
+    padding:13px 14px; min-width:0;
+  }
+  .node.seed{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+  .node.opt{border-style:dashed; background:transparent}
+  .node .lbl{font-family:var(--font-mono); font-size:.7rem; letter-spacing:.06em; text-transform:uppercase; color:var(--accent-ink); font-weight:600}
+  .node .d{margin-top:5px; font-size:.86rem; color:var(--ink-soft); line-height:1.5}
+  .node.opt .lbl{color:var(--plan)}
+  .arrow{align-self:center; color:var(--ink-faint); font-family:var(--font-mono); font-size:1.1rem; flex:0 0 auto}
+  .brace{font-family:var(--font-mono); font-size:.72rem; color:var(--ink-faint); align-self:center; text-align:center; flex:0 0 90px}
+
+  /* ---------- comparison matrix ---------- */
+  .matrix-wrap{overflow-x:auto; border:1px solid var(--line); border-radius:14px; background:var(--surface)}
+  table.matrix{width:100%; min-width:720px; border-collapse:collapse; font-size:.92rem}
+  table.matrix thead th{
+    text-align:left; font-family:var(--font-mono); font-size:.7rem; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--ink-faint); font-weight:600; padding:14px 16px; border-bottom:1px solid var(--line);
+    background:var(--surface-2); position:sticky; top:0;
+  }
+  table.matrix td{padding:13px 16px; border-bottom:1px solid var(--line-soft); vertical-align:top}
+  table.matrix tbody tr:last-child td{border-bottom:none}
+  table.matrix .concept{font-weight:650; white-space:nowrap}
+  table.matrix .concept small{display:block; font-weight:400; font-family:var(--font-mono); font-size:.68rem; color:var(--ink-faint); margin-top:2px}
+  table.matrix .ours{color:var(--ink-soft); line-height:1.5}
+  table.matrix .st{white-space:nowrap; text-align:right}
+  table.matrix tr:hover td{background:color-mix(in srgb,var(--accent-soft) 40%,transparent)}
+
+  .outscope{
+    margin-top:22px; background:var(--surface-2); border:1px solid var(--line);
+    border-left:3px solid var(--plan); border-radius:12px; padding:18px 20px;
+  }
+  .outscope h4{font-size:1rem; font-weight:700; margin-bottom:6px}
+  .outscope p{color:var(--ink-soft); font-size:.92rem}
+  .outscope ul{margin:12px 0 0; padding-left:0; list-style:none; display:grid; gap:9px}
+  .outscope li{padding-left:20px; position:relative; font-size:.9rem; color:var(--ink-soft)}
+  .outscope li::before{content:"✕"; position:absolute; left:0; color:var(--plan); font-size:.78rem; top:3px}
+  .outscope li b{color:var(--ink)}
+
+  /* ---------- capability loop meter ---------- */
+  .loop{
+    background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:24px 22px;
+    margin-bottom:34px;
+  }
+  .loop-top{display:flex; align-items:baseline; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:18px}
+  .loop-top h3{font-size:1.1rem; font-weight:730}
+  .loop-top .pct{font-family:var(--font-mono); color:var(--ink-soft); font-size:.82rem}
+  .loop-track{display:grid; grid-template-columns:repeat(6,1fr); gap:8px}
+  .seg{border-radius:9px; padding:12px 12px 13px; border:1px solid var(--line); background:var(--surface-2)}
+  .seg .k{font-family:var(--font-mono); font-size:.66rem; letter-spacing:.05em; text-transform:uppercase; color:var(--ink-faint)}
+  .seg .t{margin-top:5px; font-size:.9rem; font-weight:650; line-height:1.25}
+  .seg.done{background:var(--done-soft); border-color:color-mix(in srgb,var(--done) 32%,transparent)}
+  .seg.done .k{color:var(--done)}
+  .seg.prog{background:var(--prog-soft); border-color:color-mix(in srgb,var(--prog) 34%,transparent)}
+  .seg.prog .k{color:var(--prog)}
+  .seg.plan{background:var(--plan-soft); border-color:color-mix(in srgb,var(--plan) 30%,transparent)}
+  .seg.plan .k{color:var(--plan)}
+  .loop-note{margin-top:14px; font-size:.88rem; color:var(--ink-soft)}
+  .loop-note b{color:var(--ink)}
+
+  /* ---------- roadmap spine ---------- */
+  .spine{position:relative; margin-left:6px; padding-left:30px}
+  .spine::before{content:""; position:absolute; left:6px; top:6px; bottom:6px; width:2px; background:var(--line)}
+  .ph{position:relative; padding-bottom:26px}
+  .ph:last-child{padding-bottom:0}
+  .ph .marker{
+    position:absolute; left:-30px; top:2px; width:14px; height:14px; border-radius:50%;
+    background:var(--surface); border:2px solid var(--plan);
+  }
+  .ph.done .marker{border-color:var(--done); background:var(--done)}
+  .ph.prog .marker{border-color:var(--prog); background:var(--prog); box-shadow:0 0 0 4px var(--prog-soft)}
+  .ph-card{background:var(--surface); border:1px solid var(--line); border-radius:13px; padding:17px 19px}
+  .ph.prog .ph-card{border-color:color-mix(in srgb,var(--prog) 40%,var(--line))}
+  .ph-top{display:flex; align-items:center; gap:11px; flex-wrap:wrap}
+  .ph-code{font-family:var(--font-mono); font-size:.72rem; font-weight:700; color:var(--accent-ink); background:var(--accent-soft); padding:2px 8px; border-radius:6px}
+  .ph-top h3{font-size:1.12rem; font-weight:730; letter-spacing:-.01em}
+  .ph-card p{margin-top:9px; color:var(--ink-soft); font-size:.93rem}
+  .vers{margin-top:12px; display:flex; gap:6px; flex-wrap:wrap}
+  .vers .v{font-family:var(--font-mono); font-size:.68rem; color:var(--ink-soft); border:1px solid var(--line); border-radius:6px; padding:2px 7px}
+  .vers .v.hl{color:var(--accent-ink); border-color:color-mix(in srgb,var(--accent) 40%,var(--line))}
+
+  /* ---------- AI search sub grid ---------- */
+  .subgrid{display:grid; grid-template-columns:repeat(4,1fr); gap:11px; margin-top:6px}
+  .sg{background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:14px 14px}
+  .sg .num{font-family:var(--font-mono); font-size:.7rem; color:var(--ink-faint)}
+  .sg h4{margin:5px 0 6px; font-size:.92rem; font-weight:700; line-height:1.25}
+  .sg p{font-size:.78rem; color:var(--ink-soft); line-height:1.5; min-height:2.4em}
+  .sg .foot{margin-top:9px; display:flex; align-items:center; justify-content:space-between; gap:8px}
+  .sg .vtag{font-family:var(--font-mono); font-size:.65rem; color:var(--ink-faint)}
+
+  /* ---------- closing ---------- */
+  .thesis{
+    background:var(--surface); border:1px solid var(--line); border-radius:18px;
+    padding:38px 34px; position:relative; overflow:hidden;
+  }
+  .thesis .q{
+    font-family:var(--font-serif); font-size:clamp(1.35rem,2.8vw,1.85rem); line-height:1.4;
+    font-style:italic; color:var(--ink); max-width:38ch;
+  }
+  .thesis .q b{font-style:normal; color:var(--accent-ink)}
+  .thesis .by{margin-top:16px; font-family:var(--font-mono); font-size:.74rem; color:var(--ink-faint); letter-spacing:.04em}
+  .gaps{margin-top:26px; display:grid; grid-template-columns:repeat(3,1fr); gap:13px}
+  .gap{background:var(--surface-2); border:1px solid var(--line-soft); border-radius:11px; padding:15px 15px}
+  .gap .h{display:flex; align-items:center; gap:8px; font-size:.9rem; font-weight:700}
+  .gap p{margin-top:7px; font-size:.83rem; color:var(--ink-soft); line-height:1.5}
+
+  footer{padding:40px 0 60px; color:var(--ink-faint); font-size:.82rem}
+  footer .srcs{display:flex; gap:8px; flex-wrap:wrap; margin-top:12px}
+  footer .srcs code{font-family:var(--font-mono); font-size:.72rem; background:var(--surface-2); border:1px solid var(--line-soft); border-radius:6px; padding:3px 8px; color:var(--ink-soft)}
+
+  @media (max-width:820px){
+    .triad{grid-template-columns:1fr}
+    .fourup{grid-template-columns:repeat(2,1fr)}
+    .gloss{grid-template-columns:1fr}
+    .subgrid{grid-template-columns:repeat(2,1fr)}
+    .gaps{grid-template-columns:1fr}
+    .loop-track{grid-template-columns:repeat(2,1fr)}
+    .hero-in{padding:56px 0 48px}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none !important; transition:none !important}
+  }
+</style>
+
+<div class="ribbon">
+  <div class="ribbon-in">
+    <div class="brand"><span class="dot"></span>ReportArchive · 온톨로지 &amp; 지능화</div>
+    <span class="ver">v0.109.0</span>
+    <span class="ver">2026-07-13</span>
+    <span class="spacer"></span>
+    <button class="themebtn" id="themebtn" type="button">◐ 테마</button>
+  </div>
+</div>
+
+<header class="hero">
+  <canvas id="net" aria-hidden="true"></canvas>
+  <div class="hero-grad"></div>
+  <div class="wrap hero-in">
+    <span class="eyebrow">팔란티어 파운드리 벤치마킹 · 연결성 기반 의사결정 플랫폼</span>
+    <h1>문서 중심에서<br><span class="flip">객체 중심</span>으로</h1>
+    <p class="lede">
+      팔란티어의 핵심은 화려한 UI가 아니라 <b>온톨로지</b>다 — 세상을 객체·속성·링크로 모델링하고
+      모든 데이터를 그 위에 얹는 것. ReportArchive도 축을 뒤집었다:
+      <b>“문서가 중심, 객체는 태그”가 아니라 “객체가 중심, 문서는 그 객체에 붙은 증거 하나”.</b>
+      이 문서는 RAG·온톨로지·지능화가 무엇인지 쉽게 풀고, 파운드리 대비 어디까지 왔는지를 한눈에 보여준다.
+    </p>
+    <div class="hero-meta">
+      <span class="chip"><span class="sq done"></span>완료 — 모델·뷰·검색·AI·데이터 유입</span>
+      <span class="chip"><span class="sq prog"></span>진행 중 — 능동성(경보 Phase D)</span>
+      <span class="chip"><span class="sq plan"></span>예정 — 운동성(조치 Phase E)·구조화·AGE</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <!-- ===== 1. 온톨로지란 ===== -->
+  <section id="ontology">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker"><span class="rule"></span><span class="num">01 / 기초 개념</span></div>
+        <h2>온톨로지란 무엇인가</h2>
+        <p>팔란티어(Foundry·Gotham)는 세상을 딱 세 가지로 모델링한다. 이 세 조각 위에 모든 것이 올라간다.</p>
+      </div>
+
+      <div class="triad">
+        <div class="tcard">
+          <span class="glyph">Object · 객체</span>
+          <h3>현실의 실체</h3>
+          <p>부품·시험·과제·실패모드·사람·조직처럼 “실제로 존재하는 것”. 문서가 아니라 대상 그 자체.</p>
+          <div class="ex">과제 <span>“B300 방수설계”</span> · 공급사 · 시험실행 · 실패사례</div>
+        </div>
+        <div class="tcard">
+          <span class="glyph">Property · 속성</span>
+          <h3>타입 있는 필드</h3>
+          <p>객체가 가진 값. 자유 텍스트가 아니라 연도·상태·수치처럼 <em>타입이 정의된</em> 데이터.</p>
+          <div class="ex">연도=<span>2025</span> · 상태=<span>실패</span> · RPN=<span>120</span></div>
+        </div>
+        <div class="tcard">
+          <span class="glyph">Link · 링크</span>
+          <h3>객체 사이 관계</h3>
+          <p>객체와 객체를 잇는 선. 이 연결망을 따라 넘나들며 맥락을 탐색한다(그래프 트래버설).</p>
+          <div class="ex"><span>part_of</span> · <span>tested_by</span> · <span>caused_by</span></div>
+        </div>
+      </div>
+
+      <div class="fourup">
+        <div class="step"><div class="n">→ 01</div><h4>데이터 결합</h4><p>문서·표·시험결과·업무가 전부 <em>같은 객체</em>에 붙는다.</p></div>
+        <div class="step"><div class="n">→ 02</div><h4>연결 탐색</h4><p>객체에서 객체로 넘나들며 연결된 맥락을 본다.</p></div>
+        <div class="step"><div class="n">→ 03</div><h4>발화·조치</h4><p>그래프 위에서 경보·조치·게이트가 튀어나온다.</p></div>
+        <div class="step"><div class="n">→ 04</div><h4>출처 추적</h4><p>모든 사실이 어느 문서·버전·작성자에서 왔는지 남는다.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 2. 개념 사전 ===== -->
+  <section id="glossary">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker"><span class="rule"></span><span class="num">02 / 개념 사전</span></div>
+        <h2>지능화의 용어들 — 쉽게</h2>
+        <p>“RAG·GraphRAG·에이전트” 같은 말이 실제로 무엇을 뜻하는지, 그리고 우리는 그걸 어떻게 구현했는지.</p>
+      </div>
+
+      <div class="gloss">
+        <div class="g">
+          <div class="g-top"><h3>RAG (검색증강생성)</h3><span class="pill done">완료</span></div>
+          <p class="plain">질문을 받으면 먼저 <em>관련 문단을 찾아</em> 오고, 그 근거를 읽은 뒤 LLM이 <em>출처를 인용해</em> 답한다. LLM 혼자 지어내지 않게 하는 방식.</p>
+          <div class="impl">아카이브 Q&amp;A <b>POST /ai/ask</b> · 근거 청크 검색 → 번호 출처 → 인용 파싱</div>
+        </div>
+        <div class="g">
+          <div class="g-top"><h3>임베딩 · 벡터검색</h3><span class="pill done">완료</span></div>
+          <p class="plain">글을 “의미 좌표(벡터)”로 바꿔 저장한다. 단어가 안 겹쳐도 <em>뜻이 비슷한</em> 문서를 찾을 수 있다.</p>
+          <div class="impl">pgvector · <b>bge-m3</b> 1024차원 · HNSW 코사인 인덱스 (운영 Ollama :11435)</div>
+        </div>
+        <div class="g">
+          <div class="g-top"><h3>하이브리드 검색</h3><span class="pill done">완료</span></div>
+          <p class="plain">의미(벡터)와 글자(키워드)를 <em>둘 다</em> 써서 각 강점을 합친다. 오탈자·고유명사엔 키워드, 개념엔 벡터.</p>
+          <div class="impl">벡터 KNN + pg_trgm 키워드를 <b>RRF</b>로 융합 · 권한 밖 미노출</div>
+        </div>
+        <div class="g">
+          <div class="g-top"><h3>GraphRAG</h3><span class="pill done">완료</span></div>
+          <p class="plain">질문에서 <em>씨앗 객체</em>를 찾고, 온톨로지 링크로 <em>이웃 객체</em>까지 넓힌 뒤, 그 연결 근거를 일반 검색과 섞어 답한다.</p>
+          <div class="impl">질문→씨앗→expand_related 이웃→그래프 근거를 벡터검색과 <b>블렌드</b> · 신규 테이블 0</div>
+        </div>
+        <div class="g">
+          <div class="g-top"><h3>온톨로지 에이전트</h3><span class="pill done">완료</span></div>
+          <p class="plain">LLM이 <em>스스로 도구를 여러 번 호출</em>하며 다단계로 조사한다. “객체 찾기→관계 넓히기→본문 검색→집계”를 엮는 팔란티어 AIP식.</p>
+          <div class="impl">도구 5종 tool-calling: <b>list_object_types · search_objects · get_object · search_reports · aggregate_reports</b></div>
+        </div>
+        <div class="g">
+          <div class="g-top"><h3>재랭킹 · HyDE</h3><span class="pill done">완료</span></div>
+          <p class="plain">1차로 넉넉히 뽑은 뒤 LLM이 <em>진짜 답이 되는 순서</em>로 다시 정렬(재랭킹). HyDE는 “이상적 가상 답변”을 만들어 질문-문서 어휘 격차를 메운다.</p>
+          <div class="impl">qa._rerank(pool ×3) · qa._hyde · 설정 토글 + mock/장애 시 폴백</div>
+        </div>
+        <div class="g">
+          <div class="g-top"><h3>집계 라우팅 <span class="mono" style="color:var(--accent-ink)">★</span></h3><span class="pill done">완료</span></div>
+          <p class="plain">“2025년 낙하시험 실패한 과제 <em>몇 개</em>?” 같은 질문은 문단을 긁는 게 아니라 <em>온톨로지 SQL로 정확히 센다</em>. 파운드리다운 차별점.</p>
+          <div class="impl">structured_qa · 개수는 <b>SQL 계산(환각 없음)</b> · group-by/compare · 가시성 게이팅</div>
+        </div>
+        <div class="g">
+          <div class="g-top"><h3>근거 검증 · 평가</h3><span class="pill done">완료</span></div>
+          <p class="plain">답변의 각 주장이 <em>출처에 실제로 있는지</em> 대조(faithfulness). 그리고 골든셋·👍/👎로 검색 품질을 <em>측정</em>해 감 튜닝을 끝낸다.</p>
+          <div class="impl">qa._verify · eval.py(recall@k·MRR) · qa_feedback 테이블 + 골든셋 승격</div>
+        </div>
+        <div class="g">
+          <div class="g-top"><h3>데이터 채우기 (커넥터)</h3><span class="pill done">완료</span></div>
+          <p class="plain">엔진에 연료를 붓는 층. 엑셀 붙여넣기·벌크 임포트부터 <em>외부 시스템 자동 동기화</em>까지. 프로필·검색·에이전트가 전부 데이터 밀도에 좌우된다.</p>
+          <div class="impl">벌크/붙여넣기 + REST·OData 커넥터 · 주기 스케줄러 · AI 자동매핑 · 계보 태깅</div>
+        </div>
+        <div class="g">
+          <div class="g-top"><h3>경보 · 트리거 (Phase D)</h3><span class="pill prog">진행 중</span></div>
+          <p class="plain">온톨로지 <em>상태에 스스로 반응</em>하는 규칙 엔진. “태그 없는 게시글”, “방치된 미발행” 같은 조건이 바뀌면 발화→통보. 읽기 전용이던 온톨로지에 능동성을 준다.</p>
+          <div class="impl">alert_rules + 발화 diff 기계 · 스케줄러 자동실행 · 인앱 알림 · <b>일일 이메일 다이제스트</b></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 3. 파이프라인 ===== -->
+  <section id="pipeline">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker"><span class="rule"></span><span class="num">03 / 내부 동작</span></div>
+        <h2>질문 하나가 답이 되기까지</h2>
+        <p>검색 파이프라인의 실제 흐름. 의미·키워드 하이브리드에 온톨로지 그래프 확장을 얹고, 재랭킹·검증으로 정밀도와 신뢰를 더한다.</p>
+      </div>
+
+      <div class="pipe">
+        <div class="pipe-grid">
+          <div class="prow">
+            <div class="node" style="flex:0 0 130px"><div class="lbl">질문</div><div class="d">사용자 자연어</div></div>
+            <div class="arrow">→</div>
+            <div class="node"><div class="lbl">하이브리드 검색</div><div class="d">뜻(벡터) + 글자(키워드)로 보고서 랭킹 (RRF)</div></div>
+          </div>
+          <div class="prow">
+            <div class="brace">＋ 그래프</div>
+            <div class="node seed"><div class="lbl">씨앗 객체 링킹</div><div class="d">질문이 가리키는 온톨로지 객체 찾기</div></div>
+            <div class="arrow">→</div>
+            <div class="node seed"><div class="lbl">이웃 확장</div><div class="d">expand_related — 연결된 객체까지</div></div>
+            <div class="arrow">→</div>
+            <div class="node seed"><div class="lbl">그래프 근거</div><div class="d">객체를 언급한 청크 회수</div></div>
+          </div>
+          <div class="prow">
+            <div class="brace">↓ 합류</div>
+            <div class="node"><div class="lbl">블렌드</div><div class="d">벡터 랭킹 + 그래프 근거를 report 단위로 융합</div></div>
+            <div class="arrow">→</div>
+            <div class="node"><div class="lbl">청크 선별</div><div class="d">breadth→depth로 인용 후보 추림</div></div>
+            <div class="arrow">→</div>
+            <div class="node opt"><div class="lbl">재랭킹 (opt)</div><div class="d">LLM이 적합도로 재정렬</div></div>
+          </div>
+          <div class="prow">
+            <div class="brace">↓</div>
+            <div class="node"><div class="lbl">LLM 답변 + 청크 인용</div><div class="d">번호 출처를 달아 근거와 함께 생성</div></div>
+            <div class="arrow">→</div>
+            <div class="node opt"><div class="lbl">근거 검증 (opt)</div><div class="d">주장↔출처 대조 · 미달 경고</div></div>
+          </div>
+        </div>
+      </div>
+      <p style="margin-top:16px; font-size:.86rem; color:var(--ink-soft)">
+        집계형 질문(“몇 개?”, “부서별 비교”)은 이 경로 대신 <b class="mono" style="color:var(--accent-ink)">structured_qa</b>로 라우팅돼 온톨로지 SQL로 <em>정확히 계산</em>된다 — 문단을 긁어 세지 않는다.
+      </p>
+    </div>
+  </section>
+
+  <!-- ===== 4. 파운드리 대비 ===== -->
+  <section id="compare">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker"><span class="rule"></span><span class="num">04 / 파운드리 대비</span></div>
+        <h2>어떤 기능까지 제공하나</h2>
+        <p>팔란티어의 각 핵심 개념에 ReportArchive가 무엇으로 대응하는지, 그리고 그 상태.</p>
+      </div>
+
+      <div class="matrix-wrap">
+        <table class="matrix">
+          <thead>
+            <tr><th>팔란티어 개념</th><th>ReportArchive의 대응물</th><th style="text-align:right">상태</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="concept">객체<small>Object</small></td>
+              <td class="ours">엔티티 + 속성 스키마·동적 폼(A0.1) + record/system 타입(A0.3) + user·report 1급 투영(v0.84)</td>
+              <td class="st"><span class="pill done">완료</span></td>
+            </tr>
+            <tr>
+              <td class="concept">링크<small>Link</small></td>
+              <td class="ours">엔티티 그래프(다중관계·재귀 트래버설·시간차원) + 링크 속성/근거(A0.2) + cross-kind object_links</td>
+              <td class="st"><span class="pill done">완료</span></td>
+            </tr>
+            <tr>
+              <td class="concept">데이터 결합<small>Integration</small></td>
+              <td class="ours">자동 태깅 · 엔티티 추천 · 머지(autotag, suggest-entities)</td>
+              <td class="st"><span class="pill done">완료</span></td>
+            </tr>
+            <tr>
+              <td class="concept">객체 프로필/검색<small>Object views</small></td>
+              <td class="ours">ObjectProfile 뷰 + 객체 중심 검색(타입 + 속성 + 관계 필터, Phase C)</td>
+              <td class="st"><span class="pill done">완료</span></td>
+            </tr>
+            <tr>
+              <td class="concept">지식 검색<small>Search</small></td>
+              <td class="ours">RAG/시맨틱(pgvector 하이브리드) + B300 Q&amp;A/요약 + GraphRAG(그래프 근거 블렌드)</td>
+              <td class="st"><span class="pill done">완료</span></td>
+            </tr>
+            <tr>
+              <td class="concept">AIP 에이전트<small>Agent</small></td>
+              <td class="ours">온톨로지 tool-calling 에이전트 — 객체·관계를 도구로 다단계 조사</td>
+              <td class="st"><span class="pill done">완료</span></td>
+            </tr>
+            <tr>
+              <td class="concept">데이터 채우기<small>Data Connection</small></td>
+              <td class="ours">벌크 임포트(엑셀/CSV)·붙여넣기 + 외부 커넥터(REST/OData 동기화·증분·AI매핑·계보)</td>
+              <td class="st"><span class="pill done">완료</span></td>
+            </tr>
+            <tr>
+              <td class="concept">롤업/집계<small>Aggregation</small></td>
+              <td class="ours">종합보고(composite) + 집계 라우팅(count·group-by·compare, SQL 계산)</td>
+              <td class="st"><span class="pill done">완료</span></td>
+            </tr>
+            <tr>
+              <td class="concept">출처<small>Provenance</small></td>
+              <td class="ours">보고서 버전관리 + 링크/에이전트 근거(작성자·날짜) + 커넥터 계보 태깅</td>
+              <td class="st"><span class="pill done">완료</span></td>
+            </tr>
+            <tr>
+              <td class="concept">조치/배달<small>Delivery</small></td>
+              <td class="ours">작업 큐 + 인앱 알림 + 이메일(SMTP, 큐 경유)</td>
+              <td class="st"><span class="pill done">완료</span></td>
+            </tr>
+            <tr>
+              <td class="concept">경보/트리거<small>Alerts (Phase D)</small></td>
+              <td class="ours">온톨로지 상태 규칙 → 발화 diff → 통보. 감지·자동실행·인앱·이메일 다이제스트 완료; 파생 수신자·대시보드·시간여행 뷰 잔여</td>
+              <td class="st"><span class="pill prog">진행 중</span></td>
+            </tr>
+            <tr>
+              <td class="concept">구조화 데이터 객체<small>Datasets (Phase B)</small></td>
+              <td class="ours">기능부서 업무 플랫폼(레코드+멀티뷰)·FMEA를 타입 객체로. 지금은 레코드 위젯·벌크·커넥터로 수동 시딩만</td>
+              <td class="st"><span class="pill plan">설계</span></td>
+            </tr>
+            <tr>
+              <td class="concept">그래프 DB<small>Apache AGE (D-3)</small></td>
+              <td class="ours">traversal 백엔드를 AGE로 교체(계약 유지). 대규모 그래프·복잡 쿼리 대비 — 현재는 Postgres로 충분</td>
+              <td class="st"><span class="pill plan">예정</span></td>
+            </tr>
+            <tr>
+              <td class="concept">write-back/조치<small>Actions (Phase E)</small></td>
+              <td class="ours">에이전트·객체에서 apply_action(과제 생성·상태 변경·게이트 개시). 현재 온톨로지는 읽기 전용</td>
+              <td class="st"><span class="pill plan">예정</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="outscope">
+        <h4>일부러 만들지 않는 것 — 파운드리엔 있으나 우리 목표엔 과잉</h4>
+        <p>완제품(목적특화)과 범용 데이터 플랫폼의 차이. 대등을 노릴 필요가 없다.</p>
+        <ul>
+          <li><b>데이터 파이프라인·변환</b> (Pipeline Builder / Code Repositories / Spark transform) — 우리는 동기화(sync)까지. 파생 데이터셋 변환 층은 불필요.</li>
+          <li><b>분산 스케일·컴퓨트</b> (Spark, 페타바이트) — 단일 Postgres로 충분. 대규모 그래프만 D-3(AGE)로 대비.</li>
+          <li><b>범용 앱 빌더</b> (Workshop / Slate — 남이 온톨로지 위에 앱을 짓는 층) — 우리는 완제품이다.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 5. 로드맵 ===== -->
+  <section id="roadmap">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker"><span class="rule"></span><span class="num">05 / 로드맵</span></div>
+        <h2>전체 로드맵에서 어디까지 왔나</h2>
+        <p>모델→뷰→검색·AI→데이터 유입은 다 섰다. 남은 무게중심은 <b>온톨로지를 능동·운동성으로</b> 만드는 것 — 그래프 위에서 스스로 발화하고(D), 그래프를 직접 조작하는(E) 두 층.</p>
+      </div>
+
+      <!-- capability loop -->
+      <div class="loop">
+        <div class="loop-top">
+          <h3>온톨로지 의사결정 루프</h3>
+          <span class="pct">읽기 루프 완성 · 쓰기 루프 착수 — 6개 층 중 4 완료 · 1 진행 · 1 예정</span>
+        </div>
+        <div class="loop-track">
+          <div class="seg done"><div class="k">모델</div><div class="t">온톨로지 A0<br>속성·타입·링크</div></div>
+          <div class="seg done"><div class="k">뷰</div><div class="t">객체 프로필<br>·탐색 A·C</div></div>
+          <div class="seg done"><div class="k">검색·AI</div><div class="t">RAG·GraphRAG<br>·에이전트·지능화</div></div>
+          <div class="seg done"><div class="k">데이터 유입</div><div class="t">벌크·붙여넣기<br>·외부 커넥터</div></div>
+          <div class="seg prog"><div class="k">능동성 · D</div><div class="t">경보·트리거<br>발화→통보</div></div>
+          <div class="seg plan"><div class="k">운동성 · E</div><div class="t">조치·write-back<br>apply_action</div></div>
+        </div>
+        <p class="loop-note">
+          <b>D(경보)+E(조치)를 확보하면 루프가 닫힌다</b>: 모델→뷰→검색·AI→채우기→능동→운동→다시 데이터.
+          배달 배관(스케줄러·알림·이메일·큐)이 이미 깔려 있어 <b>Phase D 규칙 엔진이 투자 대비 효과 최대</b>.
+        </p>
+      </div>
+
+      <!-- phase spine -->
+      <div class="spine">
+        <div class="ph done">
+          <span class="marker"></span>
+          <div class="ph-card">
+            <div class="ph-top"><span class="ph-code">A0</span><h3>온톨로지 강화 — 모델 살찌우기</h3><span class="pill done">완료</span></div>
+            <p>객체 프로필·경보·GraphRAG에 담을 실체를 먼저 만든다. A0.1 속성 스키마 + <span class="mono">entities.properties</span>, A0.2 링크 속성/근거(evidence), A0.3 타입 확장(과제·공급사·시험실행·실패사례) + system 축(부서) + cross-kind object_links.</p>
+            <div class="vers"><span class="v">A0.1 속성</span><span class="v">A0.2 링크·근거</span><span class="v">A0.3 타입확장</span></div>
+          </div>
+        </div>
+
+        <div class="ph done">
+          <span class="marker"></span>
+          <div class="ph-card">
+            <div class="ph-top"><span class="ph-code">A</span><h3>객체 중심 뷰 — Object Profile</h3><span class="pill done">완료</span></div>
+            <p>객체 하나에 착지하면 연결된 모든 것이 모인다 — 속성·별칭·연도, 이 객체를 태깅한 모든 보고서(가시성 필터), 관계타입별 관련 객체, 2단계 관계도. 마이그레이션 0.</p>
+            <div class="vers"><span class="v hl">v0.67</span></div>
+          </div>
+        </div>
+
+        <div class="ph done">
+          <span class="marker"></span>
+          <div class="ph-card">
+            <div class="ph-top"><span class="ph-code">C</span><h3>그래프 탐색 &amp; 객체 검색</h3><span class="pill done">완료</span></div>
+            <p>시각적 트래버설(객체→관계→객체 피벗)과 “타입 + 속성 + 관계” 필터 검색. <span class="mono">POST /entities/search</span> · 검색화면 “객체” 탭. (대규모 그래프DB=AGE는 D-3로 별도.)</p>
+            <div class="vers"><span class="v hl">v0.72</span></div>
+          </div>
+        </div>
+
+        <div class="ph done">
+          <span class="marker"></span>
+          <div class="ph-card">
+            <div class="ph-top"><span class="ph-code">가로축</span><h3>GraphRAG · 에이전트 · 데이터 채우기</h3><span class="pill done">완료</span></div>
+            <p>GraphRAG(그래프 근거 블렌드) → 온톨로지 tool-calling 에이전트 → MCP 외부 AI 자율 조사 → 외부 커넥터(주기 스케줄러·AI매핑·계보) → user/report 1급 투영. 검색을 넘어 온톨로지를 1차 검색구조로.</p>
+            <div class="vers"><span class="v hl">v0.73 GraphRAG</span><span class="v">v0.74 에이전트·벌크</span><span class="v">v0.76 MCP</span><span class="v">v0.77–83 커넥터</span><span class="v">v0.84–85 투영</span></div>
+          </div>
+        </div>
+
+        <div class="ph done">
+          <span class="marker"></span>
+          <div class="ph-card">
+            <div class="ph-top"><span class="ph-code">지능화</span><h3>AI 검색 지능화 로드맵 1–7</h3><span class="pill done">완료</span></div>
+            <p>재랭킹·HyDE·질문분해·집계 라우팅·근거검증·다중홉·랭킹 신호·평가 하네스·👍/👎 피드백까지. 스팬 단위 청크↔객체 링크 결합. 상세는 아래 그리드.</p>
+            <div class="vers"><span class="v hl">v0.87 → v0.102</span></div>
+          </div>
+        </div>
+
+        <div class="ph prog">
+          <span class="marker"></span>
+          <div class="ph-card">
+            <div class="ph-top"><span class="ph-code">D</span><h3>의사결정 표면 — 경보/트리거 <span class="mono" style="color:var(--prog)">★ 다음 무게중심</span></h3><span class="pill prog">진행 중</span></div>
+            <p>온톨로지 상태에 반응하는 규칙 엔진. 조건이 신규 진입=발화·이탈=해소되는 <em>diff 기계</em>가 심장이라 재실행해도 스팸이 안 남는다. <b>감지·자동실행·인앱 알림·일일 이메일 다이제스트 완료.</b> 잔여: 파생 수신자(작성자·담당·부서)·객체 대시보드·“무엇이 바뀌었나” 시간여행 뷰.</p>
+            <div class="vers"><span class="v hl">v0.103 감지</span><span class="v hl">v0.104 자동실행</span><span class="v hl">v0.105 인앱</span><span class="v hl">v0.109 다이제스트</span><span class="v">3c 파생수신자 …</span></div>
+          </div>
+        </div>
+
+        <div class="ph plan">
+          <span class="marker"></span>
+          <div class="ph-card">
+            <div class="ph-top"><span class="ph-code">E</span><h3>조치 / write-back &amp; 시나리오</h3><span class="pill plan">예정</span></div>
+            <p>객체·에이전트에서 바로 조치 실행 — 과제 생성·상태 변경·게이트 개시(<span class="mono">apply_action</span>). 현재 온톨로지는 읽기 전용. Stage-Gate·작업 큐·알림 위에 쓰기 층을 얹으면 자연 확장. (선택) what-if 시나리오.</p>
+            <div class="vers"><span class="v">에이전트 apply_action</span></div>
+          </div>
+        </div>
+
+        <div class="ph plan">
+          <span class="marker"></span>
+          <div class="ph-card">
+            <div class="ph-top"><span class="ph-code">B</span><h3>구조화 데이터를 객체로 — Datasets</h3><span class="pill plan">설계</span></div>
+            <p>기능부서 업무 플랫폼(레코드+멀티뷰)·FMEA를 타입 객체로 온톨로지에 결합(대형). 시험결과·부품·FMEA 행·WBS 항목이 <em>타입 있는 객체</em>가 되면 연결성이 문서에서 구조화 데이터로 확장된다.</p>
+            <div class="vers"><span class="v">그룹업무 플랫폼</span><span class="v">FMEA / RPN</span></div>
+          </div>
+        </div>
+
+        <div class="ph plan">
+          <span class="marker"></span>
+          <div class="ph-card">
+            <div class="ph-top"><span class="ph-code">D-3 · 보안</span><h3>AGE 그래프DB · 객체단위 보안·계보</h3><span class="pill plan">예정</span></div>
+            <p>traversal 백엔드를 Apache AGE로 교체(도구 시그니처 불변)해 대규모 그래프 대비. + 객체/속성 단위 grant(현재 보고서 단위 가시성만) + 완전한 데이터 lineage(커넥터 provenance가 시작점).</p>
+            <div class="vers"><span class="v">Apache AGE</span><span class="v">객체 grant</span><span class="v">lineage</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AI search sub-roadmap -->
+      <h3 style="margin:44px 0 4px; font-size:1.15rem; font-weight:730">AI 검색 지능화 — 7개 개선안 <span class="pill done" style="vertical-align:middle">핵심 전부 완료</span></h3>
+      <p style="color:var(--ink-soft); font-size:.92rem; margin-bottom:18px">각 단계는 설정 토글 + mock/장애 시 폴백으로 독립 릴리스됐다. 신규 테이블은 최소 — 온톨로지·연도·별칭 배관을 재사용.</p>
+      <div class="subgrid">
+        <div class="sg"><div class="num">01</div><h4>재랭킹</h4><p>1차 후보를 LLM이 적합도로 재정렬. 현대 RAG 체감 최대 레버.</p><div class="foot"><span class="pill done">완료</span><span class="vtag">v0.90</span></div></div>
+        <div class="sg"><div class="num">02</div><h4>질문 재작성</h4><p>HyDE·질문 분해·별칭 확장으로 모호·다중조건 질문 회수.</p><div class="foot"><span class="pill done">완료</span><span class="vtag">v0.91·94</span></div></div>
+        <div class="sg"><div class="num">03</div><h4>집계 라우팅 ★</h4><p>“몇 개·비교·목록”을 온톨로지 SQL로 정확히. 파운드리 차별점.</p><div class="foot"><span class="pill done">완료</span><span class="vtag">v0.95·101</span></div></div>
+        <div class="sg"><div class="num">04</div><h4>근거 검증</h4><p>주장↔출처 대조(faithfulness) + 문장 단위 근거 표시.</p><div class="foot"><span class="pill done">완료</span><span class="vtag">v0.96</span></div></div>
+        <div class="sg"><div class="num">05</div><h4>다중홉 검색</h4><p>에이전트가 검색→중간결론→재검색 루프로 연쇄 질문 해결.</p><div class="foot"><span class="pill done">완료</span><span class="vtag">v0.97</span></div></div>
+        <div class="sg"><div class="num">06</div><h4>랭킹 신호</h4><p>최신성·권위 부스트 + 👍/👎 피드백 수집·골든셋 승격.</p><div class="foot"><span class="pill done">완료</span><span class="vtag">v0.100·102</span></div></div>
+        <div class="sg"><div class="num">07</div><h4>평가 하네스</h4><p>골든셋 + recall@k·MRR로 튜닝을 측정 기반으로. 감 튜닝 종식.</p><div class="foot"><span class="pill done">완료</span><span class="vtag">v0.98·99</span></div></div>
+        <div class="sg"><div class="num">＋</div><h4>런타임 설정</h4><p>app_settings 저장소 + “검색 튜닝/평가” 관리자 탭. 노브 즉시 조정.</p><div class="foot"><span class="pill done">완료</span><span class="vtag">v0.93</span></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 6. 결론 ===== -->
+  <section id="closing" style="border-bottom:none">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker"><span class="rule"></span><span class="num">06 / 결론</span></div>
+        <h2>파운드리 대비 — 어디까지 왔나</h2>
+      </div>
+
+      <div class="thesis">
+        <p class="q">D(경보) + E(조치) = <b>“파운드리 복제”가 아니라, 파운드리 핵심 발상을 우리 규모에서 완성.</b></p>
+        <p class="by">// 완제품(목적특화)으로서 “파운드리스러운” 의사결정 경험 도달 — 범용 데이터 플랫폼과의 대등은 목표가 아니다.</p>
+
+        <div class="gaps">
+          <div class="gap">
+            <div class="h"><span class="pill prog">진행</span>지속적 데이터 밀도</div>
+            <p>커넥터가 유입은 열었으나 루프가 계속 돌려면 꾸준히 채워져야. Phase D 첫 규칙을 “위생 플라이휠”로 잡은 이유 — 경보가 채우기를 유발한다.</p>
+          </div>
+          <div class="gap">
+            <div class="h"><span class="pill plan">점진</span>계보 완결성</div>
+            <p>“이 값이 어느 소스·변환에서 왔나”를 끝까지 추적. 현재는 부분(보고서 버전·커넥터 provenance·링크 근거). D-3·보안 층과 통합.</p>
+          </div>
+          <div class="gap">
+            <div class="h"><span class="pill plan">점진</span>객체단위 보안</div>
+            <p>셀 단위까진 아니어도 객체 grant(현재 보고서 단위 가시성만). 세밀 보안·계보 층에서.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="wrap">
+      <div>ReportArchive — 온톨로지·RAG·지능화 현황 · v0.109.0 · 2026-07-13 기준</div>
+      <div class="srcs">
+        <code>[참고] 팔란티어 벤치마킹.md</code>
+        <code>[참고] AI_RAG_현황.md</code>
+        <code>[일부] AI검색_지능화_로드맵_설계.md</code>
+        <code>[완료] GraphRAG_설계.md</code>
+        <code>[완료] 온톨로지 에이전트_tool-calling_설계.md</code>
+        <code>[미구현] Phase D_경보_설계.md</code>
+      </div>
+    </div>
+  </footer>
+
+</main>
+
+<script>
+  // theme toggle
+  (function(){
+    var btn = document.getElementById('themebtn');
+    var root = document.documentElement;
+    btn.addEventListener('click', function(){
+      var cur = root.getAttribute('data-theme');
+      if(!cur){ cur = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; }
+      root.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+    });
+  })();
+
+  // hero node-edge network
+  (function(){
+    var c = document.getElementById('net');
+    if(!c) return;
+    var ctx = c.getContext('2d');
+    var reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var hero = c.parentElement, dpr = Math.min(window.devicePixelRatio||1, 2);
+    var nodes = [], W=0, H=0, raf=null;
+
+    function accent(){
+      var v = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+      return v || '#0e7c8b';
+    }
+    function hexA(hex, a){
+      hex = hex.replace('#',''); if(hex.length===3){hex=hex.split('').map(function(x){return x+x}).join('');}
+      var r=parseInt(hex.substr(0,2),16), g=parseInt(hex.substr(2,2),16), b=parseInt(hex.substr(4,2),16);
+      return 'rgba('+r+','+g+','+b+','+a+')';
+    }
+    function size(){
+      W = hero.clientWidth; H = hero.clientHeight;
+      c.width = W*dpr; c.height = H*dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
+      var count = Math.max(16, Math.min(40, Math.round(W*H/26000)));
+      nodes = [];
+      for(var i=0;i<count;i++){
+        nodes.push({
+          x:Math.random()*W, y:Math.random()*H,
+          vx:(Math.random()-0.5)*0.22, vy:(Math.random()-0.5)*0.22,
+          r:Math.random()*1.6+1.1
+        });
+      }
+    }
+    function frame(){
+      var col = accent();
+      ctx.clearRect(0,0,W,H);
+      var i,j,a,b,dx,dy,dist,maxd=150;
+      for(i=0;i<nodes.length;i++){
+        a=nodes[i]; a.x+=a.vx; a.y+=a.vy;
+        if(a.x<0||a.x>W)a.vx*=-1; if(a.y<0||a.y>H)a.vy*=-1;
+      }
+      for(i=0;i<nodes.length;i++){
+        a=nodes[i];
+        for(j=i+1;j<nodes.length;j++){
+          b=nodes[j]; dx=a.x-b.x; dy=a.y-b.y; dist=Math.sqrt(dx*dx+dy*dy);
+          if(dist<maxd){
+            ctx.strokeStyle = hexA(col, (1-dist/maxd)*0.22);
+            ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+          }
+        }
+      }
+      for(i=0;i<nodes.length;i++){
+        a=nodes[i];
+        ctx.fillStyle = hexA(col, 0.55);
+        ctx.beginPath(); ctx.arc(a.x,a.y,a.r,0,Math.PI*2); ctx.fill();
+      }
+      raf = requestAnimationFrame(frame);
+    }
+    function still(){
+      // static single render for reduced motion
+      var col = accent(), i,j,a,b,dx,dy,dist,maxd=150;
+      ctx.clearRect(0,0,W,H);
+      for(i=0;i<nodes.length;i++){for(j=i+1;j<nodes.length;j++){
+        a=nodes[i];b=nodes[j];dx=a.x-b.x;dy=a.y-b.y;dist=Math.sqrt(dx*dx+dy*dy);
+        if(dist<maxd){ctx.strokeStyle=hexA(col,(1-dist/maxd)*0.2);ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();}
+      }}
+      for(i=0;i<nodes.length;i++){a=nodes[i];ctx.fillStyle=hexA(col,0.5);ctx.beginPath();ctx.arc(a.x,a.y,a.r,0,Math.PI*2);ctx.fill();}
+    }
+    function start(){ if(raf)cancelAnimationFrame(raf); size(); reduce?still():frame(); }
+    var t; window.addEventListener('resize', function(){ clearTimeout(t); t=setTimeout(start,180); });
+    start();
+  })();
+</script>
+</body>
+</html>

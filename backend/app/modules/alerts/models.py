@@ -34,6 +34,9 @@ class AlertRule(Base):
     probe_key: Mapped[str] = mapped_column(String(64), nullable=False)
     params: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     severity: Mapped[str] = mapped_column(String(16), nullable=False, default="info")
+    # 작성자 통보(3c) 옵트인 — True 면 새 발화 보고서의 owner 에게도 알림. 기본 off
+    # (일반 사용자 다수에게 가므로 민감 — 관리자가 규칙별로 켤 때만).
+    notify_owner: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # 스케줄(커넥터 DataSource 와 동형) — 'manual'=수동만, 'interval'=주기 자동.
     schedule_kind: Mapped[str] = mapped_column(
         String(16), nullable=False, default="manual"

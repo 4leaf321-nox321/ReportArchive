@@ -169,6 +169,7 @@ function RulePanel({ rule, onRulesChanged }) {
     days: rule.params?.days ?? 7,
     mounted_only: rule.params?.mounted_only ?? true,
     enabled: rule.enabled,
+    notify_owner: rule.notify_owner ?? false,
     schedule_kind: rule.schedule_kind ?? 'manual',
     interval_minutes: rule.interval_minutes ?? 1440,
   })
@@ -200,6 +201,7 @@ function RulePanel({ rule, onRulesChanged }) {
       await updateAlertRule(rule.id, {
         enabled: edit.enabled,
         params: { days, mounted_only: edit.mounted_only },
+        notify_owner: edit.notify_owner,
         schedule_kind: edit.schedule_kind,
         interval_minutes: edit.interval_minutes,
       })
@@ -272,6 +274,17 @@ function RulePanel({ rule, onRulesChanged }) {
               onChange={(ev) => setEdit((s) => ({ ...s, enabled: ev.target.checked }))}
             />
             규칙 사용
+          </label>
+          <label
+            className="flex items-center gap-2 text-sm h-8"
+            title="새로 걸린 보고서의 작성자에게도 인앱 알림을 보냅니다(기본 꺼짐)."
+          >
+            <input
+              type="checkbox"
+              checked={Boolean(edit.notify_owner)}
+              onChange={(ev) => setEdit((s) => ({ ...s, notify_owner: ev.target.checked }))}
+            />
+            작성자에게도 알림
           </label>
           <label className="flex flex-col gap-1 text-sm">
             <span className="text-muted-foreground">자동 실행</span>

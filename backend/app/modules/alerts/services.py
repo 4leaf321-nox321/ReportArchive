@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from typing import Callable, Optional
 
@@ -16,6 +17,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.modules.alerts.models import AlertRule, AlertRuleState
+
+logger = logging.getLogger(__name__)
 
 # 프로브가 한 번에 반환하는 대상 상한(폭주 방지). 초과 시 잘리고 capped=True.
 _PROBE_LIMIT = 500
@@ -81,7 +84,7 @@ def _probe_untagged_reports(db: Session, params: dict) -> list[dict]:
 
     stmt = (
         select(Report.id, Report.title, Report.workspace_slug,
-               Report.phase, Report.created_at)
+               Report.owner_user_id, Report.phase, Report.created_at)
         .where(*conds)
         .order_by(Report.created_at.asc())
         .limit(_PROBE_LIMIT + 1)  # +1 로 잘림 감지
@@ -97,6 +100,8 @@ def _probe_untagged_reports(db: Session, params: dict) -> list[dict]:
                 "title": r.title,
                 # 링크용 — 보고서 소유 워크스페이스(/w/{slug}/reports/{id}).
                 "workspace_slug": r.workspace_slug,
+                # 작성자 통보(3c)용 — owner 는 자기 보고서를 항상 봄(가시성 안전).
+                "owner_user_id": r.owner_user_id,
                 "phase": r.phase.value if r.phase else None,
                 # 표시용 — 실제 게시된 조직 게시판(없으면 미게시).
                 "boards": boards.get(r.id, []),
@@ -145,8 +150,8 @@ def _probe_stale_unpublished(db: Session, params: dict) -> list[dict]:
 
     stmt = (
         select(Report.id, Report.title, Report.workspace_slug,
-               Report.phase, Report.created_at, Report.updated_at,
-               Report.last_edited_at)
+               Report.owner_user_id, Report.phase, Report.created_at,
+               Report.updated_at, Report.last_edited_at)
         .where(*conds)
         .order_by(last_touch.asc())
         .limit(_PROBE_LIMIT + 1)
@@ -161,6 +166,7 @@ def _probe_stale_unpublished(db: Session, params: dict) -> list[dict]:
             "context": {
                 "title": r.title,
                 "workspace_slug": r.workspace_slug,
+                "owner_user_id": r.owner_user_id,
                 "phase": r.phase.value if r.phase else None,
                 "boards": boards.get(r.id, []),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -228,10 +234,13 @@ def update_rule(
     params=None,
     schedule_kind=None,
     interval_minutes=None,
+    notify_owner=None,
 ) -> AlertRule:
-    """프론트 조정 — enabled 토글, params 병합, 스케줄(자동 실행) 설정."""
+    """프론트 조정 — enabled 토글, params 병합, 스케줄·작성자 통보 설정."""
     if enabled is not None:
         rule.enabled = bool(enabled)
+    if notify_owner is not None:
+        rule.notify_owner = bool(notify_owner)
     if params is not None:
         merged = dict(rule.params or {})
         merged.update(params)
@@ -307,6 +316,59 @@ def _notify_new_firings(db: Session, rule: AlertRule, fired: int, firing_total: 
         )
 
 
+# 실행 1회당 작성자 알림 상한 — 파라미터 급변으로 대량 발화 시 사용자 폭주 방지.
+_OWNER_NOTIFY_CAP = 100
+
+_OWNER_MESSAGES = {
+    "untagged_reports": "이 보고서에 엔티티 태그가 없습니다. 태그를 추가해 주세요.",
+    "stale_unpublished": "오래 미발행 상태인 보고서입니다. 발행하거나 정리해 주세요.",
+}
+
+
+def _notify_owners(db: Session, rule: AlertRule, newly_fired: list[dict],
+                   actor_user_id) -> None:
+    """새로 발화한 보고서의 작성자(owner)에게 인앱 알림 (규칙별 옵트인 notify_owner).
+    owner 는 자기 보고서를 항상 볼 수 있어 가시성 게이트 불필요. ref_table='reports'
+    라 알림 클릭 시 기존 딥링크가 그 보고서로 보낸다(새 프론트 렌더 불필요).
+    폭주 방지: 한 실행에 상한 초과면 통째로 생략(설정 급변 방어)."""
+    reports = [
+        t for t in newly_fired
+        if t["target_type"] == "report" and t["context"].get("owner_user_id")
+    ]
+    if not reports:
+        return
+    if len(reports) > _OWNER_NOTIFY_CAP:
+        logger.warning(
+            "alert rule %s: 새 발화 %d건 > 상한 %d — 작성자 알림 생략",
+            rule.id, len(reports), _OWNER_NOTIFY_CAP,
+        )
+        return
+    from app.modules.notifications.models import NotificationType
+    from app.modules.notifications.services import create_notification
+
+    msg = _OWNER_MESSAGES.get(rule.probe_key, "경보 대상 보고서입니다. 확인해 주세요.")
+    for t in reports:
+        ctx = t["context"]
+        try:
+            rid = int(t["target_id"])
+        except (TypeError, ValueError):
+            continue
+        create_notification(
+            db,
+            recipient_user_id=ctx["owner_user_id"],
+            type=NotificationType.alert_firing,
+            ref_table="reports",
+            ref_id=rid,
+            workspace_slug=ctx.get("workspace_slug"),
+            actor_user_id=actor_user_id,
+            payload={
+                "report_title": ctx.get("title"),
+                "excerpt": msg,
+                "rule_name": rule.name,
+            },
+        )
+
+
 def run_rule(db: Session, rule: AlertRule, *, actor_user_id=None) -> dict:
     """규칙 1회 실행 — 프로브 → 직전 상태와 diff → 발화/해소 반영.
     RunResult 형태의 dict 반환. 비활성 규칙은 평가하지 않는다(발화 0).
@@ -328,6 +390,7 @@ def run_rule(db: Session, rule: AlertRule, *, actor_user_id=None) -> dict:
 
     fired = 0
     resolved = 0
+    newly_fired: list[dict] = []  # 이번에 새로 발화(신규 진입·재발화)한 대상 — 작성자 통보용
 
     # 이번 매칭 — 신규 진입은 발화, 잔류는 last_seen 갱신(침묵).
     for key, t in new_by_key.items():
@@ -345,11 +408,13 @@ def run_rule(db: Session, rule: AlertRule, *, actor_user_id=None) -> dict:
                 )
             )
             fired += 1
+            newly_fired.append(t)
         else:
             if s.state != "firing":  # resolved 였다가 다시 걸림 = 재발화
                 s.state = "firing"
                 s.first_fired_at = now
                 fired += 1
+                newly_fired.append(t)
             s.context = t["context"]
             s.last_seen_at = now
 
@@ -365,6 +430,8 @@ def run_rule(db: Session, rule: AlertRule, *, actor_user_id=None) -> dict:
     db.flush()  # 방금 add/변경한 발화 상태를 반영해야 카운트가 맞다(autoflush off 대비).
     firing_total = firing_count(db, rule.id)
     _notify_new_firings(db, rule, fired, firing_total, actor_user_id)
+    if rule.notify_owner:  # 규칙별 옵트인(기본 off) — 새 발화 보고서 작성자에게도.
+        _notify_owners(db, rule, newly_fired, actor_user_id)
     db.commit()
 
     return {

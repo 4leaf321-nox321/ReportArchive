@@ -38,6 +38,7 @@ def _to_read(db: Session, rule) -> AlertRuleRead:
         probe_key=rule.probe_key,
         params=rule.params or {},
         severity=rule.severity,
+        notify_owner=rule.notify_owner,
         schedule_kind=rule.schedule_kind,
         interval_minutes=rule.interval_minutes,
         next_run_at=rule.next_run_at,
@@ -71,6 +72,7 @@ def update_rule(
         db, rule,
         enabled=patch.get("enabled"),
         params=patch.get("params"),
+        notify_owner=patch.get("notify_owner"),
         schedule_kind=patch.get("schedule_kind"),
         interval_minutes=patch.get("interval_minutes"),
     )

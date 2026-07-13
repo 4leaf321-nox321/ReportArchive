@@ -112,6 +112,58 @@ def test_run_rule_notifies_admins_on_new_firing(monkeypatch):
         db.close()
 
 
+def test_notify_owner_optin(monkeypatch):
+    """notify_owner=True → 새 발화 보고서 작성자에게 알림(ref_table=reports). off 면 0."""
+    from sqlalchemy import func, select, text
+
+    from app.modules.notifications.models import Notification, NotificationType
+
+    db = SessionLocal()
+    OWNER = 3  # 매니저 계정을 작성자로 가정
+    FAKE_REPORT = 999999
+    rule = AlertRule(name="_own", enabled=True, probe_key="untagged_reports",
+                     params={}, severity="info", notify_owner=True)
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+
+    def owner_notifs():
+        return db.execute(
+            select(func.count()).select_from(Notification).where(
+                Notification.type == NotificationType.alert_firing,
+                Notification.ref_table == "reports",
+                Notification.ref_id == FAKE_REPORT,
+                Notification.recipient_user_id == OWNER,
+            )
+        ).scalar_one()
+
+    def fake_probe(_db, _p):
+        return [{
+            "target_type": "report", "target_id": str(FAKE_REPORT),
+            "context": {"title": "t", "owner_user_id": OWNER, "workspace_slug": "dev"},
+        }]
+
+    try:
+        monkeypatch.setitem(services.PROBES, "untagged_reports", fake_probe)
+        base = owner_notifs()
+        services.run_rule(db, rule)  # notify_owner=True → 작성자 1건
+        assert owner_notifs() - base == 1
+        # off + 상태 리셋(새 발화 유발) → 작성자 알림 증가 없음.
+        rule.notify_owner = False
+        db.query(AlertRuleState).filter_by(rule_id=rule.id).delete()
+        db.commit()
+        mid = owner_notifs()
+        services.run_rule(db, rule)
+        assert owner_notifs() == mid
+    finally:
+        db.execute(text("DELETE FROM notifications WHERE ref_table='reports' AND ref_id=:r"),
+                   {"r": FAKE_REPORT})
+        db.query(AlertRuleState).filter_by(rule_id=rule.id).delete()
+        db.delete(rule)
+        db.commit()
+        db.close()
+
+
 def test_disabled_rule_fires_nothing(monkeypatch):
     db = SessionLocal()
     rule = AlertRule(name="_t2", enabled=False, probe_key="_test_probe",

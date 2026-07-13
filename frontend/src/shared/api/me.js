@@ -100,6 +100,20 @@ export async function setUserActive(userId, { isActive }) {
   return extractData(res)
 }
 
+/** 시스템 관리자 — 계정 삭제를 막는 참조 건수 {key: count}. 전부 0 이면 삭제 가능
+ *  (조직개편·계정삭제_설계.md §6). 삭제 다이얼로그가 사전 표시용으로 호출. */
+export async function getUserDeleteDependents(userId) {
+  const res = await apiClient.get(`/api/users/${userId}/dependents`)
+  return extractData(res)
+}
+
+/** 시스템 관리자 — 계정 완전 삭제(비활성화와 달리 행을 실제로 지운다). 삭제 후
+ *  이메일이 해방돼 재가입 가능. 작성 댓글·개인 보고서가 있으면 409 로 거부된다. */
+export async function deleteUser(userId) {
+  const res = await apiClient.delete(`/api/users/${userId}`)
+  return extractData(res)
+}
+
 /** 시스템 관리자 — 사용자 접속(로그인/가입) 이력. 최신순 + 총건수.
  *  success: true(성공)/false(실패)/null(전체), userId 로 한 사용자만.
  *  응답: { items: [...], total }. */

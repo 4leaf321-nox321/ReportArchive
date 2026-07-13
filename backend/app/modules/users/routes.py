@@ -11,6 +11,7 @@ from app.database import get_db
 from app.modules.access_logs import services as access_log_services
 from app.modules.auth.services import hash_password, verify_password
 from app.modules.users import pat
+from app.modules.users import services as user_services
 from app.modules.users.models import (
     PasswordResetRequest,
     PasswordResetStatus,
@@ -573,6 +574,64 @@ def set_user_active(
     target.is_active = new_active
     db.commit()
     return success_response(data=_account_read(db, target, membership_count=0))
+
+
+@router.get("/users/{user_id}/dependents")
+def user_delete_dependents(
+    user_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_system_admin),
+):
+    """계정 삭제를 막는 참조 건수 {key: count} — 삭제 다이얼로그가 미리 표시.
+    전부 0 이면 하드삭제 가능(조직개편·계정삭제_설계.md §6)."""
+    target = db.get(User, user_id)
+    if target is None:
+        return not_found_response("사용자를 찾을 수 없습니다.")
+    return success_response(data=user_services.user_delete_blockers(db, target))
+
+
+@router.delete("/users/{user_id}")
+def delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_system_admin),
+):
+    """System-admin: 계정 완전 삭제(비활성화와 달리 행을 실제로 지운다). 잘못된
+    메일주소로 가입한 저흔적 계정 정리용 — 삭제 후 그 이메일이 해방돼 재가입 가능.
+
+    가드는 set_user_active 와 동일:
+      1. 본인 계정은 삭제 불가.
+      2. 마지막 살아있는 시스템 관리자는 삭제 불가.
+    작성한 댓글이나 개인공간 보고서가 있으면 409 로 거부(비활성화 권장)."""
+    target = db.get(User, user_id)
+    if target is None:
+        return not_found_response("사용자를 찾을 수 없습니다.")
+    if target.id == actor.id:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "본인 계정은 삭제할 수 없습니다."
+        )
+    if target.is_system_admin:
+        remaining = db.execute(
+            select(User.id).where(
+                User.is_active.is_(True),
+                User.is_system_admin.is_(True),
+                User.id != target.id,
+            ).limit(1)
+        ).first()
+        if remaining is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "마지막 시스템 관리자 계정은 삭제할 수 없습니다. 다른 시스템 "
+                "관리자를 먼저 임명하거나 본 계정의 시스템 관리자 권한을 해제하세요.",
+            )
+    email = target.email
+    try:
+        result = user_services.hard_delete_user(db, target)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    return success_response(
+        data=result, message=f"계정({email})이 완전히 삭제되었습니다."
+    )
 
 
 @router.put("/users/{user_id}/system-admin")

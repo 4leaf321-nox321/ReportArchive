@@ -24,6 +24,7 @@ import {
   Loader2,
   ShieldCheck,
   ShieldOff,
+  Trash2,
   UserPlus,
   UserX,
   UserCheck,
@@ -81,6 +82,8 @@ import {
   accessLogStats,
   accessLogStatsDetail,
   setUserActive,
+  deleteUser,
+  getUserDeleteDependents,
   setUserHomeWorkspace,
   adminSetUserPassword,
   listPasswordResetRequests,
@@ -122,6 +125,7 @@ export default function AccountsAdminPage() {
   const [newAccountOpen, setNewAccountOpen] = useState(false)
   const [resetPwdTarget, setResetPwdTarget] = useState(null)
   const [confirmActive, setConfirmActive] = useState(null) // {account, nextActive}
+  const [confirmDelete, setConfirmDelete] = useState(null) // 완전 삭제할 account
   const [homeEditTarget, setHomeEditTarget] = useState(null)
   const [detailTarget, setDetailTarget] = useState(null) // row clicked → show detail
   // 소속 필터 — `null` 이면 전체 (필터 없음), 그 외엔 선택된 키들의
@@ -372,6 +376,13 @@ export default function AccountsAdminPage() {
     }
   }
 
+  async function handleDeleteUser(account) {
+    await deleteUser(account.id)
+    toast.success(`계정(${account.email})이 완전히 삭제되었습니다.`)
+    setConfirmDelete(null)
+    reload()
+  }
+
   const columns = useMemo(
     () => [
       {
@@ -537,6 +548,19 @@ export default function AccountsAdminPage() {
                 ) : (
                   <UserCheck className="h-3.5 w-3.5" />
                 )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                title="계정 완전 삭제 (잘못된 가입 정리 — 이메일 해방)"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setConfirmDelete(a)
+                }}
+                disabled={isSelf}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
               </Button>
             </div>
           )
@@ -826,7 +850,113 @@ export default function AccountsAdminPage() {
           }
         />
       )}
+
+      <DeleteAccountConfirm
+        account={confirmDelete}
+        onOpenChange={(o) => !o && setConfirmDelete(null)}
+        onConfirm={() => confirmDelete && handleDeleteUser(confirmDelete)}
+      />
     </div>
+  )
+}
+
+// 계정 완전 삭제 확인 — 먼저 참조(작성 댓글·개인공간 내용)를 조회해, 남아 있으면
+// 삭제를 막고 비활성화를 권한다(부서 삭제 다이얼로그와 같은 패턴).
+const ACCOUNT_BLOCKER_LABELS = {
+  comment_threads: '작성한 댓글 스레드',
+  comments: '작성한 댓글',
+  personal_content: '개인 작업공간의 보고서·파일 등',
+}
+
+function DeleteAccountConfirm({ account, onOpenChange, onConfirm }) {
+  const open = Boolean(account)
+  const [blockers, setBlockers] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (!open || !account) {
+      setBlockers(null)
+      setSubmitting(false)
+      return
+    }
+    setLoading(true)
+    getUserDeleteDependents(account.id)
+      .then(setBlockers)
+      .catch(() => setBlockers(null))
+      .finally(() => setLoading(false))
+  }, [open, account?.id])
+
+  const totalBlockers = blockers
+    ? Object.values(blockers).reduce((a, b) => a + b, 0)
+    : 0
+  const canDelete = !loading && !submitting && blockers && totalBlockers === 0
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    if (!canDelete) return
+    setSubmitting(true)
+    try {
+      await onConfirm()
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err.message || '삭제 실패')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>계정 완전 삭제</DialogTitle>
+          <DialogDescription>
+            <span className="font-medium">
+              {account?.name || account?.email}
+            </span>{' '}
+            계정을 완전히 삭제합니다. 되돌릴 수 없으며, 삭제 후 이 이메일로 다시
+            가입할 수 있습니다. 작성한 보고서는 「작성자 없음」으로 보존됩니다.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={handleSubmit}>
+          {loading ? (
+            <Skeleton className="h-16" />
+          ) : blockers ? (
+            <div className="space-y-2 text-sm">
+              {Object.entries(blockers).map(([key, count]) => (
+                <div key={key} className="flex items-center justify-between">
+                  <span>{ACCOUNT_BLOCKER_LABELS[key] || key}</span>
+                  <Badge variant={count === 0 ? 'outline' : 'destructive'}>
+                    {count}
+                  </Badge>
+                </div>
+              ))}
+              {totalBlockers > 0 && (
+                <p className="text-xs text-amber-600 mt-2">
+                  참조 항목이 남아 있어 삭제할 수 없습니다. 정리하거나, 대신
+                  계정을 비활성화하세요.
+                </p>
+              )}
+            </div>
+          ) : null}
+
+          <DialogFooter className="mt-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={submitting}
+            >
+              취소
+            </Button>
+            <Button type="submit" variant="destructive" disabled={!canDelete}>
+              {submitting ? '삭제 중…' : '완전 삭제'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }
 

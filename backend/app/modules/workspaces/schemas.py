@@ -97,6 +97,16 @@ class TFArchiveUpdate(BaseModel):
     archived: bool
 
 
+class ReassignContentsRequest(BaseModel):
+    """부서 이관/병합 — src 의 콘텐츠를 target 으로 통째 이관(D5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_slug: str = Field(..., min_length=1, max_length=64)
+    # 옮길 종류: reports·composites·files·embeds·members 중 부분집합.
+    kinds: list[str] = Field(..., min_length=1)
+
+
 class WorkspaceBulkCreateItem(BaseModel):
     """One row in a bulk-create paste. Parent is resolved by name —
     case-insensitive, trimmed — against existing workspaces or against

@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update as sa_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -334,6 +334,103 @@ def workspace_fk_blockers(db: Session, slug: str) -> dict:
     return count_blockers(
         db, fk_blocking_dependents("workspaces", "slug", labels=_WS_FK_LABELS), slug
     )
+
+
+# 부서 이관/병합에서 옮길 수 있는 콘텐츠 종류. children/templates 는 구조/분류라
+# 여기서 다루지 않는다(자식은 재부모화, 템플릿은 소유 slug 배열 편집이 별도).
+REASSIGNABLE_KINDS = ("reports", "composites", "files", "embeds", "members")
+
+
+def _merge_members(db: Session, src_slug: str, target_slug: str) -> int:
+    """src 멤버십을 target 으로 옮기되, 이미 target 멤버인 사용자는 중복(unique
+    user_id+workspace_slug) 회피를 위해 src 행을 버린다(target 역할 유지). home 부서
+    가 src 인 사용자도 target 으로 갱신(삭제 시 '소속 없음' 되는 것 방지)."""
+    existing = set(
+        db.execute(
+            select(WorkspaceMember.user_id).where(
+                WorkspaceMember.workspace_slug == target_slug
+            )
+        ).scalars()
+    )
+    src_members = list(
+        db.execute(
+            select(WorkspaceMember).where(
+                WorkspaceMember.workspace_slug == src_slug
+            )
+        ).scalars()
+    )
+    moved = 0
+    for m in src_members:
+        if m.user_id in existing:
+            db.delete(m)  # 이미 target 멤버 — 중복 제거(target 역할 유지)
+        else:
+            m.workspace_slug = target_slug
+            existing.add(m.user_id)
+            moved += 1
+    db.execute(
+        sa_update(User)
+        .where(User.home_workspace_slug == src_slug)
+        .values(home_workspace_slug=target_slug)
+    )
+    return moved
+
+
+def reassign_workspace_contents(
+    db: Session, src_slug: str, target_slug: str, kinds: list[str]
+) -> dict:
+    """src 부서의 콘텐츠(보고서·종합보고·파일·번들·멤버)를 target 으로 통째 이관
+    (부서 병합/이동). 자료를 지우지 않고 소속만 바꿔, 이관 후 src 를 비워 삭제·보관
+    할 수 있게 한다(조직개편·계정삭제_설계.md D5).
+
+    반환: {source_slug, target_slug, moved: {kind: count}}."""
+    from app.modules.composites.models import CompositeReport
+    from app.modules.embed.models import HtmlEmbedBundle
+    from app.modules.files.models import File
+
+    if src_slug == target_slug:
+        raise ValueError("같은 부서로는 이관할 수 없습니다.")
+    src = db.get(Workspace, src_slug)
+    if src is None:
+        raise ValueError(f"원본 부서를 찾을 수 없습니다: {src_slug}")
+    target = db.get(Workspace, target_slug)
+    if target is None:
+        raise ValueError(f"대상 부서를 찾을 수 없습니다: {target_slug}")
+    if target.virtual or target.kind in (
+        WorkspaceKind.virtual,
+        WorkspaceKind.personal,
+    ):
+        raise ValueError("가상/개인 작업공간으로는 이관할 수 없습니다.")
+
+    wanted = set(kinds)
+    unknown = wanted - set(REASSIGNABLE_KINDS)
+    if unknown:
+        raise ValueError(f"이관할 수 없는 항목: {', '.join(sorted(unknown))}")
+
+    moved: dict[str, int] = {}
+
+    def _bulk_move(model) -> int:
+        return (
+            db.execute(
+                sa_update(model)
+                .where(model.workspace_slug == src_slug)
+                .values(workspace_slug=target_slug)
+            ).rowcount
+            or 0
+        )
+
+    if "reports" in wanted:
+        moved["reports"] = _bulk_move(Report)
+    if "composites" in wanted:
+        moved["composites"] = _bulk_move(CompositeReport)
+    if "files" in wanted:
+        moved["files"] = _bulk_move(File)
+    if "embeds" in wanted:
+        moved["embeds"] = _bulk_move(HtmlEmbedBundle)
+    if "members" in wanted:
+        moved["members"] = _merge_members(db, src_slug, target_slug)
+
+    db.commit()
+    return {"source_slug": src_slug, "target_slug": target_slug, "moved": moved}
 
 
 def delete_workspace(db: Session, ws: Workspace) -> None:

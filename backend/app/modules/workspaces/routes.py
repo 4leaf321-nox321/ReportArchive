@@ -10,6 +10,7 @@ from app.modules.workspaces import services
 from app.modules.workspaces.models import Workspace, WorkspaceKind
 from app.modules.users.models import Role
 from app.modules.workspaces.schemas import (
+    ReassignContentsRequest,
     TFArchiveUpdate,
     TFWorkspaceCreate,
     WorkspaceBulkCreate,
@@ -290,6 +291,28 @@ def delete_workspace(
     except ValueError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     return success_response(data=None, message="부서가 삭제되었습니다.")
+
+
+@router.post("/{slug}/reassign-contents")
+def reassign_workspace_contents(
+    slug: str,
+    payload: ReassignContentsRequest,
+    db: Session = Depends(get_db),
+    _: CurrentUser = Depends(require_system_admin),
+):
+    """부서 이관/병합 — 이 부서(src)의 콘텐츠(보고서·종합보고·파일·번들·멤버)를
+    대상 부서로 통째 이관한다. 자료를 지우지 않고 소속만 옮겨, 이관 후 src 를 비워
+    삭제·보관할 수 있게 한다(조직개편·계정삭제_설계.md D5)."""
+    src = db.get(Workspace, slug)
+    if not src:
+        return not_found_response(f"부서를 찾을 수 없습니다: {slug}")
+    try:
+        result = services.reassign_workspace_contents(
+            db, slug, payload.target_slug, payload.kinds
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return success_response(data=result, message="콘텐츠를 이관했습니다.")
 
 
 @router.get("/{slug}/dependents")

@@ -112,3 +112,16 @@ export async function getWorkspaceDependents(slug) {
   const res = await apiClient.get(`${BASE}/${slug}/dependents`)
   return extractData(res)
 }
+
+/**
+ * 부서 이관/병합(D5) — 이 부서(src)의 콘텐츠를 대상 부서로 통째 이관.
+ * kinds ⊆ [reports, composites, files, embeds, members]. 자료를 지우지 않고
+ * 소속만 바꿔, 이관 후 src 를 비워 삭제·보관할 수 있게 한다.
+ */
+export async function reassignWorkspaceContents(slug, targetSlug, kinds) {
+  const res = await apiClient.post(`${BASE}/${slug}/reassign-contents`, {
+    target_slug: targetSlug,
+    kinds,
+  })
+  return extractData(res)
+}

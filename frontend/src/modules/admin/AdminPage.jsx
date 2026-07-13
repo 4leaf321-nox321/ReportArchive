@@ -24,6 +24,7 @@ import {
   ArchiveRestore,
   ExternalLink,
   FolderOpen,
+  GitMerge,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
@@ -62,6 +63,7 @@ import {
   deleteWorkspace,
   getWorkspaceDependents,
   setWorkspaceArchived,
+  reassignWorkspaceContents,
 } from '@/shared/api/workspaces'
 import {
   listWidgetRelations,
@@ -843,6 +845,7 @@ function WorkspacesSection() {
   const [creating, setCreating] = useState(false)
   const [bulkCreating, setBulkCreating] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(null)
+  const [mergeSource, setMergeSource] = useState(null) // 이관/병합할 원본 부서
   const [editing, setEditing] = useState(null)
   const [moving, setMoving] = useState(false)
   // 보관된 부서는 기본 숨김 — 개편이 잦아 archived 가 쌓이면 트리가 지저분해진다.
@@ -990,6 +993,17 @@ function WorkspacesSection() {
           size="icon"
           variant="ghost"
           className="h-7 w-7"
+          onClick={() => setMergeSource(w)}
+          disabled={moving}
+          aria-label="이관/병합"
+          title="이관/병합 (콘텐츠를 다른 부서로 통째 이관)"
+        >
+          <GitMerge className="h-3.5 w-3.5" />
+        </Button>
+        <Button
+          size="icon"
+          variant="ghost"
+          className="h-7 w-7"
           onClick={() => handleToggleArchive(w)}
           disabled={moving}
           aria-label={w.status === 'archived' ? '복원' : '보관'}
@@ -1117,7 +1131,173 @@ function WorkspacesSection() {
         onOpenChange={(open) => !open && setConfirmDelete(null)}
         onConfirm={() => confirmDelete && handleDelete(confirmDelete.slug)}
       />
+
+      <MergeWorkspaceDialog
+        source={mergeSource}
+        candidates={real.filter((w) => w.slug !== mergeSource?.slug)}
+        onOpenChange={(open) => !open && setMergeSource(null)}
+        onDone={() => {
+          setMergeSource(null)
+          reload()
+        }}
+      />
     </Card>
+  )
+}
+
+// 부서 이관/병합 — 원본(source) 부서의 콘텐츠를 대상 부서로 통째 이관(D5). 부서
+// 병합/흡수 시 자료를 지우지 않고 소속만 옮겨, 이관 후 원본을 비워 삭제·보관한다.
+// dependents 키 ↔ 이관 kind 매핑.
+const MERGE_KINDS = [
+  { kind: 'reports', depKey: 'reports', label: '보고서' },
+  { kind: 'composites', depKey: 'composite_reports', label: '종합보고' },
+  { kind: 'files', depKey: 'files', label: '파일' },
+  { kind: 'embeds', depKey: 'html_embed_bundles', label: 'HTML 임베드 번들' },
+  { kind: 'members', depKey: 'members', label: '멤버' },
+]
+
+function MergeWorkspaceDialog({ source, candidates, onOpenChange, onDone }) {
+  const open = Boolean(source)
+  const [counts, setCounts] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [target, setTarget] = useState('')
+  const [picked, setPicked] = useState(() => new Set())
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (!open || !source) {
+      setCounts(null)
+      setTarget('')
+      setPicked(new Set())
+      setSubmitting(false)
+      return
+    }
+    setLoading(true)
+    getWorkspaceDependents(source.slug)
+      .then((c) => {
+        setCounts(c)
+        // 콘텐츠가 있는 종류만 기본 선택.
+        setPicked(
+          new Set(MERGE_KINDS.filter((k) => (c?.[k.depKey] ?? 0) > 0).map((k) => k.kind)),
+        )
+      })
+      .catch(() => setCounts(null))
+      .finally(() => setLoading(false))
+  }, [open, source?.slug])
+
+  const anyPicked = picked.size > 0
+  const canSubmit = !loading && !submitting && target && anyPicked
+
+  function toggleKind(kind) {
+    setPicked((prev) => {
+      const next = new Set(prev)
+      if (next.has(kind)) next.delete(kind)
+      else next.add(kind)
+      return next
+    })
+  }
+
+  async function handleSubmit() {
+    if (!canSubmit) return
+    setSubmitting(true)
+    try {
+      const res = await reassignWorkspaceContents(source.slug, target, [...picked])
+      const moved = res?.moved || {}
+      const summary = Object.entries(moved)
+        .filter(([, n]) => n > 0)
+        .map(([k, n]) => `${k}=${n}`)
+        .join(', ')
+      const tName = candidates.find((w) => w.slug === target)?.name ?? target
+      toast.success(`'${tName}'(으)로 이관 완료${summary ? ` (${summary})` : ''}`)
+      onDone()
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err.message || '이관 실패')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>부서 이관 / 병합</DialogTitle>
+          <DialogDescription>
+            <span className="font-medium">{source?.name}</span> 부서의 콘텐츠를 다른
+            부서로 통째 이관합니다. 자료를 지우지 않고 소속만 옮기므로, 이관 후 이
+            부서를 비워 삭제·보관할 수 있습니다.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div>
+            <div className="text-xs text-muted-foreground mb-1">대상 부서</div>
+            <WorkspaceCombobox
+              workspaces={candidates}
+              value={target}
+              onChange={setTarget}
+              placeholder="이관 대상 부서 선택…"
+              className="w-full"
+              wrap
+            />
+          </div>
+
+          <div>
+            <div className="text-xs text-muted-foreground mb-1">이관할 항목</div>
+            {loading ? (
+              <Skeleton className="h-24" />
+            ) : (
+              <div className="space-y-1.5">
+                {MERGE_KINDS.map((k) => {
+                  const n = counts?.[k.depKey] ?? 0
+                  return (
+                    <label
+                      key={k.kind}
+                      className={
+                        'flex items-center justify-between rounded px-2 py-1.5 text-sm ' +
+                        (n === 0
+                          ? 'opacity-40'
+                          : 'hover:bg-muted cursor-pointer')
+                      }
+                    >
+                      <span className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={picked.has(k.kind)}
+                          disabled={n === 0}
+                          onChange={() => toggleKind(k.kind)}
+                        />
+                        {k.label}
+                      </span>
+                      <Badge variant={n === 0 ? 'outline' : 'secondary'}>{n}</Badge>
+                    </label>
+                  )
+                })}
+                <p className="text-[11px] text-muted-foreground pt-1">
+                  자식 부서·소유 템플릿은 이관 대상이 아닙니다(각각 상위 부서 변경·
+                  템플릿 소유 편집으로 처리). 멤버는 대상 부서에 이미 있으면 중복 없이
+                  합쳐집니다.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <DialogFooter className="mt-4">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={submitting}
+          >
+            취소
+          </Button>
+          <Button type="button" onClick={handleSubmit} disabled={!canSubmit}>
+            {submitting ? '이관 중…' : '이관'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -2225,6 +2405,7 @@ const BLOCKER_LINKS = {
   reports: (slug) => `/w/${slug}/reports`,
   composite_reports: (slug) => `/w/${slug}/composites`,
   files: (slug) => `/admin/workspace-files/${slug}`,
+  html_embed_bundles: (slug) => `/admin/workspace-files/${slug}`,
 }
 
 function BlockerRow({ blockerKey, label, count, slug }) {

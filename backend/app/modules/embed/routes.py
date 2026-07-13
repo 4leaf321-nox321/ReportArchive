@@ -29,9 +29,13 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.modules.embed import services
-from app.modules.embed.schemas import BundleMeta
-from app.modules.users.models import Role
-from app.shared.auth import CurrentUser, get_current_user
+from app.modules.embed.schemas import (
+    BulkDeleteBundlesRequest,
+    BundleMeta,
+    ReassignBundlesRequest,
+)
+from app.modules.users.models import Role, User
+from app.shared.auth import CurrentUser, get_current_user, require_system_admin
 from app.shared.responses import created_response, not_found_response, success_response
 from app.shared.storage import assert_space_for
 
@@ -128,6 +132,52 @@ def delete_bundle(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "이 번들을 삭제할 권한이 없습니다.")
     services.delete_bundle(db, record)
     return success_response(message="번들이 삭제되었습니다.")
+
+
+# ── 부서 스코프 번들 관리(시스템관리자) — 부서 삭제/개편 정리용 ─────────────
+# ⚠ 아래 세 라우트는 catch-all serve 라우트('/{bundle_id}/{rel_path}') 보다 먼저
+# 등록해야 한다. 그렇지 않으면 GET /workspace/{slug} 가 bundle_id='workspace' 로
+# 잘못 매칭된다(FastAPI 는 등록 순서로 매칭).
+
+
+@router.get("/workspace/{slug}")
+def list_workspace_bundles(
+    slug: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_system_admin),
+):
+    """부서가 소유한 HTML 임베드 번들 목록 + 참조 정보."""
+    return success_response(data=services.list_workspace_bundles(db, slug))
+
+
+@router.post("/bulk-delete")
+def bulk_delete_bundles(
+    payload: BulkDeleteBundlesRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_system_admin),
+):
+    """번들 일괄 삭제(디스크 폴더+DB). 살아있는 보고서가 쓰는 번들을 지우면 그
+    보고서의 임베드가 깨지므로, 화면에서 참조 여부를 확인하고 호출한다."""
+    result = services.bulk_delete_bundles(db, payload.bundle_ids)
+    return success_response(
+        data=result, message=f"{result['deleted']}개 번들을 삭제했습니다."
+    )
+
+
+@router.post("/reassign")
+def reassign_bundles(
+    payload: ReassignBundlesRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_system_admin),
+):
+    """번들들을 다른 부서로 이관(자료 보존). 부서 병합/이동 시 사용."""
+    try:
+        result = services.reassign_bundles(db, payload.bundle_ids, payload.target_slug)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return success_response(
+        data=result, message=f"{result['reassigned']}개 번들을 이동했습니다."
+    )
 
 
 @router.get("/{bundle_id}/{rel_path:path}")

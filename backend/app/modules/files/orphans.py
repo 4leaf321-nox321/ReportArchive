@@ -43,19 +43,29 @@ def _is_file_ref_key(k: str) -> bool:
     return kl == "file_id" or kl == "fileid" or kl.endswith("_file_id")
 
 
-def _collect_file_ids(node, out: set[str]) -> None:
+def _is_bundle_ref_key(k: str) -> bool:
+    """`html_embed_bundles` 행을 가리키는 키인가 — html_embed 위젯의 `bundle_id`."""
+    return k.lower() == "bundle_id"
+
+
+def _collect_ids(node, out: set[str], is_ref_key) -> None:
+    """JSON 트리를 훑어 is_ref_key(k) 인 키의 문자열/문자열리스트 값을 수집."""
     if isinstance(node, dict):
         for k, v in node.items():
-            if _is_file_ref_key(k):
+            if is_ref_key(k):
                 if isinstance(v, str) and v:
                     out.add(v)
                 elif isinstance(v, list):
                     out.update(x for x in v if isinstance(x, str) and x)
             else:
-                _collect_file_ids(v, out)
+                _collect_ids(v, out, is_ref_key)
     elif isinstance(node, list):
         for v in node:
-            _collect_file_ids(v, out)
+            _collect_ids(v, out, is_ref_key)
+
+
+def _collect_file_ids(node, out: set[str]) -> None:
+    _collect_ids(node, out, _is_file_ref_key)
 
 
 def referenced_file_ids(db: Session) -> set[str]:
@@ -87,18 +97,18 @@ def referenced_file_ids(db: Session) -> set[str]:
     return refs
 
 
-def references_for(db: Session, file_ids: set[str]) -> dict[str, list[dict]]:
-    """대상 file_id 각각을 *참조하는* 소스(보고서·종합보고·버전) 목록.
-    부서 파일 관리 화면이 "이 파일을 어느 보고서가 쓰는가"를 보여주는 데 쓴다.
-    전체 스캔이지만 부서 삭제·정리라는 저빈도 관리 작업에서만 호출한다.
+def _references_for(db: Session, ids: set[str], is_ref_key) -> dict[str, list[dict]]:
+    """대상 id 각각을 *참조하는* 소스(보고서·종합보고·버전) 목록. is_ref_key 로
+    파일(file_id)·번들(bundle_id) 등 참조 종류를 바꾼다. 전체 스캔이지만 부서
+    삭제·정리라는 저빈도 관리 작업에서만 호출한다.
 
     각 항목: {"type": "report"|"composite"|"version", "id", "title", "deleted"}.
     - report.deleted = 휴지통(soft-delete) 여부. deleted=False 는 살아있는 참조라
-      그 파일을 지우면 그 보고서의 이미지/첨부가 깨진다(위험 신호).
+      그 자산을 지우면 그 보고서가 깨진다(위험 신호).
     - version 은 항상 deleted=True 취급(과거 이력 — 살아있는 참조 아님)."""
-    if not file_ids:
+    if not ids:
         return {}
-    out: dict[str, list[dict]] = {fid: [] for fid in file_ids}
+    out: dict[str, list[dict]] = {i: [] for i in ids}
 
     for rid, title, deleted_at, content, pages in db.execute(
         select(
@@ -106,10 +116,10 @@ def references_for(db: Session, file_ids: set[str]) -> dict[str, list[dict]]:
         )
     ).yield_per(200):
         hits: set[str] = set()
-        _collect_file_ids(content, hits)
-        _collect_file_ids(pages, hits)
-        for fid in hits & file_ids:
-            out[fid].append(
+        _collect_ids(content, hits, is_ref_key)
+        _collect_ids(pages, hits, is_ref_key)
+        for i in hits & ids:
+            out[i].append(
                 {
                     "type": "report",
                     "id": rid,
@@ -126,9 +136,9 @@ def references_for(db: Session, file_ids: set[str]) -> dict[str, list[dict]]:
         )
     ).yield_per(200):
         hits = set()
-        _collect_file_ids(widgets, hits)
-        for fid in hits & file_ids:
-            out[fid].append(
+        _collect_ids(widgets, hits, is_ref_key)
+        for i in hits & ids:
+            out[i].append(
                 {"type": "composite", "id": cid, "title": title, "deleted": False}
             )
 
@@ -142,13 +152,23 @@ def references_for(db: Session, file_ids: set[str]) -> dict[str, list[dict]]:
         except Exception:
             continue
         hits = set()
-        _collect_file_ids(body, hits)
-        for fid in hits & file_ids:
-            out[fid].append(
+        _collect_ids(body, hits, is_ref_key)
+        for i in hits & ids:
+            out[i].append(
                 {"type": "version", "id": rvid, "title": None, "deleted": True}
             )
 
     return out
+
+
+def references_for(db: Session, file_ids: set[str]) -> dict[str, list[dict]]:
+    """각 file_id 를 참조하는 보고서·종합보고·버전 목록(부서 파일 관리용)."""
+    return _references_for(db, file_ids, _is_file_ref_key)
+
+
+def bundle_references_for(db: Session, bundle_ids: set[str]) -> dict[str, list[dict]]:
+    """각 bundle_id 를 참조하는 보고서·종합보고·버전 목록(부서 임베드 번들 관리용)."""
+    return _references_for(db, bundle_ids, _is_bundle_ref_key)
 
 
 def _now_utc_naive() -> datetime:

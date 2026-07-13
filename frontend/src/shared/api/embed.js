@@ -44,3 +44,24 @@ export async function deleteEmbedBundle(bundleId) {
   const res = await apiClient.delete(`/api/embed/${bundleId}`)
   return extractData(res)
 }
+
+/** 시스템관리자 — 한 부서가 소유한 임베드 번들 목록 + 참조 정보(부서 삭제/개편 정리용). */
+export async function listWorkspaceBundles(slug) {
+  const res = await apiClient.get(`/api/embed/workspace/${slug}`)
+  return extractData(res)
+}
+
+/** 시스템관리자 — 임베드 번들 일괄 삭제(디스크 폴더+DB). */
+export async function bulkDeleteBundles(bundleIds) {
+  const res = await apiClient.post('/api/embed/bulk-delete', { bundle_ids: bundleIds })
+  return extractData(res)
+}
+
+/** 시스템관리자 — 번들들을 다른 부서로 이관(자료 보존). */
+export async function reassignBundles(bundleIds, targetSlug) {
+  const res = await apiClient.post('/api/embed/reassign', {
+    bundle_ids: bundleIds,
+    target_slug: targetSlug,
+  })
+  return extractData(res)
+}

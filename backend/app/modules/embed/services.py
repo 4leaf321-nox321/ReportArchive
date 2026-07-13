@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -118,3 +119,92 @@ def delete_bundle(db: Session, record: HtmlEmbedBundle) -> None:
     shutil.rmtree(bundle_dir(record.id), ignore_errors=True)
     db.delete(record)
     db.commit()
+
+
+# ── 부서 스코프 번들 관리(시스템관리자) — 부서 삭제/개편 정리용 ─────────────
+# html_embed_bundles.workspace_slug=RESTRICT 라 부서에 번들이 남으면 삭제가 막힌다.
+# files 정리와 대칭 구조(목록+참조표시·일괄삭제·재배정).
+
+
+def list_workspace_bundles(db: Session, slug: str) -> dict:
+    """부서가 소유한 임베드 번들 목록 + 참조 정보(어느 보고서가 bundle_id 로 쓰는지).
+    referenced_live=살아있는 보고서가 사용 중(삭제 시 그 보고서 임베드가 깨짐)."""
+    from app.modules.files import orphans
+
+    bundles = list(
+        db.execute(
+            select(HtmlEmbedBundle)
+            .where(HtmlEmbedBundle.workspace_slug == slug)
+            .order_by(HtmlEmbedBundle.total_bytes.desc())
+        ).scalars()
+    )
+    ids = {b.id for b in bundles}
+    refmap = orphans.bundle_references_for(db, ids)
+
+    items: list[dict] = []
+    total = 0
+    for b in bundles:
+        refs = refmap.get(b.id, [])
+        live = [r for r in refs if not r["deleted"]]
+        items.append(
+            {
+                "id": b.id,
+                "entry_path": b.entry_path,
+                "file_count": b.file_count,
+                "total_bytes": b.total_bytes,
+                "owner_user_id": b.owner_user_id,
+                "created_at": b.created_at.isoformat() if b.created_at else None,
+                "referenced_live": len(live) > 0,
+                "referenced_any": len(refs) > 0,
+                "reference_count": len(refs),
+                "references": (live + [r for r in refs if r["deleted"]])[:8],
+            }
+        )
+        total += b.total_bytes or 0
+
+    return {
+        "workspace_slug": slug,
+        "items": items,
+        "total_count": len(items),
+        "total_bytes": total,
+    }
+
+
+def bulk_delete_bundles(db: Session, bundle_ids: list[str]) -> dict:
+    """번들 일괄 삭제(디스크 폴더 rmtree + DB 행). 참조 검사는 호출부(관리자)가 화면
+    에서 보고 결정. 한 번만 commit."""
+    deleted = 0
+    freed = 0
+    failed: list[dict] = []
+    for bid in dict.fromkeys(bundle_ids):
+        b = db.get(HtmlEmbedBundle, bid)
+        if b is None:
+            failed.append({"id": bid, "reason": "not_found"})
+            continue
+        shutil.rmtree(bundle_dir(bid), ignore_errors=True)
+        freed += b.total_bytes or 0
+        db.delete(b)
+        deleted += 1
+    db.commit()
+    return {"deleted": deleted, "freed_bytes": freed, "failed": failed}
+
+
+def reassign_bundles(db: Session, bundle_ids: list[str], target_slug: str) -> dict:
+    """번들들을 다른 부서로 이관(workspace_slug 변경). 대상은 실재 비가상 부서."""
+    from app.modules.workspaces.models import Workspace, WorkspaceKind
+
+    target = db.get(Workspace, target_slug)
+    if target is None:
+        raise ValueError(f"대상 부서를 찾을 수 없습니다: {target_slug}")
+    if target.virtual or target.kind == WorkspaceKind.virtual:
+        raise ValueError("가상 부서로는 번들을 이동할 수 없습니다.")
+
+    moved = 0
+    for bid in dict.fromkeys(bundle_ids):
+        b = db.get(HtmlEmbedBundle, bid)
+        if b is None:
+            continue
+        b.workspace_slug = target_slug
+        moved += 1
+    db.commit()
+    return {"reassigned": moved, "target_slug": target_slug}

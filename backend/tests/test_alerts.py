@@ -219,6 +219,19 @@ def test_stale_unpublished_probe_shape():
         db.close()
 
 
+def test_stale_unpublished_default_excludes_personal():
+    """기본값(mounted_only 생략)이면 개인 미게시 보고서 제외 — 게시된 것만
+    (미태깅과 동일 기본값). 결과는 모두 게시판이 하나 이상 있어야 한다."""
+    db = SessionLocal()
+    try:
+        out = services._probe_stale_unpublished(db, {"days": 30})  # mounted_only 생략
+        assert isinstance(out, list)
+        for t in out[:5]:
+            assert t["context"]["boards"], "기본값인데 개인 미게시 보고서가 잡힘"
+    finally:
+        db.close()
+
+
 def test_rules_endpoint_admin_only():
     c = TestClient(app)
     # 시스템 관리자 = 200, 시드 규칙 1개 이상.

@@ -110,15 +110,17 @@ def _probe_untagged_reports(db: Session, params: dict) -> list[dict]:
 def _probe_stale_unpublished(db: Session, params: dict) -> list[dict]:
     """미발행 보고서 — 발행(finalized)되지 않은 채 오래 방치된 보고서.
 
-    params: {days:int=30, mounted_only:bool=False}. phase != finalized(작성중·리뷰중)
+    params: {days:int=30, mounted_only:bool=True}. phase != finalized(작성중·리뷰중)
     이면서 **마지막 수정 후 N일** 경과(=활동 없이 방치). updated_at 기준이라 지금도
-    편집 중인 보고서엔 안 뜬다. 휴지통 제외. mounted_only 면 게시된 것만.
+    편집 중인 보고서엔 안 뜬다. 휴지통 제외. mounted_only(기본 True) 면 게시된
+    (mount 된) 보고서만 — 개인 공간에만 있는 미게시 보고서는 제외(미태깅 프로브와
+    동일 기본값). 개인 초안까지 보려면 규칙에서 mounted_only=false 로 끈다.
     """
     from app.modules.mounts.models import ReportMount  # noqa: F401 (via _boards_for)
     from app.modules.reports.models import Report, ReportPhase
 
     days = int(params.get("days", 30))
-    mounted_only = bool(params.get("mounted_only", False))
+    mounted_only = bool(params.get("mounted_only", True))
     cutoff = datetime.utcnow() - timedelta(days=days)
 
     conds = [

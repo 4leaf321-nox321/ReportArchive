@@ -1,0 +1,292 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import {
+  MessageSquare,
+  Send,
+  Loader2,
+  RotateCcw,
+  Square,
+  Network,
+  AlertTriangle,
+  ShieldCheck,
+} from 'lucide-react'
+import { toast } from 'sonner'
+import { Button } from '@/shared/components/ui/button'
+import { Markdown } from '@/shared/components/Markdown'
+import { askAgent } from '@/shared/api/ai'
+
+// 서버에 보낼 대화 히스토리 상한(서버도 12로 캡). 너무 길면 컨텍스트·비용↑.
+const HISTORY_TURNS = 12
+
+/**
+ * 대화형 에이전트 검색 (Phase: 대화형 에이전트 검색 §MVP). 아카이브에 근거를 둔
+ * 에이전트와 대화하며 후속 질문으로 좁혀간다. 서버 stateless — 대화는 이 컴포넌트가
+ * 보관하고 매 요청에 최근 N턴을 함께 보낸다. 서버가 후속을 독립형 질문으로 재작성.
+ */
+export default function ChatPage() {
+  const navigate = useNavigate()
+  const [messages, setMessages] = useState([]) // {role:'user'|'assistant', content, result?}
+  const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
+  const abortRef = useRef(null)
+  const endRef = useRef(null)
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, busy])
+
+  const send = useCallback(async () => {
+    const q = input.trim()
+    if (!q || busy) return
+    setInput('')
+    // 이번 질문 직전까지의 대화를 히스토리로(어시스턴트는 답변 본문만).
+    const history = messages
+      .map((m) => ({
+        role: m.role,
+        content: m.role === 'assistant' ? m.result?.answer || '' : m.content,
+      }))
+      .filter((m) => m.content)
+      .slice(-HISTORY_TURNS)
+    setMessages((prev) => [...prev, { role: 'user', content: q }])
+    setBusy(true)
+    const controller = new AbortController()
+    abortRef.current = controller
+    try {
+      const result = await askAgent({ query: q, history, signal: controller.signal })
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: result.answer || '', result },
+      ])
+    } catch (err) {
+      const canceled =
+        err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError'
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: canceled ? '(중단됨)' : '답변 생성에 실패했습니다.',
+          result: null,
+        },
+      ])
+      if (!canceled) {
+        toast.error(err?.response?.data?.message || err?.message || '답변 생성 실패')
+      }
+    } finally {
+      setBusy(false)
+      abortRef.current = null
+    }
+  }, [input, busy, messages])
+
+  function onKeyDown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      send()
+    }
+  }
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center gap-2 border-b px-6 py-3">
+        <MessageSquare className="h-5 w-5 text-primary" />
+        <h1 className="text-lg font-semibold">대화</h1>
+        <span className="hidden text-xs text-muted-foreground sm:inline">
+          아카이브 근거로 답하는 에이전트와 대화하며 좁혀가세요.
+        </span>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="ml-auto"
+          onClick={() => !busy && (setMessages([]), setInput(''))}
+          disabled={busy || messages.length === 0}
+        >
+          <RotateCcw className="mr-1.5 h-3.5 w-3.5" />새 대화
+        </Button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-6 py-4">
+        {messages.length === 0 && !busy && (
+          <div className="mx-auto max-w-2xl pt-16 text-center text-sm text-muted-foreground">
+            <MessageSquare className="mx-auto mb-3 h-8 w-8 opacity-40" />
+            질문을 입력하면 에이전트가 온톨로지·보고서를 조사해 답합니다.
+            <br />
+            이어서 “그 중 2024년만?” 처럼 후속 질문으로 좁혀갈 수 있어요.
+          </div>
+        )}
+        <div className="mx-auto flex max-w-3xl flex-col gap-4">
+          {messages.map((m, i) => (
+            <MessageBubble key={i} m={m} navigate={navigate} />
+          ))}
+          {busy && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> 조사 중…
+            </div>
+          )}
+          <div ref={endRef} />
+        </div>
+      </div>
+
+      <div className="border-t px-6 py-3">
+        <div className="mx-auto flex max-w-3xl items-end gap-2">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={onKeyDown}
+            rows={1}
+            placeholder="질문을 입력하세요 (Enter 전송 · Shift+Enter 줄바꿈)"
+            className="max-h-40 min-h-[40px] flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm"
+          />
+          {busy ? (
+            <Button variant="outline" onClick={() => abortRef.current?.abort()}>
+              <Square className="mr-1.5 h-3.5 w-3.5" />중단
+            </Button>
+          ) : (
+            <Button onClick={send} disabled={!input.trim()}>
+              <Send className="mr-1.5 h-3.5 w-3.5" />전송
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function MessageBubble({ m, navigate }) {
+  if (m.role === 'user') {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl bg-primary px-4 py-2 text-sm text-primary-foreground">
+          {m.content}
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[92%] rounded-2xl border bg-card px-4 py-3">
+        {m.result ? (
+          <AssistantAnswer r={m.result} navigate={navigate} />
+        ) : (
+          <p className="text-sm text-muted-foreground">{m.content}</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function AssistantAnswer({ r, navigate }) {
+  if (r.no_evidence) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        {r.answer || '관련 근거를 찾지 못했습니다.'}
+      </p>
+    )
+  }
+  return (
+    <div>
+      {r.rewritten_query && (
+        <p className="mb-2 text-[11px] text-muted-foreground">
+          이렇게 이해했어요: <span className="italic">“{r.rewritten_query}”</span>
+        </p>
+      )}
+      {r.objects?.length > 0 && (
+        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+            <Network className="h-3.5 w-3.5" /> 관련 객체
+          </span>
+          {r.objects.map((o) => (
+            <button
+              key={`${o.type}:${o.id}`}
+              type="button"
+              onClick={() => navigate(`/objects/${o.type}/${o.id}`)}
+              title={`${o.type} · ${o.label}`}
+              className="rounded-full border bg-muted/40 px-2 py-0.5 text-[11px] hover:bg-muted"
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <Markdown className="text-sm leading-relaxed">{r.answer}</Markdown>
+
+      {r.verification?.claims?.length > 0 && (
+        <details className="mt-3 border-t pt-3" open={r.verification.unsupported > 0}>
+          <summary className="flex cursor-pointer items-center gap-1.5 text-[11px] font-medium">
+            {r.verification.unsupported > 0 ? (
+              <span className="inline-flex items-center gap-1 text-amber-600">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                근거 검증 — 근거 불충분 {r.verification.unsupported}건
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-emerald-600">
+                <ShieldCheck className="h-3.5 w-3.5" />
+                근거 검증 — 모든 주장이 출처로 뒷받침됨
+              </span>
+            )}
+          </summary>
+          <ul className="mt-1.5 flex flex-col gap-1.5">
+            {r.verification.claims.map((c, i) => (
+              <li key={i} className="flex items-start gap-2 text-[11px]">
+                {c.supported ? (
+                  <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                ) : (
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+                )}
+                <span className="min-w-0">
+                  {c.text}
+                  {!c.supported && (
+                    <span className="ml-1 text-amber-600">— 출처에서 확인 안 됨</span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      {r.trace?.length > 0 && (
+        <details className="mt-3 border-t pt-3">
+          <summary className="cursor-pointer text-[11px] font-medium text-muted-foreground">
+            추론 과정 ({r.trace.length}단계)
+          </summary>
+          <ol className="mt-1.5 flex flex-col gap-1">
+            {r.trace.map((t, i) => (
+              <li
+                key={i}
+                className="flex items-start gap-2 text-[11px] text-muted-foreground"
+              >
+                <span className="mt-0.5 shrink-0 rounded bg-muted px-1 font-mono text-[10px]">
+                  {i + 1}
+                </span>
+                <span className="min-w-0">{t.summary}</span>
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
+
+      {r.citations?.length > 0 && (
+        <div className="mt-3 border-t pt-3">
+          <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">출처</p>
+          <div className="flex flex-col gap-1">
+            {r.citations.map((c) => (
+              <button
+                key={c.n}
+                type="button"
+                onClick={() => navigate(`/w/${c.workspace_slug}/reports/${c.report_id}`)}
+                className="flex items-start gap-2 rounded px-1.5 py-1 text-left hover:bg-muted"
+              >
+                <span className="mt-0.5 shrink-0 rounded bg-primary/15 px-1.5 text-[10px] font-bold text-primary">
+                  [{c.n}]
+                </span>
+                <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                  {c.title || `보고서 ${c.report_id}`}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

@@ -30,6 +30,7 @@ import ReportNewPage from '@/modules/reports/ReportNewPage'
 import ReportDetailPage from '@/modules/reports/ReportDetailPage'
 import ReportGraphPage from '@/modules/reports/ReportGraphPage'
 import SearchPage from '@/modules/reports/SearchPage'
+import ChatPage from '@/modules/chat/ChatPage'
 import DashboardPage from '@/modules/dashboard/DashboardPage'
 import TemplatesPage from '@/modules/templates/TemplatesPage'
 import TemplateEditorPage from '@/modules/templates/TemplateEditorPage'
@@ -153,6 +154,7 @@ const router = createBrowserRouter(
 
         {/* 공통 (부서 횡단) */}
         <Route path="/profile" element={<ProfilePage />} />
+        <Route path="/chat" element={<ChatPage />} />
         <Route path="/notifications" element={<NotificationsPage />} />
         {/* 내 공간 — dedicated route. Renders the standard reports list
             against the user's personal workspace (slug resolved in

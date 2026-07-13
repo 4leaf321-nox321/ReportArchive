@@ -433,6 +433,9 @@ def eval_from_feedback(
 class AgentPayload(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
     max_hops: int = Field(default=6, ge=1, le=10)
+    # 대화형 검색 — 이전 턴 [{role:'user'|'assistant', content}]. 프론트가 보관·전송,
+    # 서버는 stateless(세션 없음). 맥락 재작성에만 쓰고 최근 N턴으로 상한.
+    history: list[dict] = Field(default_factory=list)
 
 
 @router.post("/agent")
@@ -458,7 +461,8 @@ async def agent_ask(
         )
     try:
         data = await run_in_threadpool(
-            agent.run_agent, db, actor, payload.query, max_hops=payload.max_hops
+            agent.run_agent, db, actor, payload.query,
+            history=payload.history[-12:], max_hops=payload.max_hops,
         )
     except LLMError as exc:
         return error_response(f"AI 응답 실패: {exc}", status_code=502)

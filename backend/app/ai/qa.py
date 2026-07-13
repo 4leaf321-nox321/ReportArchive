@@ -389,6 +389,41 @@ def _hyde(q: str) -> Optional[str]:
     return f"{q}\n{text}" if text else None
 
 
+_CONTEXTUALIZE_SYSTEM = (
+    "너는 검색 질의 재작성기다. 아래 대화를 참고해, 사용자의 마지막 질문을 그것만 "
+    "떼어놓아도 검색되는 '완전한 독립 질문'으로 바꿔라. 지시어(그거·그것·그 중·그 과제 "
+    "등)를 대화 속 구체 대상으로 풀고, 생략된 조건(연도·종류·부서 등)을 채워라. "
+    "이미 독립적이면 거의 그대로 두라. 설명 없이 재작성된 질문 한 줄만 출력."
+)
+
+
+def _contextualize(history: Optional[list], followup: str) -> str:
+    """대화 히스토리로 후속 질문을 독립형(self-contained) 질문으로 재작성한다.
+    히스토리 없으면(첫 턴) 원 질문 그대로 — LLM 호출 안 함. 보강 레이어라
+    mock/오류/빈 결과면 원 질문 폴백(대화가 죽지 않게)."""
+    fq = (followup or "").strip()
+    if not history or not fq:
+        return fq
+    msgs = [{"role": "system", "content": _CONTEXTUALIZE_SYSTEM}]
+    for m in history:
+        role = (m or {}).get("role")
+        content = ((m or {}).get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            msgs.append({"role": role, "content": content})
+    msgs.append({
+        "role": "user",
+        "content": f"방금 이 질문을 독립형 질문으로 재작성해줘(질문만): {fq}",
+    })
+    try:
+        res = chat(msgs)
+    except Exception:  # noqa: BLE001 — 보강 레이어, 어떤 실패든 폴백
+        return fq
+    if getattr(res, "backend", "") == "mock":
+        return fq
+    rewritten = (res.content or "").strip()
+    return rewritten or fq
+
+
 def _decompose_enabled() -> bool:
     from app.config import settings
     from app.modules.app_settings import store

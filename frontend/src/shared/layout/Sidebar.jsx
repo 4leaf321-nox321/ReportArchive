@@ -6,6 +6,7 @@ import {
   Layers,
   Network,
   Boxes,
+  Bot,
   Settings,
   Home,
   Users,
@@ -58,6 +59,8 @@ const WORKSPACE_MENU = [
  *  중간 그룹. 4B(내 공간 enrich) · 4C(mount 현황) · 4D(받은 코멘트)
  *  진입점이 모두 여기로 모임. */
 const MY_ACTIVITY_MENU = [
+  // AI 대화 — 아카이브 근거로 답하는 에이전트와 대화하며 좁혀가는 검색.
+  { to: '/chat', label: '대화', icon: Bot },
   // 내 공간 — dedicated route. Click no longer switches the org
   // workspace context; it just opens the personal reports view while
   // the sidebar's 부서 메뉴 keeps pointing at the user's current org.

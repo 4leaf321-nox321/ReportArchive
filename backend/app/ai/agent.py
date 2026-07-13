@@ -73,17 +73,25 @@ def _summary(tool: str, args: dict, content: dict) -> str:
     return tool
 
 
-def run_agent(db: Session, actor, query: str, *, max_hops: int = _MAX_HOPS) -> dict:
+def run_agent(db: Session, actor, query: str, *, history=None,
+              max_hops: int = _MAX_HOPS) -> dict:
     """질문 → {answer, citations, objects, trace, no_evidence, model, backend}.
 
-    actor 는 도구 실행 권한(보고서 가시성) scope 용. 기능 게이트는 호출부에서 통과."""
+    actor 는 도구 실행 권한(보고서 가시성) scope 용. 기능 게이트는 호출부에서 통과.
+    history(대화 이전 턴 [{role,content}])가 있으면 후속 질문을 독립형으로 재작성해
+    맥락을 잇는다(대화형 검색). 재작성되면 결과에 rewritten_query 로 노출(투명성)."""
+    from app.ai import qa
+
     q = (query or "").strip()
     if not q:
         return _result("", [], [], [], no_evidence=True)
 
+    # 대화 맥락 재작성 — 후속("그 중 2024년만?")을 독립형 질문으로. 첫 턴이면 그대로.
+    standalone = qa._contextualize(history, q)
+
     messages = [
         {"role": "system", "content": _SYSTEM},
-        {"role": "user", "content": q},
+        {"role": "user", "content": standalone},
     ]
     trace: list[dict] = []
     reports: dict[int, dict] = {}   # report_id → citation(중복 제거)
@@ -132,12 +140,14 @@ def run_agent(db: Session, actor, query: str, *, max_hops: int = _MAX_HOPS) -> d
     # 근거 검증 — 질문하기와 동일 레이어 재사용. 전역 'rag_verify_enabled' 설정이 켜져
     # 있을 때만(mock 무효). 도구가 만진 보고서 인용을 [번호] 블록으로 재구성해 답변의
     # 각 주장이 실제 근거에 뒷받침되는지 사후 판정한다. 보강 레이어라 실패해도 무해.
-    from app.ai import qa
     blocks = _verify_blocks(citations)
     if blocks and qa._verify_enabled():
         v = qa._verify(result["answer"], blocks)
         if v:
             result["verification"] = v
+    # 후속 질문이 재작성됐으면 노출 — 프론트가 "(이렇게 이해했어요)"로 표시.
+    if standalone != q:
+        result["rewritten_query"] = standalone
     return result
 
 

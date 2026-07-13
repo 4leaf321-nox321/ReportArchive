@@ -58,10 +58,12 @@ export async function getAskOptions() {
  *     no_evidence, model, backend }
  * 'rag_qa' 엔티틀먼트 재사용. LLM이 tools 미지원이면 도구 없이 1턴으로 degrade.
  */
-export async function askAgent({ query, maxHops = 6, signal } = {}) {
+export async function askAgent({ query, history = [], maxHops = 6, signal } = {}) {
+  // history: 대화 이전 턴 [{role:'user'|'assistant', content}] — 서버가 후속 질문을
+  // 독립형으로 재작성하는 데 쓴다(대화형 검색). 서버는 stateless(세션 없음).
   const res = await apiClient.post(
     '/api/ai/agent',
-    { query, max_hops: maxHops },
+    { query, max_hops: maxHops, history },
     { signal },
   )
   return extractData(res)

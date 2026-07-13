@@ -42,6 +42,11 @@ def main() -> int:
             f"[scheduler:alerts] due={a['due']} enqueued={a['enqueued']} "
             f"skipped={a['skipped']} at={a['at']}"
         )
+        # 경보 이메일 다이제스트(self-gate 로 하루 1회). 새 발화 있을 때만 발송.
+        from app.modules.alerts.digest import build_and_send_digest
+
+        d = build_and_send_digest(session)
+        print(f"[scheduler:alert-digest] {d}")
     finally:
         session.close()
     return 0

@@ -88,6 +88,10 @@ def maybe_enqueue_email(db: Session, notification: Notification) -> None:
         if level == "off":
             return
         ntype = notification.type
+        # Phase D 경보는 즉시 개별 메일 대신 **일일 다이제스트**로 발송(중복 방지).
+        # 인앱 알림(3a)은 그대로. digest.py 가 하루 1통 요약을 보낸다.
+        if ntype == NotificationType.alert_firing:
+            return
         if level == "important" and ntype not in IMPORTANT_TYPES:
             return
 

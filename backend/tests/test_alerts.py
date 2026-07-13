@@ -173,6 +173,42 @@ def test_scheduler_tick_enqueues_due_rule(monkeypatch):
         db.close()
 
 
+def test_alert_digest_window_and_gate(monkeypatch):
+    """다이제스트 — since 이후 새 발화 집계 + self-gate(too_soon)."""
+    from datetime import datetime, timedelta
+
+    from app.modules.alerts import digest
+    from app.modules.alerts.models import AlertDigestRun
+
+    db = SessionLocal()
+    rule = AlertRule(name="_dig", enabled=True, probe_key="_test_probe",
+                     params={}, severity="info")
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    now = datetime.utcnow()
+    db.add(AlertRuleState(rule_id=rule.id, target_type="report", target_id="1",
+                          state="firing", context={},
+                          first_fired_at=now, last_seen_at=now))
+    db.commit()
+    try:
+        g = digest._new_firings_since(db, now - timedelta(hours=1))
+        assert any(x["rule_id"] == rule.id and x["count"] >= 1 for x in g)
+        # 구독자 0 → 발송/기록 안 함(워터마크 보존).
+        monkeypatch.setattr(digest, "_admin_recipients", lambda _db: [])
+        assert digest.build_and_send_digest(db, force=True).get("skipped") == "no_recipients"
+        # self-gate — 최근 발송 기록이 있으면 too_soon.
+        db.add(AlertDigestRun(sent_at=now, recipients=0, summary={}))
+        db.commit()
+        assert digest.build_and_send_digest(db, force=False).get("skipped") == "too_soon"
+    finally:
+        db.query(AlertDigestRun).delete()
+        db.query(AlertRuleState).filter_by(rule_id=rule.id).delete()
+        db.delete(rule)
+        db.commit()
+        db.close()
+
+
 def test_next_alert_run_anchors():
     """주초=다음 월요일 00:00, 달 초=다음 달 1일 00:00, interval=상대 간격."""
     from datetime import datetime, timezone

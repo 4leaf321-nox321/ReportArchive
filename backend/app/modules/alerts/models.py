@@ -67,3 +67,17 @@ class AlertRuleState(Base):
     first_fired_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     last_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AlertDigestRun(Base):
+    """이메일 다이제스트 발송 이력 — max(sent_at)=워터마크(그 이후 새 발화만 모음).
+    Phase D 3b. summary={groups:[{rule_id,name,count}], total}."""
+
+    __tablename__ = "alert_digest_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    recipients: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    summary: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

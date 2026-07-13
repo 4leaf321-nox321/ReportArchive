@@ -120,7 +120,7 @@ def run_agent(db: Session, actor, query: str, *, max_hops: int = _MAX_HOPS) -> d
     citations = [
         {"n": i, **r} for i, r in enumerate(reports.values(), start=1)
     ]
-    return _result(
+    result = _result(
         last.content if last else "",
         citations,
         list(objects.values()),
@@ -129,6 +129,29 @@ def run_agent(db: Session, actor, query: str, *, max_hops: int = _MAX_HOPS) -> d
         model=getattr(last, "model", None),
         backend=getattr(last, "backend", None),
     )
+    # 근거 검증 — 질문하기와 동일 레이어 재사용. 전역 'rag_verify_enabled' 설정이 켜져
+    # 있을 때만(mock 무효). 도구가 만진 보고서 인용을 [번호] 블록으로 재구성해 답변의
+    # 각 주장이 실제 근거에 뒷받침되는지 사후 판정한다. 보강 레이어라 실패해도 무해.
+    from app.ai import qa
+    blocks = _verify_blocks(citations)
+    if blocks and qa._verify_enabled():
+        v = qa._verify(result["answer"], blocks)
+        if v:
+            result["verification"] = v
+    return result
+
+
+def _verify_blocks(citations: list[dict]) -> list[str]:
+    """근거 검증용 [번호] 출처 블록. 본문(snippet)이 있는 보고서 인용만 — 객체·집계
+    인용은 검증할 원문이 없어 제외. 인용 n 을 그대로 써 _verify 의 source 번호와 맞춘다."""
+    blocks = []
+    for c in citations:
+        snippet = (c.get("snippet") or "").strip()
+        if not snippet:
+            continue
+        head = f"보고서: {c.get('title') or c.get('report_id')}"
+        blocks.append(f"[{c['n']}] ({head})\n{snippet}")
+    return blocks
 
 
 def _result(answer, citations, objects, trace, *, no_evidence,

@@ -211,7 +211,8 @@ def _exec_search_reports(db: Session, actor, args: dict) -> ToolResult:
                      "snippet": h.get("snippet")})
         prov.append({"report_id": h["report_id"], "title": h.get("title"),
                      "workspace_slug": h.get("workspace_slug"),
-                     "block_id": h.get("block_id"), "page_idx": h.get("page_idx")})
+                     "block_id": h.get("block_id"), "page_idx": h.get("page_idx"),
+                     "snippet": h.get("snippet")})  # 근거 검증(_verify)용 본문 텍스트
     return _ok({"reports": rows, "count": len(rows)}, reports=prov)
 
 

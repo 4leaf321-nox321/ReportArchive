@@ -8,6 +8,7 @@ no_evidence 인지 확인. mock 아님 — chat 자체를 대체하므로 결정
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -91,3 +92,65 @@ def test_agent_no_tool_direct_answer(monkeypatch):
     assert d["no_evidence"] is True
     assert d["citations"] == [] and d["objects"] == []
     assert d["trace"] == []
+
+
+def test_verify_blocks_skips_snippetless_citations():
+    """근거 텍스트가 있는 인용만 [번호] 블록으로. 인용 n 을 그대로 보존."""
+    from app.ai import agent
+
+    blocks = agent._verify_blocks([
+        {"n": 1, "report_id": 7, "title": "제동시험", "snippet": "제동 거리 40m."},
+        {"n": 2, "report_id": 9, "title": "집계결과"},  # 스니펫 없음(집계 인용) → 제외
+    ])
+    assert len(blocks) == 1
+    assert blocks[0].startswith("[1] (보고서: 제동시험)")
+    assert "제동 거리 40m." in blocks[0]
+
+
+def test_agent_attaches_verification(monkeypatch):
+    """검증 on 이면 에이전트 답변에도 verification 이 붙는다(질문하기 레이어 재사용)."""
+    from app.ai import agent, agent_tools, qa
+
+    calls = {"n": 0}
+
+    def fake_chat(messages, *, tools=None, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _cr(tool_calls=[{
+                "id": "t1", "name": "search_reports",
+                "arguments": {"query": "제동 성능"},
+            }])
+        return _cr(content="제동 거리는 40m 입니다.[1]")
+
+    # search_reports 도구가 근거 스니펫을 반환하도록 대체(실 검색·DB 불필요).
+    def fake_run_tool(db, actor, name, args):
+        return {"content": {"count": 1}, "objects": [],
+                "reports": [{"report_id": 7, "title": "제동시험",
+                             "snippet": "제동 거리는 40m 로 측정되었다."}]}
+
+    monkeypatch.setattr(agent, "chat", fake_chat)
+    monkeypatch.setattr(agent_tools, "run_tool", fake_run_tool)
+    # 검증 on + 검증 LLM 응답 고정(qa 레이어 재사용).
+    monkeypatch.setattr(qa, "_verify_enabled", lambda override=None: True)
+    monkeypatch.setattr(qa, "chat", lambda m: SimpleNamespace(
+        backend="openai",
+        content=('{"claims":[{"text":"제동 거리 40m","supported":true,'
+                 '"source":1,"quote":"제동 거리는 40m 로 측정되었다."}]}')))
+
+    d = agent.run_agent(None, None, "제동 성능?")
+    v = d["verification"]
+    assert v["unsupported"] == 0
+    assert v["claims"][0]["supported"] and v["claims"][0]["source"] == 1
+
+
+def test_agent_no_verification_when_disabled(monkeypatch):
+    """검증 off 면 verification 키가 없다(기본 동작 불변)."""
+    from app.ai import agent, agent_tools, qa
+
+    def fake_chat(messages, *, tools=None, **kw):
+        return _cr(content="근거 없이 답합니다.")
+
+    monkeypatch.setattr(agent, "chat", fake_chat)
+    monkeypatch.setattr(qa, "_verify_enabled", lambda override=None: False)
+    d = agent.run_agent(None, None, "안녕?")
+    assert "verification" not in d

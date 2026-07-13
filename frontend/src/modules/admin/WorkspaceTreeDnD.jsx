@@ -239,10 +239,22 @@ function InsideZone({
       />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span className="font-medium">{ws.name}</span>
+          <span
+            className={cn(
+              'font-medium',
+              ws.status === 'archived' && 'text-muted-foreground line-through'
+            )}
+          >
+            {ws.name}
+          </span>
           <Badge variant="outline" className="font-mono text-[10px]">
             {ws.slug}
           </Badge>
+          {ws.status === 'archived' && (
+            <Badge variant="secondary" className="text-[10px]">
+              보관됨
+            </Badge>
+          )}
           {ws.parent_slug && (
             <span className="text-[10px] text-muted-foreground">↳ {ws.parent_slug}</span>
           )}

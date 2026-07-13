@@ -45,7 +45,8 @@ export function WorkspaceBrowserModal({ open, onOpenChange }) {
   const { me } = useAuth()
 
   const [query, setQuery] = React.useState('')
-  const [showArchived, setShowArchived] = React.useState(false)
+  const [showArchived, setShowArchived] = React.useState(false) // TF 보관
+  const [showArchivedOrg, setShowArchivedOrg] = React.useState(false) // org 보관
   const [createOpen, setCreateOpen] = React.useState(false)
   const q = query.trim().toLowerCase()
 
@@ -59,6 +60,13 @@ export function WorkspaceBrowserModal({ open, onOpenChange }) {
     return flattenTree(buildTree({ includeVirtual: false, includePersonal: false }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [buildTree, flattenTree, all])
+
+  // 보관된 org 부서는 기본 숨김(개편이 잦아 쌓이면 지저분). 토글로만 노출 —
+  // TF 와 동일 패턴. O1 덕분에 보관 노드를 숨겨도 활성 부서가 고아가 되지 않는다.
+  const archivedOrgCount = orgFlat.filter((w) => w.status === 'archived').length
+  const visibleOrgFlat = showArchivedOrg
+    ? orgFlat
+    : orgFlat.filter((w) => w.status !== 'archived')
 
   const tfs = React.useMemo(() => all.filter((w) => w.kind === 'tf'), [all])
   const activeTfs = tfs.filter((w) => w.status !== 'archived')
@@ -80,7 +88,7 @@ export function WorkspaceBrowserModal({ open, onOpenChange }) {
     )
   }
 
-  const orgRows = orgFlat.filter(matches)
+  const orgRows = visibleOrgFlat.filter(matches)
   const tfRows = visibleTfs.filter(matches)
 
   // 보직장(org 매니저) 이상이면 TF 개설 가능(서버도 동일 게이트).
@@ -178,7 +186,19 @@ export function WorkspaceBrowserModal({ open, onOpenChange }) {
                       style={{ backgroundColor: w.color }}
                     />
                     <div className="flex min-w-0 flex-col">
-                      <span className="truncate text-sm">{w.name}</span>
+                      <span
+                        className={cn(
+                          'truncate text-sm',
+                          w.status === 'archived' && 'text-muted-foreground',
+                        )}
+                      >
+                        {w.name}
+                        {w.status === 'archived' && (
+                          <span className="ml-1 text-[10px] text-amber-600">
+                            (보관됨)
+                          </span>
+                        )}
+                      </span>
                       {q && pathLabel(w.slug) && (
                         <span className="truncate text-[10px] text-muted-foreground">
                           {pathLabel(w.slug)}
@@ -189,6 +209,18 @@ export function WorkspaceBrowserModal({ open, onOpenChange }) {
                 ))
               )}
             </div>
+            {archivedOrgCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowArchivedOrg((v) => !v)}
+                className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                <Archive className="h-3 w-3" />
+                {showArchivedOrg
+                  ? '보관된 부서 숨기기'
+                  : `보관된 부서 보기 (${archivedOrgCount})`}
+              </button>
+            )}
           </section>
 
           {/* ── 우: 내 TF ─────────────────────────────────────── */}

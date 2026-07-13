@@ -274,7 +274,8 @@ function WorkspacePicker({
   getPath,
 }) {
   const [query, setQuery] = React.useState('')
-  const [showArchived, setShowArchived] = React.useState(false)
+  const [showArchived, setShowArchived] = React.useState(false) // TF 보관
+  const [showArchivedOrg, setShowArchivedOrg] = React.useState(false) // org 보관
   const trimmed = query.trim().toLowerCase()
   const searching = trimmed.length > 0
 
@@ -290,6 +291,18 @@ function WorkspacePicker({
     [buildTree]
   )
   const flat = React.useMemo(() => flattenTree(tree), [tree, flattenTree])
+  // 보관된 org 부서는 조직도 브라우징에선 기본 숨김(개편이 잦아 쌓이면 지저분).
+  // 검색으로는 여전히 찾을 수 있다(아래 검색 결과는 전체 flat 사용). O1(부모는
+  // 활성 자식이 있으면 보관 불가) 덕분에 보관 노드를 숨겨도 활성 부서가 고아가
+  // 되지 않는다.
+  const archivedOrgCount = React.useMemo(
+    () => flat.filter((w) => w.status === 'archived').length,
+    [flat],
+  )
+  const visibleFlat = React.useMemo(
+    () => (showArchivedOrg ? flat : flat.filter((w) => w.status !== 'archived')),
+    [flat, showArchivedOrg],
+  )
   const virtuals = all.filter((w) => w.virtual)
 
   // TF — 트리 밖 평면. 백엔드가 이미 멤버인 TF 만 내려주므로 all 의 tf 가 곧
@@ -420,7 +433,7 @@ function WorkspacePicker({
             )}
 
             <CommandGroup heading="조직도">
-              {flat.map((w) => (
+              {visibleFlat.map((w) => (
                 <PickerRow
                   key={w.slug}
                   ws={w}
@@ -431,6 +444,20 @@ function WorkspacePicker({
                   getPath={getPath}
                 />
               ))}
+              {/* 보관된 부서 토글 — 있을 때만. CommandItem 이 아니라 일반 버튼이라
+                  cmdk 키보드 탐색에서 빠진다(TF 토글과 동일 패턴). */}
+              {archivedOrgCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowArchivedOrg((v) => !v)}
+                  className="flex w-full items-center gap-1.5 px-2 py-1.5 text-[11px] text-muted-foreground hover:bg-muted rounded"
+                >
+                  <Archive className="h-3 w-3" />
+                  {showArchivedOrg
+                    ? '보관된 부서 숨기기'
+                    : `보관된 부서 보기 (${archivedOrgCount})`}
+                </button>
+              )}
             </CommandGroup>
 
             {(visibleTfs.length > 0 || isLead) && (

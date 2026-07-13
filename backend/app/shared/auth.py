@@ -288,11 +288,12 @@ def get_current_user(
                 status.HTTP_403_FORBIDDEN,
                 f"{user.email}는 부서 {workspace.slug}에 접근 권한이 없습니다.",
             )
-    # 보관된 TF 는 멤버(시스템관리자 포함)도 읽기전용으로만 — 쓰기·게시·댓글 차단.
-    # 복원(un-archive)은 워크스페이스 컨텍스트가 필요 없는 별도 엔드포인트로 한다.
-    read_only = (
-        workspace.kind == WorkspaceKind.tf
-        and workspace.status == WorkspaceStatus.archived
+    # 보관된 부서(org·TF)는 멤버(시스템관리자 포함)도 읽기전용으로만 — 쓰기·게시·
+    # 댓글 차단. 복원(un-archive)은 워크스페이스 컨텍스트가 필요 없는 별도
+    # 엔드포인트로 한다(조직개편·계정삭제_설계.md §4).
+    read_only = workspace.status == WorkspaceStatus.archived and workspace.kind in (
+        WorkspaceKind.tf,
+        WorkspaceKind.org,
     )
     return CurrentUser(
         user=user, workspace=workspace, role=role, read_only=read_only

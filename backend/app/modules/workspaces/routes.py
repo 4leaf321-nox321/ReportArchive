@@ -112,23 +112,36 @@ def set_tf_archived(
     db: Session = Depends(get_db),
     actor: User = Depends(get_current_user_no_workspace),
 ):
-    """TF 보관/복원(읽기전용 보존) — 그 TF 의 매니저 또는 시스템관리자
-    (TF조직_설계.md §7). org/personal/virtual 은 거부."""
+    """부서 보관/복원(읽기전용 보존 — 자료 이관 없음). org·tf 에 쓴다
+    (조직개편·계정삭제_설계.md §4, TF조직_설계.md §7). personal/virtual 은 거부.
+      - tf: 그 TF 의 매니저 또는 시스템관리자.
+      - org: 시스템관리자 전용(부서 개편은 관리자 행위)."""
     ws = db.get(Workspace, slug)
     if not ws:
         return not_found_response(f"부서를 찾을 수 없습니다: {slug}")
-    if ws.kind != WorkspaceKind.tf:
+    if ws.kind == WorkspaceKind.tf:
+        if not (
+            actor.is_system_admin or _resolve_role(db, actor.id, slug) == Role.manager
+        ):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "이 TF 의 매니저만 보관/복원할 수 있습니다.",
+            )
+    elif ws.kind == WorkspaceKind.org:
+        if not actor.is_system_admin:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "부서 보관/복원은 시스템관리자만 할 수 있습니다.",
+            )
+    else:
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "TF 만 보관/복원할 수 있습니다."
+            status.HTTP_400_BAD_REQUEST,
+            "개인/가상 부서는 보관할 수 없습니다.",
         )
-    if not (
-        actor.is_system_admin or _resolve_role(db, actor.id, slug) == Role.manager
-    ):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "이 TF 의 매니저만 보관/복원할 수 있습니다.",
-        )
-    ws = services.set_workspace_archived(db, ws, actor, payload.archived)
+    try:
+        ws = services.set_workspace_archived(db, ws, actor, payload.archived)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     return success_response(data=WorkspaceRead.model_validate(ws))
 
 

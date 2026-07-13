@@ -10,8 +10,10 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.shared.dependents import Dependent, count_blockers, fk_blocking_dependents
 from app.modules.reports.models import Report
 from app.modules.templates.models import Template
 from app.modules.users.models import Role, User, WorkspaceMember
@@ -249,15 +251,19 @@ def update_workspace(db: Session, ws: Workspace, payload: WorkspaceUpdate) -> Wo
     return ws
 
 
-def workspace_blockers(db: Session, slug: str) -> dict:
-    """Returns dependency counts that prevent deletion. All-zero = safe to drop."""
-    children = (
-        db.execute(
-            select(func.count(Workspace.slug)).where(Workspace.parent_slug == slug)
-        ).scalar()
-        or 0
-    )
-    members = (
+# 부서(workspaces.slug)를 참조하는 FK 의 사람이 읽는 라벨. 자기참조(parent_slug)는
+# 테이블명이 'workspaces' 라 반드시 여기서 'children' 으로 매핑해야 한다.
+_WS_FK_LABELS = {
+    ("workspaces", "parent_slug"): ("children", "자식 부서"),
+    ("reports", "workspace_slug"): ("reports", "보고서"),
+    ("files", "workspace_slug"): ("files", "파일"),
+    ("html_embed_bundles", "workspace_slug"): ("html_embed_bundles", "HTML 임베드 번들"),
+    ("composite_reports", "workspace_slug"): ("composite_reports", "종합보고"),
+}
+
+
+def _count_ws_members(db: Session, slug) -> int:
+    return int(
         db.execute(
             select(func.count(WorkspaceMember.id)).where(
                 WorkspaceMember.workspace_slug == slug
@@ -265,13 +271,10 @@ def workspace_blockers(db: Session, slug: str) -> dict:
         ).scalar()
         or 0
     )
-    reports = (
-        db.execute(
-            select(func.count(Report.id)).where(Report.workspace_slug == slug)
-        ).scalar()
-        or 0
-    )
-    templates = (
+
+
+def _count_ws_owner_templates(db: Session, slug) -> int:
+    return int(
         db.execute(
             select(func.count(Template.template_id)).where(
                 Template.owner_workspace_slugs.contains([slug])
@@ -279,12 +282,58 @@ def workspace_blockers(db: Session, slug: str) -> dict:
         ).scalar()
         or 0
     )
-    return {
-        "children": int(children),
-        "members": int(members),
-        "reports": int(reports),
-        "templates": int(templates),
-    }
+
+
+def workspace_dependents() -> list[Dependent]:
+    """부서를 참조하는 삭제 차단 항목의 레지스트리(조직개편·계정삭제_설계.md §3).
+
+    자동수집(FK RESTRICT/NO ACTION): reports·files·html_embed_bundles·
+    composite_reports·자식 부서(parent_slug 자기참조). 새 테이블이 workspaces.slug
+    를 RESTRICT FK 로 참조하면 코드 수정 없이 자동 편입된다.
+
+    수동보충(FK 만으로 안 잡히는 정책 차단):
+      - members: FK 는 CASCADE 지만 사람이 남은 부서는 삭제 거부(정책).
+      - templates: owner_workspace_slugs 배열(FK 없음) — 죽은 slug 참조 방지.
+    """
+    deps = fk_blocking_dependents("workspaces", "slug", labels=_WS_FK_LABELS)
+    deps.append(
+        Dependent(
+            key="members",
+            label="멤버",
+            blocks=True,
+            count=_count_ws_members,
+            detail="CASCADE-policy",
+        )
+    )
+    deps.append(
+        Dependent(
+            key="templates",
+            label="이 부서가 소유한 템플릿",
+            blocks=True,
+            count=_count_ws_owner_templates,
+            detail="array",
+        )
+    )
+    return deps
+
+
+def workspace_blockers(db: Session, slug: str) -> dict:
+    """삭제를 막는 의존 항목별 행 수 {key: count}. 전부 0 이면 삭제 가능.
+
+    레지스트리(workspace_dependents)를 순회하므로, 예전처럼 4종만 세지 않고
+    files/html_embed_bundles/composite_reports 등 RESTRICT FK 를 빠짐없이 센다
+    (부서 삭제 500 버그 방지)."""
+    return count_blockers(db, workspace_dependents(), slug)
+
+
+def workspace_fk_blockers(db: Session, slug: str) -> dict:
+    """실제 DB FK(RESTRICT/NO ACTION)로 삭제를 막는 것만 {key: count}. members(정책)·
+    templates(배열)는 뺀다. 계정 삭제 시 개인 작업공간이 CASCADE 로 지워질 때 그
+    삭제가 성공할지(=남은 RESTRICT 참조가 없는지) 판정하는 용도
+    (조직개편·계정삭제_설계.md §6.2)."""
+    return count_blockers(
+        db, fk_blocking_dependents("workspaces", "slug", labels=_WS_FK_LABELS), slug
+    )
 
 
 def delete_workspace(db: Session, ws: Workspace) -> None:
@@ -292,10 +341,18 @@ def delete_workspace(db: Session, ws: Workspace) -> None:
     if any(blockers.values()):
         parts = [f"{k}={v}" for k, v in blockers.items() if v]
         raise ValueError(
-            f"부서를 삭제할 수 없습니다 (참조 중: {', '.join(parts)}). 먼저 정리하세요."
+            f"부서를 삭제할 수 없습니다 (참조 중: {', '.join(parts)}). "
+            f"먼저 정리하거나 보관(archive)하세요."
         )
-    db.delete(ws)
-    db.commit()
+    try:
+        db.delete(ws)
+        db.commit()
+    except IntegrityError as exc:
+        # 레지스트리가 미처 못 잡은 참조가 있어도 500 대신 409 로 — 500 원천 차단.
+        db.rollback()
+        raise ValueError(
+            "부서를 삭제할 수 없습니다: 예상치 못한 참조가 남아 있습니다."
+        ) from exc
 
 
 def hard_delete_tf_workspace(db: Session, ws: Workspace) -> dict:
@@ -619,7 +676,28 @@ def create_tf_workspace(
 def set_workspace_archived(
     db: Session, ws: Workspace, actor: User, archived: bool
 ) -> Workspace:
-    """TF 보관/복원(읽기전용 보존). 라우트가 kind=tf + 권한을 먼저 검사."""
+    """부서 보관/복원(읽기전용 보존 — 자료 이관 없음). org·tf 에 쓴다(조직개편·
+    계정삭제_설계.md §4). 라우트가 kind·권한을 먼저 검사한다.
+
+    O1(잠정): org 를 보관할 때 active 자식 부서가 남아 있으면 거부한다 — 부모만
+    숨기면 자식이 트리에서 붕 뜨므로 자식부터 정리·재부모화하게 한다. tf 는
+    트리 밖(자식 없음)이라 해당 없음.
+    """
+    if archived and ws.kind == WorkspaceKind.org:
+        active_children = (
+            db.execute(
+                select(func.count(Workspace.slug)).where(
+                    Workspace.parent_slug == ws.slug,
+                    Workspace.status == WorkspaceStatus.active,
+                )
+            ).scalar()
+            or 0
+        )
+        if active_children:
+            raise ValueError(
+                f"하위 부서 {active_children}개가 아직 활성 상태라 보관할 수 없습니다. "
+                f"하위 부서를 먼저 보관하거나 옮기세요."
+            )
     ws.status = WorkspaceStatus.archived if archived else WorkspaceStatus.active
     if archived:
         ws.archived_at = datetime.utcnow()

@@ -20,6 +20,10 @@ import {
   Undo2,
   Link2,
   Lock,
+  Archive,
+  ArchiveRestore,
+  ExternalLink,
+  FolderOpen,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
@@ -57,6 +61,7 @@ import {
   updateWorkspace,
   deleteWorkspace,
   getWorkspaceDependents,
+  setWorkspaceArchived,
 } from '@/shared/api/workspaces'
 import {
   listWidgetRelations,
@@ -840,13 +845,22 @@ function WorkspacesSection() {
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [editing, setEditing] = useState(null)
   const [moving, setMoving] = useState(false)
+  // 보관된 부서는 기본 숨김 — 개편이 잦아 archived 가 쌓이면 트리가 지저분해진다.
+  // 관리(복원/삭제)할 때만 토글로 펼친다.
+  const [showArchived, setShowArchived] = useState(false)
 
   const list = workspaces ?? []
   // Personal workspaces (`kind='personal'`) are auto-managed per-user
   // scratch spaces — they share the `workspaces` table for FK reuse but
   // are never edited from this admin tree. Excluding them keeps the
   // tree usable when there are thousands of users.
-  const real = list.filter((w) => !w.virtual && w.kind !== 'personal')
+  const nonPersonal = list.filter((w) => !w.virtual && w.kind !== 'personal')
+  const archivedCount = nonPersonal.filter((w) => w.status === 'archived').length
+  // 보관 부서는 「보관 포함」이 켜져 있을 때만 트리에 노출. O1(부모는 활성 자식이
+  // 있으면 보관 불가) 덕분에 보관된 부서를 숨겨도 활성 부서가 고아가 되지 않는다.
+  const real = showArchived
+    ? nonPersonal
+    : nonPersonal.filter((w) => w.status !== 'archived')
   const virtuals = list.filter((w) => w.virtual)
 
   async function handleDelete(slug) {
@@ -859,6 +873,19 @@ function WorkspacesSection() {
       // Keep the modal open on failure so the user can see the error and
       // either retry or cancel.
       toast.error(err.message || '삭제 실패')
+    }
+  }
+
+  /** 부서 보관/복원 토글 — archived 부서는 트리에서 흐리게, 진입 시 읽기전용. */
+  async function handleToggleArchive(ws) {
+    const next = ws.status !== 'archived'
+    try {
+      await setWorkspaceArchived(ws.slug, next)
+      toast.success(next ? '부서를 보관했습니다.' : '부서를 복원했습니다.')
+      reload()
+    } catch (err) {
+      const msg = err?.response?.data?.message || err.message || '보관/복원 실패'
+      toast.error(msg)
     }
   }
 
@@ -948,6 +975,37 @@ function WorkspacesSection() {
           <Pencil className="h-3.5 w-3.5" />
         </Button>
         <Button
+          asChild
+          size="icon"
+          variant="ghost"
+          className="h-7 w-7"
+          aria-label="파일 정리"
+          title="파일 정리 (이관·삭제)"
+        >
+          <Link to={`/admin/workspace-files/${w.slug}`}>
+            <FolderOpen className="h-3.5 w-3.5" />
+          </Link>
+        </Button>
+        <Button
+          size="icon"
+          variant="ghost"
+          className="h-7 w-7"
+          onClick={() => handleToggleArchive(w)}
+          disabled={moving}
+          aria-label={w.status === 'archived' ? '복원' : '보관'}
+          title={
+            w.status === 'archived'
+              ? '복원 (다시 활성화)'
+              : '보관 (읽기전용 보존 — 자료를 지우지 않음)'
+          }
+        >
+          {w.status === 'archived' ? (
+            <ArchiveRestore className="h-3.5 w-3.5" />
+          ) : (
+            <Archive className="h-3.5 w-3.5" />
+          )}
+        </Button>
+        <Button
           size="icon"
           variant="ghost"
           className="h-7 w-7 text-destructive"
@@ -970,6 +1028,16 @@ function WorkspacesSection() {
             <CardTitle className="text-base">부서 트리</CardTitle>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant={showArchived ? 'secondary' : 'ghost'}
+              onClick={() => setShowArchived((v) => !v)}
+              disabled={archivedCount === 0 && !showArchived}
+              title="보관된 부서를 트리에 표시/숨김"
+            >
+              <Archive className="mr-1 h-3 w-3" />
+              {showArchived ? '보관 숨기기' : `보관 포함${archivedCount ? ` (${archivedCount})` : ''}`}
+            </Button>
             <Button size="sm" variant="outline" onClick={() => setBulkCreating(true)}>
               <Plus className="mr-1 h-3 w-3" />
               부서 일괄 추가
@@ -2092,13 +2160,22 @@ function DeleteWorkspaceConfirm({ ws, onOpenChange, onConfirm }) {
             <Skeleton className="h-20" />
           ) : blockers ? (
             <div className="space-y-2 text-sm">
-              <BlockerRow label="자식 부서" count={blockers.children} />
-              <BlockerRow label="멤버" count={blockers.members} />
-              <BlockerRow label="보고서" count={blockers.reports} />
-              <BlockerRow label="이 부서가 소유한 템플릿" count={blockers.templates} />
+              {/* 백엔드 의존성 레지스트리가 돌려주는 모든 키를 제네릭하게 렌더 —
+                  files/html_embed_bundles/composite_reports 등 새 참조 종류가
+                  추가돼도 라벨 맵만 있으면 자동으로 보인다. */}
+              {Object.entries(blockers).map(([key, count]) => (
+                <BlockerRow
+                  key={key}
+                  blockerKey={key}
+                  label={BLOCKER_LABELS[key] || key}
+                  count={count}
+                  slug={ws?.slug}
+                />
+              ))}
               {totalBlockers > 0 && (
                 <p className="text-xs text-amber-600 mt-2">
-                  참조 중인 항목이 있어 삭제할 수 없습니다. 먼저 정리하세요.
+                  참조 중인 항목이 있어 삭제할 수 없습니다. 밑줄 친 항목은 숫자를
+                  눌러 새 탭에서 정리한 뒤 다시 시도하거나, 부서를 보관하세요.
                 </p>
               )}
             </div>
@@ -2128,11 +2205,65 @@ function DeleteWorkspaceConfirm({ ws, onOpenChange, onConfirm }) {
   )
 }
 
-function BlockerRow({ label, count }) {
+// 백엔드 workspace_blockers(의존성 레지스트리) 키 → 한국어 라벨. 모르는 키는
+// 키 문자열을 그대로 보여준다(새 참조 종류가 추가돼도 삭제는 안전하게 막힘).
+const BLOCKER_LABELS = {
+  children: '자식 부서',
+  members: '멤버',
+  reports: '보고서',
+  templates: '이 부서가 소유한 템플릿',
+  files: '파일',
+  html_embed_bundles: 'HTML 임베드 번들',
+  composite_reports: '종합보고',
+}
+
+// 참조 종류별 "정리하러 갈 화면"(부서 slug 스코프). 이 3종만 전용 관리 화면이
+// 있어 클릭 시 새 탭으로 연다 — 나머지(children/templates/files/embed)는 전용
+// 화면이 없거나 매끄럽지 않아 일반 텍스트로 둔다.
+const BLOCKER_LINKS = {
+  members: (slug) => `/w/${slug}/members`,
+  reports: (slug) => `/w/${slug}/reports`,
+  composite_reports: (slug) => `/w/${slug}/composites`,
+  files: (slug) => `/admin/workspace-files/${slug}`,
+}
+
+function BlockerRow({ blockerKey, label, count, slug }) {
+  // count>0 이고 전용 화면이 있는 종류만 링크. 새 탭으로 열어야 삭제 다이얼로그가
+  // 닫히지 않는다(정리하고 돌아와 다시 시도).
+  const href =
+    count > 0 && slug ? BLOCKER_LINKS[blockerKey]?.(slug) ?? null : null
+
+  if (!href) {
+    return (
+      <div className="flex items-center justify-between">
+        <span>{label}</span>
+        <Badge variant={count === 0 ? 'outline' : 'destructive'}>{count}</Badge>
+      </div>
+    )
+  }
+
   return (
     <div className="flex items-center justify-between">
-      <span>{label}</span>
-      <Badge variant={count === 0 ? 'outline' : 'destructive'}>{count}</Badge>
+      <Link
+        to={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-1 text-primary hover:underline"
+        title="새 탭에서 정리하기"
+      >
+        {label}
+        <ExternalLink className="h-3 w-3" />
+      </Link>
+      <Link
+        to={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        title="새 탭에서 정리하기"
+      >
+        <Badge variant="destructive" className="cursor-pointer hover:opacity-80">
+          {count}
+        </Badge>
+      </Link>
     </div>
   )
 }

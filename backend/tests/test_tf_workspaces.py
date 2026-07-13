@@ -25,9 +25,12 @@ LEAD = "tf_lead@tf.test"          # dev(org) 매니저 → 보직장
 PLAIN = "tf_plain@tf.test"        # dev 일반 멤버 → 보직장 아님
 OUTSIDER = "tf_outsider@tf.test"  # dx(org, dev 의 상위) 매니저 — TF 비멤버
 RECRUIT = "tf_recruit@tf.test"    # 다른 부서(dev-he) — cross-dept 차출 대상
+ADMIN = "tf_admin@tf.test"        # 시스템관리자 — org 부서 보관/복원 권한
 
 
-def _ensure_user(email: str, org_slug: str | None, role: Role) -> int:
+def _ensure_user(
+    email: str, org_slug: str | None, role: Role, is_admin: bool = False
+) -> int:
     db = SessionLocal()
     try:
         u = db.query(User).filter_by(email=email).one_or_none()
@@ -35,6 +38,7 @@ def _ensure_user(email: str, org_slug: str | None, role: Role) -> int:
             u = User(email=email, name=email, password_hash="!unused-tests-only")
             db.add(u)
             db.flush()
+        u.is_system_admin = is_admin
         if org_slug is not None:
             m = (
                 db.query(WorkspaceMember)
@@ -88,9 +92,10 @@ def users():
     plain = _ensure_user(PLAIN, "dev", Role.user)
     outsider = _ensure_user(OUTSIDER, "dx", Role.manager)
     recruit = _ensure_user(RECRUIT, "dev-he", Role.user)
+    admin = _ensure_user(ADMIN, None, Role.user, is_admin=True)
     _cleanup_tf_of(lead)
     yield SimpleNamespace(
-        lead=lead, plain=plain, outsider=outsider, recruit=recruit
+        lead=lead, plain=plain, outsider=outsider, recruit=recruit, admin=admin
     )
     _cleanup_tf_of(lead)
 
@@ -211,13 +216,70 @@ def test_archive_toggle_and_permissions(users):
     assert res2.json()["data"]["status"] == "active"
 
 
-def test_cannot_archive_org_workspace(users):
+def test_workspace_dependents_cover_restrict_fks(users):
+    # 의존성 레지스트리 회귀 방지: 예전엔 children/members/reports/templates 4종만
+    # 셌다 — files/html_embed_bundles/composite_reports(RESTRICT FK)가 빠져 삭제 시
+    # 500 이 났다(부서 삭제 버그). 이제 /dependents 가 이들을 포함해야 한다.
+    res = client.get("/api/workspaces/dev/dependents", headers=_hdr(users.admin))
+    assert res.status_code == 200, res.text
+    keys = set(res.json()["data"].keys())
+    assert {"files", "html_embed_bundles", "composite_reports"} <= keys, keys
+
+
+def test_non_admin_cannot_archive_org_workspace(users):
+    # org 부서 보관은 시스템관리자 전용 — 부서 매니저(lead)라도 403.
     res = client.patch(
         "/api/workspaces/dev/archive",
         json={"archived": True},
         headers=_hdr(users.lead),
     )
-    assert res.status_code == 400, res.text
+    assert res.status_code == 403, res.text
+
+
+def test_admin_can_archive_leaf_org_but_not_parent(users):
+    # 자체 org 서브트리(부모→자식)를 만들어 검증(환경 독립). 활성 자식이 있는
+    # 부모는 O1 로 보관 거부(409), 리프(자식)는 보관 성공.
+    ah = _hdr(users.admin)
+    client.post(
+        "/api/workspaces",
+        json={"slug": "test-arch-parent", "name": "보관테스트-부모"},
+        headers=ah,
+    )
+    client.post(
+        "/api/workspaces",
+        json={
+            "slug": "test-arch-child",
+            "name": "보관테스트-자식",
+            "parent_slug": "test-arch-parent",
+        },
+        headers=ah,
+    )
+    try:
+        parent = client.patch(
+            "/api/workspaces/test-arch-parent/archive",
+            json={"archived": True},
+            headers=ah,
+        )
+        assert parent.status_code == 409, parent.text  # 활성 자식 존재
+
+        leaf = client.patch(
+            "/api/workspaces/test-arch-child/archive",
+            json={"archived": True},
+            headers=ah,
+        )
+        assert leaf.status_code == 200, leaf.text
+        assert leaf.json()["data"]["status"] == "archived"
+
+        # 자식이 보관되면 부모도 보관 가능(활성 자식 0).
+        parent2 = client.patch(
+            "/api/workspaces/test-arch-parent/archive",
+            json={"archived": True},
+            headers=ah,
+        )
+        assert parent2.status_code == 200, parent2.text
+    finally:
+        client.delete("/api/workspaces/test-arch-child", headers=ah)
+        client.delete("/api/workspaces/test-arch-parent", headers=ah)
 
 
 def test_archived_tf_member_is_read_only(users):

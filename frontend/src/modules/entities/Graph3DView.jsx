@@ -263,9 +263,18 @@ export function Graph3DView({
       setExpanding(true)
       try {
         const res = await getEntityGraph(node.id, { depth: 1 })
-        setExtraGraph((prev) =>
-          mergeGraph(prev, { nodes: res?.nodes ?? [], edges: res?.edges ?? [] }),
-        )
+        // 현재(이미 표시된) 노드 대비 새로 추가되는 것만 셈 — 내부 노드는 이웃이
+        // 이미 다 로드돼 있어 0 일 수 있다(그걸 사용자에게 알려준다).
+        const known = new Set(graphData.nodes.map((n) => n.id))
+        const added = (res?.nodes ?? []).filter((n) => !known.has(n.id)).length
+        if (added > 0) {
+          setExtraGraph((prev) =>
+            mergeGraph(prev, { nodes: res?.nodes ?? [], edges: res?.edges ?? [] }),
+          )
+          toast.success(`이웃 ${added}개를 추가했습니다.`)
+        } else {
+          toast.info('이 노드의 이웃은 이미 모두 표시돼 있어요.')
+        }
         setExpandedIds((prev) => new Set(prev).add(node.id))
       } catch {
         toast.error('이웃을 불러오지 못했습니다.')
@@ -273,7 +282,7 @@ export function Graph3DView({
         setExpanding(false)
       }
     },
-    [expanding],
+    [expanding, graphData],
   )
 
   const hasNodes = graphData.nodes.length > 0

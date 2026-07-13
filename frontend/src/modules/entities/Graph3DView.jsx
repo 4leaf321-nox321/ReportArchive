@@ -1,10 +1,30 @@
 import { lazy, Suspense, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
+import * as THREE from 'three'
 import SpriteText from 'three-spritetext'
 import { axisColor } from '@/shared/reports/graphColors'
 
-const LABEL_COLOR = '#cbd5e1' // slate-300 — 어두운 배경 위 라벨
+const LABEL_COLOR = '#e5e7eb' // gray-200 — 어두운 배경 위 라벨
 const LABEL_CENTER = '#fbbf24' // amber — 중심 라벨
+
+// 소프트 글로우 헤일로 텍스처(방사 그라데이션) — 노드 뒤에 깔아 성좌처럼 은은히 빛나게.
+// 한 번만 만들어 모든 노드가 공유(색은 스프라이트 material.color 로 틴트).
+let _haloTex = null
+function haloTexture() {
+  if (_haloTex) return _haloTex
+  const size = 64
+  const c = document.createElement('canvas')
+  c.width = c.height = size
+  const ctx = c.getContext('2d')
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
+  g.addColorStop(0, 'rgba(255,255,255,0.85)')
+  g.addColorStop(0.35, 'rgba(255,255,255,0.25)')
+  g.addColorStop(1, 'rgba(255,255,255,0)')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, size, size)
+  _haloTex = new THREE.CanvasTexture(c)
+  return _haloTex
+}
 
 // react-force-graph-3d 는 무겁고(three 기반) 3D 모드에서만 쓰므로 lazy 로 분리.
 // EntityGraphView(2D)와 같은 props·데이터 shape 를 받는 3D 버전 — 공간을 이동/회전하며
@@ -115,21 +135,47 @@ export function Graph3DView({
             width={size.width}
             height={size.height}
             backgroundColor={BG_COLOR}
-            nodeColor={nodeColor}
-            nodeVal={(n) =>
-              n.isCenter ? 9 : Math.max(2, 2 + Math.sqrt(n.degree || 0) * 1.3)
-            }
-            nodeOpacity={0.95}
             nodeLabel={(n) => n.label ?? ''}
-            nodeThreeObjectExtend
             nodeThreeObject={(n) => {
-              const s = new SpriteText(n.label || '')
-              s.color = n.isCenter ? LABEL_CENTER : LABEL_COLOR
-              s.textHeight = n.isCenter ? 5 : 3.5
-              s.fontWeight = n.isCenter ? '600' : '400'
-              s.material.depthWrite = false // 노드 뒤에 가려도 읽히게
-              s.position.set(0, -7, 0) // 노드 아래
-              return s
+              const r = n.isCenter ? 5 : Math.max(2, 2 + Math.sqrt(n.degree || 0) * 1.2)
+              const color = nodeColor(n)
+              const group = new THREE.Group()
+              // 발광 구 — emissive 로 어두운 배경에서 스스로 은은히 빛난다.
+              const sphere = new THREE.Mesh(
+                new THREE.SphereGeometry(r, 24, 24),
+                new THREE.MeshStandardMaterial({
+                  color,
+                  emissive: color,
+                  emissiveIntensity: n.isCenter ? 0.75 : 0.5,
+                  roughness: 0.3,
+                  metalness: 0.0,
+                }),
+              )
+              group.add(sphere)
+              // 소프트 헤일로(글로우) — 가산 블렌딩 반투명 스프라이트.
+              const halo = new THREE.Sprite(
+                new THREE.SpriteMaterial({
+                  map: haloTexture(),
+                  color,
+                  transparent: true,
+                  opacity: n.isCenter ? 0.6 : 0.42,
+                  blending: THREE.AdditiveBlending,
+                  depthWrite: false,
+                }),
+              )
+              halo.scale.set(r * 4.5, r * 4.5, 1)
+              group.add(halo)
+              // 라벨 — depthTest=false 로 노드에 안 가리고 항상 최앞에.
+              const label = new SpriteText(n.label || '')
+              label.color = n.isCenter ? LABEL_CENTER : LABEL_COLOR
+              label.textHeight = n.isCenter ? 4.5 : 3
+              label.fontWeight = n.isCenter ? '600' : '400'
+              label.material.depthTest = false
+              label.material.depthWrite = false
+              label.renderOrder = 10
+              label.position.set(0, r + 4, 0) // 노드 위
+              group.add(label)
+              return group
             }}
             linkColor={() => EDGE_COLOR}
             linkOpacity={0.5}

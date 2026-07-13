@@ -1233,6 +1233,7 @@ function MergeWorkspaceDialog({ source, candidates, onOpenChange, onDone }) {
           <div>
             <div className="text-xs text-muted-foreground mb-1">대상 부서</div>
             <WorkspaceCombobox
+              excludeArchived
               workspaces={candidates}
               value={target}
               onChange={setTarget}
@@ -1473,6 +1474,7 @@ function WorkspaceCreateDialog({ open, onOpenChange, workspaces, onCreated }) {
             <Label htmlFor="ws-parent">상위 부서</Label>
             <WorkspaceCombobox
               id="ws-parent"
+              excludeArchived
               workspaces={eligibleParents}
               value={parentSlug}
               onChange={setParentSlug}
@@ -1594,6 +1596,7 @@ function WorkspaceEditDialog({ ws, workspaces, onOpenChange, onSaved }) {
             </Label>
             <WorkspaceCombobox
               id="edit-parent"
+              excludeArchived
               workspaces={eligibleParents}
               value={parentSlug}
               onChange={setParentSlug}

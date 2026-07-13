@@ -218,6 +218,7 @@ export function NewCompositeDialog({
             <Label htmlFor="comp-ws">부서</Label>
             <WorkspaceCombobox
               id="comp-ws"
+              excludeArchived
               workspaces={eligibleWorkspaces}
               value={wsSlug}
               onChange={(s) => s && setWsSlug(s)}

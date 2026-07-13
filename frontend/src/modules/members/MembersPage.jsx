@@ -333,6 +333,7 @@ function MemberRow({
       ) : (
         <>
           <WorkspaceCombobox
+            excludeArchived
             workspaces={assignableWorkspaces}
             value={member.source_workspace_slug}
             onChange={(s) => s && s !== member.source_workspace_slug && onChangeWorkspace?.(s)}
@@ -705,6 +706,7 @@ function AddMemberDialog({
             <Label htmlFor="member-workspace">소속 부서</Label>
             <WorkspaceCombobox
               id="member-workspace"
+              excludeArchived
               workspaces={assignableWorkspaces}
               value={targetSlug}
               onChange={(s) => s && setTargetSlug(s)}

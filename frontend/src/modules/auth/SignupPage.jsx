@@ -159,6 +159,7 @@ export default function SignupPage() {
               <Label htmlFor="workspace">소속</Label>
               <WorkspaceCombobox
                 id="workspace"
+                excludeArchived
                 workspaces={workspaces}
                 value={workspaceSlug}
                 onChange={setWorkspaceSlug}

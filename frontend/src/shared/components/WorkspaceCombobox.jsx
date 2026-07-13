@@ -55,6 +55,10 @@ export function WorkspaceCombobox({
   // would otherwise overflow the modal horizontally (truncate hides it,
   // noTruncate spills it out). Takes precedence over noTruncate.
   wrap = false,
+  // When true, 보관(archived) 부서는 선택지에서 감춘다 — 은퇴한 부서를 새로
+  // 배정(가입·home 지정·이관 등)하지 못하게. 단 *이미 선택된* 값이 보관 부서면
+  // 라벨이 깨지지 않도록 그 항목만은 남긴다.
+  excludeArchived = false,
 }) {
   const [open, setOpen] = React.useState(false)
 
@@ -66,6 +70,17 @@ export function WorkspaceCombobox({
   // Build tree-traversal order with depth so children appear under parents
   // and indent reflects hierarchy.
   const ordered = React.useMemo(() => buildOrderedTree(workspaces), [workspaces])
+
+  // 드롭다운에 실제로 보여줄 선택지. excludeArchived 면 보관 부서를 뺀다(현재
+  // 선택값은 유지). O1(부모는 활성 자식이 있으면 보관 불가) 덕분에 보관 노드를
+  // 빼도 활성 부서가 고아가 되지 않는다.
+  const options = React.useMemo(
+    () =>
+      excludeArchived
+        ? ordered.filter((w) => w.status !== 'archived' || w.slug === value)
+        : ordered,
+    [ordered, excludeArchived, value]
+  )
 
   // Map slug → full path string ("개발본부 / 플랫폼팀") for the trigger label
   // and search matching.
@@ -186,7 +201,7 @@ export function WorkspaceCombobox({
                   {!value && <Check className="h-4 w-4 text-primary shrink-0" />}
                 </CommandItem>
               )}
-              {ordered.map((opt) => {
+              {options.map((opt) => {
                 const path = pathBySlug.get(opt.slug) ?? opt.name
                 const searchValue = `${opt.slug} ${opt.name} ${path}`
                 return (

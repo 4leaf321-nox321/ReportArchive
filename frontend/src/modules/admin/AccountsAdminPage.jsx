@@ -1253,6 +1253,7 @@ function NewAccountDialog({ assignableWorkspaces, onClose, onCreated }) {
             <Label htmlFor="new-account-ws">소속 부서 (선택)</Label>
             <WorkspaceCombobox
               id="new-account-ws"
+              excludeArchived
               workspaces={assignableWorkspaces}
               value={workspaceSlug}
               onChange={(s) => setWorkspaceSlug(s ?? '')}
@@ -1483,6 +1484,7 @@ function HomeWorkspaceDialog({ target, assignableWorkspaces, onClose, onChanged 
           <div className="space-y-1.5">
             <Label className="text-xs">새 소속 부서</Label>
             <WorkspaceCombobox
+              excludeArchived
               workspaces={assignableWorkspaces}
               value={workspaceSlug}
               onChange={(s) => setWorkspaceSlug(s ?? '')}

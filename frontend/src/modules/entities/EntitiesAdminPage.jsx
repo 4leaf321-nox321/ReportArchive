@@ -1901,6 +1901,7 @@ function RelationsDialog({ type, entity, onClose }) {
               // 도착축이 부서(system) — 부서 선택 콤보박스. 고르면 즉시 링크 생성.
               <div className="flex-1">
                 <WorkspaceCombobox
+                  excludeArchived
                   workspaces={orgWorkspaces}
                   value=""
                   onChange={(slug) => slug && addObjectTarget('dept', slug)}

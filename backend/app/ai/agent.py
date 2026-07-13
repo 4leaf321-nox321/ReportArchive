@@ -73,13 +73,32 @@ def _summary(tool: str, args: dict, content: dict) -> str:
     return tool
 
 
+# 주입하는 이전 턴 1개당 본문 상한(토큰 폭주 방지). 긴 답변은 잘라서 넣는다.
+_MAX_HIST_CONTENT = 1500
+
+
+def _history_messages(history) -> list[dict]:
+    """대화 히스토리 [{role,content}] → 에이전트 message 로 정제(역할 검증·본문 상한).
+    이걸 system 과 현재 질문 사이에 넣어 에이전트가 다단계 추론 내내 전체 맥락을 본다."""
+    if not history:
+        return []
+    out = []
+    for m in history:
+        role = (m or {}).get("role")
+        content = ((m or {}).get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            out.append({"role": role, "content": content[:_MAX_HIST_CONTENT]})
+    return out
+
+
 def run_agent(db: Session, actor, query: str, *, history=None,
               max_hops: int = _MAX_HOPS) -> dict:
     """질문 → {answer, citations, objects, trace, no_evidence, model, backend}.
 
     actor 는 도구 실행 권한(보고서 가시성) scope 용. 기능 게이트는 호출부에서 통과.
-    history(대화 이전 턴 [{role,content}])가 있으면 후속 질문을 독립형으로 재작성해
-    맥락을 잇는다(대화형 검색). 재작성되면 결과에 rewritten_query 로 노출(투명성)."""
+    history(대화 이전 턴 [{role,content}])가 있으면 (1) 후속 질문을 독립형으로 재작성하고
+    (rewritten_query 로 노출), (2) 이전 턴을 message 로 통째 주입해 다단계 추론 내내
+    전체 맥락을 본다(대화형 검색)."""
     from app.ai import qa
 
     q = (query or "").strip()
@@ -89,8 +108,11 @@ def run_agent(db: Session, actor, query: str, *, history=None,
     # 대화 맥락 재작성 — 후속("그 중 2024년만?")을 독립형 질문으로. 첫 턴이면 그대로.
     standalone = qa._contextualize(history, q)
 
+    # 이전 대화 턴을 통째로 주입 → 에이전트가 다단계 추론 내내 전체 맥락을 본다
+    # (재작성된 현재 질문 + 이전 Q&A). 첫 턴이면 히스토리 없음.
     messages = [
         {"role": "system", "content": _SYSTEM},
+        *_history_messages(history),
         {"role": "user", "content": standalone},
     ]
     trace: list[dict] = []

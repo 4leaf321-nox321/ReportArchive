@@ -54,6 +54,30 @@ def test_run_agent_uses_rewritten_query(monkeypatch):
     assert r.get("rewritten_query") == "재작성된질문"
 
 
+def test_run_agent_injects_history(monkeypatch):
+    # 이전 턴을 에이전트 message 로 통째 주입(system 과 현재 질문 사이).
+    monkeypatch.setattr(qa, "_contextualize", lambda h, q: "STANDALONE")
+    captured = {}
+
+    def fake_chat(messages, tools=None, tool_choice=None):
+        captured["messages"] = messages
+        return _Res("답변")
+
+    monkeypatch.setattr(agent, "chat", fake_chat)
+    agent.run_agent(
+        db=None, actor=None, query="후속",
+        history=[
+            {"role": "user", "content": "이전질문"},
+            {"role": "assistant", "content": "이전답변"},
+        ],
+    )
+    msgs = captured["messages"]
+    contents = [m.get("content") for m in msgs]
+    assert "이전질문" in contents and "이전답변" in contents  # 히스토리 주입됨
+    assert msgs[0]["role"] == "system"
+    assert msgs[-1]["content"] == "STANDALONE"  # 현재(재작성) 질문이 마지막
+
+
 def test_run_agent_no_history_no_rewrite(monkeypatch):
     # 히스토리 없으면 재작성 없음 → rewritten_query 미포함.
     def fake_chat(messages, tools=None, tool_choice=None):

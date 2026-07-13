@@ -9,37 +9,93 @@ import {
   Network,
   AlertTriangle,
   ShieldCheck,
+  Plus,
+  Trash2,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
 import { Markdown } from '@/shared/components/Markdown'
-import { askAgent } from '@/shared/api/ai'
+import {
+  askAgent,
+  listConversations,
+  getConversation,
+  createConversation,
+  updateConversation,
+  deleteConversation,
+} from '@/shared/api/ai'
 
-// 서버에 보낼 대화 히스토리 상한(서버도 12로 캡). 너무 길면 컨텍스트·비용↑.
+// 서버에 보낼 대화 히스토리 상한(서버도 12로 캡). 길면 컨텍스트·비용↑.
 const HISTORY_TURNS = 12
 
+function deriveTitle(messages) {
+  const firstUser = messages.find((m) => m.role === 'user')
+  const t = (firstUser?.content || '새 대화').trim()
+  return t.length > 40 ? `${t.slice(0, 40)}…` : t
+}
+
 /**
- * 대화형 에이전트 검색 (Phase: 대화형 에이전트 검색 §MVP). 아카이브에 근거를 둔
- * 에이전트와 대화하며 후속 질문으로 좁혀간다. 서버 stateless — 대화는 이 컴포넌트가
- * 보관하고 매 요청에 최근 N턴을 함께 보낸다. 서버가 후속을 독립형 질문으로 재작성.
+ * 대화형 에이전트 검색 (Phase: 대화형 에이전트 검색). 아카이브 근거로 답하는 에이전트와
+ * 대화하며 후속 질문으로 좁혀간다. 서버 stateless — 대화는 프론트가 보관해 매 요청에
+ * 최근 N턴을 함께 보내고, 매 턴 끝에 서버(ai_conversations)에 자동 저장한다(좌측 목록에서
+ * 지난 대화 되살리기). 서버가 후속을 독립형 질문으로 재작성.
  */
 export default function ChatPage() {
   const navigate = useNavigate()
-  const [messages, setMessages] = useState([]) // {role:'user'|'assistant', content, result?}
+  const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [conversations, setConversations] = useState([])
+  const [activeId, setActiveId] = useState(null)
+  const activeIdRef = useRef(null)
   const abortRef = useRef(null)
   const endRef = useRef(null)
+
+  const setActive = (id) => {
+    activeIdRef.current = id
+    setActiveId(id)
+  }
+
+  const loadList = useCallback(async () => {
+    try {
+      const d = await listConversations()
+      setConversations(d.items || [])
+    } catch {
+      /* 목록 로드 실패는 조용히(대화 자체엔 영향 없음) */
+    }
+  }, [])
+
+  useEffect(() => {
+    loadList()
+  }, [loadList])
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, busy])
 
+  const persist = useCallback(
+    async (msgs) => {
+      try {
+        if (activeIdRef.current) {
+          await updateConversation(activeIdRef.current, { messages: msgs })
+        } else {
+          const created = await createConversation({
+            title: deriveTitle(msgs),
+            messages: msgs,
+          })
+          setActive(created.id)
+        }
+        loadList()
+      } catch {
+        /* 저장 실패는 조용히 — 대화는 계속 진행 */
+      }
+    },
+    [loadList],
+  )
+
   const send = useCallback(async () => {
     const q = input.trim()
     if (!q || busy) return
     setInput('')
-    // 이번 질문 직전까지의 대화를 히스토리로(어시스턴트는 답변 본문만).
     const history = messages
       .map((m) => ({
         role: m.role,
@@ -47,19 +103,21 @@ export default function ChatPage() {
       }))
       .filter((m) => m.content)
       .slice(-HISTORY_TURNS)
-    setMessages((prev) => [...prev, { role: 'user', content: q }])
+    const afterUser = [...messages, { role: 'user', content: q }]
+    setMessages(afterUser)
     setBusy(true)
     const controller = new AbortController()
     abortRef.current = controller
     try {
       const result = await askAgent({ query: q, history, signal: controller.signal })
-      setMessages((prev) => [
-        ...prev,
+      const finalMsgs = [
+        ...afterUser,
         { role: 'assistant', content: result.answer || '', result },
-      ])
+      ]
+      setMessages(finalMsgs)
+      persist(finalMsgs)
     } catch (err) {
-      const canceled =
-        err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError'
+      const canceled = err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError'
       setMessages((prev) => [
         ...prev,
         {
@@ -75,7 +133,7 @@ export default function ChatPage() {
       setBusy(false)
       abortRef.current = null
     }
-  }, [input, busy, messages])
+  }, [input, busy, messages, persist])
 
   function onKeyDown(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -84,66 +142,140 @@ export default function ChatPage() {
     }
   }
 
-  return (
-    <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b px-6 py-3">
-        <MessageSquare className="h-5 w-5 text-primary" />
-        <h1 className="text-lg font-semibold">대화</h1>
-        <span className="hidden text-xs text-muted-foreground sm:inline">
-          아카이브 근거로 답하는 에이전트와 대화하며 좁혀가세요.
-        </span>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="ml-auto"
-          onClick={() => !busy && (setMessages([]), setInput(''))}
-          disabled={busy || messages.length === 0}
-        >
-          <RotateCcw className="mr-1.5 h-3.5 w-3.5" />새 대화
-        </Button>
-      </div>
+  function newChat() {
+    if (busy) return
+    setMessages([])
+    setInput('')
+    setActive(null)
+  }
 
-      <div className="flex-1 overflow-y-auto px-6 py-4">
-        {messages.length === 0 && !busy && (
-          <div className="mx-auto max-w-2xl pt-16 text-center text-sm text-muted-foreground">
-            <MessageSquare className="mx-auto mb-3 h-8 w-8 opacity-40" />
-            질문을 입력하면 에이전트가 온톨로지·보고서를 조사해 답합니다.
-            <br />
-            이어서 “그 중 2024년만?” 처럼 후속 질문으로 좁혀갈 수 있어요.
-          </div>
-        )}
-        <div className="mx-auto flex max-w-3xl flex-col gap-4">
-          {messages.map((m, i) => (
-            <MessageBubble key={i} m={m} navigate={navigate} />
-          ))}
-          {busy && (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> 조사 중…
+  async function openConv(id) {
+    if (busy) return
+    try {
+      const d = await getConversation(id)
+      setMessages(d.messages || [])
+      setActive(d.id)
+    } catch {
+      toast.error('대화를 불러오지 못했습니다.')
+    }
+  }
+
+  async function removeConv(id, e) {
+    e.stopPropagation()
+    try {
+      await deleteConversation(id)
+      if (activeIdRef.current === id) newChat()
+      loadList()
+    } catch {
+      toast.error('대화 삭제에 실패했습니다.')
+    }
+  }
+
+  return (
+    <div className="flex h-full">
+      {/* 좌측 — 지난 대화 목록 */}
+      <aside className="hidden w-60 shrink-0 flex-col border-r md:flex">
+        <div className="p-3">
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full"
+            onClick={newChat}
+            disabled={busy}
+          >
+            <Plus className="mr-1.5 h-3.5 w-3.5" /> 새 대화
+          </Button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-2 pb-3">
+          {conversations.length === 0 ? (
+            <p className="px-2 py-4 text-center text-xs text-muted-foreground">
+              저장된 대화가 없습니다.
+            </p>
+          ) : (
+            conversations.map((c) => (
+              <div
+                key={c.id}
+                onClick={() => openConv(c.id)}
+                className={`group flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 text-sm hover:bg-muted ${
+                  c.id === activeId ? 'bg-muted font-medium' : ''
+                }`}
+              >
+                <span className="min-w-0 flex-1 truncate">{c.title || '새 대화'}</span>
+                <button
+                  type="button"
+                  onClick={(e) => removeConv(c.id, e)}
+                  className="shrink-0 opacity-0 group-hover:opacity-100"
+                  title="대화 삭제"
+                >
+                  <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </aside>
+
+      {/* 우측 — 스레드 */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex items-center gap-2 border-b px-6 py-3">
+          <MessageSquare className="h-5 w-5 text-primary" />
+          <h1 className="text-lg font-semibold">대화</h1>
+          <span className="hidden text-xs text-muted-foreground lg:inline">
+            아카이브 근거로 답하는 에이전트와 대화하며 좁혀가세요.
+          </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="ml-auto md:hidden"
+            onClick={newChat}
+            disabled={busy}
+          >
+            <RotateCcw className="mr-1.5 h-3.5 w-3.5" />새 대화
+          </Button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {messages.length === 0 && !busy && (
+            <div className="mx-auto max-w-2xl pt-16 text-center text-sm text-muted-foreground">
+              <MessageSquare className="mx-auto mb-3 h-8 w-8 opacity-40" />
+              질문을 입력하면 에이전트가 온톨로지·보고서를 조사해 답합니다.
+              <br />
+              이어서 “그 중 2024년만?” 처럼 후속 질문으로 좁혀갈 수 있어요.
             </div>
           )}
-          <div ref={endRef} />
+          <div className="mx-auto flex max-w-3xl flex-col gap-4">
+            {messages.map((m, i) => (
+              <MessageBubble key={i} m={m} navigate={navigate} />
+            ))}
+            {busy && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> 조사 중…
+              </div>
+            )}
+            <div ref={endRef} />
+          </div>
         </div>
-      </div>
 
-      <div className="border-t px-6 py-3">
-        <div className="mx-auto flex max-w-3xl items-end gap-2">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={onKeyDown}
-            rows={1}
-            placeholder="질문을 입력하세요 (Enter 전송 · Shift+Enter 줄바꿈)"
-            className="max-h-40 min-h-[40px] flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm"
-          />
-          {busy ? (
-            <Button variant="outline" onClick={() => abortRef.current?.abort()}>
-              <Square className="mr-1.5 h-3.5 w-3.5" />중단
-            </Button>
-          ) : (
-            <Button onClick={send} disabled={!input.trim()}>
-              <Send className="mr-1.5 h-3.5 w-3.5" />전송
-            </Button>
-          )}
+        <div className="border-t px-6 py-3">
+          <div className="mx-auto flex max-w-3xl items-end gap-2">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={onKeyDown}
+              rows={1}
+              placeholder="질문을 입력하세요 (Enter 전송 · Shift+Enter 줄바꿈)"
+              className="max-h-40 min-h-[40px] flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm"
+            />
+            {busy ? (
+              <Button variant="outline" onClick={() => abortRef.current?.abort()}>
+                <Square className="mr-1.5 h-3.5 w-3.5" />중단
+              </Button>
+            ) : (
+              <Button onClick={send} disabled={!input.trim()}>
+                <Send className="mr-1.5 h-3.5 w-3.5" />전송
+              </Button>
+            )}
+          </div>
         </div>
       </div>
     </div>

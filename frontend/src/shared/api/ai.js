@@ -69,6 +69,38 @@ export async function askAgent({ query, history = [], maxHops = 6, signal } = {}
   return extractData(res)
 }
 
+// --- 대화형 검색 — 저장된 대화 CRUD(사용자별 private) ------------------------
+
+/** 내 대화 목록. `{ items: [{id, title, updated_at, turns}] }` (최신순). */
+export async function listConversations() {
+  const res = await apiClient.get('/api/ai/conversations')
+  return extractData(res)
+}
+
+/** 대화 전체(메시지 포함). `{ id, title, messages, updated_at }`. */
+export async function getConversation(id) {
+  const res = await apiClient.get(`/api/ai/conversations/${id}`)
+  return extractData(res)
+}
+
+/** 새 대화 저장 → `{ id, ... }`. */
+export async function createConversation({ title, messages }) {
+  const res = await apiClient.post('/api/ai/conversations', { title, messages })
+  return extractData(res)
+}
+
+/** 대화 갱신(메시지/제목 통째). */
+export async function updateConversation(id, { title, messages } = {}) {
+  const res = await apiClient.put(`/api/ai/conversations/${id}`, { title, messages })
+  return extractData(res)
+}
+
+/** 대화 삭제(멱등). */
+export async function deleteConversation(id) {
+  const res = await apiClient.delete(`/api/ai/conversations/${id}`)
+  return extractData(res)
+}
+
 // --- B300 접근 제어(엔티틀먼트, §E) — 전부 시스템 관리자 전용 -------------------
 
 /** 모든 B300 기능 grant 목록. `{ items: [{id, feature, subject_kind, user_id,

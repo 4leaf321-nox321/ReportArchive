@@ -667,3 +667,93 @@ def delete_entitlement(
         db.delete(row)
         db.commit()
     return success_response(data=None, message="권한이 해제됐습니다.")
+
+
+# --------------------------------------------------------------------------- #
+# 대화형 에이전트 검색 — 저장된 대화 CRUD (사용자별 private, rag_qa 게이트)
+# --------------------------------------------------------------------------- #
+class ConversationSavePayload(BaseModel):
+    title: str = Field(default="", max_length=200)
+    messages: list = Field(default_factory=list)
+
+
+class ConversationUpdatePayload(BaseModel):
+    title: str | None = Field(default=None, max_length=200)
+    messages: list | None = None
+
+
+def _conv_summary(c) -> dict:
+    return {
+        "id": c.id, "title": c.title,
+        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+        "turns": len(c.messages or []),
+    }
+
+
+def _require_rag_qa(db: Session, actor):
+    from app.ai.entitlements import ai_enabled_for
+    if not ai_enabled_for(db, actor.user, "rag_qa"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "AI 질문하기 권한이 없습니다.")
+
+
+@router.get("/conversations")
+def list_conversations(actor=Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.modules.ai import conversations as conv_svc
+    _require_rag_qa(db, actor)
+    items = [_conv_summary(c) for c in conv_svc.list_for_user(db, actor.user.id)]
+    return success_response(data={"items": items})
+
+
+@router.post("/conversations")
+def create_conversation(
+    payload: ConversationSavePayload,
+    actor=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.modules.ai import conversations as conv_svc
+    _require_rag_qa(db, actor)
+    conv = conv_svc.create(db, actor.user.id, title=payload.title, messages=payload.messages)
+    return success_response(data={"id": conv.id, **_conv_summary(conv)})
+
+
+@router.get("/conversations/{conv_id}")
+def get_conversation(
+    conv_id: int, actor=Depends(get_current_user), db: Session = Depends(get_db),
+):
+    from app.modules.ai import conversations as conv_svc
+    _require_rag_qa(db, actor)
+    conv = conv_svc.get_owned(db, conv_id, actor.user.id)
+    if conv is None:
+        return error_response("대화를 찾을 수 없습니다.", status_code=404)
+    return success_response(data={
+        "id": conv.id, "title": conv.title, "messages": conv.messages or [],
+        "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+    })
+
+
+@router.put("/conversations/{conv_id}")
+def update_conversation(
+    conv_id: int,
+    payload: ConversationUpdatePayload,
+    actor=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.modules.ai import conversations as conv_svc
+    _require_rag_qa(db, actor)
+    conv = conv_svc.get_owned(db, conv_id, actor.user.id)
+    if conv is None:
+        return error_response("대화를 찾을 수 없습니다.", status_code=404)
+    conv = conv_svc.update(db, conv, title=payload.title, messages=payload.messages)
+    return success_response(data=_conv_summary(conv))
+
+
+@router.delete("/conversations/{conv_id}")
+def delete_conversation(
+    conv_id: int, actor=Depends(get_current_user), db: Session = Depends(get_db),
+):
+    from app.modules.ai import conversations as conv_svc
+    _require_rag_qa(db, actor)
+    conv = conv_svc.get_owned(db, conv_id, actor.user.id)
+    if conv is not None:
+        conv_svc.delete(db, conv)
+    return success_response(data=None, message="대화를 삭제했습니다.")

@@ -129,6 +129,34 @@ class AiEntitlement(Base):
     )
 
 
+class AiConversation(Base):
+    """대화형 에이전트 검색의 저장된 대화(사용자별 private).
+
+    messages 는 스레드 전체([{role,content,result?}])를 JSONB 로 통째 저장 — 프론트가
+    보관하던 것을 그대로 영구화(한 대화=한 행, join 없음). 서버는 이 대화의 소유자
+    (user_id) 만 조회/수정. 사용자 하드삭제 시 CASCADE. 설계: 대화형_에이전트_검색_설계 §11.
+    """
+
+    __tablename__ = "ai_conversations"
+    __table_args__ = (
+        Index("ix_ai_conversations_user_updated", "user_id", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    messages: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        server_default=func.now(), onupdate=func.now(),
+    )
+
+
 class ReportChunk(Base):
     __tablename__ = "report_chunks"
     __table_args__ = (

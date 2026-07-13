@@ -11,6 +11,7 @@ import {
 import { Loader2, Home, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import * as THREE from 'three'
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import SpriteText from 'three-spritetext'
 import { axisColor } from '@/shared/reports/graphColors'
 import { getEntityGraph } from '@/shared/api/entities'
@@ -109,6 +110,7 @@ export function Graph3DView({
   const fgRef = useRef(null)
   const clickRef = useRef({ id: null, t: 0 })
   const nodeObjsRef = useRef(new Map()) // id → 노드 객체(x,y,z 보존용)
+  const bloomRef = useRef(null) // UnrealBloomPass (성운 발광 후처리, P4)
   const [focusId, setFocusId] = useState(null)
   const [extraGraph, setExtraGraph] = useState({ nodes: [], edges: [] })
   const [expandedIds, setExpandedIds] = useState(() => new Set())
@@ -121,6 +123,37 @@ export function Graph3DView({
     setFocusId(null)
     nodeObjsRef.current = new Map()
   }, [centerId])
+
+  // Bloom 후처리(P4) — react-force-graph 의 postProcessingComposer 에 UnrealBloomPass
+  // 를 얹어 발광 노드/헤일로가 빛 번지는 성운 룩을 낸다. composer 는 ForceGraph3D
+  // 마운트 후 생성되므로 준비될 때까지 rAF 로 재시도. 한 번만 붙인다.
+  useEffect(() => {
+    if (!active) return undefined
+    let raf = 0
+    const attach = () => {
+      const composer = fgRef.current?.postProcessingComposer?.()
+      if (!composer) {
+        raf = requestAnimationFrame(attach)
+        return
+      }
+      if (!bloomRef.current) {
+        // (해상도, strength, radius, threshold). threshold 를 조금 둬 어두운
+        // 배경/엣지는 안 번지고 밝은 노드 코어만 발광하게. 해상도는 composer 가
+        // 리사이즈 때 setSize 로 덮어씀.
+        const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 1.1, 0.6, 0.12)
+        composer.addPass(bloom)
+        bloomRef.current = bloom
+      }
+    }
+    attach()
+    return () => {
+      if (raf) cancelAnimationFrame(raf)
+      if (bloomRef.current) {
+        bloomRef.current.dispose?.()
+        bloomRef.current = null
+      }
+    }
+  }, [active])
 
   const graphData = useMemo(() => {
     const merged = mergeGraph(graph, extraGraph)

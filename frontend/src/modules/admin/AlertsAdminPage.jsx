@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Play, RefreshCw, Save, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Siren, Play, RefreshCw, Save, ChevronLeft, ChevronRight } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
 import { Badge } from '@/shared/components/ui/badge'
@@ -74,12 +74,12 @@ function fmtTime(iso) {
 }
 
 /**
- * 경보 탭 (Phase D 1단계) — 규칙별 하위 탭으로 나눠, 각 규칙을 수동 실행하고
- * 현재 걸린 대상(발화 인박스)을 페이지네이션으로 본다. 1단계는 프로브 규칙 +
- * 수동 실행뿐(자동 스캔·알림·이메일은 후속). AiSettingsPage 가 is_system_admin
- * 일 때만 노출하고 엔드포인트도 require_system_admin 으로 이중 방어.
+ * 경보 관리자 페이지 (Phase D) — 규칙별 하위 탭으로 나눠, 각 규칙을 수동/자동
+ * 실행하고 현재 걸린 대상(발화 인박스)을 페이지네이션으로 본다. 규칙은 프로브
+ * 조건 + 스케줄(수동/매시간~매달). 알림·이메일은 후속 단계. 사이드바 '경보'(시스템
+ * 관리자 전용)로 진입하고 엔드포인트도 require_system_admin 으로 이중 방어.
  */
-export function AlertsTab() {
+export default function AlertsAdminPage() {
   const [rules, setRules] = useState(null)
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -97,10 +97,14 @@ export function AlertsTab() {
   }, [loadRules])
 
   if (!rules) {
-    return <p className="text-sm text-muted-foreground">불러오는 중…</p>
+    return <div className="p-6 text-sm text-muted-foreground">불러오는 중…</div>
   }
   if (rules.length === 0) {
-    return <p className="text-sm text-muted-foreground">등록된 경보 규칙이 없습니다.</p>
+    return (
+      <div className="p-6 text-sm text-muted-foreground">
+        등록된 경보 규칙이 없습니다.
+      </div>
+    )
   }
 
   // 활성 하위 탭을 URL(?rule=)에 동기화 — 보고서로 갔다 뒤로 오면 원래 규칙 탭 복원.
@@ -121,13 +125,21 @@ export function AlertsTab() {
   }
 
   return (
-    <div className="space-y-3">
-      <p className="text-sm text-muted-foreground">
-        온톨로지 상태에 걸리는 대상을 규칙으로 점검합니다. 지금은 <b>수동 실행</b>만
-        — “지금 실행”을 누르면 현재 걸리는 대상 목록이 갱신됩니다. (자동 알림·이메일은
+    <div className="flex h-full flex-col gap-4 p-6">
+      <div className="flex items-center gap-2">
+        <Siren className="h-5 w-5 text-primary" />
+        <h1 className="text-xl font-semibold">경보</h1>
+      </div>
+      <p className="text-sm text-muted-foreground -mt-2">
+        온톨로지 상태에 걸리는 대상을 규칙으로 점검합니다. 규칙마다 <b>수동/자동
+        실행</b>으로 현재 걸리는 대상 목록(발화 인박스)을 갱신합니다. (자동 알림·이메일은
         후속 단계.)
       </p>
-      <Tabs value={activeRule} onValueChange={onRuleChange}>
+      <Tabs
+        value={activeRule}
+        onValueChange={onRuleChange}
+        className="flex flex-1 min-h-0 flex-col"
+      >
         <TabsList className="w-fit">
           {rules.map((r) => (
             <TabsTrigger key={r.id} value={String(r.id)} className="gap-1.5">
@@ -393,5 +405,3 @@ function RulePanel({ rule, onRulesChanged }) {
     </Card>
   )
 }
-
-export default AlertsTab

@@ -17,6 +17,7 @@ import {
   Tags,
   User,
   Bell,
+  Siren,
   Inbox,
   FileQuestion,
 } from 'lucide-react'
@@ -107,6 +108,7 @@ const ADMIN_MENU = [
   { to: '/admin', label: '시스템 관리', icon: Settings, requireSystemAdmin: true },
   { to: '/admin/entities', label: '엔티티 관리', icon: Tags, requireSystemAdmin: true },
   { to: '/admin/connectors', label: '외부 시스템 연계', icon: Network, requireSystemAdmin: true },
+  { to: '/admin/alerts', label: '경보', icon: Siren, requireSystemAdmin: true },
   // '대시보드 지표'(콘텐츠 수치, TemplateMetric)는 메타데이터 통계로 방향을
   // 틀면서 휴면 — 라우트/페이지/API 는 남겨두되 메뉴에서만 숨긴다(추후 재검토).
   // { to: '/admin/dashboard-metrics', label: '대시보드 지표', icon: Gauge, requireSystemAdmin: true },

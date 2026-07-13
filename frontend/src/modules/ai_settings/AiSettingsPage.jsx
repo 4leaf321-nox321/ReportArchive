@@ -14,7 +14,6 @@ import { AccessTab } from './AccessTab'
 import { JobsTab } from './JobsTab'
 import { SearchTuningTab } from './SearchTuningTab'
 import { EvalTab } from './EvalTab'
-import { AlertsTab } from './AlertsTab'
 import { useAuth } from '@/shared/auth/AuthContext'
 
 /**
@@ -28,7 +27,7 @@ import { useAuth } from '@/shared/auth/AuthContext'
  * shared across all workspaces (same scoping as 보고서 종류 / VOC).
  */
 const PUBLIC_TABS = ['prompts', 'mcp', 'skill']
-const ADMIN_TABS = ['diag', 'jobs', 'access', 'tuning', 'eval', 'alerts']
+const ADMIN_TABS = ['diag', 'jobs', 'access', 'tuning', 'eval']
 
 export default function AiSettingsPage() {
   const { me } = useAuth()
@@ -77,7 +76,6 @@ export default function AiSettingsPage() {
           {isAdmin && <TabsTrigger value="access">AI 접근</TabsTrigger>}
           {isAdmin && <TabsTrigger value="tuning">검색 튜닝</TabsTrigger>}
           {isAdmin && <TabsTrigger value="eval">평가</TabsTrigger>}
-          {isAdmin && <TabsTrigger value="alerts">경보</TabsTrigger>}
         </TabsList>
         <TabsContent value="prompts" className="flex-1 min-h-0 mt-4">
           <PromptsTab />
@@ -111,11 +109,6 @@ export default function AiSettingsPage() {
         {isAdmin && (
           <TabsContent value="eval" className="flex-1 min-h-0 mt-4 overflow-y-auto">
             <EvalTab />
-          </TabsContent>
-        )}
-        {isAdmin && (
-          <TabsContent value="alerts" className="flex-1 min-h-0 mt-4 overflow-y-auto">
-            <AlertsTab />
           </TabsContent>
         )}
       </Tabs>

@@ -3,7 +3,7 @@
 // + 관련 객체(관계타입별, 근거 포함) + 이 객체를 태깅한 보고서(가시성 필터) +
 // 2단계 관계도. 스키마 변경 없이 기존 서비스를 집약한 조합 엔드포인트
 // (GET /api/entities/{id}/profile)를 렌더한다. "문서 중심 → 객체 중심" 전환의 얼굴.
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   FileText,
@@ -28,6 +28,7 @@ import {
 } from '@/shared/api/entities'
 import { getObjectProvenance } from '@/shared/api/connectors'
 import { EntityGraphView } from './EntityGraphView'
+import { Graph3DView } from './Graph3DView'
 
 /**
  * 객체 프로필 **내용**(헤더·관련객체·관련보고서·관계도). 라우트 페이지와
@@ -151,6 +152,7 @@ export function ObjectProfile({ entityId, onOpenEntity, hideGraph = false }) {
  *   onNodeClick(node) — 호출자가 순회/이동 결정.
  */
 export function EntityGraphPanel({ entityId, onNodeClick }) {
+  const [mode, setMode] = useState('2d') // '2d' | '3d' — 3D 는 공간 이동으로 넓게 조망
   const { data: graph } = useAsync(
     () => getEntityGraph(entityId, { depth: 2 }),
     [entityId],
@@ -177,14 +179,34 @@ export function EntityGraphPanel({ entityId, onNodeClick }) {
       </div>
     )
   }
+  const GraphView = mode === '3d' ? Graph3DView : EntityGraphView
   return (
-    <EntityGraphView
-      graph={graph}
-      centerId={entityId}
-      relTypeLabels={relTypeLabels}
-      active
-      onNodeClick={onNodeClick}
-    />
+    <div className="relative h-full w-full">
+      <div className="absolute right-2 top-2 z-10 flex overflow-hidden rounded-md border bg-background/90 text-[11px] shadow-sm">
+        {['2d', '3d'].map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setMode(m)}
+            className={`px-2 py-1 ${
+              mode === m
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:bg-muted'
+            }`}
+            title={m === '3d' ? '공간을 이동하며 넓게 보기' : '평면 분석 보기'}
+          >
+            {m.toUpperCase()}
+          </button>
+        ))}
+      </div>
+      <GraphView
+        graph={graph}
+        centerId={entityId}
+        relTypeLabels={relTypeLabels}
+        active
+        onNodeClick={onNodeClick}
+      />
+    </div>
   )
 }
 

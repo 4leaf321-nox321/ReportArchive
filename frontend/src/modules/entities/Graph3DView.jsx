@@ -2,28 +2,30 @@ import {
   lazy,
   Suspense,
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react'
-import { Loader2, Home } from 'lucide-react'
+import { Loader2, Home, Plus } from 'lucide-react'
+import { toast } from 'sonner'
 import * as THREE from 'three'
 import SpriteText from 'three-spritetext'
 import { axisColor } from '@/shared/reports/graphColors'
+import { getEntityGraph } from '@/shared/api/entities'
 
 // react-force-graph-3d 는 무겁고(three 기반) 3D 모드에서만 쓰므로 lazy 로 분리.
-// EntityGraphView(2D)와 같은 props·데이터 shape 를 받는 3D 버전 — 공간을 이동/회전하며
-// 더 넓게 조망하기 위함. three 는 이미 프로젝트 의존성.
 const ForceGraph3D = lazy(() => import('react-force-graph-3d'))
 
 const EDGE_COLOR = 'rgba(148,163,184,0.55)'
-const DIM_EDGE_COLOR = 'rgba(100,116,139,0.08)' // focus 시 관련 없는 엣지
-const CENTER_COLOR = '#f59e0b' // amber — 중심(조회한) 객체
-const SYSTEM_COLOR = '#9ca3af' // gray — system 객체(부서 등)
-const BG_COLOR = '#0b1020' // 어두운 우주 배경
-const LABEL_COLOR = '#e5e7eb' // gray-200
-const LABEL_CENTER = '#fbbf24' // amber — 중심 라벨
+const DIM_EDGE_COLOR = 'rgba(100,116,139,0.08)'
+const CENTER_COLOR = '#f59e0b'
+const SYSTEM_COLOR = '#9ca3af'
+const BG_COLOR = '#0b1020'
+const LABEL_COLOR = '#e5e7eb'
+const LABEL_CENTER = '#fbbf24'
+const NODE_CAP = 400 // 확장 상한(폭주 방지)
 
 function nodeColorOf(n) {
   if (n.isCenter) return CENTER_COLOR
@@ -31,10 +33,20 @@ function nodeColorOf(n) {
   return axisColor(n.axis)
 }
 
-// 엣지 끝점 id — force-graph 가 source/target 을 노드 객체로 치환하기 전/후 모두 대응.
 const endId = (e) => (e && typeof e === 'object' ? e.id : e)
 
-// 소프트 글로우 헤일로 텍스처(방사 그라데이션) — 한 번만 만들어 공유(색은 material.color 틴트).
+// 두 서브그래프 병합(노드 id·엣지 (src,dst,relation) 기준 dedupe). 확장 누적에.
+function mergeGraph(a, b) {
+  const nodes = new Map()
+  for (const n of a?.nodes ?? []) nodes.set(n.id, n)
+  for (const n of b?.nodes ?? []) if (!nodes.has(n.id)) nodes.set(n.id, n)
+  const key = (e) => `${e.src}->${e.dst}:${e.relation}`
+  const edges = new Map()
+  for (const e of a?.edges ?? []) edges.set(key(e), e)
+  for (const e of b?.edges ?? []) if (!edges.has(key(e))) edges.set(key(e), e)
+  return { nodes: [...nodes.values()], edges: [...edges.values()] }
+}
+
 let _haloTex = null
 function haloTexture() {
   if (_haloTex) return _haloTex
@@ -82,9 +94,9 @@ function useElementSize(active) {
 }
 
 /**
- * 엔티티 서브그래프 3D force 뷰(관계도 3D). 노드=발광 구+헤일로+라벨, 엣지=방향
- * 화살표+흐르는 파티클. 항해(P2): 클릭=fly-to+focus(이웃만 밝게), 더블클릭=이동(순회),
- * 홈=리셋. props 는 EntityGraphView(2D)와 동일.
+ * 엔티티 서브그래프 3D force 뷰(관계도 3D). 발광 노드+라벨, 방향 파티클 엣지.
+ * 항해(P2): 클릭=fly-to+focus, 더블클릭=이동(순회), 홈=리셋. 확장(P3): 집중한 노드의
+ * 이웃을 더 로드해 제자리에서 그래프를 키움(위치 보존). props 는 EntityGraphView 와 동일.
  */
 export function Graph3DView({
   graph,
@@ -96,17 +108,30 @@ export function Graph3DView({
   const [containerRef, size] = useElementSize(active)
   const fgRef = useRef(null)
   const clickRef = useRef({ id: null, t: 0 })
+  const nodeObjsRef = useRef(new Map()) // id → 노드 객체(x,y,z 보존용)
   const [focusId, setFocusId] = useState(null)
+  const [extraGraph, setExtraGraph] = useState({ nodes: [], edges: [] })
+  const [expandedIds, setExpandedIds] = useState(() => new Set())
+  const [expanding, setExpanding] = useState(false)
+
+  // 중심(조회 대상)이 바뀌면 확장·위치 캐시 초기화(새 그래프).
+  useEffect(() => {
+    setExtraGraph({ nodes: [], edges: [] })
+    setExpandedIds(new Set())
+    setFocusId(null)
+    nodeObjsRef.current = new Map()
+  }, [centerId])
 
   const graphData = useMemo(() => {
-    if (!graph) return { nodes: [], links: [] }
+    const merged = mergeGraph(graph, extraGraph)
     const degree = {}
-    for (const e of graph.edges ?? []) {
+    for (const e of merged.edges) {
       degree[e.src] = (degree[e.src] || 0) + 1
       degree[e.dst] = (degree[e.dst] || 0) + 1
     }
-    return {
-      nodes: (graph.nodes ?? []).map((n) => ({
+    const cache = nodeObjsRef.current
+    const nodes = merged.nodes.map((n) => {
+      const fields = {
         id: n.id,
         label: n.value,
         axis: n.type_slug,
@@ -115,16 +140,23 @@ export function Graph3DView({
         refType: n.ref_type,
         refId: n.ref_id,
         degree: degree[n.id] || 0,
-      })),
-      links: (graph.edges ?? []).map((e) => ({
-        source: e.src,
-        target: e.dst,
-        relation: e.relation,
-      })),
-    }
-  }, [graph, centerId])
+      }
+      const cached = cache.get(n.id)
+      if (cached) {
+        Object.assign(cached, fields) // x,y,z 는 유지(재배치 안 함)
+        return cached
+      }
+      cache.set(n.id, fields)
+      return fields
+    })
+    const links = merged.edges.map((e) => ({
+      source: e.src,
+      target: e.dst,
+      relation: e.relation,
+    }))
+    return { nodes, links }
+  }, [graph, extraGraph, centerId])
 
-  // focus 노드의 이웃 집합(focus 자신 포함) — 나머지는 페이드.
   const focusSet = useMemo(() => {
     if (focusId == null) return null
     const s = new Set([focusId])
@@ -170,7 +202,6 @@ export function Graph3DView({
       )
       halo.scale.set(r * 4.5, r * 4.5, 1)
       group.add(halo)
-      // 라벨 — focus 중이면 이웃만 표시(soup 방지), depthTest=false 로 항상 최앞.
       if (!dim) {
         const label = new SpriteText(n.label || '')
         label.color = n.isCenter ? LABEL_CENTER : LABEL_COLOR
@@ -210,13 +241,11 @@ export function Graph3DView({
       const now = Date.now()
       const prev = clickRef.current
       if (prev.id === node.id && now - prev.t < 350) {
-        // 더블클릭 → 이동(순회).
         clickRef.current = { id: null, t: 0 }
         onNodeClick?.(node)
         return
       }
       clickRef.current = { id: node.id, t: now }
-      // 단일클릭 → focus + fly-to(제자리 탐색).
       setFocusId(node.id)
       flyTo(node)
     },
@@ -228,7 +257,33 @@ export function Graph3DView({
     fgRef.current?.zoomToFit(500, 40)
   }, [])
 
+  const expandNode = useCallback(
+    async (node) => {
+      if (!node || node.kind !== 'entity' || expanding) return
+      setExpanding(true)
+      try {
+        const res = await getEntityGraph(node.id, { depth: 1 })
+        setExtraGraph((prev) =>
+          mergeGraph(prev, { nodes: res?.nodes ?? [], edges: res?.edges ?? [] }),
+        )
+        setExpandedIds((prev) => new Set(prev).add(node.id))
+      } catch {
+        toast.error('이웃을 불러오지 못했습니다.')
+      } finally {
+        setExpanding(false)
+      }
+    },
+    [expanding],
+  )
+
   const hasNodes = graphData.nodes.length > 0
+  const focusedNode =
+    focusId != null ? graphData.nodes.find((n) => n.id === focusId) : null
+  const canExpand =
+    focusedNode &&
+    focusedNode.kind === 'entity' &&
+    !expandedIds.has(focusedNode.id) &&
+    graphData.nodes.length < NODE_CAP
 
   return (
     <div
@@ -242,7 +297,7 @@ export function Graph3DView({
       )}
       {hasNodes && size.width > 0 && (
         <>
-          <div className="absolute left-2 top-2 z-10 flex items-center gap-2">
+          <div className="absolute left-2 top-2 z-10 flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={resetView}
@@ -253,7 +308,24 @@ export function Graph3DView({
             </button>
             {focusId != null && (
               <span className="rounded-md bg-black/40 px-2 py-1 text-[11px] text-white/70 backdrop-blur">
-                집중 모드 · 더블클릭으로 이동
+                집중 · 더블클릭으로 이동
+              </span>
+            )}
+            {canExpand && (
+              <button
+                type="button"
+                onClick={() => expandNode(focusedNode)}
+                disabled={expanding}
+                className="inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/80 px-2 py-1 text-[11px] font-medium text-primary-foreground backdrop-blur hover:bg-primary disabled:opacity-60"
+                title="이 노드의 이웃을 더 불러와 그래프를 넓힘"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {expanding ? '불러오는 중…' : '이웃 확장'}
+              </button>
+            )}
+            {graphData.nodes.length >= NODE_CAP && (
+              <span className="rounded-md bg-black/40 px-2 py-1 text-[11px] text-amber-300 backdrop-blur">
+                노드 상한({NODE_CAP})
               </span>
             )}
           </div>

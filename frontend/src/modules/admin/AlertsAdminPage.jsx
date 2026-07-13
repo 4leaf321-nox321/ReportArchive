@@ -50,10 +50,10 @@ const PROBE_META = {
     daysHint: '생성 후 경과 일수',
   },
   stale_unpublished: {
-    desc: '발행(finalized)되지 않은 채 오래 방치된 보고서(마지막 수정 후 N일). 발행 또는 정리를 유도합니다.',
-    dateLabel: '수정',
-    dateKey: 'updated_at',
-    daysHint: '마지막 수정 후 경과 일수',
+    desc: '발행(finalized)되지 않은 채 오래 방치된 보고서(마지막 편집 후 N일). 발행 또는 정리를 유도합니다. 방치 기준은 실제 편집 시각(없으면 생성일)이라, 재색인 등 자동 갱신에는 리셋되지 않습니다.',
+    dateLabel: '방치 기준',
+    dateKey: 'stale_since',
+    daysHint: '마지막 편집(없으면 생성) 후 경과 일수',
   },
 }
 const DEFAULT_META = { desc: '', dateLabel: '생성', dateKey: 'created_at', daysHint: '경과 일수' }

@@ -111,10 +111,13 @@ def _probe_stale_unpublished(db: Session, params: dict) -> list[dict]:
     """미발행 보고서 — 발행(finalized)되지 않은 채 오래 방치된 보고서.
 
     params: {days:int=30, mounted_only:bool=True}. phase != finalized(작성중·리뷰중)
-    이면서 **마지막 수정 후 N일** 경과(=활동 없이 방치). updated_at 기준이라 지금도
-    편집 중인 보고서엔 안 뜬다. 휴지통 제외. mounted_only(기본 True) 면 게시된
-    (mount 된) 보고서만 — 개인 공간에만 있는 미게시 보고서는 제외(미태깅 프로브와
-    동일 기본값). 개인 초안까지 보려면 규칙에서 mounted_only=false 로 끈다.
+    이면서 **사람이 마지막으로 편집한 지 N일** 경과(=활동 없이 방치). 방치 기준은
+    last_edited_at(실제 편집 시각, 구 보고서는 NULL → created_at 폴백)을 쓴다.
+    ⚠️ Report.updated_at 을 쓰면 안 된다 — onupdate=utcnow 라 search_text 재색인·
+    마이그레이션 등 사람이 아닌 저장에도 갱신돼, 그걸 기준 삼으면 게시된 리뷰중
+    보고서가 통째로 방치 판정에서 빠진다(운영 관측). 휴지통 제외. mounted_only
+    (기본 True) 면 게시된(mount 된) 보고서만 — 개인 공간 미게시 보고서는 제외
+    (미태깅 프로브와 동일 기본값). 개인 초안까지 보려면 규칙에서 mounted_only=false.
     """
     from app.modules.mounts.models import ReportMount  # noqa: F401 (via _boards_for)
     from app.modules.reports.models import Report, ReportPhase
@@ -123,10 +126,15 @@ def _probe_stale_unpublished(db: Session, params: dict) -> list[dict]:
     mounted_only = bool(params.get("mounted_only", True))
     cutoff = datetime.utcnow() - timedelta(days=days)
 
+    # 방치 기준 = 사람이 마지막으로 손댄 시각. last_edited_at(실제 편집)을 우선하고,
+    # 편집 이력이 없는(구·미편집) 보고서는 created_at 으로 폴백. updated_at 은 비-사람
+    # 저장에도 튀어(§docstring) 방치 판정을 리셋하므로 쓰지 않는다.
+    last_touch = func.coalesce(Report.last_edited_at, Report.created_at)
+
     conds = [
         Report.deleted_at.is_(None),
         Report.phase != ReportPhase.finalized,
-        Report.updated_at < cutoff,
+        last_touch < cutoff,
     ]
     if mounted_only:
         conds.append(
@@ -137,9 +145,10 @@ def _probe_stale_unpublished(db: Session, params: dict) -> list[dict]:
 
     stmt = (
         select(Report.id, Report.title, Report.workspace_slug,
-               Report.phase, Report.created_at, Report.updated_at)
+               Report.phase, Report.created_at, Report.updated_at,
+               Report.last_edited_at)
         .where(*conds)
-        .order_by(Report.updated_at.asc())
+        .order_by(last_touch.asc())
         .limit(_PROBE_LIMIT + 1)
     )
     rows = db.execute(stmt).all()
@@ -156,6 +165,14 @@ def _probe_stale_unpublished(db: Session, params: dict) -> list[dict]:
                 "boards": boards.get(r.id, []),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                "last_edited_at": (
+                    r.last_edited_at.isoformat() if r.last_edited_at else None
+                ),
+                # 방치 판정에 실제로 쓴 기준시각(편집 없으면 생성) — 표시용.
+                "stale_since": (
+                    (r.last_edited_at or r.created_at).isoformat()
+                    if (r.last_edited_at or r.created_at) else None
+                ),
             },
         }
         for r in rows

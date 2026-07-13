@@ -268,6 +268,57 @@ def test_stale_unpublished_default_excludes_personal():
         db.close()
 
 
+def test_stale_unpublished_uses_edit_time_not_updated_at():
+    """회귀: 방치 기준은 사람의 마지막 편집(last_edited_at→created_at 폴백)이어야
+    한다. Report.updated_at 은 onupdate=utcnow 라 search_text 재색인 등 비-사람
+    저장에도 튀므로, updated_at 이 최근이어도 실제로는 오래 방치된(게시된 리뷰중)
+    보고서가 프로브에 잡혀야 한다."""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import text
+
+    from app.modules.mounts.models import ReportMount
+    from app.modules.reports.models import Report, ReportPhase
+
+    db = SessionLocal()
+    # reports.(template_id, template_version) 에 FK 가 있어 실존 템플릿을 써야 한다.
+    tpl = db.execute(
+        text("SELECT template_id, version FROM templates LIMIT 1")
+    ).first()
+    assert tpl is not None, "테스트 DB 에 템플릿이 최소 1개 있어야 함"
+    old = datetime.utcnow() - timedelta(days=90)
+    r = Report(
+        workspace_slug="dev",
+        template_id=tpl[0],
+        template_version=tpl[1],
+        title="stale-regression",
+        content={},
+        owner_user_id=2,
+        phase=ReportPhase.reviewing,   # 게시된 리뷰중 = 미발행(finalized 아님)
+        created_at=old,
+        updated_at=datetime.utcnow(),  # 재색인 등으로 방금 튄 상황을 재현
+        last_edited_at=None,           # 사람 편집 이력 없음 → created_at 폴백
+    )
+    db.add(r)
+    db.commit()
+    db.refresh(r)
+    db.add(ReportMount(report_id=r.id, workspace_slug="dev"))
+    db.commit()
+    try:
+        out = services._probe_stale_unpublished(
+            db, {"days": 30, "mounted_only": True}
+        )
+        ids = {t["target_id"] for t in out}
+        assert str(r.id) in ids, (
+            "updated_at 이 최근이어도 90일 방치된 게시 미발행 보고서는 잡혀야 함"
+        )
+    finally:
+        db.query(ReportMount).filter_by(report_id=r.id).delete()
+        db.delete(r)
+        db.commit()
+        db.close()
+
+
 def test_rules_endpoint_admin_only():
     c = TestClient(app)
     # 시스템 관리자 = 200, 시드 규칙 1개 이상.

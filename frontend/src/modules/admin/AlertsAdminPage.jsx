@@ -75,7 +75,7 @@ function fmtTime(iso) {
 
 /**
  * 경보 관리자 페이지 (Phase D) — 규칙별 하위 탭으로 나눠, 각 규칙을 수동/자동
- * 실행하고 현재 걸린 대상(발화 인박스)을 페이지네이션으로 본다. 규칙은 프로브
+ * 실행하고 현재 감지된 대상(감지 목록)을 페이지네이션으로 본다. 규칙은 프로브
  * 조건 + 스케줄(수동/매시간~매달). 알림·이메일은 후속 단계. 사이드바 '경보'(시스템
  * 관리자 전용)로 진입하고 엔드포인트도 require_system_admin 으로 이중 방어.
  */
@@ -132,7 +132,7 @@ export default function AlertsAdminPage() {
       </div>
       <p className="text-sm text-muted-foreground -mt-2">
         온톨로지 상태에 걸리는 대상을 규칙으로 점검합니다. 규칙마다 <b>수동/자동
-        실행</b>으로 현재 걸리는 대상 목록(발화 인박스)을 갱신합니다. (자동 알림·이메일은
+        실행</b>으로 현재 감지된 대상 목록을 갱신합니다. (자동 알림·이메일은
         후속 단계.)
       </p>
       <Tabs
@@ -184,7 +184,7 @@ function RulePanel({ rule, onRulesChanged }) {
         setFiring(d)
         setOffset(off)
       } catch (err) {
-        toast.error(errMsg(err, '발화 목록을 불러오지 못했습니다.'))
+        toast.error(errMsg(err, '감지 목록을 불러오지 못했습니다.'))
       }
     },
     [rule.id],
@@ -219,7 +219,7 @@ function RulePanel({ rule, onRulesChanged }) {
     try {
       const r = await runAlertRule(rule.id)
       toast.success(
-        `실행 완료 — 새 발화 ${r.fired} · 해소 ${r.resolved} · 현재 ${r.firing}건` +
+        `실행 완료 — 새로 감지 ${r.fired} · 해제 ${r.resolved} · 현재 ${r.firing}건` +
           (r.capped ? ` (상한 ${r.checked}건 초과, 일부만)` : ''),
       )
       await Promise.all([load(0), onRulesChanged?.()])
@@ -325,13 +325,13 @@ function RulePanel({ rule, onRulesChanged }) {
             variant="ghost"
             onClick={() => load(offset)}
             disabled={busy}
-            title="발화 목록 새로고침"
+            title="감지 목록 새로고침"
           >
             <RefreshCw className="h-3.5 w-3.5" />
           </Button>
         </div>
 
-        {/* 발화 인박스 */}
+        {/* 감지 목록 */}
         <div className="overflow-x-auto rounded-md border">
           <table className="w-full text-sm">
             <thead className="border-b bg-muted/40 text-xs text-muted-foreground">
@@ -340,14 +340,14 @@ function RulePanel({ rule, onRulesChanged }) {
                 <th className="px-3 py-2 text-left font-medium">게시판</th>
                 <th className="px-3 py-2 text-left font-medium">상태</th>
                 <th className="px-3 py-2 text-left font-medium">{meta.dateLabel}</th>
-                <th className="px-3 py-2 text-left font-medium">발화 이후</th>
+                <th className="px-3 py-2 text-left font-medium">감지 시각</th>
               </tr>
             </thead>
             <tbody>
               {items.length === 0 && (
                 <tr>
                   <td colSpan={5} className="px-3 py-8 text-center text-muted-foreground">
-                    {firing ? '현재 걸리는 대상이 없습니다.' : '불러오는 중…'}
+                    {firing ? '현재 감지된 대상이 없습니다.' : '불러오는 중…'}
                   </td>
                 </tr>
               )}

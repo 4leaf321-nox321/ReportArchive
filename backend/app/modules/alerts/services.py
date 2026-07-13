@@ -302,7 +302,7 @@ def _notify_new_firings(db: Session, rule: AlertRule, fired: int, firing_total: 
         "probe_key": rule.probe_key,
         # NotificationRow 가 읽는 표시 필드(제목=규칙명, 요약=건수).
         "report_title": rule.name,
-        "excerpt": f"새로 {fired}건 발화 · 현재 {firing_total}건",
+        "excerpt": f"새로 감지 {fired}건 · 현재 {firing_total}건",
     }
     for uid in admins:
         create_notification(

@@ -78,8 +78,8 @@ def build_and_send_digest(db: Session, *, force: bool = False) -> dict:
 
     total = sum(g["count"] for g in groups)
     lines = " · ".join(f"{g['name']} {g['count']}건" for g in groups)
-    subject = f"[{settings.app_name}] 경보 요약 — 새 발화 {total}건"
-    message = f"최근 새로 걸린 경보: {lines}"
+    subject = f"[{settings.app_name}] 경보 요약 — 새로 감지 {total}건"
+    message = f"최근 새로 감지된 경보: {lines}"
     url = f"{settings.email_base_url}/admin/alerts"
 
     from app.mailer import service as mail_service

@@ -146,3 +146,96 @@ def delete_file(db: Session, record: File) -> None:
         pass
     db.delete(record)
     db.commit()
+
+
+def list_workspace_files(db: Session, slug: str) -> dict:
+    """부서 스코프 파일 목록 + 참조 정보(부서 삭제/개편 정리용).
+
+    각 파일에 대해 어느 보고서가 참조하는지 표시한다 — referenced_live 는 살아있는
+    (휴지통 아님) 보고서가 쓰고 있다는 뜻으로, 지우면 그 보고서가 깨지므로 삭제보다
+    재배정을 권하는 신호다."""
+    from app.modules.files import orphans
+
+    files = list(
+        db.execute(
+            select(File)
+            .where(File.workspace_slug == slug)
+            .order_by(File.size.desc())
+        ).scalars()
+    )
+    ids = {f.id for f in files}
+    refmap = orphans.references_for(db, ids)
+
+    items: list[dict] = []
+    total_size = 0
+    for f in files:
+        refs = refmap.get(f.id, [])
+        live = [r for r in refs if not r["deleted"]]
+        items.append(
+            {
+                "id": f.id,
+                "filename": f.filename,
+                "mime_type": f.mime_type,
+                "size": f.size,
+                "is_image": f.is_image,
+                "owner_user_id": f.owner_user_id,
+                "uploaded_at": f.uploaded_at.isoformat() if f.uploaded_at else None,
+                "referenced_live": len(live) > 0,
+                "referenced_any": len(refs) > 0,
+                "reference_count": len(refs),
+                # 표시용으로 최대 8건만(살아있는 참조 우선).
+                "references": (live + [r for r in refs if r["deleted"]])[:8],
+            }
+        )
+        total_size += f.size or 0
+
+    return {
+        "workspace_slug": slug,
+        "items": items,
+        "total_count": len(items),
+        "total_size": total_size,
+    }
+
+
+def bulk_delete_files(db: Session, file_ids: list[str]) -> dict:
+    """주어진 file_id 들을 일괄 삭제(디스크 unlink + DB 행). 참조 검사는 하지 않는다
+    — 호출부(관리자)가 화면에서 참조 여부를 보고 결정한다. 한 번만 commit."""
+    deleted = 0
+    freed = 0
+    failed: list[dict] = []
+    for fid in dict.fromkeys(file_ids):  # 중복 제거(순서 유지)
+        f = db.get(File, fid)
+        if f is None:
+            failed.append({"id": fid, "reason": "not_found"})
+            continue
+        try:
+            _disk_path(f.storage_path).unlink(missing_ok=True)
+        except OSError:
+            pass  # best-effort — 디스크에 없어도 DB 행은 정리
+        freed += f.size or 0
+        db.delete(f)
+        deleted += 1
+    db.commit()
+    return {"deleted": deleted, "freed_bytes": freed, "failed": failed}
+
+
+def reassign_files(db: Session, file_ids: list[str], target_slug: str) -> dict:
+    """파일들을 다른 부서로 이관(workspace_slug 변경). 부서 병합/이동 시 자료를
+    지우지 않고 넘기는 용도. 대상은 실재하는 비가상 부서여야 한다."""
+    from app.modules.workspaces.models import Workspace, WorkspaceKind
+
+    target = db.get(Workspace, target_slug)
+    if target is None:
+        raise ValueError(f"대상 부서를 찾을 수 없습니다: {target_slug}")
+    if target.virtual or target.kind == WorkspaceKind.virtual:
+        raise ValueError("가상 부서로는 파일을 이동할 수 없습니다.")
+
+    moved = 0
+    for fid in dict.fromkeys(file_ids):
+        f = db.get(File, fid)
+        if f is None:
+            continue
+        f.workspace_slug = target_slug
+        moved += 1
+    db.commit()
+    return {"reassigned": moved, "target_slug": target_slug}

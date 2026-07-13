@@ -87,6 +87,70 @@ def referenced_file_ids(db: Session) -> set[str]:
     return refs
 
 
+def references_for(db: Session, file_ids: set[str]) -> dict[str, list[dict]]:
+    """대상 file_id 각각을 *참조하는* 소스(보고서·종합보고·버전) 목록.
+    부서 파일 관리 화면이 "이 파일을 어느 보고서가 쓰는가"를 보여주는 데 쓴다.
+    전체 스캔이지만 부서 삭제·정리라는 저빈도 관리 작업에서만 호출한다.
+
+    각 항목: {"type": "report"|"composite"|"version", "id", "title", "deleted"}.
+    - report.deleted = 휴지통(soft-delete) 여부. deleted=False 는 살아있는 참조라
+      그 파일을 지우면 그 보고서의 이미지/첨부가 깨진다(위험 신호).
+    - version 은 항상 deleted=True 취급(과거 이력 — 살아있는 참조 아님)."""
+    if not file_ids:
+        return {}
+    out: dict[str, list[dict]] = {fid: [] for fid in file_ids}
+
+    for rid, title, deleted_at, content, pages in db.execute(
+        select(
+            Report.id, Report.title, Report.deleted_at, Report.content, Report.pages
+        )
+    ).yield_per(200):
+        hits: set[str] = set()
+        _collect_file_ids(content, hits)
+        _collect_file_ids(pages, hits)
+        for fid in hits & file_ids:
+            out[fid].append(
+                {
+                    "type": "report",
+                    "id": rid,
+                    "title": title,
+                    "deleted": deleted_at is not None,
+                }
+            )
+
+    for cid, title, widgets in db.execute(
+        select(
+            CompositeReport.id,
+            CompositeReport.title,
+            CompositeReport.summary_widgets,
+        )
+    ).yield_per(200):
+        hits = set()
+        _collect_file_ids(widgets, hits)
+        for fid in hits & file_ids:
+            out[fid].append(
+                {"type": "composite", "id": cid, "title": title, "deleted": False}
+            )
+
+    for (rvid, gz) in db.execute(
+        select(ReportVersion.id, ReportVersion.body_gzip)
+    ).yield_per(200):
+        if not gz:
+            continue
+        try:
+            body = json.loads(gzip.decompress(gz).decode("utf-8"))
+        except Exception:
+            continue
+        hits = set()
+        _collect_file_ids(body, hits)
+        for fid in hits & file_ids:
+            out[fid].append(
+                {"type": "version", "id": rvid, "title": None, "deleted": True}
+            )
+
+    return out
+
+
 def _now_utc_naive() -> datetime:
     # File.uploaded_at 은 naive UTC(default datetime.utcnow).
     return datetime.now(timezone.utc).replace(tzinfo=None)

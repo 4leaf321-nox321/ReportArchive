@@ -32,6 +32,29 @@ export async function deleteFile(fileId) {
   return extractData(res)
 }
 
+/** 시스템관리자 — 한 부서가 소유한 파일 목록 + 참조 정보(어느 보고서가 쓰는지).
+ *  부서 삭제/개편 정리용(조직개편·계정삭제_설계.md 후속). */
+export async function listWorkspaceFiles(slug) {
+  const res = await apiClient.get(`${BASE}/workspace/${slug}`)
+  return extractData(res)
+}
+
+/** 시스템관리자 — 파일 일괄 삭제(디스크+DB). 살아있는 보고서가 참조하는 파일을
+ *  지우면 그 보고서의 이미지/첨부가 깨진다. */
+export async function bulkDeleteFiles(fileIds) {
+  const res = await apiClient.post(`${BASE}/bulk-delete`, { file_ids: fileIds })
+  return extractData(res)
+}
+
+/** 시스템관리자 — 파일들을 다른 부서로 이관(자료 보존). 부서 병합/이동 시 사용. */
+export async function reassignFiles(fileIds, targetSlug) {
+  const res = await apiClient.post(`${BASE}/reassign`, {
+    file_ids: fileIds,
+    target_slug: targetSlug,
+  })
+  return extractData(res)
+}
+
 /**
  * Returns a URL that can be set on `<img src>` or `<a href>`.
  *

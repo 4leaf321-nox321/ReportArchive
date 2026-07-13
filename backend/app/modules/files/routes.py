@@ -37,10 +37,20 @@ from app.config import settings
 from app.database import get_db
 from app.modules.auth.services import create_upload_ticket, decode_upload_ticket
 from app.modules.files import services
-from app.modules.files.schemas import FileFromUrlRequest, FileMeta
+from app.modules.files.schemas import (
+    BulkDeleteFilesRequest,
+    FileFromUrlRequest,
+    FileMeta,
+    ReassignFilesRequest,
+)
 from app.modules.workspaces.services import ensure_personal_workspace
 from app.modules.users.models import Role, User
-from app.shared.auth import CurrentUser, get_current_user, get_current_user_no_workspace
+from app.shared.auth import (
+    CurrentUser,
+    get_current_user,
+    get_current_user_no_workspace,
+    require_system_admin,
+)
 from app.shared.responses import created_response, not_found_response, success_response
 from app.shared.storage import assert_space_for
 from app.shared.url_fetch import UrlFetchError, basename_from_url, fetch_file_from_url
@@ -418,3 +428,48 @@ def delete_file(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "이 파일을 삭제할 권한이 없습니다.")
     services.delete_file(db, record)
     return success_response(message="파일이 삭제되었습니다.")
+
+
+# ── 부서 스코프 파일 관리(시스템관리자) — 부서 삭제/개편 정리용 ──────────────
+# 조직개편·계정삭제_설계.md 후속: files.workspace_slug=RESTRICT 라 부서에 파일이
+# 남으면 삭제가 막힌다. 목록·참조표시·일괄삭제·재배정으로 정리한다.
+
+
+@router.get("/workspace/{slug}")
+def list_workspace_files(
+    slug: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_system_admin),
+):
+    """부서가 소유한 파일 목록 + 참조 정보(어느 보고서가 쓰는지)."""
+    return success_response(data=services.list_workspace_files(db, slug))
+
+
+@router.post("/bulk-delete")
+def bulk_delete_files(
+    payload: BulkDeleteFilesRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_system_admin),
+):
+    """파일 일괄 삭제(디스크+DB). 살아있는 보고서가 참조하는 파일을 지우면 그
+    보고서의 이미지/첨부가 깨지므로, 화면에서 참조 여부를 확인하고 호출한다."""
+    result = services.bulk_delete_files(db, payload.file_ids)
+    return success_response(
+        data=result, message=f"{result['deleted']}개 파일을 삭제했습니다."
+    )
+
+
+@router.post("/reassign")
+def reassign_files(
+    payload: ReassignFilesRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_system_admin),
+):
+    """파일들을 다른 부서로 이관(자료 보존). 부서 병합/이동 시 사용."""
+    try:
+        result = services.reassign_files(db, payload.file_ids, payload.target_slug)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return success_response(
+        data=result, message=f"{result['reassigned']}개 파일을 이동했습니다."
+    )

@@ -26,3 +26,16 @@ class FileMeta(BaseModel):
     owner_user_id: int | None
     workspace_slug: str
     uploaded_at: datetime
+
+
+class BulkDeleteFilesRequest(BaseModel):
+    """부서 파일 일괄 삭제 — 지울 file_id 목록."""
+
+    file_ids: list[str] = Field(..., min_length=1)
+
+
+class ReassignFilesRequest(BaseModel):
+    """부서 파일 이관 — 대상 부서로 workspace_slug 변경."""
+
+    file_ids: list[str] = Field(..., min_length=1)
+    target_slug: str = Field(..., min_length=1, max_length=64)

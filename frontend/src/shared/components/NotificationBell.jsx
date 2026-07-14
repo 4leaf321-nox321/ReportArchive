@@ -58,6 +58,8 @@ const TYPE_META = {
   'composite.published': { icon: CircleCheck, color: 'text-blue-600', label: '종합 발행됨' },
   // Phase D 경보 — /admin/alerts?rule={ref_id}.
   'alert.firing': { icon: Siren, color: 'text-red-600', label: '경보' },
+  // 저장검색 구독 — 새 보고서. /search 로.
+  'saved_search.hit': { icon: Bell, color: 'text-teal-600', label: '저장검색' },
 }
 
 export function NotificationBell() {
@@ -208,6 +210,11 @@ export function NotificationBell() {
                         {n.payload.report_title}
                       </div>
                     )}
+                    {n.payload?.search_name && (
+                      <div className="text-[11px] text-foreground truncate">
+                        {n.payload.search_name} — 새 보고서 {n.payload.new_count}건
+                      </div>
+                    )}
                     {n.payload?.excerpt && (
                       <div className="text-[11px] text-muted-foreground truncate">
                         "{n.payload.excerpt}"
@@ -267,6 +274,10 @@ function deepLinkFor(n) {
   // Phase D 경보 — 규칙별 경보 페이지로.
   if (n.ref_table === 'alert_rules' && n.ref_id) {
     return `/admin/alerts?rule=${n.ref_id}`
+  }
+  // 저장검색 구독 — 검색 페이지로.
+  if (n.ref_table === 'saved_searches') {
+    return `/w/${n.workspace_slug || 'personal'}/search`
   }
   return null
 }

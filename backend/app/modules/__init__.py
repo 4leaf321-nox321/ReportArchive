@@ -42,6 +42,7 @@ from app.modules.presets.routes import router as presets_router
 from app.modules.prompts.routes import router as prompts_router
 from app.modules.report_types.routes import router as report_types_router
 from app.modules.reports.routes import router as reports_router
+from app.modules.saved_searches.routes import router as saved_searches_router
 from app.modules.section_taxonomy.routes import router as section_taxonomy_router
 from app.modules.template_categories.routes import router as template_categories_router
 from app.modules.templates.routes import router as templates_router
@@ -71,6 +72,11 @@ def register_routers(app: FastAPI) -> None:
         tags=["widget-relations"],
     )
     app.include_router(reports_router, prefix="/api/reports", tags=["reports"])
+    app.include_router(
+        saved_searches_router,
+        prefix="/api/saved-searches",
+        tags=["saved-searches"],
+    )
     app.include_router(
         report_types_router,
         prefix="/api/report-types",

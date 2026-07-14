@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Iterable, Optional
 
-from sqlalchemy import and_, case, desc, func, select
+from sqlalchemy import and_, asc, case, desc, func, select
 from sqlalchemy.orm import Session, defer
 
 from app.modules.composites.models import CompositeReport, CompositeReportItem
@@ -17,8 +17,10 @@ from app.modules.mounts.models import ReportMount
 from app.modules.reports.models import (
     Report,
     ReportEditLock,
+    ReportLifecycle,
     ReportLink,
     ReportLinkKind,
+    ReportPhase,
     ReportVersion,
 )
 from app.modules.reports.schemas import ReportCreate, ReportPage, ReportUpdate
@@ -682,6 +684,92 @@ def search_snippet(text: Optional[str], query: str, radius: int = 60) -> Optiona
     return snippet
 
 
+# 날짜 필터 기준 필드 — report_date(자료연도/작성일자, 기본) 또는 created_at(등록시각).
+DATE_FIELDS = ("report_date", "created_at")
+
+
+def resolve_date_range(
+    *,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    last_days: Optional[int] = None,
+    period: Optional[str] = None,
+    today: Optional[date] = None,
+) -> tuple[Optional[date], Optional[date]]:
+    """상대/명시 날짜 표현 → (date_from, date_to) **포함 범위**.
+
+    명시(date_from/date_to)가 주어지면 그대로 우선. 아니면 상대 표현을 오늘 기준
+    으로 해석: `last_days=N` → [오늘-(N-1), 오늘] ("최근 N일"), `period` 은
+    today|yesterday|this_week(월~오늘)|this_month|this_year. `today` 미지정 시
+    date.today() — 테스트는 고정 today 주입. (B) 상대 날짜 검색."""
+    if date_from is not None or date_to is not None:
+        return date_from, date_to
+    d = today or date.today()
+    if last_days is not None and last_days > 0:
+        return d - timedelta(days=last_days - 1), d
+    if period == "today":
+        return d, d
+    if period == "yesterday":
+        y = d - timedelta(days=1)
+        return y, y
+    if period == "this_week":
+        return d - timedelta(days=d.weekday()), d
+    if period == "this_month":
+        return d.replace(day=1), d
+    if period == "this_year":
+        return d.replace(month=1, day=1), d
+    return None, None
+
+
+def report_column_conditions(
+    *,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    date_field: str = "report_date",
+    report_type_ids: Optional[list[int]] = None,
+    author_ids: Optional[list[int]] = None,
+    editor_ids: Optional[list[int]] = None,
+    phases: Optional[Iterable[str]] = None,
+    lifecycles: Optional[Iterable[str]] = None,
+    tags: Optional[list[str]] = None,
+) -> list:
+    """검색·목록·AI집계가 **공유**하는 Report 컬럼 필터 → SQLAlchemy 조건 리스트.
+
+    모든 인자 옵셔널(None/빈 = 무필터). 날짜는 `date_field`(report_date|created_at)
+    기준 [date_from, date_to] **포함** 범위(created_at 은 시각이라 to 를 그날 끝까지).
+    다중값(종류·작성자·단계·태그)은 IN(=OR), 서로 다른 축은 AND 로 맞물린다. 잘못된
+    phase/lifecycle 값은 조용히 버린다(방어). (B) 날짜/종류/작성자/편집자/단계/태그."""
+    conds: list = []
+    col = Report.created_at if date_field == "created_at" else Report.report_date
+    if date_from is not None:
+        conds.append(col >= date_from)
+    if date_to is not None:
+        if date_field == "created_at":
+            conds.append(col < date_to + timedelta(days=1))
+        else:
+            conds.append(col <= date_to)
+    if report_type_ids:
+        conds.append(Report.report_type_id.in_(report_type_ids))
+    if author_ids:
+        conds.append(Report.owner_user_id.in_(author_ids))
+    if editor_ids:
+        conds.append(Report.last_edited_by_user_id.in_(editor_ids))
+    if phases:
+        valid_phase = [ReportPhase(p) for p in phases if p in ReportPhase._value2member_map_]
+        if valid_phase:
+            conds.append(Report.phase.in_(valid_phase))
+    if lifecycles:
+        valid_life = [
+            ReportLifecycle(x) for x in lifecycles
+            if x in ReportLifecycle._value2member_map_
+        ]
+        if valid_life:
+            conds.append(Report.lifecycle.in_(valid_life))
+    if tags:
+        conds.append(Report.tags.overlap(list(tags)))
+    return conds
+
+
 def search_reports(
     db: Session,
     actor,
@@ -694,6 +782,16 @@ def search_reports(
     entity_ids: Optional[list[int]] = None,
     entity_rollup: bool = False,
     year: Optional[int] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    date_field: str = "report_date",
+    report_type_ids: Optional[list[int]] = None,
+    author_ids: Optional[list[int]] = None,
+    editor_ids: Optional[list[int]] = None,
+    phases: Optional[Iterable[str]] = None,
+    lifecycles: Optional[Iterable[str]] = None,
+    tags: Optional[list[str]] = None,
+    sort: str = "relevance",
 ) -> tuple[list[Report], int]:
     """본문(search_text) + 제목 부분일치(pg_trgm ILIKE) 검색. 가시성 스코프 적용.
 
@@ -764,6 +862,14 @@ def search_reports(
     # 해에 적용되냐". 둘은 AND 로 맞물린다.
     if year is not None:
         conditions.append(func.extract("year", Report.report_date) == year)
+    # (B) 날짜범위·종류·작성자·편집자·단계·진행상태·태그 — 공유 조건 빌더.
+    conditions.extend(
+        report_column_conditions(
+            date_from=date_from, date_to=date_to, date_field=date_field,
+            report_type_ids=report_type_ids, author_ids=author_ids,
+            editor_ids=editor_ids, phases=phases, lifecycles=lifecycles, tags=tags,
+        )
+    )
 
     count_q = select(func.count(Report.id)).where(*conditions)
     select_q = select(Report).where(*conditions)
@@ -779,7 +885,13 @@ def search_reports(
     if total == 0:
         return [], 0
 
-    if tokens:
+    # 정렬 — 'recent'(작성일 최신)·'oldest'(작성일 오래된) 는 날짜 필터의 자연스러운
+    # 짝. 기본 'relevance' 는 (검색 시) 제목 매치 우선 → 최신 갱신순, (브라우즈) 최신순.
+    if sort == "recent":
+        order_by = (desc(Report.report_date), desc(Report.updated_at))
+    elif sort == "oldest":
+        order_by = (asc(Report.report_date), desc(Report.updated_at))
+    elif tokens:
         # 제목에 모든 단어가 들어간 보고서를 위로.
         title_rank = case(
             (and_(*[Report.title.ilike(f"%{tok}%") for tok in tokens]), 0),
@@ -805,6 +917,20 @@ def report_ids_in_year(db: Session, year: int) -> set[int]:
             Report.deleted_at.is_(None),
             func.extract("year", Report.report_date) == year,
         )
+    ).scalars()
+    return set(rows)
+
+
+def filtered_report_ids(db: Session, **filters) -> Optional[set[int]]:
+    """(B) 컬럼 필터(report_column_conditions 인자)에 매칭되는 (삭제 안 된) 보고서
+    id 집합. 시맨틱/하이브리드 검색이 벡터 scope 에 날짜·종류·작성자 등 필터를
+    교집합으로 얹는 데 쓴다 — year/엔티티 필터와 동일한 방식. 조건이 하나도 없으면
+    None(=무필터, scope 그대로)."""
+    conds = report_column_conditions(**filters)
+    if not conds:
+        return None
+    rows = db.execute(
+        select(Report.id).where(Report.deleted_at.is_(None), *conds)
     ).scalars()
     return set(rows)
 

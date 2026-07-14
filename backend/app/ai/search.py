@@ -49,6 +49,20 @@ def _apply_year_scope(db, scope, year):
     return yfilter if scope is None else (scope & yfilter)
 
 
+def _apply_column_scope(db, scope, column_filters):
+    """(B) 컬럼 필터(날짜범위·종류·작성자·편집자·단계·진행상태·태그)를 scope 에
+    교집합으로 얹는다 — year/엔티티 필터와 동일한 방식(벡터 경로는 미리 계산한
+    report id 집합을 AND). column_filters 없거나 매칭 조건 없으면 scope 그대로."""
+    if not column_filters:
+        return scope
+    from app.modules.reports.services import filtered_report_ids
+
+    cfilter = filtered_report_ids(db, **column_filters)
+    if cfilter is None:
+        return scope
+    return cfilter if scope is None else (scope & cfilter)
+
+
 def _visible_scope_ids(db: Session, actor) -> Optional[set[int]]:
     """검색이 볼 수 있는 report id 집합. None = 무스코프(전체 가시), 빈 set = 없음.
 
@@ -133,6 +147,7 @@ def semantic_search(
     entity_ids: Optional[list[int]] = None,
     entity_rollup: bool = False,
     year: Optional[int] = None,
+    column_filters: Optional[dict] = None,
     snippet_chars: Optional[int] = 200,
     embed_query: Optional[str] = None,
 ) -> list[dict]:
@@ -158,6 +173,7 @@ def semantic_search(
         # scope 를 넘긴다(거기서 한 번에 얹음).
         scope = _apply_entity_scope(db, scope, entity_ids, entity_rollup)
         scope = _apply_year_scope(db, scope, year)
+        scope = _apply_column_scope(db, scope, column_filters)
     if scope is not None and not scope:
         return []
 
@@ -316,6 +332,7 @@ def hybrid_search(
     entity_ids: Optional[list[int]] = None,
     entity_rollup: bool = False,
     year: Optional[int] = None,
+    column_filters: Optional[dict] = None,
     snippet_chars: Optional[int] = 200,
     embed_query: Optional[str] = None,
     keyword_query: Optional[str] = None,
@@ -334,6 +351,7 @@ def hybrid_search(
     scope = _visible_scope_ids(db, actor)
     scope = _apply_entity_scope(db, scope, entity_ids, entity_rollup)
     scope = _apply_year_scope(db, scope, year)
+    scope = _apply_column_scope(db, scope, column_filters)
     if scope is not None and not scope:
         return []
 

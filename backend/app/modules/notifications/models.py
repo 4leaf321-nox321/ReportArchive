@@ -83,6 +83,10 @@ class NotificationType(str, enum.Enum):
     # firing, probe_key, report_title(=rule_name), excerpt}. ref=(alert_rules, rule_id).
     alert_firing = "alert.firing"
 
+    # 저장검색 구독 — 구독한 필터에 새 보고서가 걸림(#2). payload: {search_name,
+    # new_count, titles(상위 몇 개)}. ref=(saved_searches, saved_search_id).
+    saved_search_hit = "saved_search.hit"
+
 
 class Notification(Base):
     __tablename__ = "notifications"

@@ -15,6 +15,11 @@ import {
   AlertTriangle,
   ThumbsUp,
   ThumbsDown,
+  Bookmark,
+  BookmarkPlus,
+  Bell,
+  BellOff,
+  X,
 } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Button } from '@/shared/components/ui/button'
@@ -27,6 +32,14 @@ import {
 import { ObjectSearch } from '@/modules/entities/ObjectSearch'
 import { askAi, askAgent, getAskOptions, submitFeedback } from '@/shared/api/ai'
 import { useAuth } from '@/shared/auth/AuthContext'
+import { listReportTypes } from '@/shared/api/reportTypes'
+import { searchUsers } from '@/shared/api/members'
+import {
+  listSavedSearches,
+  createSavedSearch,
+  updateSavedSearch,
+  deleteSavedSearch,
+} from '@/shared/api/savedSearches'
 import { EntityFilterControl } from './EntityFilterControl'
 
 const LIMIT = 30
@@ -34,6 +47,23 @@ const LIMIT = 30
 const CURRENT_YEAR = new Date().getFullYear()
 // 작성연도(자료연도) 후보 — 올해부터 9년 전까지. 검색은 기본 "전체"(null).
 const YEAR_OPTIONS = Array.from({ length: 10 }, (_, i) => CURRENT_YEAR - i)
+
+// (B) 날짜 범위 프리셋 — 서버 상대날짜(last_days/period)로 매핑. '직접'은 date_from/to.
+const DATE_PRESETS = [
+  { key: 'all', label: '전체' },
+  { key: 'last7', label: '최근 7일' },
+  { key: 'last30', label: '최근 30일' },
+  { key: 'this_week', label: '이번 주' },
+  { key: 'this_month', label: '이번 달' },
+  { key: 'this_year', label: '올해' },
+  { key: 'custom', label: '직접 지정' },
+]
+// 협업 단계 필터 칩. 서버 phase enum 과 1:1.
+const PHASE_OPTIONS = [
+  { key: 'drafting', label: '작성중' },
+  { key: 'reviewing', label: '리뷰중' },
+  { key: 'finalized', label: '발행완료' },
+]
 
 // 검색 모드. 'keyword' = 기존 pg_trgm 부분일치. 'semantic' = 임베딩 기반 의미 검색
 // (서버 mode=hybrid 로 호출 — 벡터+키워드 RRF 융합). 의미 모드는 페이지네이션 없음.
@@ -77,6 +107,23 @@ function Highlighted({ text, query }) {
     ) : (
       part
     ),
+  )
+}
+
+/** 활성 필터 요약 칩 — × 로 개별 제거. (#3) */
+function FilterChip({ children, onRemove }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2 py-0.5 text-xs text-foreground">
+      {children}
+      <button
+        type="button"
+        onClick={onRemove}
+        className="rounded-full text-muted-foreground hover:text-foreground"
+        title="제거"
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </span>
   )
 }
 
@@ -132,15 +179,251 @@ export default function SearchPage() {
   // 자료 연도(작성연도, report_date) 필터(p56). 엔티티의 적용연도와 독립 —
   // "언제 작성된 보고서냐". 검색은 기본 전체(null), 사용자가 좁힐 수 있다.
   const [year, setYear] = useState(null)
+  // (B) 컬럼 필터 — 날짜범위(프리셋/직접)·기준필드·종류·단계·"내가 작성".
+  const [datePreset, setDatePreset] = useState('all')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [dateField, setDateField] = useState('report_date')
+  const [typeId, setTypeId] = useState(null) // 보고서 종류 단일 선택
+  const [phaseFilter, setPhaseFilter] = useState([]) // 단계(멀티)
+  const [authorFilter, setAuthorFilter] = useState([]) // 작성자(멀티) [{id,name}]
+  const [tagFilter, setTagFilter] = useState([]) // 자유 태그(멀티) [str]
+  const [sort, setSort] = useState('relevance') // relevance|recent|oldest
+  const [typeOptions, setTypeOptions] = useState([]) // {id,name}
+  // 작성자 검색 picker 상태.
+  const [authorQuery, setAuthorQuery] = useState('')
+  const [authorResults, setAuthorResults] = useState([])
+  const [authorOpen, setAuthorOpen] = useState(false)
+  const [tagInput, setTagInput] = useState('')
   const entityIds = useMemo(() => entityFilter.map((e) => e.id), [entityFilter])
   // dep 안정용 문자열 키(배열은 매 렌더 새 참조).
   const entityKey = entityIds.slice().sort((a, b) => a - b).join(',')
   const useEntityFilter = entityIds.length > 0
-  // 검색 실행 조건: 검색어(2자+) "또는" 메타 필터(태그/작성연도)만으로도 돈다.
-  // 백엔드는 빈 검색어 + 필터(브라우즈)를 지원하므로, 태그만 걸어도 "모델 X
-  // 관련 보고서 전부"가 바로 뜬다. (effect 가 deps 로 참조하므로 위에서 선언.)
+
+  // (B) 서버로 보낼 필터 객체 — appendReportFilters 모양. 값 있는 것만.
+  const hasDateFilter =
+    datePreset !== 'all' && (datePreset !== 'custom' || !!dateFrom || !!dateTo)
+  const authorIds = useMemo(() => authorFilter.map((a) => a.id), [authorFilter])
+  const filters = useMemo(() => {
+    const f = { dateField }
+    if (datePreset === 'last7') f.lastDays = 7
+    else if (datePreset === 'last30') f.lastDays = 30
+    else if (['this_week', 'this_month', 'this_year'].includes(datePreset))
+      f.period = datePreset
+    else if (datePreset === 'custom') {
+      if (dateFrom) f.dateFrom = dateFrom
+      if (dateTo) f.dateTo = dateTo
+    }
+    if (typeId != null) f.reportTypeIds = [typeId]
+    if (phaseFilter.length) f.phases = phaseFilter
+    if (authorIds.length) f.authorIds = authorIds
+    if (tagFilter.length) f.tags = tagFilter
+    return f
+  }, [datePreset, dateFrom, dateTo, dateField, typeId, phaseFilter, authorIds, tagFilter])
+  const useColumnFilter =
+    hasDateFilter ||
+    typeId != null ||
+    phaseFilter.length > 0 ||
+    authorIds.length > 0 ||
+    tagFilter.length > 0
+  // dep 안정용 키 — filters 객체는 매 렌더 새 참조라 직렬화해서 비교. 정렬도 포함
+  // (결과 순서가 바뀌므로 재조회 트리거).
+  const filtersKey = (useColumnFilter ? JSON.stringify(filters) : '') + `|${sort}`
+
+  // 보고서 종류 목록 로드(종류 필터 드롭다운). 실패해도 무해(빈 목록 → 필터 숨김 안 함).
+  useEffect(() => {
+    let alive = true
+    listReportTypes({ limit: 200 })
+      .then((rows) => alive && setTypeOptions(rows ?? []))
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  // 작성자 검색(디바운스) — 이름/이메일 부분일치. 이미 고른 사람은 제외.
+  useEffect(() => {
+    const q = authorQuery.trim()
+    if (!q) {
+      setAuthorResults([])
+      return undefined
+    }
+    let alive = true
+    const t = setTimeout(() => {
+      searchUsers({ search: q, limit: 8 })
+        .then((rows) => {
+          if (!alive) return
+          const picked = new Set(authorFilter.map((a) => a.id))
+          setAuthorResults((rows ?? []).filter((u) => !picked.has(u.id)))
+        })
+        .catch(() => {})
+    }, 250)
+    return () => {
+      alive = false
+      clearTimeout(t)
+    }
+  }, [authorQuery, authorFilter])
+
+  // ── 저장된 검색(스마트 폴더) ────────────────────────────────────────
+  const [saved, setSaved] = useState([]) // [{id,name,query,mode,filters,...}]
+  const [savedOpen, setSavedOpen] = useState(false)
+  const [savingSearch, setSavingSearch] = useState(false)
+  // 저장에 담을 resolved 필터(서버 모양) + 연도 + 정렬 + 작성자 칩(복원용).
+  const saveableFilters = useMemo(() => {
+    const f = { ...filters }
+    if (year != null) f.year = year
+    if (sort && sort !== 'relevance') f.sort = sort
+    if (authorFilter.length) f.authors = authorFilter
+    return f
+  }, [filters, year, sort, authorFilter])
+
+  useEffect(() => {
+    let alive = true
+    listSavedSearches()
+      .then((rows) => alive && setSaved(rows ?? []))
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const saveCurrentSearch = useCallback(async () => {
+    const name = window.prompt('저장할 이름', debounced || '새 검색')
+    if (!name || !name.trim()) return
+    setSavingSearch(true)
+    try {
+      await createSavedSearch({
+        name: name.trim(),
+        query: debounced,
+        mode: mode === 'semantic' ? 'semantic' : 'keyword',
+        filters: saveableFilters,
+      })
+      const rows = await listSavedSearches()
+      setSaved(rows ?? [])
+      setSavedOpen(true)
+    } finally {
+      setSavingSearch(false)
+    }
+  }, [debounced, mode, saveableFilters])
+
+  // 저장검색 적용 — 검색어·모드 복원 + resolved 필터를 UI 상태로 역매핑.
+  const applySaved = useCallback(
+    (s) => {
+      const f = s.filters || {}
+      setInput(s.query || '')
+      setDebounced((s.query || '').trim())
+      if (s.mode === 'semantic' || s.mode === 'keyword') setMode(s.mode)
+      // 날짜
+      if (f.lastDays === 7) setDatePreset('last7')
+      else if (f.lastDays === 30) setDatePreset('last30')
+      else if (['this_week', 'this_month', 'this_year'].includes(f.period))
+        setDatePreset(f.period)
+      else if (f.dateFrom || f.dateTo) {
+        setDatePreset('custom')
+        setDateFrom(f.dateFrom || '')
+        setDateTo(f.dateTo || '')
+      } else setDatePreset('all')
+      setDateField(f.dateField === 'created_at' ? 'created_at' : 'report_date')
+      setTypeId(
+        Array.isArray(f.reportTypeIds) && f.reportTypeIds.length
+          ? f.reportTypeIds[0]
+          : null,
+      )
+      setPhaseFilter(Array.isArray(f.phases) ? f.phases : [])
+      // 작성자 칩 복원 — authors({id,name}) 우선, 없으면 id 만(라벨 fallback).
+      if (Array.isArray(f.authors) && f.authors.length) {
+        setAuthorFilter(f.authors)
+      } else if (Array.isArray(f.authorIds) && f.authorIds.length) {
+        setAuthorFilter(f.authorIds.map((id) => ({ id, name: `사용자 ${id}` })))
+      } else {
+        setAuthorFilter([])
+      }
+      setTagFilter(Array.isArray(f.tags) ? f.tags : [])
+      setSort(['recent', 'oldest'].includes(f.sort) ? f.sort : 'relevance')
+      setYear(f.year != null ? f.year : null)
+      setSavedOpen(false)
+    },
+    [],
+  )
+
+  const removeSaved = useCallback(async (id, e) => {
+    e?.stopPropagation?.()
+    if (!window.confirm('이 저장검색을 삭제할까요?')) return
+    await deleteSavedSearch(id).catch(() => {})
+    setSaved((prev) => prev.filter((x) => x.id !== id))
+  }, [])
+
+  // 작성자/태그 필터 조작.
+  const addAuthor = useCallback((u) => {
+    setAuthorFilter((p) => (p.some((a) => a.id === u.id) ? p : [...p, u]))
+    setAuthorQuery('')
+    setAuthorResults([])
+    setAuthorOpen(false)
+  }, [])
+  const removeAuthor = useCallback(
+    (id) => setAuthorFilter((p) => p.filter((a) => a.id !== id)),
+    [],
+  )
+  const toggleMeAuthor = useCallback(() => {
+    if (me?.id == null) return
+    setAuthorFilter((p) =>
+      p.some((a) => a.id === me.id)
+        ? p.filter((a) => a.id !== me.id)
+        : [...p, { id: me.id, name: me.name || '나' }],
+    )
+  }, [me?.id, me?.name])
+  const addTag = useCallback((raw) => {
+    const v = (raw || '').trim()
+    if (!v) return
+    setTagFilter((p) => (p.includes(v) ? p : [...p, v]))
+    setTagInput('')
+  }, [])
+  const removeTag = useCallback(
+    (t) => setTagFilter((p) => p.filter((x) => x !== t)),
+    [],
+  )
+  // 모든 필터 초기화(검색어는 유지).
+  const clearAllFilters = useCallback(() => {
+    setDatePreset('all')
+    setDateFrom('')
+    setDateTo('')
+    setDateField('report_date')
+    setTypeId(null)
+    setPhaseFilter([])
+    setAuthorFilter([])
+    setTagFilter([])
+    setYear(null)
+    setEntityFilter([])
+    setEntityRollup(false)
+    setSort('relevance')
+  }, [])
+  const meIsAuthor = me?.id != null && authorFilter.some((a) => a.id === me.id)
+  const anyFilterActive =
+    useColumnFilter || useEntityFilter || year != null || sort !== 'relevance'
+
+  // 구독 토글 — 켜면 이 조건에 새 보고서가 뜰 때 인앱 알림(+이메일 opt-in).
+  const toggleSubscribe = useCallback(async (s, e) => {
+    e?.stopPropagation?.()
+    const next = !s.subscribed
+    // 낙관적 반영.
+    setSaved((prev) =>
+      prev.map((x) => (x.id === s.id ? { ...x, subscribed: next } : x)),
+    )
+    try {
+      const updated = await updateSavedSearch(s.id, { subscribed: next })
+      setSaved((prev) => prev.map((x) => (x.id === s.id ? updated : x)))
+    } catch {
+      // 실패 시 롤백.
+      setSaved((prev) =>
+        prev.map((x) => (x.id === s.id ? { ...x, subscribed: s.subscribed } : x)),
+      )
+    }
+  }, [])
+
+  // 검색 실행 조건: 검색어(2자+) "또는" 메타 필터(태그/작성연도/날짜·종류·단계)만으로도.
+  // 백엔드는 빈 검색어 + 필터(브라우즈)를 지원하므로, 필터만 걸어도 바로 뜬다.
   const hasQuery = debounced.length >= 2
-  const hasFilter = useEntityFilter || year != null
+  const hasFilter = useEntityFilter || year != null || useColumnFilter
   const canSearch = hasQuery || hasFilter
   // 의미(시맨틱) 모드는 검색어가 있어야만 — 빈 검색어 + 필터는 키워드 브라우즈로.
   const usingSemantic = mode === 'semantic' && hasQuery
@@ -209,6 +492,7 @@ export default function SearchPage() {
             entityIds: useEntityFilter ? entityIds : undefined,
             entityRollup: useEntityFilter ? entityRollup : undefined,
             year: year ?? undefined,
+            filters: useColumnFilter ? filters : undefined,
           })
         : searchReports(debounced, {
             limit: LIMIT,
@@ -216,6 +500,8 @@ export default function SearchPage() {
             entityIds: useEntityFilter ? entityIds : undefined,
             entityRollup: useEntityFilter ? entityRollup : undefined,
             year: year ?? undefined,
+            filters: useColumnFilter ? filters : undefined,
+            sort,
           })
     run
       .then((d) => !cancelled && setData(d))
@@ -225,7 +511,7 @@ export default function SearchPage() {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debounced, mode, entityKey, entityRollup, year])
+  }, [debounced, mode, entityKey, entityRollup, year, filtersKey])
 
   const loadMore = useCallback(() => {
     const next = offset + LIMIT
@@ -236,6 +522,8 @@ export default function SearchPage() {
       entityIds: useEntityFilter ? entityIds : undefined,
       entityRollup: useEntityFilter ? entityRollup : undefined,
       year: year ?? undefined,
+      filters: useColumnFilter ? filters : undefined,
+      sort,
     })
       .then((d) =>
         setData((prev) => ({
@@ -248,7 +536,7 @@ export default function SearchPage() {
         setLoading(false)
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debounced, offset, entityKey, entityRollup, useEntityFilter, year])
+  }, [debounced, offset, entityKey, entityRollup, useEntityFilter, year, filtersKey])
 
   // 진행 중인 질문 요청을 끊기 위한 컨트롤러 — "중단" 시 abort 하면 서버도 LLM 생성 멈춤.
   const askAbortRef = useRef(null)
@@ -773,6 +1061,91 @@ export default function SearchPage() {
 
       {!isAskLike && (
         <>
+      {/* 저장된 검색(스마트 폴더) — 현재 필터 조합 저장 + 저장분 적용. */}
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setSavedOpen((v) => !v)}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs text-muted-foreground hover:bg-muted"
+          >
+            <Bookmark className="h-3.5 w-3.5" />
+            저장된 검색
+            {saved.length > 0 && (
+              <span className="rounded bg-muted px-1 text-[10px]">{saved.length}</span>
+            )}
+          </button>
+          {savedOpen && (
+            <div className="absolute z-20 mt-1 max-h-80 w-72 overflow-auto rounded-md border bg-popover p-1 shadow-md">
+              {saved.length === 0 ? (
+                <p className="px-2 py-3 text-center text-xs text-muted-foreground">
+                  저장된 검색이 없습니다. 조건을 걸고 “현재 조건 저장”을 눌러 보세요.
+                </p>
+              ) : (
+                saved.map((s) => (
+                  <div
+                    key={s.id}
+                    className="group flex items-center gap-1 rounded px-2 py-1.5 text-xs hover:bg-muted"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => applySaved(s)}
+                      className="flex min-w-0 flex-1 flex-col items-start text-left"
+                    >
+                      <span className="w-full truncate font-medium text-foreground">
+                        {s.name}
+                      </span>
+                      <span className="w-full truncate text-[11px] text-muted-foreground">
+                        {s.query ? `“${s.query}”` : '조건 검색'}
+                        {s.mode === 'semantic' ? ' · 의미' : ''}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => toggleSubscribe(s, e)}
+                      className={`shrink-0 rounded p-1 hover:bg-background ${
+                        s.subscribed
+                          ? 'text-primary'
+                          : 'text-muted-foreground opacity-0 group-hover:opacity-100'
+                      }`}
+                      title={
+                        s.subscribed
+                          ? '구독 중 — 새 보고서가 뜨면 알림. 끄기'
+                          : '구독 — 이 조건에 새 보고서가 뜨면 알림'
+                      }
+                    >
+                      {s.subscribed ? (
+                        <Bell className="h-3.5 w-3.5" />
+                      ) : (
+                        <BellOff className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => removeSaved(s.id, e)}
+                      className="shrink-0 rounded p-1 text-muted-foreground opacity-0 hover:bg-background hover:text-foreground group-hover:opacity-100"
+                      title="삭제"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={saveCurrentSearch}
+          disabled={!canSearch || savingSearch}
+          className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-background px-2 text-xs text-muted-foreground hover:bg-muted disabled:opacity-40"
+          title={canSearch ? '현재 검색어·필터 조합을 저장' : '검색어나 필터를 먼저 거세요'}
+        >
+          <BookmarkPlus className="h-3.5 w-3.5" />
+          현재 조건 저장
+        </button>
+      </div>
+
       {/* 필터 줄 — 엔티티 태그(D-2, 값의 적용연도는 태그 picker 안에서) +
           자료연도(보고서 작성연도, p56). 둘은 독립적으로 AND 결합. */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -802,7 +1175,206 @@ export default function SearchPage() {
             ))}
           </select>
         </label>
+
+        {/* (B) 날짜 범위 — 프리셋(최근 N일·이번 달 등) 또는 직접 지정. */}
+        <label
+          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
+          title="작성일자(또는 등록일자) 범위로 좁힙니다"
+        >
+          기간
+          <select
+            value={datePreset}
+            onChange={(e) => setDatePreset(e.target.value)}
+            className="h-7 rounded-md border bg-background px-2 text-xs"
+          >
+            {DATE_PRESETS.map((p) => (
+              <option key={p.key} value={p.key}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {datePreset === 'custom' && (
+          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="h-7 rounded-md border bg-background px-1.5 text-xs"
+            />
+            <span>~</span>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="h-7 rounded-md border bg-background px-1.5 text-xs"
+            />
+          </span>
+        )}
+        {hasDateFilter && (
+          <label
+            className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
+            title="report_date=보고서에 적힌 작성일자 / created_at=시스템 등록 시각"
+          >
+            기준
+            <select
+              value={dateField}
+              onChange={(e) => setDateField(e.target.value)}
+              className="h-7 rounded-md border bg-background px-2 text-xs"
+            >
+              <option value="report_date">작성일자</option>
+              <option value="created_at">등록일자</option>
+            </select>
+          </label>
+        )}
+
+        {/* (B) 보고서 종류(단일). 목록 있을 때만 노출. */}
+        {typeOptions.length > 0 && (
+          <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+            종류
+            <select
+              value={typeId ?? 'all'}
+              onChange={(e) =>
+                setTypeId(e.target.value === 'all' ? null : Number(e.target.value))
+              }
+              className="h-7 rounded-md border bg-background px-2 text-xs"
+            >
+              <option value="all">전체</option>
+              {typeOptions.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
+        {/* (B) 협업 단계(멀티 토글). */}
+        <span className="inline-flex items-center gap-1">
+          {PHASE_OPTIONS.map((p) => {
+            const on = phaseFilter.includes(p.key)
+            return (
+              <button
+                key={p.key}
+                type="button"
+                onClick={() =>
+                  setPhaseFilter((prev) =>
+                    on ? prev.filter((x) => x !== p.key) : [...prev, p.key],
+                  )
+                }
+                className={`h-7 rounded-md border px-2 text-xs transition-colors ${
+                  on
+                    ? 'border-primary bg-primary/10 text-foreground'
+                    : 'bg-background text-muted-foreground hover:bg-muted'
+                }`}
+              >
+                {p.label}
+              </button>
+            )
+          })}
+        </span>
+
+        {/* (#4) 작성자 멀티 피커 — 이름/이메일 검색 + "내가 작성" 빠른 토글. */}
+        <div className="relative">
+          <div className="flex items-center gap-1">
+            {me?.id != null && (
+              <button
+                type="button"
+                onClick={toggleMeAuthor}
+                className={`h-7 rounded-md border px-2 text-xs transition-colors ${
+                  meIsAuthor
+                    ? 'border-primary bg-primary/10 text-foreground'
+                    : 'bg-background text-muted-foreground hover:bg-muted'
+                }`}
+                title="내가 작성(소유)한 보고서"
+              >
+                내가 작성
+              </button>
+            )}
+            <input
+              value={authorQuery}
+              onChange={(e) => {
+                setAuthorQuery(e.target.value)
+                setAuthorOpen(true)
+              }}
+              onFocus={() => setAuthorOpen(true)}
+              placeholder="작성자…"
+              className="h-7 w-24 rounded-md border bg-background px-2 text-xs"
+            />
+          </div>
+          {authorOpen && authorResults.length > 0 && (
+            <div className="absolute z-20 mt-1 w-56 overflow-hidden rounded-md border bg-popover p-1 shadow-md">
+              {authorResults.map((u) => (
+                <button
+                  key={u.id}
+                  type="button"
+                  onClick={() => addAuthor({ id: u.id, name: u.name })}
+                  className="block w-full truncate rounded px-2 py-1 text-left text-xs hover:bg-muted"
+                >
+                  {u.name}
+                  {u.email && (
+                    <span className="ml-1 text-[11px] text-muted-foreground">
+                      {u.email}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* (#4) 자유 태그 필터 — Enter 로 칩 추가. */}
+        <input
+          value={tagInput}
+          onChange={(e) => setTagInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              addTag(tagInput)
+            }
+          }}
+          placeholder="#태그"
+          className="h-7 w-20 rounded-md border bg-background px-2 text-xs"
+        />
+
+        {/* (#3) 정렬. */}
+        <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+          정렬
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value)}
+            className="h-7 rounded-md border bg-background px-2 text-xs"
+          >
+            <option value="relevance">관련도</option>
+            <option value="recent">작성일 최신</option>
+            <option value="oldest">작성일 오래된</option>
+          </select>
+        </label>
       </div>
+
+      {/* (#3) 활성 필터 요약 칩 + 초기화 — 무엇이 걸렸는지 한눈에. */}
+      {anyFilterActive && (
+        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+          {authorFilter.map((a) => (
+            <FilterChip key={`au-${a.id}`} onRemove={() => removeAuthor(a.id)}>
+              작성자: {a.name}
+            </FilterChip>
+          ))}
+          {tagFilter.map((t) => (
+            <FilterChip key={`tag-${t}`} onRemove={() => removeTag(t)}>
+              #{t}
+            </FilterChip>
+          ))}
+          <button
+            type="button"
+            onClick={clearAllFilters}
+            className="ml-1 inline-flex h-6 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <X className="h-3 w-3" />
+            필터 초기화
+          </button>
+        </div>
+      )}
 
       {canSearch && (
         <p className="mb-3 text-xs text-muted-foreground">
@@ -812,7 +1384,7 @@ export default function SearchPage() {
 
       {!canSearch && (
         <p className="py-16 text-center text-sm text-muted-foreground">
-          두 글자 이상 입력하거나, 태그·작성연도 필터를 걸면 검색합니다.
+          두 글자 이상 입력하거나, 태그·연도·기간·종류·단계 필터를 걸면 검색합니다.
         </p>
       )}
 

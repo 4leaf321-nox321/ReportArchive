@@ -47,6 +47,13 @@ def main() -> int:
 
         d = build_and_send_digest(session)
         print(f"[scheduler:alert-digest] {d}")
+
+        # 저장검색 구독(#2) — 구독 필터에 새 보고서 걸리면 소유자에게 인앱 알림
+        # (+이메일 opt-in 팬아웃). 값싼 SQL 이라 잡 큐 안 거치고 인라인.
+        from app.modules.saved_searches.subscriptions import run_subscription_checks
+
+        s = run_subscription_checks(session)
+        print(f"[scheduler:saved-search-subs] {s}")
     finally:
         session.close()
     return 0

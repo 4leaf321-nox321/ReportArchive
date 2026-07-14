@@ -95,6 +95,29 @@ export async function restoreReportVersion(id, versionId) {
   }
 }
 
+// (B) 날짜범위·종류·작성자·편집자·단계·진행상태·태그 필터를 URLSearchParams 에 얹는
+// 공유 헬퍼. 두 검색 함수(키워드/시맨틱)가 같은 필터 모양을 쓰게 한다. `filters` 는
+// { dateFrom, dateTo, dateField, lastDays, period, reportTypeIds[], authorIds[],
+//   editorIds[], phases[], lifecycles[], tags[] } — 값이 있는 것만 추가.
+export function appendReportFilters(params, filters = {}) {
+  const {
+    dateFrom, dateTo, dateField, lastDays, period,
+    reportTypeIds, authorIds, editorIds, phases, lifecycles, tags,
+  } = filters
+  if (dateFrom) params.set('date_from', dateFrom)
+  if (dateTo) params.set('date_to', dateTo)
+  if (dateField && dateField !== 'report_date') params.set('date_field', dateField)
+  if (lastDays != null) params.set('last_days', String(lastDays))
+  if (period) params.set('period', period)
+  for (const id of reportTypeIds ?? []) params.append('report_type_ids', String(id))
+  for (const id of authorIds ?? []) params.append('author_ids', String(id))
+  for (const id of editorIds ?? []) params.append('editor_ids', String(id))
+  for (const p of phases ?? []) params.append('phases', p)
+  for (const l of lifecycles ?? []) params.append('lifecycles', l)
+  for (const t of tags ?? []) params.append('tags', t)
+  return params
+}
+
 // 본문 전문검색 — 제목 + 모든 위젯 텍스트(서버 search_text, 부분일치). 가시 범위
 // 내에서만 결과가 온다. 반환: { results: [{report, snippet}], total, limit, offset }.
 export async function searchReports(
@@ -109,6 +132,10 @@ export async function searchReports(
     entityRollup,
     // 자료 연도 — 보고서 작성연도(report_date) 필터(p56). 엔티티 적용연도와 독립.
     year,
+    // (B) 날짜범위·종류·작성자·단계 등 컬럼 필터(appendReportFilters 참조).
+    filters,
+    // 정렬: relevance(기본)|recent(작성일 최신)|oldest(작성일 오래된).
+    sort,
   } = {},
 ) {
   // entity_ids 는 반복 키(FastAPI list[int]) — URLSearchParams.append 로.
@@ -119,6 +146,7 @@ export async function searchReports(
     location,
     board: board ?? '',
   })
+  if (sort && sort !== 'relevance') params.set('sort', sort)
   if (Array.isArray(entityIds)) {
     for (const id of entityIds) params.append('entity_ids', String(id))
   }
@@ -126,6 +154,7 @@ export async function searchReports(
     params.append('entity_rollup', 'true')
   }
   if (year != null) params.set('year', String(year))
+  appendReportFilters(params, filters)
   const res = await apiClient.get(`${BASE}/search?${params.toString()}`)
   return extractData(res)
 }
@@ -137,7 +166,7 @@ export async function searchReports(
 // SearchPage 가 두 모드를 같은 렌더 경로로 다루게 한다. 페이지네이션 없음(total=길이).
 export async function semanticSearchReports(
   q,
-  { mode = 'hybrid', limit = 30, entityIds, entityRollup, year } = {},
+  { mode = 'hybrid', limit = 30, entityIds, entityRollup, year, filters } = {},
 ) {
   const params = new URLSearchParams({
     q: q ?? '',
@@ -151,6 +180,7 @@ export async function semanticSearchReports(
     params.append('entity_rollup', 'true')
   }
   if (year != null) params.set('year', String(year))
+  appendReportFilters(params, filters)
   const res = await apiClient.get(`${BASE}/search/semantic?${params.toString()}`)
   const data = extractData(res)
   const results = (data.results ?? []).map((r) => ({

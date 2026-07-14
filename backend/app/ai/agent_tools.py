@@ -13,6 +13,8 @@ hybrid_search 가 가시성 게이팅하므로 권한 밖 근거는 못 들어�
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from sqlalchemy.orm import Session
 
 from app.ai import search as ai_search
@@ -199,12 +201,53 @@ def _related_reports(db: Session, actor, entity_id: int):
 # --------------------------------------------------------------------------- #
 # search_reports — 벡터 RAG(hybrid_search)를 도구화
 # --------------------------------------------------------------------------- #
+def _column_filters_from_args(db: Session, args: dict) -> Optional[dict]:
+    """에이전트 도구 args 의 (B) 날짜/종류/작성자/단계 → column_filters dict.
+
+    last_days/period/date_from/date_to(상대·명시 날짜) + report_type(이름)·author(이름)
+    ·phase·lifecycle. structured_qa 의 해석 헬퍼를 재사용(이름→id, 못 풀면 그 필터만
+    생략). 아무것도 없으면 None."""
+    from app.ai import structured_qa
+    from app.modules.reports.services import resolve_date_range
+
+    cf: dict = {}
+    try:
+        last_days = int(args["last_days"]) if args.get("last_days") else None
+    except (ValueError, TypeError):
+        last_days = None
+    d_from, d_to = resolve_date_range(
+        date_from=structured_qa._iso_date(args.get("date_from")),
+        date_to=structured_qa._iso_date(args.get("date_to")),
+        last_days=last_days, period=(args.get("period") or None),
+    )
+    if d_from is not None or d_to is not None:
+        cf["date_from"], cf["date_to"] = d_from, d_to
+    rt = args.get("report_type")
+    if isinstance(rt, str) and rt.strip():
+        tid = structured_qa._resolve_report_type(db, rt)
+        if tid is not None:
+            cf["report_type_ids"] = [tid]
+    au = args.get("author")
+    if isinstance(au, str) and au.strip():
+        uid = structured_qa._resolve_author(db, au)
+        if uid is not None:
+            cf["author_ids"] = [uid]
+    if args.get("phase") in ("drafting", "reviewing", "finalized"):
+        cf["phases"] = [args["phase"]]
+    if args.get("lifecycle") in ("single_shot", "ongoing"):
+        cf["lifecycles"] = [args["lifecycle"]]
+    return cf or None
+
+
 def _exec_search_reports(db: Session, actor, args: dict) -> ToolResult:
     query = (args.get("query") or "").strip()
     if not query:
         return _err("query 가 필요합니다.")
     limit = min(int(args.get("limit") or _REPORTS_LIMIT), _REPORTS_LIMIT)
-    hits = ai_search.hybrid_search(db, query, actor, limit=limit, snippet_chars=300)
+    cf = _column_filters_from_args(db, args)
+    hits = ai_search.hybrid_search(
+        db, query, actor, limit=limit, snippet_chars=300, column_filters=cf
+    )
     rows, prov = [], []
     for h in hits:
         rows.append({"report_id": h["report_id"], "title": h.get("title"),
@@ -229,7 +272,8 @@ def _exec_aggregate_reports(db: Session, actor, args: dict) -> ToolResult:
     filters = [str(x) for x in (args.get("filters") or []) if str(x).strip()]
     target = (args.get("target") or "report").strip() or "report"
     year = args.get("year")
-    agg = structured_qa.aggregate(db, actor, filters, year, target)
+    cf = _column_filters_from_args(db, args)
+    agg = structured_qa.aggregate(db, actor, filters, year, target, column_filters=cf)
     if agg is None:
         return _err("조건(필터/타깃)을 온톨로지 객체로 해석하지 못했습니다. "
                     "list_object_types 로 타입·값을 확인하거나 search_reports 를 쓰세요.")
@@ -262,6 +306,22 @@ def _exec_aggregate_reports(db: Session, actor, args: dict) -> ToolResult:
 # --------------------------------------------------------------------------- #
 # 카탈로그 — 스키마 + dispatch
 # --------------------------------------------------------------------------- #
+# (B) 날짜/종류/작성자/단계 필터 — search_reports·aggregate_reports 공용 스키마 조각.
+_FILTER_PROPS = {
+    "last_days": {"type": "integer",
+                  "description": "최근 N일([오늘-(N-1),오늘]). '최근 일주일'=7(선택)."},
+    "period": {"type": "string",
+               "description": "상대 기간 today|yesterday|this_week|this_month|this_year(선택)."},
+    "date_from": {"type": "string", "description": "날짜범위 시작 YYYY-MM-DD(선택)."},
+    "date_to": {"type": "string", "description": "날짜범위 끝 YYYY-MM-DD(선택)."},
+    "report_type": {"type": "string", "description": "보고서 종류 이름 예:'주간보고'(선택)."},
+    "author": {"type": "string", "description": "작성자 사람 이름(선택)."},
+    "phase": {"type": "string",
+              "description": "협업 단계 drafting|reviewing|finalized(선택)."},
+    "lifecycle": {"type": "string", "description": "진행 상태 single_shot|ongoing(선택)."},
+}
+
+
 def _fn(name, description, properties, required=None) -> dict:
     return {
         "type": "function",
@@ -348,10 +408,12 @@ _CATALOG = {
         _fn(
             "search_reports",
             "보고서 본문을 의미+키워드로 검색한다(텍스트 근거). 객체 구조로 답이 안 나오는 "
-            "서술형·정성 질문이나, 객체의 근거 문서를 찾을 때 사용. 반환: 관련 보고서 발췌.",
+            "서술형·정성 질문이나, 객체의 근거 문서를 찾을 때 사용. '최근 일주일 작성' 같은 "
+            "날짜·작성자·종류·단계 조건을 함께 걸 수 있다(선택 인자). 반환: 관련 보고서 발췌.",
             {
                 "query": {"type": "string"},
                 "limit": {"type": "integer"},
+                **_FILTER_PROPS,
             },
             required=["query"],
         ),
@@ -365,17 +427,20 @@ _CATALOG = {
             "값들로 태깅된 보고서'를 기준으로 센다(예: '낙하시험'과 '실패'로 태깅된 "
             "보고서에 나온 '과제'). 개수는 계산값(정확), 볼 수 있는 보고서만. "
             "filters=조건 값들(예: [\"낙하시험\",\"실패\"]), target=셀 대상('report' "
-            "또는 축 slug), year=연도(선택).",
+            "또는 축 slug), year=연도(선택). 날짜(last_days/period/date_from·to)·작성자"
+            "(author)·종류(report_type)·단계(phase)로도 조건을 걸 수 있다.",
             {
                 "filters": {
                     "type": "array", "items": {"type": "string"},
-                    "description": "조건 값들(태깅). 서로 다른 축은 AND.",
+                    "description": "조건 값들(태깅). 서로 다른 축은 AND. 날짜/작성자 조건만 "
+                                   "있으면 빈 배열 [] 가능.",
                 },
                 "target": {
                     "type": "string",
                     "description": "셀 대상: 'report'(기본) 또는 축 slug(그 축의 값 개수).",
                 },
                 "year": {"type": "integer", "description": "자료연도(선택)."},
+                **_FILTER_PROPS,
             },
             required=["filters"],
         ),

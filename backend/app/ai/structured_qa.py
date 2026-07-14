@@ -19,7 +19,7 @@ import json
 import re
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai.llm import chat
@@ -30,13 +30,22 @@ from app.modules.reports.models import Report
 from app.modules.reports.services import (
     all_visible_report_ids,
     entity_filter_report_ids,
+    filtered_report_ids,
     report_ids_in_year,
+    resolve_date_range,
 )
 
 # 집계 신호어 — 없으면 LLM 도 안 부르고 바로 RAG.
+# 집계형(개수/목록/비교) + (B) 필터형(날짜·작성자) 신호어. 후자는 "최근 일주일 작성
+# 보고서"처럼 개수/목록 단어가 없어도 필터-기반 나열 의도를 잡아 라우팅한다.
 _CUES = (
     "몇", "개수", "몇개", "건", "얼마나", "목록", "리스트", "총", "각각",
     "비교", "통계", "count", "list", "how many",
+    # 날짜/상대기간
+    "최근", "지난", "이번 주", "이번주", "저번 주", "저번주", "이번 달", "이번달",
+    "요즘", "오늘", "어제", "이번 분기", "올해", "작년",
+    # 작성자/단계
+    "작성한", "작성된", "작성자", "누가", "내가 쓴", "작성 중", "작성중", "발행",
 )
 _MAX_LIST_PREVIEW = 30   # 답변에 나열할 값 상한
 _MAX_CITATIONS = 10      # 근거로 첨부할 보고서 상한
@@ -47,12 +56,26 @@ _EXTRACT_SYSTEM = (
     '형식: {"aggregate": true|false, "intent": "count"|"list", '
     '"target": "report" 또는 아래 타입 slug 중 하나, '
     '"filters": ["조건값", ...], "year": 정수 또는 null, '
-    '"group_by": null 또는 "year" 또는 축 slug}\n'
+    '"group_by": null 또는 "year" 또는 축 slug, '
+    '"date": {"last_days": 정수 또는 null, "period": null 또는 '
+    '"today"|"yesterday"|"this_week"|"this_month"|"this_year", '
+    '"from": "YYYY-MM-DD" 또는 null, "to": "YYYY-MM-DD" 또는 null}, '
+    '"report_type": 문자열 또는 null, "author": 문자열 또는 null, '
+    '"phase": null 또는 "drafting"|"reviewing"|"finalized", '
+    '"lifecycle": null 또는 "single_shot"|"ongoing"}\n'
     "- aggregate=false 면 나머지는 무시된다(단순 조회/설명 질문).\n"
+    "- '최근 보고서·지난주·이번 달 작성' 같은 날짜/작성자 조건의 나열도 aggregate=true, "
+    "intent='list' 로 본다.\n"
     "- target: 무엇을 세거나 나열하나. 보고서면 \"report\", 특정 축(과제·부품 등)의 "
     "값을 세면 그 축의 slug.\n"
-    "- filters: 조건이 되는 값들(예: 시험종류·결과·모델명). 질문에 나온 표현 그대로.\n"
-    "- year: 연도 조건(없으면 null).\n"
+    "- filters: 조건이 되는 값들(예: 시험종류·결과·모델명). 질문에 나온 표현 그대로. "
+    "**날짜·작성자·단계는 여기 넣지 말고 아래 전용 필드로.**\n"
+    "- year: 특정 연도 조건(없으면 null).\n"
+    "- date: 상대/명시 날짜 범위. '최근 일주일/7일'→last_days=7, '지난달'은 "
+    "period='this_month' 아님 주의(지난달은 from/to 로). 조건 없으면 모두 null.\n"
+    "- report_type: 보고서 종류(예: '주간보고','안전점검') 조건, 없으면 null.\n"
+    "- author: 작성자 사람 이름(예: '김철수','내가'→null 로 두지 말고 이름), 없으면 null.\n"
+    "- phase: 협업 단계(작성중=drafting/리뷰중=reviewing/발행완료=finalized), 없으면 null.\n"
     "- group_by: '연도별·부서별·종류별' 처럼 **쪼개서/비교해서** 세라면 그 기준"
     "('year' 또는 축 slug), 아니면 null.\n"
     "설명 없이 JSON 만 출력하라."
@@ -99,8 +122,93 @@ def _resolve_filters(db: Session, filters: list[str]) -> Optional[tuple[list[int
     return ids, labels
 
 
-def _base_reports(db: Session, actor, ent_ids: list[int], year) -> set[int]:
-    """가시성 ∩ 엔티티필터(rollup) ∩ 연도 = 집계 대상 보고서 id(소프트삭제 제외)."""
+def _iso_date(v):
+    """'YYYY-MM-DD' → date, 아니면 None(방어)."""
+    from datetime import date as _date
+
+    if not v or not isinstance(v, str):
+        return None
+    try:
+        return _date.fromisoformat(v.strip())
+    except ValueError:
+        return None
+
+
+def _resolve_report_type(db: Session, name: str) -> Optional[int]:
+    """종류 이름 → report_type_id. 완전일치 우선, 없으면 부분일치 1건."""
+    from app.modules.report_types.models import ReportType
+
+    n = name.strip()
+    if not n:
+        return None
+    row = db.execute(
+        select(ReportType.id).where(func.lower(ReportType.name) == n.lower())
+    ).scalars().first()
+    if row is None:
+        row = db.execute(
+            select(ReportType.id).where(ReportType.name.ilike(f"%{n}%")).limit(1)
+        ).scalars().first()
+    return row
+
+
+def _resolve_author(db: Session, name: str) -> Optional[int]:
+    """작성자 이름 → user id. 완전일치 우선, 없으면 부분일치 1건(활성 우선)."""
+    from app.modules.users.models import User
+
+    n = name.strip()
+    if not n:
+        return None
+    row = db.execute(
+        select(User.id).where(func.lower(User.name) == n.lower())
+        .order_by(User.is_active.desc())
+    ).scalars().first()
+    if row is None:
+        row = db.execute(
+            select(User.id).where(User.name.ilike(f"%{n}%"))
+            .order_by(User.is_active.desc()).limit(1)
+        ).scalars().first()
+    return row
+
+
+def _resolve_column_filters(db: Session, spec: dict) -> Optional[dict]:
+    """LLM spec 의 (B) 날짜·종류·작성자·단계·진행상태 → report_column_conditions
+    인자 dict. 아무 필터도 없으면 None. 종류/작성자는 이름→id 로 해석하고, 못 풀면
+    그 필터만 조용히 생략(전체로 새지 않게 나머지 조건은 유지)."""
+    cf: dict = {}
+    date = spec.get("date")
+    if isinstance(date, dict):
+        try:
+            last_days = int(date["last_days"]) if date.get("last_days") else None
+        except (ValueError, TypeError):
+            last_days = None
+        d_from, d_to = resolve_date_range(
+            date_from=_iso_date(date.get("from")), date_to=_iso_date(date.get("to")),
+            last_days=last_days, period=(date.get("period") or None),
+        )
+        if d_from is not None or d_to is not None:
+            cf["date_from"], cf["date_to"] = d_from, d_to
+    rt = spec.get("report_type")
+    if isinstance(rt, str) and rt.strip():
+        tid = _resolve_report_type(db, rt)
+        if tid is not None:
+            cf["report_type_ids"] = [tid]
+    au = spec.get("author")
+    if isinstance(au, str) and au.strip():
+        uid = _resolve_author(db, au)
+        if uid is not None:
+            cf["author_ids"] = [uid]
+    if spec.get("phase") in ("drafting", "reviewing", "finalized"):
+        cf["phases"] = [spec["phase"]]
+    if spec.get("lifecycle") in ("single_shot", "ongoing"):
+        cf["lifecycles"] = [spec["lifecycle"]]
+    return cf or None
+
+
+def _base_reports(
+    db: Session, actor, ent_ids: list[int], year, column_filters: Optional[dict] = None
+) -> set[int]:
+    """가시성 ∩ 엔티티필터(rollup) ∩ 연도 ∩ (B)컬럼필터 = 집계 대상 보고서 id
+    (소프트삭제 제외). column_filters=날짜/종류/작성자/단계 등(filtered_report_ids)."""
     scope = all_visible_report_ids(db, actor.user.id)
     base = set(scope) if scope is not None else None
     if ent_ids:
@@ -109,6 +217,10 @@ def _base_reports(db: Session, actor, ent_ids: list[int], year) -> set[int]:
     if year is not None:
         y = report_ids_in_year(db, int(year))
         base = y if base is None else (base & y)
+    if column_filters:
+        c = filtered_report_ids(db, **column_filters)
+        if c is not None:
+            base = c if base is None else (base & c)
     if base is None:  # 필터·연도·스코프가 모두 무제한인 경우는 여기 안 온다(스코프는 항상 있음)
         return set()
     if not base:
@@ -145,10 +257,12 @@ def _enabled() -> bool:
 
 
 def aggregate(
-    db: Session, actor, filters: list[str], year=None, target: str = "report"
+    db: Session, actor, filters: list[str], year=None, target: str = "report",
+    column_filters: Optional[dict] = None,
 ) -> Optional[dict]:
     """온톨로지 집계 코어(답변 조립·에이전트 도구 공유). filters(문자열)를 엔티티로
-    해석 → 가시성∩엔티티필터∩연도 = base 보고서 → target(보고서 또는 축) 개수/목록.
+    해석 → 가시성∩엔티티필터∩연도∩(B)컬럼필터 = base 보고서 → target(보고서 또는
+    축) 개수/목록. column_filters=날짜/종류/작성자/단계(filtered_report_ids 인자).
 
     반환 {count, unit, target_label, values(전체), report_ids(전체), filters(해석된 라벨),
     year}. 필터·타깃 해석 실패 시 None. 개수는 SQL 계산(환각 없음)·가시성 게이팅."""
@@ -160,7 +274,7 @@ def aggregate(
         year = int(year) if year is not None else None
     except (ValueError, TypeError):
         year = None
-    base = _base_reports(db, actor, ent_ids, year)
+    base = _base_reports(db, actor, ent_ids, year, column_filters)
 
     target_label, unit = "보고서", "건"
     if target and target != "report":
@@ -225,7 +339,8 @@ def _count_for(db: Session, report_ids, tt):
 
 
 def aggregate_grouped(
-    db: Session, actor, filters: list[str], year, target: str, group_by: str
+    db: Session, actor, filters: list[str], year, target: str, group_by: str,
+    column_filters: Optional[dict] = None,
 ) -> Optional[dict]:
     """차원(group_by='year' 또는 축 slug)으로 쪼갠 그룹별 집계(v2 group-by/compare).
     반환 {grouped, groups:[{label,count}], group_label, target_label, unit, ...}. 실패 시 None."""
@@ -237,7 +352,7 @@ def aggregate_grouped(
         year = int(year) if year is not None else None
     except (ValueError, TypeError):
         year = None
-    base = _base_reports(db, actor, ent_ids, year)
+    base = _base_reports(db, actor, ent_ids, year, column_filters)
     try:
         tt = _resolve_target(db, target)
     except ValueError:
@@ -307,10 +422,45 @@ def _citations(db: Session, report_ids: list[int]) -> list[dict]:
     return out
 
 
+_PHASE_KO = {"drafting": "작성중", "reviewing": "리뷰중", "finalized": "발행완료"}
+_LIFE_KO = {"single_shot": "단발", "ongoing": "진행중"}
+_PERIOD_KO = {
+    "today": "오늘", "yesterday": "어제", "this_week": "이번 주",
+    "this_month": "이번 달", "this_year": "올해",
+}
+
+
+def _column_cond_labels(spec: dict, cf: Optional[dict]) -> list[str]:
+    """(B) 컬럼 필터를 조건 설명 문자열로(투명성). 실제 적용된(cf 에 들어간) 것만."""
+    if not cf:
+        return []
+    labels: list[str] = []
+    date = spec.get("date") if isinstance(spec.get("date"), dict) else {}
+    if "date_from" in cf:
+        if date.get("last_days"):
+            labels.append(f"최근 {int(date['last_days'])}일")
+        elif date.get("period") in _PERIOD_KO:
+            labels.append(_PERIOD_KO[date["period"]])
+        else:
+            df, dt = cf.get("date_from"), cf.get("date_to")
+            labels.append(f"{df or '~'}~{dt or ''}".rstrip("~") or "날짜범위")
+    if cf.get("report_type_ids") and isinstance(spec.get("report_type"), str):
+        labels.append(f"종류:{spec['report_type'].strip()}")
+    if cf.get("author_ids") and isinstance(spec.get("author"), str):
+        labels.append(f"작성자:{spec['author'].strip()}")
+    for p in cf.get("phases", []):
+        labels.append(_PHASE_KO.get(p, p))
+    for lc in cf.get("lifecycles", []):
+        labels.append(_LIFE_KO.get(lc, lc))
+    return labels
+
+
 def _execute_grouped(db, actor, filters, spec, group_by) -> Optional[dict]:
     """group-by/compare(v2) — 차원별 그룹 집계 + 막대 렌더용 groups 반환."""
+    cf = _resolve_column_filters(db, spec)
     agg = aggregate_grouped(
-        db, actor, filters, spec.get("year"), spec.get("target") or "report", group_by
+        db, actor, filters, spec.get("year"), spec.get("target") or "report",
+        group_by, column_filters=cf,
     )
     if agg is None:
         return None
@@ -322,6 +472,7 @@ def _execute_grouped(db, actor, filters, spec, group_by) -> Optional[dict]:
     cond_parts = list(filter_labels)
     if year is not None:
         cond_parts.append(f"{year}년")
+    cond_parts.extend(_column_cond_labels(spec, cf))
     cond = " · ".join(cond_parts) if cond_parts else "전체"
 
     if not groups:
@@ -352,7 +503,11 @@ def _execute(db: Session, actor, q: str, spec: dict) -> Optional[dict]:
     group_by = (spec.get("group_by") or "").strip()
     if group_by:
         return _execute_grouped(db, actor, filters, spec, group_by)
-    agg = aggregate(db, actor, filters, spec.get("year"), spec.get("target") or "report")
+    cf = _resolve_column_filters(db, spec)
+    agg = aggregate(
+        db, actor, filters, spec.get("year"), spec.get("target") or "report",
+        column_filters=cf,
+    )
     if agg is None:
         return None  # 해석 실패 → RAG
 
@@ -365,10 +520,11 @@ def _execute(db: Session, actor, q: str, spec: dict) -> Optional[dict]:
     values, count = agg["values"], agg["count"]
     base = set(agg["report_ids"])
 
-    # 조건 설명(투명성) — 필터·연도.
+    # 조건 설명(투명성) — 엔티티필터·연도 + (B)날짜/종류/작성자/단계.
     cond_parts = list(filter_labels)
     if year is not None:
         cond_parts.append(f"{year}년")
+    cond_parts.extend(_column_cond_labels(spec, cf))
     cond = " · ".join(cond_parts) if cond_parts else "전체"
 
     preview = values[:_MAX_LIST_PREVIEW]

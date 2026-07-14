@@ -46,6 +46,18 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _parse_iso_date(d: str | None):
+    """'YYYY-MM-DD' → date, 빈 값이면 None, 잘못된 형식이면 400. 검색/관계도 공용."""
+    from datetime import date as _date
+
+    if not d:
+        return None
+    try:
+        return _date.fromisoformat(d)
+    except ValueError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid date: {d}")
+
+
 def _read_with_perms(db: Session, actor: CurrentUser, report) -> ReportRead:
     """Build a ReportRead and stamp the per-actor edit decision.
 
@@ -265,6 +277,42 @@ def search_reports(
         le=2200,
         description="자료 연도 — 보고서 작성연도(report_date) 필터. 미지정=전체",
     ),
+    date_from: str | None = Query(
+        default=None, description="날짜범위 시작(YYYY-MM-DD, 포함). date_field 기준"
+    ),
+    date_to: str | None = Query(
+        default=None, description="날짜범위 끝(YYYY-MM-DD, 포함)"
+    ),
+    date_field: str = Query(
+        default="report_date",
+        description="날짜 기준 필드: report_date(작성일자·기본)|created_at(등록시각)",
+    ),
+    last_days: int | None = Query(
+        default=None, ge=1, le=3650,
+        description="상대 날짜 — 최근 N일([오늘-(N-1), 오늘]). date_from/to 미지정 시만.",
+    ),
+    period: str | None = Query(
+        default=None,
+        description="상대 기간 — today|yesterday|this_week|this_month|this_year",
+    ),
+    report_type_ids: list[int] | None = Query(default=None),
+    author_ids: list[int] | None = Query(
+        default=None, description="작성자(owner) user id 필터(OR)"
+    ),
+    editor_ids: list[int] | None = Query(
+        default=None, description="최근 편집자(last_edited_by) user id 필터(OR)"
+    ),
+    phases: list[str] | None = Query(
+        default=None, description="협업 단계 drafting|reviewing|finalized (OR)"
+    ),
+    lifecycles: list[str] | None = Query(
+        default=None, description="진행 상태 single_shot|ongoing (OR)"
+    ),
+    tags: list[str] | None = Query(default=None, description="자유 태그(OR·배열 교집합)"),
+    sort: str = Query(
+        default="relevance",
+        description="정렬: relevance(기본)|recent(작성일 최신)|oldest(작성일 오래된)",
+    ),
     limit: int = Query(default=30, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -274,12 +322,26 @@ def search_reports(
     q 가 비면 가시 범위 전체를 최신순으로(브라우즈). location 으로 내공간/부서게시판,
     board(slug)로 특정 부서 게시판 필터(board 가 location 보다 우선). `entity_ids`(반복)
     로 엔티티 태그 필터를 결합 — "본문 'X' AND 모델=A1234"(D-2). 가시 범위(소유·공유·
-    게시) 안에서만 — 다른 부서도 권한 범위에서. 휴지통 제외, 검색 시 스니펫."""
+    게시) 안에서만 — 다른 부서도 권한 범위에서. 휴지통 제외, 검색 시 스니펫.
+
+    (B) 날짜범위(date_from/to 또는 last_days/period)·종류(report_type_ids)·작성자
+    (author_ids)·편집자(editor_ids)·단계(phases)·진행상태(lifecycles)·태그(tags) 필터."""
     if location not in ("all", "personal", "boards"):
         location = "all"
+    if date_field not in services.DATE_FIELDS:
+        date_field = "report_date"
+    d_from, d_to = services.resolve_date_range(
+        date_from=_parse_iso_date(date_from), date_to=_parse_iso_date(date_to),
+        last_days=last_days, period=period,
+    )
+    if sort not in ("relevance", "recent", "oldest"):
+        sort = "relevance"
     rows, total = services.search_reports(
         db, actor, q, limit=limit, offset=offset, location=location, board=board,
         entity_ids=entity_ids, entity_rollup=entity_rollup, year=year,
+        date_from=d_from, date_to=d_to, date_field=date_field,
+        report_type_ids=report_type_ids, author_ids=author_ids, editor_ids=editor_ids,
+        phases=phases, lifecycles=lifecycles, tags=tags, sort=sort,
     )
     needle = q.strip()
     results = [
@@ -306,6 +368,19 @@ def semantic_search_reports(
         default=None, ge=1900, le=2200,
         description="자료 연도 — 보고서 작성연도(report_date) 필터. 미지정=전체",
     ),
+    date_from: str | None = Query(default=None, description="날짜범위 시작(YYYY-MM-DD)"),
+    date_to: str | None = Query(default=None, description="날짜범위 끝(YYYY-MM-DD)"),
+    date_field: str = Query(
+        default="report_date", description="report_date|created_at"
+    ),
+    last_days: int | None = Query(default=None, ge=1, le=3650),
+    period: str | None = Query(default=None),
+    report_type_ids: list[int] | None = Query(default=None),
+    author_ids: list[int] | None = Query(default=None),
+    editor_ids: list[int] | None = Query(default=None),
+    phases: list[str] | None = Query(default=None),
+    lifecycles: list[str] | None = Query(default=None),
+    tags: list[str] | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=50),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
@@ -314,22 +389,37 @@ def semantic_search_reports(
 
     mode=semantic: 벡터 유사도만. mode=hybrid(기본): 벡터+키워드(pg_trgm)를 RRF 융합.
     `entity_ids`(반복)로 엔티티 태그 필터를 결합(D-2) — 의미 검색에도 "태그=모델 X"를
-    얹는다. 가시성은 키워드 검색과 동일 규칙(권한 밖 보고서 미노출). 결과 항목:
-    {report_id, title, snippet, score|rrf_score, block_id, page_idx, ...}.
+    얹는다. (B) 날짜범위·종류·작성자·편집자·단계·진행상태·태그 필터도 벡터 scope 에
+    교집합으로 얹는다. 가시성은 키워드 검색과 동일 규칙(권한 밖 보고서 미노출). 결과
+    항목: {report_id, title, snippet, score|rrf_score, block_id, page_idx, ...}.
     """
     # 지연 import — ai 패키지(pgvector)를 reports 라우터 import 시점에 끌지 않게.
     from app.ai import search as ai_search
 
+    if date_field not in services.DATE_FIELDS:
+        date_field = "report_date"
+    d_from, d_to = services.resolve_date_range(
+        date_from=_parse_iso_date(date_from), date_to=_parse_iso_date(date_to),
+        last_days=last_days, period=period,
+    )
+    column_filters = {
+        "date_from": d_from, "date_to": d_to, "date_field": date_field,
+        "report_type_ids": report_type_ids, "author_ids": author_ids,
+        "editor_ids": editor_ids, "phases": phases, "lifecycles": lifecycles,
+        "tags": tags,
+    }
     if mode == "semantic":
         results = ai_search.semantic_search(
             db, q, actor, limit=limit,
             entity_ids=entity_ids, entity_rollup=entity_rollup, year=year,
+            column_filters=column_filters,
         )
     else:
         mode = "hybrid"
         results = ai_search.hybrid_search(
             db, q, actor, limit=limit,
             entity_ids=entity_ids, entity_rollup=entity_rollup, year=year,
+            column_filters=column_filters,
         )
     return success_response(data={"results": results, "mode": mode, "limit": limit})
 

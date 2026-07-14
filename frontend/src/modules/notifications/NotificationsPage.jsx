@@ -60,6 +60,8 @@ const TYPE_META = {
   'composite.published': { icon: CircleCheck, color: 'text-blue-600', label: '종합 발행됨' },
   // Phase D 경보 — /admin/alerts?rule={ref_id} 로 이동.
   'alert.firing': { icon: Siren, color: 'text-red-600', label: '경보' },
+  // 저장검색 구독 — 구독한 필터에 새 보고서. /search 로 이동.
+  'saved_search.hit': { icon: Bell, color: 'text-teal-600', label: '저장검색' },
 }
 
 const TABS = [
@@ -356,6 +358,20 @@ function NotificationRow({ n, onClick, onDelete }) {
             {n.payload.report_title}
           </div>
         )}
+        {n.payload?.search_name && (
+          <div className="text-sm text-foreground">
+            <span className="truncate font-medium">{n.payload.search_name}</span>
+            <span className="text-muted-foreground">
+              {' '}
+              — 새 보고서 {n.payload.new_count}건
+            </span>
+            {Array.isArray(n.payload.titles) && n.payload.titles.length > 0 && (
+              <div className="mt-0.5 text-xs text-muted-foreground line-clamp-2">
+                {n.payload.titles.join(', ')}
+              </div>
+            )}
+          </div>
+        )}
         {n.payload?.excerpt && (
           <div className="text-xs text-muted-foreground italic line-clamp-2">
             "{n.payload.excerpt}"
@@ -409,6 +425,10 @@ function deepLinkFor(n) {
   // Phase D 경보 — 규칙별 경보 페이지로.
   if (n.ref_table === 'alert_rules' && n.ref_id) {
     return `/admin/alerts?rule=${n.ref_id}`
+  }
+  // 저장검색 구독 — 검색 페이지로(사용자가 저장검색을 다시 열어 확인).
+  if (n.ref_table === 'saved_searches') {
+    return `/w/${n.workspace_slug || 'personal'}/search`
   }
   return null
 }

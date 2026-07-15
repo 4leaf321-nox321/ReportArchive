@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import {
   AlertTriangle,
   ArrowRightLeft,
@@ -80,6 +87,7 @@ import {
   deleteEntityType,
   getEntityYears,
   listEntities,
+  searchEntities,
   listEntityAliases,
   listEntityRelations,
   listEntityTypes,
@@ -567,13 +575,13 @@ function NewAxisDialog({ existingSlugs, onClose, onCreated }) {
               onChange={(e) => setKindClass(e.target.value)}
               className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
             >
-              <option value="reference">어휘(reference) — 단순 태그·선택지</option>
-              <option value="record">레코드(record) — 속성 갖는 객체(과제·공급사 등)</option>
+              <option value="reference">기준정보 — 정해진 틀의 통제 목록·분류</option>
+              <option value="record">레코드 — 케이스·인스턴스를 계속 추가(시험실행·실패사례·과제 등)</option>
             </select>
             <p className="mt-1 text-[11px] text-muted-foreground">
               {kindClass === 'record'
-                ? '값마다 속성을 정의하고 객체 프로필로 볼 수 있습니다. 「속성 정의」에서 스키마를 정하세요.'
-                : '보고서에 붙이는 이름표 수준의 통제어휘입니다.'}
+                ? '케이스·인스턴스를 계속 추가하는 객체입니다(시험실행·실패사례 등). 값마다 속성·프로필을 가지며, 위젯·커넥터로 채울 수 있습니다.'
+                : '정해진 틀의 통제 목록입니다 — 단계·종류처럼 정리된 선택지로 씁니다.'}
             </p>
           </div>
         </div>
@@ -748,6 +756,7 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
             {
               key: '_properties',
               header: '속성',
+              headerClassName: 'w-[150px]',
               render: (r) => (
                 <PropertiesSummary defs={propertyDefs} properties={r.properties} />
               ),
@@ -757,119 +766,79 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
       {
         key: '_actions',
         header: '',
-        headerClassName: 'w-[264px]',
-        render: (r) => (
-          <div className="flex items-center justify-end gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0"
-              title="편집"
-              onClick={(e) => {
-                e.stopPropagation()
-                setEditTarget(r)
-              }}
-            >
-              <Pencil className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0"
-              title={r.status === 'active' ? '비활성화' : '복원'}
-              onClick={async (e) => {
-                e.stopPropagation()
-                try {
-                  await updateEntity(r.id, {
-                    status: r.status === 'active' ? 'deprecated' : 'active',
-                  })
-                  toast.success(
-                    r.status === 'active'
-                      ? `'${r.value}' 비활성화됨`
-                      : `'${r.value}' 복원됨`,
-                  )
-                  reload()
-                } catch (err) {
-                  toast.error(err.message || '상태 변경 실패')
-                }
-              }}
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0"
-              title="별칭(다른 표기) 관리 — 등록한 표기는 입력 시 이 값으로 자동 흡수"
-              onClick={(e) => {
-                e.stopPropagation()
-                setAliasTarget(r)
-              }}
-            >
-              <Tags className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0"
-              title="관계/계층 관리 — 상위(part_of) 연결. 캐스케이드 picker·롤업에 사용"
-              onClick={(e) => {
-                e.stopPropagation()
-                setRelTarget(r)
-              }}
-            >
-              <Network className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0"
-              title="관계도 보기 — 이 값 주변 그래프"
-              onClick={(e) => {
-                e.stopPropagation()
-                setGraphTarget(r)
-              }}
-            >
-              <Share2 className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0"
-              title="다른 값으로 머지"
-              onClick={(e) => {
-                e.stopPropagation()
-                setMergeTarget(r)
-              }}
-            >
-              <Combine className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0"
-              title="태깅 이동 — 이 값이 걸린 보고서(일부/전체)를 다른 값으로 옮김(원본 유지)"
-              onClick={(e) => {
-                e.stopPropagation()
-                setMoveTarget(r)
-              }}
-            >
-              <ArrowRightLeft className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0 text-destructive hover:text-destructive"
-              title="삭제 (사용 중이면 차단)"
-              onClick={(e) => {
-                e.stopPropagation()
-                setDeleteTarget(r)
-              }}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        ),
+        headerClassName: 'w-[560px]',
+        render: (r) => {
+          const btn = 'h-7 gap-1 px-2 text-xs whitespace-nowrap'
+          const stop = (fn) => (e) => {
+            e.stopPropagation()
+            fn()
+          }
+          return (
+            <div className="flex flex-wrap items-center justify-end gap-1">
+              <Button variant="ghost" size="sm" className={btn} onClick={stop(() => setEditTarget(r))}>
+                <Pencil className="h-3.5 w-3.5" /> 편집
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={btn}
+                onClick={stop(async () => {
+                  try {
+                    await updateEntity(r.id, {
+                      status: r.status === 'active' ? 'deprecated' : 'active',
+                    })
+                    toast.success(
+                      r.status === 'active'
+                        ? `'${r.value}' 비활성화됨`
+                        : `'${r.value}' 복원됨`,
+                    )
+                    reload()
+                  } catch (err) {
+                    toast.error(err.message || '상태 변경 실패')
+                  }
+                })}
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                {r.status === 'active' ? '비활성화' : '복원'}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={btn}
+                title="다른 표기(별칭) 관리 — 입력 시 이 값으로 자동 흡수"
+                onClick={stop(() => setAliasTarget(r))}
+              >
+                <Tags className="h-3.5 w-3.5" /> 별칭
+              </Button>
+              <Button variant="ghost" size="sm" className={btn} onClick={stop(() => setRelTarget(r))}>
+                <Network className="h-3.5 w-3.5" /> 관계
+              </Button>
+              <Button variant="ghost" size="sm" className={btn} onClick={stop(() => setGraphTarget(r))}>
+                <Share2 className="h-3.5 w-3.5" /> 관계도
+              </Button>
+              <Button variant="ghost" size="sm" className={btn} onClick={stop(() => setMergeTarget(r))}>
+                <Combine className="h-3.5 w-3.5" /> 머지
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={btn}
+                title="이 값이 걸린 보고서(일부/전체)를 다른 값으로 옮김(원본 유지)"
+                onClick={stop(() => setMoveTarget(r))}
+              >
+                <ArrowRightLeft className="h-3.5 w-3.5" /> 태깅이동
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn(btn, 'text-destructive hover:text-destructive')}
+                onClick={stop(() => setDeleteTarget(r))}
+              >
+                <Trash2 className="h-3.5 w-3.5" /> 삭제
+              </Button>
+            </div>
+          )
+        },
       },
     ],
     [propertyDefs],
@@ -976,7 +945,7 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
           <>
             <span className="text-muted-foreground/50">·</span>
             <Badge variant="secondary" className="text-[10px]">
-              {type.kind_class === 'record' ? '레코드 객체' : '시스템'}
+              {type.kind_class === 'record' ? '레코드' : '시스템'}
             </Badge>
           </>
         )}
@@ -1094,6 +1063,7 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
           mode="create"
           type={type}
           defs={propertyDefs}
+          allTypes={allTypes}
           onClose={() => setCreateOpen(false)}
           onSaved={() => {
             setCreateOpen(false)
@@ -1107,6 +1077,7 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
           type={type}
           defs={propertyDefs}
           target={editTarget}
+          allTypes={allTypes}
           onClose={() => setEditTarget(null)}
           onSaved={() => {
             setEditTarget(null)
@@ -1839,15 +1810,15 @@ function AxisGovernanceDialog({ type, onClose, onSaved }) {
               onChange={(e) => setKindClass(e.target.value)}
               className="h-8 w-full rounded-md border bg-background px-2 text-sm"
             >
-              <option value="reference">어휘(reference) — 단순 태그·선택지</option>
-              <option value="record">레코드(record) — 속성 갖는 객체</option>
-              <option value="system">시스템(system) — 원 테이블 투영(고급)</option>
+              <option value="reference">기준정보 — 정해진 틀의 통제 목록·분류</option>
+              <option value="record">레코드 — 케이스·인스턴스를 계속 추가</option>
+              <option value="system">시스템 — 원 테이블 투영(고급)</option>
             </select>
             <p className="text-[11px] text-muted-foreground">
               {kindClass === 'reference' &&
-                '보고서에 붙이는 이름표 수준의 통제어휘입니다.'}
+                '정해진 틀의 통제 목록입니다 — 단계·종류처럼 정리된 선택지로 씁니다.'}
               {kindClass === 'record' &&
-                '값마다 속성을 정의하고 객체 프로필로 봅니다(과제·공급사·시험 등). 「속성 정의」에서 스키마를 정하세요.'}
+                '케이스·인스턴스를 계속 추가하는 객체입니다(시험실행·실패사례·과제 등). 값마다 속성·프로필을 가지며, 위젯·커넥터로 채울 수 있습니다.'}
               {kindClass === 'system' &&
                 '보고서·사용자·부서 같은 원 테이블을 투영하는 축(A0.3 스텝2~). 값은 여기서 만들지 않습니다.'}
             </p>
@@ -2014,21 +1985,23 @@ function RelationsDialog({ type, entity, onClose }) {
   const [orgWorkspaces, setOrgWorkspaces] = useState([])
   const [userOptions, setUserOptions] = useState([]) // led_by 등 user 대상 picker
   const [objectLinks, setObjectLinks] = useState([])
+  const [allAxes, setAllAxes] = useState([]) // 대상 축 slug→id 해소용(전체 목록 picker)
+  const [pickerOpen, setPickerOpen] = useState(false)
 
   useEffect(() => {
     listRelationTypes()
       .then((res) => setRelTypes(res?.items ?? []))
       .catch(() => setRelTypes([]))
     listEntityTypes({ includeSystem: true })
-      .then((res) =>
+      .then((res) => {
+        const list = res?.items ?? []
+        setAllAxes(list)
         setSysAxes(
           new Set(
-            (res?.items ?? [])
-              .filter((t) => t.kind_class === 'system')
-              .map((t) => t.slug),
+            list.filter((t) => t.kind_class === 'system').map((t) => t.slug),
           ),
-        ),
-      )
+        )
+      })
       .catch(() => {})
     listWorkspaces()
       .then((res) =>
@@ -2101,6 +2074,22 @@ function RelationsDialog({ type, entity, onClose }) {
     const dsts = selectedRelType?.dst_axis_slugs ?? []
     return dsts.find((s) => sysAxes.has(s)) ?? null
   }, [selectedRelType, sysAxes])
+  // 전체 목록 picker 용 — 도착 축이 단일이면 그 축 id, 아니면 null(전체 검색+필터).
+  const dstTypeId = useMemo(() => {
+    const dsts = selectedRelType?.dst_axis_slugs ?? null
+    if (!dsts || dsts.length !== 1) return null
+    return allAxes.find((t) => t.slug === dsts[0])?.id ?? null
+  }, [selectedRelType, allAxes])
+  // 이미 이 관계로 연결된 대상 + 자기 자신은 picker 에서 제외.
+  const pickerExclude = useMemo(() => {
+    const s = new Set(
+      (rel?.parents ?? [])
+        .filter((p) => p.relation === selectedRel)
+        .map((p) => p.entity_id),
+    )
+    s.add(entity.id)
+    return s
+  }, [rel, selectedRel, entity.id])
 
   async function reload() {
     try {
@@ -2209,6 +2198,23 @@ function RelationsDialog({ type, entity, onClose }) {
     }
   }
 
+  // 전체 목록 picker 에서 고른 여러 대상을 한꺼번에 연결.
+  async function addManyTargets(entities) {
+    setSubmitting(true)
+    try {
+      for (const e of entities ?? []) {
+        try {
+          await addEntityRelation(entity.id, e.id, selectedRel)
+        } catch {
+          /* 개별 실패 무시 — 나머지는 계속 */
+        }
+      }
+      await reload()
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-md">
@@ -2287,19 +2293,31 @@ function RelationsDialog({ type, entity, onClose }) {
                 이 관계의 대상({dstSysType})은 아직 이 화면에서 지정할 수 없습니다.
               </p>
             ) : (
-              <div className="relative flex-1">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder={
-                    selectedRelType?.dst_axis_slugs?.length
-                      ? `대상 검색 (${selectedRelType.dst_axis_slugs.join('·')})…`
-                      : '대상 값 검색 (전체 축)…'
-                  }
-                  className="h-8 pl-7 text-sm"
-                />
-              </div>
+              <>
+                <div className="relative flex-1">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder={
+                      selectedRelType?.dst_axis_slugs?.length
+                        ? `대상 검색 (${selectedRelType.dst_axis_slugs.join('·')})…`
+                        : '대상 값 검색 (전체 축)…'
+                    }
+                    className="h-8 pl-7 text-sm"
+                  />
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 shrink-0 text-xs"
+                  onClick={() => setPickerOpen(true)}
+                  title="전체 목록에서 여러 개 골라 추가"
+                >
+                  전체 목록
+                </Button>
+              </>
             )}
           </div>
           {!dstSysType && query.trim() && (
@@ -2406,6 +2424,15 @@ function RelationsDialog({ type, entity, onClose }) {
             닫기
           </Button>
         </DialogFooter>
+        {pickerOpen && (
+          <RelationTargetPickerDialog
+            dstTypeId={dstTypeId}
+            dstAxes={selectedRelType?.dst_axis_slugs ?? null}
+            excludeIds={pickerExclude}
+            onClose={() => setPickerOpen(false)}
+            onAdd={addManyTargets}
+          />
+        )}
       </DialogContent>
     </Dialog>
   )
@@ -2664,10 +2691,476 @@ function EvidenceReportPicker({ reportId, title, onPick }) {
  * (value/code/description) and the only differences are the title and
  * the submit handler. `mode="create"` ignores `target`.
  */
-function EditDialog({ mode, type, defs = [], target, onClose, onSaved }) {
+/**
+ * 관계 대상 선택 모달 — 대량 대응. 서버 검색+페이지네이션(searchEntities, total
+ * 반환)으로 수천 건도 100개씩 "더 보기"로 로드하고, 체크박스로 여러 개를 골라 한꺼번에
+ * 추가한다. 이미 담긴/자기 자신은 "추가됨"으로 비활성. 인라인 편집기의 "전체 목록"에서 연다.
+ */
+function RelationTargetPickerDialog({
+  dstTypeId,
+  dstAxes,
+  excludeIds,
+  onClose,
+  onAdd,
+}) {
+  const PAGE = 100
+  const [query, setQuery] = useState('')
+  const [items, setItems] = useState([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [selected, setSelected] = useState(() => new Map()) // id → entity
+  const offsetRef = useRef(0)
+
+  async function load(reset) {
+    setLoading(true)
+    const off = reset ? 0 : offsetRef.current
+    try {
+      const filters = {
+        q: query.trim() || undefined,
+        limit: PAGE,
+        offset: off,
+        include_deprecated: false,
+      }
+      if (dstTypeId) filters.type_id = dstTypeId
+      const res = await searchEntities(filters)
+      let list = res?.items ?? []
+      if (!dstTypeId && dstAxes) list = list.filter((e) => dstAxes.includes(e.type_slug))
+      setItems((prev) => (reset ? list : [...prev, ...list]))
+      setTotal(res?.total ?? 0)
+      offsetRef.current = off + PAGE
+    } catch {
+      if (reset) setItems([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    const t = setTimeout(() => load(true), query ? 250 : 0)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query])
+
+  function toggle(e) {
+    setSelected((prev) => {
+      const next = new Map(prev)
+      if (next.has(e.id)) next.delete(e.id)
+      else next.set(e.id, e)
+      return next
+    })
+  }
+  const hasMore = items.length < total
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="flex max-h-[80vh] w-[36rem] max-w-[36rem] flex-col overflow-hidden">
+        <DialogHeader>
+          <DialogTitle>대상 선택</DialogTitle>
+          <DialogDescription className="text-xs">
+            검색으로 좁히고 여러 개를 체크해 한꺼번에 추가할 수 있습니다.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="대상 검색…"
+            className="h-9 pl-7"
+            autoFocus
+          />
+        </div>
+        <div className="text-[11px] text-muted-foreground">
+          총 {total.toLocaleString()}건
+          {selected.size > 0 ? ` · 선택 ${selected.size}` : ''}
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto rounded-md border">
+          {items.length === 0 && !loading ? (
+            <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+              결과 없음
+            </p>
+          ) : (
+            items.map((e) => {
+              const excluded = excludeIds?.has(e.id)
+              return (
+                <label
+                  key={e.id}
+                  className={cn(
+                    'flex items-center gap-2 border-b px-2.5 py-1.5 text-sm last:border-b-0',
+                    excluded ? 'opacity-40' : 'cursor-pointer hover:bg-accent',
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    disabled={excluded}
+                    checked={selected.has(e.id)}
+                    onChange={() => toggle(e)}
+                    className="h-3.5 w-3.5"
+                  />
+                  <span className="flex-1 truncate">{e.value}</span>
+                  {excluded && (
+                    <span className="text-[10px] text-muted-foreground">추가됨</span>
+                  )}
+                  <Badge variant="outline" className="shrink-0 text-[9px]">
+                    {e.type_slug}
+                  </Badge>
+                </label>
+              )
+            })
+          )}
+          {hasMore && (
+            <button
+              type="button"
+              onClick={() => load(false)}
+              disabled={loading}
+              className="w-full py-2 text-center text-xs text-primary hover:bg-accent"
+            >
+              {loading ? '불러오는 중…' : `더 보기 (${items.length}/${total.toLocaleString()})`}
+            </button>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            취소
+          </Button>
+          <Button
+            size="sm"
+            disabled={selected.size === 0}
+            onClick={() => {
+              onAdd([...selected.values()])
+              onClose()
+            }}
+          >
+            선택 {selected.size}개 추가
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/**
+ * 인라인 관계 편집기 — 엔티티 추가/편집 폼 안에서 "나가는 관계(이 값 → 대상)"를
+ * 속성처럼 바로 편집한다. 변경은 로컬에 담아뒀다가 저장 시 반영: 부모(EditDialog)가
+ * ref.apply(entityId) 를 저장 직후 호출하면, 편집 모드는 추가/삭제 diff 를, 생성
+ * 모드는 담아둔 것 전부를 서버에 적용한다. 엔티티↔엔티티 관계만 다루며(주 사용),
+ * 링크 속성·조직(system) 링크 같은 고급은 목록의 관계도 아이콘(전체 편집기)에 남긴다.
+ */
+const InlineRelationsField = forwardRef(function InlineRelationsField(
+  { applicableRels, axisLabel, allTypes = [], initialEntityId },
+  ref,
+) {
+  // items: { key, relation, targetId, targetValue, targetSlug, relationId? }
+  //   relationId 있으면 서버에 이미 있는 것(편집 모드 로드분), 없으면 새로 추가분.
+  const [items, setItems] = useState([])
+  const [initialIds, setInitialIds] = useState(() => new Set())
+  const [selRel, setSelRel] = useState('')
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState([])
+  const [searching, setSearching] = useState(false)
+
+  useEffect(() => {
+    if (!selRel && applicableRels.length) setSelRel(applicableRels[0].slug)
+  }, [applicableRels, selRel])
+
+  // 편집 모드 — 기존 나가는 관계 로드.
+  useEffect(() => {
+    if (!initialEntityId) return undefined
+    let cancelled = false
+    listEntityRelations(initialEntityId)
+      .then((res) => {
+        if (cancelled) return
+        const outgoing = (res?.parents ?? []).map((r) => ({
+          key: `db:${r.relation_id}`,
+          relation: r.relation,
+          targetId: r.entity_id,
+          targetValue: r.value,
+          targetSlug: r.type_slug,
+          relationId: r.relation_id,
+        }))
+        setItems(outgoing)
+        setInitialIds(new Set(outgoing.map((o) => o.relationId)))
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [initialEntityId])
+
+  const selRelType = applicableRels.find((r) => r.slug === selRel) ?? null
+  const dstAxes = selRelType?.dst_axis_slugs ?? null
+  // 도착 축이 단일로 제약되면 그 축 id 로 목록을 바로 부른다(검색 없이 브라우즈).
+  const dstTypeId = useMemo(() => {
+    if (!dstAxes || dstAxes.length !== 1) return null
+    return (allTypes ?? []).find((t) => t.slug === dstAxes[0])?.id ?? null
+  }, [dstAxes, allTypes])
+
+  // 대상 후보 로드 — 검색어가 있으면 검색, 없으면 목록(브라우즈)을 보여준다.
+  // 도착 축 제약이 있으면 그 축으로 좁히고, 이미 담은 대상·자기 자신은 뺀다.
+  useEffect(() => {
+    let cancelled = false
+    setSearching(true)
+    const q = query.trim()
+    const t = setTimeout(
+      async () => {
+        try {
+          const params = { limit: 50 }
+          if (q) params.q = q
+          if (dstTypeId) params.typeId = dstTypeId
+          const res = await listEntities(params)
+          if (cancelled) return
+          const taken = new Set(
+            items.filter((it) => it.relation === selRel).map((it) => it.targetId),
+          )
+          setResults(
+            (res?.items ?? []).filter(
+              (e) =>
+                e.id !== initialEntityId &&
+                !taken.has(e.id) &&
+                (!dstAxes || dstAxes.includes(e.type_slug)),
+            ),
+          )
+        } catch {
+          if (!cancelled) setResults([])
+        } finally {
+          if (!cancelled) setSearching(false)
+        }
+      },
+      q ? 250 : 0,
+    )
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
+  }, [query, selRel, dstAxes, dstTypeId, items, initialEntityId])
+
+  const [pickerOpen, setPickerOpen] = useState(false)
+
+  function addTarget(e) {
+    setItems((prev) => [
+      ...prev,
+      {
+        key: `new:${selRel}:${e.id}`,
+        relation: selRel,
+        targetId: e.id,
+        targetValue: e.value,
+        targetSlug: e.type_slug,
+      },
+    ])
+    setQuery('')
+    setResults([])
+  }
+  // 전체 목록 picker 에서 여러 개 한꺼번에. 이미 담긴/자기 자신은 건너뛴다.
+  function addMany(entities) {
+    setItems((prev) => {
+      const taken = new Set(
+        prev.filter((it) => it.relation === selRel).map((it) => it.targetId),
+      )
+      const add = (entities ?? [])
+        .filter((e) => !taken.has(e.id) && e.id !== initialEntityId)
+        .map((e) => ({
+          key: `new:${selRel}:${e.id}`,
+          relation: selRel,
+          targetId: e.id,
+          targetValue: e.value,
+          targetSlug: e.type_slug,
+        }))
+      return [...prev, ...add]
+    })
+  }
+  function removeItem(key) {
+    setItems((prev) => prev.filter((it) => it.key !== key))
+  }
+  // picker 에서 제외할 대상 — 이 관계로 이미 담은 것 + 자기 자신.
+  const excludeIds = useMemo(() => {
+    const s = new Set(
+      items.filter((it) => it.relation === selRel).map((it) => it.targetId),
+    )
+    if (initialEntityId) s.add(initialEntityId)
+    return s
+  }, [items, selRel, initialEntityId])
+
+  useImperativeHandle(ref, () => ({
+    async apply(entityId) {
+      const keptIds = new Set(items.filter((it) => it.relationId).map((it) => it.relationId))
+      const toDelete = [...initialIds].filter((id) => !keptIds.has(id))
+      const toAdd = items.filter((it) => !it.relationId)
+      for (const rid of toDelete) {
+        try {
+          await deleteEntityRelation(entityId, rid)
+        } catch {
+          /* 개별 실패는 무시(폼 저장 자체는 이미 성공) */
+        }
+      }
+      for (const it of toAdd) {
+        try {
+          await addEntityRelation(entityId, it.targetId, it.relation)
+        } catch {
+          /* 무시 */
+        }
+      }
+    },
+  }))
+
+  if (!applicableRels.length) return null
+
+  return (
+    <div className="space-y-1.5 rounded-md border bg-muted/20 p-2">
+      <Label className="text-xs">관계 (이 값 → 대상)</Label>
+      {/* 추가 — 관계 종류 + 대상 검색 */}
+      <div className="flex items-center gap-1.5">
+        <select
+          value={selRel}
+          onChange={(e) => {
+            setSelRel(e.target.value)
+            setResults([])
+          }}
+          className="h-8 shrink-0 rounded-md border bg-background px-2 text-xs"
+          title="관계 종류"
+        >
+          {applicableRels.map((rt) => (
+            <option key={rt.slug} value={rt.slug}>{rt.label}</option>
+          ))}
+        </select>
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={
+              dstAxes?.length
+                ? `대상 검색 (${dstAxes.map(axisLabel).join('·')})…`
+                : '대상 값 검색…'
+            }
+            className="h-8 pl-7 text-xs"
+          />
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-8 shrink-0 text-xs"
+          onClick={() => setPickerOpen(true)}
+          title="전체 목록에서 여러 개 골라 추가"
+        >
+          전체 목록
+        </Button>
+      </div>
+      {/* 대상 후보 — 검색어 없으면 목록(브라우즈), 있으면 좁힌 결과. 클릭해 추가. */}
+      <div className="max-h-36 overflow-y-auto rounded-md border">
+        {searching ? (
+          <p className="px-3 py-2 text-center text-xs text-muted-foreground">불러오는 중…</p>
+        ) : results.length === 0 ? (
+          <p className="px-3 py-2 text-center text-xs text-muted-foreground">
+            {query.trim() ? '결과 없음' : '대상이 없습니다'}
+          </p>
+        ) : (
+          <>
+            {!query.trim() && (
+              <p className="border-b bg-muted/30 px-2.5 py-1 text-[10px] text-muted-foreground">
+                대상 목록 (검색으로 좁히기, 최대 50)
+              </p>
+            )}
+            {results.map((e) => (
+              <button
+                key={e.id}
+                type="button"
+                onClick={() => addTarget(e)}
+                className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-accent"
+              >
+                <span className="truncate">{e.value}</span>
+                <Badge variant="outline" className="shrink-0 text-[9px]">
+                  {e.type_slug}
+                </Badge>
+              </button>
+            ))}
+          </>
+        )}
+      </div>
+      {/* 현재 담긴 관계 */}
+      {items.length === 0 ? (
+        <p className="px-1 py-1 text-[11px] text-muted-foreground">
+          아직 연결된 관계가 없습니다. 위에서 종류를 고르고 대상을 검색해 추가하세요.
+        </p>
+      ) : (
+        <div className="max-h-40 overflow-y-auto rounded-md border">
+          {items.map((it) => (
+            <div
+              key={it.key}
+              className="flex items-center justify-between gap-2 border-b px-2.5 py-1.5 text-xs last:border-b-0"
+            >
+              <span className="flex items-center gap-1.5 truncate">
+                <Badge className="shrink-0 text-[9px]">
+                  {applicableRels.find((r) => r.slug === it.relation)?.label ?? it.relation}
+                </Badge>
+                <span className="truncate">{it.targetValue}</span>
+                <Badge variant="outline" className="shrink-0 text-[9px]">
+                  {it.targetSlug}
+                </Badge>
+              </span>
+              <button
+                type="button"
+                onClick={() => removeItem(it.key)}
+                className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                title="제거"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="text-[10px] text-muted-foreground">
+        링크 속성·조직 링크 등 고급은 목록의 관계도 아이콘에서 편집합니다.
+      </p>
+      {pickerOpen && (
+        <RelationTargetPickerDialog
+          dstTypeId={dstTypeId}
+          dstAxes={dstAxes}
+          excludeIds={excludeIds}
+          onClose={() => setPickerOpen(false)}
+          onAdd={addMany}
+        />
+      )}
+    </div>
+  )
+})
+
+function EditDialog({
+  mode,
+  type,
+  defs = [],
+  target,
+  allTypes = [],
+  onClose,
+  onSaved,
+}) {
   const isCreate = mode === 'create'
   const isLifecycle = type.temporal_kind === 'lifecycle'
   const isYearly = type.temporal_kind === 'yearly'
+  // 이 축에서 출발 가능한 관계 종류(발견성) — src 축 제약이 없거나 이 축을 포함.
+  const [relTypes, setRelTypes] = useState([])
+  useEffect(() => {
+    listRelationTypes()
+      .then((res) => setRelTypes(res?.items ?? []))
+      .catch(() => {})
+  }, [])
+  const axisLabel = useMemo(() => {
+    const m = new Map((allTypes ?? []).map((t) => [t.slug, t.label]))
+    return (slug) => m.get(slug) ?? slug
+  }, [allTypes])
+  const applicableRels = useMemo(
+    () =>
+      relTypes.filter(
+        (rt) =>
+          !rt.src_axis_slugs ||
+          rt.src_axis_slugs.length === 0 ||
+          rt.src_axis_slugs.includes(type.slug),
+      ),
+    [relTypes, type.slug],
+  )
+  // 인라인 관계 편집기 핸들 — 저장 직후 apply(entityId) 로 관계를 서버에 반영.
+  const relRef = useRef(null)
   const [value, setValue] = useState(target?.value ?? '')
   const [code, setCode] = useState(target?.code ?? '')
   const [description, setDescription] = useState(target?.description ?? '')
@@ -2742,7 +3235,11 @@ function EditDialog({ mode, type, defs = [], target, onClose, onSaved }) {
           })
         }
         if (isYearly) await setEntityYears(created.id, parsedYears)
+        // 인라인으로 담아둔 관계를 새 엔티티에 적용.
+        await relRef.current?.apply(created.id)
         toast.success(`'${trimmedValue}' 추가됨`)
+        onSaved(created)
+        return
       } else {
         await updateEntity(target.id, {
           value: trimmedValue,
@@ -2757,9 +3254,11 @@ function EditDialog({ mode, type, defs = [], target, onClose, onSaved }) {
             : {}),
         })
         if (isYearly) await setEntityYears(target.id, parsedYears)
+        // 인라인 관계 변경(추가/삭제)을 diff 로 반영.
+        await relRef.current?.apply(target.id)
         toast.success(`'${trimmedValue}' 수정됨`)
       }
-      onSaved()
+      onSaved(target)
     } catch (err) {
       toast.error(err.message || '저장 실패')
     } finally {
@@ -2857,6 +3356,16 @@ function EditDialog({ mode, type, defs = [], target, onClose, onSaved }) {
           </div>
         </div>
       )}
+
+      {/* 관계 — 속성처럼 폼 안에서 바로 편집. 변경은 저장 시 반영(생성=저장 후
+          적용, 편집=diff). 정의된 관계가 없으면 렌더 안 함. */}
+      <InlineRelationsField
+        ref={relRef}
+        applicableRels={applicableRels}
+        axisLabel={axisLabel}
+        allTypes={allTypes}
+        initialEntityId={isCreate ? null : target?.id}
+      />
     </div>
   )
 

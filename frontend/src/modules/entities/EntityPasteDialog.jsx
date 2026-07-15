@@ -133,6 +133,23 @@ export function EntityPasteDialog({ open, onOpenChange, types, fixedType, onImpo
   const relLabel = (slug) =>
     relTypes.find((t) => t.slug === slug)?.label ?? slug
 
+  // 지금 가져오는 축(=관계의 출발) slug. 관계열 후보를 이 축→대상 축으로 좁힌다.
+  const sourceSlug = useMemo(
+    () => recordTypes.find((t) => String(t.id) === String(typeId))?.slug ?? '',
+    [recordTypes, typeId],
+  )
+  // 관계 종류가 (출발축→도착축)에 허용되나. axis 제약(null/빈)=제한 없음.
+  const axisOk = (arr, slug) =>
+    !arr || arr.length === 0 || (!!slug && arr.includes(slug))
+  const relsForTarget = (targetSlug) =>
+    targetSlug
+      ? relTypes.filter(
+          (rt) =>
+            axisOk(rt.src_axis_slugs, sourceSlug) &&
+            axisOk(rt.dst_axis_slugs, targetSlug),
+        )
+      : []
+
   // 완성된 관계열만 그리드 열로. 열 순서 = 이름 + 속성 + 관계.
   const completeRels = relCols.filter((r) => r.relation && r.target_type)
   const colDefs = useMemo(() => {
@@ -311,42 +328,68 @@ export function EntityPasteDialog({ open, onOpenChange, types, fixedType, onImpo
           {/* 관계열 설정 */}
           {relCols.length > 0 && (
             <div className="space-y-1.5 rounded-md border p-2">
-              {relCols.map((rc, i) => (
-                <div key={i} className="flex flex-wrap items-center gap-1.5 text-xs">
-                  <span className="text-muted-foreground">관계열</span>
-                  <select
-                    value={rc.relation}
-                    onChange={(e) =>
-                      setRelCols((r) => r.map((x, j) => j === i ? { ...x, relation: e.target.value } : x))
-                    }
-                    className={SELECT_CLS}
-                  >
-                    <option value="">관계…</option>
-                    {relTypes.map((t) => (
-                      <option key={t.slug} value={t.slug}>{t.label}</option>
-                    ))}
-                  </select>
-                  <select
-                    value={rc.target_type}
-                    onChange={(e) =>
-                      setRelCols((r) => r.map((x, j) => j === i ? { ...x, target_type: e.target.value } : x))
-                    }
-                    className={SELECT_CLS}
-                  >
-                    <option value="">대상 종류…</option>
-                    {recordTypes.map((t) => (
-                      <option key={t.id} value={t.slug}>{t.label}</option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => setRelCols((r) => r.filter((_, j) => j !== i))}
-                    className="text-muted-foreground hover:text-destructive"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))}
+              {relCols.map((rc, i) => {
+                const relOpts = relsForTarget(rc.target_type)
+                return (
+                  <div key={i} className="flex flex-wrap items-center gap-1.5 text-xs">
+                    <span className="text-muted-foreground">관계열</span>
+                    {/* 대상 종류 먼저 → 그 축으로 가능한 관계만 아래에서 필터 */}
+                    <select
+                      value={rc.target_type}
+                      onChange={(e) => {
+                        const target = e.target.value
+                        setRelCols((r) =>
+                          r.map((x, j) => {
+                            if (j !== i) return x
+                            // 대상이 바뀌면 현재 관계가 여전히 유효한지 확인, 아니면 비움.
+                            const stillOk = relsForTarget(target).some(
+                              (rt) => rt.slug === x.relation,
+                            )
+                            return {
+                              target_type: target,
+                              relation: stillOk ? x.relation : '',
+                            }
+                          }),
+                        )
+                      }}
+                      className={SELECT_CLS}
+                    >
+                      <option value="">대상 종류…</option>
+                      {recordTypes.map((t) => (
+                        <option key={t.id} value={t.slug}>{t.label}</option>
+                      ))}
+                    </select>
+                    <span className="text-muted-foreground">→</span>
+                    <select
+                      value={rc.relation}
+                      disabled={!rc.target_type}
+                      onChange={(e) =>
+                        setRelCols((r) => r.map((x, j) => (j === i ? { ...x, relation: e.target.value } : x)))
+                      }
+                      className={SELECT_CLS + ' disabled:opacity-50'}
+                      title={!rc.target_type ? '대상 종류를 먼저 고르세요' : ''}
+                    >
+                      <option value="">
+                        {!rc.target_type
+                          ? '대상 먼저'
+                          : relOpts.length
+                            ? '관계…'
+                            : '가능한 관계 없음'}
+                      </option>
+                      {relOpts.map((t) => (
+                        <option key={t.slug} value={t.slug}>{t.label}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => setRelCols((r) => r.filter((_, j) => j !== i))}
+                      className="text-muted-foreground hover:text-destructive"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )
+              })}
             </div>
           )}
 

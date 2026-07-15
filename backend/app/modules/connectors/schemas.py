@@ -63,6 +63,11 @@ class StreamConfig(BaseModel):
     cursor_path: str = ""                          # cursor: 응답 내 다음 커서 위치(점표기)
     cursor_param: str = "cursor"                   # cursor: 커서를 실어보낼 파라미터명
     next_url_path: str = ""                        # next_url: 응답 내 다음 URL 위치(예 @odata.nextLink)
+    #   skip_on_error(자동 스킵): offset 페이지네이션에서 어떤 페이지가 서버 오류로
+    #   중간에 실패하면(부분 데이터+오류), 받은 만큼은 취하고 실패한 레코드 1건을
+    #   건너뛰어 계속 가져온다. 특정 레코드가 서버 직렬화를 깨뜨릴 때 그 하나만
+    #   희생하고 나머지를 살린다(건너뛴 수는 로그로 남김). offset 스타일에서만 동작.
+    skip_on_error: bool = False
     # 증분(watermark) (v3) — 마지막 동기화 이후 바뀐 것만.
     incremental: bool = False
     watermark_field: str = ""                      # 레코드의 변경 기준 필드(예: updatedAt)

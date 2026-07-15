@@ -76,6 +76,75 @@ def test_request_json_merges_concatenated_data_pages():
     assert [r["id"] for r in out["value"]] == [1, 2]
 
 
+# --- 자동 스킵(skip_on_error) 통합 --- #
+from urllib.parse import parse_qs, urlparse  # noqa: E402
+
+from app.modules.connectors import fetch as F  # noqa: E402
+from app.modules.connectors.schemas import ConnectionConfig, StreamConfig  # noqa: E402
+
+
+class _PoisonHttpxClient:
+    """$skip/$top 을 읽어 레코드를 페이지로 돌려주되, poison 인덱스에 닿으면 그
+    레코드 전까지만 주고 뒤에 500 오류 객체를 이어붙인다(SPDM 재현)."""
+
+    def __init__(self, records, poison):
+        self.records = records
+        self.poison = poison
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def request(self, method, url, headers=None, auth=None):
+        q = parse_qs(urlparse(url).query)
+        skip = int(q.get("$skip", ["0"])[0])
+        top = int(q.get("$top", ["100"])[0])
+        got, hit = [], False
+        i = skip
+        while i < skip + top and i < len(self.records):
+            if i == self.poison:
+                hit = True
+                break
+            got.append(self.records[i])
+            i += 1
+        body = '{"value":' + json.dumps(got) + "}"
+        if hit:
+            body += '{"error":{"code":"500","message":"boom"}}'
+        return _FakeResp(body)
+
+
+def test_fetch_records_skip_on_error_skips_poison(monkeypatch):
+    records = [{"id": i} for i in range(10)]
+    monkeypatch.setattr(
+        F.httpx, "Client", lambda *a, **k: _PoisonHttpxClient(records, poison=3)
+    )
+    conn = ConnectionConfig(base_url="http://x.test")
+    st = StreamConfig(
+        endpoint_path="/m", records_path="value", page_style="offset",
+        page_param="$skip", size_param="$top", page_size=5, skip_on_error=True,
+    )
+    out = F.fetch_records(conn, st)
+    # poison(id=3)만 빠지고 나머지 9건 전부 수집.
+    assert [r["id"] for r in out] == [0, 1, 2, 4, 5, 6, 7, 8, 9]
+
+
+def test_fetch_records_without_skip_raises(monkeypatch):
+    records = [{"id": i} for i in range(10)]
+    monkeypatch.setattr(
+        F.httpx, "Client", lambda *a, **k: _PoisonHttpxClient(records, poison=3)
+    )
+    conn = ConnectionConfig(base_url="http://x.test")
+    st = StreamConfig(
+        endpoint_path="/m", records_path="value", page_style="offset",
+        page_param="$skip", size_param="$top", page_size=5, skip_on_error=False,
+    )
+    with pytest.raises(FetchError) as exc:
+        F.fetch_records(conn, st)
+    assert "오류" in str(exc.value)
+
+
 def test_single_doc_unchanged():
     text = json.dumps({"value": [{"a": 1}], "@odata.context": "x"})
     docs = _loads_concatenated(text)

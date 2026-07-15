@@ -403,9 +403,10 @@ def test_pagination_offset(monkeypatch):
     pages = {0: [{"id": i} for i in range(100)], 100: [{"id": i} for i in range(100, 150)]}
 
     def fake_req(client, method, url, headers, params, basic):
-        return {"items": pages.get(params.get("offset", 0), [])}
+        # offset 루프는 _request_json_partial 을 쓴다 → (payload, error) 반환.
+        return {"items": pages.get(params.get("offset", 0), [])}, None
 
-    monkeypatch.setattr(F, "_request_json", fake_req)
+    monkeypatch.setattr(F, "_request_json_partial", fake_req)
     conn = ConnectionConfig(base_url="http://x.test")
     st = StreamConfig(endpoint_path="/p", records_path="items", page_style="offset",
                       page_size=100, page_param="offset", size_param="limit")

@@ -78,6 +78,7 @@ function blankStream() {
     cursor_path: '',
     cursor_param: 'cursor',
     next_url_path: '',
+    skip_on_error: false,
     incremental: false,
     watermark_field: '',
     watermark_param: '',
@@ -125,6 +126,7 @@ function streamFromConfig(st) {
     cursor_path: st.cursor_path || '',
     cursor_param: st.cursor_param || 'cursor',
     next_url_path: st.next_url_path || '',
+    skip_on_error: !!st.skip_on_error,
     incremental: !!st.incremental,
     watermark_field: st.watermark_field || '',
     watermark_param: st.watermark_param || '',
@@ -186,6 +188,7 @@ function streamToConfig(st) {
     cursor_path: (st.cursor_path || '').trim(),
     cursor_param: (st.cursor_param || 'cursor').trim(),
     next_url_path: (st.next_url_path || '').trim(),
+    skip_on_error: !!st.skip_on_error,
     incremental: !!st.incremental,
     watermark_field: (st.watermark_field || '').trim(),
     watermark_param: (st.watermark_param || '').trim(),
@@ -661,6 +664,23 @@ function StreamEditor({
                 <Input value={stream.next_url_path} onChange={(e) => upd({ next_url_path: e.target.value })} placeholder="@odata.nextLink" />
                 <p className="mt-1 text-xs text-muted-foreground">응답이 알려주는 완전한 다음 URL을 그대로 따라갑니다.</p>
               </div>
+            )}
+
+            {/* 자동 스킵 — offset 에서만 의미. 특정 레코드가 서버 오류를 내면 그 1건만
+                건너뛰고 이어받는다(그 레코드는 버려짐). */}
+            {stream.page_style === 'offset' && (
+              <label className="flex items-start gap-2 text-sm">
+                <input type="checkbox" className="mt-0.5" checked={stream.skip_on_error}
+                  onChange={(e) => upd({ skip_on_error: e.target.checked })} />
+                <span>
+                  서버 오류 레코드 자동 스킵
+                  <span className="block text-xs text-muted-foreground">
+                    어떤 페이지가 서버 오류(예: 500)로 중간에 실패하면, 받은 만큼은
+                    취하고 실패한 레코드 1건을 건너뛰어 계속 가져옵니다. 그 레코드는
+                    수집되지 않으며 건너뛴 수는 로그에 남습니다.
+                  </span>
+                </span>
+              </label>
             )}
 
             {/* 증분 */}

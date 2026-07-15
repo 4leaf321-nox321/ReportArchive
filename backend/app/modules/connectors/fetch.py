@@ -13,6 +13,7 @@ fetch 는 커넥션(base_url·인증)과 스트림(엔드포인트·records_path
 from __future__ import annotations
 
 import json
+import logging
 from urllib.parse import quote, urlencode, urljoin, urlparse
 
 import httpx
@@ -25,6 +26,8 @@ from app.modules.entities.schemas import EntityImportMapping, ImportRelationCol
 _MAX_RECORDS = 20000  # 총 레코드 상한(페이지네이션 포함). 초과 시 증분 유도.
 _MAX_PAGES = 500      # 페이지 루프 runaway 가드.
 _TIMEOUT = 30.0
+
+logger = logging.getLogger(__name__)
 
 
 class FetchError(Exception):
@@ -135,11 +138,33 @@ def _apply_query(url: str, params: dict) -> str:
     return url + sep + qs
 
 
-def _request_json(client, method, url, headers, params, basic):
-    """단일 HTTP 요청 → 파싱된 JSON. 실패는 FetchError. 서버가 JSON 문서를 이어붙여
-    주는 경우('Extra data')엔 관대하게 여러 문서를 파싱해 배열을 병합한다.
+def _parse_body(text: str):
+    """응답 본문 → (payload, error_msg|None). 정상 단일 JSON 이면 (그대로, None).
+    이어붙은 다중 문서면 데이터 문서들은 병합하고, 트레일링 OData 오류 객체
+    ({"error":{...}})가 있으면 그 메시지를 error_msg 로 함께 돌려준다(부분 데이터 +
+    오류 신호). 파싱 자체가 불가하면 FetchError."""
+    try:
+        return json.loads(text), None
+    except ValueError:
+        docs = _loads_concatenated(text)
+        if not docs:
+            raise FetchError(f"JSON 파싱 실패: {text[:200]}") from None
+        err_msg = None
+        data_docs = []
+        for d in docs:
+            if isinstance(d, dict) and isinstance(d.get("error"), dict):
+                e = d["error"]
+                err_msg = e.get("message") or e.get("code") or "OData error"
+            else:
+                data_docs.append(d)
+        payload = _merge_docs(data_docs) if data_docs else {}
+        return payload, err_msg
 
-    쿼리는 _apply_query 로 URL 에 직접 붙인다(OData 특수문자 리터럴 보존)."""
+
+def _request_json_partial(client, method, url, headers, params, basic):
+    """HTTP 요청 → (payload, error_msg|None). 서버가 응답 도중 오류를 붙여 보내도
+    받은 부분 데이터와 오류를 함께 돌려준다(자동 스킵용). 쿼리는 _apply_query 로
+    URL 에 직접 붙인다(OData 특수문자 리터럴 보존)."""
     full_url = _apply_query(url, params or {})
     try:
         resp = client.request(method or "GET", full_url, headers=headers,
@@ -148,26 +173,18 @@ def _request_json(client, method, url, headers, params, basic):
         raise FetchError(f"요청 실패: {exc}") from exc
     if resp.status_code >= 400:
         raise FetchError(f"HTTP {resp.status_code}: {resp.text[:200]}")
-    text = resp.text
-    try:
-        return json.loads(text)
-    except ValueError:
-        # 정상 단일 JSON 이 아니면 이어붙은 다중 문서로 보고 관대하게 처리.
-        docs = _loads_concatenated(text)
-        if not docs:
-            raise FetchError(f"JSON 파싱 실패: {text[:200]}") from None
-        # 이어붙은 문서 중 OData 오류 객체({"error": {...}})가 있으면 서버가 응답
-        # 도중 실패한 것 — 앞 문서의 데이터는 잘려 불완전하다. 조용히 부분 데이터를
-        # 가져오면 안 되므로 그 오류를 그대로 surface 한다.
-        for d in docs:
-            if isinstance(d, dict) and isinstance(d.get("error"), dict):
-                err = d["error"]
-                msg = err.get("message") or err.get("code") or "OData error"
-                raise FetchError(
-                    f"서버가 응답 도중 오류를 반환했습니다(데이터 불완전): {msg}"
-                ) from None
-        # 오류가 아니라 정상 데이터 페이지가 이어붙은 경우(value 배열 분할)만 병합.
-        return _merge_docs(docs)
+    return _parse_body(resp.text)
+
+
+def _request_json(client, method, url, headers, params, basic):
+    """단일 HTTP 요청 → 파싱된 JSON. 트레일링 OData 오류가 있으면(부분 데이터+오류)
+    부분 데이터를 조용히 삼키지 않고 그 오류를 surface 한다(FetchError)."""
+    payload, err = _request_json_partial(client, method, url, headers, params, basic)
+    if err:
+        raise FetchError(
+            f"서버가 응답 도중 오류를 반환했습니다(데이터 불완전): {err}"
+        ) from None
+    return payload
 
 
 def _extract_records(payload, records_path: str) -> list[dict]:
@@ -241,17 +258,37 @@ def fetch_records(
         if style in ("offset", "page"):
             size = max(1, stream.page_size)
             n = 0 if style == "offset" else 1
+            # 자동 스킵은 offset 에서만(그래야 실패한 레코드를 $skip 으로 건너뜀).
+            skip_on_error = stream.skip_on_error and style == "offset"
+            skipped = 0
             for _ in range(_MAX_PAGES):
                 q = {**base_query, stream.page_param: n, stream.size_param: size}
-                recs = _extract_records(
-                    _request_json(client, method, url, headers, q, basic),
-                    stream.records_path,
+                payload, err = _request_json_partial(
+                    client, method, url, headers, q, basic
                 )
+                recs = _extract_records(payload, stream.records_path)
                 out.extend(recs)
                 _guard_total(len(out))
+                if err:
+                    if not skip_on_error:
+                        raise FetchError(
+                            "서버가 응답 도중 오류를 반환했습니다(데이터 불완전): "
+                            f"{err}"
+                        )
+                    # 이 페이지가 받은 recs 다음 레코드에서 죽었다 — 그 1건을 건너뛰고
+                    # 이어서 가져온다. 받은 게 0건이어도 최소 1은 전진해 무한루프 방지.
+                    skipped += 1
+                    n = n + len(recs) + 1
+                    continue
                 if not recs or len(recs) < size:
                     break
                 n = n + size if style == "offset" else n + 1
+            if skipped:
+                logger.warning(
+                    "커넥터 자동 스킵: 서버 오류로 %d개 레코드를 건너뜀 "
+                    "(endpoint=%s)",
+                    skipped, stream.endpoint_path,
+                )
         elif style == "cursor":
             cursor = None
             for _ in range(_MAX_PAGES):

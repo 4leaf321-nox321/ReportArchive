@@ -12,7 +12,8 @@ fetch 는 커넥션(base_url·인증)과 스트림(엔드포인트·records_path
 """
 from __future__ import annotations
 
-from urllib.parse import urljoin, urlparse
+import json
+from urllib.parse import quote, urlencode, urljoin, urlparse
 
 import httpx
 
@@ -78,19 +79,95 @@ def _auth_kwargs(conn: ConnectionConfig) -> tuple[dict, object | None]:
     return headers, basic
 
 
+def _loads_concatenated(text: str) -> list:
+    """이어붙은 다중 JSON 문서를 앞에서부터 모두 파싱(관대). 일부 서버는 한 응답에
+    JSON 문서를 두 개 이상 이어붙여 주는데(→ json.loads 는 'Extra data' 로 실패),
+    raw_decode 로 문서를 하나씩 떼어내고 사이 공백은 건너뛴다. JSON 이 아닌 잔여물
+    (오염·HTML 등)을 만나면 거기서 멈추고 그때까지 파싱한 문서들만 돌려준다."""
+    dec = json.JSONDecoder()
+    idx, n, docs = 0, len(text), []
+    while idx < n:
+        while idx < n and text[idx].isspace():
+            idx += 1
+        if idx >= n:
+            break
+        try:
+            obj, end = dec.raw_decode(text, idx)
+        except ValueError:
+            break
+        docs.append(obj)
+        idx = end
+    return docs
+
+
+def _merge_docs(docs: list):
+    """이어붙은 문서들을 하나로 병합 — 리스트 값(예: OData `value`)은 이어붙이고,
+    스칼라/기타는 마지막 값이 이긴다(@odata.nextLink 등). 이러면 두 조각으로 쪼개
+    온 레코드 배열도 손실 없이 합쳐진다. 첫 문서가 dict 가 아니면 그대로 반환."""
+    if len(docs) == 1 or not isinstance(docs[0], dict):
+        return docs[0]
+    merged = dict(docs[0])
+    for d in docs[1:]:
+        if not isinstance(d, dict):
+            continue
+        for k, v in d.items():
+            if isinstance(v, list) and isinstance(merged.get(k), list):
+                merged[k] = merged[k] + v  # 배열 이어붙임(새 리스트 — 원본 불변)
+            else:
+                merged[k] = v
+    return merged
+
+
+# OData 시스템 쿼리 옵션은 $ ( ) = , : ' / 같은 문자를 리터럴로 써야 하는데
+# ($expand=product($select=ProjectCode) 등) httpx 의 기본 params 인코딩은 이들을
+# 퍼센트 인코딩(%24 %28 %3D…)해 일부 커스텀 OData 서버가 거부한다. 그래서 params 를
+# 직접 이 문자들을 보존한 쿼리스트링으로 만들어 URL 에 붙이고 httpx params 는 쓰지
+# 않는다. 공백·& 등 진짜 위험한 문자는 여전히 인코딩된다.
+_ODATA_SAFE = "$(),=:'/*"
+
+
+def _apply_query(url: str, params: dict) -> str:
+    """params 를 OData 안전 문자를 보존한 채 url 에 덧붙인다(httpx params 대체)."""
+    if not params:
+        return url
+    qs = urlencode(params, quote_via=quote, safe=_ODATA_SAFE)
+    sep = "&" if urlparse(url).query else "?"
+    return url + sep + qs
+
+
 def _request_json(client, method, url, headers, params, basic):
-    """단일 HTTP 요청 → 파싱된 JSON. 실패는 FetchError."""
+    """단일 HTTP 요청 → 파싱된 JSON. 실패는 FetchError. 서버가 JSON 문서를 이어붙여
+    주는 경우('Extra data')엔 관대하게 여러 문서를 파싱해 배열을 병합한다.
+
+    쿼리는 _apply_query 로 URL 에 직접 붙인다(OData 특수문자 리터럴 보존)."""
+    full_url = _apply_query(url, params or {})
     try:
-        resp = client.request(method or "GET", url, headers=headers,
-                              params=params or None, auth=basic)
+        resp = client.request(method or "GET", full_url, headers=headers,
+                              auth=basic)
     except httpx.HTTPError as exc:
         raise FetchError(f"요청 실패: {exc}") from exc
     if resp.status_code >= 400:
         raise FetchError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+    text = resp.text
     try:
-        return resp.json()
-    except ValueError as exc:
-        raise FetchError(f"JSON 파싱 실패: {exc}") from exc
+        return json.loads(text)
+    except ValueError:
+        # 정상 단일 JSON 이 아니면 이어붙은 다중 문서로 보고 관대하게 처리.
+        docs = _loads_concatenated(text)
+        if not docs:
+            raise FetchError(f"JSON 파싱 실패: {text[:200]}") from None
+        # 이어붙은 문서 중 OData 오류 객체({"error": {...}})가 있으면 서버가 응답
+        # 도중 실패한 것 — 앞 문서의 데이터는 잘려 불완전하다. 조용히 부분 데이터를
+        # 가져오면 안 되므로 그 오류를 그대로 surface 한다.
+        for d in docs:
+            if isinstance(d, dict) and isinstance(d.get("error"), dict):
+                err = d["error"]
+                msg = err.get("message") or err.get("code") or "OData error"
+                raise FetchError(
+                    f"서버가 응답 도중 오류를 반환했습니다(데이터 불완전): {msg}"
+                ) from None
+        # 오류가 아니라 정상 데이터 페이지가 이어붙은 경우(value 배열 분할)만 병합.
+        return _merge_docs(docs)
 
 
 def _extract_records(payload, records_path: str) -> list[dict]:

@@ -137,9 +137,14 @@ class SyncRunListResponse(BaseModel):
 
 class ProbeRequest(BaseModel):
     """저장 전 매핑 UI 용 — 커넥션 + 스트림 1개로 실제 응답을 받아 레코드 샘플(필드명
-    확인용)을 돌려준다. 쓰기 없음."""
+    확인용)을 돌려준다. 쓰기 없음.
+
+    source_id: 이미 저장된 소스를 편집 중일 때 그 id. 커넥션 시크릿(토큰/비번)은
+    응답에서 마스킹돼 프론트에 없으므로, 비어 있으면 서버가 이 id 로 저장된 시크릿을
+    채워 프로브한다(재입력 불필요). 사용자가 새 값을 입력했으면 그 값이 우선."""
     connection: ConnectionConfig
     stream: StreamConfig
+    source_id: Optional[int] = None
 
 
 class SuggestMappingRequest(BaseModel):

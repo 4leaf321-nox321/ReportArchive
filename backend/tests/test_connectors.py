@@ -61,6 +61,56 @@ def test_build_rows_and_mapping():
     assert rows[0]["__r_0"] == "S1"
 
 
+def test_probe_fills_stored_secret_when_source_id(monkeypatch):
+    """저장된 소스를 편집 중이면(source_id), 마스킹된 빈 토큰을 서버가 저장분으로
+    채워 프로브한다 — 다른 화면 갔다 와도 토큰 재입력 불필요. 단, 사용자가 새 값을
+    입력했으면 그게 우선."""
+    from app.modules.connectors import services as S
+
+    c = TestClient(app)
+    sfx = uuid.uuid4().hex[:8]
+    sid = None
+    try:
+        cfg = {
+            "connection": {"base_url": "https://example.test",
+                           "auth": {"type": "bearer", "token": "storedtok"}},
+            "streams": [{"endpoint_path": "/x", "records_path": "d",
+                         "target_type_id": 1, "value_path": "name"}],
+        }
+        r = c.post("/api/connectors", headers=ADMIN,
+                   json={"name": "src-" + sfx, "kind": "rest_json", "config": cfg})
+        sid = r.json()["data"]["id"]
+
+        captured = {}
+
+        def fake_probe(conn, stream):
+            captured["token"] = conn.auth.token
+            return {"record_count": 0, "fields": [], "sample": []}
+
+        monkeypatch.setattr(S, "probe_stream", fake_probe)
+        stream = {"endpoint_path": "/x", "records_path": "d",
+                  "target_type_id": 1, "value_path": "name"}
+
+        # 마스킹된(빈) 토큰 + source_id → 저장분("storedtok")으로 채워짐.
+        r = c.post("/api/connectors/probe", headers=ADMIN, json={
+            "connection": {"base_url": "https://example.test",
+                           "auth": {"type": "bearer", "token": ""}},
+            "stream": stream, "source_id": sid})
+        assert r.status_code == 200, r.text
+        assert captured["token"] == "storedtok"
+
+        # 사용자가 새 토큰 입력 → 그게 우선(저장분으로 안 덮음).
+        r = c.post("/api/connectors/probe", headers=ADMIN, json={
+            "connection": {"base_url": "https://example.test",
+                           "auth": {"type": "bearer", "token": "newtok"}},
+            "stream": stream, "source_id": sid})
+        assert r.status_code == 200, r.text
+        assert captured["token"] == "newtok"
+    finally:
+        if sid:
+            c.delete(f"/api/connectors/{sid}", headers=ADMIN)
+
+
 # --- CRUD + 마스킹 ----------------------------------------------------------
 def test_connector_crud_and_secret_masking():
     c = TestClient(app)

@@ -106,12 +106,25 @@ def delete_source(
 @router.post("/probe")
 def probe(
     payload: ProbeRequest,
-    _db: Session = Depends(get_db),
+    db: Session = Depends(get_db),
     _admin: User = Depends(require_system_admin),
 ):
-    """저장 전 매핑 UI 용 — 커넥션+스트림으로 실제 응답을 받아 레코드 샘플·필드명 반환."""
+    """저장 전 매핑 UI 용 — 커넥션+스트림으로 실제 응답을 받아 레코드 샘플·필드명 반환.
+
+    저장된 소스를 편집 중이면(source_id) 마스킹돼 비어 있는 시크릿을 저장분으로
+    채운다 — 다른 화면 갔다 와도 토큰 재입력 없이 샘플 조회가 되게."""
+    conn = payload.connection
+    if payload.source_id is not None:
+        source = services.get_source(db, payload.source_id)
+        if source is not None:
+            stored = services.from_stored_config(source.config).connection
+            # 비어 있는 시크릿만 저장분으로 보강(사용자가 새로 입력했으면 그게 우선).
+            if not conn.auth.token and stored.auth.token:
+                conn.auth.token = stored.auth.token
+            if not conn.auth.password and stored.auth.password:
+                conn.auth.password = stored.auth.password
     try:
-        data = services.probe_stream(payload.connection, payload.stream)
+        data = services.probe_stream(conn, payload.stream)
     except FetchError as exc:
         return error_response(str(exc), status_code=400)
     return success_response(data=data)

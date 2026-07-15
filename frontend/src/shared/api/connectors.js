@@ -34,9 +34,17 @@ export async function deleteDataSource(id) {
   return extractData(await apiClient.delete(`${BASE}/${id}`))
 }
 
-/** 저장 전 응답 샘플(필드명 확인) — 커넥션+스트림 1개로. { record_count, fields[], sample[] } */
-export async function probeDataSource(connection, stream) {
-  return extractData(await apiClient.post(`${BASE}/probe`, { connection, stream }))
+/** 저장 전 응답 샘플(필드명 확인) — 커넥션+스트림 1개로. { record_count, fields[], sample[] }
+ *  저장된 소스 편집 중이면 sourceId 를 넘겨, 마스킹된 시크릿을 서버가 저장분으로
+ *  채우게 한다(토큰 재입력 불필요). */
+export async function probeDataSource(connection, stream, sourceId = null) {
+  return extractData(
+    await apiClient.post(`${BASE}/probe`, {
+      connection,
+      stream,
+      ...(sourceId != null ? { source_id: sourceId } : {}),
+    }),
+  )
 }
 
 /** dry_run 동기화(검증 미리보기, 쓰기 없음) — { summary, rows } */

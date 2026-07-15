@@ -853,7 +853,8 @@ export default function ConnectorsAdminPage() {
     try {
       const connection = draftToConnection(draft)
       const stream = streamToConfig(draft.streams[streamIndex])
-      const res = await probeDataSource(connection, stream)
+      // 저장된 소스 편집 중이면 selectedId 를 넘겨 마스킹된 토큰을 서버가 채우게.
+      const res = await probeDataSource(connection, stream, selectedId)
       setProbeResults((p) => ({ ...p, [streamIndex]: res }))
       toast.success(`레코드 ${res.record_count}건 · 필드 ${res.fields.length}개`)
     } catch (err) {

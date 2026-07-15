@@ -73,6 +73,21 @@ def run_import(
                 for rc in mapping.relation_columns]
     is_record = type_row.kind_class == EntityKindClass.record
 
+    # entity_ref 속성 — 표에 이름/별칭으로 입력한 값을 대상 축에서 찾아 id 로
+    # 치환한다(관계열과 동일한 이름 해소; 속성 검증은 id 만 받으므로). 대상 축이
+    # 지정된(ref_type_slug) 속성만 해소한다 — 미지정 자유참조는 id 입력이 필요.
+    # 축 조회는 여기서 1회(키 → (라벨, 대상 EntityType|None)).
+    ref_prop_axes = {}
+    for d in ent.list_property_defs(
+        db, owner_kind="entity_type", owner_id=type_row.id
+    ):
+        if d.data_type == "entity_ref" and d.ref_type_slug:
+            ref_prop_axes[d.key] = (
+                d.label or d.key,
+                ent.get_type_by_slug(db, d.ref_type_slug),
+                d.ref_type_slug,
+            )
+
     out, counts = [], {"create": 0, "update": 0, "error": 0,
                        "linked": 0, "link_unresolved": 0}
 
@@ -90,10 +105,32 @@ def run_import(
             code = (row.get(mapping.code_column) or "").strip() or None
 
         props = {}
+        ref_errors = []
         for header, key in mapping.property_columns.items():
             cell = (row.get(header) or "").strip()
-            if cell:
+            if not cell:
+                continue
+            if key in ref_prop_axes:
+                # entity_ref 속성 — 이름/별칭을 대상 축에서 찾아 id 로 치환.
+                label, ref_axis, ref_slug = ref_prop_axes[key]
+                if ref_axis is None:
+                    ref_errors.append(f"{label}: 대상 축 '{ref_slug}' 을 찾을 수 없습니다")
+                    continue
+                hit = ent.resolve_existing(db, type_id=ref_axis.id, value=cell)
+                if hit is None:
+                    ref_errors.append(
+                        f"{label}: '{cell}' 에 해당하는 '{ref_axis.label}' 객체가 없습니다"
+                    )
+                    continue
+                props[key] = hit.id
+            else:
                 props[key] = cell
+
+        # entity_ref 이름 해소 실패는 그 행을 error 로(무엇을 못 찾았는지 명시).
+        if ref_errors:
+            out.append(_row(idx, value, "error", ["속성 오류: " + "; ".join(ref_errors)]))
+            counts["error"] += 1
+            continue
 
         existing = ent.resolve_existing(
             db, type_id=type_row.id, value=value, code=code)

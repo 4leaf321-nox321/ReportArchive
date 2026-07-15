@@ -27,6 +27,7 @@ import {
   Combine,
   GitMerge,
   Upload,
+  Download,
   ClipboardPaste,
   X,
 } from 'lucide-react'
@@ -63,6 +64,8 @@ import {
   missingRequiredProps,
 } from './EntityPropertiesFields'
 import { cn } from '@/shared/lib/utils'
+import { copyTextToClipboard } from '@/shared/lib/clipboard'
+import { rowsToTsv } from '@/shared/lib/tableExport'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { useAsync } from '@/shared/hooks/useAsync'
@@ -655,6 +658,7 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
   const [moveTarget, setMoveTarget] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [mergeScanOpen, setMergeScanOpen] = useState(false)
+  const [autoLinkOpen, setAutoLinkOpen] = useState(false)
   // 다중 선택(체크박스) — DataTable 의 selectable 로 렌더. 선택된 id 집합을
   // 여기서 소유해 일괄 삭제 바/다이얼로그로 넘긴다.
   const [selectedIds, setSelectedIds] = useState(() => new Set())
@@ -664,6 +668,30 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
   function reload() {
     setReloadKey((n) => n + 1)
     setSelectedIds(new Set()) // 목록이 바뀌면 선택 초기화(사라진 행 잔류 방지).
+  }
+
+  // 내보내기 — "표로 입력"과 같은 열 구성(이름 + 속성)으로 TSV 를 클립보드에 담는다.
+  // 헤더(이름·속성 라벨) + 값 행. 「표로 입력」에 그대로 붙여넣으면 헤더는 자동
+  // 스킵되고 값·속성이 위치로 매핑돼 왕복 편집·재정의가 된다.
+  async function handleExport() {
+    const headers = ['이름', ...propertyDefs.map((d) => d.label)]
+    const data = filteredRows.map((r) => [
+      r.value,
+      ...propertyDefs.map((d) => {
+        const v = r.properties?.[d.key]
+        if (v == null) return ''
+        return Array.isArray(v) ? v.join(', ') : String(v)
+      }),
+    ])
+    try {
+      await copyTextToClipboard(rowsToTsv(data, headers))
+      toast.success(`${data.length}건 내보냄 (클립보드)`, {
+        description:
+          '엑셀에 붙여 편집하거나 「표로 입력」에 그대로 붙여넣어 재정의할 수 있습니다.',
+      })
+    } catch {
+      toast.error('내보내기에 실패했습니다')
+    }
   }
 
   // 검색/비활성 필터로 화면에서 사라진 행이 선택에 남지 않도록 정리. 현재
@@ -778,6 +806,33 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
               <Button variant="ghost" size="sm" className={btn} onClick={stop(() => setEditTarget(r))}>
                 <Pencil className="h-3.5 w-3.5" /> 편집
               </Button>
+              <Button variant="ghost" size="sm" className={btn} onClick={stop(() => setRelTarget(r))}>
+                <Network className="h-3.5 w-3.5" /> 관계
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={btn}
+                title="다른 표기(별칭) 관리 — 입력 시 이 값으로 자동 흡수"
+                onClick={stop(() => setAliasTarget(r))}
+              >
+                <Tags className="h-3.5 w-3.5" /> 별칭
+              </Button>
+              <Button variant="ghost" size="sm" className={btn} onClick={stop(() => setGraphTarget(r))}>
+                <Share2 className="h-3.5 w-3.5" /> 관계도
+              </Button>
+              <Button variant="ghost" size="sm" className={btn} onClick={stop(() => setMergeTarget(r))}>
+                <Combine className="h-3.5 w-3.5" /> 머지
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={btn}
+                title="이 값이 걸린 보고서(일부/전체)를 다른 값으로 옮김(원본 유지)"
+                onClick={stop(() => setMoveTarget(r))}
+              >
+                <ArrowRightLeft className="h-3.5 w-3.5" /> 태깅이동
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"
@@ -800,33 +855,6 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
               >
                 <RotateCcw className="h-3.5 w-3.5" />
                 {r.status === 'active' ? '비활성화' : '복원'}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className={btn}
-                title="다른 표기(별칭) 관리 — 입력 시 이 값으로 자동 흡수"
-                onClick={stop(() => setAliasTarget(r))}
-              >
-                <Tags className="h-3.5 w-3.5" /> 별칭
-              </Button>
-              <Button variant="ghost" size="sm" className={btn} onClick={stop(() => setRelTarget(r))}>
-                <Network className="h-3.5 w-3.5" /> 관계
-              </Button>
-              <Button variant="ghost" size="sm" className={btn} onClick={stop(() => setGraphTarget(r))}>
-                <Share2 className="h-3.5 w-3.5" /> 관계도
-              </Button>
-              <Button variant="ghost" size="sm" className={btn} onClick={stop(() => setMergeTarget(r))}>
-                <Combine className="h-3.5 w-3.5" /> 머지
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className={btn}
-                title="이 값이 걸린 보고서(일부/전체)를 다른 값으로 옮김(원본 유지)"
-                onClick={stop(() => setMoveTarget(r))}
-              >
-                <ArrowRightLeft className="h-3.5 w-3.5" /> 태깅이동
               </Button>
               <Button
                 variant="ghost"
@@ -876,6 +904,15 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
             <GitMerge className="mr-1 h-3.5 w-3.5" />
             중복 스캔
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setAutoLinkOpen(true)}
+            title="이름 규칙(접두어·구분자·포함)으로 대상 축의 값에 관계를 일괄 연결"
+          >
+            <Network className="mr-1 h-3.5 w-3.5" />
+            자동 연결
+          </Button>
           <Button size="sm" onClick={() => setCreateOpen(true)}>
             <Plus className="mr-1 h-3.5 w-3.5" />
             추가
@@ -899,6 +936,15 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
           >
             <Upload className="mr-1 h-3.5 w-3.5" />
             가져오기
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExport}
+            title="현재 목록을 「표로 입력」 형식(TSV)으로 클립보드에 복사 — 붙여넣어 편집·재정의"
+          >
+            <Download className="mr-1 h-3.5 w-3.5" />
+            내보내기
           </Button>
           {/* 이 축 자체를 통째로 삭제. 값이 남아 있으면 백엔드가 400으로
               막고, 다이얼로그가 그 안내를 그대로 보여준다. */}
@@ -1114,6 +1160,15 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
           type={type}
           onClose={() => setMergeScanOpen(false)}
           onChanged={reload}
+        />
+      )}
+      {autoLinkOpen && (
+        <AutoLinkDialog
+          sourceType={type}
+          sourceRows={rows}
+          allTypes={allTypes}
+          onClose={() => setAutoLinkOpen(false)}
+          onDone={() => setAutoLinkOpen(false)}
         />
       )}
       <EntityPasteDialog
@@ -2691,6 +2746,230 @@ function EvidenceReportPicker({ reportId, title, onPick }) {
  * (value/code/description) and the only differences are the title and
  * the submit handler. `mode="create"` ignores `target`.
  */
+/**
+ * 규칙으로 관계 자동 연결 — 이름 규칙(접두어·구분자·포함)으로 출발 축의 값들을
+ * 도착 축의 값에 매칭해 관계를 일괄 생성한다. 예: 과제 "A35-G" → 과제통칭 "A35"
+ * (접두어/구분자). 미리보기로 확인 후 적용. 이미 연결된 쌍은 중복 제약에 걸려
+ * 건너뛴다. 기존 addEntityRelation·listEntities 만으로 동작(백엔드 변경 없음).
+ */
+function AutoLinkDialog({ sourceType, sourceRows, allTypes, onClose, onDone }) {
+  const [relTypes, setRelTypes] = useState([])
+  const [targetTypeId, setTargetTypeId] = useState('')
+  const [relation, setRelation] = useState('')
+  const [rule, setRule] = useState('prefix') // prefix | delimiter | contains
+  const [delimiter, setDelimiter] = useState('-')
+  const [targets, setTargets] = useState([])
+  const [applying, setApplying] = useState(false)
+
+  useEffect(() => {
+    listRelationTypes()
+      .then((r) => setRelTypes(r?.items ?? []))
+      .catch(() => {})
+  }, [])
+
+  const targetOptions = (allTypes ?? []).filter(
+    (t) => t.kind_class !== 'system' && t.id !== sourceType.id,
+  )
+  const targetType = targetOptions.find((t) => String(t.id) === targetTypeId)
+  const axisOk = (arr, slug) =>
+    !arr || arr.length === 0 || (!!slug && arr.includes(slug))
+  const relOpts = targetType
+    ? relTypes.filter(
+        (rt) =>
+          axisOk(rt.src_axis_slugs, sourceType.slug) &&
+          axisOk(rt.dst_axis_slugs, targetType.slug),
+      )
+    : []
+
+  // 대상 축 값 로드.
+  useEffect(() => {
+    if (!targetTypeId) {
+      setTargets([])
+      return
+    }
+    setRelation('')
+    listEntities({ typeId: Number(targetTypeId), includeDeprecated: false, limit: 500 })
+      .then((r) => setTargets(r?.items ?? []))
+      .catch(() => setTargets([]))
+  }, [targetTypeId])
+
+  const norm = (s) => (s ?? '').trim().toLowerCase()
+
+  // 규칙 매칭 — 출발마다 최적(가장 긴/정확한) 대상 1개.
+  const matches = useMemo(() => {
+    const tn = targets.map((t) => ({ t, n: norm(t.value) })).filter((x) => x.n)
+    return (sourceRows ?? []).map((s) => {
+      const sn = norm(s.value)
+      let best = null
+      let bestLen = -1
+      for (const { t, n } of tn) {
+        let ok = false
+        if (rule === 'prefix') ok = sn.startsWith(n)
+        else if (rule === 'contains') ok = sn.includes(n)
+        else if (rule === 'delimiter')
+          ok = delimiter ? sn.split(delimiter)[0].trim() === n : false
+        if (ok && n.length > bestLen) {
+          best = t
+          bestLen = n.length
+        }
+      }
+      return { source: s, target: best }
+    })
+  }, [sourceRows, targets, rule, delimiter])
+
+  const matched = useMemo(() => matches.filter((m) => m.target), [matches])
+  const canApply = !!relation && matched.length > 0 && !applying
+
+  async function apply() {
+    setApplying(true)
+    let ok = 0
+    let skip = 0
+    for (const m of matched) {
+      try {
+        await addEntityRelation(m.source.id, m.target.id, relation)
+        ok++
+      } catch {
+        skip++ // 이미 연결(중복 제약)·기타
+      }
+    }
+    if (ok > 0) {
+      toast.success(`${ok}건 연결됨`, {
+        description: skip > 0 ? `${skip}건 건너뜀(이미 연결·오류)` : undefined,
+      })
+    } else {
+      toast.warning('새로 연결된 것이 없습니다', {
+        description: skip > 0 ? '모두 이미 연결돼 있거나 오류였습니다.' : undefined,
+      })
+    }
+    setApplying(false)
+    onDone()
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="flex max-h-[85vh] w-[40rem] max-w-[40rem] flex-col overflow-hidden">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Network className="h-4 w-4" /> 규칙으로 관계 자동 연결
+          </DialogTitle>
+          <DialogDescription className="text-xs">
+            <strong>{sourceType.label}</strong> 의 값들을 이름 규칙으로 대상 축의
+            값에 매칭해 관계를 한꺼번에 겁니다. (예: A35-G → A35)
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">대상 축</Label>
+              <select
+                value={targetTypeId}
+                onChange={(e) => setTargetTypeId(e.target.value)}
+                className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
+              >
+                <option value="">대상 종류…</option>
+                {targetOptions.map((t) => (
+                  <option key={t.id} value={String(t.id)}>{t.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label className="text-xs">관계 종류</Label>
+              <select
+                value={relation}
+                disabled={!targetType}
+                onChange={(e) => setRelation(e.target.value)}
+                className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm disabled:opacity-50"
+              >
+                <option value="">
+                  {!targetType ? '대상 먼저' : relOpts.length ? '관계…' : '가능한 관계 없음'}
+                </option>
+                {relOpts.map((rt) => (
+                  <option key={rt.slug} value={rt.slug}>{rt.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <div>
+              <Label className="text-xs">매칭 규칙</Label>
+              <select
+                value={rule}
+                onChange={(e) => setRule(e.target.value)}
+                className="mt-1 h-8 rounded-md border bg-background px-2 text-xs"
+              >
+                <option value="prefix">접두어 — 대상이 출발의 앞부분 (A35 ⊂ A35-G)</option>
+                <option value="delimiter">구분자 — 출발을 나눈 첫 토큰 = 대상</option>
+                <option value="contains">포함 — 대상이 출발에 포함</option>
+              </select>
+            </div>
+            {rule === 'delimiter' && (
+              <div>
+                <Label className="text-xs">구분자</Label>
+                <Input
+                  value={delimiter}
+                  onChange={(e) => setDelimiter(e.target.value)}
+                  className="mt-1 h-8 w-16 text-center text-xs"
+                  placeholder="-"
+                />
+              </div>
+            )}
+            <span className="ml-auto self-end text-xs text-muted-foreground">
+              매칭 <strong className="text-foreground">{matched.length}</strong> / 전체{' '}
+              {(sourceRows ?? []).length}건
+            </span>
+          </div>
+
+          {/* 미리보기 */}
+          <div className="max-h-[40vh] overflow-y-auto rounded-md border">
+            {(sourceRows ?? []).length === 0 ? (
+              <p className="px-3 py-4 text-center text-xs text-muted-foreground">
+                이 축에 값이 없습니다.
+              </p>
+            ) : (
+              matches.slice(0, 300).map((m) => (
+                <div
+                  key={m.source.id}
+                  className="flex items-center justify-between gap-2 border-b px-2.5 py-1.5 text-sm last:border-b-0"
+                >
+                  <span className="truncate">{m.source.value}</span>
+                  {m.target ? (
+                    <span className="flex shrink-0 items-center gap-1 text-muted-foreground">
+                      →
+                      <Badge variant="secondary" className="text-[10px]">
+                        {m.target.value}
+                      </Badge>
+                    </span>
+                  ) : (
+                    <span className="shrink-0 text-[11px] text-muted-foreground">
+                      매칭 없음
+                    </span>
+                  )}
+                </div>
+              ))
+            )}
+            {matches.length > 300 && (
+              <p className="px-2 py-1 text-[11px] text-muted-foreground">
+                미리보기 300건까지 표시 — 적용은 매칭된 전체에 적용됩니다.
+              </p>
+            )}
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={applying}>
+            취소
+          </Button>
+          <Button size="sm" onClick={apply} disabled={!canApply}>
+            {applying ? '연결 중…' : `${matched.length}건 연결`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 /**
  * 관계 대상 선택 모달 — 대량 대응. 서버 검색+페이지네이션(searchEntities, total
  * 반환)으로 수천 건도 100개씩 "더 보기"로 로드하고, 체크박스로 여러 개를 골라 한꺼번에

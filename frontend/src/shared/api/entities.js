@@ -520,8 +520,49 @@ export async function unlinkEntityFromAllReports(entityId) {
   return extractData(res)
 }
 
+/**
+ * Admin-only. Move reports tagged with `entityId` to `intoId` (same axis),
+ * keeping the source entity — the "move" counterpart of unlink-all. Pass
+ * `reportIds` to move only that subset (partial move); omit/null moves all.
+ * Server 400s if the target is on a different axis. Returns `{ moved_count }`.
+ */
+export async function moveEntityTaggings(entityId, intoId, reportIds = null) {
+  const res = await apiClient.post(`${BASE}/${entityId}/move-taggings`, {
+    into_id: intoId,
+    ...(reportIds != null ? { report_ids: reportIds } : {}),
+  })
+  return extractData(res)
+}
+
 /** Admin-only hard delete. Server returns 400 when the entity is still in use. */
 export async function deleteEntity(id) {
   const res = await apiClient.delete(`${BASE}/${id}`)
+  return extractData(res)
+}
+
+/**
+ * Admin-only bulk hard delete. Entities still in use are skipped (not an
+ * error) — the response splits `deleted_ids` from `skipped` (each with a
+ * reason) so the caller can report partial success.
+ */
+export async function bulkDeleteEntities(entityIds) {
+  const res = await apiClient.post(`${BASE}/bulk-delete`, {
+    entity_ids: entityIds,
+  })
+  return extractData(res)
+}
+
+/**
+ * Admin-only bulk axis reassignment. Moves the given entities to
+ * `targetTypeId`; taggings follow automatically (they key on entity_id).
+ * Response splits `moved_ids` (axis changed in place) from `merged_ids`
+ * (target axis already had the value → absorbed + source deleted) and
+ * `skipped` (pattern mismatch / already on target / not found).
+ */
+export async function bulkReassignAxis(entityIds, targetTypeId) {
+  const res = await apiClient.post(`${BASE}/bulk-reassign-axis`, {
+    entity_ids: entityIds,
+    target_type_id: targetTypeId,
+  })
   return extractData(res)
 }

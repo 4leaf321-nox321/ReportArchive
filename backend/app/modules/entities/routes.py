@@ -35,6 +35,12 @@ from app.modules.entities.schemas import (
     EntityAliasCreate,
     EntityAliasListResponse,
     EntityAliasRead,
+    EntityBulkDeleteRequest,
+    EntityBulkDeleteResponse,
+    EntityBulkDeleteSkipped,
+    EntityMoveTaggingsRequest,
+    EntityReassignAxisRequest,
+    EntityReassignAxisResponse,
     EntityCreate,
     EntityImportMapping,
     EntityImportRowsRequest,
@@ -841,6 +847,35 @@ def unlink_all_reports(
     )
 
 
+@entities_router.post("/{entity_id}/move-taggings")
+def move_taggings(
+    entity_id: int,
+    payload: EntityMoveTaggingsRequest,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """Admin-only — 이 값이 걸린 보고서 태깅을 같은 축의 다른 값(into_id)으로
+    옮긴다. "모두 해제"의 '이동' 버전 — 원본 값은 남는다(이후 사용 0건이 돼 삭제
+    가능). report_ids 를 주면 그 보고서들만 옮긴다(일부 이동). 다른 축 대상은 400."""
+    _require_admin(actor)
+    src = services.get_entity(db, entity_id)
+    if not src:
+        return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
+    into = services.get_entity(db, payload.into_id)
+    if not into:
+        return not_found_response(f"대상 값을 찾을 수 없습니다: {payload.into_id}")
+    try:
+        count = services.move_taggings(
+            db, src=src, into=into, report_ids=payload.report_ids
+        )
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    return success_response(
+        data={"moved_count": count},
+        message=f"{count}건의 보고서를 '{src.value}' → '{into.value}' 로 이동함.",
+    )
+
+
 @entities_router.get("/{entity_id}/aliases")
 def list_entity_aliases(
     entity_id: int,
@@ -1252,6 +1287,117 @@ def _augment_graph_object_links(db, data) -> None:
                 {"src": n["id"], "dst": key, "relation": link.relation}
             )
     data["nodes"].extend(added.values())
+
+
+@entities_router.post("/bulk-delete")
+def bulk_delete_entities(
+    payload: EntityBulkDeleteRequest,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """여러 엔티티를 한 번에 삭제(관리자만). 사용 중이라 개별 삭제가 막히는 값은
+    건너뛰고, 지운 것/건너뛴 것(사유 포함)을 나눠 돌려준다(부분 성공). 개별
+    delete_entity 를 그대로 재사용하므로 사용-중 가드가 동일하게 적용된다."""
+    _require_admin(actor)
+    deleted_ids: list[int] = []
+    skipped: list[EntityBulkDeleteSkipped] = []
+    seen: set[int] = set()
+    for entity_id in payload.entity_ids:
+        if entity_id in seen:  # 중복 id 는 한 번만 처리.
+            continue
+        seen.add(entity_id)
+        row = services.get_entity(db, entity_id)
+        if not row:
+            skipped.append(
+                EntityBulkDeleteSkipped(
+                    id=entity_id, value=str(entity_id), reason="찾을 수 없음"
+                )
+            )
+            continue
+        try:
+            services.delete_entity(db, row)
+            deleted_ids.append(entity_id)
+        except ValueError as exc:
+            skipped.append(
+                EntityBulkDeleteSkipped(id=entity_id, value=row.value, reason=str(exc))
+            )
+    return success_response(
+        data=EntityBulkDeleteResponse(deleted_ids=deleted_ids, skipped=skipped),
+        message=f"{len(deleted_ids)}건 삭제됨"
+        + (f", {len(skipped)}건 건너뜀" if skipped else "") + ".",
+    )
+
+
+@entities_router.post("/bulk-reassign-axis")
+def bulk_reassign_axis(
+    payload: EntityReassignAxisRequest,
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """선택한 엔티티들을 다른 축으로 이관(관리자만). 태깅은 entity_id 기준이라
+    자동으로 따라온다. 대상 축에 같은 값이 이미 있으면 그 값으로 머지(원본
+    삭제), 없으면 축만 바꿔 이사. 형식 불일치·없는 id 는 사유와 함께 건너뛴다."""
+    _require_admin(actor)
+    target = services.get_type(db, payload.target_type_id)
+    if target is None:
+        return error_response(
+            f"대상 축을 찾을 수 없습니다: {payload.target_type_id}", status_code=400
+        )
+    if target.kind_class == "system":
+        return error_response(
+            "system 축으로는 값을 이관할 수 없습니다.", status_code=400
+        )
+
+    moved_ids: list[int] = []
+    merged_ids: list[int] = []
+    skipped: list[EntityBulkDeleteSkipped] = []
+    seen: set[int] = set()
+    for entity_id in payload.entity_ids:
+        if entity_id in seen:
+            continue
+        seen.add(entity_id)
+        row = services.get_entity(db, entity_id)
+        if row is None:
+            skipped.append(
+                EntityBulkDeleteSkipped(
+                    id=entity_id, value=str(entity_id), reason="찾을 수 없음"
+                )
+            )
+            continue
+        if row.type_id == target.id:
+            skipped.append(
+                EntityBulkDeleteSkipped(
+                    id=entity_id, value=row.value, reason="이미 대상 축입니다"
+                )
+            )
+            continue
+        try:
+            action, _into = services.reassign_entity_axis(
+                db, entity=row, target_type=target, moved_by_user_id=actor.user.id
+            )
+        except ValueError as exc:
+            skipped.append(
+                EntityBulkDeleteSkipped(id=entity_id, value=row.value, reason=str(exc))
+            )
+            continue
+        if action == "merged":
+            merged_ids.append(entity_id)
+        else:  # moved
+            moved_ids.append(entity_id)
+
+    parts = []
+    if moved_ids:
+        parts.append(f"{len(moved_ids)}건 이동")
+    if merged_ids:
+        parts.append(f"{len(merged_ids)}건 병합")
+    if skipped:
+        parts.append(f"{len(skipped)}건 건너뜀")
+    return success_response(
+        data=EntityReassignAxisResponse(
+            moved_ids=moved_ids, merged_ids=merged_ids, skipped=skipped
+        ),
+        message=(", ".join(parts) + "." if parts else "이관할 항목이 없습니다."),
+    )
 
 
 @entities_router.delete("/{entity_id}")

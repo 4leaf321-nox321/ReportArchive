@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
+  ArrowRightLeft,
   ChevronUp,
   ChevronDown,
   ExternalLink,
@@ -72,6 +73,8 @@ import {
   createEntity,
   createEntityType,
   deleteEntity,
+  bulkDeleteEntities,
+  bulkReassignAxis,
   deleteEntityAlias,
   deleteEntityRelation,
   deleteEntityType,
@@ -95,6 +98,7 @@ import {
   deleteRelationTypeProperty,
   updateEntityRelation,
   mergeEntity,
+  moveEntityTaggings,
   setEntityYears,
   unlinkEntityFromAllReports,
   unlinkEntityFromReport,
@@ -640,12 +644,40 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
   const [createOpen, setCreateOpen] = useState(false)
   const [editTarget, setEditTarget] = useState(null)
   const [mergeTarget, setMergeTarget] = useState(null)
+  const [moveTarget, setMoveTarget] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [mergeScanOpen, setMergeScanOpen] = useState(false)
+  // 다중 선택(체크박스) — DataTable 의 selectable 로 렌더. 선택된 id 집합을
+  // 여기서 소유해 일괄 삭제 바/다이얼로그로 넘긴다.
+  const [selectedIds, setSelectedIds] = useState(() => new Set())
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+  const [bulkReassignOpen, setBulkReassignOpen] = useState(false)
 
   function reload() {
     setReloadKey((n) => n + 1)
+    setSelectedIds(new Set()) // 목록이 바뀌면 선택 초기화(사라진 행 잔류 방지).
   }
+
+  // 검색/비활성 필터로 화면에서 사라진 행이 선택에 남지 않도록 정리. 현재
+  // 보이는 행 집합과 교집합만 유지한다.
+  const visibleIdSet = useMemo(
+    () => new Set(filteredRows.map((r) => r.id)),
+    [filteredRows],
+  )
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev
+      const next = new Set()
+      for (const id of prev) if (visibleIdSet.has(id)) next.add(id)
+      return next.size === prev.size ? prev : next
+    })
+  }, [visibleIdSet])
+
+  // 선택된 행 객체(일괄 삭제 다이얼로그가 값/사용건수를 보여주기 위함).
+  const selectedRows = useMemo(
+    () => filteredRows.filter((r) => selectedIds.has(r.id)),
+    [filteredRows, selectedIds],
+  )
 
   const columns = useMemo(
     () => [
@@ -725,7 +757,7 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
       {
         key: '_actions',
         header: '',
-        headerClassName: 'w-[220px]',
+        headerClassName: 'w-[264px]',
         render: (r) => (
           <div className="flex items-center justify-end gap-1">
             <Button
@@ -811,6 +843,18 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
               }}
             >
               <Combine className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0"
+              title="태깅 이동 — 이 값이 걸린 보고서(일부/전체)를 다른 값으로 옮김(원본 유지)"
+              onClick={(e) => {
+                e.stopPropagation()
+                setMoveTarget(r)
+              }}
+            >
+              <ArrowRightLeft className="h-3.5 w-3.5" />
             </Button>
             <Button
               variant="ghost"
@@ -954,6 +998,40 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
         </Button>
       </div>
 
+      {/* 일괄 삭제 바 — 하나라도 선택되면 나타난다. 선택 수 + 삭제/해제. */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm">
+          <span className="font-medium">{selectedIds.size}건 선택됨</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs"
+            onClick={() => setSelectedIds(new Set())}
+          >
+            선택 해제
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto h-7"
+            onClick={() => setBulkReassignOpen(true)}
+            title="선택한 값을 다른 축으로 이관합니다"
+          >
+            <ArrowRightLeft className="mr-1 h-3.5 w-3.5" />
+            축 이동
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            className="h-7"
+            onClick={() => setBulkDeleteOpen(true)}
+          >
+            <Trash2 className="mr-1 h-3.5 w-3.5" />
+            선택 삭제
+          </Button>
+        </div>
+      )}
+
       {error ? (
         <ErrorState description={error.message} onRetry={reload} />
       ) : loading ? (
@@ -967,6 +1045,9 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
           pageSizeStorageKey={`entities-${type.slug}`}
           searchableKeys={['value', 'code', 'description']}
           searchPlaceholder=""
+          selectable
+          selectedIds={selectedIds}
+          onSelectionChange={setSelectedIds}
         />
       )}
 
@@ -1045,6 +1126,18 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
           }}
         />
       )}
+      {moveTarget && (
+        <MoveTaggingsDialog
+          type={type}
+          source={moveTarget}
+          allRows={rows}
+          onClose={() => setMoveTarget(null)}
+          onMoved={() => {
+            setMoveTarget(null)
+            reload()
+          }}
+        />
+      )}
       {mergeScanOpen && (
         <MergeCandidatesDialog
           type={type}
@@ -1081,6 +1174,12 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
             setMergeTarget(deleteTarget)
             setDeleteTarget(null)
           }}
+          onSwitchToMove={() => {
+            // "모두 이동" — 태깅을 다른 값으로 옮기되 원본은 남긴다("모두 해제"의
+            // 이동 버전). 이후 원본은 사용 0건이 돼 삭제할 수 있다.
+            setMoveTarget(deleteTarget)
+            setDeleteTarget(null)
+          }}
         />
       )}
       {deleteAxisOpen && (
@@ -1094,7 +1193,269 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
           }}
         />
       )}
+      {bulkDeleteOpen && (
+        <BulkDeleteDialog
+          rows={selectedRows}
+          onClose={() => setBulkDeleteOpen(false)}
+          onDone={() => {
+            setBulkDeleteOpen(false)
+            reload()
+          }}
+        />
+      )}
+      {bulkReassignOpen && (
+        <ReassignAxisDialog
+          rows={selectedRows}
+          currentType={type}
+          allTypes={allTypes}
+          onClose={() => setBulkReassignOpen(false)}
+          onDone={() => {
+            setBulkReassignOpen(false)
+            reload()
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+/**
+ * 선택한 엔티티들을 다른 축으로 이관하는 다이얼로그. 대상 축을 고르면 실행 시
+ * 서버가 값별로 판정한다: 대상 축에 같은 값이 있으면 그 값으로 병합(원본 삭제),
+ * 없으면 축만 바꿔 이사(태깅은 자동으로 따라옴). 실행 후 이동/병합/건너뜀을
+ * 토스트로 요약한다(부분 성공).
+ */
+function ReassignAxisDialog({ rows, currentType, allTypes, onClose, onDone }) {
+  const [submitting, setSubmitting] = useState(false)
+  // 대상 후보 — 현재 축과 system 축은 제외(값을 담지 않는 투영 표식이라 이관 불가).
+  const targets = (allTypes ?? []).filter(
+    (t) => t.id !== currentType.id && t.kind_class !== 'system',
+  )
+  const [targetId, setTargetId] = useState(() =>
+    targets.length > 0 ? String(targets[0].id) : '',
+  )
+  const targetType = targets.find((t) => String(t.id) === targetId)
+
+  async function handleReassign() {
+    if (!targetId) return
+    setSubmitting(true)
+    try {
+      const res = await bulkReassignAxis(
+        rows.map((r) => r.id),
+        Number(targetId),
+      )
+      const moved = res?.moved_ids?.length ?? 0
+      const merged = res?.merged_ids?.length ?? 0
+      const skipped = res?.skipped?.length ?? 0
+      const done = moved + merged
+      if (done > 0) {
+        const parts = []
+        if (moved > 0) parts.push(`${moved}건 이동`)
+        if (merged > 0) parts.push(`${merged}건 병합`)
+        toast.success(parts.join(', '), {
+          description:
+            skipped > 0 ? `${skipped}건은 건너뛰었습니다.` : undefined,
+        })
+      } else {
+        toast.warning('이관된 항목이 없습니다', {
+          description:
+            skipped > 0 ? '모든 항목이 건너뛰어졌습니다.' : undefined,
+        })
+      }
+      onDone()
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err.message || '축 이동 실패')
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <ArrowRightLeft className="h-4 w-4" />
+            다른 축으로 이동
+          </DialogTitle>
+          <DialogDescription>
+            선택한 <strong>{rows.length}건</strong>을{' '}
+            <strong>{currentType.label}</strong> 축에서 다른 축으로 옮깁니다.
+            보고서 태깅은 그대로 따라옵니다.
+          </DialogDescription>
+        </DialogHeader>
+
+        {targets.length === 0 ? (
+          <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+            이동할 수 있는 다른 축이 없습니다.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">대상 축</Label>
+              <select
+                value={targetId}
+                onChange={(e) => setTargetId(e.target.value)}
+                className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+              >
+                {targets.map((t) => (
+                  <option key={t.id} value={String(t.id)}>
+                    {t.label}
+                    {t.kind_class === 'record' ? ' (레코드)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground space-y-1">
+              <p>
+                대상 축에 <strong>같은 값이 이미 있으면</strong> 그 값으로 병합
+                되고 원본은 삭제됩니다. 없으면 축만 바뀌어 이동합니다.
+              </p>
+              <p>
+                대상 축의 값 형식(정규식)에 맞지 않는 값은 건너뜁니다.
+              </p>
+              {targetType?.kind_class === 'record' && (
+                <p className="text-amber-600">
+                  레코드 축으로 옮기면 기존 속성은 보존되지만 대상 축 스키마와
+                  다를 수 있어, 이동 후 속성을 확인하세요.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            disabled={submitting}
+          >
+            취소
+          </Button>
+          <Button
+            size="sm"
+            onClick={handleReassign}
+            disabled={submitting || !targetId || targets.length === 0}
+          >
+            {submitting ? '이동 중...' : `${rows.length}건 이동`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/**
+ * 여러 엔티티 일괄 삭제 확인. 선택 중 "사용 중"(usage_count>0)인 값은 서버가
+ * 건너뛰므로, 삭제 예정 / 건너뜀(사용 중) 건수를 미리 나눠 보여준다. 실행 후
+ * 서버가 돌려준 deleted/skipped 를 토스트로 요약한다(부분 성공).
+ */
+function BulkDeleteDialog({ rows, onClose, onDone }) {
+  const [submitting, setSubmitting] = useState(false)
+  // usage_count 로 미리보기 — 서버가 최종 판정하지만, 여기서 "몇 건은 사용
+  // 중이라 건너뜁니다"를 미리 알려 놀람을 줄인다.
+  const blocked = rows.filter((r) => (r.usage_count ?? 0) > 0)
+  const deletable = rows.length - blocked.length
+
+  async function handleDelete() {
+    setSubmitting(true)
+    try {
+      const res = await bulkDeleteEntities(rows.map((r) => r.id))
+      const deleted = res?.deleted_ids?.length ?? 0
+      const skipped = res?.skipped?.length ?? 0
+      if (deleted > 0 && skipped > 0) {
+        toast.success(`${deleted}건 삭제됨`, {
+          description: `${skipped}건은 사용 중이라 건너뛰었습니다.`,
+        })
+      } else if (deleted > 0) {
+        toast.success(`${deleted}건 삭제됨`)
+      } else {
+        toast.warning('삭제된 항목이 없습니다', {
+          description:
+            skipped > 0 ? '선택한 값이 모두 사용 중입니다.' : undefined,
+        })
+      }
+      onDone()
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err.message || '일괄 삭제 실패')
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-destructive" />
+            선택 항목 삭제
+          </DialogTitle>
+          <DialogDescription>
+            선택한 <strong>{rows.length}건</strong>을 삭제합니다. 이 작업은
+            되돌릴 수 없습니다.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-2 text-xs">
+          <div className="rounded-md border bg-muted/30 p-3">
+            <p>
+              삭제 예정{' '}
+              <strong className="tabular-nums">{deletable}건</strong>
+              {blocked.length > 0 && (
+                <>
+                  {' · '}건너뜀(사용 중){' '}
+                  <strong className="tabular-nums text-amber-600">
+                    {blocked.length}건
+                  </strong>
+                </>
+              )}
+            </p>
+          </div>
+          {blocked.length > 0 && (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 space-y-1.5">
+              <p className="text-muted-foreground">
+                아래 값은 보고서가 사용 중이라 삭제되지 않고 건너뜁니다. 지우려면
+                머지하거나 비활성화하세요.
+              </p>
+              <ul className="max-h-32 overflow-y-auto space-y-0.5">
+                {blocked.map((r) => (
+                  <li key={r.id} className="flex justify-between gap-2">
+                    <span className="truncate">{r.value}</span>
+                    <span className="shrink-0 text-muted-foreground tabular-nums">
+                      {r.usage_count}건
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            disabled={submitting}
+          >
+            취소
+          </Button>
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={handleDelete}
+            disabled={submitting || deletable === 0}
+            title={
+              deletable === 0
+                ? '선택한 값이 모두 사용 중이라 삭제할 수 없습니다.'
+                : undefined
+            }
+          >
+            {submitting ? '삭제 중...' : `${deletable}건 삭제`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -2684,6 +3045,280 @@ function MergeDialog({ type, source, allRows, onClose, onMerged }) {
 }
 
 /**
+ * "모두 이동" — 이 값이 걸린 모든 보고서를 같은 축의 다른 값으로 재태깅하되
+ * **원본은 남긴다**("모두 해제"의 이동 버전, merge 와 달리 원본 삭제 안 함).
+ * 이동 후 원본은 사용 0건이 되어 필요하면 삭제할 수 있다. MergeDialog 의 후보
+ * 피커를 그대로 따르되 moveEntityTaggings 를 호출한다.
+ */
+function MoveTaggingsDialog({ type, source, allRows, onClose, onMoved }) {
+  const [intoId, setIntoId] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [usage, setUsage] = useState(null) // null=loading | array
+  const [usageError, setUsageError] = useState(null)
+  // 옮길 보고서 선택 — 로드되면 기본 전체선택. 일부만 이동하려면 체크 해제.
+  const [selectedReportIds, setSelectedReportIds] = useState(() => new Set())
+  // 대규모(수천 건) 대응 — 목록 검색 + 렌더 상한. 전체선택은 렌더와 무관하게
+  // 로드된 전체 id 를 대상으로 한다(화면에 다 안 그려도 선택 가능).
+  const [query, setQuery] = useState('')
+  const VISIBLE_CAP = 200
+  const candidates = useMemo(
+    () => allRows.filter((r) => r.id !== source.id),
+    [allRows, source.id],
+  )
+  const target = candidates.find((r) => r.id === intoId)
+  const sourceUsage = source.usage_count ?? 0
+
+  useEffect(() => {
+    if (sourceUsage <= 0) {
+      setUsage([])
+      return
+    }
+    let cancelled = false
+    listEntityUsage(source.id)
+      .then((res) => {
+        if (cancelled) return
+        const items = res?.items ?? []
+        setUsage(items)
+        setSelectedReportIds(new Set(items.map((r) => r.id))) // 기본 전체선택
+      })
+      .catch((e) => {
+        if (!cancelled) setUsageError(e)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [source.id, sourceUsage])
+
+  const allReportIds = useMemo(() => (usage ?? []).map((r) => r.id), [usage])
+  const allChecked =
+    allReportIds.length > 0 && selectedReportIds.size === allReportIds.length
+  // 검색 필터(제목·워크스페이스) + 렌더 상한. 필터는 화면 렌더만 좁히고, 전체
+  // 선택은 여전히 로드된 전량 대상.
+  const filtered = useMemo(() => {
+    const n = query.trim().toLowerCase()
+    const items = usage ?? []
+    if (!n) return items
+    return items.filter(
+      (r) =>
+        r.title.toLowerCase().includes(n) ||
+        (r.workspace_slug ?? '').toLowerCase().includes(n),
+    )
+  }, [usage, query])
+  const visible = filtered.slice(0, VISIBLE_CAP)
+  const filteredAllSelected =
+    filtered.length > 0 && filtered.every((r) => selectedReportIds.has(r.id))
+
+  function toggleAll() {
+    setSelectedReportIds(allChecked ? new Set() : new Set(allReportIds))
+  }
+  function toggleOne(rid) {
+    setSelectedReportIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(rid)) next.delete(rid)
+      else next.add(rid)
+      return next
+    })
+  }
+  // 검색 결과 전체를 한 번에 선택/해제 — 수천 건에서 "일부"를 키워드로 골라
+  // 옮기는 핵심 동선.
+  function toggleFiltered() {
+    setSelectedReportIds((prev) => {
+      const next = new Set(prev)
+      if (filteredAllSelected) for (const r of filtered) next.delete(r.id)
+      else for (const r of filtered) next.add(r.id)
+      return next
+    })
+  }
+
+  const pickCount = selectedReportIds.size
+  const canSubmit = !!target && pickCount > 0 && !submitting
+
+  async function handleMove() {
+    if (!canSubmit) return
+    setSubmitting(true)
+    try {
+      const ids = [...selectedReportIds]
+      // 전량이면 report_ids 생략(null)으로 보내 서버가 전체를 옮기게 한다.
+      const movingAll = ids.length === allReportIds.length
+      const res = await moveEntityTaggings(
+        source.id,
+        intoId,
+        movingAll ? null : ids,
+      )
+      const moved = res?.moved_count ?? ids.length
+      toast.success(
+        `'${source.value}' → '${target.value}' 로 ${moved}건 이동 완료.`,
+        { description: `'${source.value}' 값은 남아 있습니다.` },
+      )
+      onMoved()
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err.message || '이동 실패')
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <ArrowRightLeft className="h-4 w-4" />
+            {type.label} 태깅 이동
+          </DialogTitle>
+          <DialogDescription className="text-xs">
+            <strong>'{source.value}'</strong> 가 걸린 보고서를 선택해 다른 값으로
+            재태깅합니다. 일부만 골라 옮길 수 있고,{' '}
+            <strong>'{source.value}'</strong> 값 자체는{' '}
+            <strong>삭제되지 않고 남습니다</strong>.
+          </DialogDescription>
+        </DialogHeader>
+        {sourceUsage <= 0 ? (
+          <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+            이 값을 사용하는 보고서가 없어 이동할 것이 없습니다.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {/* 옮길 보고서 선택 (기본 전체) — 검색 + 렌더 상한으로 대규모 대응 */}
+            <div className="rounded-md border">
+              <div className="flex flex-col gap-1.5 border-b bg-muted/30 px-2 py-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="inline-flex cursor-pointer items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={allChecked}
+                      onChange={toggleAll}
+                      className="h-3.5 w-3.5"
+                    />
+                    옮길 보고서 (선택 {pickCount}/{allReportIds.length})
+                  </label>
+                  {query.trim() && filtered.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={toggleFiltered}
+                      className="text-[11px] text-primary hover:underline"
+                    >
+                      검색결과 {filtered.length}건{' '}
+                      {filteredAllSelected ? '해제' : '선택'}
+                    </button>
+                  )}
+                </div>
+                {allReportIds.length > 20 && (
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="보고서 제목·워크스페이스 검색"
+                      className="h-7 pl-6 text-xs"
+                    />
+                  </div>
+                )}
+              </div>
+              {usage === null ? (
+                <p className="px-3 py-2 text-xs text-muted-foreground">
+                  불러오는 중...
+                </p>
+              ) : usageError ? (
+                <p className="px-3 py-2 text-xs text-destructive">
+                  목록을 불러올 수 없습니다.
+                </p>
+              ) : filtered.length === 0 ? (
+                <p className="px-3 py-2 text-xs text-muted-foreground">
+                  검색 결과가 없습니다.
+                </p>
+              ) : (
+                <>
+                  <ul className="max-h-52 divide-y overflow-y-auto">
+                    {visible.map((r) => (
+                      <li
+                        key={r.id}
+                        className="flex items-center gap-2 px-2 py-1.5 text-sm"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedReportIds.has(r.id)}
+                          onChange={() => toggleOne(r.id)}
+                          className="h-3.5 w-3.5 shrink-0"
+                        />
+                        <a
+                          href={`/w/${r.workspace_slug}/reports/${r.id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex min-w-0 flex-1 items-center justify-between gap-2 hover:underline"
+                          title={r.workspace_slug}
+                        >
+                          <span className="flex-1 truncate">{r.title}</span>
+                          <span className="shrink-0 text-[10px] text-muted-foreground">
+                            {r.workspace_slug}
+                          </span>
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                  {filtered.length > VISIBLE_CAP && (
+                    <p className="border-t px-2 py-1 text-[11px] text-muted-foreground">
+                      {filtered.length.toLocaleString()}건 중 {VISIBLE_CAP}건 표시
+                      — 검색으로 좁히거나 위 전체/검색결과 선택을 쓰세요.
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+            {/* 이동 대상 값 (같은 축) */}
+            <div>
+              <Label className="text-xs">이동 대상</Label>
+              <div className="mt-1 max-h-52 overflow-y-auto rounded-md border">
+                {candidates.length === 0 && (
+                  <p className="px-3 py-4 text-center text-xs text-muted-foreground">
+                    같은 축의 다른 값이 없습니다.
+                  </p>
+                )}
+                {candidates.map((r) => (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => setIntoId(r.id)}
+                    className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-accent ${
+                      intoId === r.id ? 'bg-accent' : ''
+                    }`}
+                  >
+                    <span
+                      className={
+                        r.status === 'deprecated'
+                          ? 'text-muted-foreground line-through'
+                          : ''
+                      }
+                    >
+                      {r.value}
+                      {r.code && (
+                        <span className="ml-1 text-[11px] text-muted-foreground">
+                          ({r.code})
+                        </span>
+                      )}
+                    </span>
+                    <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
+                      {r.usage_count ?? 0}건
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            취소
+          </Button>
+          <Button size="sm" onClick={handleMove} disabled={!canSubmit}>
+            {submitting ? '이동 중...' : `${pickCount}건 이동`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/**
  * Hard-delete confirm. On open, fetches the actual list of reports using
  * this entity so the admin can see them inline (instead of getting a
  * bare "사용 중" error toast after clicking 삭제). When there's any
@@ -2699,7 +3334,13 @@ function MergeDialog({ type, source, allRows, onClose, onMerged }) {
  * The list and count refresh in place after each unlink so the admin
  * doesn't have to re-open the dialog.
  */
-function DeleteConfirmDialog({ target, onClose, onDeleted, onSwitchToMerge }) {
+function DeleteConfirmDialog({
+  target,
+  onClose,
+  onDeleted,
+  onSwitchToMerge,
+  onSwitchToMove,
+}) {
   const [submitting, setSubmitting] = useState(false)
   const [unlinkingAll, setUnlinkingAll] = useState(false)
   const [usage, setUsage] = useState(null) // null = loading | array
@@ -2801,17 +3442,29 @@ function DeleteConfirmDialog({ target, onClose, onDeleted, onSwitchToMerge }) {
                   : `사용 중인 보고서 (${usage.length}건)`}
               </span>
               {usage !== null && usage.length > 0 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 px-2 text-[11px] text-muted-foreground hover:text-destructive"
-                  onClick={handleUnlinkAll}
-                  disabled={unlinkingAll}
-                  title="이 모든 보고서에서 태그만 해제 — 엔티티 자체는 남습니다"
-                >
-                  <Link2Off className="mr-1 h-3 w-3" />
-                  {unlinkingAll ? '해제 중...' : '모두 해제'}
-                </Button>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                    onClick={onSwitchToMove}
+                    title="이 모든 보고서를 같은 축의 다른 값으로 재태깅 — 엔티티 자체는 남습니다"
+                  >
+                    <ArrowRightLeft className="mr-1 h-3 w-3" />
+                    모두 이동
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-2 text-[11px] text-muted-foreground hover:text-destructive"
+                    onClick={handleUnlinkAll}
+                    disabled={unlinkingAll}
+                    title="이 모든 보고서에서 태그만 해제 — 엔티티 자체는 남습니다"
+                  >
+                    <Link2Off className="mr-1 h-3 w-3" />
+                    {unlinkingAll ? '해제 중...' : '모두 해제'}
+                  </Button>
+                </div>
               )}
             </div>
             <UsageList

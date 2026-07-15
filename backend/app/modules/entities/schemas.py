@@ -502,3 +502,46 @@ class EntityUsageReportRef(BaseModel):
 
 class EntityUsageResponse(BaseModel):
     items: list[EntityUsageReportRef]
+
+
+class EntityBulkDeleteRequest(BaseModel):
+    """한 번에 삭제할 엔티티 id 목록. 사용 중(보고서에 태깅)이라 개별 삭제가
+    막히는 값은 건너뛰고, 지운 것/건너뛴 것을 나눠 돌려준다(부분 성공)."""
+
+    entity_ids: list[int]
+
+
+class EntityBulkDeleteSkipped(BaseModel):
+    """일괄 삭제에서 지우지 못한 한 건 — 사용 중이거나 이미 없는 경우."""
+
+    id: int
+    value: str
+    reason: str
+
+
+class EntityBulkDeleteResponse(BaseModel):
+    deleted_ids: list[int]
+    skipped: list[EntityBulkDeleteSkipped]
+
+
+class EntityMoveTaggingsRequest(BaseModel):
+    """이 값이 걸린 보고서 태깅을 같은 축의 다른 값(into_id)으로 이동. 원본은
+    남는다("모두 해제"의 이동 버전). report_ids 를 주면 그 보고서들만(일부 이동),
+    비우거나 생략하면 전량 이동."""
+
+    into_id: int
+    report_ids: Optional[list[int]] = None
+
+
+class EntityReassignAxisRequest(BaseModel):
+    """선택한 엔티티들을 다른 축(target_type_id)으로 이관. 대상 축에 같은 값이
+    이미 있으면 그 값으로 머지(원본 삭제), 없으면 축만 바꿔 통째로 이사한다."""
+
+    entity_ids: list[int]
+    target_type_id: int
+
+
+class EntityReassignAxisResponse(BaseModel):
+    moved_ids: list[int]  # 축만 바꿔 이사(원본 유지, 대상 축으로 이동)
+    merged_ids: list[int]  # 대상 축 기존값으로 흡수(원본 삭제)
+    skipped: list[EntityBulkDeleteSkipped]  # 형식 불일치·없는 id·이미 대상 축 등

@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Float, and_, cast, delete, func, or_, select
+from sqlalchemy import Float, and_, cast, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -768,7 +768,12 @@ def set_entity_years(db: Session, row: Entity, years: list[int]) -> list[int]:
 
 
 def merge_entities(
-    db: Session, *, src: Entity, into: Entity, merged_by_user_id: int | None = None
+    db: Session,
+    *,
+    src: Entity,
+    into: Entity,
+    merged_by_user_id: int | None = None,
+    allow_cross_axis: bool = False,
 ) -> int:
     """Re-link all `report_entities` rows from `src` to `into`, drop `src`,
     return the number of reports re-linked.
@@ -779,12 +784,16 @@ def merge_entities(
     `src` is also linked to, the duplicate link is silently dropped
     (composite PK on report_entities).
 
+    `allow_cross_axis=True` 는 축을 넘는 흡수를 허용한다 — "잘못된 축의 값을
+    올바른 축으로 이관"(reassign_entity_axis)에서 대상 축에 이미 같은 값이 있을
+    때만 쓰인다. src 의 별칭/관계는 into(대상 축)로 이관되고 src 는 삭제된다.
+
     `merged_by_user_id` 가 주어지면 `entity_merges` 감사 로그를 남긴다(p60) — src
     는 삭제되므로 값/코드/흡수 별칭을 스냅샷으로 보존(되돌리기 정책="감사 로그만").
     """
     if src.id == into.id:
         return 0
-    if src.type_id != into.type_id:
+    if not allow_cross_axis and src.type_id != into.type_id:
         raise ValueError("같은 타입(축)의 엔티티끼리만 머지할 수 있습니다.")
 
     # 삭제 전 스냅샷 — 감사 로그용(src 는 아래에서 사라진다).
@@ -927,6 +936,79 @@ def merge_entities(
     db.delete(src)
     db.commit()
     return relinked
+
+
+def reassign_entity_axis(
+    db: Session,
+    *,
+    entity: Entity,
+    target_type: EntityType,
+    moved_by_user_id: int | None = None,
+) -> tuple[str, int | None]:
+    """엔티티를 다른 축(target_type)으로 이관한다. 태깅(report_entities)은
+    entity_id 기준이라 **자동으로 따라온다** — 링크를 건드리지 않는다.
+
+    두 경로로 갈린다:
+      - 대상 축에 같은 값(또는 별칭)이 이미 있으면 그 값으로 **머지**(cross-axis,
+        원본 삭제) → ("merged", into_id)
+      - 없으면 **type_id 재지정**으로 통째로 이사(별칭도 함께 이동, 대상 축에
+        같은 표기가 이미 있으면 그 별칭은 드롭). 속성(properties)은 보존 →
+        ("moved", None)
+
+    대상 축의 value_pattern 에 맞지 않으면 ValueError(호출자가 건너뛴다). 이미
+    대상 축이면 ("noop", None).
+    """
+    if entity.type_id == target_type.id:
+        return ("noop", None)
+
+    # 1) 대상 축 값 형식 검증 — 안 맞으면 이관 거부(호출자가 사유와 함께 건너뜀).
+    if not value_matches_pattern(target_type.value_pattern, entity.value):
+        raise ValueError(
+            f"'{entity.value}' 은(는) 대상 축 '{target_type.label}' 형식에 맞지 "
+            "않습니다"
+            + (
+                f" (패턴: {target_type.value_pattern})"
+                if target_type.value_pattern
+                else ""
+            )
+            + "."
+        )
+
+    # 2) 대상 축에 같은 값/별칭이 있으면 그 값으로 흡수(원본 삭제).
+    existing = resolve_existing(db, type_id=target_type.id, value=entity.value)
+    if existing is not None and existing.id != entity.id:
+        merge_entities(
+            db,
+            src=entity,
+            into=existing,
+            merged_by_user_id=moved_by_user_id,
+            allow_cross_axis=True,
+        )
+        return ("merged", existing.id)
+
+    # 3) 충돌 없음 → 축만 바꿔 통째로 이사. 별칭 type_id 도 함께 옮기되, 대상 축에
+    #    같은 정규화 표기가 이미 있으면 (type_id, normalized) 유니크 충돌을 피해
+    #    그 별칭은 버린다. 속성(JSONB)은 손대지 않아 데이터 손실이 없다(대상 축
+    #    스키마와 안 맞는 키는 UI 가 무시할 뿐 보존됨).
+    entity.type_id = target_type.id
+    for al in list(
+        db.execute(
+            select(EntityAlias).where(EntityAlias.entity_id == entity.id)
+        ).scalars()
+    ):
+        clash = db.execute(
+            select(EntityAlias).where(
+                EntityAlias.type_id == target_type.id,
+                EntityAlias.normalized == al.normalized,
+            )
+        ).scalar_one_or_none()
+        if clash is not None and clash.id != al.id:
+            db.delete(al)
+        else:
+            al.type_id = target_type.id
+        db.flush()
+    db.commit()
+    return ("moved", None)
 
 
 def dismiss_merge_pair(
@@ -1462,6 +1544,59 @@ def unlink_from_all_reports(db: Session, *, entity_id: int) -> int:
         db.delete(link)
     db.commit()
     return len(links)
+
+
+def move_taggings(
+    db: Session,
+    *,
+    src: Entity,
+    into: Entity,
+    report_ids: list[int] | None = None,
+) -> int:
+    """이 값(src)이 걸린 보고서 태깅을 into 로 옮긴다 — **src 자신은 남긴다**.
+
+    "모두 해제"(unlink_from_all_reports)의 '이동' 버전: 태그를 떼는 대신 다른
+    값으로 재태깅한다. merge_entities 와 달리 src 를 삭제하지 않고, 별칭 흡수·
+    관계 이관·감사 로그도 하지 않는다(순수 재연결). 실행 후 src 의 사용이 0이 되면
+    삭제할 수 있다.
+
+    `report_ids` 가 주어지면 **그 보고서들만** 옮긴다(일부 이동) — 나머지는 src 에
+    그대로 남는다. None 이면 전량 이동. 같은 축이어야 한다(축을 넘으면 보고서의
+    의미가 바뀌므로). 대상 보고서에 이미 into 가 붙어 있으면 중복 링크
+    (report_entities 복합 PK)는 버린다. 반환: 옮긴 보고서 수.
+    """
+    if src.id == into.id:
+        return 0
+    if src.type_id != into.type_id:
+        raise ValueError("같은 축의 값으로만 이동할 수 있습니다.")
+    if report_ids is not None and not report_ids:
+        return 0
+
+    # 벌크 2문장 — 행당 루프 대신(수천 건도 즉시·타임아웃 무관). synchronize_session
+    # =False: 세션 ORM 캐시 동기화를 생략(직후 commit, 로드된 ReportEntity 인스턴스를
+    # 다시 쓰지 않음).
+    #   1) 대상(into)에 이미 링크가 있는 보고서의 src 링크는 제거(복합 PK 충돌 방지).
+    #   2) 남은 src 링크의 entity_id 를 into 로 재지정(UPDATE=원자적, 무태그 순간 없음).
+    into_reports = select(ReportEntity.report_id).where(
+        ReportEntity.entity_id == into.id
+    )
+    del_stmt = delete(ReportEntity).where(
+        ReportEntity.entity_id == src.id,
+        ReportEntity.report_id.in_(into_reports),
+    )
+    upd_stmt = update(ReportEntity).where(ReportEntity.entity_id == src.id)
+    if report_ids is not None:
+        del_stmt = del_stmt.where(ReportEntity.report_id.in_(report_ids))
+        upd_stmt = upd_stmt.where(ReportEntity.report_id.in_(report_ids))
+    db.execute(del_stmt.execution_options(synchronize_session=False))
+    result = db.execute(
+        upd_stmt.values(entity_id=into.id).execution_options(
+            synchronize_session=False
+        )
+    )
+    moved = result.rowcount or 0
+    db.commit()
+    return moved
 
 
 def list_reports_using_entity(db: Session, *, entity_id: int) -> list:

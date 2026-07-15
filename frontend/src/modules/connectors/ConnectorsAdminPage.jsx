@@ -67,6 +67,7 @@ function blankStream() {
     value_path: '',
     match_key: 'value', // 'value'(이름) | 'code'(안정 식별자)
     code_path: '',
+    query_rows: [], // [{key,value}] — OData $expand·$select·$filter 등 쿼리 파라미터
     prop_paths: {}, // {속성 slug: 필드 경로}
     relation_rows: [],
     // 고급(v3) — 페이지네이션 · 증분
@@ -111,6 +112,10 @@ function streamFromConfig(st) {
     value_path: st.value_path || '',
     match_key: st.match_key || 'value',
     code_path: st.code_path || '',
+    query_rows: Object.entries(st.query || {}).map(([key, value]) => ({
+      key,
+      value: String(value),
+    })),
     prop_paths: { ...(st.property_map || {}) },
     relation_rows: (st.relation_map || []).map((r) => ({ match_key: 'value', ...r })),
     page_style: st.page_style || 'none',
@@ -156,11 +161,17 @@ function streamToConfig(st) {
       relation: r.relation, target_type: r.target_type, path: r.path.trim(),
       match_key: r.match_key === 'code' ? 'code' : 'value',
     }))
+  // 쿼리 파라미터(OData $expand·$select·$filter 등) — 페이지네이션 파라미터와 같은
+  // params dict 로 함께 전송돼야 URL 쿼리가 덮이지 않는다(endpoint_path 에 붙이면 안 됨).
+  const query = {}
+  for (const r of st.query_rows || []) {
+    if ((r.key || '').trim()) query[r.key.trim()] = r.value ?? ''
+  }
   return {
     label: st.label.trim(),
     endpoint_path: st.endpoint_path.trim(),
     http_method: st.http_method,
-    query: {},
+    query,
     records_path: st.records_path.trim(),
     target_type_id: Number(st.target_type_id) || 0,
     match_key: st.match_key === 'code' ? 'code' : 'value',
@@ -265,10 +276,14 @@ function StreamEditor({
   }
 
   const dlId = `ff-${index}` // datalist id (조회된 필드 경로)
-  const fieldPaths = useMemo(
-    () => [...new Set(flattenPaths(probeResult?.sample?.[0] ?? {}))].sort(),
-    [probeResult],
-  )
+  // 조회된 필드 경로 — 샘플 **전체 레코드**를 훑어 합집합으로 모은다. 한 레코드만
+  // 보면(특히 첫 레코드) 그 레코드에 null 인 navigation($expand된 product 등)의
+  // 하위 경로가 빠져 자동완성에 안 뜬다. 5건 중 하나라도 있으면 노출되게.
+  const fieldPaths = useMemo(() => {
+    const rows = probeResult?.sample ?? []
+    const all = rows.flatMap((r) => flattenPaths(r ?? {}))
+    return [...new Set(all)].sort()
+  }, [probeResult])
 
   // 속성 행 = 축 정의 속성(자동) + config 에 있던 추가 slug(하위호환).
   const defKeys = (axisDefs || []).map((d) => d.key)
@@ -325,6 +340,71 @@ function StreamEditor({
             <Label className="text-xs">records_path</Label>
             <Input value={stream.records_path} onChange={(e) => upd({ records_path: e.target.value })} placeholder="data.items" />
           </div>
+        </div>
+
+        {/* 쿼리 파라미터 — OData $expand·$select·$filter 등. endpoint_path 에 붙이면
+            페이지네이션 파라미터가 URL 쿼리를 덮어써 사라지므로 반드시 여기에. */}
+        <div className="space-y-1">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs">
+              쿼리 파라미터{' '}
+              <span className="font-normal text-muted-foreground">
+                (OData $expand · $select · $filter)
+              </span>
+            </Label>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={() =>
+                upd({ query_rows: [...(stream.query_rows || []), { key: '', value: '' }] })
+              }
+            >
+              <Plus className="mr-1 h-3.5 w-3.5" /> 추가
+            </Button>
+          </div>
+          {(stream.query_rows || []).map((r, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <Input
+                className="h-8 w-40 font-mono text-xs"
+                placeholder="$expand"
+                value={r.key}
+                onChange={(e) => {
+                  const rows = [...stream.query_rows]
+                  rows[i] = { ...rows[i], key: e.target.value }
+                  upd({ query_rows: rows })
+                }}
+              />
+              <span className="text-muted-foreground">=</span>
+              <Input
+                className="h-8 flex-1 font-mono text-xs"
+                placeholder="Product"
+                value={r.value}
+                onChange={(e) => {
+                  const rows = [...stream.query_rows]
+                  rows[i] = { ...rows[i], value: e.target.value }
+                  upd({ query_rows: rows })
+                }}
+              />
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 shrink-0 p-0"
+                onClick={() =>
+                  upd({ query_rows: stream.query_rows.filter((_, j) => j !== i) })
+                }
+              >
+                <XIcon className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ))}
+          {(stream.query_rows || []).length === 0 && (
+            <p className="text-[11px] text-muted-foreground">
+              예: <code className="font-mono">$expand = Product</code> — navigation 을
+              딸려와 관계/속성 경로에서 <code className="font-mono">Product.필드</code> 로
+              뽑을 수 있습니다.
+            </p>
+          )}
         </div>
 
         <div className="flex items-end gap-2">

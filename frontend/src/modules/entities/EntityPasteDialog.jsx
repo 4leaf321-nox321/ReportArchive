@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ClipboardPaste, Plus, X, Loader2 } from 'lucide-react'
+import { ClipboardPaste, Plus, X, Loader2, Copy } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/shared/components/ui/button'
+import { copyTextToClipboard } from '@/shared/lib/clipboard'
+import { rowsToTsv } from '@/shared/lib/tableExport'
 import {
   Dialog,
   DialogContent,
@@ -168,6 +170,11 @@ export function EntityPasteDialog({ open, onOpenChange, types, fixedType, onImpo
     e.preventDefault()
     const lines = text.replace(/\r/g, '').split('\n')
     if (lines.length && lines[lines.length - 1] === '') lines.pop()
+    // "표 복사"로 내보낸 헤더 줄을 그대로 다시 붙여넣으면 첫 줄이 열 이름이므로
+    // 건너뛴다(0번 열에 붙여넣을 때만).
+    if (c === 0 && lines.length && lines[0].split('\t')[0].trim() === colDefs[0]?.label) {
+      lines.shift()
+    }
     setGrid((prev) => {
       const next = prev.map((row) => {
         const nr = [...row]
@@ -217,6 +224,22 @@ export function EntityPasteDialog({ open, onOpenChange, types, fixedType, onImpo
     0,
   )
   const canRun = typeId && filledRows > 0 && !busy
+
+  async function handleCopy() {
+    const filled = grid
+      .map((row) => colDefs.map((_, c) => row[c] ?? ''))
+      .filter((row) => row.some((cell) => (cell ?? '').trim() !== ''))
+    const src = filled.length ? filled : [colDefs.map(() => '')]
+    const tsv = rowsToTsv(src, colDefs.map((c) => c.label))
+    try {
+      await copyTextToClipboard(tsv)
+      toast.success('표를 클립보드에 복사했습니다', {
+        description: '엑셀에 붙여넣어 편집하거나, 다시 이 표에 붙여넣을 수 있습니다.',
+      })
+    } catch {
+      toast.error('복사에 실패했습니다')
+    }
+  }
 
   async function run(dryRun) {
     setBusy(true)
@@ -378,15 +401,27 @@ export function EntityPasteDialog({ open, onOpenChange, types, fixedType, onImpo
                 </tbody>
               </table>
               <div className="flex items-center justify-between border-t px-2 py-1">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 text-[11px]"
-                  onClick={() => setGrid((g) => [...g, []])}
-                >
-                  <Plus className="mr-1 h-3 w-3" /> 행 추가
-                </Button>
+                <div className="flex items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 text-[11px]"
+                    onClick={() => setGrid((g) => [...g, []])}
+                  >
+                    <Plus className="mr-1 h-3 w-3" /> 행 추가
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 text-[11px]"
+                    onClick={handleCopy}
+                    title="현재 표를 클립보드에 복사(TSV) — 엑셀 편집·붙여넣기 왕복용"
+                  >
+                    <Copy className="mr-1 h-3 w-3" /> 표 복사
+                  </Button>
+                </div>
                 <span className="text-[10px] text-muted-foreground">
                   엑셀에서 복사 후 셀에 붙여넣기(Ctrl+V) — 여러 행·열 한 번에
                 </span>

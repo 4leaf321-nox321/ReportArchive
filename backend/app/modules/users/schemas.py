@@ -99,6 +99,25 @@ class PasswordResetRequestRead(BaseModel):
     created_at: datetime
 
 
+class PasswordResetTokenRead(BaseModel):
+    """셀프 재설정 토큰 발급 이력 한 건(계정 단위 집계).
+
+    토큰 해시는 절대 내보내지 않는다 — 계정과 시각만.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: int
+    email: str
+    user_name: str
+    user_is_active: bool
+    request_count: int  # 이 계정이 재설정을 요청한 횟수
+    first_requested_at: datetime
+    last_requested_at: datetime
+    used_count: int  # 실제로 링크를 타고 재설정에 성공한 횟수
+    has_pending_queue_row: bool  # 이미 관리자 중개 큐에도 올라와 있는지
+
+
 class ResolvePasswordResetRequest(BaseModel):
     """관리자가 임시 비번을 발급하며 요청을 해소."""
 

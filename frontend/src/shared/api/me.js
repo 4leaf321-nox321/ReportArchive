@@ -60,6 +60,18 @@ export async function listPasswordResetRequests() {
   return extractData(res)
 }
 
+/**
+ * 관리자 — 셀프 재설정 토큰 발급 이력(계정 단위 집계).
+ * 메일이 도달 안 하는 환경에서 셀프 재설정 경로로 빠져나가 관리자 큐에 안 뜬
+ * 요청을 사후 추적하는 용도. days 는 조회 기간(기본 90일).
+ */
+export async function listPasswordResetTokens({ days = 90 } = {}) {
+  const res = await apiClient.get('/api/password-reset-tokens', {
+    params: { days },
+  })
+  return extractData(res)
+}
+
 /** 관리자 — 임시 비번 발급으로 요청 해소. */
 export async function resolvePasswordResetRequest(requestId, { newPassword }) {
   const res = await apiClient.post(

@@ -87,6 +87,7 @@ import {
   setUserHomeWorkspace,
   adminSetUserPassword,
   listPasswordResetRequests,
+  listPasswordResetTokens,
   resolvePasswordResetRequest,
   dismissPasswordResetRequest,
 } from '@/shared/api/me'
@@ -584,6 +585,7 @@ export default function AccountsAdminPage() {
       />
 
       <PasswordResetRequestsPanel />
+      <PasswordResetTokensPanel />
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
@@ -2205,6 +2207,137 @@ function PasswordResetRequestsPanel() {
           load()
         }}
       />
+    </div>
+  )
+}
+
+// 셀프 재설정 시도 이력 — 사용자가 '비밀번호 찾기'를 눌러 재설정 링크가
+// 발급된 계정 목록. 메일이 실제로 도달하지 않는 환경에서 셀프 재설정 경로가
+// 켜져 있으면 요청이 위 대기 큐에 안 뜨고 이 이력에만 남으므로, 그런 요청을
+// 찾아 임시 비번을 발급하는 용도. 이력 없음/권한 없음이면 숨김.
+function PasswordResetTokensPanel() {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [days, setDays] = useState(90)
+  const [resetTarget, setResetTarget] = useState(null)
+  // 이력이 하나라도 잡히면 그 뒤로는 계속 보여준다. 기간을 좁혀 0건이 되었을
+  // 때 패널이 통째로 사라지면 기간 선택기까지 없어져 되돌릴 수 없다.
+  const [everHadRows, setEverHadRows] = useState(false)
+
+  async function load(d = days) {
+    setLoading(true)
+    try {
+      const data = await listPasswordResetTokens({ days: d })
+      setRows(data ?? [])
+      if ((data ?? []).length > 0) setEverHadRows(true)
+    } catch {
+      setRows([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    load(days)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [days])
+
+  // 이력이 없거나 권한이 없으면(403 → rows=[]) 조용히 숨긴다.
+  if (!everHadRows && (loading || rows.length === 0)) return null
+
+  // 링크를 못 받았을 가능성이 있는 건 = 발급됐지만 한 번도 사용되지 않은 것.
+  const unused = rows.filter((r) => r.used_count === 0)
+
+  return (
+    <div className="rounded-lg border border-border bg-muted/30 p-4">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <KeyRound className="h-4 w-4" />
+          셀프 재설정 시도 이력 ({rows.length})
+        </div>
+        <select
+          value={days}
+          onChange={(e) => setDays(Number(e.target.value))}
+          className="h-7 rounded-md border border-input bg-background px-2 text-xs"
+        >
+          <option value={7}>최근 7일</option>
+          <option value={30}>최근 30일</option>
+          <option value={90}>최근 90일</option>
+          <option value={365}>최근 1년</option>
+        </select>
+      </div>
+      <p className="mb-3 text-xs text-muted-foreground">
+        ‘비밀번호 찾기’로 재설정 링크가 발급된 계정입니다.{' '}
+        <b>미사용</b>은 링크를 받지 못했거나 쓰지 않은 것으로, 메일 발송이 꺼진
+        기간에 접수된 요청이면 사용자는 아직 로그인하지 못하는 상태일 수 있습니다
+        {unused.length > 0 ? ` (현재 ${unused.length}건)` : ''}. 본인 확인 후 임시
+        비밀번호를 발급하세요.
+        <br />
+        가입되지 않은 이메일로 온 요청은 계정이 없어 이 목록에 남지 않습니다.
+      </p>
+      {rows.length === 0 && (
+        <div className="py-2 text-sm text-muted-foreground">
+          {loading ? '불러오는 중…' : '이 기간에는 시도 이력이 없습니다.'}
+        </div>
+      )}
+      <ul className="divide-y divide-border">
+        {rows.map((r) => (
+          <li
+            key={r.user_id}
+            className="flex items-center justify-between gap-3 py-2"
+          >
+            <div className="min-w-0">
+              <div className="truncate text-sm font-medium">
+                {r.user_name}{' '}
+                <span className="font-normal text-muted-foreground">
+                  · {r.email}
+                </span>
+                {!r.user_is_active && (
+                  <span className="ml-1.5 text-xs text-muted-foreground">
+                    (비활성 계정)
+                  </span>
+                )}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {r.request_count}회 시도 · 최종{' '}
+                {new Date(r.last_requested_at).toLocaleString()}
+                {r.used_count > 0 ? (
+                  <span className="ml-1.5 text-emerald-600 dark:text-emerald-400">
+                    · 재설정 완료 {r.used_count}회
+                  </span>
+                ) : (
+                  <span className="ml-1.5 text-amber-700 dark:text-amber-300">
+                    · 미사용 — 링크를 못 받았을 수 있음
+                  </span>
+                )}
+                {r.has_pending_queue_row && (
+                  <span className="ml-1.5">· 위 대기 큐에도 있음</span>
+                )}
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="shrink-0"
+              onClick={() =>
+                setResetTarget({ id: r.user_id, email: r.email, name: r.user_name })
+              }
+            >
+              <KeyRound className="mr-1.5 h-3.5 w-3.5" />
+              임시 비번 발급
+            </Button>
+          </li>
+        ))}
+      </ul>
+      {resetTarget && (
+        <ResetPasswordDialog
+          target={resetTarget}
+          onClose={() => {
+            setResetTarget(null)
+            load()
+          }}
+        />
+      )}
     </div>
   )
 }

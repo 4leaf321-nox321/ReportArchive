@@ -138,13 +138,17 @@ def _smtp_login_send(smtp, msg, envelope_from: str, recipients: list[str]) -> No
 
 
 def is_active() -> bool:
-    """실제로 메일을 전달할 수 있는 상태인가. smtp 는 호스트가 설정돼야 하고,
-    console/mock 은 항상 활성(로그/캡처). 비활성이면 호출부가 관리자 중개 등
-    폴백을 쓴다."""
+    """실제로 수신자에게 메일이 도달하는 상태인가. 비활성이면 호출부가 관리자
+    중개 등 폴백을 쓴다.
+
+    smtp 는 호스트가 설정돼야 한다. mock 은 OUTBOX 로 캡처되므로 테스트에서
+    도달로 친다. console 은 로그로만 찍히고 아무에게도 가지 않으므로 False —
+    여기서 True 를 주면 호출부가 '보냈다'고 믿고 폴백을 건너뛴다.
+    """
     backend = (settings.email_backend or "console").strip().lower()
     if backend == "smtp":
         return bool(settings.smtp_host.strip())
-    return backend in ("console", "mock")
+    return backend == "mock"
 
 
 def status() -> dict:

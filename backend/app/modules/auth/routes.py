@@ -100,8 +100,9 @@ def request_password_reset(
 ):
     """공개 '비밀번호 찾기' 접수.
 
-    메일 발송이 가능하면(mailer.is_active) 가입 계정에 재설정 링크를 이메일로
-    보낸다(셀프 재설정). 발송 불가 환경이면 기존처럼 관리자 중개 큐에 쌓는다.
+    셀프 재설정이 켜져 있고(password_self_reset_enabled) 메일이 실제로 도달할
+    수 있으면(mailer.is_active) 가입 계정에 재설정 링크를 보낸다. 둘 중 하나라도
+    아니면 관리자 중개 큐에 쌓는다 — 요청이 조용히 사라지면 안 된다.
 
     보안: 이메일 가입 여부를 응답으로 노출하지 않는다(항상 202/동일 메시지).
     """
@@ -112,7 +113,7 @@ def request_password_reset(
         select(User).where(User.email == email)
     ).scalar_one_or_none()
 
-    if mail_service.is_active():
+    if settings.password_self_reset_enabled and mail_service.is_active():
         # 셀프 재설정 — 가입 계정에만 실제 발송(미가입이면 조용히 넘어감).
         if user is not None and user.is_active and "@" in (user.email or ""):
             raw = auth_services.create_password_reset_token(db, user)

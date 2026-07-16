@@ -217,6 +217,11 @@ class Settings(BaseSettings):
     # 메일 본문 링크(비밀번호 재설정 등)의 기준 URL. 비우면 cors_origins 첫 항목 사용.
     app_base_url: str = Field(default="")
 
+    # 셀프 비밀번호 재설정(이메일 링크) 사용 여부. false 면 메일이 나갈 수 있는
+    # 환경이어도 '비밀번호 찾기'는 관리자 중개 큐로만 간다. SMTP 를 다른 용도
+    # (알림·경보 다이제스트)로 켤 때 셀프 재설정까지 딸려 켜지는 걸 막는 스위치.
+    password_self_reset_enabled: bool = Field(default=False)
+
     @property
     def email_base_url(self) -> str:
         """메일 링크용 프론트엔드 기준 URL. app_base_url 우선, 없으면 CORS 첫 항목."""

@@ -30,6 +30,7 @@ from app.modules.users.schemas import (
     MembershipRead,
     MeRead,
     PasswordResetRequestRead,
+    PasswordResetTokenRead,
     ResolvePasswordResetRequest,
     SetHomeWorkspaceRequest,
     SetSystemAdminRequest,
@@ -39,7 +40,7 @@ from app.modules.users.schemas import (
     UpdateProfileRequest,
     UserRead,
 )
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.modules.workspaces.models import Workspace
 from app.shared.auth import (
     CurrentUser,
@@ -741,6 +742,33 @@ def admin_set_user_password(
     )
 
 
+def _visible_reset_user_ids(db: Session, actor: User) -> set[int]:
+    """actor 의 관리 트리(매니저 부서 + 하위)에 속한 유저 id 집합.
+
+    시스템 관리자는 이 함수를 호출할 필요가 없다(전부 보임) — 호출부가
+    is_system_admin 을 먼저 확인한다.
+    """
+    from app.modules.workspaces import services as ws_services
+
+    admin_slugs: set[str] = set()
+    for m in db.execute(
+        select(WorkspaceMember).where(WorkspaceMember.user_id == actor.id)
+    ).scalars():
+        if m.role == Role.manager:
+            admin_slugs.update(
+                ws_services.get_descendants_inclusive(db, m.workspace_slug)
+            )
+    if not admin_slugs:
+        return set()
+    return set(
+        db.execute(
+            select(WorkspaceMember.user_id).where(
+                WorkspaceMember.workspace_slug.in_(admin_slugs)
+            )
+        ).scalars()
+    )
+
+
 @router.get("/password-reset-requests")
 def list_password_reset_requests(
     db: Session = Depends(get_db),
@@ -760,25 +788,9 @@ def list_password_reset_requests(
     )
 
     is_sysadmin = actor.user.is_system_admin
-    visible_user_ids: set[int] = set()
-    if not is_sysadmin:
-        from app.modules.workspaces import services as ws_services
-
-        admin_slugs: set[str] = set()
-        for m in db.execute(
-            select(WorkspaceMember).where(WorkspaceMember.user_id == actor.user.id)
-        ).scalars():
-            if m.role == Role.manager:
-                admin_slugs.update(
-                    ws_services.get_descendants_inclusive(db, m.workspace_slug)
-                )
-        if admin_slugs:
-            member_user_ids = db.execute(
-                select(WorkspaceMember.user_id).where(
-                    WorkspaceMember.workspace_slug.in_(admin_slugs)
-                )
-            ).scalars()
-            visible_user_ids = set(member_user_ids)
+    visible_user_ids: set[int] = (
+        set() if is_sysadmin else _visible_reset_user_ids(db, actor.user)
+    )
 
     out = []
     for r in rows:
@@ -794,6 +806,87 @@ def list_password_reset_requests(
                 user_id=r.user_id,
                 user_name=r.user.name if r.user else None,
                 created_at=r.created_at,
+            )
+        )
+    return success_response(data=out)
+
+
+@router.get("/password-reset-tokens")
+def list_password_reset_tokens(
+    days: int = 90,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_admin),
+):
+    """셀프 재설정 토큰 발급 이력(계정 단위 집계).
+
+    용도는 두 가지다. 하나는 셀프 재설정이 켜져 있을 때 누가 재설정을 시도했고
+    실제로 완료했는지 보는 것. 다른 하나는 사후 추적 — 메일이 도달하지 않는
+    환경에서 셀프 재설정 경로로 요청이 빠져나가면, 관리자 큐에는 안 뜨고 이
+    토큰 행만 흔적으로 남는다. 그런 요청을 여기서 찾아 임시 비번을 발급한다.
+
+    가시성은 대기 목록과 같은 규칙(시스템 관리자 전부 / 부서 관리자는 관리
+    트리 내 계정). 토큰 해시는 내보내지 않는다.
+
+    한계: 어느 계정과도 매칭되지 않은 이메일로 온 요청은 토큰 자체가 생기지
+    않으므로 여기에도 안 나온다.
+    """
+    from sqlalchemy import func
+
+    from app.modules.users.models import PasswordResetToken
+
+    days = max(1, min(days, 365))
+    since = datetime.utcnow() - timedelta(days=days)
+
+    rows = list(
+        db.execute(
+            select(
+                PasswordResetToken.user_id,
+                func.count().label("request_count"),
+                func.min(PasswordResetToken.created_at).label("first_at"),
+                func.max(PasswordResetToken.created_at).label("last_at"),
+                func.count(PasswordResetToken.used_at).label("used_count"),
+            )
+            .where(PasswordResetToken.created_at >= since)
+            .group_by(PasswordResetToken.user_id)
+            .order_by(func.max(PasswordResetToken.created_at).desc())
+        )
+    )
+    if not rows:
+        return success_response(data=[])
+
+    is_sysadmin = actor.user.is_system_admin
+    visible_user_ids: set[int] = (
+        set() if is_sysadmin else _visible_reset_user_ids(db, actor.user)
+    )
+
+    # 이미 관리자 큐에 올라와 있는 계정은 화면에서 중복 처리하지 않도록 표시.
+    queued_user_ids = set(
+        db.execute(
+            select(PasswordResetRequest.user_id).where(
+                PasswordResetRequest.status == PasswordResetStatus.pending,
+                PasswordResetRequest.user_id.is_not(None),
+            )
+        ).scalars()
+    )
+
+    out = []
+    for r in rows:
+        if not is_sysadmin and r.user_id not in visible_user_ids:
+            continue
+        u = db.get(User, r.user_id)
+        if u is None:
+            continue  # 계정이 지워졌으면 토큰도 CASCADE 로 사라지지만 방어적으로.
+        out.append(
+            PasswordResetTokenRead(
+                user_id=r.user_id,
+                email=u.email,
+                user_name=u.name,
+                user_is_active=u.is_active,
+                request_count=r.request_count,
+                first_requested_at=r.first_at,
+                last_requested_at=r.last_at,
+                used_count=r.used_count,
+                has_pending_queue_row=r.user_id in queued_user_ids,
             )
         )
     return success_response(data=out)

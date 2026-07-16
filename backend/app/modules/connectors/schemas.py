@@ -148,6 +148,12 @@ class ProbeRequest(BaseModel):
 
 
 class SuggestMappingRequest(BaseModel):
-    """AI 자동 매핑 — 조회한 샘플 레코드 1건 + 대상 축으로 매핑 초안을 제안받는다."""
+    """AI 자동 매핑 — 조회한 샘플 + 대상 축으로 매핑 초안을 제안받는다.
+
+    samples/fields 는 probe 응답을 그대로 넘기면 된다. 1건만 보내면 그 레코드에서
+    null 인 navigation($expand 된 product 등)을 AI 가 아예 못 본다.
+    """
     target_type_id: int
-    sample: dict = {}
+    sample: dict = {}                  # 구버전 호환(1건). samples 가 있으면 무시.
+    samples: list[dict] = []           # probe 의 sample (5건)
+    fields: list[str] = []             # probe 가 전체 스캔해 모은 경로 목록

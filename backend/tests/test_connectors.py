@@ -713,3 +713,65 @@ def test_provenance_tagging(monkeypatch):
             c.delete(f"/api/connectors/{sid}", headers=ADMIN)
         if proj_id:
             c.delete(f"/api/entity-types/{proj_id}", headers=ADMIN)
+
+
+def test_suggest_sees_nested_path_null_in_first_record(monkeypatch):
+    """앞 레코드에서 null 인 navigation 의 하위 경로도 AI 매핑 후보가 된다.
+
+    실제 SPDM 케이스 — $expand=product 인데 앞쪽 모델들은 product 가 null 이라,
+    1건만 보내던 예전 방식에선 product.* 를 아예 못 봐서 제안이 불가능했다.
+    """
+    def _boom(*a, **k):
+        raise LLMError("no llm")
+
+    monkeypatch.setattr(conn_suggest, "chat", _boom)
+    c = TestClient(app)
+    sfx = uuid.uuid4().hex[:8]
+    tid = None
+    try:
+        tid = _mk_axis_with_prop(c, sfx)
+        samples = [
+            {"name": "M0", "product": None},
+            {"name": "M1", "product": None},
+            {"name": "M2", "product": {"stage": "양산"}},  # 여기서만 값이 있음
+        ]
+        r = c.post("/api/connectors/suggest-mapping", headers=ADMIN,
+                   json={"target_type_id": tid, "samples": samples,
+                         "fields": ["name", "product.stage"]})
+        assert r.status_code == 200, r.text
+        d = r.json()["data"]
+        # 3번째 레코드에만 있던 product.stage 를 속성 stage 에 매핑해낸다.
+        assert d["property_map"].get("stage") == "product.stage", d
+        assert d["value_path"] == "name", d
+    finally:
+        if tid:
+            rp = c.get(f"/api/entity-types/{tid}/properties", headers=ADMIN)
+            if rp.status_code == 200:
+                for pd in rp.json()["data"]["items"]:
+                    c.delete(f"/api/entity-types/{tid}/properties/{pd['id']}", headers=ADMIN)
+            c.delete(f"/api/entity-types/{tid}", headers=ADMIN)
+
+
+def test_suggest_legacy_single_sample_still_works(monkeypatch):
+    """구버전 호출(sample 1건)도 그대로 — 프론트 배포 전 요청이 깨지지 않게."""
+    def _boom(*a, **k):
+        raise LLMError("no llm")
+
+    monkeypatch.setattr(conn_suggest, "chat", _boom)
+    c = TestClient(app)
+    sfx = uuid.uuid4().hex[:8]
+    tid = None
+    try:
+        tid = _mk_axis_with_prop(c, sfx)
+        r = c.post("/api/connectors/suggest-mapping", headers=ADMIN,
+                   json={"target_type_id": tid,
+                         "sample": {"name": "M", "stage": "설계"}})
+        assert r.status_code == 200, r.text
+        assert r.json()["data"]["property_map"].get("stage") == "stage"
+    finally:
+        if tid:
+            rp = c.get(f"/api/entity-types/{tid}/properties", headers=ADMIN)
+            if rp.status_code == 200:
+                for pd in rp.json()["data"]["items"]:
+                    c.delete(f"/api/entity-types/{tid}/properties/{pd['id']}", headers=ADMIN)
+            c.delete(f"/api/entity-types/{tid}", headers=ADMIN)

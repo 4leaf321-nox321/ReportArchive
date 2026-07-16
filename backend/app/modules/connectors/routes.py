@@ -139,7 +139,13 @@ def suggest_mapping(
     """AI 자동 매핑 — 샘플 레코드 + 대상 축으로 value/속성/관계 매핑 초안 제안.
     LLM 시도 → 실패 시 휴리스틱 폴백. 존재하는 경로·슬러그만 반환(검증됨)."""
     try:
-        data = suggest.suggest_mapping(db, payload.target_type_id, payload.sample)
+        data = suggest.suggest_mapping(
+            db,
+            payload.target_type_id,
+            sample=payload.sample,
+            samples=payload.samples,
+            fields=payload.fields,
+        )
     except ValueError as exc:
         return error_response(str(exc), status_code=400)
     return success_response(data=data)

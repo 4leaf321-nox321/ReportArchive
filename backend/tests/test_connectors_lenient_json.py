@@ -188,3 +188,70 @@ def test_last_scalar_wins_for_nextlink():
     merged = _merge_docs(_loads_concatenated(json.dumps(d1) + json.dumps(d2)))
     assert merged["@odata.nextLink"] == "page3"  # 스칼라는 마지막이 이김
     assert [r["id"] for r in merged["value"]] == [1, 2]
+
+
+# --- probe 필드 경로 수집 --- #
+
+
+def test_probe_collects_paths_beyond_sample():
+    """자동완성 경로는 화면에 보여줄 5건이 아니라 받아온 레코드 전체에서 모은다.
+
+    $expand 된 navigation 은 앞쪽 레코드에서 null 인 경우가 흔하다(실제 SPDM 의
+    product). 5건만 훑으면 product.ProductCode 가 통째로 빠져 자동완성에 안 뜬다.
+    """
+    from unittest.mock import patch
+
+    from app.modules.connectors import services as S
+
+    records = [{"id": i, "Name": f"M{i}", "product": None} for i in range(5)]
+    records.append({"id": 5, "Name": "M5", "product": {"ProductCode": "P-5"}})
+
+    with patch.object(S, "fetch_records", return_value=records):
+        out = S.probe_stream(ConnectionConfig(base_url="http://x"), StreamConfig())
+
+    assert "product.ProductCode" in out["fields"]  # 6번째 레코드에만 있어도 잡힌다
+    assert out["record_count"] == 6
+    assert out["scanned"] == 6
+    assert len(out["sample"]) == 5              # 화면 미리보기는 5건 그대로
+    assert out["sample"][0]["product"] is None  # 첫 건은 여전히 null
+
+
+def test_probe_drops_interior_paths():
+    """null 때문에 leaf 로 잡힌 중간 노드('product')는 제안하지 않는다 — 하위
+    경로가 있으면 그 경로는 객체를 가리키므로 속성 값으로 쓸 수 없다."""
+    from unittest.mock import patch
+
+    from app.modules.connectors import services as S
+
+    records = [{"product": None}, {"product": {"ProductCode": "P-1"}}]
+    with patch.object(S, "fetch_records", return_value=records):
+        out = S.probe_stream(ConnectionConfig(base_url="http://x"), StreamConfig())
+
+    assert out["fields"] == ["product.ProductCode"]
+
+
+def test_probe_keeps_null_only_field():
+    """전 레코드에서 null 인 필드는 하위 경로가 없으니 그대로 남긴다(존재 자체가 정보)."""
+    from unittest.mock import patch
+
+    from app.modules.connectors import services as S
+
+    with patch.object(S, "fetch_records", return_value=[{"a": 1, "product": None}]):
+        out = S.probe_stream(ConnectionConfig(base_url="http://x"), StreamConfig())
+    assert out["fields"] == ["a", "product"]
+
+
+def test_probe_array_paths_match_dig_notation():
+    """컬렉션 navigation 은 인덱스 표기로 — _dig 가 읽는 표기와 같아야 한다."""
+    from unittest.mock import patch
+
+    from app.modules.connectors import services as S
+    from app.modules.connectors.fetch import _dig
+
+    rec = {"product": [{"ProductCode": "P-1"}]}
+    with patch.object(S, "fetch_records", return_value=[rec]):
+        out = S.probe_stream(ConnectionConfig(base_url="http://x"), StreamConfig())
+
+    assert out["fields"] == ["product.0.ProductCode"]
+    # 제안한 경로가 실제로 값을 뽑아내는지 — 자동완성이 거짓말하면 안 된다.
+    assert _dig(rec, out["fields"][0]) == "P-1"

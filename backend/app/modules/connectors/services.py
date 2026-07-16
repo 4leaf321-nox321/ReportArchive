@@ -337,9 +337,55 @@ def maybe_alert_sync_failure(
 
 
 # --- probe(스트림 단위 샘플) -------------------------------------------------
+_PROBE_SAMPLE = 5        # 화면에 그대로 보여줄 원본 레코드 수(응답 크기 억제).
+_PROBE_SCAN = 500        # 경로 수집용 스캔 상한. 앞쪽이 전부 null 인 navigation 을
+                         # 놓치지 않을 만큼 넓게, 큰 응답에서 CPU 를 안 태울 만큼 좁게.
+
+
+def _flatten_paths(obj, prefix: str = "", out: set[str] | None = None) -> set[str]:
+    """레코드 하나를 점표기 leaf 경로 집합으로 평탄화(name, product.ProductCode …).
+
+    배열은 첫 원소만 파고들며 인덱스를 경로에 남긴다(product.0.ProductCode) —
+    build_rows_and_mapping 의 _dig 가 읽는 표기와 같아야 한다.
+    """
+    if out is None:
+        out = set()
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            _flatten_paths(v, f"{prefix}.{k}" if prefix else str(k), out)
+    elif isinstance(obj, list):
+        if obj:
+            _flatten_paths(obj[0], f"{prefix}.0", out)
+        elif prefix:
+            out.add(prefix)
+    elif prefix:
+        out.add(prefix)
+    return out
+
+
 def probe_stream(connection, stream) -> dict:
-    """저장 전 매핑 UI 용 — 커넥션+스트림으로 응답을 받아 레코드 샘플·필드명 반환."""
+    """저장 전 매핑 UI 용 — 커넥션+스트림으로 응답을 받아 레코드 샘플·필드 경로 반환.
+
+    필드 경로는 **샘플이 아니라 받아온 레코드 전체**(스캔 상한까지)에서 모은다.
+    $expand 된 navigation 은 앞쪽 레코드에서 null 인 경우가 흔해서(SPDM 의 product
+    등), 화면에 보여줄 5건만 훑으면 그 하위 경로가 자동완성에서 통째로 빠진다 —
+    fetch 는 이미 전체를 받아왔으므로 여기서 훑는 게 공짜에 가깝다.
+    """
     records = fetch_records(connection, stream)
-    sample = records[:5]
-    fields = sorted(sample[0].keys()) if sample else []
-    return {"record_count": len(records), "fields": fields, "sample": sample}
+    sample = records[:_PROBE_SAMPLE]
+    paths: set[str] = set()
+    for r in records[:_PROBE_SCAN]:
+        if isinstance(r, dict):
+            paths |= _flatten_paths(r)
+    # 중간 노드 제거 — product 가 어떤 레코드에서 null 이면 leaf 로 잡혀 'product' 가
+    # 들어오는데, 다른 레코드에서 product.ProductCode 가 나왔다면 'product' 는 객체를
+    # 가리키는 경로다. 속성 칸에 넣어도 값이 안 나오니 제안하지 않는다.
+    fields = sorted(
+        p for p in paths if not any(q.startswith(f"{p}.") for q in paths)
+    )
+    return {
+        "record_count": len(records),
+        "fields": fields,
+        "sample": sample,
+        "scanned": min(len(records), _PROBE_SCAN),
+    }

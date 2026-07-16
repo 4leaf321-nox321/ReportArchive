@@ -68,10 +68,17 @@ export async function getObjectProvenance(entityId) {
   return extractData(await apiClient.get(`${BASE}/objects/${entityId}/provenance`))
 }
 
-/** AI 자동 매핑 — 샘플 레코드 + 대상 축 → 매핑 초안 제안(LLM→휴리스틱 폴백, 검증됨).
+/** AI 자동 매핑 — probe 결과(샘플 레코드들 + 전체 스캔 경로) + 대상 축 → 매핑 초안
+ *  제안(LLM→휴리스틱 폴백, 검증됨). probeResult 를 통째로 넘기면 된다 — 1건만 보내면
+ *  그 레코드에서 null 인 navigation 을 AI 가 못 본다.
  *  { value_path, property_map:{slug:path}, relation_map:[...], source:'llm'|'heuristic' } */
-export async function suggestMapping(targetTypeId, sample) {
+export async function suggestMapping(targetTypeId, probeResult) {
+  const { sample = [], fields = [] } = probeResult || {}
   return extractData(
-    await apiClient.post(`${BASE}/suggest-mapping`, { target_type_id: targetTypeId, sample }),
+    await apiClient.post(`${BASE}/suggest-mapping`, {
+      target_type_id: targetTypeId,
+      samples: sample,
+      fields,
+    }),
   )
 }

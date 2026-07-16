@@ -279,13 +279,14 @@ function StreamEditor({
   }
 
   const dlId = `ff-${index}` // datalist id (조회된 필드 경로)
-  // 조회된 필드 경로 — 샘플 **전체 레코드**를 훑어 합집합으로 모은다. 한 레코드만
-  // 보면(특히 첫 레코드) 그 레코드에 null 인 navigation($expand된 product 등)의
-  // 하위 경로가 빠져 자동완성에 안 뜬다. 5건 중 하나라도 있으면 노출되게.
+  // 조회된 필드 경로 — 서버가 받아온 레코드 전체(스캔 상한까지)를 훑어 준 fields 를
+  // 쓴다. 화면에 오는 샘플 5건만 훑으면, $expand 된 navigation 이 앞쪽 레코드에서
+  // null 일 때(SPDM product 등) 하위 경로가 통째로 빠진다. sample 평탄화는 구버전
+  // 응답(fields 없음) 대비 폴백.
   const fieldPaths = useMemo(() => {
+    if (probeResult?.fields?.length) return probeResult.fields
     const rows = probeResult?.sample ?? []
-    const all = rows.flatMap((r) => flattenPaths(r ?? {}))
-    return [...new Set(all)].sort()
+    return [...new Set(rows.flatMap((r) => flattenPaths(r ?? {})))].sort()
   }, [probeResult])
 
   // 속성 행 = 축 정의 속성(자동) + config 에 있던 추가 slug(하위호환).
@@ -427,14 +428,24 @@ function StreamEditor({
           </Button>
           {fieldPaths.length > 0 && (
             <span className="pb-1.5 text-xs text-muted-foreground">
-              필드 {fieldPaths.length}개 조회됨 — 칸을 클릭해 고르거나 ‘AI 자동 매핑’으로 한 번에.
+              필드 {fieldPaths.length}개 조회됨
+              {probeResult?.scanned ? ` (레코드 ${probeResult.scanned}건 기준)` : ''} —
+              칸을 클릭해 고르거나 ‘AI 자동 매핑’으로 한 번에.
             </span>
           )}
         </div>
         {probeResult && (
-          <pre className="max-h-32 overflow-auto rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
-            {JSON.stringify(probeResult.sample?.[0] ?? {}, null, 2)}
-          </pre>
+          <>
+            {/* 미리보기는 첫 레코드 1건 — 이 레코드에 null 인 값도 위 필드 목록에는
+                있을 수 있다(목록은 전체 스캔 기준). 오해 없게 밝혀둔다. */}
+            <p className="text-xs text-muted-foreground">
+              아래는 <b>첫 레코드 1건</b>입니다. 여기서 <code>null</code>인 항목도 뒤쪽
+              레코드에 값이 있으면 위 필드 목록에는 나옵니다.
+            </p>
+            <pre className="max-h-32 overflow-auto rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
+              {JSON.stringify(probeResult.sample?.[0] ?? {}, null, 2)}
+            </pre>
+          </>
         )}
 
         {/* 값(이름) */}
@@ -866,12 +877,14 @@ export default function ConnectorsAdminPage() {
 
   async function doSuggest(i) {
     const st = draft.streams[i]
-    const sample = probeResults[i]?.sample?.[0]
+    // probe 결과를 통째로 — 1건만 주면 그 레코드에서 null 인 navigation 을 AI 가
+    // 못 본다(SPDM product 등). 샘플 5건 + 전체 스캔 경로를 함께 넘긴다.
+    const probe = probeResults[i]
     if (!Number(st.target_type_id)) return toast.error('대상 축을 먼저 선택하세요.')
-    if (!sample) return toast.error('먼저 샘플 조회를 하세요.')
+    if (!probe?.sample?.length) return toast.error('먼저 샘플 조회를 하세요.')
     setSuggesting(i)
     try {
-      const res = await suggestMapping(Number(st.target_type_id), sample)
+      const res = await suggestMapping(Number(st.target_type_id), probe)
       setStream(i, {
         ...st,
         value_path: res.value_path || st.value_path,

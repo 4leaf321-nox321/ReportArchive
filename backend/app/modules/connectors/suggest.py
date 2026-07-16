@@ -47,13 +47,56 @@ def _leaf(path: str) -> str:
     return path.rsplit(".", 1)[-1]
 
 
-def suggest_mapping(db: Session, target_type_id: int, sample: dict) -> dict:
+def _flatten_many(records: list[dict], fields: list[str] | None = None) -> dict:
+    """여러 레코드 → {점표기 leaf 경로: 대표 샘플값}.
+
+    대표값은 **처음 만나는 non-null 값**. 한 레코드만 보면 그 레코드에서 null 인
+    navigation($expand 된 product 등)의 하위 경로가 통째로 안 보여서, LLM 도
+    휴리스틱도 그 필드의 존재 자체를 모른다.
+
+    fields 는 probe 가 레코드 전체를 스캔해 모은 경로 목록 — 샘플 몇 건에는 값이
+    없어도 후보로는 남겨야 하므로 값 없이(None) 채워 넣는다.
+    """
+    out: dict = {}
+    for r in records or []:
+        if not isinstance(r, dict):
+            continue
+        for p, v in _flatten(r).items():
+            # 이미 값이 있으면 유지 — 먼저 만난 non-null 이 대표값.
+            if out.get(p) is None:
+                out[p] = v
+            else:
+                out.setdefault(p, v)
+    for f in fields or []:
+        out.setdefault(f, None)
+    # 중간 노드 제거 — 어떤 레코드에서 product 가 null 이면 leaf 로 잡혀 'product' 가
+    # 들어오는데, 하위 경로(product.ProductCode)가 있다면 그건 객체를 가리킨다.
+    # 속성 값으로 쓸 수 없으니 후보에서 뺀다(probe 의 fields 와 같은 규칙).
+    return {
+        p: v for p, v in out.items()
+        if not any(q.startswith(f"{p}.") for q in out)
+    }
+
+
+def suggest_mapping(
+    db: Session,
+    target_type_id: int,
+    sample: dict | None = None,
+    samples: list[dict] | None = None,
+    fields: list[str] | None = None,
+) -> dict:
+    """매핑 초안 제안.
+
+    samples/fields 는 probe 결과를 그대로 넘기면 된다(레코드 5건 + 전체 스캔 경로).
+    sample 은 구버전 호출 하위호환 — samples 가 있으면 무시된다.
+    """
     axis = ent.get_type(db, target_type_id)
     if axis is None:
         raise ValueError(f"축을 찾을 수 없습니다: {target_type_id}")
 
     defs = ent.list_property_defs(db, owner_kind="entity_type", owner_id=target_type_id)
-    paths = _flatten(sample or {})
+    records = samples if samples else ([sample] if sample else [])
+    paths = _flatten_many(records, fields)
     axes = ent.list_types(db)
     axis_slugs = {a.slug for a in axes}
     rel_types = ent.list_relation_types(db)
@@ -115,8 +158,15 @@ def _heuristic(defs, applicable, paths: dict) -> dict:
 
 # --- LLM ---------------------------------------------------------------------
 def _llm_suggest(axis, defs, applicable, paths: dict) -> dict | None:
+    # 값이 없는 경로도 실재하는 후보다(샘플 몇 건에서만 비었을 뿐) — "null" 로 찍어
+    # 항상 빈 필드처럼 오해하게 두지 말고 그렇게 밝힌다.
     fields_desc = "\n".join(
-        f"- {p}: {json.dumps(v, ensure_ascii=False)[:60]}"
+        f"- {p}: "
+        + (
+            "(샘플에 값 없음 — 필드는 존재)"
+            if v is None
+            else json.dumps(v, ensure_ascii=False)[:60]
+        )
         for p, v in list(paths.items())[:_MAX_FIELDS]
     ) or "(없음)"
     props_desc = "\n".join(f"- {d.key} ({d.label}, {d.data_type})" for d in defs) or "(없음)"

@@ -334,6 +334,7 @@ def list_entities(
     q: Optional[str] = None,
     include_deprecated: bool = False,
     limit: int = 200,
+    offset: int = 0,
     with_usage: bool = False,
     related_to: Optional[list[int]] = None,
     year: Optional[int] = None,
@@ -369,7 +370,7 @@ def list_entities(
             stmt = stmt.where(Entity.id.in_(_related_to_subquery(related_to)))
         if year is not None:
             stmt = stmt.where(_temporal_year_filter(year))
-        stmt = stmt.order_by(Entity.value).limit(limit)
+        stmt = stmt.order_by(Entity.value, Entity.id).limit(limit).offset(offset)
         return list(db.execute(stmt).scalars())
 
     # Admin variant — count via a correlated subquery rather than
@@ -404,7 +405,7 @@ def list_entities(
         stmt = stmt.where(Entity.id.in_(_related_to_subquery(related_to)))
     if year is not None:
         stmt = stmt.where(_temporal_year_filter(year))
-    stmt = stmt.order_by(Entity.value).limit(limit)
+    stmt = stmt.order_by(Entity.value, Entity.id).limit(limit).offset(offset)
     return [(row, int(cnt or 0)) for row, cnt in db.execute(stmt).all()]
 
 

@@ -11,6 +11,7 @@ import {
   ArrowRightLeft,
   ChevronUp,
   ChevronDown,
+  Copy,
   ExternalLink,
   FileText,
   Link2Off,
@@ -65,7 +66,13 @@ import {
 } from './EntityPropertiesFields'
 import { cn } from '@/shared/lib/utils'
 import { copyTextToClipboard } from '@/shared/lib/clipboard'
-import { rowsToTsv } from '@/shared/lib/tableExport'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/shared/components/ui/dropdown-menu'
+import { downloadTextFile, rowsToCsv, rowsToTsv } from '@/shared/lib/tableExport'
 import { PageHeader } from '@/shared/components/PageHeader'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { useAsync } from '@/shared/hooks/useAsync'
@@ -89,6 +96,7 @@ import {
   deleteEntityRelation,
   deleteEntityType,
   getEntityYears,
+  listAllEntities,
   listEntities,
   searchEntities,
   listEntityAliases,
@@ -619,13 +627,14 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
   const [relTarget, setRelTarget] = useState(null)
   const [graphTarget, setGraphTarget] = useState(null)
 
+  // 값 전체를 가져온다 — 페이지를 끝까지 넘겨 합친다. 예전엔 limit:500 한 번이라
+  // 값이 500개를 넘는 축은 화면에 조용히 잘려 보였다(표시도 없었음).
   const { data, loading, error } = useAsync(
     () =>
-      listEntities({
+      listAllEntities({
         typeId: type.id,
         includeDeprecated,
         withUsage: true,
-        limit: 500,
       }),
     [type.id, includeDeprecated, reloadKey],
   )
@@ -673,7 +682,8 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
   // 내보내기 — "표로 입력"과 같은 열 구성(이름 + 속성)으로 TSV 를 클립보드에 담는다.
   // 헤더(이름·속성 라벨) + 값 행. 「표로 입력」에 그대로 붙여넣으면 헤더는 자동
   // 스킵되고 값·속성이 위치로 매핑돼 왕복 편집·재정의가 된다.
-  async function handleExport() {
+  /** 내보낼 표(헤더 + 행) — 복사·CSV 두 모드가 같은 데이터를 쓴다. */
+  function buildExportTable() {
     const headers = ['이름', ...propertyDefs.map((d) => d.label)]
     const data = filteredRows.map((r) => [
       r.value,
@@ -683,14 +693,38 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
         return Array.isArray(v) ? v.join(', ') : String(v)
       }),
     ])
+    return { headers, data }
+  }
+
+  async function handleExportCopy() {
+    const { headers, data } = buildExportTable()
     try {
+      // await 없이 바로 호출 — 비보안(HTTP) 폴백은 사용자 제스처 안에서만 된다.
       await copyTextToClipboard(rowsToTsv(data, headers))
-      toast.success(`${data.length}건 내보냄 (클립보드)`, {
+      toast.success(`${data.length}건 복사됨 (클립보드)`, {
         description:
           '엑셀에 붙여 편집하거나 「표로 입력」에 그대로 붙여넣어 재정의할 수 있습니다.',
       })
     } catch {
-      toast.error('내보내기에 실패했습니다')
+      toast.error('복사에 실패했습니다')
+    }
+  }
+
+  function handleExportCsv() {
+    const { headers, data } = buildExportTable()
+    try {
+      // 파일명에 축 이름 — 여러 축을 내보내도 구분된다. 경로 문자는 제거.
+      const safe = (type.label || type.slug || 'entities').replace(/[\\/:*?"<>|]/g, '_')
+      const stamp = new Date().toISOString().slice(0, 10)
+      downloadTextFile(`${safe}_${stamp}.csv`, rowsToCsv(data, headers), {
+        mime: 'text/csv',
+        bom: true, // 엑셀 한글 깨짐 방지
+      })
+      toast.success(`${data.length}건 저장됨 (CSV)`, {
+        description: '엑셀에서 바로 열립니다.',
+      })
+    } catch {
+      toast.error('CSV 저장에 실패했습니다')
     }
   }
 
@@ -721,6 +755,9 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
         key: 'value',
         header: '값',
         sortable: true,
+        // 폭을 명시해 좁힌다 — 폭 없는 열이 나머지를 다 흡수하는(title 열) 규칙
+        // 때문에 값이 과하게 넓고 속성이 눌려 있었다. 이제 속성이 나머지를 받는다.
+        headerClassName: 'w-[200px]',
         render: (r) => (
           <span
             className={
@@ -784,7 +821,9 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
             {
               key: '_properties',
               header: '속성',
-              headerClassName: 'w-[150px]',
+              // 액션 열(560px)보다 약간 작게 — 속성 칩이 줄바꿈으로 뭉개지지 않게
+              // 넉넉히 준다. 값(200px)에서 뺀 폭이 여기로 온다.
+              headerClassName: 'w-[480px]',
               render: (r) => (
                 <PropertiesSummary defs={propertyDefs} properties={r.properties} />
               ),
@@ -937,15 +976,35 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
             <Upload className="mr-1 h-3.5 w-3.5" />
             가져오기
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleExport}
-            title="현재 목록을 「표로 입력」 형식(TSV)으로 클립보드에 복사 — 붙여넣어 편집·재정의"
-          >
-            <Download className="mr-1 h-3.5 w-3.5" />
-            내보내기
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" disabled={filteredRows.length === 0}>
+                <Download className="mr-1 h-3.5 w-3.5" />
+                내보내기
+                <ChevronDown className="ml-1 h-3.5 w-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={handleExportCopy}>
+                <Copy className="mr-2 h-3.5 w-3.5" />
+                <div>
+                  <div>클립보드로 복사</div>
+                  <div className="text-xs text-muted-foreground">
+                    「표로 입력」에 그대로 붙여넣기
+                  </div>
+                </div>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleExportCsv}>
+                <Download className="mr-2 h-3.5 w-3.5" />
+                <div>
+                  <div>CSV 파일로 저장</div>
+                  <div className="text-xs text-muted-foreground">
+                    엑셀에서 바로 열림
+                  </div>
+                </div>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           {/* 이 축 자체를 통째로 삭제. 값이 남아 있으면 백엔드가 400으로
               막고, 다이얼로그가 그 안내를 그대로 보여준다. */}
           <Button
@@ -1013,6 +1072,15 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
         </Button>
       </div>
 
+      {/* 폭주 방지선에 걸려 일부만 받은 경우 — 조용히 자르지 않는다(잘린 줄 모르고
+          내보내기·자동연결을 돌리면 결과가 소리 없이 틀린다). */}
+      {data?.truncated && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-200">
+          값이 너무 많아 <b>앞 {rows.length.toLocaleString()}건만</b> 불러왔습니다 —
+          목록·내보내기가 전부를 담지 못합니다. 검색으로 범위를 좁혀 주세요.
+        </div>
+      )}
+
       {/* 일괄 삭제 바 — 하나라도 선택되면 나타난다. 선택 수 + 삭제/해제. */}
       {selectedIds.size > 0 && (
         <div className="flex items-center gap-3 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm">
@@ -1056,6 +1124,13 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
           columns={columns}
           data={filteredRows}
           fixedLayout
+          // 선언한 열 폭을 실제로 보장한다. table-layout:fixed 는 폭을 '비율'로만
+          // 보고 컨테이너에 맞춰 전부 줄여버려서, min-width 가 없으면 속성 열이
+          // 선언값보다 더 눌린다(좁아 보이던 원인). 컨테이너는 overflow-x-auto 라
+          // 좁은 화면에선 표만 가로 스크롤된다.
+          minTableWidthClass={
+            propertyDefs.length > 0 ? 'min-w-[1680px]' : 'min-w-[1200px]'
+          }
           defaultSort={{ key: 'value', dir: 'asc' }}
           pageSizeStorageKey={`entities-${type.slug}`}
           searchableKeys={['value', 'code', 'description']}
@@ -2788,7 +2863,9 @@ function AutoLinkDialog({ sourceType, sourceRows, allTypes, onClose, onDone }) {
       return
     }
     setRelation('')
-    listEntities({ typeId: Number(targetTypeId), includeDeprecated: false, limit: 500 })
+    // 전체를 받아야 한다 — 규칙 매칭이 이 목록에서만 대상을 찾으므로, 잘리면
+    // 501번째부터는 조용히 매칭 실패(연결 누락)로 나타난다.
+    listAllEntities({ typeId: Number(targetTypeId), includeDeprecated: false })
       .then((r) => setTargets(r?.items ?? []))
       .catch(() => setTargets([]))
   }, [targetTypeId])

@@ -532,6 +532,7 @@ def list_entities(
     q: Optional[str] = Query(default=None, max_length=128),
     include_deprecated: bool = Query(default=False),
     limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     with_usage: bool = Query(default=False),
     related_to: Optional[list[int]] = Query(default=None),
     year: Optional[int] = Query(default=None, ge=1900, le=2200),
@@ -541,6 +542,10 @@ def list_entities(
     """Picker list. Defaults to active-only; admin page passes
     `include_deprecated=true`. Without `type_id` returns across all
     axes (mostly useful for global search).
+
+    `offset` 으로 페이지를 넘긴다 — limit 상한(500)이 곧 총량 상한이면 축에 값이
+    500개를 넘을 때 관리 화면이 조용히 잘려 보인다. 정렬은 (value, id) 라서
+    페이지 경계가 안정적이다(value 는 축 안에서 유일하지 않을 수 있음).
 
     `year` (p56) filters by the axis's temporal policy: evergreen 축은
     무시(항상 포함), lifecycle=유효구간, yearly=배정연도, derived=그 해
@@ -560,6 +565,7 @@ def list_entities(
         q=q,
         include_deprecated=include_deprecated,
         limit=limit,
+        offset=offset,
         with_usage=with_usage,
         related_to=related_to or None,
         year=year,

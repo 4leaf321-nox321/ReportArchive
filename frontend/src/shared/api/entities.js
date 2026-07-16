@@ -343,6 +343,7 @@ export async function listEntities({
   q,
   includeDeprecated = false,
   limit = 200,
+  offset = 0,
   withUsage = false,
   relatedTo,
   year,
@@ -352,6 +353,7 @@ export async function listEntities({
   // axios 기본 배열 직렬화(related_to[]=1)는 안 맞음.
   const params = new URLSearchParams()
   params.set('limit', String(limit))
+  if (offset) params.set('offset', String(offset))
   if (typeId != null) params.set('type_id', String(typeId))
   if (q && q.trim()) params.set('q', q.trim())
   if (includeDeprecated) params.set('include_deprecated', 'true')
@@ -363,6 +365,29 @@ export async function listEntities({
   if (year != null) params.set('year', String(year))
   const res = await apiClient.get(`${BASE}?${params.toString()}`)
   return extractData(res)
+}
+
+/** 서버 limit 상한(500) — 이보다 크게 요청하면 422. 페이지 크기로 쓴다. */
+const LIST_PAGE_MAX = 500
+
+/**
+ * 축의 값을 **전부** 가져온다(페이지를 끝까지 넘겨 합침).
+ *
+ * listEntities 한 번은 최대 500건이라, 값이 그보다 많은 축은 관리 화면이 조용히
+ * 잘려 보였다(마지막 페이지가 꽉 차지 않을 때까지 반복해서 이어붙인다).
+ *
+ * maxRecords 는 폭주 방지선 — 넘으면 거기서 멈추고 truncated=true 로 알린다.
+ * 조용히 자르지 않기 위한 것이므로 호출부가 반드시 표시해야 한다.
+ */
+export async function listAllEntities({ maxRecords = 20000, ...opts } = {}) {
+  const items = []
+  for (let offset = 0; ; offset += LIST_PAGE_MAX) {
+    const page = await listEntities({ ...opts, limit: LIST_PAGE_MAX, offset })
+    const got = page?.items ?? []
+    items.push(...got)
+    if (got.length < LIST_PAGE_MAX) return { items, truncated: false }
+    if (items.length >= maxRecords) return { items, truncated: true }
+  }
 }
 
 /**

@@ -3,17 +3,31 @@ import { useEditor, EditorContent } from '@tiptap/react'
 import { BubbleMenu } from '@tiptap/react/menus'
 import StarterKit from '@tiptap/starter-kit'
 import { Placeholder } from '@tiptap/extensions'
+import { HardBreak } from '@tiptap/extension-hard-break'
 import { TextStyle, FontSize, FontFamily } from '@tiptap/extension-text-style'
 import { DOMSerializer } from '@tiptap/pm/model'
-import { TextColor, ColorSwatchPicker, hexToToken, colorTokenClass } from '@/shared/text-color'
+import {
+  TextColor,
+  Highlight,
+  ColorSwatchPicker,
+  HIGHLIGHT_TOKENS,
+  hexToToken,
+  colorTokenClass,
+} from '@/shared/text-color'
 import {
   Bold as BoldIcon,
   Italic as ItalicIcon,
   Strikethrough as StrikeIcon,
   Underline as UnderlineIcon,
   Link2Off as UnlinkIcon,
+  Superscript as SuperscriptIcon,
+  Subscript as SubscriptIcon,
+  Highlighter as HighlighterIcon,
+  Link2 as LinkIcon,
 } from 'lucide-react'
 import { ReportLinkMark } from './extensions/ReportLinkMark'
+import { Superscript, Subscript } from './extensions/SupSubMarks'
+import { ExternalLink } from './extensions/ExternalLinkMark'
 
 // Font-size choices. Values are inline CSS (`style="font-size:..."`) so
 // Tailwind purging is irrelevant here. Text *color* is no longer a hex array —
@@ -204,6 +218,9 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
         blockquote: false,
         codeBlock: false,
         horizontalRule: false,
+        // StarterKit 의 hardBreak 는 끄고 아래 커스텀 HardBreak 로 대체한다.
+        // 기본 keymap 이 Mod-Enter 도 물어 Ctrl+Enter('아래 새 위젯 추가')를
+        // 가로채기 때문 — 커스텀은 Shift-Enter 만 바인딩한다.
         hardBreak: false,
         // We use Underline below — StarterKit provides it too in v3 but
         // configuring it here is a no-op since we don't extend it further.
@@ -219,9 +236,23 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
       }),
       TextStyle,
       TextColor,
+      Highlight,
       FontSize,
       FontFamily,
       ReportLinkMark,
+      ExternalLink,
+      Superscript,
+      Subscript,
+      // 소프트 줄바꿈(Shift+Enter) — 같은 문단 안 인라인 <br>. 기본 HardBreak 가
+      // 무는 Mod-Enter 는 떼어내(Shift-Enter 만) Ctrl+Enter('아래 새 위젯 추가')
+      // 와 충돌하지 않게 한다. 렌더 sanitize·PPTX·DOCX 는 이미 <br> 를 처리한다.
+      HardBreak.extend({
+        addKeyboardShortcuts() {
+          return {
+            'Shift-Enter': () => this.editor.commands.setHardBreak(),
+          }
+        },
+      }),
       Placeholder.configure({
         // The placeholder text comes from props.placeholder. Latest value
         // lives on a ref so updating it after construction is cheap (the
@@ -570,13 +601,21 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
               fontSize: editor.getAttributes('textStyle')?.fontSize ?? '',
               fontFamily: editor.getAttributes('textStyle')?.fontFamily ?? '',
               color: editor.getAttributes('textColor')?.token ?? null,
+              highlight: editor.getAttributes('highlight')?.token ?? null,
+              externalLink: editor.getAttributes('externalLink')?.href ?? null,
               reportLink: editor.isActive('reportLink'),
+              superscript: editor.isActive('superscript'),
+              subscript: editor.isActive('subscript'),
             }}
             actions={{
               toggleBold: () => editor.chain().focus().toggleBold().run(),
               toggleItalic: () => editor.chain().focus().toggleItalic().run(),
               toggleUnderline: () => editor.chain().focus().toggleUnderline().run(),
               toggleStrike: () => editor.chain().focus().toggleStrike().run(),
+              toggleSuperscript: () =>
+                editor.chain().focus().toggleSuperscript().run(),
+              toggleSubscript: () =>
+                editor.chain().focus().toggleSubscript().run(),
               unsetReportLink: () =>
                 editor.chain().focus().unsetReportLink().run(),
               setFontSize: (v) =>
@@ -591,6 +630,14 @@ export const RichTextRowEditor = forwardRef(function RichTextRowEditor(
                 c
                   ? editor.chain().focus().setColor(c).run()
                   : editor.chain().focus().unsetColor().run(),
+              setHighlight: (t) =>
+                t
+                  ? editor.chain().focus().setHighlight(t).run()
+                  : editor.chain().focus().unsetHighlight().run(),
+              setExternalLink: (href) =>
+                href
+                  ? editor.chain().focus().setExternalLink({ href }).run()
+                  : editor.chain().focus().unsetExternalLink().run(),
             }}
           />
           </div>
@@ -642,6 +689,46 @@ export function RichTextFormatToolbarBody({ state, actions, defaultSizePx }) {
       >
         <StrikeIcon className="h-3.5 w-3.5" />
       </ToolbarButton>
+      {/* 위/아래 첨자 — 단일 행 안 인라인 마크. 액션이 배선된 곳(행별 버블
+          메뉴)에서만 노출하고, 행간(cross-row) 툴바에는 넣지 않는다. */}
+      {actions.toggleSuperscript && actions.toggleSubscript && (
+        <>
+          <ToolbarSeparator />
+          <ToolbarButton
+            active={!!state.superscript}
+            onClick={actions.toggleSuperscript}
+            title="위 첨자 (Ctrl+.)"
+          >
+            <SuperscriptIcon className="h-3.5 w-3.5" />
+          </ToolbarButton>
+          <ToolbarButton
+            active={!!state.subscript}
+            onClick={actions.toggleSubscript}
+            title="아래 첨자 (Ctrl+,)"
+          >
+            <SubscriptIcon className="h-3.5 w-3.5" />
+          </ToolbarButton>
+        </>
+      )}
+      {/* 외부 URL 링크 — 액션이 배선된 곳(행별 버블 메뉴)에서만. 클릭 시
+          URL 입력(기존 링크면 미리 채움, 비우면 제거). */}
+      {actions.setExternalLink && (
+        <>
+          <ToolbarSeparator />
+          <ToolbarButton
+            active={!!state.externalLink}
+            onClick={() => {
+              const cur = state.externalLink || ''
+              const url = window.prompt('링크 URL (비우면 제거)', cur)
+              if (url === null) return
+              actions.setExternalLink(url.trim() || null)
+            }}
+            title="링크 (URL)"
+          >
+            <LinkIcon className="h-3.5 w-3.5" />
+          </ToolbarButton>
+        </>
+      )}
       <ToolbarSeparator />
       <FontFamilySelect value={state.fontFamily} onChange={actions.setFontFamily} />
       <FontSizeSelect
@@ -651,6 +738,20 @@ export function RichTextFormatToolbarBody({ state, actions, defaultSizePx }) {
       />
       <ToolbarSeparator />
       <ColorSwatchPicker value={state.color} onChange={actions.setColor} />
+      {/* 하이라이트(형광펜) — 액션이 배선된 곳(행별 버블 메뉴)에서만 노출.
+          큐레이션한 형광펜 팔레트로 컴팩트하게. */}
+      {actions.setHighlight && (
+        <>
+          <ToolbarSeparator />
+          <HighlighterIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          <ColorSwatchPicker
+            value={state.highlight}
+            onChange={actions.setHighlight}
+            tokens={HIGHLIGHT_TOKENS}
+            columns={9}
+          />
+        </>
+      )}
       {/* 보고서 멘션 링크가 선택에 걸려 있을 때만 — 링크 해제(텍스트는 유지). */}
       {state.reportLink && actions.unsetReportLink && (
         <>

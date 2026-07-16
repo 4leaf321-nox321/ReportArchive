@@ -14,6 +14,7 @@ import {
   UserSearch,
   HardDrive,
   MessageSquare,
+  Megaphone,
   Sparkles,
   Tags,
   User,
@@ -85,6 +86,7 @@ const MY_ACTIVITY_MENU = [
 const PUBLIC_MENU = [
   { to: '/entities', label: '기준정보 탐색', icon: Boxes },
   { to: '/templates', label: '템플릿 관리', icon: FileCode2 },
+  { to: '/notices', label: '공지', icon: Megaphone },
   { to: '/voc', label: 'VOC', icon: MessageSquare },
   { to: '/ai-settings', label: 'AI 설정', icon: Sparkles },
 ]

@@ -9,6 +9,7 @@ import { Label } from '@/shared/components/ui/label'
 import { Textarea } from '@/shared/components/ui/textarea'
 import { Card, CardContent } from '@/shared/components/ui/card'
 import { AuthedImage } from '@/shared/components/AuthedImage'
+import { AuthedRichText } from '@/shared/rich-text/AuthedRichText'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { uploadFile } from '@/shared/api/files'
 import { Skeleton } from '@/shared/components/ui/skeleton'
@@ -90,7 +91,7 @@ export default function VocDetailPage() {
   }
 
   return (
-    <div className="p-6 space-y-4 max-w-4xl mx-auto w-full">
+    <div className="p-6 space-y-4 max-w-[1500px] mx-auto w-full">
       <Button variant="ghost" size="sm" asChild className="-ml-2 h-7">
         <Link to="/voc">
           <ArrowLeft className="mr-1 h-3.5 w-3.5" />
@@ -179,8 +180,8 @@ export default function VocDetailPage() {
               )}
             </div>
             {post.body && (
-              <div className="text-sm whitespace-pre-wrap leading-relaxed border-t pt-3">
-                {post.body}
+              <div className="border-t pt-3">
+                <AuthedRichText editable={false} value={post.body} />
               </div>
             )}
             {Array.isArray(post.attachments) && post.attachments.length > 0 && (
@@ -302,17 +303,6 @@ function PostEditor({ post, onSaved, onCancel }) {
     }
   }
 
-  function onPaste(e) {
-    const items = Array.from(e.clipboardData?.items ?? [])
-    const imageFiles = items
-      .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
-      .map((it) => it.getAsFile())
-      .filter(Boolean)
-    if (imageFiles.length === 0) return
-    e.preventDefault()
-    handleFiles(imageFiles)
-  }
-
   async function handleSave() {
     setSaving(true)
     try {
@@ -327,7 +317,7 @@ function PostEditor({ post, onSaved, onCancel }) {
 
   return (
     <Card>
-      <CardContent className="space-y-3 py-4" onPaste={onPaste}>
+      <CardContent className="space-y-3 py-4">
         <div className="space-y-1.5">
           <Label>제목</Label>
           <Input value={title} onChange={(e) => setTitle(e.target.value)} />
@@ -348,14 +338,10 @@ function PostEditor({ post, onSaved, onCancel }) {
         </div>
         <div className="space-y-1.5">
           <Label>내용</Label>
-          <Textarea
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            className="min-h-[180px]"
-          />
+          <AuthedRichText value={body} onChange={setBody} />
         </div>
         <div className="space-y-1.5">
-          <Label>첨부 이미지</Label>
+          <Label>파일 첨부</Label>
           {attachments.length > 0 && (
             <div className="grid grid-cols-3 gap-2">
               {attachments.map((a, i) => (
@@ -432,9 +418,6 @@ function PostEditor({ post, onSaved, onCancel }) {
 function AttachmentGallery({ attachments }) {
   return (
     <div className="border-t pt-3 space-y-2">
-      <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
-        첨부 이미지 ({attachments.length})
-      </div>
       <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
         {attachments.map((a, i) => (
           <a

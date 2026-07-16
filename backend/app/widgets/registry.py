@@ -142,7 +142,7 @@ _NOTE_FIELD = {"type": "string", "maxLength": 1000}
 # choice is represented by omitting the key, so null is never persisted. Shared
 # by the block text style (_TEXT_STYLE_SCHEMA) and the caption / note colors.
 _COLOR_TOKENS = [
-    "ink", "gray", "slate",
+    "ink", "white", "gray", "slate",
     "red", "orange", "amber", "yellow", "lime",
     "green", "teal", "cyan",
     "sky", "blue", "indigo",
@@ -391,6 +391,11 @@ HEADING: WidgetDescriptor = {
                 "minimum": 0,
                 "maximum": 200,
             },
+            # 배경 밴드 색(토큰) — 제목을 PPT 섹션 헤더처럼 색 밴드로. 글자색은
+            # 밴드 밝기에 따라 자동 대비. 화면·PPTX·DOCX 공통.
+            "bg_color": _COLOR_TOKEN_FIELD,
+            # 밴드 위 글자색 강제. 없으면 자동 대비.
+            "bg_text": {"type": "string", "enum": ["white", "black"]},
         },
         "required": ["level"],
         "additionalProperties": False,
@@ -413,6 +418,9 @@ HEADING: WidgetDescriptor = {
                 "minimum": 0,
                 "maximum": 200,
             },
+            # per-report 배경 밴드 색·글자색 오버라이드(작성 화면 밴드 컨트롤).
+            "bg_color": _COLOR_TOKEN_FIELD,
+            "bg_text": {"type": "string", "enum": ["white", "black"]},
         },
         "required": ["text"],
         "additionalProperties": False,
@@ -475,6 +483,9 @@ def _rich_text_content(props: dict) -> dict:
             # this specific widget from the inline editor. Unset = inherit the
             # template default (문서가져오기_설계.md §5).
             "outline_numbering": {"type": "boolean"},
+            # Per-report override — 불릿/번호 없이 들여쓰기만(머리표 없음). 켜지면
+            # outline_numbering 과 무관하게 접두를 그리지 않는다. Unset = 상속.
+            "hide_prefix": {"type": "boolean"},
         },
         # Body fields are intentionally optional during draft state — the
         # report writer can fill caption first, body later.
@@ -504,6 +515,9 @@ RICH_TEXT: WidgetDescriptor = {
             # 규격서·논문류 정형 개요. Per-widget opt-in; default off keeps the
             # familiar bullet outline (문서가져오기_설계.md §5).
             "outline_numbering": {"type": "boolean"},
+            # 머리표 없음(불릿/번호 없이 들여쓰기만) — 템플릿 기본값. 작성 화면의
+            # 인라인 토글(불릿→번호→없음)이 per-report 로 이를 덮어쓴다.
+            "hide_prefix": {"type": "boolean"},
             "text_style": _TEXT_STYLE_SCHEMA,
             "depth_styles": _DEPTH_STYLES_SCHEMA,
         },

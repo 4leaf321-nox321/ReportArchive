@@ -37,6 +37,7 @@ from app.modules.report_types import models as _report_types  # noqa: F401
 from app.modules.reports import models as _reports  # noqa: F401
 from app.modules.saved_searches import models as _saved_searches  # noqa: F401
 from app.modules.section_taxonomy import models as _section_taxonomy  # noqa: F401
+from app.modules.notices import models as _notices  # noqa: F401
 from app.modules.template_categories import models as _template_categories  # noqa: F401
 from app.modules.template_metrics import models as _template_metrics  # noqa: F401
 from app.modules.templates import models as _templates  # noqa: F401

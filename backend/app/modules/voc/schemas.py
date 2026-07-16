@@ -70,7 +70,7 @@ class VocPostListResponse(BaseModel):
 
 class VocPostCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
-    body: str = Field(default="", max_length=20000)
+    body: str = Field(default="", max_length=200000)
     category: VocCategory = VocCategory.question
     workspace_slug: Optional[str] = None
     attachments: list[VocAttachment] = Field(default_factory=list)
@@ -83,7 +83,7 @@ class VocPostUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    body: Optional[str] = Field(default=None, max_length=20000)
+    body: Optional[str] = Field(default=None, max_length=200000)
     category: Optional[VocCategory] = None
     attachments: Optional[list[VocAttachment]] = None
 

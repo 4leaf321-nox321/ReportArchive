@@ -5,6 +5,7 @@ import { Header } from './Header'
 import { Sidebar, MobileSidebar } from './Sidebar'
 import { MentionReturnBar } from './MentionReturnBar'
 import { PresetEditBar } from './PresetEditBar'
+import { NoticePopup } from '@/modules/notices/NoticePopup'
 import { ReportTabBar } from '@/shared/reports/ReportTabBar'
 import { ReportSplitLayout } from '@/shared/reports/ReportSplitLayout'
 import { useScrollRestoration } from './useScrollRestoration'
@@ -46,6 +47,8 @@ export function AppShell() {
 
   return (
     <div className="flex h-full flex-col">
+      {/* 접속 시 안 본 공지를 1회 팝업으로 노출(본 뒤로는 안 뜸). */}
+      <NoticePopup />
       <Header onOpenMobileSidebar={() => setMobileOpen(true)} />
       <div className="relative flex flex-1 min-h-0">
         <Sidebar collapsed={collapsed} />

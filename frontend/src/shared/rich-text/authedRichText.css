@@ -1,0 +1,87 @@
+/* 리치 텍스트 본문 — 편집(TipTap)·읽기 공용 스타일. Tailwind 는 리스트
+   마커/문단 여백을 리셋하므로 여기서 다시 살린다. .rt-prose 로 스코프.
+   공지·VOC 등 여러 모듈이 공용으로 쓴다. */
+.rt-prose {
+  font-size: 0.875rem;
+  line-height: 1.65;
+  color: inherit;
+  word-break: break-word;
+}
+.rt-prose:focus,
+.rt-prose:focus-visible {
+  outline: none;
+}
+.rt-prose > * + * {
+  margin-top: 0.5rem;
+}
+.rt-prose p {
+  margin: 0;
+}
+.rt-prose ul {
+  list-style: disc;
+  padding-left: 1.4rem;
+  margin: 0;
+}
+.rt-prose ol {
+  list-style: decimal;
+  padding-left: 1.4rem;
+  margin: 0;
+}
+.rt-prose li {
+  margin: 0.15rem 0;
+}
+.rt-prose li > p {
+  margin: 0;
+}
+.rt-prose h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+.rt-prose h2 {
+  font-size: 1.125rem;
+  font-weight: 700;
+}
+.rt-prose h3 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+.rt-prose strong {
+  font-weight: 700;
+}
+.rt-prose em {
+  font-style: italic;
+}
+.rt-prose u {
+  text-decoration: underline;
+}
+.rt-prose s {
+  text-decoration: line-through;
+}
+.rt-prose blockquote {
+  border-left: 3px solid hsl(var(--border));
+  padding-left: 0.75rem;
+  color: hsl(var(--muted-foreground));
+}
+.rt-prose code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85em;
+  background: hsl(var(--muted));
+  padding: 0.1em 0.3em;
+  border-radius: 0.25rem;
+}
+.rt-prose a {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+}
+.rt-prose img {
+  max-width: 100%;
+  height: auto;
+}
+/* 빈 편집기 placeholder (TipTap Placeholder 확장) */
+.rt-prose p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: hsl(var(--muted-foreground));
+}

@@ -30,6 +30,7 @@
        so colored text stays legible on the dark surface. `기본`(null) carries
        no class and inherits --foreground. */
     --rt-c-ink: #111827;
+    --rt-c-white: #ffffff;
     --rt-c-gray: #6b7280;
     --rt-c-slate: #475569;
     --rt-c-red: #dc2626;
@@ -73,6 +74,7 @@
     /* Brighter variants so colored text reads on the dark surface; `ink`
        inverts to a light gray (the dark-mode equivalent of "검정"). */
     --rt-c-ink: #e5e7eb;
+    --rt-c-white: #ffffff;
     --rt-c-gray: #9ca3af;
     --rt-c-slate: #94a3b8;
     --rt-c-red: #f87171;
@@ -101,6 +103,7 @@
    tree-shake every token it doesn't find as a literal — which silently dropped
    all but one color. Plain top-level rules are never purged. */
 .rt-c-ink { color: var(--rt-c-ink); }
+.rt-c-white { color: var(--rt-c-white); }
 .rt-c-gray { color: var(--rt-c-gray); }
 .rt-c-slate { color: var(--rt-c-slate); }
 .rt-c-red { color: var(--rt-c-red); }
@@ -124,6 +127,7 @@
    adapts to light/dark surfaces. Emitted by bgTokenClass(token). Same
    not-in-@layer rule as above (dynamic class names → would be purged). */
 .rt-bg-ink { background-color: color-mix(in srgb, var(--rt-c-ink) 16%, transparent); }
+.rt-bg-white { background-color: color-mix(in srgb, var(--rt-c-white) 16%, transparent); }
 .rt-bg-gray { background-color: color-mix(in srgb, var(--rt-c-gray) 16%, transparent); }
 .rt-bg-slate { background-color: color-mix(in srgb, var(--rt-c-slate) 16%, transparent); }
 .rt-bg-red { background-color: color-mix(in srgb, var(--rt-c-red) 16%, transparent); }
@@ -141,6 +145,35 @@
 .rt-bg-purple { background-color: color-mix(in srgb, var(--rt-c-purple) 16%, transparent); }
 .rt-bg-pink { background-color: color-mix(in srgb, var(--rt-c-pink) 16%, transparent); }
 .rt-bg-rose { background-color: color-mix(in srgb, var(--rt-c-rose) 16%, transparent); }
+
+/* 하이라이트(형광펜) — rt-bg 보다 진한 틴트(38%)로 "칠한 듯" 보이되 텍스트
+   가독성은 유지. 다크/라이트 모두 --rt-c-* 변수에서 색을 받아 적응. rich_text
+   등 인라인 마크(hlTokenClass)가 emit. box-decoration-break 로 줄바꿈 시에도
+   각 줄 배경이 이어져 보이게. 동적 클래스라 @layer 밖(퍼지 방지). */
+.rt-hl-ink { background-color: color-mix(in srgb, var(--rt-c-ink) 38%, transparent); }
+.rt-hl-white { background-color: color-mix(in srgb, var(--rt-c-white) 38%, transparent); }
+.rt-hl-gray { background-color: color-mix(in srgb, var(--rt-c-gray) 38%, transparent); }
+.rt-hl-slate { background-color: color-mix(in srgb, var(--rt-c-slate) 38%, transparent); }
+.rt-hl-red { background-color: color-mix(in srgb, var(--rt-c-red) 38%, transparent); }
+.rt-hl-orange { background-color: color-mix(in srgb, var(--rt-c-orange) 38%, transparent); }
+.rt-hl-amber { background-color: color-mix(in srgb, var(--rt-c-amber) 38%, transparent); }
+.rt-hl-yellow { background-color: color-mix(in srgb, var(--rt-c-yellow) 38%, transparent); }
+.rt-hl-lime { background-color: color-mix(in srgb, var(--rt-c-lime) 38%, transparent); }
+.rt-hl-green { background-color: color-mix(in srgb, var(--rt-c-green) 38%, transparent); }
+.rt-hl-teal { background-color: color-mix(in srgb, var(--rt-c-teal) 38%, transparent); }
+.rt-hl-cyan { background-color: color-mix(in srgb, var(--rt-c-cyan) 38%, transparent); }
+.rt-hl-sky { background-color: color-mix(in srgb, var(--rt-c-sky) 38%, transparent); }
+.rt-hl-blue { background-color: color-mix(in srgb, var(--rt-c-blue) 38%, transparent); }
+.rt-hl-indigo { background-color: color-mix(in srgb, var(--rt-c-indigo) 38%, transparent); }
+.rt-hl-violet { background-color: color-mix(in srgb, var(--rt-c-violet) 38%, transparent); }
+.rt-hl-purple { background-color: color-mix(in srgb, var(--rt-c-purple) 38%, transparent); }
+.rt-hl-pink { background-color: color-mix(in srgb, var(--rt-c-pink) 38%, transparent); }
+.rt-hl-rose { background-color: color-mix(in srgb, var(--rt-c-rose) 38%, transparent); }
+
+/* 외부 URL 링크(ExternalLinkMark). 파랑+밑줄, 테마 적응(--rt-c-blue). 멘션
+   링크(*-mention)와 구분되는 별도 스타일. */
+.rt-link { color: var(--rt-c-blue); text-decoration: underline; cursor: pointer; }
+.rt-link:hover { text-decoration-thickness: 2px; }
 
 /* 표·비교표 격자 테두리 옵션(content.bordered). 표 <table> 에 .rt-grid 를 달면
    모든 셀에 균일한 격자선이 그려진다. 굵기·색은 인라인 CSS 변수로 주입:
@@ -240,6 +273,7 @@
   :root,
   .dark {
     --rt-c-ink: #111827;
+    --rt-c-white: #ffffff;
     --rt-c-gray: #6b7280;
     --rt-c-slate: #475569;
     --rt-c-red: #dc2626;

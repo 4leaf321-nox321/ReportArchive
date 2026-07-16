@@ -88,6 +88,7 @@ import {
   adminSetUserPassword,
   listPasswordResetRequests,
   listPasswordResetTokens,
+  clearPasswordResetTokens,
   resolvePasswordResetRequest,
   dismissPasswordResetRequest,
 } from '@/shared/api/me'
@@ -2242,6 +2243,24 @@ function PasswordResetTokensPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [days])
 
+  async function handleClear(r) {
+    if (
+      !window.confirm(
+        `'${r.user_name} · ${r.email}'의 셀프 재설정 시도 이력을 삭제할까요?\n조치가 끝난 이력을 목록에서 치웁니다.`,
+      )
+    )
+      return
+    try {
+      await clearPasswordResetTokens(r.user_id)
+      toast.success('시도 이력을 삭제했습니다.')
+      setRows((prev) => prev.filter((x) => x.user_id !== r.user_id))
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.message || err.message || '이력 삭제 실패',
+      )
+    }
+  }
+
   // 이력이 없거나 권한이 없으면(403 → rows=[]) 조용히 숨긴다.
   if (!everHadRows && (loading || rows.length === 0)) return null
 
@@ -2315,17 +2334,31 @@ function PasswordResetTokensPanel() {
                 )}
               </div>
             </div>
-            <Button
-              size="sm"
-              variant="outline"
-              className="shrink-0"
-              onClick={() =>
-                setResetTarget({ id: r.user_id, email: r.email, name: r.user_name })
-              }
-            >
-              <KeyRound className="mr-1.5 h-3.5 w-3.5" />
-              임시 비번 발급
-            </Button>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  setResetTarget({
+                    id: r.user_id,
+                    email: r.email,
+                    name: r.user_name,
+                  })
+                }
+              >
+                <KeyRound className="mr-1.5 h-3.5 w-3.5" />
+                임시 비번 발급
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-muted-foreground hover:text-destructive"
+                title="이 시도 이력을 목록에서 삭제"
+                onClick={() => handleClear(r)}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
           </li>
         ))}
       </ul>

@@ -974,3 +974,38 @@ def dismiss_password_reset_request(
     req.resolved_at = datetime.utcnow()
     db.commit()
     return success_response(data=None, message="요청을 반려했습니다.")
+
+
+@router.delete("/password-reset-tokens/{user_id}")
+def clear_password_reset_tokens(
+    user_id: int,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(require_admin),
+):
+    """셀프 재설정 시도 이력을 계정 단위로 삭제(정리)한다.
+
+    임시 비번 발급이나 사용자 셀프 재설정으로 이미 조치가 끝난 뒤에도 이력이
+    계속 패널에 남아 관리자를 성가시게 하므로, 해당 계정의 토큰 흔적을 지워
+    목록에서 치울 수 있게 한다. 권한은 비번 재설정과 동일 스코프.
+    """
+    from sqlalchemy import delete as sa_delete
+
+    from app.modules.users.models import PasswordResetToken
+
+    target = db.get(User, user_id)
+    if target is None:
+        # 계정이 사라졌으면 토큰도 CASCADE 로 없어졌겠지만, 관리 스코프를 확인할
+        # 수 없으므로 시스템 관리자만 정리할 수 있게 한다.
+        if not actor.user.is_system_admin:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "이 이력은 시스템 관리자만 삭제할 수 있습니다.",
+            )
+    else:
+        _assert_can_reset_password(db, actor.user, target)
+
+    db.execute(
+        sa_delete(PasswordResetToken).where(PasswordResetToken.user_id == user_id)
+    )
+    db.commit()
+    return success_response(data=None, message="시도 이력을 삭제했습니다.")

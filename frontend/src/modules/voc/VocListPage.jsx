@@ -125,7 +125,7 @@ export default function VocListPage() {
   const lastIdx = Math.min(page * PAGE_SIZE, total)
 
   return (
-    <div className="p-6 space-y-4 max-w-4xl mx-auto w-full">
+    <div className="p-6 space-y-4 max-w-[1500px] mx-auto w-full">
       <PageHeader
         title="VOC"
         description="도구에 대한 버그·기능 요청·질문 게시판"

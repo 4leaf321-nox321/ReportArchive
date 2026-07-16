@@ -8,7 +8,11 @@
  *  슬라이드는 흰 배경이라 라이트 색이 맞다. (exportReportToDocx 의 _TOKEN_HEX
  *  와 같은 사유.)
  */
-import { COLOR_TOKENS } from '@/shared/text-color'
+import {
+  COLOR_TOKENS,
+  highlightHex,
+  tokenFromHlClassName,
+} from '@/shared/text-color'
 import { outlineNumbers } from '@/shared/reports/blockNumbering'
 
 export const NATIVE_TEXT_TYPES = new Set([
@@ -72,6 +76,21 @@ function walkRuns(node, fmt, out) {
       if (tag === 'em' || tag === 'i') next.italic = true
       if (tag === 'u') next.underline = true
       if (tag === 's' || tag === 'del' || tag === 'strike') next.strike = true
+      if (tag === 'sup') next.superscript = true
+      if (tag === 'sub') next.subscript = true
+      if (tag === 'a') {
+        // 외부 링크만(멘션 앵커·href="#" 제외) → 하이퍼링크.
+        const href = child.getAttribute('href')
+        if (
+          href &&
+          href !== '#' &&
+          !child.getAttribute('data-mention-type') &&
+          !child.getAttribute('data-report-id') &&
+          !child.getAttribute('data-dept-slug')
+        ) {
+          next.link = href
+        }
+      }
       if (tag === 'span') {
         const style = child.getAttribute('style') || ''
         const cm = style.match(/(^|;)\s*color\s*:\s*([^;]+)/i)
@@ -81,6 +100,8 @@ function walkRuns(node, fmt, out) {
         const cls = child.getAttribute('class') || ''
         const tok = cls.match(/\brt-c-([a-z0-9]+)\b/)
         if (tok && TOKEN_HEX[tok[1]]) next.color = TOKEN_HEX[tok[1]]
+        const hlTok = tokenFromHlClassName(cls)
+        if (hlTok) next.highlight = highlightHex(hlTok) ?? next.highlight
       }
       walkRuns(child, next, out)
     }
@@ -142,6 +163,11 @@ function richTextLines(meta) {
     meta.content?.outline_numbering != null
       ? !!meta.content.outline_numbering
       : !!meta.props?.outline_numbering
+  // 머리표 없음 — 불릿/번호 없이 들여쓰기만(content 오버라이드 → props 기본).
+  const hidePrefix =
+    meta.content?.hide_prefix != null
+      ? !!meta.content.hide_prefix
+      : !!meta.props?.hide_prefix
   const nums = numberingOn ? outlineNumbers(items) : null
   const lines = []
   items.forEach((it, i) => {
@@ -149,6 +175,13 @@ function richTextLines(meta) {
     const cr = htmlToCharRuns(it?.html, text)
     if (cr.length === 0) return
     const depth = Math.max(0, Math.min(5, Math.floor(Number(it?.depth) || 0)))
+    if (hidePrefix) {
+      // 접두 없이 들여쓰기만(depth 만큼 공백). marker/뒤 공백 없음.
+      const indent = '  '.repeat(depth)
+      const charRuns = indent ? [{ text: indent }, ...cr] : cr
+      lines.push({ charRuns, para: {} })
+      return
+    }
     const marker = nums ? nums[i] || '' : DEPTH_PREFIX[depth] || '·'
     const prefix = { text: `${'  '.repeat(depth)}${marker} `, color: '888888' }
     lines.push({ charRuns: [prefix, ...cr], para: {} })
@@ -248,6 +281,10 @@ export function buildPptxText(meta, ctx) {
           italic: r.italic || undefined,
           underline: r.underline ? { style: 'sng' } : undefined,
           strike: r.strike || undefined,
+          superscript: r.superscript || undefined,
+          subscript: r.subscript || undefined,
+          highlight: r.highlight || undefined,
+          hyperlink: r.link ? { url: r.link } : undefined,
           color: r.color || undefined,
           fontSize: toPt(r.px),
           ...(line.para || {}),

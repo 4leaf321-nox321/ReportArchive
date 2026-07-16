@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Settings2 } from 'lucide-react'
+import { Settings2, PaintBucket } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import {
@@ -8,6 +8,12 @@ import {
   PopoverTrigger,
 } from '@/shared/components/ui/popover'
 import { cn } from '@/shared/lib/utils'
+import {
+  ColorSwatchPicker,
+  bandBgHex,
+  bandTextHex,
+  normalizeToken,
+} from '@/shared/text-color'
 import { useCurrentBlockHeadingNumber } from '@/shared/reports/CurrentBlockRefContext'
 import {
   HEADING_DEFAULT_PX_BY_LEVEL,
@@ -57,6 +63,32 @@ function levelClass(level) {
   if (level === 1) return 'text-2xl font-bold'
   if (level === 3) return 'text-lg font-medium'
   return 'text-xl font-semibold'
+}
+
+// 배경 밴드 색 토큰 — content(per-report) → props(템플릿 기본).
+function effectiveBgColor(content, props) {
+  return normalizeToken(content?.bg_color) ?? normalizeToken(props?.bg_color) ?? null
+}
+
+// 밴드 글자색 강제('white'|'black') — content → props. 없으면 자동 대비.
+function effectiveBgText(content, props) {
+  const v = content?.bg_text ?? props?.bg_text
+  return v === 'white' || v === 'black' ? v : null
+}
+
+// 밴드 토큰 → 화면 스타일(배경+글자색+패딩+라운드). 없으면 null.
+// bgText('white'|'black')를 주면 글자색을 그 값으로, 아니면 자동 대비.
+function bandBoxStyle(token, bgText) {
+  if (!token) return null
+  const bg = bandBgHex(token)
+  const fg = bandTextHex(token, bgText)
+  if (!bg || !fg) return null
+  return {
+    backgroundColor: `#${bg}`,
+    color: `#${fg}`,
+    padding: '0.25em 0.6em',
+    borderRadius: '4px',
+  }
 }
 
 // --------------------------------------------------------------------------- //
@@ -114,6 +146,42 @@ export function HeadingPropsPanel({ props, onChange }) {
         onChange={(text_style) => onChange({ ...props, text_style })}
         defaultSizePx={HEADING_DEFAULT_PX_BY_LEVEL[props.level ?? 2]}
       />
+      <div>
+        <Label className="text-xs">배경 밴드 색</Label>
+        <div className="mt-1">
+          <ColorSwatchPicker
+            value={props.bg_color ?? null}
+            onChange={(t) => onChange({ ...props, bg_color: t || undefined })}
+          />
+        </div>
+        <p className="mt-1 text-[10px] text-muted-foreground">
+          제목을 색 밴드로 표시(PPT 섹션 헤더 느낌). PPTX·Word 로도 색 밴드로 나갑니다.
+        </p>
+        <div className="mt-2 flex items-center gap-2">
+          <Label className="text-xs">글자색</Label>
+          <div className="inline-flex rounded-md border bg-background overflow-hidden">
+            {[
+              { v: null, label: '자동' },
+              { v: 'white', label: '흰색' },
+              { v: 'black', label: '검정' },
+            ].map((o) => (
+              <button
+                key={o.label}
+                type="button"
+                onClick={() => onChange({ ...props, bg_text: o.v || undefined })}
+                className={cn(
+                  'h-7 px-3 text-xs transition-colors',
+                  (props.bg_text ?? null) === o.v
+                    ? 'bg-primary text-primary-foreground'
+                    : 'hover:bg-muted',
+                )}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -125,15 +193,17 @@ export function HeadingPreview({ props }) {
   const text = props.default_text || '(보고서에서 입력)'
   const isPlaceholder = !props.default_text
   const cls = `${levelClass(props.level ?? 2)} ${textStyleToClassName(props.text_style)}`
+  const band = bandBoxStyle(effectiveBgColor(null, props), effectiveBgText(null, props))
   const inlineStyle = {
     ...(textStyleToInlineStyle(props.text_style) ?? {}),
+    ...(band ?? {}),
     ...(Number.isFinite(props.margin_bottom_px) && props.margin_bottom_px > 0
       ? { marginBottom: `${props.margin_bottom_px}px` }
       : {}),
   }
   return (
     <div
-      className={`px-2 ${cls} ${isPlaceholder ? 'text-muted-foreground italic' : ''}`}
+      className={`${band ? '' : 'px-2'} ${cls} ${isPlaceholder && !band ? 'text-muted-foreground italic' : ''}`}
       style={inlineStyle}
     >
       {text}
@@ -170,6 +240,11 @@ export function HeadingEditor({ props, content, onChange, readOnly, onInsertWidg
   const inlineTextStyle = textStyleToInlineStyle(textStyle) ?? {}
   const wrapperStyle =
     marginBottomPx > 0 ? { marginBottom: `${marginBottomPx}px` } : undefined
+  // 배경 밴드(PPT 섹션 헤더 느낌) — 켜지면 배경색+글자색+패딩+라운드.
+  const band = bandBoxStyle(
+    effectiveBgColor(content, props),
+    effectiveBgText(content, props),
+  )
 
   function patch(next) {
     const merged = { ...(content ?? {}), text: value, ...next }
@@ -206,7 +281,10 @@ export function HeadingEditor({ props, content, onChange, readOnly, onInsertWidg
   if (readOnly) {
     if (!value && !hasRich) return null
     return (
-      <div className={`px-2 py-1 ${cls}`} style={{ ...inlineTextStyle, ...wrapperStyle }}>
+      <div
+        className={band ? cls : `px-2 py-1 ${cls}`}
+        style={{ ...inlineTextStyle, ...(band ?? {}), ...wrapperStyle }}
+      >
         {headingNumber && (
           <span className="mr-2" data-heading-number>
             {headingNumber}
@@ -227,8 +305,23 @@ export function HeadingEditor({ props, content, onChange, readOnly, onInsertWidg
   return (
     <div
       className="relative group/heading flex items-baseline"
-      style={wrapperStyle}
+      style={{
+        ...wrapperStyle,
+        ...(band
+          ? {
+              backgroundColor: band.backgroundColor,
+              borderRadius: band.borderRadius,
+            }
+          : {}),
+      }}
     >
+      {/* 배경 밴드 컨트롤 — 항상 보이는 인라인 버튼(왼쪽). 위젯 우상단 호버
+          컨트롤과 겹치지 않도록 오른쪽이 아니라 제목 줄 맨 앞에 둔다. */}
+      <HeadingBandControl
+        bgColor={effectiveBgColor(content, props)}
+        bgText={effectiveBgText(content, props)}
+        onPatch={patch}
+      />
       {/* 절 번호(headingNumber)는 편집 중에도 비편집 prefix 로 함께 보여준다 —
           작성자가 번호 구조를 바로 확인할 수 있게(읽기/내보내기와 동일한 값).
           flex-1 은 outline-rich-row(내가 제어하는 블록)에 둔다 — className 은
@@ -236,7 +329,7 @@ export function HeadingEditor({ props, content, onChange, readOnly, onInsertWidg
       {headingNumber && (
         <span
           className={cn('shrink-0 pl-2 py-1', cls)}
-          style={inlineTextStyle}
+          style={{ ...inlineTextStyle, ...(band ? { color: band.color } : {}) }}
           contentEditable={false}
           data-heading-number
         >
@@ -277,7 +370,7 @@ export function HeadingEditor({ props, content, onChange, readOnly, onInsertWidg
             headingNumber ? 'pl-2' : 'px-2',
             cls,
           )}
-          style={inlineTextStyle}
+          style={{ ...inlineTextStyle, ...(band ? { color: band.color } : {}) }}
         />
       </div>
       <HeadingOptionsPopover
@@ -331,6 +424,84 @@ function headingCaretRect() {
 // and bottom spacing. Each control writes through `onPatch` (the editor's       //
 // patch()) so changes flow through the standard content path.                   //
 // --------------------------------------------------------------------------- //
+// 배경 밴드 전용 컨트롤 — 톱니(옵션)와 별개로 제목 줄에 항상 노출되는 페인트
+// 버튼. 클릭하면 밴드 색 + 글자색(자동/흰색/검정)을 바로 고른다. 밴드가 설정돼
+// 있으면 버튼 우하단에 현재 색 점을 표시.
+function HeadingBandControl({ bgColor, bgText, onPatch }) {
+  const [open, setOpen] = useState(false)
+  const swatchHex = bgColor ? bandBgHex(bgColor) : null
+  const TEXT_OPTIONS = [
+    { v: null, label: '자동' },
+    { v: 'white', label: '흰색' },
+    { v: 'black', label: '검정' },
+  ]
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          className={cn(
+            'shrink-0 self-center ml-0.5 mr-1',
+            'inline-flex h-6 w-6 items-center justify-center rounded-md border',
+            'bg-background/85 text-muted-foreground hover:bg-muted hover:text-foreground',
+          )}
+          title="배경 밴드 색 / 글자색"
+          aria-label="배경 밴드 색"
+        >
+          <PaintBucket className="h-3.5 w-3.5" />
+          {swatchHex && (
+            <span
+              className="absolute bottom-0 right-0 h-1.5 w-1.5 rounded-full border border-background"
+              style={{ backgroundColor: `#${swatchHex}` }}
+              aria-hidden
+            />
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        className="w-72 p-3 space-y-3"
+        align="end"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+          배경 밴드 (제목 색 헤더)
+        </div>
+        <div className="space-y-1">
+          <div className="text-xs">밴드 색</div>
+          <ColorSwatchPicker
+            value={bgColor ?? null}
+            onChange={(t) => onPatch({ bg_color: t || undefined })}
+          />
+        </div>
+        <div className="space-y-1">
+          <div className="text-xs">글자색</div>
+          <div className="inline-flex rounded-md border bg-background overflow-hidden">
+            {TEXT_OPTIONS.map((o) => (
+              <button
+                key={o.label}
+                type="button"
+                onClick={() => onPatch({ bg_text: o.v || undefined })}
+                className={cn(
+                  'h-7 px-3 text-xs transition-colors',
+                  (bgText ?? null) === o.v
+                    ? 'bg-primary text-primary-foreground'
+                    : 'hover:bg-muted',
+                )}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            밴드가 켜졌을 때 글자색. 자동은 배경 밝기로 흰/검정을 고른다.
+          </p>
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function HeadingOptionsPopover({
   props,
   content,
@@ -369,6 +540,8 @@ function HeadingOptionsPopover({
       level: undefined,
       text_style: {},
       margin_bottom_px: undefined,
+      bg_color: undefined,
+      bg_text: undefined,
     })
     setOpen(false)
   }
@@ -378,7 +551,9 @@ function HeadingOptionsPopover({
   const hasOverride = Boolean(
     (content?.level && content.level !== props?.level) ||
       (content?.text_style && Object.keys(content.text_style).length > 0) ||
-      Number.isFinite(content?.margin_bottom_px),
+      Number.isFinite(content?.margin_bottom_px) ||
+      (content?.bg_color != null && content.bg_color !== props?.bg_color) ||
+      (content?.bg_text != null && content.bg_text !== props?.bg_text),
   )
 
   return (

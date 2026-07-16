@@ -42,10 +42,16 @@ const SANITIZE_OPTIONS = {
   // the data-* targeting attrs + class — NOT `href` — so navigation goes
   // through the delegated SPA click handler (OutlineView) and no javascript:
   // / external href vector can ride in via API-bypassed content.
-  ALLOWED_TAGS: ['p', 'span', 'strong', 'em', 'u', 's', 'del', 'br', 'a'],
+  ALLOWED_TAGS: ['p', 'span', 'strong', 'em', 'u', 's', 'del', 'br', 'a', 'sup', 'sub'],
   ALLOWED_ATTR: [
     'style',
     'class',
+    // 외부 URL 링크(ExternalLinkMark). DOMPurify 가 href 의 위험 스킴
+    // (javascript:/data: 등)은 자동 제거하므로 http(s)/mailto/tel 만 남는다.
+    // 멘션 앵커의 href="#" 는 클릭 위임이 preventDefault 하므로 무해.
+    'href',
+    'target',
+    'rel',
     // 제네릭 멘션 스키마(종류가 늘어도 고정).
     'data-mention-type',
     'data-mention-id',
@@ -202,6 +208,19 @@ export function RichTextPropsPanel({ props, onChange }) {
         개요 번호 매기기 (1 / 1.1 / 1.1.1)
         <span className="text-[10px] text-muted-foreground">
           깊이 기호(■ – ·) 대신 계층 번호
+        </span>
+      </label>
+      <label className="flex items-center gap-2 text-xs">
+        <input
+          type="checkbox"
+          checked={!!props.hide_prefix}
+          onChange={(e) =>
+            onChange({ ...props, hide_prefix: e.target.checked || undefined })
+          }
+        />
+        머리표 없음
+        <span className="text-[10px] text-muted-foreground">
+          불릿·번호 없이 들여쓰기만 (작성 화면 토글로도 전환 가능)
         </span>
       </label>
       <p className="text-[10px] text-muted-foreground">
@@ -544,6 +563,10 @@ export function RichTextEditor({ props, content, onChange, readOnly, onInsertWid
     content?.outline_numbering != null
       ? !!content.outline_numbering
       : !!props.outline_numbering
+  // 머리표 숨김(불릿/번호 없이 들여쓰기만) — 세 번째 모드. content 오버라이드가
+  // props 기본을 이긴다. 켜지면 numbering 과 무관하게 접두를 그리지 않는다.
+  const hidePrefix =
+    content?.hide_prefix != null ? !!content.hide_prefix : !!props.hide_prefix
 
   function patchItems(nextItems) {
     // ...content 보존 — 안 그러면 본문만 바꿔도 caption_skip_autofill(제목 생략),
@@ -570,12 +593,18 @@ export function RichTextEditor({ props, content, onChange, readOnly, onInsertWid
     onChange(merged)
   }
 
-  // 인라인 토글 — 번호 ↔ 불릿. 템플릿 기본값과 같아지면 키를 지워 상속으로
-  // 되돌린다(content 를 스파스하게 유지).
-  function toggleNumbering() {
-    const next = !numbering
+  // 인라인 머리표 순환 — 불릿(■ – ·) → 번호(1.1.1) → 없음 → 불릿. 템플릿
+  // 기본값과 같아지는 키는 지워 상속으로 되돌린다(content 를 스파스하게 유지).
+  function cyclePrefixMode() {
+    const mode = hidePrefix ? 'none' : numbering ? 'number' : 'bullet'
+    const nextMode =
+      mode === 'bullet' ? 'number' : mode === 'number' ? 'none' : 'bullet'
+    const nextNumbering = nextMode === 'number'
+    const nextHide = nextMode === 'none'
     patchContent({
-      outline_numbering: next === !!props.outline_numbering ? undefined : next,
+      outline_numbering:
+        nextNumbering === !!props.outline_numbering ? undefined : nextNumbering,
+      hide_prefix: nextHide === !!props.hide_prefix ? undefined : nextHide,
     })
   }
 
@@ -619,6 +648,7 @@ export function RichTextEditor({ props, content, onChange, readOnly, onInsertWid
           <OutlineView
             items={items}
             numbering={numbering}
+            hidePrefix={hidePrefix}
             bodyClassFor={bodyClassFor}
             bodyStyleFor={bodyStyleFor}
           />
@@ -644,11 +674,11 @@ export function RichTextEditor({ props, content, onChange, readOnly, onInsertWid
     <button
       type="button"
       onMouseDown={(e) => e.preventDefault()}
-      onClick={toggleNumbering}
+      onClick={cyclePrefixMode}
       className="shrink-0 inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      title="개요 머리표 전환 — 번호(1.1.1) ↔ 불릿(■ – ·)"
+      title="개요 머리표 전환 — 불릿(■ – ·) → 번호(1.1.1) → 없음"
     >
-      {numbering ? '1.1.1 번호' : '■ 불릿'}
+      {hidePrefix ? '머리표 없음' : numbering ? '1.1.1 번호' : '■ 불릿'}
     </button>
   )
 
@@ -666,6 +696,7 @@ export function RichTextEditor({ props, content, onChange, readOnly, onInsertWid
       <OutlineEditor
         items={items}
         numbering={numbering}
+        hidePrefix={hidePrefix}
         onChange={patchItems}
         placeholder={props.placeholder || '부가 기능 : Tab 상세 들여쓰기 · / 위젯 추가 · @ 보고서·부서 멘션 · # 그림·표 참조'}
         bodyClassFor={bodyClassFor}
@@ -694,7 +725,7 @@ export function RichTextEditor({ props, content, onChange, readOnly, onInsertWid
 // --------------------------------------------------------------------------- //
 // View mode — read-only structured render
 // --------------------------------------------------------------------------- //
-function OutlineView({ items, numbering, bodyClassFor, bodyStyleFor }) {
+function OutlineView({ items, numbering, hidePrefix, bodyClassFor, bodyStyleFor }) {
   // 보고서 단위 depth-별 글리프 override. depth 2 글리프는 depth 2+ 모두
   // 에 그대로 적용 (= 깊은 들여쓰기는 depth 2 값을 이어 쓴다).
   const { depthGlyphs } = useReportStyle()
@@ -813,17 +844,19 @@ function OutlineView({ items, numbering, bodyClassFor, bodyStyleFor }) {
             data-rt-row
             data-rt-depth={depth}
           >
-            <span
-              className={`select-none shrink-0 text-center ${
-                prefixFmt.colorToken ? '' : 'text-muted-foreground'
-              } ${prefixFmt.className}`}
-              style={prefixStyle}
-              data-rt-prefix
-            >
-              {numbers
-                ? numbers[i]
-                : depthGlyphs?.[Math.min(depth, 2)] || DEPTH_PREFIX[depth]}
-            </span>
+            {!hidePrefix && (
+              <span
+                className={`select-none shrink-0 text-center ${
+                  prefixFmt.colorToken ? '' : 'text-muted-foreground'
+                } ${prefixFmt.className}`}
+                style={prefixStyle}
+                data-rt-prefix
+              >
+                {numbers
+                  ? numbers[i]
+                  : depthGlyphs?.[Math.min(depth, 2)] || DEPTH_PREFIX[depth]}
+              </span>
+            )}
             <RelationChipStatic relation={it.relation} />
             <span
               className={`flex-1 min-w-0 break-words [&_p]:leading-[1.4] ${classFor(depth)}`}
@@ -853,7 +886,7 @@ function RelationChipStatic({ relation }) {
 // --------------------------------------------------------------------------- //
 // Edit mode — outline with Tab depth, auto-prefix, inline relation picker
 // --------------------------------------------------------------------------- //
-function OutlineEditor({ items, numbering, onChange, placeholder, bodyClassFor, bodyStyleFor, baseSizeFor, onInsertWidgetAfter }) {
+function OutlineEditor({ items, numbering, hidePrefix, onChange, placeholder, bodyClassFor, bodyStyleFor, baseSizeFor, onInsertWidgetAfter }) {
   // 슬래시커맨드(①) — 빈(또는 "/…"만 있는) 행에서 / 로 위젯 삽입. 상태는
   // { index, query, rect } | null. rect 는 캐럿 위치(메뉴 앵커).
   const [slash, setSlash] = useState(null)
@@ -1750,6 +1783,7 @@ function OutlineEditor({ items, numbering, onChange, placeholder, bodyClassFor, 
           index={i}
           item={it}
           numberPrefix={outlineNumbers ? outlineNumbers[i] : undefined}
+          hidePrefix={hidePrefix}
           isFirst={i === 0}
           parentDepth={items[i - 1]?.depth}
           placeholder={i === 0 && !it.text ? placeholder : ''}
@@ -2005,6 +2039,7 @@ function OutlineRow({
   index,
   item,
   numberPrefix,
+  hidePrefix,
   isFirst,
   parentDepth,
   placeholder,
@@ -2309,16 +2344,18 @@ function OutlineRow({
       style={{ paddingLeft: `${depth * INDENT_PX_PER_DEPTH}px` }}
     >
       <div className="flex items-baseline gap-1 group">
-        <span
-          className={`select-none shrink-0 text-center ${
-            prefixFmt.colorToken ? '' : 'text-muted-foreground'
-          } ${prefixFmt.className}`}
-          style={prefixStyle}
-        >
-          {numberPrefix != null
-            ? numberPrefix
-            : depthGlyphs?.[Math.min(depth, 2)] || DEPTH_PREFIX[depth]}
-        </span>
+        {!hidePrefix && (
+          <span
+            className={`select-none shrink-0 text-center ${
+              prefixFmt.colorToken ? '' : 'text-muted-foreground'
+            } ${prefixFmt.className}`}
+            style={prefixStyle}
+          >
+            {numberPrefix != null
+              ? numberPrefix
+              : depthGlyphs?.[Math.min(depth, 2)] || DEPTH_PREFIX[depth]}
+          </span>
+        )}
         <RelationChip relation={relation} onChange={onRelationChange} />
         <div className="flex-1 min-w-0 outline-rich-row">
           <RichTextRowEditor

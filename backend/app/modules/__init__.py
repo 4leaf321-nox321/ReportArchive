@@ -49,6 +49,7 @@ from app.modules.templates.routes import router as templates_router
 from app.modules.users.routes import router as users_router
 from app.modules.widget_relations.routes import router as widget_relations_router
 from app.modules.widgets.routes import router as widgets_router
+from app.modules.notices.routes import router as notices_router
 from app.modules.voc.routes import router as voc_router
 from app.modules.workspaces.routes import router as workspaces_router
 
@@ -126,6 +127,8 @@ def register_routers(app: FastAPI) -> None:
     # B300 보조 AI — 연결 진단(M0). 이후 RAG Q&A·엔티틀먼트가 같은 prefix 로 붙는다.
     app.include_router(ai_router, prefix="/api/ai", tags=["ai"])
     app.include_router(voc_router, prefix="/api/voc", tags=["voc"])
+    # 공지 게시판 — 시스템 관리자만 작성, 전원 열람. VOC 와 대칭.
+    app.include_router(notices_router, prefix="/api/notices", tags=["notices"])
     # Phase D 경보/트리거(관리자) — 온톨로지 상태 규칙 발화. 1단계=수동 실행.
     app.include_router(alerts_router, prefix="/api/alerts", tags=["alerts"])
     # Phase 0 — empty routers registered now so Phase 1/2/3/4 can

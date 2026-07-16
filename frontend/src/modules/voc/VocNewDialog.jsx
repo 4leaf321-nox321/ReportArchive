@@ -12,16 +12,14 @@ import {
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
-import { Textarea } from '@/shared/components/ui/textarea'
 import { AuthedImage } from '@/shared/components/AuthedImage'
+import { AuthedRichText } from '@/shared/rich-text/AuthedRichText'
 import { uploadFile } from '@/shared/api/files'
 import { createVocPost } from '@/shared/api/voc'
 import { VOC_CATEGORIES } from './constants'
 
-/** New VOC post dialog — captures title / category / body + image
- *  attachments (screenshots etc.). The free-text "관련 페이지" field
- *  was removed because users were rarely filling it; pasting a
- *  screenshot is faster and conveys far more context. */
+/** New VOC post dialog — 제목 / 분류 / 리치 텍스트 본문(문단 사이 이미지·크기
+ *  조절) + 별도 파일 첨부. 본문 이미지는 인라인, 첨부는 파일 단위로 따로 붙는다. */
 export function VocNewDialog({ open, onOpenChange, onCreated }) {
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
@@ -83,21 +81,6 @@ export function VocNewDialog({ open, onOpenChange, onCreated }) {
     handleFiles(e.dataTransfer.files)
   }
 
-  function onPaste(e) {
-    // Pull image blobs out of the clipboard — covers Win+Shift+S /
-    // macOS screenshot tool / "copy image" from a browser. Falls
-    // through when only text is on the clipboard so the textarea
-    // still handles a normal paste.
-    const items = Array.from(e.clipboardData?.items ?? [])
-    const imageFiles = items
-      .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
-      .map((it) => it.getAsFile())
-      .filter(Boolean)
-    if (imageFiles.length === 0) return
-    e.preventDefault()
-    handleFiles(imageFiles)
-  }
-
   function removeAttachment(idx) {
     setAttachments((prev) => prev.filter((_, i) => i !== idx))
   }
@@ -128,21 +111,16 @@ export function VocNewDialog({ open, onOpenChange, onCreated }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="max-w-2xl max-h-[90vh] flex flex-col"
-        onPaste={onPaste}
-      >
+      <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col">
         <DialogHeader>
           <DialogTitle>VOC 새 글</DialogTitle>
           <DialogDescription>
-            도구에 대한 버그·기능 요청·질문·개선 아이디어를 남겨주세요.
-            스크린샷은 직접 첨부하거나 Ctrl+V 로 붙여넣을 수 있습니다.
+            도구에 대한 버그·기능 요청·질문·개선 아이디어를 남겨주세요. 본문 문단
+            사이에 이미지를 넣거나(Ctrl+V·드래그), 아래에서 파일을 따로 첨부할 수
+            있습니다.
           </DialogDescription>
         </DialogHeader>
-        <form
-          onSubmit={handleSubmit}
-          className="space-y-3 overflow-y-auto pr-1"
-        >
+        <form onSubmit={handleSubmit} className="space-y-3 overflow-y-auto pr-1">
           <div className="space-y-1.5">
             <Label htmlFor="voc-title">제목</Label>
             <Input
@@ -170,17 +148,15 @@ export function VocNewDialog({ open, onOpenChange, onCreated }) {
             </select>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="voc-body">내용</Label>
-            <Textarea
-              id="voc-body"
+            <Label>내용</Label>
+            <AuthedRichText
               value={body}
-              onChange={(e) => setBody(e.target.value)}
-              placeholder="재현 절차, 기대 동작, 화면 등 자세히 적어주세요."
-              className="min-h-[160px]"
+              onChange={setBody}
+              placeholder="재현 절차, 기대 동작, 화면 등 자세히 적어주세요. 이미지는 툴바·드래그·Ctrl+V 로 본문에 넣을 수 있습니다."
             />
           </div>
           <div className="space-y-1.5">
-            <Label>스크린샷·이미지</Label>
+            <Label>파일 첨부</Label>
             <AttachmentGrid attachments={attachments} onRemove={removeAttachment} />
             <div
               tabIndex={0}
@@ -196,11 +172,7 @@ export function VocNewDialog({ open, onOpenChange, onCreated }) {
               ) : (
                 <div className="flex flex-col items-center gap-2 text-muted-foreground">
                   <ImageIcon className="h-5 w-5" />
-                  <div className="text-xs">
-                    이미지 드래그·앤·드롭, 또는 클릭해서 포커스 후{' '}
-                    <kbd className="px-1 rounded bg-muted">Ctrl</kbd>+
-                    <kbd className="px-1 rounded bg-muted">V</kbd>
-                  </div>
+                  <div className="text-xs">파일을 드래그·앤·드롭하거나 선택하세요</div>
                   <Button
                     type="button"
                     size="sm"

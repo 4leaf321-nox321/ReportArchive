@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Search, User, Sun, Moon, Menu } from 'lucide-react'
+import { Search, User, Sun, Moon, Menu, Megaphone } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 import {
   DropdownMenu,
@@ -98,6 +98,18 @@ export function Header({ onOpenMobileSidebar }) {
           onClick={toggleTheme}
         >
           {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+        </Button>
+
+        {/* 공지 — 공지 게시판(/notices)으로 이동. 알림 바로 옆. */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-9 w-9"
+          aria-label="공지"
+          title="공지"
+          onClick={() => navigate('/notices')}
+        >
+          <Megaphone className="h-4 w-4" />
         </Button>
 
         {/* 알림 — Phase 2D NotificationBell (실데이터 + 폴링 + 점프) */}

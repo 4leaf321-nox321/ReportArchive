@@ -72,6 +72,12 @@ export async function listPasswordResetTokens({ days = 90 } = {}) {
   return extractData(res)
 }
 
+/** 관리자 — 셀프 재설정 시도 이력을 계정 단위로 삭제(정리). */
+export async function clearPasswordResetTokens(userId) {
+  const res = await apiClient.delete(`/api/password-reset-tokens/${userId}`)
+  return extractData(res)
+}
+
 /** 관리자 — 임시 비번 발급으로 요청 해소. */
 export async function resolvePasswordResetRequest(requestId, { newPassword }) {
   const res = await apiClient.post(

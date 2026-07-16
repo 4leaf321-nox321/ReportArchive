@@ -27,7 +27,7 @@ import {
 } from './exportCapture'
 import { NATIVE_TEXT_TYPES, buildPptxText, readBasePx } from './exportPptxText'
 import { NATIVE_TABLE_TYPES, buildPptxTable } from './exportPptxTable'
-import { COLOR_TOKENS } from '@/shared/text-color'
+import { COLOR_TOKENS, bandBgHex, bandTextHex } from '@/shared/text-color'
 
 // 색 토큰 → 라이트 swatch hex(# 제외). PPT 는 다크모드가 없어 라이트 hex 를 쓴다.
 const _TOKEN_HEX = Object.fromEntries(
@@ -235,8 +235,20 @@ function tryAddNativeText(slide, meta, content, el, pos, ptPerPx, caption) {
     const capH = addCaptionBox(slide, caption, pos, ptPerPx)
     // 헤더가 아래면 본문은 위에서 시작, 위면 캡션 높이만큼 내려서 시작.
     const bodyY = caption?.below ? pos.y : pos.y + capH
+    // 제목 배경 밴드(PPT 섹션 헤더) — 텍스트박스 fill + 대비 글자색.
+    const bandTok =
+      meta.type === 'heading'
+        ? content?.bg_color ?? meta.props?.bg_color ?? null
+        : null
+    const bandBg = bandTok ? bandBgHex(bandTok) : null
+    const bandFg = bandTok
+      ? bandTextHex(bandTok, content?.bg_text ?? meta.props?.bg_text)
+      : null
     if (runs && runs.length) {
-      slide.addText(runs, {
+      const finalRuns = bandFg
+        ? runs.map((r) => ({ ...r, options: { ...r.options, color: bandFg } }))
+        : runs
+      slide.addText(finalRuns, {
         x: pos.x,
         y: bodyY,
         w: pos.w,
@@ -245,6 +257,7 @@ function tryAddNativeText(slide, meta, content, el, pos, ptPerPx, caption) {
         wrap: true,
         fontFace: TEXT_FONT,
         margin: 2,
+        ...(bandBg ? { fill: { color: bandBg } } : {}),
       })
     }
     return true

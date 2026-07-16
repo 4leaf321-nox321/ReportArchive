@@ -18,11 +18,13 @@ import {
   AlignmentType,
   BorderStyle,
   Document,
+  ExternalHyperlink,
   HeadingLevel,
   ImageRun,
   LineRuleType,
   Packer,
   Paragraph,
+  ShadingType,
   Table,
   TableCell,
   TableRow,
@@ -36,7 +38,13 @@ import html2canvas from 'html2canvas-pro'
 // pulling auth helpers in, and the apiClient already handles refresh /
 // 401 retries uniformly.
 import { apiClient } from '@/shared/api/client'
-import { COLOR_TOKENS } from '@/shared/text-color'
+import {
+  COLOR_TOKENS,
+  bandBgHex,
+  bandTextHex,
+  highlightHex,
+  tokenFromHlClassName,
+} from '@/shared/text-color'
 import { blockRefKey, outlineNumbers } from '@/shared/reports/blockNumbering'
 // rt-c-{token} 클래스(현재 색 저장 형식) → 라이트모드 hex(swatch). DOCX 는
 // 문서(밝은 배경)라 라이트 hex 가 적절. walkInline 이 클래스 색을 이걸로 매핑.
@@ -414,6 +422,7 @@ async function convertBlock(block, props, content, opts = {}) {
   // 번호 parity — 절 번호(heading)·개요 번호(rich_text) on/off.
   const headingNumber = opts.headingNumber ?? null
   const outlineNumbering = opts.outlineNumbering === true
+  const hidePrefix = opts.hidePrefix === true
   const out = []
 
   // NB: caption emission moved to `renderBlockPieces` — it composes a
@@ -426,7 +435,7 @@ async function convertBlock(block, props, content, opts = {}) {
       out.push(...convertHeading(props, content, headingNumber))
       break
     case 'rich_text':
-      out.push(...convertRichText(content, depthGlyphs, outlineNumbering))
+      out.push(...convertRichText(content, depthGlyphs, outlineNumbering, hidePrefix))
       break
     case 'bulleted_list':
       out.push(...convertBulletedList(content))
@@ -575,18 +584,33 @@ function convertHeading(props, content, headingNumber = null) {
     2: HeadingLevel.HEADING_2,
     3: HeadingLevel.HEADING_3,
   }[level]
+  // 배경 밴드(PPT 섹션 헤더) — 문단 shading + 대비 글자색. 밴드가 없으면 검정.
+  const bandTok = content?.bg_color ?? props?.bg_color ?? null
+  const bandBg = bandTok ? bandBgHex(bandTok) : null
+  const bandFg = bandTok
+    ? bandTextHex(bandTok, content?.bg_text ?? props?.bg_text)
+    : null
+  const textColor = bandFg || '000000'
   // rich(text_html)면 per-char 색·서식을 colored run 으로(긴 글처럼), 없으면
-  // 기존처럼 검정 단색. 기본 크기는 TITLE_SIZE, 색 없는 run 은 검정.
+  // 기존처럼 단색. 기본 크기는 TITLE_SIZE, 색 없는 run 은 대비색(밴드) 또는 검정.
   const children = hasRich
-    ? htmlToTextRuns(html, text, { size: TITLE_SIZE, color: '000000' })
-    : [new TextRun({ text, size: TITLE_SIZE, color: '000000' })]
+    ? htmlToTextRuns(html, text, { size: TITLE_SIZE, color: textColor })
+    : [new TextRun({ text, size: TITLE_SIZE, color: textColor })]
   // 절 번호(page_heading_numbering)가 켜졌으면 제목 앞에 "1.1.1 " prefix.
   if (headingNumber) {
     children.unshift(
-      new TextRun({ text: `${headingNumber} `, size: TITLE_SIZE, color: '000000' }),
+      new TextRun({ text: `${headingNumber} `, size: TITLE_SIZE, color: textColor }),
     )
   }
-  return [new Paragraph({ heading: headingLevel, children })]
+  return [
+    new Paragraph({
+      heading: headingLevel,
+      children,
+      ...(bandBg
+        ? { shading: { type: ShadingType.CLEAR, color: 'auto', fill: bandBg } }
+        : {}),
+    }),
+  ]
 }
 
 // Depth glyphs mirror the RichText widget's display set. depth 0 is
@@ -599,7 +623,7 @@ const RT_INDENT_TWIPS_PER_DEPTH = 360 // ~0.25in
 // 만큼 안쪽으로 들어가고, 깊은 depth 는 그 위에 360씩 더 들어감.
 const RT_BASE_INDENT_TWIPS = 360 // ~0.25in
 
-function convertRichText(content, depthGlyphs, outlineNumbering = false) {
+function convertRichText(content, depthGlyphs, outlineNumbering = false, hidePrefix = false) {
   // The widget accepts two persisted shapes:
   //   - { items: [{ depth, text, html? }, ...] }  — canonical, what
   //     the TipTap editor writes back on every edit.
@@ -623,11 +647,15 @@ function convertRichText(content, depthGlyphs, outlineNumbering = false) {
   const nums = outlineNumbering ? outlineNumbers(items) : null
   return items.map((it, i) => {
     const depth = clamp(it?.depth ?? 0, 0, 5)
-    const prefix = nums
-      ? nums[i]
-        ? `${nums[i]} `
-        : ''
-      : `${glyphFor(depth)} `
+    // 머리표 없음이면 접두 문자열을 비워 prefix TextRun 을 안 넣는다(들여쓰기는
+    // 아래 indent 로 유지). 아래 `if (prefix)` 가 빈 접두를 이미 건너뛴다.
+    const prefix = hidePrefix
+      ? ''
+      : nums
+        ? nums[i]
+          ? `${nums[i]} `
+          : ''
+        : `${glyphFor(depth)} `
     const runs = htmlToTextRuns(it?.html, it?.text ?? '')
     if (prefix) {
       runs.unshift(
@@ -1079,9 +1107,16 @@ function walkInline(node, fmt, out, defaultSize = BODY_SIZE) {
           text,
           bold: fmt.bold || undefined,
           italics: fmt.italic || undefined,
-          underline: fmt.underline ? {} : undefined,
+          // 링크는 밑줄로 표시(명시 밑줄과 합쳐짐).
+          underline: fmt.underline || fmt.isLink ? {} : undefined,
           strike: fmt.strike || undefined,
-          color: fmt.color || undefined,
+          superScript: fmt.superScript || undefined,
+          subScript: fmt.subScript || undefined,
+          shading: fmt.shadingFill
+            ? { type: ShadingType.CLEAR, color: 'auto', fill: fmt.shadingFill }
+            : undefined,
+          // 링크 파랑(사용자가 명시 색을 안 줬을 때만; 명시 색은 존중).
+          color: fmt.color || (fmt.isLink ? '0563C1' : undefined),
           // Editor-picked size wins; otherwise fall back to the caller's
           // default (BODY_SIZE for rich_text, TITLE_SIZE for heading) so
           // the paragraph stays in lockstep instead of inheriting Word's
@@ -1096,9 +1131,29 @@ function walkInline(node, fmt, out, defaultSize = BODY_SIZE) {
       if (tag === 'em' || tag === 'i') next.italic = true
       if (tag === 'u') next.underline = true
       if (tag === 's' || tag === 'del' || tag === 'strike') next.strike = true
+      if (tag === 'sup') next.superScript = true
+      if (tag === 'sub') next.subScript = true
       if (tag === 'br') {
         out.push(new TextRun({ text: '', break: 1 }))
         continue
+      }
+      if (tag === 'a') {
+        // 외부 링크만(멘션 앵커·href="#" 제외) → 진짜 클릭 가능한 하이퍼링크.
+        const href = child.getAttribute('href')
+        const isExternal =
+          href &&
+          href !== '#' &&
+          !child.getAttribute('data-mention-type') &&
+          !child.getAttribute('data-report-id') &&
+          !child.getAttribute('data-dept-slug')
+        if (isExternal) {
+          const sub = []
+          walkInline(child, { ...next, isLink: true }, sub, defaultSize)
+          if (sub.length) {
+            out.push(new ExternalHyperlink({ link: href, children: sub }))
+          }
+          continue
+        }
       }
       if (tag === 'span') {
         const style = child.getAttribute('style') || ''
@@ -1111,6 +1166,9 @@ function walkInline(node, fmt, out, defaultSize = BODY_SIZE) {
         const cls = child.getAttribute('class') || ''
         const tok = cls.match(/\brt-c-([a-z0-9]+)\b/)
         if (tok && _TOKEN_HEX[tok[1]]) next.color = _TOKEN_HEX[tok[1]]
+        // 하이라이트(rt-hl-{token}) → 옅은 shading fill hex.
+        const hlTok = tokenFromHlClassName(cls)
+        if (hlTok) next.shadingFill = highlightHex(hlTok) ?? next.shadingFill
       }
       walkInline(child, next, out, defaultSize)
     }
@@ -1268,6 +1326,10 @@ export async function renderBlockPieces({
     content?.outline_numbering != null
       ? !!content.outline_numbering
       : !!effectiveProps?.outline_numbering
+  const hidePrefixOn =
+    content?.hide_prefix != null
+      ? !!content.hide_prefix
+      : !!effectiveProps?.hide_prefix
 
   if (isLongTextWidget) {
     // Long-text widgets retain the combined "[단락구분] : 제목" header
@@ -1323,6 +1385,7 @@ export async function renderBlockPieces({
       depthGlyphs,
       headingNumber,
       outlineNumbering: outlineNumberingOn,
+      hidePrefix: hidePrefixOn,
     })
     for (const el of els) out.push(el)
   } catch (err) {

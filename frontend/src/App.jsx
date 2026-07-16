@@ -55,6 +55,8 @@ import ObjectProfilePage, {
 } from '@/modules/entities/ObjectProfilePage'
 import VocListPage from '@/modules/voc/VocListPage'
 import VocDetailPage from '@/modules/voc/VocDetailPage'
+import NoticeListPage from '@/modules/notices/NoticeListPage'
+import NoticeDetailPage from '@/modules/notices/NoticeDetailPage'
 import AiSettingsPage from '@/modules/ai_settings/AiSettingsPage'
 import MembersPage from '@/modules/members/MembersPage'
 import NotificationsPage from '@/modules/notifications/NotificationsPage'
@@ -190,6 +192,8 @@ const router = createBrowserRouter(
         <Route path="/templates/:templateId/edit" element={<TemplateEditorPage />} />
         <Route path="/voc" element={<VocListPage />} />
         <Route path="/voc/:postId" element={<VocDetailPage />} />
+        <Route path="/notices" element={<NoticeListPage />} />
+        <Route path="/notices/:postId" element={<NoticeDetailPage />} />
         <Route path="/ai-settings" element={<AiSettingsPage />} />
         <Route path="/admin" element={<AdminPage />} />
         <Route path="/admin/accounts" element={<AccountsAdminPage />} />

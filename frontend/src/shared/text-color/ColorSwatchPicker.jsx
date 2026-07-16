@@ -15,7 +15,14 @@ import { COLOR_TOKENS, normalizeToken } from './tokens'
  * actual rendered text color comes from the theme CSS variable, not this value.
  * The "기본" swatch shows a diagonal slash to signal "no color / inherit".
  */
-export function ColorSwatchPicker({ value, onChange, size = 20, columns = 10 }) {
+export function ColorSwatchPicker({
+  value,
+  onChange,
+  size = 20,
+  columns = 10,
+  // 팔레트 오버라이드 — 하이라이트 등에서 큐레이션한 부분집합을 넘길 수 있다.
+  tokens = COLOR_TOKENS,
+}) {
   const current = normalizeToken(value)
   const dim = `${size}px`
   const gap = 2
@@ -24,7 +31,7 @@ export function ColorSwatchPicker({ value, onChange, size = 20, columns = 10 }) 
       className="flex flex-wrap content-start gap-0.5"
       style={{ maxWidth: `${columns * (size + gap)}px` }}
     >
-      {COLOR_TOKENS.map((c) => {
+      {tokens.map((c) => {
         const active = c.token === current
         return (
           <button

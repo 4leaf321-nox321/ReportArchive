@@ -132,6 +132,7 @@ import {
 import { FOLDER_FILTER_UNCATEGORIZED } from './FolderSidebar'
 import { isWidgetCopyable, copyWidget, widgetCopyKind, downloadWidgetImage } from './widgetCopy'
 import { copyTextToClipboard } from '@/shared/lib/clipboard'
+import { notifyIfStaleChunk } from '@/shared/lib/staleChunk'
 import { useReportLock } from './useReportLock'
 import { useReportTabs } from '@/shared/reports/ReportTabsContext'
 import { computeCompareDiff } from '@/shared/reports/compareDiff'
@@ -3767,7 +3768,10 @@ export default function ReportDetailPage() {
         toast.info('HTML 내보내기를 취소했습니다.')
       } else {
         console.error(err)
-        toast.error(`HTML 저장 실패: ${err?.message ?? err}`)
+        // 배포로 청크가 사라진 경우엔 코드 오류가 아니라 낡은 페이지 문제다.
+        if (!notifyIfStaleChunk(err, toast, { context: 'HTML 저장' })) {
+          toast.error(`HTML 저장 실패: ${err?.message ?? err}`)
+        }
       }
     } finally {
       setPrinting(false)

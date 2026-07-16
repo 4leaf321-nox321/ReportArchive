@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import {
   createBrowserRouter,
   createRoutesFromElements,
@@ -6,6 +7,8 @@ import {
   Route,
   RouterProvider,
 } from 'react-router-dom'
+import { toast } from 'sonner'
+import { showStaleChunkToast } from '@/shared/lib/staleChunk'
 import { AppShell } from '@/shared/layout/AppShell'
 import { WorkspaceProvider } from '@/shared/workspace/WorkspaceContext'
 import { AuthProvider, useAuth } from '@/shared/auth/AuthContext'
@@ -108,6 +111,17 @@ function RootRedirect() {
  * is rendered here too so toasts persist across route changes.
  */
 function RootLayout() {
+  // 지연 로딩 청크가 배포로 사라졌을 때의 안전망. 호출부마다 catch 가 있는
+  // 건 아니라서(html2canvas-pro·plotly·3D 런타임 등), 개별 처리가 없는
+  // 경로에서도 날것의 에러 대신 새로고침 안내가 뜨도록 전역에서 받는다.
+  useEffect(() => {
+    // 이 이벤트는 프리로드 실패 때만 뜨므로 메시지를 따지지 않는다 —
+    // 청크든 CSS든 원인은 같다(배포로 사라진 자산).
+    const onPreloadError = () => showStaleChunkToast(toast)
+    window.addEventListener('vite:preloadError', onPreloadError)
+    return () => window.removeEventListener('vite:preloadError', onPreloadError)
+  }, [])
+
   return (
     <AuthProvider>
       <Outlet />

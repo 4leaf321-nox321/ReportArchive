@@ -23,6 +23,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/shared/components/ui/dropdown-menu'
+import { notifyIfStaleChunk } from '@/shared/lib/staleChunk'
 import { cn } from '@/shared/lib/utils'
 import { toast } from 'sonner'
 import { Badge } from '@/shared/components/ui/badge'
@@ -741,7 +742,10 @@ export default function CompositeDetailPage() {
         toast.info('HTML 내보내기를 취소했습니다.')
       } else {
         console.error(err)
-        toast.error(`HTML 저장 실패: ${err?.message ?? err}`)
+        // 배포로 청크가 사라진 경우엔 코드 오류가 아니라 낡은 페이지 문제다.
+        if (!notifyIfStaleChunk(err, toast, { context: 'HTML 저장' })) {
+          toast.error(`HTML 저장 실패: ${err?.message ?? err}`)
+        }
       }
     } finally {
       setHtmlProgress(null)

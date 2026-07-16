@@ -93,9 +93,30 @@ def _mount_frontend_if_configured(app: FastAPI) -> None:
 
     index_file = dist_path / "index.html"
 
+    def _index_response() -> FileResponse:
+        """index.html 은 **매번 재검증**시킨다(no-cache).
+
+        이 파일만이 해시 붙은 청크 이름들의 유일한 진입점이다. 배포는 SIF 를
+        통째로 갈아끼워 /assets 의 옛 청크를 전부 없애므로, 브라우저가 옛
+        index.html 을 계속 쓰면 이미 사라진 청크를 가리키게 되고 지연 로딩
+        (예: HTML 내보내기)이 404 로 죽는다 —
+        "Failed to fetch dynamically imported module".
+
+        헤더가 없으면 브라우저는 휴리스틱 캐싱(마지막 수정 이후 경과의 10% 가량)
+        으로 재검증 없이 옛 파일을 며칠씩 쓸 수 있어, 새로고침해도 안 낫는다.
+
+        참고: FileResponse 는 조건부 요청(If-None-Match)을 처리하지 않아 304 를
+        내주지 못한다 — 매 요청마다 index.html 본문이 다시 나간다. 수 KB짜리
+        진입점 하나라 그대로 둔다. 정말 문제가 되면 StaticFiles(304 처리 있음)로
+        옮기거나 여기서 ETag 를 직접 비교하면 된다.
+
+        /assets 아래 파일들은 내용 해시가 이름에 박혀 있어 이 처리가 필요 없다.
+        """
+        return FileResponse(index_file, headers={"Cache-Control": "no-cache"})
+
     @app.get("/", include_in_schema=False)
     def _serve_index() -> FileResponse:
-        return FileResponse(index_file)
+        return _index_response()
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def _spa_fallback(full_path: str, request: Request):
@@ -113,7 +134,7 @@ def _mount_frontend_if_configured(app: FastAPI) -> None:
             return FileResponse(candidate)
 
         # Otherwise let React Router handle the route.
-        return FileResponse(index_file)
+        return _index_response()
 
     logger.info("Serving frontend dist from %s", dist_path)
 

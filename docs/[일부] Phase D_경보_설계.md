@@ -3,7 +3,35 @@
 > 팔란티어 벤치마킹 로드맵의 **Phase D(의사결정 표면)** 중 **경보/트리거** 부분 설계.
 > "묻지 않아도 시스템이 먼저 알린다" = 온톨로지가 **읽기 전용·수동 → 능동**으로.
 > 배경: `[참고] 팔란티어 벤치마킹.md`(§4 Phase D), `[일부] AI검색_지능화_로드맵_설계.md`.
-> 상태: **미구현 (다음 무게중심 ★)**. 이 문서로 Phase D 전용 설계 최초 분화.
+> 상태: **일부 구현** (갱신 2026-07-17). 통보 레이어까지 완성, **규칙 레이어가 얇다.**
+>
+> **구현됨:** 1 감지(v0.103, 마이그 p78, `alerts/services.py::run_rule` + diff 기계
+> `diff_keys`) · 2 자동실행(v0.104, p79, `jobs/scheduler.py::run_alerts_scheduler_tick`,
+> 매시간~매달) · 독립 관리자 페이지 `/admin/alerts`(v0.104.1) · 3a 관리자 인앱 알림
+> (v0.105, p80, `_notify_new_firings`) · 3b 일일 이메일 다이제스트(v0.109, p82,
+> `alerts/digest.py`) · 3c 작성자 통보(v0.110, p83, `_notify_owners`, 규칙별 옵트인
+> `notify_owner`). 용어 '발화'→'감지'(v0.110.1).
+>
+> **⚠️ 잔여 — 릴리스 노트보다 얇다:**
+> - **규칙이 2개뿐**(설계 §6 = 6개). `PROBES` = `untagged_reports`, `stale_unpublished`.
+>   그나마 `stale_unpublished` 는 **설계 목록에 없는 즉흥 추가**이고, 설계의
+>   `merge_candidates_backlog`·`connector_unresolved_links`·`stale_drafts`·
+>   `pending_requests_aging`·`failed_jobs_backlog` 는 **미구현**.
+> - **관리자가 규칙을 만들 수 없다** — `alerts/routes.py` 에 POST/DELETE 가 없어 시드된 2개를
+>   켜고 끄는 것만 된다. **실질적으로 가장 큰 구멍.**
+> - **`recipients` 모델이 스키마에 없다** — 설계 §5.1 의 `{mode, users, dept, derive}` 대신
+>   `notify_owner` bool 하나뿐. 담당PL/부서 수신자 불가.
+> - **작성자 이메일은 구조적으로 불가능** — `email_fanout.py` 가 `alert_firing` 이메일을 전부
+>   억제하고, 유일한 이메일 경로인 다이제스트는 수신자를 `is_system_admin` 으로 거른다.
+> - `escalate_after_minutes` 미구현 → `AlertRuleState.last_notified_at` 은 **아무도 안 읽는
+>   죽은 컬럼**. 규칙별 `digest` 토글·`condition_kind`(`object_search`)·`created_by` 도 없음.
+> - 드라이런(§5.4) 엔드포인트 없음. **시간여행·객체 대시보드**(§7) 코드 0줄.
+>
+> **⚠️ v0.110 이후 26개 릴리스 동안 방치됨** — 무게중심이 기준정보 관리·UI 로 옮겨갔다.
+> 코드 주석(`services.py:7`·`models.py:27`·`routes.py:8`)이 아직 "1단계는 수동 실행만"
+> 이라고 적혀 있으니 믿지 말 것.
+>
+> 이 문서로 Phase D 전용 설계 최초 분화.
 
 ---
 

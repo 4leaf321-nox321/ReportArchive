@@ -36,7 +36,7 @@
 | 내부 에이전트 오케스트레이터 | `run_agent()` — 다단계 tool-calling, 인용/trace 누적, `max_hops` bound | `backend/app/ai/agent.py:73` |
 | 온톨로지 도구 4종 (LLM용, compact · size-cap · 가시성 게이팅) | `list_object_types / search_objects / get_object / search_reports` | `backend/app/ai/agent_tools.py` |
 | 지능화 검색 HTTP | `POST /api/ai/agent` `{query, max_hops}` → `{answer, citations, objects, trace, no_evidence}` | `backend/app/modules/ai/routes.py:163` |
-| 그래프 프리미티브 HTTP | `/api/entities/search`, `/api/entities/{id}/profile`, `/api/entities/{id}/subgraph?depth=`, `/api/entity-types`, `/api/relation-types` | `backend/app/modules/entities/routes.py` |
+| 그래프 프리미티브 HTTP | `/api/entities/search`, `/api/entities/{id}/profile`, `/api/entities/{id}/graph?depth=`, `/api/entity-types`, `/api/relation-types` | `backend/app/modules/entities/routes.py` |
 
 `agent_tools`의 실행기는 이미 다음을 내장한다: **slug→id 해석, 결과 size-cap(15/8/25), 보고서 가시성 게이팅, LLM친화적 compact shape.** 외부 에이전트에게도 그대로 재사용한다 — 재구현 0.
 
@@ -70,8 +70,16 @@ POST /api/ai/ontology/tool     body: { name: str, args: dict }
          └ 근거: /api/entities/* 가 이미 "인증-only"이고,
            도구 내부 report 검색은 hybrid_search 가 가시성 게이팅한다.
            LLM을 호출하지 않으므로 rag_qa 게이트가 필요 없음.
-  whitelist : {list_object_types, search_objects, get_object} 만 통과,
-              나머지(create/update 계열)는 404 — 실행기 화이트리스트.
+  whitelist : {list_object_types, search_objects, get_object, aggregate_reports}
+              만 통과, 나머지(create/update 계열)는 404 — 실행기 화이트리스트.
+              ※ aggregate_reports 는 2026-07-17 추가. 게이트 기준 두 개를 다 만족한다 —
+                생성 LLM 미호출(chat() 은 _extract=maybe_answer 전용, aggregate 경로엔
+                없음) + 가시성 게이팅(_base_reports → all_visible_report_ids).
+                **개수를 SQL 로 세는 유일한 도구**라 빠져 있으면 외부 AI 가 search_reports
+                결과를 손으로 세다 환각한다(이 도구의 존재 이유가 바로 그 방지).
+              ※ search_reports 는 의도적 제외 — MCP 가 /api/reports/search/semantic 을
+                직접 부르는 자기 도구를 이미 갖고 있다(단 그쪽은 날짜·종류·작성자 필터가
+                없어 agent_tools 판보다 약하다).
 ```
 
 ### 4.2 MCP 신규 도구 3종 (`mcp_server/server.py`)
@@ -97,7 +105,7 @@ POST /api/ai/ontology/tool     body: { name: str, args: dict }
 `get_object`는 1-hop 관계만 준다. 외부 AI가 노드마다 `get_object`를 반복하면 구조를 탈 수 있지만(정석 에이전트 방식), 한 방에 서브그래프를 주면 hop 낭비가 준다:
 
 ```python
-@mcp.tool() get_subgraph(entity_id, relations?, depth=2)   # → GET /api/entities/{id}/subgraph
+@mcp.tool() get_subgraph(entity_id, relations?, depth=2)   # → GET /api/entities/{id}/graph
 ```
 
 - 비관리자에겐 `active_only` 자동 적용(기존 라우트 로직 재사용).
@@ -154,9 +162,10 @@ async def ask_ontology(query: str, ctx, max_hops: int = 6) -> dict:
 | `list_object_types` | ✅ A | `/api/ai/ontology/tool` |
 | `search_objects` | ✅ A | `/api/ai/ontology/tool` |
 | `get_object` | ✅ A | `/api/ai/ontology/tool` |
-| `get_subgraph` | ✅ A(선택) | `/api/entities/{id}/subgraph` |
+| `get_subgraph` | ✅ A(선택) | `/api/entities/{id}/graph` |
 | `ask_ontology` | ✅ B | `/api/ai/agent` |
-| `search_reports` | 기존 | `/api/reports/search/semantic` |
+| `aggregate_reports` | ✅ A (2026-07-17 추가) | `/api/ai/ontology/tool` — 개수를 SQL 로 셈(환각 방지) |
+| `search_reports` | 기존 | `/api/reports/search/semantic` (MCP 자체 도구 — 화이트리스트 제외) |
 | `describe_metadata` | 기존 | (작성용 flat 축, 유지) |
 | `get_report` | 기존 | `/api/reports/{id}` |
 
@@ -188,7 +197,7 @@ async def ask_ontology(query: str, ctx, max_hops: int = 6) -> dict:
 1. ✅ **A-1** 백엔드 `POST /api/ai/ontology/tool` (+ 화이트리스트 `_ONTOLOGY_TOOLS`) — `agent_tools.run_tool` 위임, 인증-only.
 2. ✅ **A-2** MCP `list_object_types` / `search_objects` / `get_object` (도크스트링에 `_SYSTEM` 규칙 이식).
 3. ✅ **B** MCP `ask_ontology` → `/api/ai/agent` (`_post` timeout=120s, `rag_qa` 게이트는 문서화).
-4. ✅ **A-3** MCP `get_subgraph` → `/api/entities/{id}/subgraph`.
+4. ✅ **A-3** MCP `get_subgraph` → `/api/entities/{id}/graph`. (실제 라우트명은 `/graph` — 문서·클라이언트가 `/subgraph` 로 잘못 적혀 404 였던 것을 정정.)
 5. ⏭️ `McpTab.jsx` — 등록/토큰 안내 화면일 뿐 도구를 열거하지 않음(도구는 docstring 자기설명) → 변경 불필요.
 
 ## 11. 검증(구현 후)

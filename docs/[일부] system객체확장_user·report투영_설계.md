@@ -4,6 +4,27 @@
 > (supersedes/cites 보고서간)·스텝3(자동 채우기) 미구현. A0.3 잔여 = dept까지만 투영된 것을
 > **user·report** 로 확장.
 >
+> **AI/MCP 소비처 배선 (2026-07-17, 마이그 없음):** 스텝1 이 리졸버·라우트만 붙이고 §5.1
+> (`agent_tools`)을 빠뜨려, report 는 AI·MCP 에서 **항상 "객체를 찾을 수 없습니다"**, user 는
+> **라벨만 있는 껍데기**였다(사람 UI 는 이 경로를 안 써서 영향 없음). 수정 3건 —
+> ① `_exec_get_object` 가 `resolve_object(…, actor.user)` 로 actor 전달 + system 분기에서
+> `derived_links_for` 로 관계 탑재(§5.1) · ② `search_objects` 가 system 축을 거절하고 길 안내
+> (값 행이 없어 구조적으로 0건인데 **빈 배열이 "없다"로 오독**됐다) · ③ report 속성 투영
+> (`report_date`·`phase`·`lifecycle`·`report_type`·`tags` — 저장 0, 컬럼 온플라이). MCP
+> `get_subgraph` 는 없는 경로(`/subgraph`)를 불러 404 였다 → `/graph` 로 정정.
+> 회귀 테스트는 **`agent_tools` 소비 경로**에 추가(기존 테스트가 services 만 직접 불러 결함을
+> 놓쳤다). 유출 회귀 실측: 비가시 보고서 25건 찔러 0건 노출.
+>
+> **후속 2건 (같은 날):**
+> - **수동 링크 병합** — `_exec_get_object` 가 `entity_relations`(entity 분기)·FK 파생(system
+>   분기)만 읽고 **`object_links` 를 어느 쪽도 안 읽어**, 스텝2 의 존재 이유인 `led_by`(담당 PL)가
+>   AI 에 통째로 안 보였다(사람 라우트 `object_ref_links` 는 이미 병합 중이었다). `_manual_link_summary`
+>   로 양방향 병합 → 정방향(과제→PL)·역방향(PL→담당 과제) 모두 확인. §4 의 "역방향 led_by ←
+>   project[]" 도 이걸로 충족(`list_object_links_for_ref` 가 양방향이라 파생 리졸버 확장 불필요).
+> - **가시성 N+1** — `derived_links_for` 가 `visible` 을 계산해 두고도 루프 안 `resolve_object` 가
+>   `all_visible_report_ids`(13ms)를 건마다 재계산했다. `resolve_object(…, visible_ids=)` 성능
+>   힌트 추가 → 실측 **205ms → 53ms**(링크 수 동일). 게이트 자체는 불변.
+>
 > **스텝2(수동 관계) — led_by 구현:** 마이그 p72 `led_by`(과제→user) 시드. add_object_link+
 > resolve_object(user) 재사용(엔티티 src→user system dst). 프론트 RelationsDialog: 도착축이
 > user 면 **사용자 검색 Combobox**(searchUsers, 이름·이메일)로 담당 PL 지정 → object_link.
@@ -129,8 +150,11 @@ derived_links_for(db, actor, ref) -> [{relation, direction, object}]
 3. **프로필** — `ObjectProfilePage`(이미 `/objects/:type/:id` 범용) 가 user 를 렌더:
    헤더(이름) + 「작성한 보고서」「담당 과제(led_by)」「소속 부서」. report 는 기존
    보고서 상세로 이동(별도 프로필 불필요).
-4. **MCP** — 별도 작업 없음: `[완료] MCP온톨로지조사_설계.md` 의 `get_object`/`get_subgraph`
+4. **MCP** — 1의 후속: `[완료] MCP온톨로지조사_설계.md` 의 `get_object`/`get_subgraph`
    가 확장된 resolve/파생 리졸버를 그대로 태운다(외부 AI도 사람/문서 traversal 획득).
+   ⚠️ **"별도 작업 없음"이 아니다** — MCP 는 `/api/ai/ontology/tool` → `agent_tools` 를
+   경유하므로 **1(agent_tools 분기)이 돼야 비로소 성립**한다. 실제로 1을 건너뛴 채
+   스텝1 을 릴리스해 report 가 AI·MCP 전 경로에서 조회 불가였다(2026-07-17 수정).
 
 ## 6. 가시성 · 프라이버시 · 거버넌스
 
@@ -150,9 +174,9 @@ derived_links_for(db, actor, ref) -> [{relation, direction, object}]
 - [ ] `services.resolve_object(…, actor=None)` — user/report 분기(+report 가시성).
 - [ ] `services.derived_links_for(db, actor, ref)` — §4 파생 엣지(정·역, 상한).
 - [ ] `list_object_links_for_ref` 와 파생 엣지 **머지**(수동+파생 한 뷰).
-- [ ] `GET /api/objects/{type}/{id}` · `/links` 가 user/report 처리(기존 라우트 확장).
-- [ ] `agent_tools._exec_get_object` system 분기 확장(report/user 관계·근거).
-- [ ] 테스트: resolve(가시성·비활성) · 파생 엣지 정역 · 에이전트 traversal · 유출 회귀.
+- [x] `GET /api/objects/{type}/{id}` · `/links` 가 user/report 처리(기존 라우트 확장).
+- [x] `agent_tools._exec_get_object` system 분기 확장(report/user 관계·근거).
+- [x] 테스트: resolve(가시성·비활성) · 파생 엣지 정역 · 에이전트 traversal · 유출 회귀.
 
 **프론트**
 - [ ] `ObjectProfilePage` user 렌더(작성 보고서·담당 과제·소속). report→보고서 상세 리다이렉트.

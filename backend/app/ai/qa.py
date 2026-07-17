@@ -733,11 +733,14 @@ def ask_archive(
     """질문 → {answer, citations, no_evidence, seeds, ...}. actor 는 검색 권한
     scope 용(.user.id 기반 가시 보고서). 기능 권한 게이트는 호출부에서 이미 통과.
     graph=True 면 GraphRAG(온톨로지 그래프 근거 블렌드). rerank/hyde/verify=요청별 override."""
-    from app.ai import structured_qa
+    from app.ai import agent_route, structured_qa
 
     routed = structured_qa.maybe_answer(db, actor, query)
     if routed is not None:
-        return routed  # 집계형 질문 → 온톨로지 SQL 집계(개수 정확). 아니면 아래 RAG.
+        return routed  # 집계형 질문 → 온톨로지 SQL 집계(개수 정확). 아니면 아래.
+    routed_agent = agent_route.maybe_route_agent(db, actor, query)
+    if routed_agent is not None:
+        return routed_agent  # 복합(다홉) 질문 → 에이전트. 아니면 아래 일반 RAG.
     retrieved = _retrieve(
         db, actor, query, limit=limit, graph=graph, rerank=rerank, hyde=hyde
     )
@@ -769,11 +772,19 @@ async def ask_archive_cancellable(
     """ask_archive 의 비동기·취소 가능 버전(라우트가 클라이언트 연결 끊김을
     should_cancel 로 넘긴다). 검색은 동기지만 짧고, 긴 LLM 생성만 스트리밍해
     중간 취소된다. 결과 형태는 ask_archive 와 동일."""
-    from app.ai import structured_qa
+    from starlette.concurrency import run_in_threadpool
+
+    from app.ai import agent_route, structured_qa
 
     routed = structured_qa.maybe_answer(db, actor, query)
     if routed is not None:
-        return routed  # 집계형 질문 → 온톨로지 SQL 집계(개수 정확). 아니면 아래 RAG.
+        return routed  # 집계형 질문 → 온톨로지 SQL 집계(개수 정확). 아니면 아래.
+    # 에이전트는 sync·다홉(느림)이라 스레드풀로(이벤트루프 안 막게, /agent 라우트 패턴).
+    routed_agent = await run_in_threadpool(
+        agent_route.maybe_route_agent, db, actor, query
+    )
+    if routed_agent is not None:
+        return routed_agent  # 복합(다홉) 질문 → 에이전트. 아니면 아래 일반 RAG.
     retrieved = _retrieve(
         db, actor, query, limit=limit, graph=graph, rerank=rerank, hyde=hyde
     )

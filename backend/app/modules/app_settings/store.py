@@ -55,6 +55,13 @@ REGISTRY: dict[str, dict] = {
                 "(개수는 계산이라 정확). 신호어 있을 때만 AI 1콜. 불확실하면 일반 검색 폴백.",
         "requires_reindex": False,
     },
+    "rag_auto_route_enabled": {
+        "type": "bool", "group": "질문 이해", "label": "복합질문 에이전트 자동 라우팅",
+        "desc": "\"A공급사 부품이 물린 과제의 결론은?\" 처럼 관계를 여러 단계 타는 복합 "
+                "질문을 에이전트(다단계 도구)로 자동 전환한다. 다홉 신호어가 있을 때만 — "
+                "단순 질문은 그대로 일반 검색(추가 AI 콜 없음).",
+        "requires_reindex": False,
+    },
     "rag_verify_enabled": {
         "type": "bool", "group": "답변 신뢰", "label": "근거 검증 기본값",
         "desc": "생성된 답변의 각 주장이 인용 출처에 실제로 뒷받침되는지 검증하고 "

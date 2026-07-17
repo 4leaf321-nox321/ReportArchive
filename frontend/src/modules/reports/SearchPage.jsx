@@ -30,7 +30,7 @@ import {
   createReportFromAnswer,
 } from '@/modules/reports/api'
 import { ObjectSearch } from '@/modules/entities/ObjectSearch'
-import { askAi, askAgent, getAskOptions, submitFeedback } from '@/shared/api/ai'
+import { askAi, getAskOptions, submitFeedback } from '@/shared/api/ai'
 import { useAuth } from '@/shared/auth/AuthContext'
 import { listReportTypes } from '@/shared/api/reportTypes'
 import { searchUsers } from '@/shared/api/members'
@@ -76,19 +76,26 @@ const MODES = [
     hint: '뜻이 비슷한 보고서까지 (의미 + 키워드 융합)',
   },
 ]
-// RAG Q&A 모드 (B300). ai_features 에 'rag_qa' 가 있는 사용자에게만 노출.
-const ASK_MODE = {
-  key: 'ask',
-  label: '질문하기',
-  icon: MessageCircleQuestion,
-  hint: '아카이브 보고서를 근거로 답변 (출처 인용)',
-}
-// 온톨로지 에이전트 모드 (tool-calling). 객체·관계를 도구로 조사해 답변.
-const AGENT_MODE = {
-  key: 'agent',
-  label: '에이전트',
-  icon: Network,
-  hint: '온톨로지(객체·관계)를 스스로 조사해 답변 (추론 과정·근거 표시)',
+// 질문(RAG/에이전트)은 이제 별도 모드가 아니다 — 검색창에 자연어로 쓰고 Enter 를
+// 치면 /api/ai/ask 가 답한다(복합 질문은 서버가 에이전트로 자동 라우팅). 모드는 검색
+// 방식(키워드/의미)만 고른다. 'rag_qa' 권한이 있어야 Enter 로 질문할 수 있다.
+
+// 입력이 '질문형'인지 가벼운 휴리스틱 — 맞으면 "Enter 로 묻기" 힌트만 띄운다(발견성
+// 보조). 틀려도 Enter 는 항상 질문으로 처리되므로 무해하다.
+const _QUESTION_WORDS = [
+  // 의문사
+  '?', '？', '뭐', '무엇', '무슨', '어떤', '어느', '왜', '어디', '언제', '누가',
+  '누구', '얼마', '몇', '어떻게', '인가', '일까', '있나', '있는지',
+  // 요청·명령형(검색 의도) — "찾아줘·보여줘·알려줘·추천·정리·요약·비교·분석" 등
+  '알려', '해줘', '찾아', '보여', '추천', '설명', '정리', '요약', '비교', '분석', '줘',
+]
+function looksLikeQuestion(s) {
+  const q = (s || '').trim()
+  if (q.length < 4) return false
+  const lower = q.toLowerCase()
+  if (_QUESTION_WORDS.some((w) => lower.includes(w))) return true
+  // 3어절 이상의 자연어 문장은 질문 의도로 본다 — 키워드 검색은 보통 짧다.
+  return q.split(/\s+/).filter(Boolean).length >= 3
 }
 
 /** 검색어의 각 단어(공백 분리)를 <mark> 로 강조. 대소문자 무시, 모든 일치. */
@@ -153,13 +160,8 @@ export default function SearchPage() {
   const canAuthorReport = !!me?.ai_features?.includes('report_authoring')
   const [savingReport, setSavingReport] = useState(false)
   const [saveError, setSaveError] = useState(null)
-  const isAsk = mode === 'ask'
-  const isAgent = mode === 'agent'
-  const isAskLike = isAsk || isAgent // LLM 호출 모드(질문하기·에이전트) 공통
-  const modes = useMemo(
-    () => (hasRagQa ? [...MODES, ASK_MODE, AGENT_MODE] : MODES),
-    [hasRagQa],
-  )
+  // 모드 = 검색 방식(키워드/의미)만. 질문은 Enter 로 별도(askResult).
+  const modes = MODES
   const [askLoading, setAskLoading] = useState(false)
   const [askResult, setAskResult] = useState(null) // {answer, citations, no_evidence, seeds}
   const [askError, setAskError] = useState(null)
@@ -470,9 +472,8 @@ export default function SearchPage() {
   }, [input])
 
   // 디바운스된 검색어 → URL(?q) 동기화 + 첫 페이지 조회.
+  // ★ 속도 보존: 타이핑은 항상 키워드 검색(즉시·무료). LLM 은 Enter(submitAsk)로만.
   useEffect(() => {
-    // 질문하기 모드는 자동 조회 안 함 — LLM 호출 비용이라 Enter/버튼으로만.
-    if (mode === 'ask') return undefined
     if (debounced !== lastPushedRef.current) {
       lastPushedRef.current = debounced
       setParams(debounced ? { q: debounced } : {}, { replace: true })
@@ -549,13 +550,12 @@ export default function SearchPage() {
     setAskLoading(true)
     setAskError(null)
     try {
-      const res = isAgent
-        ? await askAgent({ query: q, signal: controller.signal })
-        : await askAi({
-            query: q, graph: graphMode,
-            rerank: rerankMode, hyde: hydeMode, verify: verifyMode,
-            signal: controller.signal,
-          })
+      // 항상 /ask — 복합(다홉) 질문은 서버가 에이전트로 자동 라우팅한다.
+      const res = await askAi({
+        query: q, graph: graphMode,
+        rerank: rerankMode, hyde: hydeMode, verify: verifyMode,
+        signal: controller.signal,
+      })
       setAskResult(res)
       setAskedQuery(q)
       setFeedbackSent(null)
@@ -573,7 +573,7 @@ export default function SearchPage() {
       askAbortRef.current = null
       setAskLoading(false)
     }
-  }, [input, askLoading, graphMode, rerankMode, hydeMode, verifyMode, isAgent])
+  }, [input, askLoading, graphMode, rerankMode, hydeMode, verifyMode])
 
   const sendFeedback = async (rating) => {
     if (!askResult || feedbackSent) return
@@ -666,28 +666,41 @@ export default function SearchPage() {
       </h1>
       {targetToggle}
 
-      <div className="relative mb-3">
+      <div className="relative mb-1">
         <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
-            if (isAskLike && e.key === 'Enter' && !e.nativeEvent.isComposing) {
+            // Enter = 이 입력을 '질문'으로 보고 AI 답변(권한 있을 때만). 타이핑은
+            // 그대로 즉시 키워드 검색 — LLM 은 이 Enter 로만 발동한다(속도 보존).
+            if (hasRagQa && e.key === 'Enter' && !e.nativeEvent.isComposing) {
               e.preventDefault()
               submitAsk()
             }
           }}
           placeholder={
-            isAgent
-              ? '온톨로지에 묻기 (예: A공급사 부품 중 낙하시험 실패한 게 물린 과제는?) — Enter'
-              : isAsk
-                ? '아카이브에 질문하기 (예: 낙하 시험에서 가장 취약한 부품은?) — Enter'
-                : '제목·본문에서 검색 (표·긴 글 등 위젯 내용 포함)'
+            hasRagQa
+              ? '제목·본문 검색 — Enter 로 AI 에게 질문 (예: 낙하시험에서 취약한 부품은?)'
+              : '제목·본문에서 검색 (표·긴 글 등 위젯 내용 포함)'
           }
           className="h-11 pl-9 text-base"
         />
       </div>
+
+      {/* 질문형 입력이면 Enter 로 AI 에게 물으라는 힌트(발견성 보조). 이미 답변이
+          떠 있으면 감춤. 감지가 틀려도 Enter 는 항상 질문으로 처리된다. */}
+      {hasRagQa && !askResult && !askLoading && looksLikeQuestion(input) && (
+        <button
+          type="button"
+          onClick={() => submitAsk()}
+          className="mb-3 inline-flex items-center gap-1.5 rounded-full border bg-primary/5 px-3 py-1 text-xs text-primary hover:bg-primary/10"
+        >
+          <MessageCircleQuestion className="h-3.5 w-3.5" />
+          <b>Enter</b> 로 AI 에게 물어보기
+        </button>
+      )}
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <div className="inline-flex rounded-md border p-0.5">
@@ -712,72 +725,94 @@ export default function SearchPage() {
             )
           })}
         </div>
-        {isAsk && (
-          <label
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs"
-            title="온톨로지 그래프로 답합니다 — 질문이 다룬 객체와 연결된 이웃 객체의 보고서를 근거로 우선합니다"
-          >
-            <input
-              type="checkbox"
-              checked={graphMode}
-              onChange={(e) => setGraphMode(e.target.checked)}
-              className="h-3 w-3"
-            />
-            <Network className="h-3.5 w-3.5" />
-            그래프 근거
-          </label>
-        )}
-        {isAsk && askOpts?.rerank_available && (
-          <label
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs"
-            title="검색된 후보 문단을 AI가 질문 적합도로 다시 채점해 상위만 인용합니다 — 정밀도↑, 응답이 조금 느려집니다"
-          >
-            <input
-              type="checkbox"
-              checked={rerankMode}
-              onChange={(e) => setRerankMode(e.target.checked)}
-              className="h-3 w-3"
-            />
-            <SlidersHorizontal className="h-3.5 w-3.5" />
-            정밀 재랭킹
-          </label>
-        )}
-        {isAsk && askOpts?.hyde_available && (
-          <label
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs"
-            title="모호한 질문을 '가상 답변 문단'으로 바꿔 검색합니다 — 짧고 애매한 질문의 적중률↑"
-          >
-            <input
-              type="checkbox"
-              checked={hydeMode}
-              onChange={(e) => setHydeMode(e.target.checked)}
-              className="h-3 w-3"
-            />
-            <Wand2 className="h-3.5 w-3.5" />
-            가상답변 검색
-          </label>
-        )}
-        {isAsk && askOpts?.verify_available && (
-          <label
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs"
-            title="답변의 각 주장이 인용 출처에 실제로 뒷받침되는지 AI가 검증합니다 — 환각 차단, 응답이 조금 느려집니다"
-          >
-            <input
-              type="checkbox"
-              checked={verifyMode}
-              onChange={(e) => setVerifyMode(e.target.checked)}
-              className="h-3 w-3"
-            />
-            <ShieldCheck className="h-3.5 w-3.5" />
-            근거 검증
-          </label>
-        )}
         <span className="text-xs text-muted-foreground">{activeHint}</span>
+        {/* AI 답변 옵션 — 「고급」으로 접어 평소엔 감춘다("그냥 물어보기" 인상). */}
+        {hasRagQa && (
+          <details className="text-xs">
+            <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+              AI 답변 옵션
+            </summary>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <label
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1"
+                title="온톨로지 그래프로 답합니다 — 질문이 다룬 객체와 연결된 이웃 객체의 보고서를 근거로 우선합니다"
+              >
+                <input
+                  type="checkbox"
+                  checked={graphMode}
+                  onChange={(e) => setGraphMode(e.target.checked)}
+                  className="h-3 w-3"
+                />
+                <Network className="h-3.5 w-3.5" />
+                그래프 근거
+              </label>
+              {askOpts?.rerank_available && (
+                <label
+                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1"
+                  title="검색된 후보 문단을 AI가 질문 적합도로 다시 채점해 상위만 인용합니다 — 정밀도↑, 응답이 조금 느려집니다"
+                >
+                  <input
+                    type="checkbox"
+                    checked={rerankMode}
+                    onChange={(e) => setRerankMode(e.target.checked)}
+                    className="h-3 w-3"
+                  />
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  정밀 재랭킹
+                </label>
+              )}
+              {askOpts?.hyde_available && (
+                <label
+                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1"
+                  title="모호한 질문을 '가상 답변 문단'으로 바꿔 검색합니다 — 짧고 애매한 질문의 적중률↑"
+                >
+                  <input
+                    type="checkbox"
+                    checked={hydeMode}
+                    onChange={(e) => setHydeMode(e.target.checked)}
+                    className="h-3 w-3"
+                  />
+                  <Wand2 className="h-3.5 w-3.5" />
+                  가상답변 검색
+                </label>
+              )}
+              {askOpts?.verify_available && (
+                <label
+                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1"
+                  title="답변의 각 주장이 인용 출처에 실제로 뒷받침되는지 AI가 검증합니다 — 환각 차단, 응답이 조금 느려집니다"
+                >
+                  <input
+                    type="checkbox"
+                    checked={verifyMode}
+                    onChange={(e) => setVerifyMode(e.target.checked)}
+                    className="h-3 w-3"
+                  />
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  근거 검증
+                </label>
+              )}
+            </div>
+          </details>
+        )}
       </div>
 
-      {/* 질문하기(RAG Q&A)·에이전트 패널 — 답변 카드 + 출처 인용(+ 에이전트 추론과정). */}
-      {isAskLike && (
+      {/* AI 답변 카드 — Enter 로 질문했을 때만. 키워드 결과 위에 공존. */}
+      {(askResult || askLoading || askError) && (
         <div className="mt-1">
+          {!askLoading && (askResult || askError) && (
+            <div className="mb-2 flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setAskResult(null)
+                  setAskError(null)
+                }}
+                className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" /> 검색으로 돌아가기
+              </button>
+            </div>
+          )}
           {askLoading && (
             <div className="flex items-center gap-3 py-10 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" /> 답변 생성 중…
@@ -789,12 +824,6 @@ export default function SearchPage() {
           {!askLoading && askError && (
             <p className="py-10 text-center text-sm text-destructive">
               {askError}
-            </p>
-          )}
-          {!askLoading && !askError && !askResult && (
-            <p className="py-16 text-center text-sm text-muted-foreground">
-              질문을 입력하고 Enter — 아카이브 보고서를 근거로 답하고 출처를
-              인용합니다.
             </p>
           )}
           {!askLoading &&
@@ -1097,8 +1126,8 @@ export default function SearchPage() {
         </div>
       )}
 
-      {!isAskLike && (
-        <>
+      {/* 키워드/의미 검색 결과 — 타이핑 시 항상 표시(AI 답변과 공존). */}
+      <>
       {/* 저장된 검색(스마트 폴더) — 현재 필터 조합 저장 + 저장분 적용. */}
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <div className="relative">
@@ -1487,8 +1516,7 @@ export default function SearchPage() {
           </Button>
         </div>
       )}
-        </>
-      )}
+      </>
     </div>
   )
 }

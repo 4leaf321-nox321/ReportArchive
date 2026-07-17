@@ -139,6 +139,10 @@ class Settings(BaseSettings):
     # (개수는 계산=환각 없음). 집계 신호어 있을 때만 LLM 로 파라미터 추출(비용 bound).
     # **기본 OFF**. mock/불확실/실패 시 일반 RAG 로 폴백.
     rag_aggregate_routing_enabled: bool = Field(default=False)
+    # RAG Q&A 복합질문 에이전트 자동 라우팅 — 다홉/관계 신호어("관여한·물린·거쳐" 등)가
+    # 있는 복합 질문을 에이전트(다단계 도구 루프)로 자동 전환. 단순 질문은 일반 RAG.
+    # 분류는 휴리스틱만(추가 LLM 0). **기본 OFF**. mock/실패 시 일반 RAG 로 폴백.
+    rag_auto_route_enabled: bool = Field(default=False)
     # RAG Q&A 근거 검증 — 생성된 답변의 각 주장이 인용 출처에 실제로 뒷받침되는지
     # 사후 LLM 검증(환각 차단). 미달 주장 표시 + 근거 문장. **기본 OFF**(답변당 LLM 1콜
     # 추가). mock/실패 시 검증 생략(답변은 그대로). 사용자 질문별 override 가능.

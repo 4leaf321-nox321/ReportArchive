@@ -143,3 +143,29 @@ def test_search_is_scoped_to_visible_reports():
         )
     finally:
         _purge(rid)
+
+
+def test_related_reports_excludes_self_and_gates():
+    """관련 보고서 추천 — semantic_search 재사용. 자기 자신 제외 + 가시성 게이트 +
+    없는 보고서 404."""
+    from app.modules.reports import services as rs
+
+    db = SessionLocal()
+    try:
+        rid = next((r for r in rs.all_visible_report_ids(db, 2)), None)
+    finally:
+        db.close()
+    if rid is None:
+        return  # dev DB 에 가시 보고서 없음
+
+    client = TestClient(app)
+    r = client.get(f"/api/reports/{rid}/related", params={"limit": 5}, headers=_h(2, "dx"))
+    assert r.status_code == 200, r.text
+    items = r.json()["data"]["items"]
+    assert len(items) <= 5
+    assert all(it["report_id"] != rid for it in items)  # ★ 자기 자신 제외
+    for it in items:  # 관련 항목은 이동에 필요한 필드를 갖춘다
+        assert "report_id" in it and "workspace_slug" in it
+
+    # 없는 보고서 → 404.
+    assert client.get("/api/reports/999999999/related", headers=_h(2, "dx")).status_code == 404

@@ -52,6 +52,13 @@ export async function getReport(id) {
   return extractData(res)
 }
 
+// 이 보고서와 내용이 비슷한 다른 보고서(벡터 유사도, 가시성 내).
+// 반환: { items: [{report_id, title, score, snippet, workspace_slug}] }
+export async function getRelatedReports(id, { limit = 5 } = {}) {
+  const res = await apiClient.get(`${BASE}/${id}/related`, { params: { limit } })
+  return extractData(res)
+}
+
 // 자동태깅 — 저장된 본문에서 엔티티(축) 태그 후보를 추천. **아무것도 저장하지
 // 않는다** — 제안 칩 데이터일 뿐(사용자가 수락 → entity_ids 로 PATCH 해야 태깅).
 // 반환: { items: [{id, type_id, type_slug, value, code, status, source, score}], truncated }

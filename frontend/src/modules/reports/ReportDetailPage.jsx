@@ -180,6 +180,7 @@ import { TableViewContext } from '@/modules/templates/widgets/Table'
 import { WidgetPicker } from '@/modules/templates/WidgetPicker'
 import { DepthStyleField, TextStyleField } from '@/modules/templates/widgets/_shared'
 import { TemplatePicker } from './TemplatePicker'
+import { RelatedReportsSection } from './RelatedReports'
 import { SectionPickerDialog } from './SectionPickerDialog'
 import { PromptPickerDialog } from './PromptPickerDialog'
 import { MountDialog } from './MountDialog'
@@ -5301,6 +5302,11 @@ export default function ReportDetailPage() {
               onRemove={linkedReports.removeLink}
               editable={effectiveIsEditing && !!existingReport?.can_edit}
             />
+            {/* 관련 보고서 추천(벡터 유사도) — 뷰 모드에서만, 저장된 보고서에 한해.
+                편집 중엔 방해되지 않게 숨김. print/export 는 컴포넌트가 자체 제외. */}
+            {!effectiveIsEditing && existingReport?.id && (
+              <RelatedReportsSection reportId={existingReport.id} />
+            )}
             {/* 편집 모드 전용 하단 여백 — 마지막 위젯 row_span 을 드래그로
                 늘릴 때 보고서 컨테이너가 같이 늘어나면서 페이지가 점프하던
                 불편함 해소. 50vh 확보해서 마지막 위젯의 핸들을 잡고 화면

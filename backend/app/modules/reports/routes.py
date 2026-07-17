@@ -1045,6 +1045,41 @@ def get_report(
     return success_response(data=_read_with_perms(db, actor, report))
 
 
+# 이 보고서와 벡터 유사도가 높은 다른 보고서(권한 내) — 임베딩 발판 재사용.
+_RELATED_QUERY_CHARS = 2000   # 대표 텍스트 상한(제목+본문 앞부분을 임베딩)
+_RELATED_MIN_SCORE = 0.3      # 약한 매치 제외(무관한 추천 방지)
+
+
+@router.get("/{report_id}/related")
+def related_reports(
+    report_id: int,
+    limit: int = Query(default=5, ge=1, le=20),
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """이 보고서와 내용이 비슷한 다른 보고서(가시성 내). 대상 보고서의 대표 텍스트를
+    벡터 검색해 자기 자신을 뺀 상위 limit 개. semantic_search 재사용(권한 게이팅).
+    반환: {items: [{report_id, title, score, snippet, workspace_slug}]}."""
+    from app.ai import search as ai_search
+
+    report = services.get_report(db, report_id)
+    if not report:
+        return not_found_response(f"Report not found: {report_id}")
+    if not services.can_read_report(db, actor, report):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+
+    text = f"{report.title or ''} {report.search_text or ''}".strip()[:_RELATED_QUERY_CHARS]
+    if not text:
+        return success_response(data={"items": []})
+
+    # 자기 자신은 동일 텍스트라 최상위로 잡히므로 limit+1 뽑아 제외.
+    hits = ai_search.semantic_search(
+        db, text, actor, limit=limit + 1, min_score=_RELATED_MIN_SCORE,
+    )
+    items = [h for h in hits if h.get("report_id") != report_id][:limit]
+    return success_response(data={"items": items})
+
+
 @router.get("/{report_id}/ai-summary")
 def get_report_ai_summary(
     report_id: int,

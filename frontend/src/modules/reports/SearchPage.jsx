@@ -902,6 +902,44 @@ export default function SearchPage() {
                     })()}
                   </div>
                 )}
+                {!askResult.aggregate?.groups &&
+                  askResult.aggregate?.values?.length > 0 && (
+                    <div className="mt-3 space-y-1.5 border-t pt-3">
+                      <p className="text-[11px] font-medium text-muted-foreground">
+                        {askResult.aggregate.target_label} 목록 (총{' '}
+                        {askResult.aggregate.values_total}
+                        {askResult.aggregate.unit})
+                      </p>
+                      <ul className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+                        {askResult.aggregate.values.slice(0, 30).map((v, i) => (
+                          <li key={i} className="max-w-[240px] truncate">
+                            · {v}
+                          </li>
+                        ))}
+                      </ul>
+                      {askResult.aggregate.values.length > 30 && (
+                        <details className="mt-1">
+                          <summary className="cursor-pointer text-[11px] text-primary">
+                            나머지 {askResult.aggregate.values.length - 30}개 더 보기
+                          </summary>
+                          <ul className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs">
+                            {askResult.aggregate.values.slice(30).map((v, i) => (
+                              <li key={i} className="max-w-[240px] truncate">
+                                · {v}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
+                      {askResult.aggregate.values_total >
+                        askResult.aggregate.values.length && (
+                        <p className="text-[10px] text-muted-foreground">
+                          (상위 {askResult.aggregate.values.length}개 표시 / 총{' '}
+                          {askResult.aggregate.values_total}개)
+                        </p>
+                      )}
+                    </div>
+                  )}
                 {askResult.verification?.claims?.length > 0 && (
                   <details className="mt-3 border-t pt-3" open={askResult.verification.unsupported > 0}>
                     <summary className="flex cursor-pointer items-center gap-1.5 text-[11px] font-medium">

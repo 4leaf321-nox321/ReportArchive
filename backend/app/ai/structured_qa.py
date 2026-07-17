@@ -47,7 +47,8 @@ _CUES = (
     # 작성자/단계
     "작성한", "작성된", "작성자", "누가", "내가 쓴", "작성 중", "작성중", "발행",
 )
-_MAX_LIST_PREVIEW = 30   # 답변에 나열할 값 상한
+_MAX_LIST_PREVIEW = 30   # 답변 문장에 나열할 값 상한(사람이 읽는 텍스트)
+_LIST_FULL_CAP = 500     # aggregate.values 로 UI 에 넘겨 "더 보기"로 펼칠 상한
 _MAX_CITATIONS = 10      # 근거로 첨부할 보고서 상한
 
 _EXTRACT_SYSTEM = (
@@ -555,6 +556,11 @@ def _execute(db: Session, actor, q: str, spec: dict) -> Optional[dict]:
             "unit": unit,
             "filters": filter_labels,
             "year": year,
+            # 답변 문장은 30개까지만 나열하지만, UI 가 "더 보기"로 펼칠 수 있게
+            # 전체 목록(상한)과 총계를 함께 넘긴다 — 코어가 이미 full 을 계산했으므로
+            # 재쿼리 없음(_MAX_LIST_PREVIEW 로 잘려 뒤를 못 보던 것 해소).
+            "values": values[:_LIST_FULL_CAP],
+            "values_total": len(values),
         },
         "backend": "structured",
     }

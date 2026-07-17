@@ -20,6 +20,29 @@ def test_aggregate_cue():
     assert not sq._has_aggregate_cue("배터리 셀 손상 원인이 뭐야")
 
 
+def test_execute_exposes_full_list_for_pagination():
+    """집계 목록이 답변 문장에선 30개로 잘리지만, aggregate.values 엔 전체(상한)와
+    총계가 담겨 UI 가 '더 보기'로 펼칠 수 있어야(재쿼리 없이)."""
+    db = SessionLocal()
+    try:
+        # filters 없이 전체 보고서 목록 — 값이 여럿 나오는 경로.
+        r = sq._execute(db, _actor(), "보고서 목록",
+                        {"filters": [], "intent": "list", "target": "report"})
+        if r is None:
+            return  # dev DB 에 가시 보고서 없음
+        agg = r["aggregate"]
+        assert "values" in agg and "values_total" in agg
+        # 전체 목록은 상한까지, 총계는 count 와 일치.
+        assert agg["values_total"] == agg["count"]
+        assert len(agg["values"]) == min(agg["count"], sq._LIST_FULL_CAP)
+        # 30개 초과면 답변 문장은 "외 N개"로 축약(문장은 안 길어짐).
+        if agg["count"] > sq._MAX_LIST_PREVIEW:
+            assert "외" in r["answer"] and "개" in r["answer"]
+            assert len(agg["values"]) > sq._MAX_LIST_PREVIEW  # UI 는 더 받는다
+    finally:
+        db.close()
+
+
 def test_disabled_returns_none(monkeypatch):
     # 토글 off(기본) → None(=일반 RAG).
     monkeypatch.setattr(settings, "llm_backend", "openai")

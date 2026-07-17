@@ -132,8 +132,9 @@ export default function AlertsAdminPage() {
       </div>
       <p className="text-sm text-muted-foreground -mt-2">
         온톨로지 상태에 걸리는 대상을 규칙으로 점검합니다. 규칙마다 <b>수동/자동
-        실행</b>으로 현재 감지된 대상 목록을 갱신합니다. (자동 알림·이메일은
-        후속 단계.)
+        실행</b>으로 현재 감지된 대상 목록을 갱신합니다. 새로 감지되면 관리자에게
+        <b>인앱 알림</b>과 <b>일일 이메일 다이제스트</b>가 가고, 규칙별로 켜면
+        보고서 작성자에게도 알립니다.
       </p>
       <Tabs
         value={activeRule}

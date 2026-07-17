@@ -1,9 +1,12 @@
 """경보 ORM — AlertRule(규칙) + AlertRuleState(발화 상태).
 
-Phase D 1단계. 조건은 내장 프로브 키(probe_key) + 파라미터(params JSONB)로 표현한다
+조건은 내장 프로브 키(probe_key) + 파라미터(params JSONB)로 표현한다
 (object_search 조건은 Phase B 데이터 이후). 발화 상태는 (rule, target) 별로 저장해
 재실행 시 신규 진입만 발화하고 이탈은 해소 처리한다 — 스팸 방지의 핵심.
-설계: docs/[미구현] Phase D_경보_설계.md.
+
+⚠️ AlertRuleState.last_notified_at 은 escalate_after(재알림) 용으로 만들었으나 그 기능이
+미구현이라 **아무도 읽지 않는다**. 설계 §5.1 의 recipients(담당PL·부서 파생 수신자)도
+스키마에 없다(notify_owner bool 하나로 대체). 설계: docs/[일부] Phase D_경보_설계.md.
 """
 from __future__ import annotations
 

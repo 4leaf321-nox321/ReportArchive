@@ -98,7 +98,9 @@ def test_kind_class_crud_and_record_validation():
         rp = c.get(f"/api/entity-types/{proj['id']}/properties", headers=_h())
         assert rp.status_code == 200
         keys = {d["key"] for d in rp.json()["data"]["items"]}
-        assert {"status", "period_from", "budget"} <= keys, keys
+        # 시드 후 운영에서 지운 속성은 여기 넣지 말 것 — budget(예산)이 그렇게 빠졌다.
+        # 축이 시드됐는지만 보고, 지울 수 있는 개별 속성엔 기대지 않는다.
+        assert {"status", "period_from"} <= keys, keys
     finally:
         if ent_id is not None:
             c.delete(f"/api/entities/{ent_id}", headers=_h())

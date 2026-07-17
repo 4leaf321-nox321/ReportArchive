@@ -4,7 +4,9 @@
   프로브가 "현재 걸리는 대상" 리스트 반환 → 직전 발화 상태와 diff →
   신규 진입=발화 / 이탈=해소 / 잔류=침묵. 재실행해도 중복 발화하지 않는다.
 
-1단계는 수동 실행(run_rule)만. 주기 스캔·알림·이메일은 후속. 프로브는 명시적
+주기 스캔(jobs/scheduler.py)·인앱 알림(_notify_new_firings)·이메일 다이제스트
+(alerts/digest.py)·작성자 통보(_notify_owners)까지 구현됨 — run_rule 수동 실행은
+그 중 하나일 뿐이다. 잔여는 `[일부] Phase D_경보_설계.md` 참조. 프로브는 명시적
 화이트리스트(PROBES)로만 — 임의 SQL 금지.
 """
 from __future__ import annotations

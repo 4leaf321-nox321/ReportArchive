@@ -17,7 +17,7 @@
  *   2. Create <Widget>.jsx here exporting PropsPanel + Preview + (optional) Editor
  *   3. Register the components below
  */
-import { Activity, AlignLeft, BarChartHorizontal, Box, Boxes, Brain, Circle, Columns3, Crosshair, FileCode2, FileText, Film, Flag, GitBranch, Grid2x2, Grid3x3, Heading1, Hexagon, Image, LayoutGrid, LineChart, ListOrdered, MoreVertical, Paperclip, PieChart as PieIcon, Share2, Sigma, Table2, Type, Waypoints, Workflow } from 'lucide-react'
+import { Activity, AlignLeft, BarChartHorizontal, Box, Boxes, Brain, Circle, Columns3, Crosshair, FileCode2, FileText, Film, Flag, GitBranch, Grid2x2, Grid3x3, Heading1, Hexagon, Image, LayoutGrid, LineChart, ListOrdered, MoreVertical, Paperclip, PieChart as PieIcon, Share2, ShieldAlert, Sigma, Table2, Type, Waypoints, Workflow } from 'lucide-react'
 
 import { HeadingPropsPanel, HeadingPreview, HeadingEditor } from './Heading'
 import { RichTextPropsPanel, RichTextPreview, RichTextEditor } from './RichText'
@@ -55,6 +55,7 @@ import { MilestonePropsPanel, MilestonePreview, MilestoneEditor } from './Milest
 import { FlowchartPropsPanel, FlowchartPreview, FlowchartEditor } from './Flowchart'
 import { ProgressBarPropsPanel, ProgressBarPreview, ProgressBarEditor } from './ProgressBar'
 import { RaciMatrixPropsPanel, RaciMatrixPreview, RaciMatrixEditor } from './RaciMatrix'
+import { FmeaPropsPanel, FmeaPreview, FmeaEditor } from './Fmea'
 import { Cad3dPropsPanel, Cad3dPreview, Cad3dEditor } from './Cad3d'
 import { ComparisonPropsPanel, ComparisonPreview, ComparisonEditor } from './Comparison'
 import { QuadrantPropsPanel, QuadrantPreview, QuadrantEditor } from './Quadrant'
@@ -252,6 +253,12 @@ export const WIDGET_RENDERERS = {
     PropsPanel: RaciMatrixPropsPanel,
     Preview: RaciMatrixPreview,
     Editor: RaciMatrixEditor,
+  },
+  fmea: {
+    Icon: ShieldAlert,
+    PropsPanel: FmeaPropsPanel,
+    Preview: FmeaPreview,
+    Editor: FmeaEditor,
   },
   cad_3d: {
     Icon: Boxes,

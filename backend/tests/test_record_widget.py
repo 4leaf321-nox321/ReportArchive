@@ -214,3 +214,76 @@ def test_materialize_record_table_hook():
             db.delete(r)
             db.commit()
         db.close()
+
+
+def test_materialize_fmea_hook_promotes_failure_mode():
+    """FMEA 위젯 — 각 행의 고장모드가 failure_mode 엔티티로 승격되고, entity_id 가
+    rows[].failure_mode 에 되심긴다. 태깅으로 get_object(failure_mode).documents 작동."""
+    c = TestClient(app)
+    sfx = uuid.uuid4().hex[:8]
+    tpl = c.get("/api/templates", headers=_hw()).json()["data"][0]
+    rid = c.post(
+        "/api/reports", headers=_hw(),
+        json={"template_id": tpl["template_id"], "template_version": tpl["version"],
+              "title": "FMEA-" + sfx, "tags": []},
+    ).json()["data"]["id"]
+    made = []
+    try:
+        db = SessionLocal()
+        rep = db.get(Report, rid)
+        rep.content = {
+            "fm1": {
+                "fmea_items": {
+                    "caption": "구조 FMEA",
+                    "rows": [
+                        {"id": "r1",
+                         "failure_mode": {"name": "낙하응력집중-" + sfx, "entity_id": None},
+                         "potential_effect": "셀 파손", "severity": 9,
+                         "occurrence": 3, "detection": 4, "rpn": 108, "status": "open"},
+                        {"id": "r2",
+                         "failure_mode": {"name": "체결부피로-" + sfx, "entity_id": None},
+                         "severity": 6, "occurrence": 2, "detection": 3, "rpn": 36},
+                        {"id": "r3",  # 이름 없는 행은 승격 안 됨
+                         "failure_mode": {"name": "", "entity_id": None}},
+                    ],
+                }
+            }
+        }
+        db.commit()
+
+        ids = report_services._materialize_record_widgets(db, rep, ADMIN)
+        assert len(ids) == 2, ids  # 이름 있는 2행만
+        made = list(ids)
+
+        db.refresh(rep)
+        rows = rep.content["fm1"]["fmea_items"]["rows"]
+        # ★ entity_id 가 중첩 위치(failure_mode.entity_id)에 되심김
+        assert rows[0]["failure_mode"]["entity_id"] in ids
+        assert rows[1]["failure_mode"]["entity_id"] in ids
+        assert rows[2]["failure_mode"]["entity_id"] is None  # 빈 이름 행
+
+        # failure_mode 축으로 생성됨
+        for eid in ids:
+            e = ent_services.get_entity(db, eid)
+            assert e.entity_type.slug == "failure_mode"
+
+        # 태깅 → 이 불량모드가 '나온 보고서' 조회 작동(온톨로지 재사용).
+        report_services.add_entities_to_report(db, rep, list(ids))
+        db.refresh(rep)
+        assert ids <= {x.id for x in rep.entities}
+        linked = ent_services.list_report_links_for_entity(db, entity_id=made[0])
+        assert rid in [r.id for r in linked], (linked, rid)  # 이 보고서가 잡힘
+
+        # 멱등 재실행
+        ids2 = report_services._materialize_record_widgets(db, rep, ADMIN)
+        assert ids2 == ids
+        db.close()
+    finally:
+        for eid in made:
+            c.delete(f"/api/entities/{eid}", headers=_h())
+        db = SessionLocal()
+        r = db.get(Report, rid)
+        if r:
+            db.delete(r)
+            db.commit()
+        db.close()

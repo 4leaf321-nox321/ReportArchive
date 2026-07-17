@@ -11,7 +11,7 @@
  */
 import { cssColorToHex } from './exportCapture'
 
-export const NATIVE_TABLE_TYPES = new Set(['table', 'raci_matrix', 'comparison'])
+export const NATIVE_TABLE_TYPES = new Set(['table', 'raci_matrix', 'comparison', 'fmea'])
 
 /** autoFit 측정용 mirror 가 아닌 *보이는* <table>. */
 function findVisibleTable(blockEl) {

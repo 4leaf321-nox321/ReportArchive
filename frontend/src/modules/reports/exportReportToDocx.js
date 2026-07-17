@@ -519,17 +519,20 @@ async function convertBlock(block, props, content, opts = {}) {
     case 'milestone':
     case 'progress_bar':
     case 'raci_matrix':
+    case 'fmea':
     case 'cad_3d':
     case 'comparison':
     case 'quadrant':
     case 'sankey':
     case 'video':
     case 'html_embed': {
-      // comparison / raci_matrix 도 표와 같은 사유 — GUI 에서 조절한 컬럼
+      // comparison / raci_matrix / fmea 도 표와 같은 사유 — GUI 에서 조절한 컬럼
       // 폭이 docx 에 안 실리고, 행 수가 늘면 세로로 길어진다. 캡처 height
       // 상한을 가로 폭의 8배까지 풀어 자연 비율을 보존.
       const tallVisual =
-        block.type === 'comparison' || block.type === 'raci_matrix'
+        block.type === 'comparison' ||
+        block.type === 'raci_matrix' ||
+        block.type === 'fmea'
       const heightCap = tallVisual ? maxImageWidthPx * 8 : null
       out.push(
         ...(await convertVisualBlock(

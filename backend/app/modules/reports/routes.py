@@ -1054,11 +1054,17 @@ _RELATED_MIN_SCORE = 0.3      # 약한 매치 제외(무관한 추천 방지)
 def related_reports(
     report_id: int,
     limit: int = Query(default=5, ge=1, le=20),
+    text: str | None = Query(
+        default=None, max_length=_RELATED_QUERY_CHARS,
+        description="주면 이 텍스트로 유사검색(예: FMEA 행의 고장모드+영향). "
+                    "없으면 보고서 대표 텍스트.",
+    ),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
-    """이 보고서와 내용이 비슷한 다른 보고서(가시성 내). 대상 보고서의 대표 텍스트를
-    벡터 검색해 자기 자신을 뺀 상위 limit 개. semantic_search 재사용(권한 게이팅).
+    """이 보고서와(또는 주어진 text 와) 내용이 비슷한 다른 보고서(가시성 내). 대표
+    텍스트를 벡터 검색해 자기 자신을 뺀 상위 limit 개. semantic_search 재사용(권한
+    게이팅). FMEA 작성 중 행 텍스트로 과거 유사사례를 추천할 때 text 를 쓴다.
     반환: {items: [{report_id, title, score, snippet, workspace_slug}]}."""
     from app.ai import search as ai_search
 
@@ -1068,13 +1074,16 @@ def related_reports(
     if not services.can_read_report(db, actor, report):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
 
-    text = f"{report.title or ''} {report.search_text or ''}".strip()[:_RELATED_QUERY_CHARS]
-    if not text:
+    query = (text or "").strip() or (
+        f"{report.title or ''} {report.search_text or ''}".strip()
+    )
+    query = query[:_RELATED_QUERY_CHARS]
+    if not query:
         return success_response(data={"items": []})
 
     # 자기 자신은 동일 텍스트라 최상위로 잡히므로 limit+1 뽑아 제외.
     hits = ai_search.semantic_search(
-        db, text, actor, limit=limit + 1, min_score=_RELATED_MIN_SCORE,
+        db, query, actor, limit=limit + 1, min_score=_RELATED_MIN_SCORE,
     )
     items = [h for h in hits if h.get("report_id") != report_id][:limit]
     return success_response(data={"items": items})

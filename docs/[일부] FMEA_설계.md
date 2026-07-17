@@ -8,19 +8,38 @@ CAE·신뢰성 도메인의 핵심 산출물인 **FMEA(Failure Mode and Effects 
 > 배경: `부족한부분.md` §4-5 에서 FMEA 연관문서 추천을 "도메인 킬러"로 지목.
 > 토대(임베딩·시맨틱 검색)는 `AI_RAG_현황.md` 에 이미 구축됨 — 본 문서는 그 위에
 > FMEA 도메인 기능을 올린다. 위젯 시스템은 `app/widgets/registry.py` 컨벤션을 따른다.
-> **상태: 설계 단계(미구현). 코드 0줄.**
+>
+> **상태: P0~P2 구현 완료(2026-07-18). P3~P5 후속.** 온톨로지 통합형으로 구현 —
+> 고장모드를 자유 텍스트가 아니라 **불량모드(failure_mode) record 엔티티**로 승격해,
+> `get_object`/`search_objects`/파생 `documents` 링크가 그대로 꽂힌다(같은 불량모드가
+> 나온 모든 보고서 조회·AI 조사·유사사례 추천). 구현물:
+> - **P0** 마이그 `p88_failure_mode_axis` — failure_mode record 축(open·derived)+category 속성.
+> - **P1** 위젯 등록(`registry.py` `_fmea_content`+`FMEA`, ref category `fmea`) · 위젯 컴포넌트
+>   (`Fmea.jsx` — RPN=S×O×D 파생·rt-c 위험색상·RecordNamePicker 고장모드 셀·호버 설명 헤더) ·
+>   엔티티 승격(`_materialize_record_widgets` FMEA 분기 — rows[].failure_mode→upsert+태깅) ·
+>   내보내기(DOCX visual-capture, PPTX native table).
+> - **P2** 유사사례 추천 — `/related?text=`(임의 텍스트 semantic_search) + FmeaEditor "유사 과거사례"
+>   패널(`semanticSearchReports`, 행별 ✨). 점수(S·O·D·RPN)는 엔티티 속성 아닌 위젯 JSON.
+> - 검증: 승격 E2E(test_record_widget)·`?text=`(test_report_search). 회귀 64건.
+> - **잔여**: 관계 타입(occurs_in 등)·P3 대시보드(RPN 횡단, fmea_items 투영)·P4 액션추적·P5 생성LLM.
 
 ---
 
 ## 0. 한눈에 보기
 
-| Phase | 내용 | LLM 필요 | 공수(러프) | 의존 |
+| Phase | 내용 | LLM 필요 | 공수(러프) | 상태 |
 |---|---|---|---|---|
-| **P1. FMEA 위젯 + 템플릿** | 구조화 표(S·O·D 입력), RPN 자동계산, 위험 색상, 내보내기 | ❌ | 1.5~2주 | 없음(현 인프라) |
-| **P2. 과거 사례 AI 추천** | 작성 중 유사 FMEA/보고서 자동 추천(벡터) | ❌ | 3~5일 | 임베딩(가동중) |
-| **P3. FMEA 지식베이스** | 행→쿼리가능 엔티티 승격, RPN 대시보드/필터, 횡단 검색 | ❌ | 2~3주 | P1 |
-| **P4. 액션 추적** | 권고조치 owner·기한·상태, 재평가(RPN before/after), 알림 | ❌ | 1.5~2주 | P3 + 알림 인프라 |
-| **P5. LLM 보조** | 고장모드/원인/대책 제안, 유사사례 기반 초안 자동생성 | ✅(B300) | 2주+ | RAG Phase 3 |
+| **P0. 불량모드 엔티티 축** | failure_mode record 축 시드(고장모드를 온톨로지로) | ❌ | 마이그 1장 | ✅ **완료**(p88) |
+| **P1. FMEA 위젯 + 승격** | 구조화 표(S·O·D→RPN 자동·색상), 고장모드 엔티티 승격, 내보내기 | ❌ | 1.5~2주 | ✅ **완료** |
+| **P2. 과거 사례 AI 추천** | 작성 중 유사 FMEA/보고서 자동 추천(벡터) | ❌ | 3~5일 | ✅ **완료** |
+| **P3. FMEA 지식베이스** | RPN 대시보드/필터, 횡단 검색(RPN>100 전수 등) | ❌ | 2~3주 | ⬜ 후속(P1) |
+| **P4. 액션 추적** | 권고조치 owner·기한·상태, 재평가(RPN before/after), 알림 | ❌ | 1.5~2주 | ⬜ 후속(P3+알림) |
+| **P5. LLM 보조** | 고장모드/원인/대책 제안, 유사사례 기반 초안 자동생성 | ✅(B300) | 2주+ | ⬜ 후속(RAG P3) |
+
+> **온톨로지 통합 결정(구현 시)**: 원안은 고장모드를 위젯 JSON 텍스트로 뒀으나, 구현은
+> **불량모드 record 엔티티로 승격**(P0 신설). 그 결과 P3의 "행→쿼리가능 엔티티" 상당 부분이
+> 이미 온톨로지로 달성됨 — get_object(failure_mode).documents 로 횡단 조회가 되고, 남은 P3는
+> **RPN 등 점수 집계**(위젯 JSON 에 있어 fmea_items 투영 테이블 필요)에 집중된다.
 
 원칙: **P1+P2 가 단독으로 즉시 가치(작성 편의 + 지식 재활용)를 낸다.** P3 이후는
 "표를 넘어 데이터로" 가는 확장이며, P5 는 생성 LLM(B300) 연결 후.

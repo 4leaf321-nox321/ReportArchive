@@ -774,6 +774,87 @@ TABLE: WidgetDescriptor = {
 }
 
 
+def _fmea_content(props: dict) -> dict:
+    # FMEA 행 — 열이 고정(고장모드·영향·원인·S·O·D·RPN·대책·담당·상태). 점수는
+    # 정수 1~10(빈값=null 허용, 작성 중), rpn 은 파생(S×O×D, 프론트 재계산 후 저장).
+    # 고장모드는 온톨로지 엔티티로 승격 → {name, entity_id}. content 는 저장 훅이
+    # "fmea_items" 키로 감지하도록 한 겹 감싼다(_materialize_record_widgets).
+    _score = {"type": ["integer", "null"], "minimum": 1, "maximum": 10}
+    row_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "failure_mode": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "entity_id": {"type": ["integer", "null"]},
+                },
+                "additionalProperties": False,
+            },
+            "potential_effect": {"type": "string"},
+            "potential_cause": {"type": "string"},
+            "current_controls": {"type": "string"},
+            "severity": _score,
+            "occurrence": _score,
+            "detection": _score,
+            "rpn": {"type": ["integer", "null"]},
+            "recommended_action": {"type": "string"},
+            "responsible": {"type": "string"},
+            "due_date": {"type": ["string", "null"]},
+            "status": {"type": "string"},  # open|in_progress|closed|"" — UI 제한
+            "target_rpn": {"type": ["integer", "null"]},
+        },
+        "additionalProperties": True,
+    }
+    rows_schema: dict[str, Any] = {"type": "array", "items": row_schema}
+    if "max_rows" in props:
+        rows_schema["maxItems"] = props["max_rows"]
+    return {
+        "type": "object",
+        "properties": {
+            "fmea_items": {
+                "type": "object",
+                "properties": {
+                    "caption": _CAPTION_FIELD,
+                    "caption_color": _COLOR_TOKEN_FIELD,
+                    "caption_html": _CAPTION_HTML_FIELD,
+                    "caption_skip_autofill": {"type": "boolean"},
+                    "caption_position": _CAPTION_POSITION_FIELD,
+                    "note": _NOTE_FIELD,
+                    "note_color": _COLOR_TOKEN_FIELD,
+                    "note_html": _NOTE_HTML_FIELD,
+                    "rows": rows_schema,
+                    "cell_styles": _CELL_STYLES_SCHEMA,
+                },
+                "additionalProperties": False,
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
+FMEA: WidgetDescriptor = {
+    "type": "fmea",
+    "label": "FMEA",
+    "description": "고장모드·영향분석 — S·O·D 입력 시 RPN 자동계산·위험 색상, "
+                   "고장모드는 온톨로지(불량모드)로 연결",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "maxLength": 200},
+            "max_rows": {"type": "integer", "minimum": 1},
+            # 중점관리 임계 — RPN 이 이 값 이상이면 위험(빨강)으로 강조(기본 100).
+            "rpn_threshold": {"type": "integer", "minimum": 1, "maximum": 1000},
+        },
+        "additionalProperties": False,
+    },
+    "content_schema_for": _fmea_content,
+    "default_props": {"label": "FMEA", "rpn_threshold": 100},
+}
+
+
 # --------------------------------------------------------------------------- #
 # 6.5 record — 객체 레코드 위젯 (온톨로지 A0.3 입력경로). 보고서에 record 축
 #      (시험실행·실패사례 등) 객체를 속성과 함께 기록하면, 저장 시 그 값으로
@@ -3838,6 +3919,7 @@ WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
         CAD_3D,
         QUADRANT,
         SANKEY,
+        FMEA,
     )
 }
 
@@ -3865,6 +3947,7 @@ REF_CATEGORIES: list[dict] = [
     {"key": "comparison", "label": "비교표"},
     {"key": "keyvalue", "label": "키-값"},
     {"key": "raci", "label": "RACI"},
+    {"key": "fmea", "label": "FMEA"},
     {"key": "equation", "label": "수식"},
     {"key": "list", "label": "목록"},
     {"key": "attachment", "label": "첨부"},
@@ -3890,6 +3973,7 @@ REF_CATEGORY_BY_TYPE: dict[str, Optional[str]] = {
     "comparison": "comparison",
     "key_value": "keyvalue",
     "raci_matrix": "raci",
+    "fmea": "fmea",
     # 객체 레코드 — 번호 참조 대상 아님(객체 자체가 프로필로 참조됨). MVP: None.
     "record": None,
     "record_table": None,

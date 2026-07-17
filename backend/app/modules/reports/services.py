@@ -1711,23 +1711,40 @@ def _materialize_record_widgets(db: Session, report, creator_user_id) -> set:
         if not isinstance(cmap, dict):
             return
         for bid, content in cmap.items():
-            if not isinstance(content, dict) or "axis_slug" not in content:
+            if not isinstance(content, dict):
                 continue
-            axis = content.get("axis_slug")
-            rows = content.get("rows")
-            if isinstance(rows, list):
-                # 레코드 표 — 각 행이 객체 하나.
-                for i, row in enumerate(rows):
-                    if not isinstance(row, dict):
-                        continue
-                    ent = _upsert(axis, row)
+            if "axis_slug" in content:
+                axis = content.get("axis_slug")
+                rows = content.get("rows")
+                if isinstance(rows, list):
+                    # 레코드 표 — 각 행이 객체 하나.
+                    for i, row in enumerate(rows):
+                        if not isinstance(row, dict):
+                            continue
+                        ent = _upsert(axis, row)
+                        if ent is not None:
+                            plan.append((loc, bid, i, ent.id))
+                else:
+                    # 단건 레코드.
+                    ent = _upsert(axis, content)
                     if ent is not None:
-                        plan.append((loc, bid, i, ent.id))
-            else:
-                # 단건 레코드.
-                ent = _upsert(axis, content)
-                if ent is not None:
-                    plan.append((loc, bid, None, ent.id))
+                        plan.append((loc, bid, None, ent.id))
+            elif isinstance(content.get("fmea_items"), dict):
+                # FMEA 위젯 — 각 행의 고장모드를 failure_mode 엔티티로 승격.
+                # (record 위젯과 달리 셀이 rows[].failure_mode 에 중첩. 마커 = fmea_items.)
+                fmea_rows = content["fmea_items"].get("rows")
+                if isinstance(fmea_rows, list):
+                    for i, row in enumerate(fmea_rows):
+                        if not isinstance(row, dict):
+                            continue
+                        fm = row.get("failure_mode")
+                        if not isinstance(fm, dict) or not (fm.get("name") or "").strip():
+                            continue
+                        ent = _upsert("failure_mode",
+                                      {"name": fm.get("name"),
+                                       "entity_id": fm.get("entity_id")})
+                        if ent is not None:
+                            plan.append((loc, bid, ("fmea", i), ent.id))
 
     _scan(report.content, ("content",))
     if isinstance(report.pages, list):
@@ -1768,6 +1785,20 @@ def _materialize_record_widgets(db: Session, report, creator_user_id) -> set:
         if row_idx is None:
             if blk.get("entity_id") != eid:
                 blk["entity_id"] = eid
+                changed = True
+        elif isinstance(row_idx, tuple) and row_idx[0] == "fmea":
+            # FMEA — entity_id 를 rows[i].failure_mode.entity_id 에 되심는다.
+            i = row_idx[1]
+            fmea = blk.get("fmea_items")
+            rows = fmea.get("rows") if isinstance(fmea, dict) else None
+            if (
+                isinstance(rows, list)
+                and i < len(rows)
+                and isinstance(rows[i], dict)
+                and isinstance(rows[i].get("failure_mode"), dict)
+                and rows[i]["failure_mode"].get("entity_id") != eid
+            ):
+                rows[i]["failure_mode"]["entity_id"] = eid
                 changed = True
         else:
             rows = blk.get("rows")

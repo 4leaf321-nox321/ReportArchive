@@ -169,3 +169,13 @@ def test_related_reports_excludes_self_and_gates():
 
     # 없는 보고서 → 404.
     assert client.get("/api/reports/999999999/related", headers=_h(2, "dx")).status_code == 404
+
+    # ?text= 로 임의 텍스트 유사검색(FMEA 행 텍스트용) — 자기 제외·가시성 유지.
+    rt = client.get(
+        f"/api/reports/{rid}/related",
+        params={"text": "낙하 시험 응력 집중 파손", "limit": 5}, headers=_h(2, "dx"),
+    )
+    assert rt.status_code == 200, rt.text
+    titems = rt.json()["data"]["items"]
+    assert len(titems) <= 5
+    assert all(it["report_id"] != rid for it in titems)

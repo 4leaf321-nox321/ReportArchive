@@ -1021,21 +1021,30 @@ def _object_link_item(db, link, direction, other, title_cache) -> ObjectLinkItem
     )
 
 
-def _system_links_for(db, row) -> list[ObjectLinkItem]:
+def _system_links_for(db, row, actor_user) -> list[ObjectLinkItem]:
     """이 엔티티의 object_links(양방향) → 상대를 ObjectRef 로 해석해 아이템화.
-    해석 실패(삭제된 대상 등)는 건너뛴다."""
+    해석 실패(삭제된 대상 등)는 건너뛴다.
+
+    actor_user 필수 — report 상대는 요청자 가시성 게이트라 없으면 통째로 드롭된다.
+    가시성 집합은 여기서 한 번만 계산해 넘긴다(링크마다 재계산 방지).
+    """
     axis = row.entity_type.slug if row.entity_type else ""
     outgoing, incoming = services.list_object_links_for_entity(
         db, entity_id=row.id, axis_slug=axis
     )
+    visible = services.visible_report_ids_for(db, actor_user)
     cache: dict = {}
     items: list[ObjectLinkItem] = []
     for link in outgoing:
-        other = services.resolve_object(db, link.dst_type, link.dst_id)
+        other = services.resolve_object(
+            db, link.dst_type, link.dst_id, actor_user, visible_ids=visible
+        )
         if other:
             items.append(_object_link_item(db, link, "out", other, cache))
     for link in incoming:
-        other = services.resolve_object(db, link.src_type, link.src_id)
+        other = services.resolve_object(
+            db, link.src_type, link.src_id, actor_user, visible_ids=visible
+        )
         if other:
             items.append(_object_link_item(db, link, "in", other, cache))
     return items
@@ -1083,7 +1092,7 @@ def get_entity_profile(
             aliases=[EntityAliasRead.model_validate(a) for a in aliases],
             years=years,
             relations=relations,
-            system_links=_system_links_for(db, row),
+            system_links=_system_links_for(db, row, actor.user),
             reports=reports,
             report_count=len(reports),
         )
@@ -1178,14 +1187,14 @@ def delete_entity_relation(
 @entities_router.get("/{entity_id}/object-links")
 def list_entity_object_links(
     entity_id: int,
-    _actor: EntityActor = Depends(entity_actor),
+    actor: EntityActor = Depends(entity_actor),
     db: Session = Depends(get_db),
 ):
     """이 엔티티의 cross-kind 링크(해석됨) — 인증-only. 프로필과 같은 아이템 형태."""
     row = services.get_entity(db, entity_id)
     if not row:
         return not_found_response(f"엔티티를 찾을 수 없습니다: {entity_id}")
-    return success_response(data={"items": _system_links_for(db, row)})
+    return success_response(data={"items": _system_links_for(db, row, actor.user)})
 
 
 @entities_router.post("/{entity_id}/object-links", status_code=201)
@@ -1207,6 +1216,7 @@ def add_entity_object_link(
             dst_type=payload.dst_type,
             dst_id=payload.dst_id,
             relation=payload.relation,
+            actor_user=actor.user,
             creator_user_id=actor.user.id,
             properties=payload.properties,
             evidence_report_id=payload.evidence_report_id,
@@ -1214,7 +1224,11 @@ def add_entity_object_link(
         )
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    other = services.resolve_object(db, link.dst_type, link.dst_id)
+    other = services.resolve_object(db, link.dst_type, link.dst_id, actor.user)
+    if other is None:  # 방금 만든 링크의 상대가 안 보이면 응답을 만들 수 없다
+        return not_found_response(
+            f"대상 객체를 찾을 수 없습니다: {link.dst_type}/{link.dst_id}"
+        )
     return created_response(data=_object_link_item(db, link, "out", other, {}))
 
 
@@ -1259,40 +1273,8 @@ def entity_subgraph(
         max_depth=depth,
         active_only=not actor.is_admin,
     )
-    _augment_graph_object_links(db, data)
+    services.augment_graph_object_links(db, data, actor.user)
     return success_response(data=data)
-
-
-def _augment_graph_object_links(db, data) -> None:
-    """엔티티 서브그래프에 object_links(부서 등 system 객체)를 1-hop 노드로 얹는다
-    (A0.3 스텝3 A1). system 은 terminal — 재귀 확장 없이 각 엔티티 노드의 나가는
-    링크만 붙인다. system 노드 id 는 `type:id` 문자열(엔티티 정수 id 와 충돌 없음),
-    `kind='system'` + ref/url 로 프론트가 다른 목적지로 이동한다."""
-    added: dict = {}
-    for n in list(data.get("nodes", [])):
-        outgoing, _ = services.list_object_links_for_ref(
-            db, n["type_slug"], str(n["id"])
-        )
-        for link in outgoing:
-            other = services.resolve_object(db, link.dst_type, link.dst_id)
-            if not other:
-                continue
-            key = f"{other['type']}:{other['id']}"
-            if key not in added:
-                added[key] = {
-                    "id": key,
-                    "value": other["label"],
-                    "type_slug": other["type"],
-                    "type_id": None,
-                    "kind": "system",
-                    "ref_type": other["type"],
-                    "ref_id": other["id"],
-                    "url": other.get("url"),
-                }
-            data["edges"].append(
-                {"src": n["id"], "dst": key, "relation": link.relation}
-            )
-    data["nodes"].extend(added.values())
 
 
 @entities_router.post("/bulk-delete")

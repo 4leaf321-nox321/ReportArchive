@@ -11,7 +11,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Float, and_, cast, delete, func, or_, select, update
+from sqlalchemy import (
+    Float,
+    String,
+    and_,
+    cast,
+    delete,
+    func,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1492,19 +1502,6 @@ def set_report_entities(
     return rows
 
 
-def get_report_entities(db: Session, report_id: int) -> list[Entity]:
-    """Read-side helper for the few code paths that touch a report by
-    id without going through the ORM relationship (e.g. background jobs).
-    Routes / API responses use the eager-loaded `Report.entities` relationship."""
-    stmt = (
-        select(Entity)
-        .join(ReportEntity, ReportEntity.entity_id == Entity.id)
-        .where(ReportEntity.report_id == report_id)
-        .order_by(Entity.value)
-    )
-    return list(db.execute(stmt).scalars())
-
-
 def unlink_from_report(db: Session, *, entity_id: int, report_id: int) -> bool:
     """Drop a single (report_id, entity_id) link from the M:N table.
 
@@ -1651,14 +1648,24 @@ def list_report_links_for_entity(db: Session, *, entity_id: int) -> list:
 # 축 slug('dept' 등). system 은 entities 행이 없고 원 테이블을 투영한다.
 
 def resolve_object(
-    db: Session, obj_type: str, obj_id: str, actor=None
+    db: Session, obj_type: str, obj_id: str, actor, *, visible_ids=None
 ) -> Optional[dict]:
     """ObjectRef 를 균일한 표시형으로 해석. 모르는 타입/대상은 None.
     반환: {type, id, kind_class, label, url, icon, deleted}.
 
     actor(요청 User) 는 **report 가시성 게이트**용 — report 는 요청자가 볼 수 있는
     것만 해석하고 권한 밖·actor 없음이면 None(존재 자체 비노출). dept/user/entity 는
-    actor 무시. (설계: system객체확장_user·report투영)."""
+    actor 무시. (설계: system객체확장_user·report투영).
+
+    ★ actor 는 **필수 위치 인자**다(기본값 없음). 기본값이 None 이던 시절, 호출부가
+    깜빡 빠뜨리면 report 가 조용히 "없는 것"이 돼 기능이 통째로 죽는 버그가 6곳에서
+    났다(에이전트 get_object·그래프 augment·프로필 system_links·링크 생성 등).
+    안 넘기면 TypeError 로 즉시 터지게 둔다. 의도적으로 actor 가 없는 자리(백그라운드
+    잡 등)는 None 을 **명시적으로** 넘기면 되고, 그때는 fail-closed 로 동작한다.
+
+    visible_ids: 이미 계산해 둔 `all_visible_report_ids(actor)` 집합(성능 힌트).
+    한 요청에서 report 를 여러 건 해석할 때 재계산(13ms×N)을 막는다. 게이트 자체는
+    동일 — 이 인자로 권한이 넓어지지 않는다(호출자가 같은 actor 로 계산한 것)."""
     type_row = get_type_by_slug(db, obj_type)
     if type_row is None:
         return None
@@ -1700,7 +1707,14 @@ def resolve_object(
             except (TypeError, ValueError):
                 return None
             # ★ 가시성 게이트 — 요청자가 볼 수 있는 보고서만(권한 밖·actor 없음 → None).
-            if actor is None or rid not in all_visible_report_ids(db, actor.id):
+            if actor is None:
+                return None
+            vis = (
+                visible_ids
+                if visible_ids is not None
+                else all_visible_report_ids(db, actor.id)
+            )
+            if rid not in vis:
                 return None
             r = db.get(Report, rid)
             if r is None:
@@ -1808,12 +1822,62 @@ def derived_links_for(db: Session, actor, obj_type: str, obj_id: str) -> list[di
             n = 0
             for rid in rep_ids:
                 if rid in visible:
-                    add("authored_by", "in", resolve_object(db, "report", str(rid), actor))
+                    # visible 은 위에서 이미 계산 — 건마다 재계산하면 13ms×N 이 된다.
+                    add("authored_by", "in",
+                        resolve_object(db, "report", str(rid), actor,
+                                       visible_ids=visible))
                     n += 1
                     if n >= _DERIVED_LIMIT:
                         break
 
     return out
+
+
+def visible_report_ids_for(db: Session, actor_user):
+    """요청자가 볼 수 있는 보고서 id 집합 — 한 요청에서 ObjectRef 를 N개 해석할 때
+    resolve_object 가 건마다 재계산(13ms×N)하지 않도록 미리 계산해 넘기는 용도.
+    actor_user 없으면 빈 집합(fail-closed)."""
+    if actor_user is None:
+        return set()
+    from app.modules.reports.services import all_visible_report_ids
+
+    return all_visible_report_ids(db, actor_user.id)
+
+
+def augment_graph_object_links(db: Session, data: dict, actor_user) -> None:
+    """엔티티 서브그래프(graph.subgraph 결과)에 object_links(부서·담당 PL 등 system
+    객체)를 1-hop 노드로 얹는다(A0.3 스텝3 A1, in-place). system 은 terminal —
+    재귀 확장 없이 각 엔티티 노드의 나가는 링크만 붙인다. system 노드 id 는
+    `type:id` 문자열(엔티티 정수 id 와 충돌 없음), `kind='system'` + ref/url.
+
+    actor_user 필수 — report 노드는 요청자 가시성 게이트라 없으면 통째로 드롭된다.
+    라우트(entity_subgraph)와 에이전트 도구(get_subgraph)가 공유한다."""
+    added: dict = {}
+    visible = visible_report_ids_for(db, actor_user)
+    for n in list(data.get("nodes", [])):
+        outgoing, _ = list_object_links_for_ref(db, n["type_slug"], str(n["id"]))
+        for link in outgoing:
+            other = resolve_object(
+                db, link.dst_type, link.dst_id, actor_user, visible_ids=visible
+            )
+            if not other:
+                continue
+            key = f"{other['type']}:{other['id']}"
+            if key not in added:
+                added[key] = {
+                    "id": key,
+                    "value": other["label"],
+                    "type_slug": other["type"],
+                    "type_id": None,
+                    "kind": "system",
+                    "ref_type": other["type"],
+                    "ref_id": other["id"],
+                    "url": other.get("url"),
+                }
+            data["edges"].append(
+                {"src": n["id"], "dst": key, "relation": link.relation}
+            )
+    data["nodes"].extend(added.values())
 
 
 def add_object_link(
@@ -1823,6 +1887,7 @@ def add_object_link(
     dst_type: str,
     dst_id: str,
     relation: str,
+    actor_user=None,
     creator_user_id: Optional[int] = None,
     properties: Optional[dict] = None,
     evidence_report_id: Optional[int] = None,
@@ -1831,7 +1896,11 @@ def add_object_link(
     """엔티티 src → system 객체(dst_type/dst_id) 링크 추가 (A0.3 스텝2).
     relation_types 카탈로그로 검증 — 허용 타입인지, 축 제약(src=src 엔티티 축,
     dst=dst_type)에 맞는지. 대상이 실재하는지 ObjectRef 로 확인. 속성/근거는
-    A0.2 로직 재사용. 이미 있으면 멱등(속성/근거 넘어오면 갱신)."""
+    A0.2 로직 재사용. 이미 있으면 멱등(속성/근거 넘어오면 갱신).
+
+    actor_user: 대상 실재 확인(resolve_object)에 쓰는 요청자. **dst_type='report' 인
+    관계를 만들려면 필수** — 없으면 report 는 항상 None 으로 해석돼 "대상을 찾을 수
+    없습니다" 로 거절된다(가시성 게이트). dept/user/entity 대상은 actor 무시라 무관."""
     rtype = get_relation_type(db, relation)
     if rtype is None:
         raise ValueError(f"지원하지 않는 관계 종류입니다: {relation}")
@@ -1845,7 +1914,7 @@ def add_object_link(
         raise ValueError(
             f"'{rtype.label}' 관계의 도착 축이 아닙니다(허용: {', '.join(rtype.dst_axis_slugs)})."
         )
-    if resolve_object(db, dst_type, dst_id) is None:
+    if resolve_object(db, dst_type, dst_id, actor_user) is None:
         raise ValueError(f"대상 객체를 찾을 수 없습니다: {dst_type}/{dst_id}")
 
     validated = validate_relation_properties(db, rtype, properties)
@@ -2072,17 +2141,39 @@ def search_entities(
                 stmt = stmt.where(cond)
 
     # 관계 필터 — dst 에 (relation 종류로) 연결된 src.
+    # ★ entity_relations(엔티티↔엔티티) **와** object_links(엔티티→system) 를 **둘 다**
+    # 본다. object_links 를 빠뜨리면 led_by(담당 PL)·owned_by 로 거를 때 조용히 0건이
+    # 나오고, LLM 은 그걸 "그런 객체가 없다"로 읽는다(list_object_types 가 그 관계
+    # slug 들을 유효하다고 알려주기 때문에 더 그렇다).
     for rf in relations or []:
         dst = rf.get("dst_id") if isinstance(rf, dict) else rf.dst_id
         rel = rf.get("relation") if isinstance(rf, dict) else rf.relation
         if dst is None:
             continue
-        sub = select(EntityRelation.src_entity_id).where(
-            EntityRelation.dst_entity_id == dst
-        )
+        conds = []
+
+        # entity_relations — dst 는 엔티티 정수 id.
+        try:
+            dst_int = int(dst)
+        except (TypeError, ValueError):
+            dst_int = None
+        if dst_int is not None:
+            sub = select(EntityRelation.src_entity_id).where(
+                EntityRelation.dst_entity_id == dst_int
+            )
+            if rel:
+                sub = sub.where(EntityRelation.relation == rel)
+            conds.append(Entity.id.in_(sub))
+
+        # object_links — dst_id 는 varchar(부서는 slug 'cae', user/report 는 정수 문자열).
+        # src_id 도 varchar 라 Entity.id 를 문자열로 캐스팅해 맞춘다(반대로 캐스팅하면
+        # 숫자가 아닌 src_id 에서 터진다).
+        sub2 = select(ObjectLink.src_id).where(ObjectLink.dst_id == str(dst))
         if rel:
-            sub = sub.where(EntityRelation.relation == rel)
-        stmt = stmt.where(Entity.id.in_(sub))
+            sub2 = sub2.where(ObjectLink.relation == rel)
+        conds.append(cast(Entity.id, String).in_(sub2))
+
+        stmt = stmt.where(or_(*conds))
 
     if year is not None:
         stmt = stmt.where(_temporal_year_filter(year))

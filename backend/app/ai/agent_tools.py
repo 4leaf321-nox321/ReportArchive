@@ -18,12 +18,15 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.ai import search as ai_search
+from app.modules.entities import graph as ent_graph
 from app.modules.entities import services as ent
 
 # 결과 크기 상한 — LLM 컨텍스트/환각 방지.
 _SEARCH_LIMIT = 15
 _REPORTS_LIMIT = 8
 _RELATIONS_LIMIT = 25
+_SUBGRAPH_MAX_DEPTH = 2      # 에이전트는 넓게 안 봐도 된다(필요하면 seed 바꿔가며).
+_SUBGRAPH_MAX_NODES = 40     # graph.subgraph 는 depth 로만 제한 → 고차수 노드면 폭주.
 
 
 class ToolResult(dict):
@@ -87,7 +90,24 @@ def _exec_search_objects(db: Session, actor, args: dict) -> ToolResult:
         t = ent.get_type_by_slug(db, type_slug)
         if not t:
             return _err(f"알 수 없는 객체 종류: {type_slug!r}. list_object_types 로 확인하세요.")
+        # system 축(report·user·dept)은 entities 값 행이 없는 **투영 표식**이라 여기선
+        # 구조적으로 0건이다. 빈 결과는 LLM 이 "그런 객체가 없다"로 오독하므로 길을
+        # 알려준다(설계: system객체확장_user·report투영 §2.1).
+        if str(getattr(t.kind_class, "value", t.kind_class)) == "system":
+            return _err(
+                f"{type_slug!r} 는 search_objects 로 찾을 수 없습니다(값 목록이 없는 투영 "
+                f"객체). 보고서는 search_reports(제목·본문·날짜·종류·작성자)로 찾고, "
+                f"이미 아는 대상의 상세·관계는 get_object(type={type_slug!r}, id=…) 를 쓰세요."
+            )
         type_id = t.id
+    # props 는 축의 property_defs 로 캐스팅해야 해서 type 이 없으면 **조용히 버려진다**
+    # (services.search_entities: `if props and type_id is not None`). 그러면 필터가 안 걸린
+    # 전체 목록이 그럴듯하게 돌아가 LLM 이 오답을 만든다 → 타입 오류처럼 시끄럽게 실패시킨다.
+    if args.get("props") and type_id is None:
+        return _err(
+            "props(속성 필터)는 type 과 함께 써야 합니다 — 속성은 객체 종류마다 다릅니다. "
+            "list_object_types 로 종류를 고른 뒤 type 과 같이 넘기세요."
+        )
     limit = min(int(args.get("limit") or _SEARCH_LIMIT), _SEARCH_LIMIT)
     try:
         items, total = ent.search_entities(
@@ -126,7 +146,8 @@ def _exec_get_object(db: Session, actor, args: dict) -> ToolResult:
     if not otype or not oid:
         return _err("type 과 id 가 필요합니다.")
 
-    resolved = ent.resolve_object(db, otype, oid)
+    # actor 필수 — report 는 요청자 가시성 게이트라 actor 없이는 항상 None 이다.
+    resolved = ent.resolve_object(db, otype, oid, actor.user)
     if not resolved:
         return _err(f"객체를 찾을 수 없습니다: {otype}:{oid}")
 
@@ -140,8 +161,22 @@ def _exec_get_object(db: Session, actor, args: dict) -> ToolResult:
              "label": resolved.get("label")}]
     reports_prov = []
 
-    # entity(reference/record) 면 속성·관계·관련보고서까지.
-    if str(resolved.get("kind_class")) != "system":
+    # 수동 object_links(led_by=담당 PL, owned_by 등)는 entity·system 양쪽에 다 붙는다.
+    # FK 에 없는 의미라 여기서 안 실으면 AI 는 담당 PL 을 영원히 못 본다(라우트는
+    # object_ref_links 에서 이미 같은 병합을 한다).
+    rels = _manual_link_summary(db, actor, otype, oid)
+
+    if str(resolved.get("kind_class")) == "system":
+        # system(report·user·dept) — FK 파생 관계를 실어 hop 노드가 되게 한다
+        # (설계: system객체확장_user·report투영 §5.1).
+        props = _system_properties(db, otype, oid)
+        if props:
+            content["properties"] = props
+        rels += _derived_summary(db, actor, otype, oid)
+        if otype == "report":
+            reports_prov = _self_report_prov(db, oid)  # 근거 = 그 보고서 자신
+    else:
+        # entity(reference/record) 면 속성·관계·관련보고서까지.
         try:
             eid = int(oid)
         except (TypeError, ValueError):
@@ -150,10 +185,158 @@ def _exec_get_object(db: Session, actor, args: dict) -> ToolResult:
             row = ent.get_entity(db, eid)
             if row:
                 content["properties"] = row.properties or {}
-                content["relations"] = _relation_summary(db, eid)
+                rels += _relation_summary(db, eid)
                 reps, reports_prov = _related_reports(db, actor, eid)
                 content["reports"] = reps
+    content["relations"] = rels[:_RELATIONS_LIMIT]
     return _ok(content, objects=objs, reports=reports_prov)
+
+
+def _manual_link_summary(db: Session, actor, obj_type: str, obj_id: str) -> list:
+    """수동 object_links(양방향) — compact 형태. 상대는 resolve_object 가 해석하므로
+    report 상대는 가시성 게이트가 걸린다(권한 밖이면 None → 제외)."""
+    outgoing, incoming = ent.list_object_links_for_ref(db, obj_type, obj_id)
+    out = []
+    for link, direction, o_type, o_id in (
+        [(x, "out", x.dst_type, x.dst_id) for x in outgoing]
+        + [(x, "in", x.src_type, x.src_id) for x in incoming]
+    ):
+        other = ent.resolve_object(db, o_type, o_id, actor.user)
+        if not other:
+            continue  # 삭제된 엔티티(고아 링크)·권한 밖 → 조용히 제외
+        out.append({
+            "relation": link.relation,
+            "direction": direction,
+            "object": {"type": other.get("type"), "id": other.get("id"),
+                       "label": other.get("label")},
+        })
+        if len(out) >= _RELATIONS_LIMIT:
+            break
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# get_subgraph — seed 주변 관계망을 한 콜로(get_object 반복 없이 여러 홉)
+# --------------------------------------------------------------------------- #
+def _exec_get_subgraph(db: Session, actor, args: dict) -> ToolResult:
+    raw = args.get("entity_id")
+    try:
+        eid = int(raw)
+    except (TypeError, ValueError):
+        return _err("entity_id(정수)가 필요합니다. search_objects/get_object 가 준 id.")
+
+    # seed 는 entity 만 — system 객체(report/user/dept)는 그래프 노드가 아니다.
+    row = ent.get_entity(db, eid)
+    if row is None:
+        return _err(f"엔티티를 찾을 수 없습니다: {eid} (system 객체는 get_object 를 쓰세요).")
+
+    relations = args.get("relations") or None
+    try:
+        depth = int(args.get("depth") or _SUBGRAPH_MAX_DEPTH)
+    except (TypeError, ValueError):
+        depth = _SUBGRAPH_MAX_DEPTH
+    depth = max(1, min(depth, _SUBGRAPH_MAX_DEPTH))
+
+    # 라우트(entity_subgraph)와 같은 조립 — 구조 CTE + object_links(부서·PL) augment.
+    # active_only: 비관리자는 active 기준정보만(deprecated 제외).
+    is_admin = bool(getattr(actor.user, "is_system_admin", False))
+    data = ent_graph.subgraph(
+        db, [eid], relations=relations, max_depth=depth, active_only=not is_admin,
+    )
+    ent.augment_graph_object_links(db, data, actor.user)
+
+    nodes = data.get("nodes", [])
+    edges = data.get("edges", [])
+    # 크기 상한 — graph.subgraph 는 depth 로만 제한해 고차수 노드면 수백 개가 된다.
+    # seed 는 반드시 남기고, 넘치면 자른 뒤 양 끝이 살아있는 엣지만 유지(dangling 제거).
+    truncated = len(nodes) > _SUBGRAPH_MAX_NODES
+    if truncated:
+        kept, seen = [], set()
+        for n in nodes:
+            if n["id"] == eid or len(kept) < _SUBGRAPH_MAX_NODES:
+                kept.append(n)
+                seen.add(n["id"])
+        nodes = kept
+        edges = [e for e in edges if e["src"] in seen and e["dst"] in seen]
+
+    out_nodes = [
+        {"id": n["id"], "value": n.get("value"), "type": n.get("type_slug"),
+         "kind": n.get("kind", "entity"), "degree": n.get("degree")}
+        for n in nodes
+    ]
+    objs = [
+        {"type": n.get("type_slug"), "id": str(n.get("ref_id", n["id"])),
+         "label": n.get("value")}
+        for n in nodes
+    ]
+    content = {
+        "seed": eid, "depth": depth,
+        "nodes": out_nodes, "edges": edges,
+        "node_count": len(out_nodes), "edge_count": len(edges),
+    }
+    if truncated:
+        content["truncated"] = True
+        content["note"] = (
+            f"노드가 {_SUBGRAPH_MAX_NODES}개를 넘어 잘렸습니다. relations 로 관계 종류를 "
+            "좁히거나 depth 를 줄이거나, 특정 노드를 get_object 로 파고드세요."
+        )
+    return _ok(content, objects=objs)
+
+
+def _derived_summary(db: Session, actor, obj_type: str, obj_id: str) -> list:
+    """system 객체의 FK 파생 관계 — _relation_summary 와 같은 compact 형태(상한)."""
+    out = []
+    for link in ent.derived_links_for(db, actor.user, obj_type, obj_id):
+        o = link.get("object") or {}
+        out.append({
+            "relation": link.get("relation"),
+            "direction": link.get("direction"),
+            "object": {"type": o.get("type"), "id": o.get("id"),
+                       "label": o.get("label")},
+        })
+        if len(out) >= _RELATIONS_LIMIT:
+            break
+    return out
+
+
+def _system_properties(db: Session, obj_type: str, obj_id: str) -> dict:
+    """system 객체의 속성 — 원 테이블 컬럼을 온플라이로 투영(저장 0, 설계 §1).
+
+    report 만 대상: reports 의 컬럼이 곧 속성이다. 호출 전 resolve_object 가 가시성을
+    검증했으므로 여기선 다시 게이팅하지 않는다. user 는 이름 외 비노출(§6), dept 는
+    라벨이 전부라 속성 없음.
+    """
+    if obj_type != "report":
+        return {}
+    from app.modules.reports.models import Report
+
+    try:
+        r = db.get(Report, int(obj_id))
+    except (TypeError, ValueError):
+        return {}
+    if r is None:
+        return {}
+    props = {
+        "report_date": r.report_date.isoformat() if r.report_date else None,
+        "phase": getattr(r.phase, "value", r.phase),
+        "lifecycle": getattr(r.lifecycle, "value", r.lifecycle),
+        "report_type": r.report_type.name if r.report_type else None,
+        "tags": list(r.tags or []),
+    }
+    return {k: v for k, v in props.items() if v not in (None, [], "")}
+
+
+def _self_report_prov(db: Session, obj_id: str) -> list:
+    """report 객체 자신을 인용 근거로. 호출 전 resolve_object 가 가시성을 이미 검증."""
+    from app.modules.reports.models import Report
+
+    try:
+        r = db.get(Report, int(obj_id))
+    except (TypeError, ValueError):
+        return []
+    if r is None:
+        return []
+    return [{"report_id": r.id, "title": r.title, "workspace_slug": r.workspace_slug}]
 
 
 def _relation_summary(db: Session, entity_id: int) -> list:
@@ -352,16 +535,26 @@ _PROP_FILTER = {
 }
 _REL_FILTER = {
     "type": "array",
-    "description": "관계 필터. 각 원소 {relation, dst_id} — 이 관계로 dst_id 객체와 연결된 것만.",
+    "description": "관계 필터. 각 원소 {relation, dst_id} — 이 관계로 dst_id 객체와 연결된 것만. "
+                   "dst_id 는 get_object 가 준 id: 엔티티·사용자는 정수 문자열('42'), "
+                   "부서는 slug('cae').",
     "items": {
         "type": "object",
         "properties": {
             "relation": {"type": "string"},
-            "dst_id": {"type": "integer"},
+            # 정수만 받으면 부서(slug) 대상을 표현할 수 없다 — ObjectRef id 는 varchar.
+            "dst_id": {"type": ["integer", "string"]},
         },
         "required": ["relation", "dst_id"],
     },
 }
+
+# system 축 취급 규칙 — LLM 이 틀리기 쉬운 지점이라 도구 설명에 직접 박는다. report·
+# user·dept 는 entities 값 행이 없는 투영 객체라 search_objects 로는 구조적으로 0건이다.
+_SYSTEM_RULE = (
+    " ※ report·user·dept 는 값 목록이 없는 '투영 객체'라 search_objects 로 찾을 수 없다 — "
+    "보고서 찾기는 search_reports, 이미 아는 대상의 상세·관계는 get_object 를 쓰라."
+)
 
 # (스키마, executor) — 이름 순.
 _CATALOG = {
@@ -370,7 +563,7 @@ _CATALOG = {
             "list_object_types",
             "온톨로지 지도. 검색 가능한 객체 종류(타입)와 각 타입의 속성 key·데이터타입"
             "(enum이면 허용값)·관계 종류를 반환한다. 다른 도구로 쿼리를 만들기 전에 먼저 호출해 "
-            "어휘(타입 slug·속성 key·관계 slug)를 확인하라.",
+            "어휘(타입 slug·속성 key·관계 slug)를 확인하라." + _SYSTEM_RULE,
             {},
         ),
         _exec_list_object_types,
@@ -379,9 +572,11 @@ _CATALOG = {
         _fn(
             "search_objects",
             "타입+속성+관계로 온톨로지 객체를 검색한다(결정적 필터). 예: 특정 종류 중 "
-            "속성이 조건에 맞거나 특정 객체와 관계된 것. 반환: 객체 목록(id·값·속성) + 총건수.",
+            "속성이 조건에 맞거나 특정 객체와 관계된 것. 반환: 객체 목록(id·값·속성) + 총건수."
+            + _SYSTEM_RULE,
             {
-                "type": {"type": "string", "description": "객체 종류 slug(list_object_types 참고)."},
+                "type": {"type": "string", "description": "객체 종류 slug(list_object_types 참고). "
+                                                          "report·user·dept 는 불가."},
                 "q": {"type": "string", "description": "이름/코드/설명 부분검색(선택)."},
                 "props": _PROP_FILTER,
                 "relations": _REL_FILTER,
@@ -395,7 +590,9 @@ _CATALOG = {
         _fn(
             "get_object",
             "객체 하나의 프로필 — 속성, 연결된 객체(관계 방향·상대), 이 객체를 근거로 하는 "
-            "보고서(권한 내). type 과 id 로 지목한다(search_objects 결과의 type·id).",
+            "보고서(권한 내). type 과 id 로 지목한다(search_objects 결과의 type·id). "
+            "report·user·dept 도 지원한다 — 보고서의 작성자·게시부서·다룬 객체, 사용자의 "
+            "소속부서·작성 보고서 같은 관계를 타고 이어서 조사할 수 있다(권한 내).",
             {
                 "type": {"type": "string"},
                 "id": {"type": "string"},
@@ -403,6 +600,26 @@ _CATALOG = {
             required=["type", "id"],
         ),
         _exec_get_object,
+    ),
+    "get_subgraph": (
+        _fn(
+            "get_subgraph",
+            "한 엔티티 주변의 관계망(노드+엣지)을 한 번에 가져온다 — 관계를 여러 홉 타는 "
+            "구조 조사를 get_object 반복 없이 끝낼 때 쓴다. 부서·담당 PL 같은 연결 객체도 "
+            "1홉 얹힌다. 각 노드의 degree 는 화면 밖 이웃 수(크면 그쪽을 더 파볼 것). "
+            "seed 는 **엔티티만**(report·user·dept 는 노드가 아니라 get_object 로 조사). "
+            "노드가 많으면 잘리고 truncated 로 알린다 — relations 로 좁히거나 depth 를 줄여라.",
+            {
+                "entity_id": {"type": "integer",
+                              "description": "중심 엔티티 id(search_objects/get_object 가 준 정수)."},
+                "relations": {"type": "array", "items": {"type": "string"},
+                              "description": "따라갈 관계 slug 제한(미지정=전체, 선택)."},
+                "depth": {"type": "integer",
+                          "description": f"홉 깊이(1~{_SUBGRAPH_MAX_DEPTH}, 기본 {_SUBGRAPH_MAX_DEPTH})."},
+            },
+            required=["entity_id"],
+        ),
+        _exec_get_subgraph,
     ),
     "search_reports": (
         _fn(

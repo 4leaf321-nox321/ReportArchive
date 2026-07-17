@@ -4,8 +4,12 @@ LLM이 온톨로지 도구(agent_tools)를 스스로 호출해 다단계로 조�
 답하게 한다. 팔란티어 AIP식 — 온톨로지가 1차 검색 구조, LLM은 에이전트.
 
 루프: chat(tools=스키마) → tool_calls 있으면 실행·되먹임(+인용/trace 누적) →
-없으면 최종 답변. max_hops·결과크기 상한으로 폭주를 막고, 도구가 만진 보고서·
-객체를 인용으로 모은다. 보고서 근거는 hybrid_search 가 가시성 게이팅(권한 밖 유출 X).
+없으면 최종 답변. 도구가 만진 보고서·객체를 인용으로 모은다. 보고서 근거는
+hybrid_search 가 가시성 게이팅(권한 밖 유출 X).
+
+폭주 방지는 셋이 나눠 맡는다 — **max_hops**=LLM 왕복 수, **결과크기 상한**(agent_tools
+_SEARCH_LIMIT 등)=홉당 토큰, **_MAX_TOOL_CALLS_PER_HOP/_TOTAL**=실제 도구 실행 수.
+앞의 둘만으론 한 홉에 뱉은 tool_calls N개가 그대로 다 도는 걸 못 막는다.
 
 동기 함수 — 라우트가 run_in_threadpool 로 부른다(hop 마다 sync chat). 스트리밍/
 중간취소는 후속(지금은 max_hops·타임아웃으로 bound).
@@ -21,6 +25,17 @@ from app.ai.llm import chat
 
 _MAX_HOPS = 6
 
+# ★ 홉 예산 — max_hops 는 **LLM 왕복 횟수**만 묶는다. 한 홉에서 모델이 tool_calls 를
+# 몇 개든 뱉을 수 있어서, 그것만으론 실제 작업량(벡터검색 N회 등)이 안 묶인다.
+# 아래 두 상한이 fan-out 을 묶는다. 초과분은 **실행만 건너뛰고 응답은 채운다** —
+# tool_call 마다 tool 메시지가 있어야 하는 프로토콜이라 그냥 버리면 다음 chat 이 깨진다.
+_MAX_TOOL_CALLS_PER_HOP = 6
+_MAX_TOOL_CALLS_TOTAL = 20
+_BUDGET_MSG = (
+    "도구 호출 예산을 초과해 이 호출은 실행되지 않았습니다. "
+    "지금까지 모은 근거만으로 답하세요."
+)
+
 _SYSTEM = (
     "당신은 사내 CAE 아카이브의 온톨로지 분석가다. 객체(모델·부품·과제·공급사·"
     "시험실행·실패사례 등)와 그 속성·관계, 그리고 보고서를 도구로 조사해 한국어로 "
@@ -28,7 +43,8 @@ _SYSTEM = (
     "규칙:\n"
     "1) 어휘(객체 종류 slug·속성 key·관계 slug)가 확실치 않으면 먼저 list_object_types 를 호출하라.\n"
     "2) '속성이 조건에 맞는' '특정 객체와 관계된' 같은 구조적 질문은 search_objects 로 "
-    "정확히 필터하라(추측 금지). 객체 상세는 get_object.\n"
+    "정확히 필터하라(추측 금지). 객체 상세는 get_object. 한 객체 주변의 관계망을 "
+    "여러 홉 훑어야 하면 get_object 를 반복하지 말고 get_subgraph 한 번으로 가져와라.\n"
     "3) 서술형·정성 질문이나 객체의 근거 문서가 필요하면 search_reports 로 본문을 검색하라.\n"
     "4) 도구가 반환한 사실만 근거로 답하고, 근거로 쓴 보고서·객체를 답변에 명시하라. "
     "찾지 못하면 '아카이브에서 찾지 못했습니다'라고 답하고 지어내지 마라.\n"
@@ -119,6 +135,7 @@ def run_agent(db: Session, actor, query: str, *, history=None,
     reports: dict[int, dict] = {}   # report_id → citation(중복 제거)
     objects: dict[str, dict] = {}   # "type:id" → object(중복 제거)
     last = None
+    spent = 0                       # 누적 도구 실행 수(_MAX_TOOL_CALLS_TOTAL 예산)
 
     for hop in range(1, max_hops + 1):
         # 마지막 hop 은 도구 없이 답변 강제(무한 조사 방지).
@@ -131,16 +148,20 @@ def run_agent(db: Session, actor, query: str, *, history=None,
             break
 
         messages.append(_assistant_tool_msg(last))
-        for tc in last.tool_calls:
+        for idx, tc in enumerate(last.tool_calls):
             name, args = tc.get("name"), (tc.get("arguments") or {})
-            result = agent_tools.run_tool(db, actor, name, args)
-            content = result.get("content", {})
-            for o in result.get("objects", []):
-                objects[f"{o['type']}:{o['id']}"] = o
-            for r in result.get("reports", []):
-                reports.setdefault(r["report_id"], r)
-            trace.append({"hop": hop, "tool": name, "args": args,
-                          "summary": _summary(name, args, content)})
+            if idx >= _MAX_TOOL_CALLS_PER_HOP or spent >= _MAX_TOOL_CALLS_TOTAL:
+                content = {"error": _BUDGET_MSG}
+            else:
+                spent += 1
+                result = agent_tools.run_tool(db, actor, name, args)
+                content = result.get("content", {})
+                for o in result.get("objects", []):
+                    objects[f"{o['type']}:{o['id']}"] = o
+                for r in result.get("reports", []):
+                    reports.setdefault(r["report_id"], r)
+                trace.append({"hop": hop, "tool": name, "args": args,
+                              "summary": _summary(name, args, content)})
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.get("id") or f"call_{hop}",
@@ -230,6 +251,7 @@ async def run_agent_stream(db, actor, query: str, *, history=None,
     trace: list[dict] = []
     reports: dict[int, dict] = {}
     objects: dict[str, dict] = {}
+    spent = 0                       # run_agent 와 같은 도구 예산(_MAX_TOOL_CALLS_TOTAL)
 
     # Phase 1 — 도구 조사(진행 상황 방출). 최종 답변은 Phase 2 에서 스트리밍.
     for hop in range(1, max_hops):
@@ -241,8 +263,16 @@ async def run_agent_stream(db, actor, query: str, *, history=None,
         if not last.tool_calls:
             break
         messages.append(_assistant_tool_msg(last))
-        for tc in last.tool_calls:
+        for idx, tc in enumerate(last.tool_calls):
             name, args = tc.get("name"), (tc.get("arguments") or {})
+            if idx >= _MAX_TOOL_CALLS_PER_HOP or spent >= _MAX_TOOL_CALLS_TOTAL:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id") or f"call_{hop}",
+                    "content": json.dumps({"error": _BUDGET_MSG}, ensure_ascii=False),
+                })
+                continue
+            spent += 1
             result = await run_in_threadpool(agent_tools.run_tool, db, actor, name, args)
             content = result.get("content", {})
             for o in result.get("objects", []):

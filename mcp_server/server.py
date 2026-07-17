@@ -190,15 +190,39 @@ async def describe_metadata(ctx: Context) -> dict:
 
 
 @mcp.tool()
-async def search_reports(q: str, ctx: Context, limit: int = 20) -> dict:
+async def search_reports(
+    ctx: Context,
+    query: str,
+    limit: int = 8,
+    last_days: int | None = None,
+    period: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    report_type: str | None = None,
+    author: str | None = None,
+    phase: str | None = None,
+    lifecycle: str | None = None,
+) -> dict:
     """보고서 검색(내가 볼 수 있는 범위 내) — 기존 내용을 참고할 때.
 
     **하이브리드 검색**: 정확한 단어(키워드)뿐 아니라 *의미가 비슷한* 보고서도 찾는다
     (임베딩 기반). 예: "브래킷 응력"으로 검색하면 "브라켓 강도 검토"처럼 표현이 달라도
     뜻이 가까운 보고서가 함께 잡힌다. 각 결과에 report_id·title·snippet 이 있으니,
-    필요하면 report_id 로 get_report 를 호출해 상세를 본다."""
-    return await _get(
-        ctx, "/api/reports/search/semantic", {"q": q, "mode": "hybrid", "limit": limit}
+    필요하면 report_id 로 get_report 를 호출해 상세를 본다.
+
+    필터로 좁힐 수 있다(이름은 그대로 넣으면 서버가 id 로 해석한다):
+      - report_type: 종류 이름('주간보고') · author: 작성자 이름('홍길동')
+      - phase: drafting|reviewing|finalized · lifecycle: single_shot|ongoing
+      - 기간: last_days(최근 N일) · period(today|this_week|this_month|this_year) ·
+        date_from/date_to(YYYY-MM-DD)
+    예: "낙하시험" + report_type='주간보고' + last_days=30."""
+    args = {
+        "query": query, "limit": limit, "last_days": last_days, "period": period,
+        "date_from": date_from, "date_to": date_to, "report_type": report_type,
+        "author": author, "phase": phase, "lifecycle": lifecycle,
+    }
+    return await _ontology_tool(
+        ctx, "search_reports", {k: v for k, v in args.items() if v is not None}
     )
 
 
@@ -219,8 +243,9 @@ async def get_report(report_id: int, ctx: Context) -> dict:
 # --------------------------------------------------------------------------- #
 # 온톨로지 조사 — 객체/관계를 스스로 다단계로 파고든다(팔란티어식). 어휘가 확실치
 # 않으면 먼저 list_object_types, 구조적 질문은 search_objects(추측 금지), 상세·관계는
-# get_object, 관계를 여러 단계 타면 get_subgraph, 서술형은 search_reports. 세밀한 제어
-# 없이 완결 답변만 원하면 ask_ontology(서버 에이전트에 위임).
+# get_object, 관계를 여러 단계 타면 get_subgraph, 서술형은 search_reports,
+# **개수는 aggregate_reports**(직접 세지 말 것). 세밀한 제어 없이 완결 답변만 원하면
+# ask_ontology(서버 에이전트에 위임).
 # --------------------------------------------------------------------------- #
 async def _ontology_tool(ctx, name, args):
     return await _post(ctx, "/api/ai/ontology/tool", {"name": name, "args": args})
@@ -273,6 +298,41 @@ async def get_object(type: str, id: str, ctx: Context) -> dict:
 
 
 @mcp.tool()
+async def aggregate_reports(
+    ctx: Context,
+    filters: list | None = None,
+    target: str = "report",
+    year: int | None = None,
+    last_days: int | None = None,
+    period: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    report_type: str | None = None,
+    author: str | None = None,
+    phase: str | None = None,
+    lifecycle: str | None = None,
+) -> dict:
+    """**개수를 센다** — "몇 건이야?" 류 질문에 쓴다. 세는 건 SQL 이라 정확하다.
+    search_reports 결과를 직접 세지 마라(누락·환각). 볼 수 있는 보고서만 집계된다.
+      - filters: 조건 값들(태깅) 예 ["낙하시험","실패"]. 서로 다른 축은 AND.
+        날짜/작성자 조건만 쓸 거면 빈 배열 [].
+      - target: 셀 대상 — 'report'(기본) 또는 축 slug(그 축의 값 개수).
+      - year: 자료연도. last_days/period/date_from/date_to: 기간.
+      - report_type: 종류 이름('주간보고'), author: 작성자 이름, phase: drafting|
+        reviewing|finalized, lifecycle: single_shot|ongoing.
+    반환: {count, unit, target_label, values, report_ids, filters, year}."""
+    args = {
+        "filters": filters if filters is not None else [],
+        "target": target, "year": year, "last_days": last_days, "period": period,
+        "date_from": date_from, "date_to": date_to, "report_type": report_type,
+        "author": author, "phase": phase, "lifecycle": lifecycle,
+    }
+    return await _ontology_tool(
+        ctx, "aggregate_reports", {k: v for k, v in args.items() if v is not None}
+    )
+
+
+@mcp.tool()
 async def get_subgraph(
     entity_id: int, ctx: Context, relations: list | None = None, depth: int = 2
 ) -> dict:
@@ -283,7 +343,7 @@ async def get_subgraph(
     params: dict = {"depth": depth}
     if relations:
         params["relations"] = relations
-    return await _get(ctx, f"/api/entities/{entity_id}/subgraph", params)
+    return await _get(ctx, f"/api/entities/{entity_id}/graph", params)
 
 
 @mcp.tool()

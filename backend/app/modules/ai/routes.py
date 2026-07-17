@@ -471,11 +471,28 @@ async def agent_ask(
 
 # --------------------------------------------------------------------------- #
 # 온톨로지 조사 도구 — 외부(MCP) 에이전트에 프리미티브를 노출. 내부 run_agent 가 쓰는
-# 것과 동일한 읽기 도구(agent_tools)를 그대로 실행해, 외부 AI가 스스로 다단계로
-# 온톨로지/객체/관계를 조사하게 한다. LLM 미호출·읽기 전용이라 인증-only.
+# 읽기 도구(agent_tools)를 그대로 실행해, 외부 AI가 스스로 다단계로 온톨로지/객체/관계를
+# 조사하게 한다. LLM(생성) 미호출·읽기 전용이라 인증-only.
 # --------------------------------------------------------------------------- #
 # 외부에 노출할 읽기 도구 화이트리스트(create/update 계열은 절대 노출 안 함).
-_ONTOLOGY_TOOLS = {"list_object_types", "search_objects", "get_object"}
+#
+# 게이트 기준 두 가지 — ① 생성 LLM 을 안 부른다 ② 보고서는 가시성 게이팅된다.
+#   aggregate_reports: structured_qa.aggregate 경유. chat() 은 _extract(=maybe_answer
+#     전용)에만 있어 이 경로엔 없고, _base_reports 가 all_visible_report_ids 로 교집합을
+#     잡는다 → 두 기준 충족. **개수를 SQL 로 세는 유일한 도구**라, 없으면 외부 AI 가
+#     search_reports 결과를 손으로 세다 환각한다(이 도구의 존재 이유가 그 방지).
+#   search_reports: hybrid_search 경유 — embed_one(임베딩)만 쓰고 생성 chat() 은 안
+#     부른다(aggregate 도 임베딩을 쓴다). _visible_scope_ids 로 가시성 게이팅 → 두 기준
+#     충족. 2026-07-18 추가: MCP 자체 도구가 q·limit 만 넘겨 날짜·종류·작성자 필터와
+#     이름→id 해석을 못 했다. 이 내부판으로 통일해 그 격차를 없앤다(MCP 자체 도구는
+#     이 화이트리스트판으로 위임하게 교체).
+_ONTOLOGY_TOOLS = {
+    "list_object_types",
+    "search_objects",
+    "get_object",
+    "search_reports",
+    "aggregate_reports",
+}
 
 
 class OntologyToolPayload(BaseModel):

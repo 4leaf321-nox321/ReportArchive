@@ -157,6 +157,154 @@ async def ask(
     return success_response(data=data)
 
 
+# --------------------------------------------------------------------------- #
+# A'. 객체 스코프 Q&A / 요약 — 객체 프로필의 "이 객체에 대해" AI 패널.
+#     아카이브 전체가 아니라 *이 객체를 태깅한 (가시) 보고서*로 리트리브를 한정한다.
+# --------------------------------------------------------------------------- #
+# 객체 요약 컨텍스트에 넣을 태깅 보고서 상한(토큰 폭주 방지). 최신 갱신 우선.
+_ENTITY_SUMMARY_MAX_REPORTS = 12
+# 보고서별 기존 초록 인용 상한(문자).
+_ENTITY_SUMMARY_SNIPPET = 400
+
+_ENTITY_SUMMARY_PROMPT = (
+    "너는 지식 그래프의 한 객체를 설명하는 요약가다. 아래에 그 객체의 메타데이터와, "
+    "그 객체를 다루는 보고서들의 제목·초록을 준다. 이 객체가 무엇이며 보고서들에서 "
+    "어떻게 다뤄지는지 3~5문장의 한국어로 요약하라. 주어진 정보에만 근거하고 추측하지 "
+    "마라. 근거가 부족하면 '요약할 정보가 충분하지 않습니다.' 라고만 답하라. 코드블록·"
+    "JSON 없이 요약 문장만 출력하라.\n\n"
+)
+
+
+def _entity_scope(db: Session, actor, entity_id: int):
+    """이 객체를 태깅한 보고서 ∩ 요청자 가시성. (row, [visible EntityProfileReport-like]).
+
+    프로필 엔드포인트와 같은 가시성 규칙(사용자 중심, 휴지통 제외)을 재사용한다.
+    row=None 이면 없는 엔티티. reports 는 (id,title,workspace_slug,updated_at) 튜플."""
+    from app.modules.entities import services as ent_services
+    from app.modules.reports.services import all_visible_report_ids
+
+    row = ent_services.get_entity(db, entity_id)
+    if not row:
+        return None, []
+    links = ent_services.list_report_links_for_entity(db, entity_id=entity_id)
+    visible = all_visible_report_ids(db, actor.user.id)
+    reports = [r for r in links if r.id in visible]
+    return row, reports
+
+
+@router.post("/entities/{entity_id}/ask")
+async def ask_entity(
+    entity_id: int,
+    payload: AskPayload,
+    request: Request,
+    actor=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """객체 프로필 스코프 질문 — 이 객체를 태깅한 (가시) 보고서로만 근거를 한정해
+    답한다. 게이트·취소·인용 형태는 /ask 와 동일. graph 는 강제 off(객체 스코프가
+    그래프 이웃 확장과 상충)."""
+    from app.ai import qa
+    from app.ai.entitlements import ai_enabled_for
+
+    if not ai_enabled_for(db, actor.user, "rag_qa"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "AI 질문하기 권한이 없습니다.")
+
+    row, reports = _entity_scope(db, actor, entity_id)
+    if row is None:
+        return error_response(
+            f"객체를 찾을 수 없습니다: {entity_id}", status_code=404
+        )
+    # 태깅 보고서가 없거나 전부 안 보이면 [] 를 넘겨 qa 가 조용히 '근거 없음'을 낸다
+    # (entity_ids=None=무스코프와 구분되어야 하므로 빈 리스트로).
+    try:
+        data = await qa.ask_archive_cancellable(
+            db, actor, payload.query, limit=payload.limit, graph=False,
+            rerank=payload.rerank, hyde=payload.hyde, verify=payload.verify,
+            should_cancel=request.is_disconnected,
+            entity_ids=[entity_id] if reports else [],
+        )
+    except LLMCancelled:
+        return error_response("AI 응답이 취소되었습니다.", status_code=499)
+    except LLMError as exc:
+        return error_response(f"AI 응답 실패: {exc}", status_code=502)
+    return success_response(data=data)
+
+
+@router.post("/entities/{entity_id}/summary")
+def entity_summary(
+    entity_id: int,
+    actor=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """객체 요약 — 이 객체의 메타데이터 + 태깅 (가시) 보고서들의 기존 초록/제목을
+    모아 LLM 이 3~5문장으로 종합한다. 온디맨드 동기(캐시·잡큐 없음, 마이그레이션 0).
+    게이트는 /ask 와 같은 'rag_qa'. 태깅 보고서가 없으면 근거 부족 응답."""
+    from app.ai.entitlements import ai_enabled_for
+    from app.ai.models import ReportAiSummary
+
+    if not ai_enabled_for(db, actor.user, "rag_qa"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "AI 요약 권한이 없습니다.")
+
+    row, reports = _entity_scope(db, actor, entity_id)
+    if row is None:
+        return error_response(
+            f"객체를 찾을 수 없습니다: {entity_id}", status_code=404
+        )
+    if not reports:
+        return success_response(data={
+            "summary": "이 객체를 태깅한, 요약할 근거가 될 보고서가 없습니다.",
+            "no_evidence": True, "report_count": 0,
+        })
+
+    # 최신 갱신 우선으로 상한만큼 — 기존 자동요약(있으면)을 근거로 붙인다(재계산 회피).
+    reports = sorted(
+        reports, key=lambda r: (r.updated_at is None, r.updated_at), reverse=True
+    )[:_ENTITY_SUMMARY_MAX_REPORTS]
+    summ_by_report = {
+        s.report_id: s.summary
+        for s in db.query(ReportAiSummary)
+        .filter(ReportAiSummary.report_id.in_([r.id for r in reports]))
+        .all()
+        if (s.summary or "").strip()
+    }
+
+    # 객체 메타 헤더.
+    lines = [f"[객체] {row.value} (종류: {row.type_slug})"]
+    if getattr(row, "code", None):
+        lines.append(f"코드: {row.code}")
+    if getattr(row, "description", None):
+        lines.append(f"설명: {row.description}")
+    props = getattr(row, "properties", None) or {}
+    if props:
+        lines.append(
+            "속성: "
+            + ", ".join(
+                f"{k}={', '.join(v) if isinstance(v, list) else v}"
+                for k, v in props.items()
+            )
+        )
+    lines.append(f"\n[이 객체를 다루는 보고서 {len(reports)}건]")
+    for r in reports:
+        head = f"- {r.title}"
+        snip = summ_by_report.get(r.id)
+        if snip:
+            head += f": {snip[:_ENTITY_SUMMARY_SNIPPET]}"
+        lines.append(head)
+    context = "\n".join(lines)
+
+    try:
+        res = chat([{"role": "user", "content": _ENTITY_SUMMARY_PROMPT + context}])
+    except LLMError as exc:
+        return error_response(f"AI 요약 실패: {exc}", status_code=502)
+    return success_response(data={
+        "summary": (res.content or "").strip(),
+        "model": res.model,
+        "backend": res.backend,
+        "report_count": len(reports),
+        "no_evidence": False,
+    })
+
+
 @router.get("/ask/options")
 def ask_options(actor=Depends(get_current_user)):
     """Q&A 검색 옵션의 **현재 기본값** — 프론트 토글 초기화용. 사용자는 이 위에서

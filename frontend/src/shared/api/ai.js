@@ -49,6 +49,29 @@ export async function askAi({
   return extractData(res)
 }
 
+/**
+ * 객체 스코프 Q&A — 이 객체를 태깅한 (가시) 보고서로만 근거를 한정해 답한다.
+ * 응답 형태는 askAi 와 동일(citations 등). rag_qa 권한 필요. graph 는 서버가 강제 off.
+ */
+export async function askEntity(entityId, { query, limit = 6, rerank, hyde, verify, signal } = {}) {
+  const body = { query, limit }
+  if (rerank !== undefined && rerank !== null) body.rerank = rerank
+  if (hyde !== undefined && hyde !== null) body.hyde = hyde
+  if (verify !== undefined && verify !== null) body.verify = verify
+  const res = await apiClient.post(`/api/ai/entities/${entityId}/ask`, body, { signal })
+  return extractData(res)
+}
+
+/**
+ * 객체 요약 — 이 객체의 메타 + 태깅 보고서 초록을 LLM 이 종합.
+ *   { summary, model, backend, report_count, no_evidence }
+ * 온디맨드(캐시 없음). rag_qa 권한 필요.
+ */
+export async function getEntitySummary(entityId, { signal } = {}) {
+  const res = await apiClient.post(`/api/ai/entities/${entityId}/summary`, {}, { signal })
+  return extractData(res)
+}
+
 /** Q&A 검색 옵션 기본값(프론트 토글 초기화용). { graph, rerank, hyde, *_available } */
 export async function getAskOptions() {
   const res = await apiClient.get('/api/ai/ask/options')

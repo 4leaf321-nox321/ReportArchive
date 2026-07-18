@@ -27,8 +27,10 @@ import {
   listRelationTypes,
 } from '@/shared/api/entities'
 import { getObjectProvenance } from '@/shared/api/connectors'
+import { useAuth } from '@/shared/auth/AuthContext'
 import { EntityGraphView } from './EntityGraphView'
 import { Graph3DView } from './Graph3DView'
+import { ObjectAiPanel } from './ObjectAiPanel'
 
 /**
  * 객체 프로필 **내용**(헤더·관련객체·관련보고서·관계도). 라우트 페이지와
@@ -41,8 +43,11 @@ import { Graph3DView } from './Graph3DView'
  *     생략하면 아무 동작 안 함(정적 표시).
  *   hideGraph  — 관계도 섹션 숨김(탐색 페이지가 별도 탭에서 크게 그릴 때).
  */
-export function ObjectProfile({ entityId, onOpenEntity, hideGraph = false }) {
+export function ObjectProfile({ entityId, onOpenEntity, hideGraph = false, hideAi = false }) {
   const navigate = useNavigate()
+  const { me } = useAuth()
+  // 객체 스코프 AI 패널은 'rag_qa' 권한이 있을 때만(질문/요약 엔드포인트도 같은 게이트).
+  const canAi = !!me?.ai_features?.includes('rag_qa')
 
   // 프로필 조합(별칭·연도·관계·태깅보고서) — id 바뀌면 재조회.
   const { data: profile, loading, error, reload } = useAsync(
@@ -127,6 +132,8 @@ export function ObjectProfile({ entityId, onOpenEntity, hideGraph = false }) {
         reportCount={profile.report_count}
         onOpen={(r) => navigate(`/w/${r.workspace_slug}/reports/${r.id}`)}
       />
+
+      {canAi && !hideAi && <ObjectAiPanel entityId={entityId} />}
 
       {!hideGraph && (
         <GraphSection

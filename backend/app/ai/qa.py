@@ -212,15 +212,25 @@ def _graph_objects(
 def _retrieve(
     db: Session, actor, query: str, *, limit: int, graph: bool = False,
     rerank: Optional[bool] = None, hyde: Optional[bool] = None,
+    entity_ids: Optional[list[int]] = None,
 ):
     """질문 → (질문문, citations, blocks, seeds) 또는 근거 없음 dict.
 
     graph=True 면 씨앗 객체 링킹 → 이웃 확장 → 그래프 근거를 순수 벡터와 블렌드
     (GraphRAG_설계.md §2). rerank/hyde 는 요청별 override(None=설정 기본값).
-    동기/비동기 ask 양쪽이 공유한다."""
+    entity_ids 가 주어지면 그 객체(들)로 태깅된 보고서로 리트리브를 한정한다
+    (객체 프로필 스코프 Q&A) — 가시성 ∩ 엔티티 필터. 동기/비동기 ask 양쪽이 공유한다."""
     q = (query or "").strip()
     if not q:
         return {"answer": "", "citations": [], "no_evidence": True, "seeds": []}
+
+    # 객체 스코프 요청인데 대상 엔티티가 비면(태깅 보고서 없음) 조용히 근거 없음.
+    # entity_ids=None 은 무스코프(일반 아카이브 질문), []는 "아무것도 없음"으로 구분.
+    if entity_ids is not None and not entity_ids:
+        return {
+            "answer": "이 객체에 연결된, 답할 근거가 될 보고서가 없습니다.",
+            "citations": [], "no_evidence": True, "seeds": [],
+        }
 
     seeds: list[dict] = []
     expanded_ids: set[int] = set()
@@ -251,6 +261,7 @@ def _retrieve(
         kw_q = kw_full if sq == q else (_alias_expand(db, sq) if alias_on else None)
         for h in ai_search.hybrid_search(
             db, sq, actor, limit=pool, snippet_chars=None,
+            entity_ids=entity_ids,
             embed_query=embed_of.get(sq), keyword_query=kw_q,
         ):
             rid = h["report_id"]
@@ -728,21 +739,25 @@ def _finalize(
 def ask_archive(
     db: Session, actor, query: str, *, limit: int = 8, graph: bool = False,
     rerank: Optional[bool] = None, hyde: Optional[bool] = None,
-    verify: Optional[bool] = None,
+    verify: Optional[bool] = None, entity_ids: Optional[list[int]] = None,
 ) -> dict:
     """질문 → {answer, citations, no_evidence, seeds, ...}. actor 는 검색 권한
     scope 용(.user.id 기반 가시 보고서). 기능 권한 게이트는 호출부에서 이미 통과.
-    graph=True 면 GraphRAG(온톨로지 그래프 근거 블렌드). rerank/hyde/verify=요청별 override."""
+    graph=True 면 GraphRAG(온톨로지 그래프 근거 블렌드). rerank/hyde/verify=요청별 override.
+    entity_ids 가 주어지면 객체 프로필 스코프 Q&A(그 객체 태깅 보고서로 한정) — 이때
+    집계·에이전트 라우팅은 스코프를 무시하므로 건너뛰고 곧장 스코프 리트리브로 간다."""
     from app.ai import agent_route, structured_qa
 
-    routed = structured_qa.maybe_answer(db, actor, query)
-    if routed is not None:
-        return routed  # 집계형 질문 → 온톨로지 SQL 집계(개수 정확). 아니면 아래.
-    routed_agent = agent_route.maybe_route_agent(db, actor, query)
-    if routed_agent is not None:
-        return routed_agent  # 복합(다홉) 질문 → 에이전트. 아니면 아래 일반 RAG.
+    if entity_ids is None:
+        routed = structured_qa.maybe_answer(db, actor, query)
+        if routed is not None:
+            return routed  # 집계형 질문 → 온톨로지 SQL 집계(개수 정확). 아니면 아래.
+        routed_agent = agent_route.maybe_route_agent(db, actor, query)
+        if routed_agent is not None:
+            return routed_agent  # 복합(다홉) 질문 → 에이전트. 아니면 아래 일반 RAG.
     retrieved = _retrieve(
-        db, actor, query, limit=limit, graph=graph, rerank=rerank, hyde=hyde
+        db, actor, query, limit=limit, graph=graph, rerank=rerank, hyde=hyde,
+        entity_ids=entity_ids,
     )
     if isinstance(retrieved, dict):
         return retrieved
@@ -768,25 +783,28 @@ async def ask_archive_cancellable(
     hyde: Optional[bool] = None,
     verify: Optional[bool] = None,
     should_cancel: Optional[CancelCheck] = None,
+    entity_ids: Optional[list[int]] = None,
 ) -> dict:
     """ask_archive 의 비동기·취소 가능 버전(라우트가 클라이언트 연결 끊김을
     should_cancel 로 넘긴다). 검색은 동기지만 짧고, 긴 LLM 생성만 스트리밍해
-    중간 취소된다. 결과 형태는 ask_archive 와 동일."""
+    중간 취소된다. 결과 형태는 ask_archive 와 동일. entity_ids=객체 스코프."""
     from starlette.concurrency import run_in_threadpool
 
     from app.ai import agent_route, structured_qa
 
-    routed = structured_qa.maybe_answer(db, actor, query)
-    if routed is not None:
-        return routed  # 집계형 질문 → 온톨로지 SQL 집계(개수 정확). 아니면 아래.
-    # 에이전트는 sync·다홉(느림)이라 스레드풀로(이벤트루프 안 막게, /agent 라우트 패턴).
-    routed_agent = await run_in_threadpool(
-        agent_route.maybe_route_agent, db, actor, query
-    )
-    if routed_agent is not None:
-        return routed_agent  # 복합(다홉) 질문 → 에이전트. 아니면 아래 일반 RAG.
+    if entity_ids is None:
+        routed = structured_qa.maybe_answer(db, actor, query)
+        if routed is not None:
+            return routed  # 집계형 질문 → 온톨로지 SQL 집계(개수 정확). 아니면 아래.
+        # 에이전트는 sync·다홉(느림)이라 스레드풀로(이벤트루프 안 막게, /agent 라우트 패턴).
+        routed_agent = await run_in_threadpool(
+            agent_route.maybe_route_agent, db, actor, query
+        )
+        if routed_agent is not None:
+            return routed_agent  # 복합(다홉) 질문 → 에이전트. 아니면 아래 일반 RAG.
     retrieved = _retrieve(
-        db, actor, query, limit=limit, graph=graph, rerank=rerank, hyde=hyde
+        db, actor, query, limit=limit, graph=graph, rerank=rerank, hyde=hyde,
+        entity_ids=entity_ids,
     )
     if isinstance(retrieved, dict):
         return retrieved

@@ -27,6 +27,7 @@ import {
 } from './exportCapture'
 import { NATIVE_TEXT_TYPES, buildPptxText, readBasePx } from './exportPptxText'
 import { NATIVE_TABLE_TYPES, buildPptxTable } from './exportPptxTable'
+import { NATIVE_CARD_TYPES, tryAddNativeCard } from './exportPptxCard'
 import { COLOR_TOKENS, bandBgHex, bandTextHex } from '@/shared/text-color'
 
 // 색 토큰 → 라이트 swatch hex(# 제외). PPT 는 다크모드가 없어 라이트 hex 를 쓴다.
@@ -382,6 +383,20 @@ export async function exportReportToPptx({
           let placed = false
           if (meta && NATIVE_TEXT_TYPES.has(meta.type)) {
             placed = tryAddNativeText(curSlide, meta, content[b.id] ?? {}, b.el, pos, ptPerPx, caption)
+          } else if (meta && NATIVE_CARD_TYPES.has(meta.type)) {
+            // 카드는 도형(배경/테두리) + 글 + 아이콘 조합이라 전용 경로. 아이콘
+            // 래스터화 때문에 async — 실패하면 아래 이미지 폴백으로 떨어진다.
+            placed = await tryAddNativeCard(
+              curSlide,
+              meta,
+              content[b.id] ?? {},
+              b.el,
+              pos,
+              ptPerPx,
+              caption,
+              addCaptionBox,
+              { fontFace: TEXT_FONT, basePx: readBasePx(b.el) ?? 18 },
+            )
           } else if (meta && NATIVE_TABLE_TYPES.has(meta.type)) {
             placed = tryAddNativeTable(
               curSlide,

@@ -432,6 +432,28 @@ HEADING: WidgetDescriptor = {
 # --------------------------------------------------------------------------- #
 # 2. rich_text — markdown / 자유 서술
 # --------------------------------------------------------------------------- #
+# 개요 항목(들여쓰기 있는 리치텍스트 한 줄). `text` 는 `html` 의 평문 미러(AI 프롬프트·
+# 검색용), `html` 이 TipTap 이 쓰는 정본. 긴 글(rich_text)이 원 소유자이고, 카드(card)의
+# 본문도 같은 형식을 재사용한다 — 렌더러·정규화·export 경로를 공유하기 위해서다.
+# 참조만 하고 변형하지 않는다(공유 상수).
+_OUTLINE_ITEM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "depth": {"type": "integer", "minimum": 0, "maximum": 5},
+        "text": {"type": "string", "maxLength": 2000},
+        "html": {"type": "string", "maxLength": 8000},
+        "relation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": r"^[a-z0-9][a-z0-9_-]*$",
+        },
+    },
+    "required": ["depth", "text"],
+    "additionalProperties": False,
+}
+
+
 def _rich_text_content(props: dict) -> dict:
     md_schema: dict[str, Any] = {"type": "string"}
     if "min_length" in props:
@@ -448,22 +470,7 @@ def _rich_text_content(props: dict) -> dict:
     # `relation` is a free-form slug validated only for shape — the actual
     # vocabulary lives in the widget_relations table so admins can add or
     # rename entries without a schema migration.
-    item_schema = {
-        "type": "object",
-        "properties": {
-            "depth": {"type": "integer", "minimum": 0, "maximum": 5},
-            "text": {"type": "string", "maxLength": 2000},
-            "html": {"type": "string", "maxLength": 8000},
-            "relation": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 32,
-                "pattern": r"^[a-z0-9][a-z0-9_-]*$",
-            },
-        },
-        "required": ["depth", "text"],
-        "additionalProperties": False,
-    }
+    item_schema = _OUTLINE_ITEM_SCHEMA
     return {
         "type": "object",
         "properties": {
@@ -852,6 +859,123 @@ FMEA: WidgetDescriptor = {
     },
     "content_schema_for": _fmea_content,
     "default_props": {"label": "FMEA", "rpn_threshold": 100},
+}
+
+
+# --------------------------------------------------------------------------- #
+# 6.4 card — 한 장 요약 카드 (PPT/인포그래픽식 블록). 배경·테두리·컬러 악센트 +
+#      (선택) 아이콘 + 제목 + 본문. KPI 타일·콜아웃 밴드·상태 카드는 별도 타입이
+#      아니라 이 카드의 variant/선택필드 조합으로 파생한다 — 위젯 하나로 표현 폭
+#      대부분을 커버(카드위젯_설계.md §3). 자식 위젯을 담는 컨테이너 카드는 후속.
+# --------------------------------------------------------------------------- #
+# 카드 아이콘 허용셋 — 프론트가 lucide-react 컴포넌트로 매핑한다(ICON_COMPONENTS,
+# frontend/src/modules/templates/widgets/cardIcons.js 가 같은 목록을 갖는다).
+# ⚠️ 임의 lucide 이름을 허용하지 않는 이유: 프론트가 아이콘을 정적 import 해야
+# 번들에 들어가고, PPTX/DOCX export 도 같은 셋만 래스터화할 수 있기 때문이다.
+# 목록을 늘리려면 **양쪽 파일을 함께** 고쳐야 한다(프론트에 없으면 렌더 시 무시).
+_CARD_ICONS = [
+    # 개념·구조
+    "network", "share", "layers", "package", "database", "cpu", "settings",
+    # 방향·성과
+    "target", "flag", "trending-up", "trending-down", "activity", "gauge",
+    # 상태·판정
+    "check-circle", "alert-triangle", "alert-circle", "info", "shield",
+    # 일정·사람
+    "clock", "calendar", "users", "building",
+    # 업무·문서
+    "file-text", "clipboard-list", "search", "wrench", "beaker", "microscope",
+    "truck", "factory", "lightbulb", "zap",
+]
+_CARD_ICON_FIELD = {"type": "string", "enum": _CARD_ICONS}
+
+# 카드 표현형. soft=연한 틴트 배경(기본), outline=테두리만, filled=진한 배경+대비
+# 글자색, banner=가로 강조 띠(섹션 구분용). 화면·PPTX·DOCX 가 같은 토큰을 읽는다.
+_CARD_VARIANTS = ["soft", "outline", "filled", "banner"]
+
+# 상태 배지 톤. accent(카드 색)와 독립 — 카드는 파랑인데 배지는 "완료(초록)"일 수
+# 있다. 토큰이 아니라 의미 이름인 이유: 톤→색 매핑을 한 곳에서 바꾸기 위해서.
+_CARD_BADGE_TONES = ["success", "info", "warn", "neutral"]
+
+
+def _card_content(props: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "caption": _CAPTION_FIELD,
+            "caption_color": _COLOR_TOKEN_FIELD,
+            "caption_html": _CAPTION_HTML_FIELD,
+            "caption_skip_autofill": {"type": "boolean"},
+            "caption_position": _CAPTION_POSITION_FIELD,
+            "note": _NOTE_FIELD,
+            "note_color": _COLOR_TOKEN_FIELD,
+            "note_html": _NOTE_HTML_FIELD,
+            # 표현형·악센트 — 없으면 props 기본값(default_variant/default_accent).
+            "variant": {"type": "string", "enum": _CARD_VARIANTS},
+            # ⚠️ 저장값은 접두사 없는 토큰("teal") — 렌더 시 rt-c-/rt-bg- 를 붙인다.
+            "accent": _COLOR_TOKEN_FIELD,
+            "icon": _CARD_ICON_FIELD,
+            # 제목 위 소라벨(①, "STEP 1", 분류명 등). 짧게.
+            "eyebrow": {"type": "string", "maxLength": 40},
+            "title": {"type": "string", "maxLength": 200},
+            # 본문 — 긴 글과 같은 개요 형식(렌더러·export 공유).
+            "body": {
+                "type": "object",
+                "properties": {
+                    "items": {"type": "array", "items": _OUTLINE_ITEM_SCHEMA},
+                },
+                "additionalProperties": False,
+            },
+            "badge": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "maxLength": 40},
+                    "tone": {"type": "string", "enum": _CARD_BADGE_TONES},
+                },
+                "additionalProperties": False,
+            },
+            # 있으면 KPI 타일로 렌더(큰 숫자 + 단위, title 이 라벨 역할).
+            "stat": {
+                "type": "object",
+                "properties": {
+                    "value": {"type": "string", "maxLength": 24},
+                    "unit": {"type": "string", "maxLength": 12},
+                },
+                "additionalProperties": False,
+            },
+            "footnote": {"type": "string", "maxLength": 300},
+        },
+        # 초안 상태에서 제목만 있고 본문이 비어도 저장되게 — 필수 필드 없음.
+        "additionalProperties": False,
+    }
+
+
+CARD: WidgetDescriptor = {
+    "type": "card",
+    "label": "카드",
+    "description": "한 장 요약 카드 — 색 악센트·아이콘·제목·본문. "
+                   "KPI 타일·콜아웃 밴드·상태 카드로 변형 가능",
+    "has_content": True,
+    "props_schema": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "maxLength": 200},
+            # 템플릿 기본값 — content 에 없을 때만 적용.
+            "default_variant": {"type": "string", "enum": _CARD_VARIANTS},
+            "default_accent": _COLOR_TOKEN_FIELD,
+            # 작성 화면에서 아이콘·KPI 컨트롤을 노출할지(템플릿 설계자가 끈다).
+            "icon_enabled": {"type": "boolean"},
+            "allow_stat": {"type": "boolean"},
+        },
+        "additionalProperties": False,
+    },
+    "content_schema_for": _card_content,
+    "default_props": {
+        "label": "카드",
+        "default_variant": "soft",
+        "default_accent": "slate",
+        "icon_enabled": True,
+        "allow_stat": True,
+    },
 }
 
 
@@ -3920,6 +4044,7 @@ WIDGET_REGISTRY: dict[str, WidgetDescriptor] = {
         QUADRANT,
         SANKEY,
         FMEA,
+        CARD,
     )
 }
 
@@ -3977,6 +4102,9 @@ REF_CATEGORY_BY_TYPE: dict[str, Optional[str]] = {
     # 객체 레코드 — 번호 참조 대상 아님(객체 자체가 프로필로 참조됨). MVP: None.
     "record": None,
     "record_table": None,
+    # 카드 — 그림도 표도 아닌 요약 블록. "그림 N"/"표 N" 카운트를 오염시키지 않게
+    # 비번호(None). 카드에 번호를 매길 필요가 생기면 별도 카테고리를 신설할 것.
+    "card": None,
     # 그림 (images, charts, diagrams — anything primarily visual)
     "image": "figure",
     "chart": "figure",

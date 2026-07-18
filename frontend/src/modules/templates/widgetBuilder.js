@@ -38,6 +38,8 @@ const DEFAULT_BLOCK_SIZE = {
   progress_bar: { col_span: 12, row_span: 3 },
   raci_matrix: { col_span: 12, row_span: 4 },
   comparison: { col_span: 12, row_span: 6 },
+  // 카드는 나란히 배치가 기본 용법 — 12칸 중 4칸(한 줄에 3장)으로 시작한다.
+  card: { col_span: 4, row_span: 4 },
 }
 
 function defaultSize(type) {

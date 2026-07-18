@@ -43,7 +43,7 @@ export const WIDGET_PICKER_CATEGORIES = [
       'scatter3d',
     ],
   },
-  { name: '텍스트', types: ['heading', 'rich_text', 'equation'] },
+  { name: '텍스트', types: ['heading', 'rich_text', 'card', 'equation'] },
   { name: '목록 / 표', types: ['bulleted_list', 'key_value', 'table', 'comparison'] },
   {
     // Proportional / part-of-whole. pie/waffle are flat; treemap/packing

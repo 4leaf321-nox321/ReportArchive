@@ -12354,6 +12354,9 @@ const WIDGETS_DEFAULT_NO_AUTOFIT = new Set([
   'quadrant',
   'cad_3d',
   'html_embed',
+  // 카드 — 나란히 놓인 카드들의 높이가 내용 길이에 따라 들쭉날쭉해지면 타일
+  // 레이아웃이 무너진다. 작성자가 정한 셀 높이를 그대로 지켜 줄을 맞춘다.
+  'card',
 ])
 
 // Subset that wants the auto-fit measurement to track cell *width*

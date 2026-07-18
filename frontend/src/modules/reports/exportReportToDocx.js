@@ -440,6 +440,11 @@ async function convertBlock(block, props, content, opts = {}) {
     case 'bulleted_list':
       out.push(...convertBulletedList(content))
       break
+    case 'card':
+      // 카드는 시각 위젯이지만 내용이 사실상 글이라 캡처(PNG) 대신 네이티브로
+      // 낸다 — Word 에서 글자가 선택·검색·수정된다. 색은 문단 shading 으로.
+      out.push(...convertCard(props, content))
+      break
     case 'key_value':
       out.push(...convertKeyValue(props, content))
       break
@@ -625,6 +630,138 @@ const RT_INDENT_TWIPS_PER_DEPTH = 360 // ~0.25in
 // 보이도록 기본 들여쓰기를 더한다. depth 0 (■) 도 0 이 아니라 이 값
 // 만큼 안쪽으로 들어가고, 깊은 depth 는 그 위에 360씩 더 들어감.
 const RT_BASE_INDENT_TWIPS = 360 // ~0.25in
+
+// --------------------------------------------------------------------------- //
+// 카드 — 네이티브(문단 shading) 렌더                                             //
+//                                                                              //
+// Word 에 "박스" 도형은 못 쓰지만, 카드의 모든 문단에 같은 배경(shading)을 주면  //
+// 시각적으로 하나의 카드 블록이 된다. soft/outline 은 옅은 틴트(highlightHex,   //
+// 화면의 rt-bg 16% 에 대응), filled/banner 는 솔리드 + 자동 대비 글자색으로 —   //
+// 제목 배경 밴드(convertHeading)와 같은 규칙이다.                               //
+// --------------------------------------------------------------------------- //
+const CARD_BADGE_TONE_TOKEN = {
+  success: 'green',
+  info: 'blue',
+  warn: 'amber',
+  neutral: 'gray',
+}
+
+function convertCard(props, content) {
+  const variant =
+    content?.variant ?? props?.default_variant ?? 'soft'
+  const accent =
+    content?.accent ?? props?.default_accent ?? 'slate'
+  const solid = variant === 'filled' || variant === 'banner'
+  // 솔리드는 진한 악센트 + 대비 글자색, 그 외는 옅은 틴트 + 기본 글자색.
+  const fill = solid ? bandBgHex(accent) : highlightHex(accent)
+  const fg = solid ? bandTextHex(accent) : null
+  const shading = fill
+    ? { shading: { type: ShadingType.CLEAR, color: 'auto', fill } }
+    : {}
+  const colorOf = (fallback) => fg || fallback
+
+  const out = []
+  const push = (runs, extra = {}) => {
+    if (!runs.length) return
+    out.push(new Paragraph({ children: runs, ...shading, ...extra }))
+  }
+
+  // 머리줄 — eyebrow / 배지. 한 줄에 합쳐 낸다(Word 엔 우측 정렬 배지가 없으므로).
+  const headRuns = []
+  if (content?.eyebrow) {
+    headRuns.push(
+      new TextRun({
+        text: content.eyebrow,
+        bold: true,
+        size: BODY_SIZE - 6,
+        color: colorOf(bandBgHex(accent) || '666666'),
+      }),
+    )
+  }
+  if (content?.badge?.text) {
+    const toneTok = CARD_BADGE_TONE_TOKEN[content.badge.tone] ?? 'gray'
+    headRuns.push(
+      new TextRun({
+        text: `${headRuns.length ? '   ' : ''}[${content.badge.text}]`,
+        bold: true,
+        size: BODY_SIZE - 6,
+        color: colorOf(bandBgHex(toneTok) || '666666'),
+      }),
+    )
+  }
+  push(headRuns)
+
+  // 제목. 아이콘은 Word 에 그릴 수단이 없어 생략한다(화면·PPT 에만 나온다).
+  if (content?.title) {
+    push([
+      new TextRun({
+        text: content.title,
+        bold: true,
+        size: TITLE_SIZE,
+        color: colorOf('000000'),
+      }),
+    ])
+  }
+
+  // KPI 숫자 — 큰 글씨 + 단위.
+  const statValue = content?.stat?.value
+  if (statValue != null && String(statValue) !== '') {
+    const runs = [
+      new TextRun({
+        text: String(statValue),
+        bold: true,
+        size: TITLE_SIZE + 14,
+        color: colorOf('000000'),
+      }),
+    ]
+    if (content.stat.unit) {
+      runs.push(
+        new TextRun({
+          text: ` ${content.stat.unit}`,
+          size: BODY_SIZE,
+          color: colorOf('666666'),
+        }),
+      )
+    }
+    push(runs)
+  }
+
+  // 본문 — 긴 글과 같은 개요 항목(글리프 + 깊이 들여쓰기).
+  const items = Array.isArray(content?.body?.items) ? content.body.items : []
+  for (const it of items) {
+    const depth = clamp(it?.depth ?? 0, 0, 5)
+    const runs = htmlToTextRuns(it?.html, it?.text ?? '')
+    if (!runs.length) continue
+    runs.unshift(
+      new TextRun({
+        text: `${DEPTH_PREFIX[depth] || '·'} `,
+        color: colorOf('888888'),
+        size: BODY_SIZE,
+      }),
+    )
+    out.push(
+      new Paragraph({
+        indent: { left: RT_BASE_INDENT_TWIPS + depth * RT_INDENT_TWIPS_PER_DEPTH },
+        children: runs,
+        ...shading,
+      }),
+    )
+  }
+
+  if (content?.footnote) {
+    push([
+      new TextRun({
+        text: content.footnote,
+        size: BODY_SIZE - 8,
+        italics: true,
+        color: colorOf('666666'),
+      }),
+    ])
+  }
+
+  out.push(...convertNote(content))
+  return out
+}
 
 function convertRichText(content, depthGlyphs, outlineNumbering = false, hidePrefix = false) {
   // The widget accepts two persisted shapes:

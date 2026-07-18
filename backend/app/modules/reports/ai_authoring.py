@@ -537,9 +537,124 @@ def _normalize_block(wtype: str, raw, props: dict, warnings: list[str], block_id
                 out["display_mode"] = raw["display_mode"]
         return _with_caption(out, raw)
 
+    if wtype == "card":
+        return _normalize_card(raw, warnings, block_id)
+
     # 그 외 위젯 — 설정이 있으면 느슨 보정(배열 래핑·키 별칭·숫자강제 등),
     # 없으면(파일/임베드) dict 만 그대로 통과.
     return _normalize_passthrough(wtype, raw, warnings, block_id)
+
+
+# 카드 — LLM 이 자주 내는 느슨한 모양을 widget-v1 로 맞춘다(카드위젯_설계.md §4).
+# 일반 _PASSTHROUGH(키 별칭만)로는 부족한 이유: 문자열로 온 body/badge/stat 을
+# 객체로 펼쳐야 하고, accent/icon/variant 는 enum 이라 틀리면 저장이 통째로 거절된다.
+# 못 맞춘 값은 조용히 통과시키지 말고 **버리고 경고** — 스키마 거절보다 낫다.
+_CARD_TITLE_KEYS = ("title", "heading", "label", "name")
+_CARD_BODY_KEYS = ("body", "text", "desc", "description", "content")
+_CARD_TONE_GUESS = {
+    "완료": "success", "성공": "success", "정상": "success", "done": "success",
+    "주의": "warn", "경고": "warn", "지연": "warn", "위험": "warn",
+    "정보": "info", "진행": "info", "진행중": "info",
+}
+# "128건" / "12 %" / "3.5 배" → ("128", "건") 처럼 값과 단위를 가른다.
+_STAT_RE = re.compile(r"^\s*([+-]?[\d,]+(?:\.\d+)?)\s*(.*?)\s*$")
+
+
+def _normalize_card(raw, warnings: list[str], block_id: str):
+    from app.widgets.registry import (
+        _CARD_ICONS,
+        _CARD_VARIANTS,
+        _CARD_BADGE_TONES,
+        _COLOR_TOKENS,
+    )
+
+    # 문자열 하나만 오면 제목으로 본다("카드에 이 말을 넣어줘" 패턴).
+    if isinstance(raw, str):
+        return {"title": raw.strip()} if raw.strip() else None
+    if not isinstance(raw, dict):
+        warnings.append(f"{block_id}: 'card' content 형식 불일치 — 건너뜀")
+        return None
+
+    out: dict = {}
+
+    for k in _CARD_TITLE_KEYS:
+        if raw.get(k) and str(raw[k]).strip():
+            out["title"] = _strip_md(str(raw[k]).strip())
+            break
+
+    for k in _CARD_BODY_KEYS:
+        if k in raw and raw[k] not in (None, ""):
+            items = _norm_rich_items(raw[k])
+            if items:
+                out["body"] = {"items": items}
+            break
+
+    # enum 3종 — 틀린 값은 버리고 경고(그대로 두면 저장 전체가 422).
+    variant = raw.get("variant")
+    if variant is not None:
+        if variant in _CARD_VARIANTS:
+            out["variant"] = variant
+        else:
+            warnings.append(
+                f"{block_id}: card.variant '{variant}' 는 허용값이 아님"
+                f"({'/'.join(_CARD_VARIANTS)}) — 기본값 사용"
+            )
+
+    accent = raw.get("accent") or raw.get("color")
+    if accent is not None:
+        tok = str(accent).strip()
+        # 'rt-c-teal' 처럼 클래스명으로 주는 실수를 흔히 한다 — 접두사만 벗겨 살린다.
+        if tok.startswith("rt-c-"):
+            tok = tok[len("rt-c-"):]
+        if tok in _COLOR_TOKENS:
+            out["accent"] = tok
+        else:
+            warnings.append(
+                f"{block_id}: card.accent '{accent}' 는 색 토큰이 아님"
+                " (hex 불가 — 예: \"teal\") — 기본값 사용"
+            )
+
+    icon = raw.get("icon")
+    if icon is not None:
+        if icon in _CARD_ICONS:
+            out["icon"] = icon
+        else:
+            warnings.append(f"{block_id}: card.icon '{icon}' 는 허용 아이콘이 아님 — 생략")
+
+    # 배지 — 문자열이면 톤을 말뜻으로 추정한다("완료"→success).
+    badge = raw.get("badge")
+    if isinstance(badge, str) and badge.strip():
+        text = badge.strip()
+        out["badge"] = {"text": text[:40], "tone": _CARD_TONE_GUESS.get(text, "neutral")}
+    elif isinstance(badge, dict) and str(badge.get("text") or "").strip():
+        tone = badge.get("tone")
+        out["badge"] = {
+            "text": str(badge["text"]).strip()[:40],
+            "tone": tone if tone in _CARD_BADGE_TONES else "neutral",
+        }
+
+    # KPI — "128건" 한 덩어리로 오는 경우가 많아 값/단위를 가른다.
+    stat = raw.get("stat")
+    if isinstance(stat, (str, int, float)) and str(stat).strip():
+        m = _STAT_RE.match(str(stat))
+        if m:
+            out["stat"] = {"value": m.group(1)}
+            if m.group(2):
+                out["stat"]["unit"] = m.group(2)[:12]
+        else:
+            out["stat"] = {"value": str(stat).strip()[:24]}
+    elif isinstance(stat, dict) and stat.get("value") not in (None, ""):
+        out["stat"] = {"value": str(stat["value"])[:24]}
+        if stat.get("unit"):
+            out["stat"]["unit"] = str(stat["unit"])[:12]
+
+    for k, limit in (("eyebrow", 40), ("footnote", 300)):
+        if raw.get(k) and str(raw[k]).strip():
+            out[k] = str(raw[k]).strip()[:limit]
+
+    if not out and not _has_caption(raw):
+        return None
+    return _with_caption(out, raw)
 
 
 def _has_caption(raw) -> bool:
@@ -726,6 +841,9 @@ _LAYOUT_SPEC: dict[str, tuple[int, int]] = {
     "cad_3d": (12, 40),
     "quadrant": (6, 34),
     "sankey": (12, 40),
+    # 카드 — 한 줄에 3장(12/4) 나란히가 기본 용법. 고정 높이(NO_AUTOFIT)라
+    # row_span 이 실제 높이가 된다. 프런트 widgetBuilder 의 {4, 4}와 같은 비율.
+    "card": (4, 16),
 }
 _LAYOUT_DEFAULT = (12, 28)
 

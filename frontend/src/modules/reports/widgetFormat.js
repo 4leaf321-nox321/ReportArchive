@@ -106,6 +106,12 @@ const WIDGET_FORMAT_FIELDS = {
   milestone: { props: ['text_style'], content: [] },
   progress_bar: { props: ['text_style', 'default_max', 'unit'], content: [] },
   raci_matrix: { props: ['text_style'], content: [] },
+  // 카드는 '겉모습'이 곧 서식 — 표현형·색·아이콘까지 붓으로 옮긴다. 제목/본문/
+  // KPI 같은 내용 키는 제외(서식 복사가 내용을 덮어쓰면 안 됨).
+  card: {
+    props: ['default_variant', 'default_accent', 'icon_enabled', 'allow_stat'],
+    content: ['variant', 'accent', 'icon'],
+  },
 }
 
 // 매핑 없는 종류 — text_style(있으면) + 공통 색 토큰만. 데이터 키는 절대 없음.

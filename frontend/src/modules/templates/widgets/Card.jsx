@@ -233,7 +233,9 @@ export function CardEditor({ props, content, onChange, readOnly }) {
     <CaptionInput
       value={content?.caption ?? ''}
       onChange={(v) => patch({ caption: v })}
-      placeholder="카드 제목(선택)"
+      // 위젯 공통 머리글(색 상자 **바깥**). 카드 안 제목(content.title)과 헷갈리지
+      // 않게 다른 위젯과 같은 규약(props.label)만 띄운다.
+      placeholder={props?.label ?? '카드'}
       readOnly={readOnly}
       color={content?.caption_color}
       {...captionSkipProps({ content, patch })}
@@ -268,8 +270,9 @@ export function CardEditor({ props, content, onChange, readOnly }) {
               <input
                 value={eyebrow}
                 onChange={(e) => patch({ eyebrow: e.target.value || undefined })}
-                placeholder="①"
-                className="w-24 bg-transparent text-[11px] font-semibold uppercase tracking-wide outline-none placeholder:font-normal placeholder:normal-case placeholder:text-muted-foreground/60"
+                placeholder="말머리(선택)"
+                title="제목 위에 붙는 작은 라벨 — 번호(①)나 분류명(STEP 1, 요약 등)에 씁니다."
+                className="w-28 bg-transparent text-[11px] font-semibold uppercase tracking-wide outline-none placeholder:font-normal placeholder:normal-case placeholder:text-muted-foreground/60"
                 style={{ color: accentColor }}
               />
             )}
@@ -296,7 +299,8 @@ export function CardEditor({ props, content, onChange, readOnly }) {
             <input
               value={title}
               onChange={(e) => patch({ title: e.target.value || undefined })}
-              placeholder="제목"
+              placeholder="카드 제목"
+              title="색 상자 안에 크게 들어가는 제목. 상자 바깥 머리글은 위쪽 헤더 칸입니다."
               className="min-w-0 flex-1 bg-transparent text-base font-semibold leading-tight outline-none placeholder:font-normal placeholder:text-muted-foreground/60"
             />
           )}
@@ -428,11 +432,18 @@ function CardBody({ items, readOnly, solid, onChange }) {
             className="flex items-start gap-1.5 text-sm"
             style={{ paddingLeft: `${depth * 12}px` }}
           >
+            {/* 글머리 기호 — 편집 중 **빈 줄**에는 띄우지 않는다. 아무것도 안 쓴
+                칸 옆의 ■ 는 "이게 뭐지?" 만 유발하고 알려주는 게 없다. 첫 글자를
+                치는 순간 나타나 목록임을 알린다(자리는 미리 비워 둬 안 밀린다). */}
             <span
-              className={cn('mt-[3px] shrink-0 text-[10px]', !solid && 'text-muted-foreground', solid && 'opacity-70')}
+              className={cn(
+                'mt-[3px] w-3 shrink-0 text-[10px]',
+                !solid && 'text-muted-foreground',
+                solid && 'opacity-70',
+              )}
               aria-hidden="true"
             >
-              {DEPTH_PREFIX[depth]}
+              {readOnly || (item.text ?? '').trim() !== '' ? DEPTH_PREFIX[depth] : ''}
             </span>
             {readOnly ? (
               <span
@@ -444,7 +455,8 @@ function CardBody({ items, readOnly, solid, onChange }) {
               <RichTextRowEditor
                 ref={(el) => { editorRefs.current[i] = el }}
                 html={item.html || escapeText(item.text)}
-                placeholder="내용"
+                // 첫 줄에만 조작법을 알려 준다(모든 줄에 띄우면 시끄럽다).
+                placeholder={i === 0 ? '내용 — Enter 로 줄 추가, Tab 으로 들여쓰기' : '내용'}
                 className="min-w-0 flex-1"
                 onChange={(html, text) =>
                   setRow(i, { html: _richIsEmpty(html) ? undefined : html, text: text ?? '' })

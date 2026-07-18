@@ -858,10 +858,26 @@ def _is_flat_layout(blocks: list[dict]) -> bool:
     return True
 
 
+def _layout_for(block: dict, content: dict | None) -> tuple[int, int]:
+    """블록 → (col_span, row_span). 기본은 타입별 휴리스틱(_LAYOUT_SPEC)이지만,
+    같은 타입이라도 모양이 달라지는 경우는 content 를 봐야 한다.
+
+    카드의 `banner` variant 가 그렇다 — "가로 강조 띠"라 전폭이어야 의미가 있는데,
+    타입만 보면 일반 카드와 같은 4칸(한 줄 3장)이 잡혀 띠가 아니라 작은 상자가 된다."""
+    wtype = block.get("type")
+    if wtype == "card":
+        c = (content or {}).get(block.get("id")) or {}
+        variant = c.get("variant") or (block.get("props") or {}).get("default_variant")
+        if variant == "banner":
+            return (_GRID_COLS, 6)
+    return _LAYOUT_SPEC.get(wtype, _LAYOUT_DEFAULT)
+
+
 def auto_layout(
     template_schema: dict,
     include_ids: list[str] | None = None,
     extra_blocks: list[dict] | None = None,
+    content: dict | None = None,
 ) -> dict:
     """템플릿 블록(+AI 가 추가한 extra 블록)을 위젯 타입별 크기 휴리스틱으로 12칸
     그리드에 매거진식 재배치한 layout_overrides({block_id: {row, col_span, row_span}}).
@@ -869,7 +885,9 @@ def auto_layout(
 
     - include_ids: 주면 그 id 의 템플릿 블록만 배치(=AI 가 채운 것만 보일 때). None=전부.
     - extra_blocks: AI 가 직접 정의해 추가한 블록들([{id, type, ...}]). 템플릿 블록
-      뒤에 같은 규칙으로 흐른다. 빈 템플릿이어도 이걸로 레이아웃이 만들어진다."""
+      뒤에 같은 규칙으로 흐른다. 빈 템플릿이어도 이걸로 레이아웃이 만들어진다.
+    - content: 정규화된 블록 내용({block_id: content}). 타입만으론 크기가 안 정해지는
+      위젯(카드 banner=전폭)에 쓴다. 없으면 타입 휴리스틱만 적용."""
     tpl = [
         b
         for b in (template_schema.get("blocks") or [])
@@ -887,7 +905,7 @@ def auto_layout(
     row = 1
     used = 0
     for b in blocks:
-        span, height = _LAYOUT_SPEC.get(b.get("type"), _LAYOUT_DEFAULT)
+        span, height = _layout_for(b, content)
         span = max(1, min(_GRID_COLS, span))
         if used + span > _GRID_COLS:
             row += 1

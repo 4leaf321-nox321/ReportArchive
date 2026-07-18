@@ -167,3 +167,38 @@ def test_card_ai_stat_string_split_into_value_unit():
 def test_card_ai_empty_input_returns_none():
     out, _ = _norm({})
     assert out is None
+
+
+def test_card_banner_gets_full_width_layout():
+    """banner 는 '가로 강조 띠' — 타입 휴리스틱(4칸)대로 두면 띠가 아니라 작은 상자가 된다.
+
+    같은 card 타입이라도 variant 에 따라 폭이 달라져야 하므로 auto_layout 이
+    content 를 본다. 일반 카드는 그대로 4칸(한 줄 3장).
+    """
+    from app.modules.reports.ai_authoring import auto_layout
+
+    schema = {"blocks": [], "version": "widget-v1"}
+    extra = [
+        {"id": "b", "type": "card"},
+        {"id": "c1", "type": "card"},
+    ]
+    content = {"b": {"variant": "banner"}, "c1": {"variant": "soft"}}
+    out = auto_layout(schema, include_ids=[], extra_blocks=extra, content=content)
+    assert out["b"]["col_span"] == 12, out["b"]
+    assert out["c1"]["col_span"] == 4, out["c1"]
+    # content 를 안 주면 타입 휴리스틱으로만 — 기존 동작 유지(하위호환).
+    out2 = auto_layout(schema, include_ids=[], extra_blocks=extra)
+    assert out2["b"]["col_span"] == 4
+
+
+def test_card_banner_from_template_default_variant():
+    """variant 를 content 에 안 쓰고 템플릿 기본값으로 둔 경우도 전폭이어야 한다."""
+    from app.modules.reports.ai_authoring import auto_layout
+
+    out = auto_layout(
+        {"blocks": [], "version": "widget-v1"},
+        include_ids=[],
+        extra_blocks=[{"id": "b", "type": "card", "props": {"default_variant": "banner"}}],
+        content={},
+    )
+    assert out["b"]["col_span"] == 12

@@ -16,6 +16,9 @@ admin)·id 3(seeded manager)를 하드코딩하는데, 현재 시드는 id 1(adm
 """
 from __future__ import annotations
 
+import os
+import sys
+
 import pytest
 
 from app.database import SessionLocal
@@ -159,3 +162,38 @@ def _restore_app_settings() -> None:
         store.invalidate()
     finally:
         db.close()
+
+
+# --------------------------------------------------------------------------- #
+# 진단용 HTTP 로깅 (옵트인)                                                     #
+#                                                                              #
+# 왜 있나 — 전체 스위트를 돌리면 **가끔**(경험상 ~15%) 서로 다른 테스트가 몇 건씩   #
+# `KeyError: 'data'` 로 깨진다. 성공 응답 대신 오류 응답이 온 것인데, 정작 **본문을 #
+# 못 봐서** 원인을 못 밝혔다(재현이 어렵고 조용한 환경에선 잘 안 난다).            #
+# 실패한 요청은 전부 관리자 토큰(user 2)으로 낸 것이었다는 것까지가 지금 아는 전부. #
+#                                                                              #
+# 그래서 다음 재발 때 한 번에 잡도록 훅만 남겨 둔다:                               #
+#     RA_DEBUG_HTTP=1 pytest tests/ -q -s
+# ⚠️ `-s` 가 **필수**다 — 없으면 pytest 가 stderr 를 캡처해 로그가 안 보인다(실측).
+# 4xx/5xx 응답의 method·URL·본문(앞 300자)을 stderr 로 찍는다. 환경변수가 없으면    #
+# 아무것도 안 하므로 평소 실행 비용은 0.                                          #
+#                                                                              #
+# ⚠️ 401/403 을 **의도적으로 검사하는** 테스트도 있어 로그에 정상 4xx 가 섞인다.    #
+#    실패한 테스트 이름 근처의 줄을 보면 된다.                                     #
+#                                                                              #
+# (참고: 같은 flakiness 의 다른 원인 하나 — DB 저장 설정 오염 — 은 위 격리          #
+#  픽스처로 이미 해결됐다. 여기 남은 건 그것과 별개의 잔여 원인이다.)              #
+# --------------------------------------------------------------------------- #
+if os.environ.get("RA_DEBUG_HTTP"):
+    from starlette.testclient import TestClient as _TestClient
+
+    _orig_request = _TestClient.request
+
+    def _request_with_error_log(self, method, url, **kwargs):
+        res = _orig_request(self, method, url, **kwargs)
+        if res.status_code >= 400:
+            body = (res.text or "")[:300].replace("\n", " ")
+            print(f"\n[HTTP {res.status_code}] {method} {url} → {body}", file=sys.stderr)
+        return res
+
+    _TestClient.request = _request_with_error_log

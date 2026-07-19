@@ -46,6 +46,12 @@ import {
   tokenFromHlClassName,
 } from '@/shared/text-color'
 import { blockRefKey, outlineNumbers } from '@/shared/reports/blockNumbering'
+import {
+  cardAccent,
+  cardIsSolid,
+  cardVariant,
+  cardsOf,
+} from '@/modules/templates/widgets/cardModel'
 // rt-c-{token} 클래스(현재 색 저장 형식) → 라이트모드 hex(swatch). DOCX 는
 // 문서(밝은 배경)라 라이트 hex 가 적절. walkInline 이 클래스 색을 이걸로 매핑.
 // `기본`(no-color) 토큰은 token=null·swatch=null 이라 매핑에서 제외해야 한다 —
@@ -646,12 +652,23 @@ const CARD_BADGE_TONE_TOKEN = {
   neutral: 'gray',
 }
 
+/** 카드 위젯 = 카드 N 장. Word 엔 격자 배치 수단이 마땅치 않아 **세로로 이어서**
+ *  낸다(화면은 가로 타일, 문서는 위에서 아래로). 장 사이는 빈 문단 한 줄로 띄운다. */
 function convertCard(props, content) {
-  const variant =
-    content?.variant ?? props?.default_variant ?? 'soft'
-  const accent =
-    content?.accent ?? props?.default_accent ?? 'slate'
-  const solid = variant === 'filled' || variant === 'banner'
+  const cards = cardsOf(content)
+  const out = []
+  cards.forEach((card, i) => {
+    if (i > 0) out.push(new Paragraph({ children: [] }))
+    out.push(...convertCardTile(props, content, card))
+  })
+  out.push(...convertNote(content))
+  return out
+}
+
+function convertCardTile(props, content, card) {
+  const variant = cardVariant(card, content, props)
+  const accent = cardAccent(card, content, props)
+  const solid = cardIsSolid(variant)
   // 솔리드는 진한 악센트 + 대비 글자색, 그 외는 옅은 틴트 + 기본 글자색.
   const fill = solid ? bandBgHex(accent) : highlightHex(accent)
   const fg = solid ? bandTextHex(accent) : null
@@ -668,21 +685,21 @@ function convertCard(props, content) {
 
   // 머리줄 — eyebrow / 배지. 한 줄에 합쳐 낸다(Word 엔 우측 정렬 배지가 없으므로).
   const headRuns = []
-  if (content?.eyebrow) {
+  if (card?.eyebrow) {
     headRuns.push(
       new TextRun({
-        text: content.eyebrow,
+        text: card.eyebrow,
         bold: true,
         size: BODY_SIZE - 6,
         color: colorOf(bandBgHex(accent) || '666666'),
       }),
     )
   }
-  if (content?.badge?.text) {
-    const toneTok = CARD_BADGE_TONE_TOKEN[content.badge.tone] ?? 'gray'
+  if (card?.badge?.text) {
+    const toneTok = CARD_BADGE_TONE_TOKEN[card.badge.tone] ?? 'gray'
     headRuns.push(
       new TextRun({
-        text: `${headRuns.length ? '   ' : ''}[${content.badge.text}]`,
+        text: `${headRuns.length ? '   ' : ''}[${card.badge.text}]`,
         bold: true,
         size: BODY_SIZE - 6,
         color: colorOf(bandBgHex(toneTok) || '666666'),
@@ -692,10 +709,10 @@ function convertCard(props, content) {
   push(headRuns)
 
   // 제목. 아이콘은 Word 에 그릴 수단이 없어 생략한다(화면·PPT 에만 나온다).
-  if (content?.title) {
+  if (card?.title) {
     push([
       new TextRun({
-        text: content.title,
+        text: card.title,
         bold: true,
         size: TITLE_SIZE,
         color: colorOf('000000'),
@@ -704,7 +721,7 @@ function convertCard(props, content) {
   }
 
   // KPI 숫자 — 큰 글씨 + 단위.
-  const statValue = content?.stat?.value
+  const statValue = card?.stat?.value
   if (statValue != null && String(statValue) !== '') {
     const runs = [
       new TextRun({
@@ -714,10 +731,10 @@ function convertCard(props, content) {
         color: colorOf('000000'),
       }),
     ]
-    if (content.stat.unit) {
+    if (card.stat.unit) {
       runs.push(
         new TextRun({
-          text: ` ${content.stat.unit}`,
+          text: ` ${card.stat.unit}`,
           size: BODY_SIZE,
           color: colorOf('666666'),
         }),
@@ -727,7 +744,7 @@ function convertCard(props, content) {
   }
 
   // 본문 — 긴 글과 같은 개요 항목(글리프 + 깊이 들여쓰기).
-  const items = Array.isArray(content?.body?.items) ? content.body.items : []
+  const items = Array.isArray(card?.body?.items) ? card.body.items : []
   for (const it of items) {
     const depth = clamp(it?.depth ?? 0, 0, 5)
     const runs = htmlToTextRuns(it?.html, it?.text ?? '')
@@ -748,10 +765,10 @@ function convertCard(props, content) {
     )
   }
 
-  if (content?.footnote) {
+  if (card?.footnote) {
     push([
       new TextRun({
-        text: content.footnote,
+        text: card.footnote,
         size: BODY_SIZE - 8,
         italics: true,
         color: colorOf('666666'),
@@ -759,7 +776,6 @@ function convertCard(props, content) {
     ])
   }
 
-  out.push(...convertNote(content))
   return out
 }
 

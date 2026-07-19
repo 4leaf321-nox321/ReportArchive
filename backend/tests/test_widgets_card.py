@@ -27,14 +27,38 @@ def test_card_registered_and_not_numbered():
     assert REF_CATEGORY_BY_TYPE["card"] is None
 
 
-def test_card_minimal_and_full_content_validate():
+def test_card_set_of_cards_validates():
+    """위젯 하나가 카드 여러 장을 담는다 — 세트 공통 표현형/색 + cards 배열."""
     schema = _schema()
-    # 초안 상태 — 제목만. 필수 필드가 없어야 한다.
-    validate({"title": "연결 탐색"}, schema)
-    # 빈 카드도 저장 가능(작성 시작 직후).
-    validate({}, schema)
+    validate({}, schema)  # 빈 위젯(작성 시작 직후)
+    validate(
+        {
+            "variant": "soft",
+            "accent": "blue",
+            "columns": 3,
+            "cards": [
+                {"title": "등록 보고서", "stat": {"value": "1,284", "unit": "건"}},
+                {"title": "완료 과제", "badge": {"text": "완료", "tone": "success"}},
+                {
+                    "title": "연결 탐색",
+                    "icon": "network",
+                    "eyebrow": "①",
+                    "body": {"items": [{"depth": 0, "text": "관련 시험 즉시 연계"}]},
+                    # 장별 덮어쓰기 — 이 장만 진한 배경.
+                    "variant": "filled",
+                    "accent": "teal",
+                    "footnote": "2026-07 기준",
+                },
+            ],
+            "caption": "요약",
+            "caption_position": "below",
+        },
+        schema,
+    )
 
-    # 전체 필드.
+
+def test_card_legacy_single_card_still_validates():
+    """`cards` 도입 전에 저장된 보고서(카드 필드가 최상위)가 계속 열려야 한다."""
     validate(
         {
             "variant": "filled",
@@ -46,11 +70,18 @@ def test_card_minimal_and_full_content_validate():
             "badge": {"text": "완료", "tone": "success"},
             "stat": {"value": "128", "unit": "건"},
             "footnote": "2026-07 기준",
-            "caption": "요약",
-            "caption_position": "below",
         },
-        schema,
+        _schema(),
     )
+
+
+def test_card_columns_range_enforced():
+    schema = _schema()
+    validate({"columns": 4}, schema)
+    with pytest.raises(ValidationError):
+        validate({"columns": 5}, schema)
+    with pytest.raises(ValidationError):
+        validate({"columns": 0}, schema)
 
 
 @pytest.mark.parametrize("variant", ["soft", "outline", "filled", "banner"])
@@ -64,6 +95,11 @@ def test_card_rejects_unknown_variant_and_tone():
         validate({"variant": "glass"}, schema)
     with pytest.raises(ValidationError):
         validate({"badge": {"text": "x", "tone": "danger"}}, schema)
+    # 카드 배열 안에서도 같은 규칙이 적용돼야 한다.
+    with pytest.raises(ValidationError):
+        validate({"cards": [{"variant": "glass"}]}, schema)
+    with pytest.raises(ValidationError):
+        validate({"cards": [{"icon": "rocket"}]}, schema)
 
 
 def test_card_accent_is_bare_token_not_class():
@@ -123,14 +159,32 @@ def _norm(raw):
 
 def test_card_ai_bare_string_becomes_title():
     out, _ = _norm("연결 탐색")
-    assert out == {"title": "연결 탐색"}
+    assert out == {"cards": [{"title": "연결 탐색"}]}
+
+
+def test_card_ai_list_becomes_multiple_cards():
+    """LLM 이 "카드 3장"을 리스트로 주는 게 가장 자연스럽다 — 그대로 N 장이 돼야."""
+    out, _ = _norm(["첫째", "둘째", {"title": "셋째", "icon": "target"}])
+    assert [c["title"] for c in out["cards"]] == ["첫째", "둘째", "셋째"]
+    assert out["cards"][2]["icon"] == "target"
+
+
+def test_card_ai_set_common_style_kept_out_of_cards():
+    """표현형·색·열은 세트 공통 — 장마다 복사되면 안 된다."""
+    out, _ = _norm(
+        {"variant": "filled", "accent": "teal", "columns": 2,
+         "cards": [{"title": "A"}, {"title": "B"}]}
+    )
+    assert out["variant"] == "filled" and out["accent"] == "teal" and out["columns"] == 2
+    assert all("variant" not in c and "accent" not in c for c in out["cards"])
 
 
 def test_card_ai_key_aliases():
     out, _ = _norm({"heading": "연결 탐색", "text": "관련 시험 즉시 연계", "color": "teal"})
-    assert out["title"] == "연결 탐색"
-    assert out["accent"] == "teal"
-    assert out["body"]["items"][0]["text"] == "관련 시험 즉시 연계"
+    card = out["cards"][0]
+    assert card["title"] == "연결 탐색"
+    assert out["accent"] == "teal"            # 색은 세트 공통으로
+    assert card["body"]["items"][0]["text"] == "관련 시험 즉시 연계"
 
 
 def test_card_ai_class_prefixed_accent_is_salvaged():
@@ -145,23 +199,25 @@ def test_card_ai_bad_enums_dropped_with_warning():
         {"title": "x", "variant": "glass", "accent": "#0d9488", "icon": "rocket"}
     )
     # 스키마를 깨뜨리는 대신 버리고 경고 — 저장 전체가 422 되는 것보다 낫다.
-    assert "variant" not in out and "accent" not in out and "icon" not in out
-    assert len(warnings) == 3
+    assert "variant" not in out and "accent" not in out
+    assert "icon" not in out["cards"][0]
+    # 잘못된 값 3개 → 경고 정확히 3개(세트/장에서 중복 해석하면 5개가 된다).
+    assert len(warnings) == 3, warnings
 
 
 def test_card_ai_badge_string_infers_tone():
     out, _ = _norm({"title": "x", "badge": "완료"})
-    assert out["badge"] == {"text": "완료", "tone": "success"}
+    assert out["cards"][0]["badge"] == {"text": "완료", "tone": "success"}
     out2, _ = _norm({"title": "x", "badge": "알수없는말"})
-    assert out2["badge"]["tone"] == "neutral"
+    assert out2["cards"][0]["badge"]["tone"] == "neutral"
 
 
 def test_card_ai_stat_string_split_into_value_unit():
     out, _ = _norm({"title": "x", "stat": "128건"})
-    assert out["stat"] == {"value": "128", "unit": "건"}
+    assert out["cards"][0]["stat"] == {"value": "128", "unit": "건"}
     # 숫자만 오면 단위 없음.
     out2, _ = _norm({"title": "x", "stat": 42})
-    assert out2["stat"] == {"value": "42"}
+    assert out2["cards"][0]["stat"] == {"value": "42"}
 
 
 def test_card_ai_empty_input_returns_none():
@@ -169,36 +225,13 @@ def test_card_ai_empty_input_returns_none():
     assert out is None
 
 
-def test_card_banner_gets_full_width_layout():
-    """banner 는 '가로 강조 띠' — 타입 휴리스틱(4칸)대로 두면 띠가 아니라 작은 상자가 된다.
-
-    같은 card 타입이라도 variant 에 따라 폭이 달라져야 하므로 auto_layout 이
-    content 를 본다. 일반 카드는 그대로 4칸(한 줄 3장).
-    """
-    from app.modules.reports.ai_authoring import auto_layout
-
-    schema = {"blocks": [], "version": "widget-v1"}
-    extra = [
-        {"id": "b", "type": "card"},
-        {"id": "c1", "type": "card"},
-    ]
-    content = {"b": {"variant": "banner"}, "c1": {"variant": "soft"}}
-    out = auto_layout(schema, include_ids=[], extra_blocks=extra, content=content)
-    assert out["b"]["col_span"] == 12, out["b"]
-    assert out["c1"]["col_span"] == 4, out["c1"]
-    # content 를 안 주면 타입 휴리스틱으로만 — 기존 동작 유지(하위호환).
-    out2 = auto_layout(schema, include_ids=[], extra_blocks=extra)
-    assert out2["b"]["col_span"] == 4
-
-
-def test_card_banner_from_template_default_variant():
-    """variant 를 content 에 안 쓰고 템플릿 기본값으로 둔 경우도 전폭이어야 한다."""
+def test_card_layout_is_full_width():
+    """카드 위젯 하나가 격자를 담으므로 자동 배치는 항상 전폭이어야 한다."""
     from app.modules.reports.ai_authoring import auto_layout
 
     out = auto_layout(
         {"blocks": [], "version": "widget-v1"},
         include_ids=[],
-        extra_blocks=[{"id": "b", "type": "card", "props": {"default_variant": "banner"}}],
-        content={},
+        extra_blocks=[{"id": "c", "type": "card"}],
     )
-    assert out["b"]["col_span"] == 12
+    assert out["c"]["col_span"] == 12

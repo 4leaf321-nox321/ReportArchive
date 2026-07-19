@@ -607,8 +607,7 @@ def _build_ai_page(
     rendered = set(blocks_order)
     layout_overrides = (
         ai_authoring.auto_layout(
-            template.schema, include_ids=filled_tpl_ids, extra_blocks=extra_defs,
-            content=content,
+            template.schema, include_ids=filled_tpl_ids, extra_blocks=extra_defs
         )
         or None
     )
@@ -702,8 +701,7 @@ def _merge_ai_page(
         blocks_order = new_order
         layout_overrides = (
             ai_authoring.auto_layout(
-                template.schema, include_ids=filled_tpl_ids, extra_blocks=extra_defs,
-                content=content,
+                template.schema, include_ids=filled_tpl_ids, extra_blocks=extra_defs
             )
             or None
         )

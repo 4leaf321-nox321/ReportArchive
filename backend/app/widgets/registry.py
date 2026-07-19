@@ -897,6 +897,51 @@ _CARD_VARIANTS = ["soft", "outline", "filled", "banner"]
 _CARD_BADGE_TONES = ["success", "info", "warn", "neutral"]
 
 
+# 카드 한 장의 필드. 위젯 하나가 이런 카드를 **여러 장** 담는다(content.cards) —
+# 타일 그리드가 카드의 주 용법이라, 블록을 N 개 만들어 폭을 맞추는 대신 위젯 하나가
+# 격자를 갖는다. variant/accent 는 장마다 덮어쓸 수 있지만, 보통은 세트 공통값
+# (content 최상위)을 쓰고 여기선 비워 둔다.
+_CARD_ITEM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "variant": {"type": "string", "enum": _CARD_VARIANTS},
+        # ⚠️ 저장값은 접두사 없는 토큰("teal") — 렌더 시 rt-c-/rt-bg- 를 붙인다.
+        "accent": _COLOR_TOKEN_FIELD,
+        "icon": _CARD_ICON_FIELD,
+        # 제목 위 소라벨(①, "STEP 1", 분류명 등). 짧게.
+        "eyebrow": {"type": "string", "maxLength": 40},
+        "title": {"type": "string", "maxLength": 200},
+        # 본문 — 긴 글과 같은 개요 형식(렌더러·export 공유).
+        "body": {
+            "type": "object",
+            "properties": {
+                "items": {"type": "array", "items": _OUTLINE_ITEM_SCHEMA},
+            },
+            "additionalProperties": False,
+        },
+        "badge": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "maxLength": 40},
+                "tone": {"type": "string", "enum": _CARD_BADGE_TONES},
+            },
+            "additionalProperties": False,
+        },
+        # 있으면 KPI 타일로 렌더(큰 숫자 + 단위, title 이 라벨 역할).
+        "stat": {
+            "type": "object",
+            "properties": {
+                "value": {"type": "string", "maxLength": 24},
+                "unit": {"type": "string", "maxLength": 12},
+            },
+            "additionalProperties": False,
+        },
+        "footnote": {"type": "string", "maxLength": 300},
+    },
+    "additionalProperties": False,
+}
+
+
 def _card_content(props: dict) -> dict:
     return {
         "type": "object",
@@ -909,40 +954,23 @@ def _card_content(props: dict) -> dict:
             "note": _NOTE_FIELD,
             "note_color": _COLOR_TOKEN_FIELD,
             "note_html": _NOTE_HTML_FIELD,
-            # 표현형·악센트 — 없으면 props 기본값(default_variant/default_accent).
+            # ── 세트 공통 ──────────────────────────────────────────────
+            # 표현형·악센트를 여기서 한 번 정하면 모든 장에 적용된다(장별 덮어쓰기 가능).
+            # 없으면 props 기본값(default_variant/default_accent).
             "variant": {"type": "string", "enum": _CARD_VARIANTS},
-            # ⚠️ 저장값은 접두사 없는 토큰("teal") — 렌더 시 rt-c-/rt-bg- 를 붙인다.
             "accent": _COLOR_TOKEN_FIELD,
-            "icon": _CARD_ICON_FIELD,
-            # 제목 위 소라벨(①, "STEP 1", 분류명 등). 짧게.
-            "eyebrow": {"type": "string", "maxLength": 40},
-            "title": {"type": "string", "maxLength": 200},
-            # 본문 — 긴 글과 같은 개요 형식(렌더러·export 공유).
-            "body": {
-                "type": "object",
-                "properties": {
-                    "items": {"type": "array", "items": _OUTLINE_ITEM_SCHEMA},
-                },
-                "additionalProperties": False,
+            # 한 줄에 몇 장을 놓을지. 없으면 프론트가 장수에 맞춰 정한다(최대 4열).
+            "columns": {"type": "integer", "minimum": 1, "maximum": 4},
+            "cards": {"type": "array", "items": _CARD_ITEM_SCHEMA},
+            # ── 레거시(단일 카드) ──────────────────────────────────────
+            # `cards` 도입 이전에 저장된 보고서는 카드 필드가 content 최상위에 있다.
+            # 읽을 때 "cards 가 없으면 최상위를 1 장으로" 해석해 계속 열리게 한다.
+            # 새로 저장하면 cards 로 옮겨 적히므로 시간이 지나면 자연히 사라진다.
+            **{
+                k: v
+                for k, v in _CARD_ITEM_SCHEMA["properties"].items()
+                if k not in ("variant", "accent")  # 이 둘은 위에서 세트 공통으로 이미 정의
             },
-            "badge": {
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "maxLength": 40},
-                    "tone": {"type": "string", "enum": _CARD_BADGE_TONES},
-                },
-                "additionalProperties": False,
-            },
-            # 있으면 KPI 타일로 렌더(큰 숫자 + 단위, title 이 라벨 역할).
-            "stat": {
-                "type": "object",
-                "properties": {
-                    "value": {"type": "string", "maxLength": 24},
-                    "unit": {"type": "string", "maxLength": 12},
-                },
-                "additionalProperties": False,
-            },
-            "footnote": {"type": "string", "maxLength": 300},
         },
         # 초안 상태에서 제목만 있고 본문이 비어도 저장되게 — 필수 필드 없음.
         "additionalProperties": False,

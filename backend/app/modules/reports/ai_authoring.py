@@ -561,18 +561,102 @@ _STAT_RE = re.compile(r"^\s*([+-]?[\d,]+(?:\.\d+)?)\s*(.*?)\s*$")
 
 
 def _normalize_card(raw, warnings: list[str], block_id: str):
+    """카드 위젯 = 카드 **여러 장**(content.cards). 받아들이는 느슨한 모양:
+
+      "문자열"                     → 카드 1 장(제목)
+      ["a", "b"]  /  [{...}, ...]  → 카드 N 장
+      {"cards": [...], ...}        → 그대로(세트 공통 variant/accent/columns 유지)
+      {"title": ..., ...}          → 카드 1 장(레거시 단일 카드 모양)
+    """
+    from app.widgets.registry import _CARD_VARIANTS, _COLOR_TOKENS
+
+    # 배열 → 카드 목록. LLM 이 "카드 3장"을 리스트로 주는 게 가장 자연스럽다.
+    if isinstance(raw, list):
+        cards = [c for c in (_normalize_card_item(x, warnings, block_id) for x in raw) if c]
+        return {"cards": cards} if cards else None
+
+    if isinstance(raw, str):
+        one = _normalize_card_item(raw, warnings, block_id)
+        return {"cards": [one]} if one else None
+
+    if not isinstance(raw, dict):
+        warnings.append(f"{block_id}: 'card' content 형식 불일치 — 건너뜀")
+        return None
+
+    out: dict = {}
+
+    # 세트 공통 — 표현형·색·열 수. 장마다 다시 정하지 않아도 되게 여기 둔다.
+    variant = raw.get("variant")
+    if variant is not None:
+        if variant in _CARD_VARIANTS:
+            out["variant"] = variant
+        else:
+            warnings.append(
+                f"{block_id}: card.variant '{variant}' 는 허용값이 아님"
+                f"({'/'.join(_CARD_VARIANTS)}) — 기본값 사용"
+            )
+    accent_tok = _card_accent_token(raw.get("accent") or raw.get("color"), warnings, block_id)
+    if accent_tok:
+        out["accent"] = accent_tok
+    cols = raw.get("columns")
+    if isinstance(cols, (int, float)) and not isinstance(cols, bool):
+        n = int(cols)
+        if 1 <= n <= 4:
+            out["columns"] = n
+        else:
+            warnings.append(f"{block_id}: card.columns 는 1~4 — {cols} 무시")
+
+    # 카드 목록. cards 가 있으면 그걸, 없으면 raw 자체를 단일 카드로 읽는다.
+    src = raw.get("cards")
+    if isinstance(src, list):
+        cards = [c for c in (_normalize_card_item(x, warnings, block_id) for x in src) if c]
+    else:
+        # 단일 카드 모양 — 세트 수준에서 이미 집어간 키(표현형·색·열)는 빼고 넘긴다.
+        # 안 그러면 같은 값을 두 번 해석해 경고도 두 번 난다.
+        item_raw = {
+            k: v for k, v in raw.items()
+            if k not in ("variant", "accent", "color", "columns")
+        }
+        one = _normalize_card_item(item_raw, warnings, block_id)
+        cards = [one] if one else []
+    if cards:
+        out["cards"] = cards
+
+    if not out and not _has_caption(raw):
+        return None
+    return _with_caption(out, raw)
+
+
+def _card_accent_token(accent, warnings: list[str], block_id: str):
+    """색 토큰 정규화 — 'rt-c-teal' 은 접두사만 벗겨 살리고, hex 등은 버리고 경고."""
+    from app.widgets.registry import _COLOR_TOKENS
+
+    if accent is None:
+        return None
+    tok = str(accent).strip()
+    if tok.startswith("rt-c-"):
+        tok = tok[len("rt-c-"):]
+    if tok in _COLOR_TOKENS:
+        return tok
+    warnings.append(
+        f"{block_id}: card.accent '{accent}' 는 색 토큰이 아님"
+        " (hex 불가 — 예: \"teal\") — 기본값 사용"
+    )
+    return None
+
+
+def _normalize_card_item(raw, warnings: list[str], block_id: str):
+    """카드 **한 장**. 못 맞춘 enum 은 통과시키지 말고 버리고 경고 — 스키마 거절보다 낫다."""
     from app.widgets.registry import (
         _CARD_ICONS,
         _CARD_VARIANTS,
         _CARD_BADGE_TONES,
-        _COLOR_TOKENS,
     )
 
     # 문자열 하나만 오면 제목으로 본다("카드에 이 말을 넣어줘" 패턴).
     if isinstance(raw, str):
-        return {"title": raw.strip()} if raw.strip() else None
+        return {"title": _strip_md(raw.strip())} if raw.strip() else None
     if not isinstance(raw, dict):
-        warnings.append(f"{block_id}: 'card' content 형식 불일치 — 건너뜀")
         return None
 
     out: dict = {}
@@ -600,19 +684,10 @@ def _normalize_card(raw, warnings: list[str], block_id: str):
                 f"({'/'.join(_CARD_VARIANTS)}) — 기본값 사용"
             )
 
-    accent = raw.get("accent") or raw.get("color")
-    if accent is not None:
-        tok = str(accent).strip()
-        # 'rt-c-teal' 처럼 클래스명으로 주는 실수를 흔히 한다 — 접두사만 벗겨 살린다.
-        if tok.startswith("rt-c-"):
-            tok = tok[len("rt-c-"):]
-        if tok in _COLOR_TOKENS:
-            out["accent"] = tok
-        else:
-            warnings.append(
-                f"{block_id}: card.accent '{accent}' 는 색 토큰이 아님"
-                " (hex 불가 — 예: \"teal\") — 기본값 사용"
-            )
+    # 장별 색 덮어쓰기(보통은 세트 공통을 쓰고 비워 둔다).
+    accent_tok = _card_accent_token(raw.get("accent") or raw.get("color"), warnings, block_id)
+    if accent_tok:
+        out["accent"] = accent_tok
 
     icon = raw.get("icon")
     if icon is not None:
@@ -652,9 +727,7 @@ def _normalize_card(raw, warnings: list[str], block_id: str):
         if raw.get(k) and str(raw[k]).strip():
             out[k] = str(raw[k]).strip()[:limit]
 
-    if not out and not _has_caption(raw):
-        return None
-    return _with_caption(out, raw)
+    return out or None
 
 
 def _has_caption(raw) -> bool:
@@ -841,9 +914,9 @@ _LAYOUT_SPEC: dict[str, tuple[int, int]] = {
     "cad_3d": (12, 40),
     "quadrant": (6, 34),
     "sankey": (12, 40),
-    # 카드 — 한 줄에 3장(12/4) 나란히가 기본 용법. 고정 높이(NO_AUTOFIT)라
-    # row_span 이 실제 높이가 된다. 프런트 widgetBuilder 의 {4, 4}와 같은 비율.
-    "card": (4, 16),
+    # 카드 — 위젯 하나가 카드 여러 장을 격자로 담으므로 **전폭**. 장수·열수는
+    # content(cards/columns)가 정한다. 고정 높이(NO_AUTOFIT)라 row_span 이 실제 높이.
+    "card": (12, 20),
 }
 _LAYOUT_DEFAULT = (12, 28)
 
@@ -858,26 +931,10 @@ def _is_flat_layout(blocks: list[dict]) -> bool:
     return True
 
 
-def _layout_for(block: dict, content: dict | None) -> tuple[int, int]:
-    """블록 → (col_span, row_span). 기본은 타입별 휴리스틱(_LAYOUT_SPEC)이지만,
-    같은 타입이라도 모양이 달라지는 경우는 content 를 봐야 한다.
-
-    카드의 `banner` variant 가 그렇다 — "가로 강조 띠"라 전폭이어야 의미가 있는데,
-    타입만 보면 일반 카드와 같은 4칸(한 줄 3장)이 잡혀 띠가 아니라 작은 상자가 된다."""
-    wtype = block.get("type")
-    if wtype == "card":
-        c = (content or {}).get(block.get("id")) or {}
-        variant = c.get("variant") or (block.get("props") or {}).get("default_variant")
-        if variant == "banner":
-            return (_GRID_COLS, 6)
-    return _LAYOUT_SPEC.get(wtype, _LAYOUT_DEFAULT)
-
-
 def auto_layout(
     template_schema: dict,
     include_ids: list[str] | None = None,
     extra_blocks: list[dict] | None = None,
-    content: dict | None = None,
 ) -> dict:
     """템플릿 블록(+AI 가 추가한 extra 블록)을 위젯 타입별 크기 휴리스틱으로 12칸
     그리드에 매거진식 재배치한 layout_overrides({block_id: {row, col_span, row_span}}).
@@ -886,8 +943,7 @@ def auto_layout(
     - include_ids: 주면 그 id 의 템플릿 블록만 배치(=AI 가 채운 것만 보일 때). None=전부.
     - extra_blocks: AI 가 직접 정의해 추가한 블록들([{id, type, ...}]). 템플릿 블록
       뒤에 같은 규칙으로 흐른다. 빈 템플릿이어도 이걸로 레이아웃이 만들어진다.
-    - content: 정규화된 블록 내용({block_id: content}). 타입만으론 크기가 안 정해지는
-      위젯(카드 banner=전폭)에 쓴다. 없으면 타입 휴리스틱만 적용."""
+"""
     tpl = [
         b
         for b in (template_schema.get("blocks") or [])
@@ -905,7 +961,7 @@ def auto_layout(
     row = 1
     used = 0
     for b in blocks:
-        span, height = _layout_for(b, content)
+        span, height = _LAYOUT_SPEC.get(b.get("type"), _LAYOUT_DEFAULT)
         span = max(1, min(_GRID_COLS, span))
         if used + span > _GRID_COLS:
             row += 1

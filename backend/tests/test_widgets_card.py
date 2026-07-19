@@ -264,3 +264,27 @@ def test_card_icon_allowlist_matches_frontend():
     only_front = sorted(set(front) - set(_CARD_ICONS))
     assert not only_back, f"백엔드에만 있는 아이콘(화면에 안 그려짐): {only_back}"
     assert not only_front, f"프론트에만 있는 아이콘(저장 422): {only_front}"
+
+
+def test_card_icon_labels_are_unique():
+    """한글 라벨이 겹치면 피커에서 같은 이름 둘이 나와 고를 수가 없다.
+
+    269종이라 손으로는 못 지킨다 — 라벨을 추가·수정할 때 여기서 잡는다.
+    """
+    import re
+    from pathlib import Path
+
+    js = (
+        Path(__file__).resolve().parents[2]
+        / "frontend/src/modules/templates/widgets/cardIcons.js"
+    )
+    if not js.exists():
+        pytest.skip("프론트 소스가 없는 환경 — 라벨 검사 생략")
+
+    pairs = re.findall(r"name: '([^']+)', label: '([^']+)'", js.read_text(encoding="utf-8"))
+    assert pairs, "cardIcons.js 파싱 실패"
+    seen: dict[str, list[str]] = {}
+    for name, label in pairs:
+        seen.setdefault(label, []).append(name)
+    dup = {lbl: ns for lbl, ns in seen.items() if len(ns) > 1}
+    assert not dup, f"한글 라벨 중복: {dup}"

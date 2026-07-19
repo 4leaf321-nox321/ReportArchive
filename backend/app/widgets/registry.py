@@ -877,37 +877,62 @@ FMEA: WidgetDescriptor = {
 _CARD_ICONS = [
     # 반도체·회로
     "cpu", "microchip", "circuit-board", "component", "memory", "binary", "puzzle",
+    "atom", "blocks", "hexagon", "grid", "spline", "waypoints",
     # 전원·전력
     "battery", "battery-charging", "battery-warning", "power", "plug", "plug-zap",
-    "zap", "bolt",
+    "zap", "bolt", "battery-full", "battery-medium", "battery-low", "power-off",
+    "zap-off", "fuel", "flashlight", "cable", "ethernet-port",
     # 통신·무선
     "wifi", "bluetooth", "nfc", "antenna", "signal", "radio", "radio-tower",
-    "satellite", "network", "share",
+    "satellite", "network", "share", "wifi-off", "wifi-high", "wifi-low", "signal-high",
+    "signal-low", "signal-zero", "bluetooth-connected", "bluetooth-searching", "router",
+    "satellite-dish", "radio-receiver", "rss",
     # 제품·기기
     "smartphone", "tablet", "laptop", "monitor", "tv", "camera", "mic", "speaker",
-    "headphones", "volume",
+    "headphones", "volume", "watch", "keyboard", "mouse", "printer", "projector",
+    "webcam", "joystick", "disc", "monitor-smartphone", "smartphone-charging",
+    "smartphone-nfc", "tablet-smartphone", "microwave", "refrigerator",
+    "washing-machine", "air-vent", "lamp",
     # 계측·시험
     "gauge", "thermometer", "fan", "snowflake", "flame", "droplet", "wind", "waves",
     "audio-waveform", "magnet", "radiation", "ruler", "scale", "timer", "radar", "scan",
-    "fingerprint", "microscope", "flask", "test-tube", "beaker",
+    "fingerprint", "microscope", "flask", "test-tube", "beaker", "syringe",
+    "test-tubes", "flask-round", "thermometer-snowflake", "thermometer-sun",
+    "scan-barcode", "scan-qr", "scan-line", "scan-eye", "scan-search",
+    "ruler-dimension", "gauge-circle", "timer-reset", "weight", "orbit", "aperture",
+    "focus",
     # 품질·판정
     "check-circle", "badge-check", "alert-triangle", "alert-circle", "bug", "shield",
     "shield-check", "shield-alert", "list-checks", "clipboard-check", "file-check",
-    "info", "eye",
+    "info", "eye", "check-check", "octagon-alert", "ban", "circle-slash", "shield-x",
+    "shield-off", "thumbs-up", "thumbs-down", "trophy", "medal", "star",
+    "bookmark-check", "list-todo", "triangle-dashed", "circle-help", "circle-dot",
     # 지표·성과
     "chart-column", "chart-line", "chart-pie", "trending-up", "trending-down",
-    "activity", "target", "flag", "award", "coins",
+    "activity", "target", "flag", "award", "coins", "chart-area", "chart-bar",
+    "chart-scatter", "chart-gantt", "chart-candlestick", "chart-network",
+    "chart-spline", "percent", "sigma", "calculator", "layout-dashboard", "table",
+    "kanban", "list-ordered", "trending-up-down", "banknote", "wallet", "receipt",
     # 생산·공급
     "factory", "warehouse", "container", "truck", "package", "boxes", "handshake",
-    "wrench", "hammer", "cog", "settings", "recycle", "leaf",
+    "wrench", "hammer", "cog", "settings", "recycle", "leaf", "forklift", "hard-hat",
+    "construction", "drill", "anvil", "archive", "package-check", "package-open",
+    "package-search", "truck-electric", "trash", "store", "shopping-cart", "barcode",
     # 데이터·SW
     "database", "server", "hard-drive", "cloud", "code", "terminal", "layers", "filter",
-    "search", "link", "lock",
+    "search", "link", "lock", "git-commit", "git-merge", "git-pull-request",
+    "file-code", "database-zap", "server-cog", "cloud-upload", "cloud-download",
+    "folder-git", "bug-play", "braces",
     # 일정·조직
     "workflow", "git-branch", "milestone", "clock", "calendar", "calendar-clock",
-    "history", "refresh", "users", "user", "building",
+    "history", "refresh", "users", "user", "building", "user-check", "user-plus",
+    "users-round", "briefcase", "presentation", "mail", "bell", "map-pin", "globe",
+    "contact", "id-card", "landmark",
     # 문서·기타
-    "file-text", "clipboard-list", "book", "lightbulb", "sparkles",
+    "file-text", "clipboard-list", "book", "lightbulb", "sparkles", "book-open",
+    "file-search", "file-plus", "files", "folder", "folder-open", "paperclip", "pin",
+    "quote", "pen-tool", "stamp", "languages", "table-of-contents", "notebook-pen",
+    "sticky-note", "highlighter", "signature", "scroll-text",
 ]
 _CARD_ICON_FIELD = {"type": "string", "enum": _CARD_ICONS}
 

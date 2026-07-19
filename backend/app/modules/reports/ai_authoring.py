@@ -346,7 +346,65 @@ def _normalize_passthrough(wtype: str, raw, warnings: list[str], block_id: str):
     return out or None
 
 
+# 코어 정규화기가 **이미 처리한** 키 — 되살리기가 다시 손대면 안 된다.
+# 두 부류가 섞여 있다:
+#   · 다른 자리로 옮긴 키(card: 레거시 최상위 카드 필드 → cards[]) — 되살리면 중복
+#   · 코어가 직접 검증하고 경고까지 낸 키(card: variant/accent/columns) — 되살리기가
+#     다시 검증하면 **같은 문제로 경고가 두 번** 난다
+_CORE_HANDLED_KEYS = {
+    "card": {
+        "icon", "eyebrow", "title", "body", "badge", "stat", "footnote",  # cards[] 로 이동
+        "variant", "accent", "columns",  # 코어가 검증·경고까지 끝냄
+    },
+}
+
+
 def _normalize_block(wtype: str, raw, props: dict, warnings: list[str], block_id: str):
+    """정규화 + **상세 설정 되살리기**.
+
+    전용 정규화기(heading·table·rich_text 등)는 out 을 새로 조립하는 화이트리스트라,
+    스키마엔 있는 상세 설정이 **조용히 사라졌다** — heading 의 level·bg_color(배경
+    밴드), table 의 bordered·note, 공통 caption_position 등. AI 도 사람도 실패를
+    모르는 게 가장 나빴다.
+
+    그래서 코어 정규화 뒤에, 입력에 있었지만 결과에 없는 **스키마 유효 키**를
+    per-property 검증을 통과하는 것만 되살리고, 통과 못 한 값은 버리되 warnings 로
+    알린다. 검증을 통과한 값만 넣으므로 이 되살리기가 스키마를 깨뜨릴 수 없다.
+    """
+    out = _normalize_block_core(wtype, raw, props, warnings, block_id)
+    if not isinstance(raw, dict) or not isinstance(out, dict):
+        return out
+    try:
+        desc = get_widget(wtype)
+    except ValueError:
+        return out
+    schema = desc["content_schema_for"](props or desc.get("default_props") or {})
+    allowed = (schema or {}).get("properties") or {}
+
+    handled = _CORE_HANDLED_KEYS.get(wtype, set())
+    # caption_skip_autofill 이 켜지면 caption 은 **일부러** 비운다(제목 행 제거).
+    skipped_caption = out.get("caption_skip_autofill") is True
+
+    from jsonschema import ValidationError as _VErr
+    from jsonschema import validate as _validate
+
+    for key, value in raw.items():
+        if key in out or key not in allowed or key in handled:
+            continue
+        if key == "caption" and skipped_caption:
+            continue
+        try:
+            _validate(value, allowed[key])
+        except _VErr as exc:
+            warnings.append(
+                f"{block_id}: '{wtype}.{key}' 값을 쓸 수 없어 무시합니다 — {exc.message}"
+            )
+            continue
+        out[key] = value
+    return out
+
+
+def _normalize_block_core(wtype: str, raw, props: dict, warnings: list[str], block_id: str):
     if wtype == "heading":
         text = raw if isinstance(raw, str) else (raw.get("text") if isinstance(raw, dict) else None)
         if not text or not str(text).strip():

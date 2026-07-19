@@ -128,3 +128,81 @@ def test_record_entity_id_is_not_taken_from_input():
 def test_record_widgets_reject_empty(wtype):
     out, _ = _norm(wtype, {})
     assert out is None
+
+
+# --------------------------------------------------------------------------- #
+# 상세 설정 보존 — 전용 정규화기가 화이트리스트라 조용히 버리던 것들              #
+# --------------------------------------------------------------------------- #
+def test_heading_detail_settings_survive():
+    """heading 은 text 만 남기고 level·배경밴드를 **조용히** 버렸다.
+
+    보고서 제목의 배경 밴드(bg_color)는 PPT 섹션 헤더용 기능인데, MCP 로는
+    설정할 방법이 아예 없었다. 경고조차 없어 AI 도 사람도 실패를 몰랐다.
+    """
+    out, warnings = _norm("heading", {
+        "text": "섹션 제목", "level": 1,
+        "bg_color": "teal", "bg_text": "white", "margin_bottom_px": 12,
+    })
+    assert out["level"] == 1
+    assert out["bg_color"] == "teal" and out["bg_text"] == "white"
+    assert out["margin_bottom_px"] == 12
+    assert not warnings
+
+
+def test_caption_position_survives_across_widgets():
+    """caption_position(제목 위/아래)은 어느 위젯에서도 설정할 수 없었다 —
+    공용 헬퍼가 caption 과 skip 플래그만 옮겼기 때문."""
+    for wtype, raw in [
+        ("rich_text", {"items": [{"depth": 0, "text": "본문"}]}),
+        ("bulleted_list", {"items": ["가", "나"]}),
+        ("table", {"rows": [{"a": "1"}]}),
+        ("pie", {"rows": [{"label": "A", "value": 1}]}),
+    ]:
+        out, _ = _norm(wtype, {**raw, "caption": "제목", "caption_position": "below"})
+        assert out.get("caption_position") == "below", f"{wtype} 에서 유실"
+
+
+def test_table_note_and_border_survive():
+    """note(※ 주석)는 서식이 아니라 **내용**이라 유실이 특히 나빴다."""
+    out, warnings = _norm("table", {
+        "rows": [{"a": "1"}], "note": "측정 조건 25℃",
+        "bordered": True, "border_width": 2, "border_color": "gray",
+    })
+    assert out["note"] == "측정 조건 25℃"
+    assert out["bordered"] is True and out["border_width"] == 2
+    assert not warnings
+
+
+def test_rich_text_numbering_flags_survive():
+    out, _ = _norm("rich_text", {
+        "items": [{"depth": 0, "text": "본문"}],
+        "outline_numbering": True, "hide_prefix": True,
+    })
+    assert out["outline_numbering"] is True and out["hide_prefix"] is True
+
+
+def test_invalid_detail_value_is_dropped_with_warning():
+    """되살리기는 per-property 검증을 통과한 값만 넣는다 — 스키마를 깨뜨릴 수 없다.
+    통과 못 한 값은 버리되 **조용히 버리지 않는다**(이게 원래 문제였다)."""
+    out, warnings = _norm("heading", {"text": "x", "level": 99, "bg_color": "#ff0000"})
+    assert "level" not in out and "bg_color" not in out
+    assert len(warnings) == 2
+    assert all("무시합니다" in w for w in warnings), warnings
+
+
+def test_caption_skip_still_clears_caption():
+    """caption_skip_autofill 이 켜지면 caption 을 **일부러** 비운다 —
+    되살리기가 그걸 되돌리면 안 된다."""
+    out, _ = _norm("table", {
+        "rows": [{"a": "1"}], "caption": "제목", "caption_skip_autofill": True,
+    })
+    assert out["caption_skip_autofill"] is True
+    assert "caption" not in out
+
+
+def test_card_legacy_fields_are_moved_not_restored():
+    """카드의 레거시 최상위 필드는 cards[] 로 **옮기는** 것이라 되살리면 중복된다."""
+    out, warnings = _norm("card", {"title": "연결 탐색", "icon": "cpu"})
+    assert out["cards"][0]["title"] == "연결 탐색"
+    assert "title" not in out and "icon" not in out
+    assert not warnings

@@ -5,17 +5,27 @@ import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Badge } from '@/shared/components/ui/badge'
 import { getAiSettings, updateAiSettings, resetAiSetting } from '@/shared/api/ai'
+import { getJobsHealth } from '@/shared/api/jobsAdmin'
 
 /**
  * "검색 튜닝" 탭 — 시스템 관리자 전용. AI 검색 임계·토글을 재시작 없이 바꾼다.
  * `.env` 는 기본값이고, 여기서 바꾸면 DB override(app_settings)가 우선한다.
  * 색인 시점 설정(requires_reindex)은 변경해도 기존 보고서엔 재색인해야 반영 →
  * "재색인 필요" 배지로 경고한다.
+ *
+ * LLM 이 필요한 설정(requires_llm)은 **연결 상태를 실제로 확인해** 경고한다.
+ * 코드의 가드는 `llm_backend != mock` 만 보므로 "백엔드는 설정됐는데 서버가 죽은"
+ * 경우를 못 거른다 — 그 상태로 켜면 질문이 LLM 타임아웃(120초)까지 매달리고,
+ * 에이전트 라우팅은 최대 6홉이라 훨씬 길어진다. 게다가 실패 시 일반 검색으로
+ * 물러나지 않고 502 로 나간다(agent_route 의 의도된 동작). 그래서 켜기 전에
+ * "지금 닿는가"를 보여 주는 게 중요하다. 헬스는 작업 큐 탭이 쓰는 것과 같은
+ * 엔드포인트(/api/jobs/admin/health)를 재사용한다.
  */
 export function SearchTuningTab() {
   const [rows, setRows] = useState(null) // null=loading
   const [draft, setDraft] = useState({}) // key -> 편집 중 값
   const [saving, setSaving] = useState(false)
+  const [llm, setLlm] = useState(null) // {backend, reachable} | null=확인 전
 
   const load = async () => {
     try {
@@ -28,7 +38,21 @@ export function SearchTuningTab() {
   }
   useEffect(() => {
     load()
+    // LLM 연결 확인 — 실패해도 화면은 정상 동작(경고만 생략).
+    getJobsHealth()
+      .then((h) => setLlm(h?.llm ?? null))
+      .catch(() => setLlm(null))
   }, [])
+
+  // 켜려는 항목 중 LLM 이 필요한 게 있는데 지금 LLM 이 안 닿으면 경고.
+  const llmDown = llm != null && !llm.reachable
+  const turningOnLlmFeature = useMemo(
+    () =>
+      (rows || []).some(
+        (r) => r.requires_llm && r.key in draft && draft[r.key] && !r.value,
+      ),
+    [rows, draft],
+  )
 
   // 편집값(draft) 우선, 없으면 서버값.
   const valueOf = (r) => (r.key in draft ? draft[r.key] : r.value)
@@ -117,6 +141,28 @@ export function SearchTuningTab() {
         </div>
       )}
 
+      {llmDown && (
+        <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            <b>지금 LLM 에 연결되지 않습니다</b>
+            {llm?.backend ? ` (백엔드: ${llm.backend})` : ''} — &ldquo;LLM 필요&rdquo;
+            표시된 설정을 켜면 그 기능을 쓰는 질문이 <b>응답 없이 멈추다 실패</b>합니다
+            (LLM 대기 최대 120초, 에이전트 라우팅은 여러 배). 연결을 먼저 확인하세요.
+          </span>
+        </div>
+      )}
+
+      {turningOnLlmFeature && llmDown && (
+        <div className="flex items-start gap-2 rounded-md border border-destructive bg-destructive/15 px-3 py-2 text-xs font-medium text-destructive">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            지금 켜려는 항목 중 <b>LLM 이 필요한 설정</b>이 있습니다. LLM 이 끊긴
+            상태라 저장하면 곧바로 검색 실패로 이어집니다.
+          </span>
+        </div>
+      )}
+
       {Object.entries(groups).map(([group, items]) => (
         <div key={group} className="space-y-2">
           <h3 className="text-sm font-semibold">{group}</h3>
@@ -132,6 +178,23 @@ export function SearchTuningTab() {
                         className="border-amber-400 text-amber-600"
                       >
                         재색인 필요
+                      </Badge>
+                    )}
+                    {r.requires_llm && (
+                      <Badge
+                        variant="outline"
+                        className={
+                          llmDown
+                            ? 'border-destructive text-destructive'
+                            : 'border-sky-400 text-sky-600'
+                        }
+                        title={
+                          llmDown
+                            ? '이 설정은 LLM 이 있어야 동작합니다 — 지금은 연결되지 않았습니다.'
+                            : '이 설정은 LLM 을 호출합니다.'
+                        }
+                      >
+                        LLM 필요{llmDown ? ' · 끊김' : ''}
                       </Badge>
                     )}
                     {r.overridden && (

@@ -3,7 +3,7 @@
 정책(합의):
 - `.env`(settings) = 기본값. app_settings 테이블에 override 가 있으면 그 값이 우선.
 - 노출 대상은 REGISTRY 로 **큐레이션**(범용 key-value 아님). 각 키에 타입·범위·
-  라벨·설명 + **재색인 필요 여부**(requires_reindex) 메타.
+  라벨·설명 + **재색인 필요 여부**(requires_reindex) · **LLM 필요 여부**(requires_llm) 메타.
 - get() 은 짧은 TTL 캐시로 재시작 없이 반영하되 요청마다 DB 히트는 피한다. 프로세스가
   여러 개(웹·워커)면 다른 프로세스는 최대 TTL 만큼 늦게 본다(경계 있는 eventual).
 
@@ -29,19 +29,19 @@ REGISTRY: dict[str, dict] = {
         "type": "bool", "group": "검색 품질", "label": "재랭킹 기본값",
         "desc": "후보 문단을 LLM 이 다시 채점해 상위만 인용(질문당 AI 1콜). "
                 "사용자가 질문마다 켜고 끌 수 있고, 이 값은 그 기본값.",
-        "requires_reindex": False,
+        "requires_llm": True, "requires_reindex": False,
     },
     "rag_hyde_enabled": {
         "type": "bool", "group": "검색 품질", "label": "HyDE(가상답변) 기본값",
         "desc": "모호한 질문을 가상 답변 문단으로 바꿔 검색(질문당 AI 1콜). "
                 "사용자 질문별 override 가능, 이 값은 기본값.",
-        "requires_reindex": False,
+        "requires_llm": True, "requires_reindex": False,
     },
     "rag_decompose_enabled": {
         "type": "bool", "group": "질문 이해", "label": "질문 분해",
         "desc": "복합 질문을 하위 질문들로 쪼개 각각 검색 후 근거를 합친다(질문당 "
                 "AI 1콜). HyDE 와 동시에 켜지면 분해가 우선.",
-        "requires_reindex": False,
+        "requires_llm": True, "requires_reindex": False,
     },
     "rag_alias_expand_enabled": {
         "type": "bool", "group": "질문 이해", "label": "별칭·약어 확장",
@@ -53,20 +53,20 @@ REGISTRY: dict[str, dict] = {
         "type": "bool", "group": "질문 이해", "label": "집계 질의 라우팅",
         "desc": "\"몇 개·목록·비교\" 같은 집계형 질문을 온톨로지 집계로 답한다"
                 "(개수는 계산이라 정확). 신호어 있을 때만 AI 1콜. 불확실하면 일반 검색 폴백.",
-        "requires_reindex": False,
+        "requires_llm": True, "requires_reindex": False,
     },
     "rag_auto_route_enabled": {
         "type": "bool", "group": "질문 이해", "label": "복합질문 에이전트 자동 라우팅",
         "desc": "\"A공급사 부품이 물린 과제의 결론은?\" 처럼 관계를 여러 단계 타는 복합 "
                 "질문을 에이전트(다단계 도구)로 자동 전환한다. 다홉 신호어가 있을 때만 — "
                 "단순 질문은 그대로 일반 검색(추가 AI 콜 없음).",
-        "requires_reindex": False,
+        "requires_llm": True, "requires_reindex": False,
     },
     "rag_verify_enabled": {
         "type": "bool", "group": "답변 신뢰", "label": "근거 검증 기본값",
         "desc": "생성된 답변의 각 주장이 인용 출처에 실제로 뒷받침되는지 검증하고 "
                 "미달 주장을 표시(답변당 AI 1콜). 사용자 질문별 override 가능.",
-        "requires_reindex": False,
+        "requires_llm": True, "requires_reindex": False,
     },
     "seed_link_min_score": {
         "type": "float", "group": "온톨로지 링킹", "label": "질문→씨앗 의미 임계",
@@ -251,5 +251,6 @@ def all_effective(db: Session) -> list[dict]:
             "max": meta.get("max"),
             "step": meta.get("step"),
             "requires_reindex": bool(meta.get("requires_reindex")),
+            "requires_llm": bool(meta.get("requires_llm")),
         })
     return out

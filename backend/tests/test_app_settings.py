@@ -70,3 +70,42 @@ def test_qa_rerank_reads_store(monkeypatch):
         assert qa._rerank_enabled(False) is False  # 요청 override 우선
     finally:
         db.close()
+
+
+def test_llm_dependent_settings_are_marked():
+    """LLM 을 부르는 설정에 requires_llm 표식이 있어야 관리자 화면이 경고할 수 있다.
+
+    표식이 없으면 관리자가 LLM 끊긴 서버에서 무심코 켜고, 그 기능을 쓰는 질문이
+    LLM 타임아웃(120초, 에이전트는 최대 6홉)까지 매달리다 502 로 실패한다.
+    코드의 가드는 `llm_backend != mock` 만 보므로 "설정은 됐는데 서버가 죽은"
+    경우를 못 거른다 — 그래서 화면 경고가 필요하다.
+
+    ⚠️ 새 설정을 추가할 때 이 목록도 갱신할 것. 코드에서 자동 판별할 방법이 없어
+    (가드가 각 모듈에 흩어져 있다) 명시 목록으로 고정한다.
+    """
+    expected = {
+        "rag_rerank_enabled",
+        "rag_hyde_enabled",
+        "rag_decompose_enabled",
+        "rag_aggregate_routing_enabled",
+        "rag_auto_route_enabled",
+        "rag_verify_enabled",
+    }
+    marked = {k for k, v in store.REGISTRY.items() if v.get("requires_llm")}
+    assert marked == expected, (
+        f"표식 누락: {expected - marked} / 잘못 표식: {marked - expected}"
+    )
+    # 별칭 확장은 별칭 테이블 조회라 LLM 불필요 — 표식이 붙으면 안 된다.
+    assert not store.REGISTRY["rag_alias_expand_enabled"].get("requires_llm")
+
+
+def test_all_effective_exposes_requires_llm():
+    """관리자 API 응답에 실려 나가야 화면이 배지를 그린다."""
+    db = SessionLocal()
+    try:
+        rows = store.all_effective(db)
+    finally:
+        db.close()
+    by_key = {r["key"]: r for r in rows}
+    assert by_key["rag_auto_route_enabled"]["requires_llm"] is True
+    assert by_key["chunk_link_min_score"]["requires_llm"] is False

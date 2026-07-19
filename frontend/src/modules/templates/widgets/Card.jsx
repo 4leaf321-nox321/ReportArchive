@@ -12,7 +12,7 @@
 // 색은 hex 가 아니라 rt-c-* 토큰으로만 저장한다. 화면은 클래스(rt-bg-*)로 테마에
 // 적응하고, export(PPTX/DOCX)는 같은 토큰을 hex 로 굽는다(bandBgHex/highlightHex).
 // 제목 배경 밴드(Heading.jsx)가 쓰던 배관을 그대로 재사용한다.
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, Palette, Plus, Trash2, X } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
@@ -39,7 +39,7 @@ import {
   _richIsEmpty,
 } from './_shared'
 import { RichTextRowEditor } from './RichTextRowEditor'
-import { CARD_ICON_NAMES, cardIconComponent } from './cardIcons'
+import { cardIconComponent, cardIconLabel, searchCardIcons } from './cardIcons'
 import {
   CARD_ITEM_KEYS,
   CARD_MAX_COLUMNS as MAX_COLUMNS,
@@ -745,53 +745,111 @@ function SetOptions({ content, props, patch, cols, cardCount }) {
   )
 }
 
+/**
+ * 아이콘 피커 — 119개라 그냥 격자로 뿌리면 못 찾는다. 한글 라벨 + 검색 + 페이지.
+ * 검색은 한글 라벨·저장 이름·보조 키워드·그룹명을 모두 훑는다(searchCardIcons).
+ */
+const ICONS_PER_PAGE = 24
+
 function IconPicker({ value, onChange }) {
   const Current = cardIconComponent(value)
+  const [query, setQuery] = useState('')
+  const [page, setPage] = useState(0)
+
+  const matches = searchCardIcons(query)
+  const pageCount = Math.max(1, Math.ceil(matches.length / ICONS_PER_PAGE))
+  // 검색어가 바뀌어 페이지 수가 줄면 현재 페이지가 범위를 벗어날 수 있다 — 당겨 준다.
+  const safePage = Math.min(page, pageCount - 1)
+  const shown = matches.slice(safePage * ICONS_PER_PAGE, (safePage + 1) * ICONS_PER_PAGE)
+
   return (
-    <Popover>
+    <Popover onOpenChange={(open) => { if (!open) { setQuery(''); setPage(0) } }}>
       <PopoverTrigger asChild>
         <button
           type="button"
-          title="아이콘"
+          title={value ? `아이콘: ${cardIconLabel(value)}` : '아이콘 선택'}
           aria-label="아이콘 선택"
           className="flex h-6 items-center gap-1 rounded border bg-background px-1.5 text-[11px] hover:bg-muted"
         >
           {Current ? <Current className="h-3 w-3" /> : <Palette className="h-3 w-3" />}
-          <span className="text-muted-foreground">아이콘</span>
+          <span className="text-muted-foreground">
+            {value ? cardIconLabel(value) : '아이콘'}
+          </span>
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-64 p-2" align="start">
-        <div className="mb-1.5 flex items-center justify-between">
-          <span className="text-xs font-medium">아이콘</span>
+      <PopoverContent className="w-[19rem] p-2" align="start">
+        <div className="mb-1.5 flex items-center gap-1.5">
+          <input
+            value={query}
+            onChange={(e) => { setQuery(e.target.value); setPage(0) }}
+            placeholder="아이콘 검색… (온도, 배터리, 결함)"
+            autoFocus
+            className="h-7 min-w-0 flex-1 rounded border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+          />
           {value && (
             <button
               type="button"
               onClick={() => onChange(null)}
-              className="flex items-center gap-0.5 text-[11px] text-muted-foreground hover:text-foreground"
+              title="아이콘 없애기"
+              className="flex h-7 shrink-0 items-center gap-0.5 rounded border px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
             >
               <X className="h-3 w-3" /> 없애기
             </button>
           )}
         </div>
-        <div className="grid grid-cols-8 gap-1">
-          {CARD_ICON_NAMES.map((name) => {
-            const Cmp = cardIconComponent(name)
-            return (
+
+        {shown.length === 0 ? (
+          <p className="px-1 py-6 text-center text-xs text-muted-foreground">
+            “{query}”에 맞는 아이콘이 없습니다.
+          </p>
+        ) : (
+          <div className="grid grid-cols-4 gap-1">
+            {shown.map((d) => (
               <button
-                key={name}
+                key={d.name}
                 type="button"
-                title={name}
-                onClick={() => onChange(name)}
+                title={`${d.label} · ${d.group}`}
+                onClick={() => onChange(d.name)}
                 className={cn(
-                  'flex h-7 w-7 items-center justify-center rounded hover:bg-muted',
-                  value === name && 'bg-primary/15 ring-1 ring-primary',
+                  'flex flex-col items-center gap-0.5 rounded border px-1 py-1.5 hover:bg-muted',
+                  value === d.name
+                    ? 'border-primary bg-primary/10'
+                    : 'border-transparent',
                 )}
               >
-                <Cmp className="h-4 w-4" />
+                <d.Cmp className="h-4 w-4 shrink-0" />
+                <span className="w-full truncate text-center text-[10px] leading-tight text-muted-foreground">
+                  {d.label}
+                </span>
               </button>
-            )
-          })}
-        </div>
+            ))}
+          </div>
+        )}
+
+        {pageCount > 1 && (
+          <div className="mt-2 flex items-center justify-between border-t pt-1.5">
+            <button
+              type="button"
+              onClick={() => setPage(safePage - 1)}
+              disabled={safePage === 0}
+              className="flex h-6 items-center gap-0.5 rounded border px-1.5 text-[11px] text-muted-foreground hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent"
+            >
+              <ChevronLeft className="h-3 w-3" /> 이전
+            </button>
+            <span className="text-[11px] text-muted-foreground">
+              {safePage + 1} / {pageCount}
+              <span className="ml-1.5 opacity-70">({matches.length}개)</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setPage(safePage + 1)}
+              disabled={safePage >= pageCount - 1}
+              className="flex h-6 items-center gap-0.5 rounded border px-1.5 text-[11px] text-muted-foreground hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent"
+            >
+              다음 <ChevronRight className="h-3 w-3" />
+            </button>
+          </div>
+        )}
       </PopoverContent>
     </Popover>
   )

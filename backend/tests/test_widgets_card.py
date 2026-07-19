@@ -235,3 +235,32 @@ def test_card_layout_is_full_width():
         extra_blocks=[{"id": "c", "type": "card"}],
     )
     assert out["c"]["col_span"] == 12
+
+
+def test_card_icon_allowlist_matches_frontend():
+    """백엔드 enum 과 프론트 목록이 **정확히 같아야** 한다.
+
+    이 위젯의 대표 함정: 한쪽에만 아이콘을 추가하면 백엔드만 → 저장은 되는데 화면에
+    안 그려지고(조용히 무시), 프론트만 → 저장이 422 로 거부된다. 사람이 지키기엔
+    잊기 쉬워서 테스트로 고정한다. 프론트 파일을 파싱해 이름 집합을 비교.
+    """
+    import re
+    from pathlib import Path
+
+    from app.widgets.registry import _CARD_ICONS
+
+    js = (
+        Path(__file__).resolve().parents[2]
+        / "frontend/src/modules/templates/widgets/cardIcons.js"
+    )
+    if not js.exists():  # 백엔드만 배포된 환경
+        pytest.skip("프론트 소스가 없는 환경 — 동기화 검사 생략")
+
+    front = re.findall(r"\{ name: '([^']+)'", js.read_text(encoding="utf-8"))
+    assert front, "cardIcons.js 에서 아이콘 정의를 못 읽었다 — 파싱 규칙 확인 필요"
+    assert len(front) == len(set(front)), "프론트 아이콘 이름에 중복이 있다"
+
+    only_back = sorted(set(_CARD_ICONS) - set(front))
+    only_front = sorted(set(front) - set(_CARD_ICONS))
+    assert not only_back, f"백엔드에만 있는 아이콘(화면에 안 그려짐): {only_back}"
+    assert not only_front, f"프론트에만 있는 아이콘(저장 422): {only_front}"

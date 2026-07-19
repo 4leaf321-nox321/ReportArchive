@@ -868,23 +868,46 @@ FMEA: WidgetDescriptor = {
 #      아니라 이 카드의 variant/선택필드 조합으로 파생한다 — 위젯 하나로 표현 폭
 #      대부분을 커버(카드위젯_설계.md §3). 자식 위젯을 담는 컨테이너 카드는 후속.
 # --------------------------------------------------------------------------- #
-# 카드 아이콘 허용셋 — 프론트가 lucide-react 컴포넌트로 매핑한다(ICON_COMPONENTS,
-# frontend/src/modules/templates/widgets/cardIcons.js 가 같은 목록을 갖는다).
+# 카드 아이콘 허용셋 — 전자제품 R&D 도메인(반도체·전원·통신·계측·품질·생산 등).
+# 프론트 frontend/src/modules/templates/widgets/cardIcons.js 의 CARD_ICON_DEFS 와
+# **같은 목록**이며 그쪽이 한글 라벨·그룹·검색 키워드를 갖는다.
 # ⚠️ 임의 lucide 이름을 허용하지 않는 이유: 프론트가 아이콘을 정적 import 해야
 # 번들에 들어가고, PPTX/DOCX export 도 같은 셋만 래스터화할 수 있기 때문이다.
 # 목록을 늘리려면 **양쪽 파일을 함께** 고쳐야 한다(프론트에 없으면 렌더 시 무시).
 _CARD_ICONS = [
-    # 개념·구조
-    "network", "share", "layers", "package", "database", "cpu", "settings",
-    # 방향·성과
-    "target", "flag", "trending-up", "trending-down", "activity", "gauge",
-    # 상태·판정
-    "check-circle", "alert-triangle", "alert-circle", "info", "shield",
-    # 일정·사람
-    "clock", "calendar", "users", "building",
-    # 업무·문서
-    "file-text", "clipboard-list", "search", "wrench", "beaker", "microscope",
-    "truck", "factory", "lightbulb", "zap",
+    # 반도체·회로
+    "cpu", "microchip", "circuit-board", "component", "memory", "binary", "puzzle",
+    # 전원·전력
+    "battery", "battery-charging", "battery-warning", "power", "plug", "plug-zap",
+    "zap", "bolt",
+    # 통신·무선
+    "wifi", "bluetooth", "nfc", "antenna", "signal", "radio", "radio-tower",
+    "satellite", "network", "share",
+    # 제품·기기
+    "smartphone", "tablet", "laptop", "monitor", "tv", "camera", "mic", "speaker",
+    "headphones", "volume",
+    # 계측·시험
+    "gauge", "thermometer", "fan", "snowflake", "flame", "droplet", "wind", "waves",
+    "audio-waveform", "magnet", "radiation", "ruler", "scale", "timer", "radar", "scan",
+    "fingerprint", "microscope", "flask", "test-tube", "beaker",
+    # 품질·판정
+    "check-circle", "badge-check", "alert-triangle", "alert-circle", "bug", "shield",
+    "shield-check", "shield-alert", "list-checks", "clipboard-check", "file-check",
+    "info", "eye",
+    # 지표·성과
+    "chart-column", "chart-line", "chart-pie", "trending-up", "trending-down",
+    "activity", "target", "flag", "award", "coins",
+    # 생산·공급
+    "factory", "warehouse", "container", "truck", "package", "boxes", "handshake",
+    "wrench", "hammer", "cog", "settings", "recycle", "leaf",
+    # 데이터·SW
+    "database", "server", "hard-drive", "cloud", "code", "terminal", "layers", "filter",
+    "search", "link", "lock",
+    # 일정·조직
+    "workflow", "git-branch", "milestone", "clock", "calendar", "calendar-clock",
+    "history", "refresh", "users", "user", "building",
+    # 문서·기타
+    "file-text", "clipboard-list", "book", "lightbulb", "sparkles",
 ]
 _CARD_ICON_FIELD = {"type": "string", "enum": _CARD_ICONS}
 

@@ -25,7 +25,12 @@ def test_multihop_cue():
 
 
 def test_disabled_returns_none(monkeypatch):
-    # 플래그 off(기본) → None(=일반 RAG). 신호어가 있어도.
+    # 플래그 off → None(=일반 RAG). 신호어가 있어도.
+    #
+    # ⚠️ 플래그는 .env 가 아니라 **DB**(app_settings)에서 온다. "기본값이 off 겠지"
+    # 하고 주변 상태에 기대면, DB 에 override 가 남아 있을 때 **없는 LLM 을 호출해
+    # 타임아웃까지 매달린다**(dev 서버엔 LLM 이 없다). 여기서 명시적으로 끈다.
+    monkeypatch.setattr(ar, "_enabled", lambda: False)
     monkeypatch.setattr(settings, "llm_backend", "openai")
     db = SessionLocal()
     try:

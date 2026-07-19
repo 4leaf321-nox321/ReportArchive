@@ -1,5 +1,9 @@
 """테스트 공용 픽스처.
 
+⚠️ **이 스위트는 별도 테스트 DB 없이 dev DB 에 직접 붙는다**(아래 참고). 그래서
+"DB 에 저장되는 상태"는 테스트 사이에 새어 나간다. 특히 기능 플래그(app_settings)가
+그랬다 — 아래 `_clean_app_settings` 주석 참고.
+
 이 저장소의 통합 테스트들은 별도 테스트 DB 를 띄우지 않고 settings.database_url
 이 가리키는 (개발) DB 에 직접 붙는다. 일부 오래된 테스트가 사용자 id 2(seeded
 admin)·id 3(seeded manager)를 하드코딩하는데, 현재 시드는 id 1(admin)만 만든다
@@ -72,3 +76,86 @@ def _seed_legacy_test_users():
     finally:
         db.close()
     yield
+
+
+# --------------------------------------------------------------------------- #
+# app_settings(기능 플래그) 격리                                                 #
+#                                                                              #
+# 왜 필요한가 — 실제로 겪은 flakiness 의 원인:                                    #
+#   1. 기능 플래그는 .env 가 아니라 **DB**(app_settings)에 저장되고, store 가 45초    #
+#      TTL 로 캐시한다(store._TTL). 스위트 실행 시간이 43~57초라 딱 그 경계다.        #
+#   2. 일부 테스트가 store.set_many() 로 플래그를 켜고 **되돌리지 않았다**            #
+#      (예: test_app_settings 의 rag_rerank_enabled).                            #
+#   3. 그 뒤 실행되는 테스트가 오염된 값을 본다. 45초가 지나면 캐시가 다시 로드돼      #
+#      값이 또 바뀐다 → **어느 테스트가 어느 값을 보는지가 실행 속도에 따라 달라져**   #
+#      매번 다른 테스트가 실패했다.                                                #
+#   4. 하필 dev 서버엔 LLM 이 없어서, rag_auto_route_enabled 가 켜진 채로 남으면      #
+#      에이전트 라우팅이 없는 LLM 을 호출해 타임아웃까지 매달린다(실행이 4배 느려짐).  #
+#                                                                              #
+# 대책 두 가지(둘 다 **테스트에만** 적용 — 운영 동작은 그대로):                      #
+#   ⓐ 매 테스트 뒤 DB override 를 전부 지운다(아래 fixture).                       #
+#   ⓑ 캐시 TTL 을 0 으로 — 캐시 경계 자체를 없애 타이밍 의존을 제거한다.             #
+# --------------------------------------------------------------------------- #
+# 세션 시작 시점의 override 스냅샷 — 테스트는 여기로 되돌린다.
+_SETTINGS_BASELINE: dict = {}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_app_settings_cache():
+    """ⓑ 테스트에서는 설정 캐시를 끈다(TTL 0 = 매번 DB 조회) + 기준선 스냅샷.
+
+    캐시가 있으면 "DB 는 바뀌었는데 프로세스는 45초간 옛 값을 본다"는 창이 생기고,
+    그 창의 위치가 실행 속도에 따라 달라져 재현이 안 되는 실패가 난다.
+    운영의 TTL(45초)은 여러 프로세스 간 절충이라 그대로 둔다.
+    """
+    from app.modules.app_settings import store
+
+    prev = store._TTL
+    store._TTL = 0.0
+    store.invalidate()
+
+    global _SETTINGS_BASELINE
+    _SETTINGS_BASELINE = store._load_overrides()
+    if _SETTINGS_BASELINE:
+        # 기준선이 비어 있지 않으면 알린다 — 개발자가 dev 화면에서 조정한 값일 수도,
+        # 죽은 실행이 남긴 오염일 수도 있다. **조용히 지우지 않는다**(개발 환경의
+        # 설정을 테스트가 말없이 날리면 안 된다). 오염이면 테스트가 깨져서 보인다.
+        import warnings as _w
+        _w.warn(
+            f"app_settings 에 override 가 있습니다: {_SETTINGS_BASELINE}. "
+            "테스트는 매 테스트 뒤 이 상태로 되돌립니다. 의도한 값이 아니면 지우세요.",
+            stacklevel=1,
+        )
+    yield
+    _restore_app_settings()
+    store._TTL = prev
+
+
+@pytest.fixture(autouse=True)
+def _clean_app_settings():
+    """ⓐ 테스트가 바꾼 DB override 를 **세션 시작 상태로** 되돌린다(테스트 뒤).
+
+    통째로 지우지 않는 이유: 이 스위트는 dev DB 에 붙으므로, 개발자가 화면에서
+    조정해 둔 설정을 테스트가 말없이 날려선 안 된다. 기준선과 다를 때만 손댄다.
+    """
+    yield
+    _restore_app_settings()
+
+
+def _restore_app_settings() -> None:
+    """현재 override 를 _SETTINGS_BASELINE 과 일치시킨다(다를 때만 DB 를 건드림)."""
+    from app.database import SessionLocal as _S
+    from app.modules.app_settings import store
+    from app.modules.app_settings.models import AppSetting
+
+    if store._load_overrides() == _SETTINGS_BASELINE:
+        return
+    db = _S()
+    try:
+        db.query(AppSetting).delete()
+        for key, value in _SETTINGS_BASELINE.items():
+            store.set_many(db, {key: value}, None)
+        db.commit()
+        store.invalidate()
+    finally:
+        db.close()

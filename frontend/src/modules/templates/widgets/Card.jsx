@@ -13,7 +13,7 @@
 // 적응하고, export(PPTX/DOCX)는 같은 토큰을 hex 로 굽는다(bandBgHex/highlightHex).
 // 제목 배경 밴드(Heading.jsx)가 쓰던 배관을 그대로 재사용한다.
 import { useRef } from 'react'
-import { Palette, Plus, Trash2, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Palette, Plus, Trash2, X } from 'lucide-react'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import {
@@ -218,6 +218,17 @@ export function CardEditor({ props, content, onChange, readOnly }) {
     writeCards(shown.map((c, j) => (j === i ? { ...c, ...p } : c)))
   const addCard = () => writeCards([...shown, {}])
   const removeCard = (i) => writeCards(shown.filter((_, j) => j !== i))
+  /** 장 순서 이동 — 격자라 dir 은 -1(앞)/+1(뒤). 줄바꿈은 열 수가 알아서 하므로
+   *  "왼쪽/오른쪽"이 아니라 **배열 순서**를 옮긴다(마지막 열에서 +1 하면 다음 줄 첫 칸).
+   *  _shared.jsx FieldItemListEditor 의 move(idx, dir) 와 같은 방식. */
+  const moveCard = (i, dir) => {
+    const j = i + dir
+    if (j < 0 || j >= shown.length) return
+    const next = [...shown]
+    const [moved] = next.splice(i, 1)
+    next.splice(j, 0, moved)
+    writeCards(next)
+  }
 
   const captionEl = (
     <CaptionInput
@@ -251,6 +262,9 @@ export function CardEditor({ props, content, onChange, readOnly }) {
             readOnly={readOnly}
             onPatch={(p) => patchCard(i, p)}
             onRemove={shown.length > 1 ? () => removeCard(i) : null}
+            onMove={shown.length > 1 ? (dir) => moveCard(i, dir) : null}
+            canMoveBack={i > 0}
+            canMoveFwd={i < shown.length - 1}
           />
         ))}
         {!readOnly && (
@@ -298,7 +312,9 @@ export function CardEditor({ props, content, onChange, readOnly }) {
 // CardTile — 카드 한 장                                                        //
 // --------------------------------------------------------------------------- //
 
-function CardTile({ card, content, props, readOnly, onPatch, onRemove }) {
+function CardTile({
+  card, content, props, readOnly, onPatch, onRemove, onMove, canMoveBack, canMoveFwd,
+}) {
   const variant = cardVariant(card, content, props)
   const accent = cardAccent(card, content, props)
   const solid = isSolid(variant)
@@ -414,6 +430,9 @@ function CardTile({ card, content, props, readOnly, onPatch, onRemove }) {
           statAllowed={statAllowed}
           onPatch={onPatch}
           onRemove={onRemove}
+          onMove={onMove}
+          canMoveBack={canMoveBack}
+          canMoveFwd={canMoveFwd}
         />
       )}
     </div>
@@ -442,7 +461,9 @@ function Badge({ badge, solid }) {
 }
 
 /** 장별 컨트롤 — 호버할 때만 뜬다(카드가 여러 장이라 항상 보이면 시끄럽다). */
-function TileControls({ card, iconEnabled, statAllowed, onPatch, onRemove }) {
+function TileControls({
+  card, iconEnabled, statAllowed, onPatch, onRemove, onMove, canMoveBack, canMoveFwd,
+}) {
   const has = (k) => card?.[k] != null
   return (
     <div
@@ -510,17 +531,53 @@ function TileControls({ card, iconEnabled, statAllowed, onPatch, onRemove }) {
         placeholder="각주"
         className="h-6 w-20 rounded border bg-background px-1.5 text-[11px]"
       />
-      {onRemove && (
-        <button
-          type="button"
-          onClick={onRemove}
-          title="이 카드 삭제"
-          className="ml-auto flex h-6 w-6 items-center justify-center rounded border text-muted-foreground hover:bg-destructive hover:text-destructive-foreground"
-        >
-          <Trash2 className="h-3 w-3" />
-        </button>
+      {/* 구조 조작(순서·삭제)은 오른쪽에 묶는다 — 왼쪽은 내용 컨트롤. */}
+      {(onMove || onRemove) && (
+        <div className="ml-auto flex items-center gap-0.5">
+          {onMove && (
+            <>
+              <MoveButton
+                dir={-1}
+                disabled={!canMoveBack}
+                onClick={() => onMove(-1)}
+              />
+              <MoveButton
+                dir={1}
+                disabled={!canMoveFwd}
+                onClick={() => onMove(1)}
+              />
+            </>
+          )}
+          {onRemove && (
+            <button
+              type="button"
+              onClick={onRemove}
+              title="이 카드 삭제"
+              className="flex h-6 w-6 items-center justify-center rounded border text-muted-foreground hover:bg-destructive hover:text-destructive-foreground"
+            >
+              <Trash2 className="h-3 w-3" />
+            </button>
+          )}
+        </div>
       )}
     </div>
+  )
+}
+
+/** 순서 이동 버튼. 양 끝에서는 비활성 — 눌러도 아무 일 없는 버튼보다 낫다. */
+function MoveButton({ dir, disabled, onClick }) {
+  const Icon = dir < 0 ? ChevronLeft : ChevronRight
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={dir < 0 ? '앞으로 옮기기' : '뒤로 옮기기'}
+      aria-label={dir < 0 ? '카드를 앞으로 옮기기' : '카드를 뒤로 옮기기'}
+      className="flex h-6 w-6 items-center justify-center rounded border text-muted-foreground hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent"
+    >
+      <Icon className="h-3 w-3" />
+    </button>
   )
 }
 

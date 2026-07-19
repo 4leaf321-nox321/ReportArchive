@@ -540,6 +540,12 @@ def _normalize_block(wtype: str, raw, props: dict, warnings: list[str], block_id
     if wtype == "card":
         return _normalize_card(raw, warnings, block_id)
 
+    if wtype == "fmea":
+        return _normalize_fmea(raw, warnings, block_id)
+
+    if wtype in ("record", "record_table"):
+        return _normalize_record_widget(wtype, raw, warnings, block_id)
+
     # 그 외 위젯 — 설정이 있으면 느슨 보정(배열 래핑·키 별칭·숫자강제 등),
     # 없으면(파일/임베드) dict 만 그대로 통과.
     return _normalize_passthrough(wtype, raw, warnings, block_id)
@@ -626,6 +632,162 @@ def _normalize_card(raw, warnings: list[str], block_id: str):
         return None
     return _with_caption(out, raw)
 
+
+
+# --------------------------------------------------------------------------- #
+# FMEA — content 는 rows 를 "fmea_items" 로 한 겹 감싼다(저장 훅이 그 표식으로       #
+# 고장모드를 온톨로지 객체로 승격한다). LLM 이 그 래핑을 맞힐 리 없으므로 배열/rows  #
+# 어느 쪽으로 줘도 받아 준다.                                                      #
+# --------------------------------------------------------------------------- #
+_FMEA_ROW_ALIASES = {
+    "mode": "failure_mode", "failure": "failure_mode", "고장모드": "failure_mode",
+    "effect": "potential_effect", "영향": "potential_effect",
+    "cause": "potential_cause", "원인": "potential_cause",
+    "controls": "current_controls", "control": "current_controls",
+    "s": "severity", "sev": "severity", "심각도": "severity",
+    "o": "occurrence", "occ": "occurrence", "발생도": "occurrence",
+    "d": "detection", "det": "detection", "검출도": "detection",
+    "action": "recommended_action", "대책": "recommended_action",
+    "owner": "responsible", "담당": "responsible", "담당자": "responsible",
+    "due": "due_date", "기한": "due_date",
+    "target": "target_rpn",
+}
+_FMEA_SCORES = ("severity", "occurrence", "detection")
+
+
+def _fmea_score(v):
+    """S·O·D 는 1~10 정수. 범위를 벗어나면 None(=미입력)으로 — 저장이 거절되느니 비운다."""
+    n = _num(v)
+    if isinstance(n, float) and n.is_integer():
+        n = int(n)
+    return n if isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= 10 else None
+
+
+def _normalize_fmea(raw, warnings: list[str], block_id: str):
+    rows_src = None
+    if isinstance(raw, list):
+        rows_src = raw
+    elif isinstance(raw, dict):
+        inner = raw.get("fmea_items")
+        if isinstance(inner, dict):
+            rows_src = inner.get("rows")
+        elif isinstance(raw.get("rows"), list):
+            rows_src = raw["rows"]
+    if not isinstance(rows_src, list):
+        warnings.append(f"{block_id}: 'fmea' 는 행 목록이 필요합니다(rows) — 건너뜀")
+        return None
+
+    rows: list[dict] = []
+    for i, r in enumerate(rows_src):
+        if isinstance(r, str):
+            r = {"failure_mode": r}
+        if not isinstance(r, dict):
+            continue
+        out: dict = {}
+        for k, v in r.items():
+            out[_FMEA_ROW_ALIASES.get(str(k).lower(), k)] = v
+
+        # 고장모드는 {name, entity_id} — 문자열로 주면 감싼다(승격 훅이 name 을 본다).
+        fm = out.get("failure_mode")
+        if isinstance(fm, str):
+            out["failure_mode"] = {"name": _strip_md(fm.strip()), "entity_id": None}
+        elif isinstance(fm, dict):
+            out["failure_mode"] = {
+                "name": _strip_md(str(fm.get("name") or "").strip()),
+                "entity_id": fm.get("entity_id"),
+            }
+        else:
+            out["failure_mode"] = {"name": "", "entity_id": None}
+
+        for k in _FMEA_SCORES:
+            if k in out:
+                out[k] = _fmea_score(out[k])
+        # RPN 은 화면이 **저장값을 그대로** 보여준다(렌더 시 재계산 안 함) — 여기서
+        # 안 채우면 S·O·D 를 다 줘도 "—" 로 보인다. 셋 다 있으면 곱해서 채운다.
+        s_, o_, d_ = (out.get(k) for k in _FMEA_SCORES)
+        out["rpn"] = s_ * o_ * d_ if (s_ and o_ and d_) else None
+        if out.get("target_rpn") is not None:
+            tn = _num(out["target_rpn"])
+            out["target_rpn"] = tn if isinstance(tn, int) else None
+
+        for k in ("potential_effect", "potential_cause", "current_controls",
+                  "recommended_action", "responsible", "status"):
+            if k in out and out[k] is not None:
+                out[k] = _strip_md(str(out[k]))
+        if out.get("due_date") is not None:
+            out["due_date"] = str(out["due_date"])
+        # 행 id — 화면 편집기가 행 식별에 쓴다. 없으면 만들어 준다.
+        out["id"] = str(out.get("id") or f"r{i + 1}")
+        # 스키마에 없는 키는 버린다(additionalProperties 는 True 지만 화면이 못 읽는다).
+        rows.append(out)
+
+    if not rows:
+        return None
+    inner_out: dict = {"rows": rows}
+    if isinstance(raw, dict):
+        src = raw.get("fmea_items") if isinstance(raw.get("fmea_items"), dict) else raw
+        _with_caption(inner_out, src)
+    return {"fmea_items": inner_out}
+
+
+# --------------------------------------------------------------------------- #
+# record / record_table — 저장 훅이 content 의 `axis_slug` 를 표식으로 보고 객체를  #
+# upsert 한다. axis_slug 가 없으면 위젯은 저장되지만 **온톨로지에 아무것도 안 남는다** #
+# — 조용히 넘기면 안 되므로 경고한다.                                              #
+# --------------------------------------------------------------------------- #
+def _normalize_record_widget(wtype: str, raw, warnings: list[str], block_id: str):
+    if isinstance(raw, str):
+        raw = {"name": raw}
+    axis = None
+    rows_src = None
+
+    if isinstance(raw, list):
+        rows_src = raw
+    elif isinstance(raw, dict):
+        axis = raw.get("axis_slug") or raw.get("axis") or raw.get("type_slug")
+        if isinstance(raw.get("rows"), list):
+            rows_src = raw["rows"]
+        elif isinstance(raw.get("items"), list):
+            rows_src = raw["items"]
+
+    def one(r):
+        if isinstance(r, str):
+            r = {"name": r}
+        if not isinstance(r, dict):
+            return None
+        name = _strip_md(str(r.get("name") or r.get("value") or "").strip())
+        if not name:
+            return None
+        out: dict = {"name": name[:255]}
+        props = r.get("properties")
+        if isinstance(props, dict):
+            out["properties"] = props
+        if r.get("entity_id") is not None:
+            out["entity_id"] = r["entity_id"]
+        return out
+
+    out: dict = {}
+    if axis:
+        out["axis_slug"] = str(axis)[:32]
+    else:
+        warnings.append(
+            f"{block_id}: '{wtype}' 에 axis_slug 가 없어 온톨로지 객체가 만들어지지 "
+            "않습니다(축 slug 를 주세요 — describe_metadata 로 확인)"
+        )
+
+    if wtype == "record_table":
+        rows = [x for x in (one(r) for r in (rows_src or [])) if x]
+        if not rows:
+            return None
+        out["rows"] = rows
+        return out
+
+    # record — 단건.
+    single = one(raw if isinstance(raw, dict) else {})
+    if not single:
+        return None
+    out.update(single)
+    return out
 
 def _card_accent_token(accent, warnings: list[str], block_id: str):
     """색 토큰 정규화 — 'rt-c-teal' 은 접두사만 벗겨 살리고, hex 등은 버리고 경고."""
@@ -917,6 +1079,13 @@ _LAYOUT_SPEC: dict[str, tuple[int, int]] = {
     # 카드 — 위젯 하나가 카드 여러 장을 격자로 담으므로 **전폭**. 장수·열수는
     # content(cards/columns)가 정한다. 고정 높이(NO_AUTOFIT)라 row_span 이 실제 높이.
     "card": (12, 20),
+    # FMEA — 열 10개짜리 넓은 표. 표(table, 12x16)보다 가로가 빡빡해 조금 더 높게.
+    "fmea": (12, 20),
+    # 객체 레코드 — 단건은 속성 폼 하나라 반폭이면 충분, 표는 전폭.
+    "record": (6, 14),
+    "record_table": (12, 16),
+    # 문서 뷰어 — PDF 를 본문에서 펼쳐 보므로 전폭·높게.
+    "doc_viewer": (12, 40),
 }
 _LAYOUT_DEFAULT = (12, 28)
 

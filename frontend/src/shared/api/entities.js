@@ -347,6 +347,8 @@ export async function listEntities({
   withUsage = false,
   relatedTo,
   year,
+  searchProps = false,
+  propFilters,
 } = {}) {
   // URLSearchParams 로 직접 조립 — related_to 는 반복 파라미터
   // (related_to=1&related_to=2) 라야 FastAPI list[int] 에 바인딩된다.
@@ -358,6 +360,15 @@ export async function listEntities({
   if (q && q.trim()) params.set('q', q.trim())
   if (includeDeprecated) params.set('include_deprecated', 'true')
   if (withUsage) params.set('with_usage', 'true')
+  if (searchProps) params.set('search_props', 'true')
+  // 속성 지정 필터 — prop=key:value 반복(백엔드가 첫 콜론에서 나눔).
+  if (Array.isArray(propFilters)) {
+    for (const f of propFilters) {
+      if (f?.key && String(f.value ?? '').trim()) {
+        params.append('prop', `${f.key}:${f.value}`)
+      }
+    }
+  }
   if (Array.isArray(relatedTo)) {
     for (const id of relatedTo) if (id != null) params.append('related_to', String(id))
   }
@@ -383,11 +394,25 @@ const LIST_PAGE_MAX = 500
  * 축의 엔티티 **전체**를 CSV 로 내려받는다(서버 스트리밍, 2만 표시 상한과 무관).
  * 관리자 전용. q 를 주면 그 검색 결과만. Blob 을 돌려주니 호출부가 저장한다.
  */
-export async function exportEntitiesCsv({ typeId, includeDeprecated = false, q } = {}) {
+export async function exportEntitiesCsv({
+  typeId,
+  includeDeprecated = false,
+  q,
+  searchProps = false,
+  propFilters,
+} = {}) {
   const params = new URLSearchParams()
   params.set('type_id', String(typeId))
   if (includeDeprecated) params.set('include_deprecated', 'true')
   if (q && q.trim()) params.set('q', q.trim())
+  if (searchProps) params.set('search_props', 'true')
+  if (Array.isArray(propFilters)) {
+    for (const f of propFilters) {
+      if (f?.key && String(f.value ?? '').trim()) {
+        params.append('prop', `${f.key}:${f.value}`)
+      }
+    }
+  }
   const res = await apiClient.get(`${BASE}/export.csv?${params.toString()}`, {
     responseType: 'blob',
   })

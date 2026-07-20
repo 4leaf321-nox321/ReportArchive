@@ -337,6 +337,59 @@ def _temporal_year_filter(year: int):
     )
 
 
+def _entity_list_filters(
+    stmt,
+    *,
+    type_id,
+    q,
+    include_deprecated,
+    related_to,
+    year,
+    search_props,
+    prop_filters,
+):
+    """list_entities 의 공통 WHERE 절 — with_usage 유무 두 경로가 똑같이 쓴다.
+
+    q: 값·코드·설명 부분일치(ILIKE). search_props 면 **속성 값**도 포함(jsonb 값
+    전체를 훑어 어느 하나라도 일치하면 매칭). prop_filters: [{key,value}] 로 특정
+    속성을 지정 검색(예: year=2025) — 각각 properties->>key 부분일치, 여러 개는 AND."""
+    if type_id is not None:
+        stmt = stmt.where(Entity.type_id == type_id)
+    if not include_deprecated:
+        stmt = stmt.where(Entity.status == EntityStatus.active)
+    if q:
+        needle = f"%{q.strip().lower()}%"
+        clauses = [
+            func.lower(Entity.value).like(needle),
+            func.lower(Entity.code).like(needle),
+            func.lower(Entity.description).like(needle),
+        ]
+        if search_props:
+            # 속성 값 전체를 훑는다 — jsonb_each_text 로 (key,value) 펼쳐 값만 매칭.
+            # 멀티값(배열)은 텍스트로 펼쳐져 부분일치로 걸린다. Entity 는 자동 상관.
+            kv = func.jsonb_each_text(Entity.properties).table_valued("key", "value")
+            clauses.append(
+                select(1).select_from(kv)
+                .where(func.lower(kv.c.value).like(needle))
+                .exists()
+            )
+        stmt = stmt.where(or_(*clauses))
+    for f in prop_filters or []:
+        key = (f.get("key") or "").strip()
+        val = f.get("value")
+        if key and val is not None and str(val).strip():
+            stmt = stmt.where(
+                func.lower(Entity.properties[key].astext).like(
+                    f"%{str(val).strip().lower()}%"
+                )
+            )
+    if related_to:
+        stmt = stmt.where(Entity.id.in_(_related_to_subquery(related_to)))
+    if year is not None:
+        stmt = stmt.where(_temporal_year_filter(year))
+    return stmt
+
+
 def list_entities(
     db: Session,
     *,
@@ -348,6 +401,8 @@ def list_entities(
     with_usage: bool = False,
     related_to: Optional[list[int]] = None,
     year: Optional[int] = None,
+    search_props: bool = False,
+    prop_filters: Optional[list[dict]] = None,
 ) -> list[Entity] | list[tuple[Entity, int]]:
     """Picker list — filters on axis + search + (optionally) status.
 
@@ -360,26 +415,16 @@ def list_entities(
     `[(Entity, count)]` so the route can pack it into `EntityRead.usage_count`.
     Picker calls leave this False — the extra LEFT JOIN COUNT is only
     worth it for the admin grid's "사용 중" column.
-    """
+
+    `search_props`/`prop_filters` (관리 화면 opt-in) 로 속성 검색까지 확장한다 —
+    기본값은 picker 동작 보존(속성 무시)."""
+    filt = dict(
+        type_id=type_id, q=q, include_deprecated=include_deprecated,
+        related_to=related_to, year=year, search_props=search_props,
+        prop_filters=prop_filters,
+    )
     if not with_usage:
-        stmt = select(Entity)
-        if type_id is not None:
-            stmt = stmt.where(Entity.type_id == type_id)
-        if not include_deprecated:
-            stmt = stmt.where(Entity.status == EntityStatus.active)
-        if q:
-            needle = f"%{q.strip().lower()}%"
-            stmt = stmt.where(
-                or_(
-                    func.lower(Entity.value).like(needle),
-                    func.lower(Entity.code).like(needle),
-                    func.lower(Entity.description).like(needle),
-                )
-            )
-        if related_to:
-            stmt = stmt.where(Entity.id.in_(_related_to_subquery(related_to)))
-        if year is not None:
-            stmt = stmt.where(_temporal_year_filter(year))
+        stmt = _entity_list_filters(select(Entity), **filt)
         stmt = stmt.order_by(Entity.value, Entity.id).limit(limit).offset(offset)
         return list(db.execute(stmt).scalars())
 
@@ -397,24 +442,7 @@ def list_entities(
         .correlate(Entity)
         .scalar_subquery()
     )
-    stmt = select(Entity, count_subq)
-    if type_id is not None:
-        stmt = stmt.where(Entity.type_id == type_id)
-    if not include_deprecated:
-        stmt = stmt.where(Entity.status == EntityStatus.active)
-    if q:
-        needle = f"%{q.strip().lower()}%"
-        stmt = stmt.where(
-            or_(
-                func.lower(Entity.value).like(needle),
-                func.lower(Entity.code).like(needle),
-                func.lower(Entity.description).like(needle),
-            )
-        )
-    if related_to:
-        stmt = stmt.where(Entity.id.in_(_related_to_subquery(related_to)))
-    if year is not None:
-        stmt = stmt.where(_temporal_year_filter(year))
+    stmt = _entity_list_filters(select(Entity, count_subq), **filt)
     stmt = stmt.order_by(Entity.value, Entity.id).limit(limit).offset(offset)
     return [(row, int(cnt or 0)) for row, cnt in db.execute(stmt).all()]
 
@@ -466,6 +494,8 @@ def iter_entities_for_export(
     include_deprecated: bool = False,
     q: Optional[str] = None,
     prop_keys: Optional[list[str]] = None,
+    search_props: bool = False,
+    prop_filters: Optional[list[dict]] = None,
     batch: int = 1000,
 ):
     """축의 엔티티를 페이지(batch)로 순회하며 CSV 내보내기용 평평한 dict 를 yield.
@@ -483,6 +513,8 @@ def iter_entities_for_export(
             limit=batch,
             offset=offset,
             with_usage=True,
+            search_props=search_props,
+            prop_filters=prop_filters,
         )
         if not rows:
             break

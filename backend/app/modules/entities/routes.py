@@ -526,6 +526,18 @@ def delete_relation_type_property(
 entities_router = APIRouter()
 
 
+def _parse_prop_filters(prop: Optional[list[str]]) -> list[dict]:
+    """`prop=key:value` 반복 파라미터 → [{key,value}]. 속성 key 는 콜론을 못 담으므로
+    (^[a-z][a-z0-9_]*$) 첫 콜론에서만 나눈다 — value 에 콜론이 있어도 안전."""
+    out: list[dict] = []
+    for item in prop or []:
+        if ":" in item:
+            k, v = item.split(":", 1)
+            if k.strip():
+                out.append({"key": k.strip(), "value": v})
+    return out
+
+
 @entities_router.get("")
 def list_entities(
     type_id: Optional[int] = Query(default=None),
@@ -536,6 +548,8 @@ def list_entities(
     with_usage: bool = Query(default=False),
     related_to: Optional[list[int]] = Query(default=None),
     year: Optional[int] = Query(default=None, ge=1900, le=2200),
+    search_props: bool = Query(default=False),
+    prop: Optional[list[str]] = Query(default=None),
     actor: EntityActor = Depends(entity_actor),
     db: Session = Depends(get_db),
 ):
@@ -569,6 +583,8 @@ def list_entities(
         with_usage=with_usage,
         related_to=related_to or None,
         year=year,
+        search_props=search_props,
+        prop_filters=_parse_prop_filters(prop),
     )
     if with_usage:
         items = [_to_read(r, usage_count=cnt) for (r, cnt) in rows]
@@ -582,13 +598,16 @@ def export_entities_csv(
     type_id: int = Query(...),
     include_deprecated: bool = Query(default=False),
     q: Optional[str] = Query(default=None, max_length=128),
+    search_props: bool = Query(default=False),
+    prop: Optional[list[str]] = Query(default=None),
     actor: EntityActor = Depends(entity_actor),
     db: Session = Depends(get_db),
 ):
     """축의 엔티티 **전체**를 CSV 로 스트리밍 내보내기 — 관리자 전용. 목록 화면의
     2만 표시 상한과 무관하게 전건을 담는다(페이지 단위 스트리밍이라 대량도 안전).
     컬럼: 기본(id·값·코드·설명·상태·유효연도) + 축 속성별 + 별칭(;) + 사용수.
-    q 를 주면 그 검색 결과만(값·코드·설명 ILIKE)."""
+    q/search_props/prop 은 목록과 같은 검색 필터 — 화면에 보이는 것과 같은 결과를
+    내보낸다(속성 값 검색·key:value 필터 포함)."""
     import csv
     import io
 
@@ -623,7 +642,8 @@ def export_entities_csv(
         buf.truncate(0)
         for row in services.iter_entities_for_export(
             db, type_id=type_id, include_deprecated=include_deprecated,
-            q=q, prop_keys=prop_keys,
+            q=q, prop_keys=prop_keys, search_props=search_props,
+            prop_filters=_parse_prop_filters(prop),
         ):
             writer.writerow(
                 [row["id"], row["value"], row["code"], row["description"],

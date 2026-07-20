@@ -639,28 +639,34 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
     const t = setTimeout(() => setDebouncedQuery(query), 300)
     return () => clearTimeout(t)
   }, [query])
-  const serverSearching = debouncedQuery.trim().length > 0
+  // 속성 지정 필터 — [{key,value}]. 예: year=2025. 서버가 properties->>key 부분일치로
+  // 거른다(여러 개는 AND). 검색어와 함께 서버 검색 모드를 켠다.
+  const [propFilters, setPropFilters] = useState([])
+  const propFiltersKey = propFilters.map((f) => `${f.key} ${f.value}`).join('|')
+  const serverSearching = debouncedQuery.trim().length > 0 || propFilters.length > 0
 
-  // 목록 로드 — 검색어가 있으면 **서버 검색**(q, 값·코드·설명 ILIKE, 최대 500건)으로
-  // 개수와 무관하게 무엇이든 찾는다. 검색어가 없으면 브라우즈용으로 값 전체를 페이지
-  // 끝까지 모은다(2만 폭주 방지선, truncated 로 알림). 축 값이 2만을 넘어도 서버 검색
-  // 경로로 특정 값을 찾아 편집·병합·삭제할 수 있다.
+  // 목록 로드 — 검색어/속성필터가 있으면 **서버 검색**(값·코드·설명 ILIKE + 속성
+  // 값까지, 최대 500건)으로 개수와 무관하게 무엇이든 찾는다. 없으면 브라우즈용으로
+  // 값 전체를 페이지 끝까지 모은다(2만 폭주 방지선, truncated 로 알림). 축 값이 2만을
+  // 넘어도 서버 검색 경로로 특정 값·속성을 찾아 편집·병합·삭제할 수 있다.
   const { data, loading, error } = useAsync(
     () =>
       serverSearching
         ? listEntities({
             typeId: type.id,
-            q: debouncedQuery.trim(),
+            q: debouncedQuery.trim() || undefined,
             includeDeprecated,
             withUsage: true,
             limit: SERVER_SEARCH_LIMIT,
+            searchProps: true,
+            propFilters,
           })
         : listAllEntities({
             typeId: type.id,
             includeDeprecated,
             withUsage: true,
           }),
-    [type.id, includeDeprecated, reloadKey, debouncedQuery],
+    [type.id, includeDeprecated, reloadKey, debouncedQuery, propFiltersKey],
   )
   const rows = data?.items ?? []
   // 축의 속성 스키마(A0.1). record 축이면 목록 요약칩·편집 폼이 이걸로 렌더
@@ -707,6 +713,20 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
     setReloadKey((n) => n + 1)
     setSelectedIds(new Set()) // 목록이 바뀌면 선택 초기화(사라진 행 잔류 방지).
   }
+
+  // 속성 필터 추가/삭제 — 드래프트(속성 select + 값 input)를 칩으로 확정.
+  const [filterKey, setFilterKey] = useState('')
+  const [filterValue, setFilterValue] = useState('')
+  function addPropFilter() {
+    const key = filterKey || propertyDefs[0]?.key
+    if (!key || !filterValue.trim()) return
+    setPropFilters((prev) => [...prev, { key, value: filterValue.trim() }])
+    setFilterValue('')
+  }
+  function removePropFilter(i) {
+    setPropFilters((prev) => prev.filter((_, j) => j !== i))
+  }
+  const propLabel = (key) => propertyDefs.find((d) => d.key === key)?.label || key
 
   // 내보내기 — "표로 입력"과 같은 열 구성(이름 + 속성)으로 TSV 를 클립보드에 담는다.
   // 헤더(이름·속성 라벨) + 값 행. 「표로 입력」에 그대로 붙여넣으면 헤더는 자동
@@ -763,10 +783,17 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
     setExportingAll(true)
     try {
       const q = debouncedQuery.trim() || undefined
-      const blob = await exportEntitiesCsv({ typeId: type.id, includeDeprecated, q })
+      const filtered = Boolean(q || propFilters.length)
+      const blob = await exportEntitiesCsv({
+        typeId: type.id,
+        includeDeprecated,
+        q,
+        searchProps: true,
+        propFilters,
+      })
       const safe = (type.label || type.slug || 'entities').replace(/[\\/:*?"<>|]/g, '_')
       const stamp = new Date().toISOString().slice(0, 10)
-      const suffix = q ? '_검색' : '_전체'
+      const suffix = filtered ? '_검색' : '_전체'
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -775,7 +802,7 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
       a.click()
       a.remove()
       URL.revokeObjectURL(url)
-      toast.success(q ? '검색 결과 전체를 CSV로 저장했습니다.' : '축의 전체 값을 CSV로 저장했습니다.', {
+      toast.success(filtered ? '검색 결과 전체를 CSV로 저장했습니다.' : '축의 전체 값을 CSV로 저장했습니다.', {
         description: '엑셀에서 바로 열립니다(모든 컬럼 포함).',
       })
     } catch (err) {
@@ -976,7 +1003,7 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={`${type.label} 검색 (값·코드·설명)`}
+            placeholder={`${type.label} 검색 (값·코드·설명·속성)`}
             className="h-8 pl-7 w-72 text-sm"
           />
         </div>
@@ -1067,7 +1094,7 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
               >
                 <Download className="mr-2 h-3.5 w-3.5" />
                 <div>
-                  <div>{debouncedQuery.trim() ? '검색 결과 전체 CSV' : '전체 CSV 저장 (모든 값)'}</div>
+                  <div>{serverSearching ? '검색 결과 전체 CSV' : '전체 CSV 저장 (모든 값)'}</div>
                   <div className="text-xs text-muted-foreground">
                     {exportingAll
                       ? '내보내는 중…'
@@ -1091,6 +1118,65 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
           </Button>
         </div>
       </div>
+
+      {/* 속성 지정 필터 — 속성(key) + 값으로 좁힌다(예: 년도=2025). 여러 개는 AND.
+          record 축(속성 정의 있음)에서만 노출. 개수와 무관하게 서버가 필터한다. */}
+      {propertyDefs.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-muted-foreground">속성 필터:</span>
+          <select
+            value={filterKey || propertyDefs[0]?.key || ''}
+            onChange={(e) => setFilterKey(e.target.value)}
+            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+          >
+            {propertyDefs.map((d) => (
+              <option key={d.key} value={d.key}>
+                {d.label}
+              </option>
+            ))}
+          </select>
+          <Input
+            value={filterValue}
+            onChange={(e) => setFilterValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                addPropFilter()
+              }
+            }}
+            placeholder="값 (예: 2025)"
+            className="h-8 w-40 text-xs"
+          />
+          <Button variant="outline" size="sm" onClick={addPropFilter} disabled={!filterValue.trim()}>
+            <Plus className="mr-1 h-3.5 w-3.5" /> 필터 추가
+          </Button>
+          {propFilters.map((f, i) => (
+            <span
+              key={`${f.key}:${f.value}:${i}`}
+              className="inline-flex items-center gap-1 rounded-full border bg-primary/5 px-2 py-0.5"
+            >
+              <b>{propLabel(f.key)}</b>: {f.value}
+              <button
+                type="button"
+                className="ml-0.5 text-muted-foreground hover:text-foreground"
+                onClick={() => removePropFilter(i)}
+                title="이 필터 제거"
+              >
+                ✕
+              </button>
+            </span>
+          ))}
+          {propFilters.length > 0 && (
+            <button
+              type="button"
+              className="text-muted-foreground underline hover:text-foreground"
+              onClick={() => setPropFilters([])}
+            >
+              모두 지우기
+            </button>
+          )}
+        </div>
+      )}
 
       {/* 입력 거버넌스 바 — 이 축의 정책/패턴을 한눈에 + 편집 진입. */}
       <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-1.5 text-xs">

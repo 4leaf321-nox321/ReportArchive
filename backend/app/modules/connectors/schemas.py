@@ -68,6 +68,15 @@ class StreamConfig(BaseModel):
     #   건너뛰어 계속 가져온다. 특정 레코드가 서버 직렬화를 깨뜨릴 때 그 하나만
     #   희생하고 나머지를 살린다(건너뛴 수는 로그로 남김). offset 스타일에서만 동작.
     skip_on_error: bool = False
+    # 오프셋 백필 (v3.2) — 초기 대량 적재를 한 번에 못 받을 때(상한 초과), $skip
+    # 오프셋을 sync_state 에 저장해 실행마다 다음 창(최대 상한)만 이어 받는다.
+    # $filter 없이 page_param($skip)+size_param($top)+page_size(서버 페이지 크기)로
+    # 페이징하며, $orderby 로 안정 정렬돼 있어야 창 경계에서 누락/중복이 안 생긴다.
+    # 다 받으면 자동으로 멈춘다(done). 이후 실제 변경분은 incremental(watermark)로.
+    backfill: bool = False
+    #   backfill_window: 한 번 실행에 받을 최대 레코드 수(창 크기). 0=기본(_MAX_RECORDS
+    #   =2만). 메모리 안전 상한(_MAX_RECORDS)을 넘겨 지정해도 그 값으로 clamp 된다.
+    backfill_window: int = 0
     # 증분(watermark) (v3) — 마지막 동기화 이후 바뀐 것만.
     incremental: bool = False
     watermark_field: str = ""                      # 레코드의 변경 기준 필드(예: updatedAt)
@@ -107,6 +116,9 @@ class DataSourceRead(BaseModel):
     enabled: bool
     config: SourceConfig
     has_secret: bool
+    # 런타임 상태 — 스트림별 watermark 커서 + 백필 오프셋('{i}:backfill_offset',
+    # '{i}:backfill_done'). UI 가 백필 진행률을 보여준다.
+    sync_state: dict = {}
     schedule_kind: str
     interval_minutes: Optional[int]
     next_run_at: Optional[datetime]

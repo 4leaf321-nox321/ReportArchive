@@ -154,17 +154,19 @@ def suggest_mapping(
 @router.post("/{source_id}/preview")
 def preview(
     source_id: int,
+    stream: int | None = None,
     db: Session = Depends(get_db),
     _admin: User = Depends(require_system_admin),
 ):
-    """dry_run 동기화 — fetch + 매핑 + 검증만(쓰기 없음). 반환 {summary, rows}."""
+    """dry_run 동기화 — fetch + 매핑 + 검증만(쓰기 없음). 반환 {summary, rows}.
+    stream(인덱스)을 주면 그 스트림 하나만 미리본다."""
     source = services.get_source(db, source_id)
     if source is None:
         return not_found_response("데이터소스를 찾을 수 없습니다.")
     try:
         result = services.run_sync(
             db, source, dry_run=True, triggered_by="manual",
-            user_id=source.created_by_user_id or 0,
+            user_id=source.created_by_user_id or 0, stream_index=stream,
         )
     except (FetchError, ValueError) as exc:
         return error_response(str(exc), status_code=400)
@@ -174,20 +176,39 @@ def preview(
 @router.post("/{source_id}/sync")
 def sync_now(
     source_id: int,
+    stream: int | None = None,
     db: Session = Depends(get_db),
     admin: User = Depends(require_system_admin),
 ):
-    """실제 동기화 — 온톨로지에 upsert + 관계 링크. 이력에 기록. 반환 {summary, rows}."""
+    """실제 동기화 — 온톨로지에 upsert + 관계 링크. 이력에 기록. 반환 {summary, rows}.
+    stream(인덱스)을 주면 그 스트림 하나만 동기화한다(나머지는 건드리지 않음)."""
     source = services.get_source(db, source_id)
     if source is None:
         return not_found_response("데이터소스를 찾을 수 없습니다.")
     try:
         result = services.run_sync(
             db, source, dry_run=False, triggered_by="manual", user_id=admin.id,
+            stream_index=stream,
         )
     except (FetchError, ValueError) as exc:
         return error_response(str(exc), status_code=400)
     return success_response(data=result)
+
+
+@router.post("/{source_id}/reset-backfill")
+def reset_backfill(
+    source_id: int,
+    stream: int | None = None,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_system_admin),
+):
+    """오프셋 백필 진행 상태(오프셋·done)를 초기화 — 다음 실행이 offset 0 부터 다시.
+    stream(인덱스)을 주면 그 스트림만. watermark 커서는 보존."""
+    source = services.get_source(db, source_id)
+    if source is None:
+        return not_found_response("데이터소스를 찾을 수 없습니다.")
+    services.reset_backfill(db, source, stream_index=stream)
+    return success_response(data={"sync_state": source.sync_state or {}})
 
 
 @router.get("/objects/{entity_id}/provenance")

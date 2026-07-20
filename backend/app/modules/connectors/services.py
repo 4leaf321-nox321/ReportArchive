@@ -19,6 +19,7 @@ from app.modules.connectors.fetch import (
     FetchError,
     _dig,
     build_rows_and_mapping,
+    fetch_offset_backfill,
     fetch_records,
 )
 from app.modules.connectors.models import DataSource, SyncRun
@@ -108,6 +109,7 @@ def to_read(source: DataSource) -> DataSourceRead:
         enabled=source.enabled,
         config=masked,
         has_secret=has_secret,
+        sync_state=source.sync_state or {},
         schedule_kind=source.schedule_kind,
         interval_minutes=source.interval_minutes,
         next_run_at=source.next_run_at,
@@ -232,10 +234,21 @@ def _finish_run(db: Session, run_id: int, source_id: int, *, status: str,
 
 # --- 핵심: 동기화 실행(스트림 순회) ------------------------------------------
 def run_sync(db: Session, source: DataSource, *, dry_run: bool,
-             triggered_by: str, user_id: int) -> dict:
+             triggered_by: str, user_id: int,
+             stream_index: int | None = None) -> dict:
     """커넥션의 각 스트림을 순서대로 fetch → rows 변환 → run_import(upsert). dry_run
-    이면 검증만(쓰기 없음). 스트림별 결과를 모으고 집계 요약을 함께 돌려준다."""
+    이면 검증만(쓰기 없음). 스트림별 결과를 모으고 집계 요약을 함께 돌려준다.
+
+    stream_index 를 주면 그 인덱스의 스트림 하나만 실행한다(나머지는 건너뜀) — 큰
+    소스에서 문제 스트림만 재시도하거나 초기 백필을 스트림별로 나눠 돌릴 때 쓴다.
+    watermark·계보 갱신은 실행한 스트림에만 적용되니 증분 상태도 그대로 유지된다."""
     cfg = from_stored_config(source.config)  # 시크릿 복호(fetch 직전)
+
+    if stream_index is not None and not (0 <= stream_index < len(cfg.streams)):
+        raise ValueError(
+            f"스트림 인덱스({stream_index})가 범위를 벗어났습니다. "
+            f"이 소스의 스트림은 {len(cfg.streams)}개입니다."
+        )
 
     run_id = None
     if not dry_run:
@@ -250,11 +263,31 @@ def run_sync(db: Session, source: DataSource, *, dry_run: bool,
     any_failed = False
 
     for i, st in enumerate(cfg.streams):
+        if stream_index is not None and i != stream_index:
+            continue
         label = st.label or f"스트림 {i + 1}"
+        state = source.sync_state or {}
+        off_key, done_key = f"{i}:backfill_offset", f"{i}:backfill_done"
+        # 백필 모드 판정 — backfill 켜졌고 아직 끝(done)이 아니면 오프셋 창 방식.
+        # dry_run(미리보기)도 현재 오프셋 기준으로 "다음에 받을 창"을 보여준다.
+        backfilling = st.backfill and (dry_run or state.get(done_key) != "1")
         try:
-            # 증분 — 마지막 watermark 이후 변경분만(dry_run 은 전체, 미리보기라).
-            since = (source.sync_state or {}).get(str(i)) if (st.incremental and not dry_run) else None
-            records = fetch_records(cfg.connection, st, since=since)
+            backfill_meta = None
+            if backfilling:
+                start = int(state.get(off_key) or 0)
+                records, next_off, done = fetch_offset_backfill(
+                    cfg.connection, st, start_offset=start,
+                    window=st.backfill_window or None,
+                )
+                backfill_meta = {"from": start, "to": next_off, "done": done}
+            elif st.backfill and not st.incremental and not dry_run:
+                # 백필 완료 + 증분 미설정 → 더 받을 것 없음. 전체 재조회(상한 초과) 회피.
+                records = []
+                backfill_meta = {"done": True, "idle": True}
+            else:
+                # 증분 — 마지막 watermark 이후 변경분만(dry_run 은 전체, 미리보기라).
+                since = state.get(str(i)) if (st.incremental and not dry_run) else None
+                records = fetch_records(cfg.connection, st, since=since)
             mapping, rows = build_rows_and_mapping(st, records, dry_run=dry_run)
             result = run_import(db, mapping=mapping, rows=rows,
                                 creator_user_id=user_id, dry_run=dry_run)
@@ -265,6 +298,7 @@ def run_sync(db: Session, source: DataSource, *, dry_run: bool,
                 "label": label,
                 "target_type_id": st.target_type_id,
                 "summary": s,
+                "backfill": backfill_meta,
                 "error_rows": [r for r in result["rows"] if r["status"] == "error"][:20],
             })
             # 계보 — 이번에 채운 객체에 출처(소스·run) 태깅.
@@ -272,14 +306,21 @@ def run_sync(db: Session, source: DataSource, *, dry_run: bool,
                 eids = [r["entity_id"] for r in result["rows"] if r.get("entity_id")]
                 record_provenance(db, entity_ids=eids,
                                   data_source_id=source.id, sync_run_id=run_id)
-            # watermark 전진 — 이번에 받은 레코드의 최댓값을 저장(스트림별 즉시 커밋해
-            # 뒤 스트림 실패에도 진행분 보존).
-            if not dry_run and st.incremental and st.watermark_field:
-                new_wm = _max_watermark(records, st.watermark_field)
-                if new_wm:
-                    state = dict(source.sync_state or {})
-                    state[str(i)] = new_wm
-                    source.sync_state = state
+            # 런타임 상태 전진 — 백필 오프셋 + watermark 를 스트림별 즉시 커밋(뒤 스트림
+            # 실패에도 진행분 보존). watermark 는 백필 중에도 최댓값을 계속 올려둬,
+            # 백필 완료 후 첫 증분 실행이 전체 재조회 없이 since 를 이어받게 한다.
+            if not dry_run:
+                new_state = dict(source.sync_state or {})
+                if backfill_meta and not backfill_meta.get("idle"):
+                    new_state[off_key] = str(backfill_meta["to"])
+                    if backfill_meta["done"]:
+                        new_state[done_key] = "1"
+                if st.incremental and st.watermark_field:
+                    new_wm = _max_watermark(records, st.watermark_field)
+                    if new_wm:
+                        new_state[str(i)] = new_wm
+                if new_state != (source.sync_state or {}):
+                    source.sync_state = new_state
                     db.commit()
         except (FetchError, ValueError) as exc:
             db.rollback()
@@ -291,7 +332,7 @@ def run_sync(db: Session, source: DataSource, *, dry_run: bool,
             })
 
     agg["committed"] = not dry_run
-    agg["streams"] = len(cfg.streams)
+    agg["streams"] = len(stream_results)  # 실제 실행한 스트림 수(단일 실행이면 1)
     out = {"summary": agg, "streams": stream_results}
 
     if run_id is not None:
@@ -299,6 +340,30 @@ def run_sync(db: Session, source: DataSource, *, dry_run: bool,
                     status=("failed" if any_failed else "done"),
                     summary={**agg, "stream_results": stream_results})
     return out
+
+
+def reset_backfill(db: Session, source: DataSource,
+                   stream_index: int | None = None) -> None:
+    """백필 진행 상태(오프셋·done)를 초기화 — 처음(offset 0)부터 다시 받게 한다.
+    orderby 를 잘못 걸어 창 경계가 어긋났거나, 소스를 통째로 재적재할 때. watermark
+    커서(str(i))는 건드리지 않는다. stream_index 를 주면 그 스트림만."""
+    state = dict(source.sync_state or {})
+    prefixes = (
+        [f"{stream_index}:"] if stream_index is not None
+        else None
+    )
+
+    def _is_backfill_key(k: str) -> bool:
+        return k.endswith(":backfill_offset") or k.endswith(":backfill_done")
+
+    for k in list(state.keys()):
+        if not _is_backfill_key(k):
+            continue
+        if prefixes and not any(k.startswith(p) for p in prefixes):
+            continue
+        del state[k]
+    source.sync_state = state
+    db.commit()
 
 
 def maybe_alert_sync_failure(

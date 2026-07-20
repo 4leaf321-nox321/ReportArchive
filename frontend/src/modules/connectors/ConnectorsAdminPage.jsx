@@ -40,6 +40,7 @@ import {
   probeDataSource,
   previewDataSource,
   syncDataSource,
+  resetBackfill,
   listSyncRuns,
   suggestMapping,
 } from '@/shared/api/connectors'
@@ -127,6 +128,8 @@ function streamFromConfig(st) {
     cursor_param: st.cursor_param || 'cursor',
     next_url_path: st.next_url_path || '',
     skip_on_error: !!st.skip_on_error,
+    backfill: !!st.backfill,
+    backfill_window: st.backfill_window || 0,
     incremental: !!st.incremental,
     watermark_field: st.watermark_field || '',
     watermark_param: st.watermark_param || '',
@@ -148,6 +151,7 @@ function draftFromSource(s) {
     auth_username: conn.auth?.username || '',
     auth_password: '',
     has_secret: s.has_secret,
+    sync_state: s.sync_state || {}, // 백필 진행률 표시용(편집 대상 아님)
     streams: (s.config?.streams || []).map(streamFromConfig),
   }
 }
@@ -189,6 +193,8 @@ function streamToConfig(st) {
     cursor_param: (st.cursor_param || 'cursor').trim(),
     next_url_path: (st.next_url_path || '').trim(),
     skip_on_error: !!st.skip_on_error,
+    backfill: !!st.backfill,
+    backfill_window: Number(st.backfill_window) || 0,
     incremental: !!st.incremental,
     watermark_field: (st.watermark_field || '').trim(),
     watermark_param: (st.watermark_param || '').trim(),
@@ -270,6 +276,11 @@ function StreamEditor({
   probeResult,
   onSuggest,
   suggesting,
+  onRun,
+  busy,
+  canRun,
+  syncState,
+  onResetBackfill,
 }) {
   function upd(patch) {
     onChange(index, { ...stream, ...patch })
@@ -433,6 +444,39 @@ function StreamEditor({
               칸을 클릭해 고르거나 ‘AI 자동 매핑’으로 한 번에.
             </span>
           )}
+        </div>
+
+        {/* 이 스트림만 실행 — 큰 소스에서 문제 스트림만 재시도하거나 초기 백필을
+            스트림별로 나눠 돌릴 때. 저장된 config 기준으로 도니 편집분은 먼저 저장. */}
+        <div className="flex flex-wrap items-center gap-2 border-t pt-3">
+          <span className="text-xs font-medium text-muted-foreground">이 스트림만:</span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onRun('preview', index)}
+            disabled={!canRun || busy != null}
+            title={!canRun ? '먼저 저장한 뒤 실행하세요.' : '이 스트림만 미리보기(쓰기 없음)'}
+          >
+            {busy === `preview:${index}` ? (
+              <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+            ) : (
+              <Eye className="mr-1 h-4 w-4" />
+            )}
+            미리보기
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => onRun('sync', index)}
+            disabled={!canRun || busy != null}
+            title={!canRun ? '먼저 저장한 뒤 실행하세요.' : '이 스트림만 동기화(온톨로지에 쓰기)'}
+          >
+            {busy === `sync:${index}` ? (
+              <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+            ) : (
+              <Play className="mr-1 h-4 w-4" />
+            )}
+            지금 동기화
+          </Button>
         </div>
         {probeResult && (
           <>
@@ -694,6 +738,80 @@ function StreamEditor({
               </label>
             )}
 
+            {/* 오프셋 백필 — 초기 대량 적재(상한 초과)를 실행마다 한 창씩 나눠 받기 */}
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" className="mt-0.5" checked={stream.backfill}
+                onChange={(e) => upd({ backfill: e.target.checked })} />
+              <span>
+                오프셋 백필 (초기 대량 적재를 나눠서)
+                <span className="block text-xs text-muted-foreground">
+                  한 번에 다 못 받을 때, 실행할 때마다 정한 개수(기본 2만, 아래에서
+                  조정)만큼 이어서 받습니다. 필터 없이 <code>$skip</code>(오프셋 파라미터)+
+                  <code>$top</code>(개수 파라미터)로 페이징합니다. 다 받으면 자동으로
+                  멈추고, 이후 실제 변경분은 증분 동기화로 넘기면 됩니다.
+                </span>
+              </span>
+            </label>
+            {stream.backfill && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-muted-foreground">
+                <div className="mb-2 flex items-center gap-2">
+                  <Label className="text-xs">한 번에 받을 개수(창 크기)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={20000}
+                    className="h-8 w-28"
+                    value={stream.backfill_window || ''}
+                    placeholder="20000"
+                    onChange={(e) => upd({ backfill_window: e.target.value })}
+                  />
+                  <span>비우면 기본 2만(상한). 그보다 크게 넣어도 2만으로 제한됩니다.</span>
+                </div>
+                <p className="font-medium text-amber-600 dark:text-amber-400">설정 확인</p>
+                <ul className="ml-4 list-disc space-y-0.5">
+                  <li>
+                    쿼리에 <code>$orderby</code>로 <b>안정 정렬</b>을 넣으세요(예: 기본키·
+                    코드). 정렬이 흔들리면 창 경계에서 누락·중복이 생깁니다.
+                  </li>
+                  <li>
+                    <b>개수 파라미터명</b>=<code>$top</code>, <b>오프셋 파라미터명</b>=
+                    <code>$skip</code>, <b>페이지 크기</b>는 서버가 한 번에 돌려주는
+                    실제 페이지 크기와 같게 두세요.
+                  </li>
+                  <li>매칭 기준을 <b>코드</b>로 두면 창이 겹쳐도 중복 없이 갱신됩니다.</li>
+                </ul>
+                {(() => {
+                  const off = syncState?.[`${index}:backfill_offset`]
+                  const done = syncState?.[`${index}:backfill_done`] === '1'
+                  if (off == null && !done) {
+                    return <p className="mt-1">진행 상태: 아직 시작 안 함 (다음 실행이 offset 0부터).</p>
+                  }
+                  return (
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <span>
+                        진행 상태:{' '}
+                        {done ? (
+                          <b className="text-emerald-600 dark:text-emerald-400">완료</b>
+                        ) : (
+                          <>다음 실행은 offset <b>{off ?? 0}</b>부터</>
+                        )}
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => onResetBackfill(index)}
+                        disabled={!canRun}
+                        title="offset 0부터 다시 받도록 진행 상태를 초기화"
+                      >
+                        위치 초기화
+                      </Button>
+                    </div>
+                  )
+                })()}
+              </div>
+            )}
+
             {/* 증분 */}
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={stream.incremental}
@@ -903,21 +1021,45 @@ export default function ConnectorsAdminPage() {
     }
   }
 
-  async function doAction(kind) {
+  async function doAction(kind, streamIndex = null) {
     if (selectedId === 'new') return toast.error('먼저 저장한 뒤 실행하세요.')
-    setBusy(kind)
+    // busy 키에 스트림 인덱스를 실어(예: 'sync:2') 그 버튼만 돌게 한다.
+    const busyKey = streamIndex != null ? `${kind}:${streamIndex}` : kind
+    setBusy(busyKey)
     setResult(null)
     try {
-      const res = kind === 'preview' ? await previewDataSource(selectedId) : await syncDataSource(selectedId)
-      setResult({ kind, ...res })
+      const res =
+        kind === 'preview'
+          ? await previewDataSource(selectedId, streamIndex)
+          : await syncDataSource(selectedId, streamIndex)
+      setResult({ kind, streamIndex, ...res })
       if (kind === 'sync') {
-        toast.success('동기화 완료.')
+        toast.success(streamIndex != null ? '이 스트림 동기화 완료.' : '동기화 완료.')
         reload()
+        // 백필 오프셋이 전진했을 수 있어 진행률 표시를 새 sync_state 로 갱신.
+        try {
+          const fresh = await getDataSource(selectedId)
+          setDraft((d) => (d ? { ...d, sync_state: fresh.sync_state || {} } : d))
+        } catch {
+          /* 진행률 갱신 실패는 치명적 아님 */
+        }
       }
     } catch (err) {
       toast.error(err?.response?.data?.message || '실행에 실패했습니다.')
     } finally {
       setBusy(null)
+    }
+  }
+
+  async function doResetBackfill(streamIndex) {
+    if (selectedId === 'new') return
+    try {
+      const res = await resetBackfill(selectedId, streamIndex)
+      // 반환된 sync_state 로 draft 의 진행률 표시를 갱신(편집 config 는 그대로).
+      setDraft((d) => (d ? { ...d, sync_state: res.sync_state || {} } : d))
+      toast.success('백필 위치를 초기화했습니다. 다음 실행이 offset 0부터 받습니다.')
+    } catch (err) {
+      toast.error(err?.response?.data?.message || '초기화에 실패했습니다.')
     }
   }
 
@@ -1235,6 +1377,11 @@ export default function ConnectorsAdminPage() {
                     probeResult={probeResults[selStream]}
                     onSuggest={doSuggest}
                     suggesting={suggesting === selStream}
+                    onRun={doAction}
+                    busy={busy}
+                    canRun={selectedId !== 'new'}
+                    syncState={draft.sync_state}
+                    onResetBackfill={doResetBackfill}
                   />
                 ) : (
                   <p className="py-8 text-center text-sm text-muted-foreground">
@@ -1252,22 +1399,25 @@ export default function ConnectorsAdminPage() {
                     {saving && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
                     저장
                   </Button>
-                  <Button variant="outline" onClick={() => doAction('preview')} disabled={busy === 'preview' || selectedId === 'new'}>
+                  <Button variant="outline" onClick={() => doAction('preview')} disabled={busy != null || selectedId === 'new'}>
                     {busy === 'preview' ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Eye className="mr-1 h-4 w-4" />}
-                    미리보기(dry-run)
+                    전체 미리보기(dry-run)
                   </Button>
-                  <Button onClick={() => doAction('sync')} disabled={busy === 'sync' || selectedId === 'new'}>
+                  <Button onClick={() => doAction('sync')} disabled={busy != null || selectedId === 'new'}>
                     {busy === 'sync' ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Play className="mr-1 h-4 w-4" />}
-                    지금 동기화
+                    전체 동기화
                   </Button>
-                  <Button variant="ghost" onClick={loadRuns} disabled={busy === 'runs' || selectedId === 'new'}>
+                  <Button variant="ghost" onClick={loadRuns} disabled={busy != null || selectedId === 'new'}>
                     <History className="mr-1 h-4 w-4" /> 이력
                   </Button>
                 </div>
 
                 {(result?.kind === 'preview' || result?.kind === 'sync') && (
                   <div className="rounded-md border bg-muted/30 p-3">
-                    <p className="mb-1 text-sm font-medium">{result.kind === 'preview' ? '미리보기 결과' : '동기화 결과'}</p>
+                    <p className="mb-1 text-sm font-medium">
+                      {result.kind === 'preview' ? '미리보기 결과' : '동기화 결과'}
+                      {result.streamIndex != null ? ` · 스트림 ${result.streamIndex + 1}만 실행` : ''}
+                    </p>
                     <SummaryLine summary={result.summary} />
                     <div className="mt-2 space-y-1">
                       {(result.streams || []).map((sr, i) => (
@@ -1283,6 +1433,15 @@ export default function ConnectorsAdminPage() {
                               — 생성 {sr.summary.create} · 갱신 {sr.summary.update} · 오류 {sr.summary.error} · 링크{' '}
                               {sr.summary.linked}
                             </span>
+                          )}
+                          {sr.backfill && !sr.backfill.idle && (
+                            <span className="ml-1 text-amber-600 dark:text-amber-400">
+                              · 백필 offset {sr.backfill.from}→{sr.backfill.to}
+                              {sr.backfill.done ? ' (완료 ✓)' : ' (다음 실행에서 계속)'}
+                            </span>
+                          )}
+                          {sr.backfill?.idle && (
+                            <span className="ml-1 text-muted-foreground">· 백필 완료 — 받을 것 없음</span>
                           )}
                         </div>
                       ))}

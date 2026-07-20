@@ -47,14 +47,25 @@ export async function probeDataSource(connection, stream, sourceId = null) {
   )
 }
 
-/** dry_run 동기화(검증 미리보기, 쓰기 없음) — { summary, rows } */
-export async function previewDataSource(id) {
-  return extractData(await apiClient.post(`${BASE}/${id}/preview`))
+/** dry_run 동기화(검증 미리보기, 쓰기 없음) — { summary, rows }
+ *  streamIndex 를 주면 그 스트림 하나만 미리본다. */
+export async function previewDataSource(id, streamIndex = null) {
+  const q = streamIndex != null ? `?stream=${streamIndex}` : ''
+  return extractData(await apiClient.post(`${BASE}/${id}/preview${q}`))
 }
 
-/** 실제 동기화(온톨로지 upsert + 이력) — { summary, rows } */
-export async function syncDataSource(id) {
-  return extractData(await apiClient.post(`${BASE}/${id}/sync`))
+/** 실제 동기화(온톨로지 upsert + 이력) — { summary, rows }
+ *  streamIndex 를 주면 그 스트림 하나만 동기화한다(나머지는 건드리지 않음). */
+export async function syncDataSource(id, streamIndex = null) {
+  const q = streamIndex != null ? `?stream=${streamIndex}` : ''
+  return extractData(await apiClient.post(`${BASE}/${id}/sync${q}`))
+}
+
+/** 오프셋 백필 진행 상태 초기화(offset 0 부터 다시). streamIndex 주면 그 스트림만.
+ *  { sync_state } */
+export async function resetBackfill(id, streamIndex = null) {
+  const q = streamIndex != null ? `?stream=${streamIndex}` : ''
+  return extractData(await apiClient.post(`${BASE}/${id}/reset-backfill${q}`))
 }
 
 /** 동기화 이력 — { items[] } */

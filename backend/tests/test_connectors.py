@@ -589,6 +589,125 @@ def test_next_url_pagination_odata(monkeypatch):
     assert seq["n"] == 2  # 두 번 요청
 
 
+def test_offset_backfill_window(monkeypatch):
+    """오프셋 백필 — 한 창(window)만 이어받고 next_offset·done 을 정확히 돌려준다.
+    $filter 없이 $skip/$top 페이징. window 를 채우면 done=False 로 다음 실행에 넘긴다."""
+    from app.modules.connectors import fetch as F
+    from app.modules.connectors.schemas import ConnectionConfig, StreamConfig
+
+    data = [{"id": i} for i in range(12)]  # 총 12건, page_size=4
+
+    def fake_req(client, method, url, headers, params, basic):
+        skip = int(params.get("$skip", 0))
+        top = int(params.get("$top", 0))
+        return {"value": data[skip:skip + top]}
+
+    monkeypatch.setattr(F, "_request_json", fake_req)
+    conn = ConnectionConfig(base_url="http://x.test")
+    st = StreamConfig(endpoint_path="/svc/Items", records_path="value",
+                      page_param="$skip", size_param="$top", page_size=4)
+
+    # 1창(window=5): 페이지 4+4=8 누적 후 window 초과로 멈춤 → 아직 안 끝남.
+    recs, nxt, done = F.fetch_offset_backfill(conn, st, start_offset=0, window=5)
+    assert len(recs) == 8 and nxt == 8 and done is False, (len(recs), nxt, done)
+
+    # 이어받기: skip 8 부터. 4건 받고 다음 페이지가 빈(<size) → 소스 끝(done).
+    recs2, nxt2, done2 = F.fetch_offset_backfill(conn, st, start_offset=8, window=5)
+    assert len(recs2) == 4 and done2 is True, (len(recs2), nxt2, done2)
+
+    # window=0/None → 기본(_MAX_RECORDS), 그리고 상한 초과 지정은 상한으로 clamp.
+    monkeypatch.setattr(F, "_MAX_RECORDS", 6)
+    r0, _, d0 = F.fetch_offset_backfill(conn, st, start_offset=0, window=0)
+    assert len(r0) == 8 and d0 is False  # 기본=6 → 4+4=8 에서 창 초과로 멈춤
+    r_big, _, _ = F.fetch_offset_backfill(conn, st, start_offset=0, window=99999)
+    assert len(r_big) == 8  # 99999→6 으로 clamp(전건 12 아님)
+
+
+def test_backfill_chunked_sync_through_api(monkeypatch):
+    """백필 켠 스트림을 반복 동기화하면 offset 이 전진하며 청크로 다 적재되고, 끝나면
+    done 이 서고 idle 이 된다. 코드 매칭이라 창이 겹쳐도 중복 없이 전건 upsert."""
+    from app.database import SessionLocal
+    from app.modules.connectors import fetch as F
+    from app.modules.connectors.models import DataSource
+
+    monkeypatch.setattr(F, "_MAX_RECORDS", 5)  # 작은 창으로 청킹 확인
+    total = [{"code": f"P{i:03d}-{{sfx}}", "name": f"n{i}-{{sfx}}"} for i in range(12)]
+
+    c = TestClient(app)
+    sfx = uuid.uuid4().hex[:8]
+    total = [{"code": r["code"].format(sfx=sfx), "name": r["name"].format(sfx=sfx)}
+             for r in total]
+
+    def fake_req(client, method, url, headers, params, basic):
+        skip = int(params.get("$skip", 0))
+        top = int(params.get("$top", 0))
+        return {"value": total[skip:skip + top]}
+
+    monkeypatch.setattr(F, "_request_json", fake_req)
+    proj_id = sid = None
+    try:
+        proj_id = c.post("/api/entity-types", headers=ADMIN,
+                         json={"slug": "bf_" + sfx, "label": "백필과제",
+                               "kind_class": "record"}).json()["data"]["id"]
+        cfg = {
+            "connection": {"base_url": "http://x.test"},
+            "streams": [{"endpoint_path": "/svc/Items", "records_path": "value",
+                         "target_type_id": proj_id, "value_path": "name",
+                         "match_key": "code", "code_path": "code",
+                         "page_param": "$skip", "size_param": "$top",
+                         "page_size": 4, "backfill": True}],
+        }
+        sid = c.post("/api/connectors", headers=ADMIN,
+                     json={"name": "bf-" + sfx, "config": cfg}).json()["data"]["id"]
+
+        # 1차 — 창(5) 채우고 offset 전진, 아직 done 아님.
+        r1 = c.post(f"/api/connectors/{sid}/sync", headers=ADMIN).json()["data"]
+        bf1 = r1["streams"][0]["backfill"]
+        assert bf1["from"] == 0 and bf1["done"] is False and bf1["to"] >= 5, bf1
+        db = SessionLocal()
+        try:
+            assert db.get(DataSource, sid).sync_state.get("0:backfill_offset") == str(bf1["to"])
+        finally:
+            db.close()
+
+        # 반복 — 다 받을 때까지. 결국 done.
+        seen_done = False
+        for _ in range(6):
+            r = c.post(f"/api/connectors/{sid}/sync", headers=ADMIN).json()["data"]
+            if r["streams"][0]["backfill"]["done"]:
+                seen_done = True
+                break
+        assert seen_done
+        db = SessionLocal()
+        try:
+            assert db.get(DataSource, sid).sync_state.get("0:backfill_done") == "1"
+        finally:
+            db.close()
+
+        # 12건 전부 적재(코드 매칭 → 중복 없음).
+        assert len(_find(c, proj_id, sfx)) == 12, len(_find(c, proj_id, sfx))
+
+        # done 이후 재실행 — 증분 미설정이라 idle(받을 것 없음).
+        r_idle = c.post(f"/api/connectors/{sid}/sync", headers=ADMIN).json()["data"]
+        assert r_idle["streams"][0]["backfill"].get("idle") is True
+
+        # 위치 초기화 — done/offset 지워지고 다음 실행이 다시 offset 0 부터.
+        c.post(f"/api/connectors/{sid}/reset-backfill", headers=ADMIN)
+        db = SessionLocal()
+        try:
+            state = db.get(DataSource, sid).sync_state or {}
+            assert "0:backfill_done" not in state and "0:backfill_offset" not in state
+        finally:
+            db.close()
+        r_after = c.post(f"/api/connectors/{sid}/sync", headers=ADMIN).json()["data"]
+        assert r_after["streams"][0]["backfill"]["from"] == 0
+    finally:
+        if sid:
+            c.delete(f"/api/connectors/{sid}", headers=ADMIN)
+        if proj_id:
+            c.delete(f"/api/entity-types/{proj_id}", headers=ADMIN)
+
+
 def test_watermark_filter_template_odata(monkeypatch):
     """OData $filter 증분 — since 를 식 템플릿에 넣어 파라미터로."""
     from app.modules.connectors import fetch as F

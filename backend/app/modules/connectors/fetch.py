@@ -327,6 +327,54 @@ def fetch_records(
     return out
 
 
+def fetch_offset_backfill(
+    conn: ConnectionConfig, stream: StreamConfig, *, start_offset: int = 0,
+    window: int | None = None,
+) -> tuple[list[dict], int, bool]:
+    """오프셋 백필 한 창 — page_param($skip) 오프셋을 start_offset 부터 시작해 한 번에
+    최대 window(기본 _MAX_RECORDS)건까지만 이어 받는다. 반환 (records, next_offset,
+    done). done=True 면 소스 끝(더 받을 것 없음).
+
+    한 창을 여러 페이지로 나눠 받는다 — page_size(size_param=$top) 만큼씩 요청하며
+    누적이 window 에 닿으면 멈추고 다음 실행이 이어받게 next_offset 을 돌려준다.
+    $orderby 로 안정 정렬돼 있어야 창 경계에서 누락/중복이 안 생긴다(호출측 안내).
+    page_size 는 서버가 실제로 돌려주는 페이지 크기와 같아야 한다 — 그래야 마지막
+    페이지에서 recs < size 로 소스 끝(done)을 정확히 판단한다.
+
+    window 는 이번 실행 창 크기. None/0/음수면 _MAX_RECORDS(기본). 메모리 안전을 위해
+    _MAX_RECORDS 를 넘겨도 그 값으로 clamp 한다."""
+    if not window or window <= 0:
+        window = _MAX_RECORDS
+    window = min(window, _MAX_RECORDS)
+    base = (conn.base_url or "").strip()
+    if not base:
+        raise FetchError("base_url 이 비었습니다.")
+    url = urljoin(base if base.endswith("/") else base + "/",
+                  (stream.endpoint_path or "").lstrip("/"))
+    _check_outbound(url)
+
+    headers, basic = _auth_kwargs(conn)
+    method = stream.http_method or "GET"
+    base_query = dict(stream.query or {})
+    size = max(1, stream.page_size)
+    out: list[dict] = []
+    n = max(0, start_offset)
+    done = False
+    with httpx.Client(timeout=_TIMEOUT, follow_redirects=True) as client:
+        for _ in range(_MAX_PAGES):
+            q = {**base_query, stream.page_param: n, stream.size_param: size}
+            payload = _request_json(client, method, url, headers, q, basic)
+            recs = _extract_records(payload, stream.records_path)
+            out.extend(recs)
+            n += len(recs)
+            if len(recs) < size:  # 마지막 페이지 — 소스 끝.
+                done = True
+                break
+            if len(out) >= window:  # 이번 창 다 채움 — 다음 실행이 n 부터 이어받음.
+                break
+    return out, n, done
+
+
 def build_rows_and_mapping(
     stream: StreamConfig, records: list[dict], *, dry_run: bool
 ) -> tuple[EntityImportMapping, list[dict]]:

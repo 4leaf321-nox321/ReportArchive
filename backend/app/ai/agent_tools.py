@@ -676,3 +676,148 @@ def run_tool(db: Session, actor, name: str, args: dict) -> ToolResult:
         return _err(f"알 수 없는 도구: {name!r}")
     _, executor = entry
     return executor(db, actor, args or {})
+
+
+# --------------------------------------------------------------------------- #
+# 쓰기 도구 — 외부 AI(MCP)가 기준정보(온톨로지)를 채운다. **시스템 관리자 전용**
+# (라우트 `/api/ai/ontology/write` 가 require_system_admin 으로 게이팅).
+#
+# 인스턴스 레벨만: 객체 생성/수정·별칭·관계. 축/속성정의(스키마) 생성은 노출 안 함
+# (관리자 UI 유지). 모든 로직은 기존 entities/services 재사용 — 멱등 upsert
+# (resolve_existing)·거버넌스(closed 축·value_pattern·속성 스키마)가 그대로 적용된다.
+# 서비스가 ValueError 를 던지면 {"error": …} 로 감싸 AI 가 교정하게 한다.
+# --------------------------------------------------------------------------- #
+def _object_brief(row) -> dict:
+    """엔티티 1건을 AI 에게 줄 간결 dict 로. 읽기 도구 결과와 형태를 맞춘다."""
+    return {
+        "id": row.id,
+        "value": row.value,
+        "type_slug": row.entity_type.slug if row.entity_type else None,
+        "code": row.code,
+        "description": row.description or None,
+        "status": str(getattr(row.status, "value", row.status)),
+        "properties": row.properties or {},
+    }
+
+
+def _resolve_type(db: Session, args: dict):
+    """args 에서 type_slug(우선) 또는 type_id 로 축을 찾는다. (row, error) 반환."""
+    slug = (args.get("type_slug") or "").strip() if args.get("type_slug") else None
+    if slug:
+        t = ent.get_type_by_slug(db, slug)
+        return (t, None) if t else (None, f"알 수 없는 축(type_slug): {slug!r}")
+    type_id = args.get("type_id")
+    if type_id is not None:
+        t = ent.get_type(db, int(type_id))
+        return (t, None) if t else (None, f"알 수 없는 축(type_id): {type_id}")
+    return None, "type_slug 또는 type_id 가 필요합니다."
+
+
+def _w_create_object(db: Session, user, args: dict) -> dict:
+    from app.modules.entities.schemas import EntityCreate
+
+    type_row, err = _resolve_type(db, args)
+    if err:
+        return {"error": err}
+    value = (args.get("value") or "").strip()
+    if not value:
+        return {"error": "value(객체 이름)는 비워둘 수 없습니다."}
+    code = (args.get("code") or "").strip() or None
+
+    # 멱등 판정 — 이미 있으면(값/별칭/코드 매칭) created=False 로 canonical 을 돌려준다.
+    existing = ent.resolve_existing(db, type_id=type_row.id, value=value, code=code)
+    if existing is not None:
+        return {"created": False, "object": _object_brief(existing)}
+
+    payload = EntityCreate(
+        type_id=type_row.id,
+        value=value,
+        code=code,
+        description=args.get("description") or "",
+        properties=args.get("properties"),
+    )
+    row = ent.create_entity(db, payload, creator_user_id=user.id)
+    # create_entity 도 내부에서 resolve → 방금 없던 값이면 신규. id 재확인 대신
+    # 위 existing None 으로 신규 확정.
+    return {"created": True, "object": _object_brief(row)}
+
+
+def _w_update_object(db: Session, user, args: dict) -> dict:
+    from app.modules.entities.schemas import EntityUpdate
+
+    obj_id = args.get("object_id")
+    if obj_id is None:
+        return {"error": "object_id 가 필요합니다."}
+    row = ent.get_entity(db, int(obj_id))
+    if row is None:
+        return {"error": f"객체를 찾을 수 없습니다: {obj_id}"}
+    # 넘어온 키만 반영(부분 수정). None 을 명시로 오해하지 않도록 present 키만 전달.
+    provided = {
+        k: args[k]
+        for k in ("value", "code", "description", "properties")
+        if k in args
+    }
+    if not provided:
+        return {"error": "수정할 필드(value/code/description/properties)가 없습니다."}
+    payload = EntityUpdate(**provided)
+    row = ent.update_entity(db, row, payload)
+    return {"updated": True, "object": _object_brief(row)}
+
+
+def _w_add_object_alias(db: Session, user, args: dict) -> dict:
+    obj_id = args.get("object_id")
+    alias = (args.get("alias") or "").strip()
+    if obj_id is None:
+        return {"error": "object_id 가 필요합니다."}
+    if not alias:
+        return {"error": "alias(별칭)가 필요합니다."}
+    row = ent.get_entity(db, int(obj_id))
+    if row is None:
+        return {"error": f"객체를 찾을 수 없습니다: {obj_id}"}
+    ent.add_alias(db, entity=row, alias=alias, creator_user_id=user.id)
+    return {"ok": True, "object_id": row.id, "alias": alias}
+
+
+def _w_link_objects(db: Session, user, args: dict) -> dict:
+    src_id, dst_id = args.get("src_id"), args.get("dst_id")
+    relation = (args.get("relation") or "").strip()
+    if src_id is None or dst_id is None:
+        return {"error": "src_id 와 dst_id 가 필요합니다."}
+    if not relation:
+        return {"error": "relation(관계 종류 slug)이 필요합니다."}
+    src = ent.get_entity(db, int(src_id))
+    dst = ent.get_entity(db, int(dst_id))
+    if src is None or dst is None:
+        return {"error": f"객체를 찾을 수 없습니다: src={src_id}, dst={dst_id}"}
+    ent.add_relation(
+        db, src=src, dst=dst, relation=relation,
+        creator_user_id=user.id,
+        properties=args.get("properties"),
+        evidence_report_id=args.get("evidence_report_id"),
+    )
+    return {
+        "ok": True, "src_id": src.id, "dst_id": dst.id, "relation": relation,
+    }
+
+
+_WRITE_CATALOG = {
+    "create_object": _w_create_object,
+    "update_object": _w_update_object,
+    "add_object_alias": _w_add_object_alias,
+    "link_objects": _w_link_objects,
+}
+
+
+def run_write_tool(db: Session, user, name: str, args: dict) -> dict:
+    """온톨로지 쓰기 도구 1개 실행 — **시스템 관리자 전용**(라우트에서 게이팅).
+
+    user=요청 관리자(User). 서비스 계층이 던지는 ValueError(거버넌스·검증)는
+    {"error": …} 로 감싸 AI 가 스스로 고치게 한다. 알 수 없는 이름은 라우트가 404."""
+    fn = _WRITE_CATALOG.get(name)
+    if fn is None:
+        return {"error": f"알 수 없는 쓰기 도구: {name!r}"}
+    try:
+        return fn(db, user, args or {})
+    except ValueError as exc:
+        db.rollback()
+        return {"error": str(exc)}

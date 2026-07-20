@@ -672,6 +672,46 @@ def ontology_tool(
 
 
 # --------------------------------------------------------------------------- #
+# A''. 온톨로지 쓰기 — 외부 AI(MCP)가 기준정보를 채운다. **시스템 관리자 전용.**
+#      읽기 /ontology/tool 의 대칭이되 게이트가 다르다(읽기=인증-only, 쓰기=관리자).
+#      MCP 는 호출자의 PAT 를 그대로 전달하므로, require_system_admin 이 곧
+#      "관리자 계정 토큰으로 등록된 MCP 만 통과" 를 강제한다(일반 유저 토큰=403).
+# --------------------------------------------------------------------------- #
+_ONTOLOGY_WRITE_TOOLS = {
+    "create_object",
+    "update_object",
+    "add_object_alias",
+    "link_objects",
+}
+
+
+class OntologyWritePayload(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    args: dict = Field(default_factory=dict)
+
+
+@router.post("/ontology/write")
+def ontology_write(
+    payload: OntologyWritePayload,
+    admin_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """온톨로지 쓰기 도구 1개 실행 — **시스템 관리자 전용**(require_system_admin,
+    부서관리자 require_admin 과 혼동 금지). 인스턴스 레벨만(객체 생성/수정·별칭·
+    관계) — 축/속성정의 등 스키마 변경은 노출하지 않는다. 화이트리스트 밖 이름은
+    404. 멱등 upsert·거버넌스 검증은 서비스 계층이 담당하고, 검증 실패는 결과의
+    error 필드로 돌아온다(예외 아님) → AI 가 교정."""
+    from app.ai import agent_tools
+
+    if payload.name not in _ONTOLOGY_WRITE_TOOLS:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"알 수 없는 쓰기 도구: {payload.name}"
+        )
+    result = agent_tools.run_write_tool(db, admin_user, payload.name, payload.args)
+    return success_response(data=result)
+
+
+# --------------------------------------------------------------------------- #
 # E. 접근 제어(엔티틀먼트) — 선별 유저/조직만 B300 기능 사용 (B300_보조AI_설계.md §E)
 # 전부 시스템 관리자 전용. "AI 접근" 탭이 읽고 쓴다.
 # --------------------------------------------------------------------------- #

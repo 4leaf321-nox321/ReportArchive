@@ -356,6 +356,99 @@ async def ask_ontology(query: str, ctx: Context, max_hops: int = 6) -> dict:
     return await _post(ctx, "/api/ai/agent", {"query": query, "max_hops": max_hops})
 
 
+# --------------------------------------------------------------------------- #
+# 온톨로지 쓰기 — 기준정보(객체·별칭·관계)를 채운다. **시스템 관리자 전용.**
+# 이 MCP 를 등록한 토큰이 시스템 관리자 계정의 것이어야 동작한다(그 외 403).
+# 스키마(축·속성정의)는 못 바꾸고 인스턴스만 다룬다. 쓰기 전에 반드시 먼저
+# list_object_types 로 축 slug·속성 key·관계 slug 를 확인하고, search_objects/
+# get_object 로 이미 있는지·대상 id 를 확인하라(멱등이지만 중복 확인이 안전).
+# --------------------------------------------------------------------------- #
+async def _ontology_write(ctx, name, args):
+    return await _post(ctx, "/api/ai/ontology/write", {"name": name, "args": args})
+
+
+@mcp.tool()
+async def create_object(
+    ctx: Context,
+    type_slug: str,
+    value: str,
+    code: str | None = None,
+    description: str | None = None,
+    properties: dict | None = None,
+) -> dict:
+    """**[시스템 관리자 전용]** 기준정보 객체(온톨로지 엔티티)를 만든다. 같은 이름/코드가
+    이미 있으면 새로 만들지 않고 기존 객체를 돌려준다(멱등 upsert). closed 축·형식패턴·
+    속성 스키마를 위반하면 error 로 알려주니 그에 맞춰 고쳐 다시 호출하라.
+      - type_slug: 객체 종류(축) slug (list_object_types 참고).
+      - value: 객체 이름(대표 표기). code: 안정 식별자(ERP 코드 등, 선택).
+      - properties: 축 속성 {key: value} — 정의된 key·데이터타입만(list_object_types 확인).
+    반환: {created(신규면 true), object:{id,value,type_slug,code,properties,...}} 또는 {error}."""
+    args = {
+        "type_slug": type_slug, "value": value, "code": code,
+        "description": description, "properties": properties,
+    }
+    return await _ontology_write(
+        ctx, "create_object", {k: v for k, v in args.items() if v is not None}
+    )
+
+
+@mcp.tool()
+async def update_object(
+    ctx: Context,
+    object_id: int,
+    value: str | None = None,
+    code: str | None = None,
+    description: str | None = None,
+    properties: dict | None = None,
+) -> dict:
+    """**[시스템 관리자 전용]** 기존 기준정보 객체를 수정한다. 넘긴 필드만 바뀐다.
+    properties 는 통째로 교체되니(부분병합 아님) 기존 값에 더하려면 get_object 로 현재
+    속성을 읽어 합쳐서 보내라. object_id 는 search_objects/get_object 가 준 정수 id.
+      - value: 이름 변경(같은 축 중복이면 error). code: 안정 식별자. properties: 축 속성 전체.
+    반환: {updated:true, object:{...}} 또는 {error}."""
+    args = {
+        "object_id": object_id, "value": value, "code": code,
+        "description": description, "properties": properties,
+    }
+    return await _ontology_write(
+        ctx, "update_object", {k: v for k, v in args.items() if v is not None}
+    )
+
+
+@mcp.tool()
+async def add_object_alias(ctx: Context, object_id: int, alias: str) -> dict:
+    """**[시스템 관리자 전용]** 객체에 별칭(다른 표기)을 단다 — 이후 그 표기로 검색·매칭이
+    같은 객체로 흡수된다(중복 예방). 같은 축의 다른 값과 충돌하면 error. object_id 는
+    search_objects/get_object 가 준 정수 id. 반환: {ok:true, object_id, alias} 또는 {error}."""
+    return await _ontology_write(
+        ctx, "add_object_alias", {"object_id": object_id, "alias": alias}
+    )
+
+
+@mcp.tool()
+async def link_objects(
+    ctx: Context,
+    src_id: int,
+    dst_id: int,
+    relation: str,
+    properties: dict | None = None,
+    evidence_report_id: int | None = None,
+) -> dict:
+    """**[시스템 관리자 전용]** 두 객체를 관계로 연결한다(src --relation--> dst). 같은 링크가
+    있으면 멱등. 관계 종류·축 제약·순환 규칙을 위반하면 error(list_object_types 의
+    relation_types 로 slug·허용 축 확인). src_id/dst_id 는 정수 객체 id.
+      - relation: 관계 종류 slug (예: part_of). properties: 관계 속성(정의된 경우).
+      - evidence_report_id: 이 관계의 근거 보고서 id(선택, provenance).
+    반환: {ok:true, src_id, dst_id, relation} 또는 {error}."""
+    args = {
+        "src_id": src_id, "dst_id": dst_id, "relation": relation,
+        "properties": properties, "evidence_report_id": evidence_report_id,
+    }
+    return await _ontology_write(
+        ctx, "link_objects", {k: v for k, v in args.items() if v is not None}
+    )
+
+
 @mcp.tool()
 async def upload_from_url(ctx: Context, url: str, filename: str | None = None) -> dict:
     """웹 URL 의 파일을 **ReportArchive 서버가 직접 받아** 저장하고 **file_id** 를 돌려준다

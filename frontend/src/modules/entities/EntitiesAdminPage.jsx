@@ -70,6 +70,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/shared/components/ui/dropdown-menu'
 import { downloadTextFile, rowsToCsv, rowsToTsv } from '@/shared/lib/tableExport'
@@ -96,6 +97,7 @@ import {
   deleteEntityRelation,
   deleteEntityType,
   getEntityYears,
+  exportEntitiesCsv,
   listAllEntities,
   listEntities,
   searchEntities,
@@ -126,6 +128,10 @@ import {
 } from '@/shared/api/entities'
 
 // 시간 차원 정책 (p56) 짧은 라벨 — 축 거버넌스 바에 현재 설정을 한 단어로 표시.
+// 서버 검색 한 번에 가져올 상한 — 백엔드 list_entities limit 상한(500)과 정렬.
+// 검색 결과가 이보다 많으면 더 좁히라고 안내한다.
+const SERVER_SEARCH_LIMIT = 500
+
 const TEMPORAL_KIND_LABEL = {
   evergreen: '연도 무관',
   lifecycle: '유효구간',
@@ -627,16 +633,34 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
   const [relTarget, setRelTarget] = useState(null)
   const [graphTarget, setGraphTarget] = useState(null)
 
-  // 값 전체를 가져온다 — 페이지를 끝까지 넘겨 합친다. 예전엔 limit:500 한 번이라
-  // 값이 500개를 넘는 축은 화면에 조용히 잘려 보였다(표시도 없었음).
+  // 검색어를 디바운스(300ms) — 서버 검색 트리거용. 타이핑마다 서버를 때리지 않게.
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query), 300)
+    return () => clearTimeout(t)
+  }, [query])
+  const serverSearching = debouncedQuery.trim().length > 0
+
+  // 목록 로드 — 검색어가 있으면 **서버 검색**(q, 값·코드·설명 ILIKE, 최대 500건)으로
+  // 개수와 무관하게 무엇이든 찾는다. 검색어가 없으면 브라우즈용으로 값 전체를 페이지
+  // 끝까지 모은다(2만 폭주 방지선, truncated 로 알림). 축 값이 2만을 넘어도 서버 검색
+  // 경로로 특정 값을 찾아 편집·병합·삭제할 수 있다.
   const { data, loading, error } = useAsync(
     () =>
-      listAllEntities({
-        typeId: type.id,
-        includeDeprecated,
-        withUsage: true,
-      }),
-    [type.id, includeDeprecated, reloadKey],
+      serverSearching
+        ? listEntities({
+            typeId: type.id,
+            q: debouncedQuery.trim(),
+            includeDeprecated,
+            withUsage: true,
+            limit: SERVER_SEARCH_LIMIT,
+          })
+        : listAllEntities({
+            typeId: type.id,
+            includeDeprecated,
+            withUsage: true,
+          }),
+    [type.id, includeDeprecated, reloadKey, debouncedQuery],
   )
   const rows = data?.items ?? []
   // 축의 속성 스키마(A0.1). record 축이면 목록 요약칩·편집 폼이 이걸로 렌더
@@ -651,6 +675,10 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
   // own search box but we surface one in the toolbar above so it lives
   // alongside the "비활성 포함" toggle.
   const filteredRows = useMemo(() => {
+    // 서버 검색 모드면 서버가 이미 값·코드·설명을 필터했으니 그대로 쓴다(같은 필드
+    // ILIKE). 브라우즈 모드에서 디바운스 대기 중 타이핑하는 순간엔 로드된 집합을
+    // 즉시 필터해 반응성을 유지한다.
+    if (serverSearching) return rows
     const n = query.trim().toLowerCase()
     if (!n) return rows
     return rows.filter(
@@ -659,7 +687,7 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
         (r.code ?? '').toLowerCase().includes(n) ||
         (r.description ?? '').toLowerCase().includes(n),
     )
-  }, [rows, query])
+  }, [rows, query, serverSearching])
 
   const [createOpen, setCreateOpen] = useState(false)
   const [editTarget, setEditTarget] = useState(null)
@@ -673,6 +701,7 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
   const [selectedIds, setSelectedIds] = useState(() => new Set())
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
   const [bulkReassignOpen, setBulkReassignOpen] = useState(false)
+  const [exportingAll, setExportingAll] = useState(false)
 
   function reload() {
     setReloadKey((n) => n + 1)
@@ -725,6 +754,34 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
       })
     } catch {
       toast.error('CSV 저장에 실패했습니다')
+    }
+  }
+
+  // 전체 CSV — 서버 스트리밍. 목록의 2만 표시 상한과 무관하게 축의 전건을 받는다
+  // (검색어가 있으면 그 결과만). id·코드·설명·상태·유효연도·속성·별칭·사용수까지 포함.
+  async function handleExportAllCsv() {
+    setExportingAll(true)
+    try {
+      const q = debouncedQuery.trim() || undefined
+      const blob = await exportEntitiesCsv({ typeId: type.id, includeDeprecated, q })
+      const safe = (type.label || type.slug || 'entities').replace(/[\\/:*?"<>|]/g, '_')
+      const stamp = new Date().toISOString().slice(0, 10)
+      const suffix = q ? '_검색' : '_전체'
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${safe}_${stamp}${suffix}.csv`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      toast.success(q ? '검색 결과 전체를 CSV로 저장했습니다.' : '축의 전체 값을 CSV로 저장했습니다.', {
+        description: '엑셀에서 바로 열립니다(모든 컬럼 포함).',
+      })
+    } catch (err) {
+      toast.error(err?.response?.data?.message || '전체 CSV 저장에 실패했습니다.')
+    } finally {
+      setExportingAll(false)
     }
   }
 
@@ -997,9 +1054,24 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
               <DropdownMenuItem onClick={handleExportCsv}>
                 <Download className="mr-2 h-3.5 w-3.5" />
                 <div>
-                  <div>CSV 파일로 저장</div>
+                  <div>CSV 파일로 저장 (현재 목록)</div>
                   <div className="text-xs text-muted-foreground">
-                    엑셀에서 바로 열림
+                    값·속성 열, 화면에 보이는 행만
+                  </div>
+                </div>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={handleExportAllCsv}
+                disabled={exportingAll}
+              >
+                <Download className="mr-2 h-3.5 w-3.5" />
+                <div>
+                  <div>{debouncedQuery.trim() ? '검색 결과 전체 CSV' : '전체 CSV 저장 (모든 값)'}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {exportingAll
+                      ? '내보내는 중…'
+                      : '2만 상한 없이 서버에서 전건 — id·코드·설명·별칭·사용수 포함'}
                   </div>
                 </div>
               </DropdownMenuItem>
@@ -1073,11 +1145,20 @@ function AxisPanel({ type, allTypes, onAxisDeleted, onAxisUpdated }) {
       </div>
 
       {/* 폭주 방지선에 걸려 일부만 받은 경우 — 조용히 자르지 않는다(잘린 줄 모르고
-          내보내기·자동연결을 돌리면 결과가 소리 없이 틀린다). */}
-      {data?.truncated && (
+          내보내기·자동연결을 돌리면 결과가 소리 없이 틀린다). 브라우즈 모드에서만.
+          값이 2만을 넘어도 위 검색창으로 서버 검색하면 무엇이든 찾을 수 있다. */}
+      {!serverSearching && data?.truncated && (
         <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-200">
           값이 너무 많아 <b>앞 {rows.length.toLocaleString()}건만</b> 불러왔습니다 —
-          목록·내보내기가 전부를 담지 못합니다. 검색으로 범위를 좁혀 주세요.
+          목록·내보내기가 전부를 담지 못합니다. <b>위 검색창</b>에 입력하면 개수와
+          무관하게 전체에서 찾습니다(서버 검색).
+        </div>
+      )}
+      {/* 서버 검색 결과가 상한을 채웠으면 더 있을 수 있음 — 좁히라고 안내. */}
+      {serverSearching && rows.length >= SERVER_SEARCH_LIMIT && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-200">
+          검색 결과가 많아 <b>앞 {SERVER_SEARCH_LIMIT.toLocaleString()}건만</b> 보여줍니다 —
+          검색어를 더 구체적으로 입력해 범위를 좁혀 주세요.
         </div>
       )}
 

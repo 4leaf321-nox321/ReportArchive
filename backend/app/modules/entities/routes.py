@@ -577,6 +577,78 @@ def list_entities(
     return success_response(data=EntityListResponse(items=items))
 
 
+@entities_router.get("/export.csv")
+def export_entities_csv(
+    type_id: int = Query(...),
+    include_deprecated: bool = Query(default=False),
+    q: Optional[str] = Query(default=None, max_length=128),
+    actor: EntityActor = Depends(entity_actor),
+    db: Session = Depends(get_db),
+):
+    """축의 엔티티 **전체**를 CSV 로 스트리밍 내보내기 — 관리자 전용. 목록 화면의
+    2만 표시 상한과 무관하게 전건을 담는다(페이지 단위 스트리밍이라 대량도 안전).
+    컬럼: 기본(id·값·코드·설명·상태·유효연도) + 축 속성별 + 별칭(;) + 사용수.
+    q 를 주면 그 검색 결과만(값·코드·설명 ILIKE)."""
+    import csv
+    import io
+
+    from fastapi.responses import StreamingResponse
+    from urllib.parse import quote
+
+    if not actor.is_admin:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "전체 내보내기는 관리자만 사용할 수 있습니다."
+        )
+    etype = services.get_type(db, type_id)
+    if etype is None:
+        return not_found_response(f"엔티티 축을 찾을 수 없습니다: {type_id}")
+
+    defs = services.list_property_defs(db, owner_kind="entity_type", owner_id=type_id)
+    prop_keys = [d.key for d in defs]
+    header = (
+        ["id", "value", "code", "description", "status",
+         "valid_from_year", "valid_to_year"]
+        + [d.label or d.key for d in defs]
+        + ["aliases", "usage_count"]
+    )
+
+    def _generate():
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        # UTF-8 BOM — Excel 이 한글을 깨지 않게.
+        buf.write("﻿")
+        writer.writerow(header)
+        yield buf.getvalue()
+        buf.seek(0)
+        buf.truncate(0)
+        for row in services.iter_entities_for_export(
+            db, type_id=type_id, include_deprecated=include_deprecated,
+            q=q, prop_keys=prop_keys,
+        ):
+            writer.writerow(
+                [row["id"], row["value"], row["code"], row["description"],
+                 row["status"], row["valid_from_year"], row["valid_to_year"]]
+                + row["props"]
+                + [row["aliases"], row["usage_count"]]
+            )
+            yield buf.getvalue()
+            buf.seek(0)
+            buf.truncate(0)
+
+    fname_ascii = f"entities-{type_id}.csv"
+    fname_utf8 = quote(f"{etype.label or etype.slug}.csv")
+    return StreamingResponse(
+        _generate(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"{fname_ascii}\"; "
+                f"filename*=UTF-8''{fname_utf8}"
+            )
+        },
+    )
+
+
 @entities_router.post("/search")
 def search_entities(
     payload: EntitySearchRequest,

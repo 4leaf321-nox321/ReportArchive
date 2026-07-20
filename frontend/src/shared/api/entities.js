@@ -379,6 +379,21 @@ const LIST_PAGE_MAX = 500
  * maxRecords 는 폭주 방지선 — 넘으면 거기서 멈추고 truncated=true 로 알린다.
  * 조용히 자르지 않기 위한 것이므로 호출부가 반드시 표시해야 한다.
  */
+/**
+ * 축의 엔티티 **전체**를 CSV 로 내려받는다(서버 스트리밍, 2만 표시 상한과 무관).
+ * 관리자 전용. q 를 주면 그 검색 결과만. Blob 을 돌려주니 호출부가 저장한다.
+ */
+export async function exportEntitiesCsv({ typeId, includeDeprecated = false, q } = {}) {
+  const params = new URLSearchParams()
+  params.set('type_id', String(typeId))
+  if (includeDeprecated) params.set('include_deprecated', 'true')
+  if (q && q.trim()) params.set('q', q.trim())
+  const res = await apiClient.get(`${BASE}/export.csv?${params.toString()}`, {
+    responseType: 'blob',
+  })
+  return res.data
+}
+
 export async function listAllEntities({ maxRecords = 20000, ...opts } = {}) {
   const items = []
   for (let offset = 0; ; offset += LIST_PAGE_MAX) {

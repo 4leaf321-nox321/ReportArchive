@@ -433,6 +433,80 @@ def list_by_ids(db: Session, ids: list[int]) -> list[Entity]:
     )
 
 
+def aliases_for_entities(db: Session, entity_ids: list[int]) -> dict[int, list[str]]:
+    """엔티티 id 목록 → {id: [별칭…]} 일괄 조회(내보내기용, N+1 회피)."""
+    if not entity_ids:
+        return {}
+    out: dict[int, list[str]] = {}
+    rows = db.execute(
+        select(EntityAlias.entity_id, EntityAlias.alias)
+        .where(EntityAlias.entity_id.in_(set(entity_ids)))
+        .order_by(EntityAlias.entity_id, EntityAlias.id)
+    )
+    for eid, alias in rows:
+        out.setdefault(eid, []).append(alias)
+    return out
+
+
+def _fmt_prop_value(v) -> str:
+    """속성값 → CSV 셀 문자열. 리스트(multi)는 ';'로 잇고, None 은 빈 문자열."""
+    if v is None:
+        return ""
+    if isinstance(v, (list, tuple)):
+        return ";".join("" if x is None else str(x) for x in v)
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return str(v)
+
+
+def iter_entities_for_export(
+    db: Session,
+    *,
+    type_id: int,
+    include_deprecated: bool = False,
+    q: Optional[str] = None,
+    prop_keys: Optional[list[str]] = None,
+    batch: int = 1000,
+):
+    """축의 엔티티를 페이지(batch)로 순회하며 CSV 내보내기용 평평한 dict 를 yield.
+    대량(2만+)도 전부 메모리에 올리지 않고 스트리밍한다. 각 행은 기본 컬럼 + 속성
+    (prop_keys 별) + 별칭(;) + 사용수. list_entities(with_usage) 를 offset 으로
+    끝까지 넘긴다 — 목록 화면의 2만 폭주 방지선과 무관(여기선 전건)."""
+    prop_keys = prop_keys or []
+    offset = 0
+    while True:
+        rows = list_entities(
+            db,
+            type_id=type_id,
+            q=q,
+            include_deprecated=include_deprecated,
+            limit=batch,
+            offset=offset,
+            with_usage=True,
+        )
+        if not rows:
+            break
+        alias_map = aliases_for_entities(db, [e.id for (e, _c) in rows])
+        for (e, cnt) in rows:
+            props = e.properties or {}
+            status = getattr(e.status, "value", None) or str(e.status)
+            yield {
+                "id": e.id,
+                "value": e.value,
+                "code": e.code or "",
+                "description": e.description or "",
+                "status": status,
+                "valid_from_year": e.valid_from_year if e.valid_from_year is not None else "",
+                "valid_to_year": e.valid_to_year if e.valid_to_year is not None else "",
+                "props": [_fmt_prop_value(props.get(k)) for k in prop_keys],
+                "aliases": ";".join(alias_map.get(e.id, [])),
+                "usage_count": cnt,
+            }
+        if len(rows) < batch:
+            break
+        offset += batch
+
+
 # --------------------------------------------------------------------------- #
 # 속성 정의(property_defs) + 값 검증 (온톨로지 강화 A0)
 # --------------------------------------------------------------------------- #

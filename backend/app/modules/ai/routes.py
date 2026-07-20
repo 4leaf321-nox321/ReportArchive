@@ -269,7 +269,9 @@ def entity_summary(
     }
 
     # 객체 메타 헤더.
-    lines = [f"[객체] {row.value} (종류: {row.type_slug})"]
+    et = getattr(row, "entity_type", None)
+    type_label = (getattr(et, "label", None) or getattr(et, "slug", None) or "미분류")
+    lines = [f"[객체] {row.value} (종류: {type_label})"]
     if getattr(row, "code", None):
         lines.append(f"코드: {row.code}")
     if getattr(row, "description", None):

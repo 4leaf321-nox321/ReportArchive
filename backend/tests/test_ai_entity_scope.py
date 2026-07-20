@@ -9,8 +9,11 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from app.database import SessionLocal
 from app.main import app
 from app.modules.auth.services import create_access_token
+from app.modules.entities import services as entity_services
+from app.modules.reports.models import Report
 
 ADMIN = {
     "Authorization": f"Bearer {create_access_token(2)}",
@@ -87,3 +90,48 @@ def test_entity_summary_gate_and_structure(entity_id):
     # 없는 객체 → 404.
     r = c.post("/api/ai/entities/999999999/summary", headers=ADMIN)
     assert r.status_code == 404, r.text
+
+
+def test_entity_summary_with_tagged_report(entity_id):
+    """태깅된 (가시) 보고서가 있을 때 — no_evidence 조기리턴을 지나 LLM 종합
+    경로(객체 메타 헤더 조립)까지 실제로 도달한다. 이 경로가 예전엔 `row.type_slug`
+    (Entity 에 없는 속성) 때문에 500 을 냈다 — 회귀 방지."""
+    c = TestClient(app)
+
+    # ADMIN(user2) 소유 보고서 1건 → 자기 자신에게 가시. 이 객체로 태깅.
+    tpl = c.get("/api/templates", headers=ADMIN).json()["data"][0]
+    r = c.post(
+        "/api/reports",
+        headers=ADMIN,
+        json={
+            "template_id": tpl["template_id"],
+            "template_version": tpl["version"],
+            "title": "스코프AI요약-태깅보고서",
+            "tags": [],
+        },
+    )
+    assert r.status_code in (200, 201), r.text
+    rid = r.json()["data"]["id"]
+    db = SessionLocal()
+    try:
+        entity_services.set_report_entities(db, report_id=rid, entity_ids=[entity_id])
+        db.commit()
+    finally:
+        db.close()
+
+    try:
+        r = c.post(f"/api/ai/entities/{entity_id}/summary", headers=ADMIN)
+        assert r.status_code == 200, r.text
+        d = r.json()["data"]
+        assert "summary" in d
+        assert d.get("no_evidence") is False
+        assert d.get("report_count") >= 1
+    finally:
+        db = SessionLocal()
+        try:
+            row = db.get(Report, rid)
+            if row:
+                db.delete(row)  # report_entities CASCADE
+                db.commit()
+        finally:
+            db.close()

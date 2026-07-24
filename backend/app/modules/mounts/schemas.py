@@ -24,6 +24,10 @@ class MountRead(BaseModel):
     # 시스템관리자). 작성자라도 관리 안 하는 board 는 False — 프런트가 "해제"
     # 버튼을 이 값으로 게이팅하고, 나머지는 "게시판에서 내리기 요청"으로 보낸다.
     can_unmount: Optional[bool] = None
+    # 이 게시판에 대해 현재 pending 인 게시취소 요청이 있는지. 작성자가 개별
+    # 게시판에 "내리기 요청"을 보내면 그 board 매니저 승인 전까지 True — 프런트가
+    # "승인 대기" 뱃지로 표시해, 중복 요청/재클릭을 막는다.
+    takedown_pending: Optional[bool] = None
     # Org folder placement on this board. NULL = 미분류 in that board's
     # listing. Same Report can be in different folders on different
     # boards (folder is mount-level, not report-level).

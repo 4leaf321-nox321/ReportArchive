@@ -555,11 +555,19 @@ def _assert_board_manager(db: Session, user_id: int, workspace_slug: str) -> Non
         )
 
 
-def request_takedown(db: Session, *, report_id: int, actor_user_id: int) -> dict:
+def request_takedown(
+    db: Session,
+    *,
+    report_id: int,
+    actor_user_id: int,
+    workspace_slug: Optional[str] = None,
+) -> dict:
     """작성자가 "게시판에서 내리기"를 요청 — 게시(mount)된 부서 게시판마다
-    팬아웃. 요청자가 *관리하는* 게시판은 즉시 게시취소(자동 승인), 나머지는
-    pending 요청을 만들어 그 board 매니저의 승인을 기다린다. 권한: 작성자
-    본인 또는 시스템관리자."""
+    팬아웃. `workspace_slug` 를 지정하면 그 게시판 하나에만 요청한다(게시판별
+    개별 내리기 — 매니저가 게시판 클릭으로 바로 해제하는 것과 대칭). 요청자가
+    *관리하는* 게시판은 즉시 게시취소(자동 승인), 나머지는 pending 요청을
+    만들어 그 board 매니저의 승인을 기다린다. 권한: 작성자 본인 또는
+    시스템관리자."""
     report = db.get(Report, report_id)
     if report is None:
         raise MountTargetInvalidError(f"보고서를 찾을 수 없습니다: {report_id}")
@@ -568,11 +576,14 @@ def request_takedown(db: Session, *, report_id: int, actor_user_id: int) -> dict
     if not (is_sysadmin or report.owner_user_id == actor_user_id):
         raise MountForbiddenError("본인 보고서만 게시취소를 요청할 수 있습니다.")
 
-    mounts = (
-        db.execute(select(ReportMount).where(ReportMount.report_id == report_id))
-        .scalars()
-        .all()
-    )
+    q = select(ReportMount).where(ReportMount.report_id == report_id)
+    if workspace_slug is not None:
+        q = q.where(ReportMount.workspace_slug == workspace_slug)
+    mounts = db.execute(q).scalars().all()
+    if workspace_slug is not None and not mounts:
+        raise MountTargetInvalidError(
+            f"이 보고서가 게시되지 않은 게시판입니다: {workspace_slug}"
+        )
     requested = 0
     auto_removed = 0
     for m in mounts:
@@ -617,6 +628,41 @@ def request_takedown(db: Session, *, report_id: int, actor_user_id: int) -> dict
                 requested += 1
     db.commit()
     return {"requested": requested, "auto_removed": auto_removed}
+
+
+def cancel_takedown_request(
+    db: Session,
+    *,
+    report_id: int,
+    actor_user_id: int,
+    workspace_slug: Optional[str] = None,
+) -> dict:
+    """작성자가 자신이 보낸 pending 게시취소 요청을 철회한다. `workspace_slug`
+    지정 시 그 게시판 하나만, 없으면 이 보고서의 pending 요청 전부. 이미 매니저가
+    승인/거절한 요청은 손대지 않는다(pending 만 canceled 로 전환). 권한: 작성자
+    본인 또는 시스템관리자. 반환 { canceled }."""
+    report = db.get(Report, report_id)
+    if report is None:
+        raise MountTargetInvalidError(f"보고서를 찾을 수 없습니다: {report_id}")
+    actor = db.get(User, actor_user_id)
+    is_sysadmin = bool(getattr(actor, "is_system_admin", False))
+    if not (is_sysadmin or report.owner_user_id == actor_user_id):
+        raise MountForbiddenError("본인 보고서의 게시취소 요청만 취소할 수 있습니다.")
+
+    q = select(ReportTakedownRequest).where(
+        ReportTakedownRequest.report_id == report_id,
+        ReportTakedownRequest.status == TakedownStatus.pending,
+    )
+    if workspace_slug is not None:
+        q = q.where(ReportTakedownRequest.workspace_slug == workspace_slug)
+    rows = db.execute(q).scalars().all()
+    now = datetime.utcnow()
+    for r in rows:
+        r.status = TakedownStatus.canceled
+        r.decided_by_user_id = actor_user_id
+        r.decided_at = now
+    db.commit()
+    return {"canceled": len(rows)}
 
 
 def list_takedown_requests(

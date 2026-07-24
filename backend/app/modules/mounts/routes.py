@@ -79,6 +79,19 @@ def list_mounts(
         if folder_ids
         else {}
     )
+    # 이 보고서에 대해 pending 인 게시취소 요청이 걸린 게시판 slug 집합 —
+    # 작성자가 개별 게시판에 "내리기 요청"을 보냈으나 아직 매니저가 처리하지
+    # 않은 건. 프런트가 그 행을 "승인 대기"로 표시한다.
+    pending_takedown_slugs = {
+        slug
+        for (slug,) in db.execute(
+            select(_models.ReportTakedownRequest.workspace_slug).where(
+                _models.ReportTakedownRequest.report_id == report_id,
+                _models.ReportTakedownRequest.status
+                == _models.TakedownStatus.pending,
+            )
+        ).all()
+    }
     items = []
     for r in rows:
         mr = MountRead.model_validate(r)
@@ -86,6 +99,7 @@ def list_mounts(
         mr.can_unmount = services._can_unmount_board(
             db, actor.user.id, r.workspace_slug
         )
+        mr.takedown_pending = r.workspace_slug in pending_takedown_slugs
         mr.workspace_name = ws_names.get(r.workspace_slug)
         mr.folder_name = (
             folder_names.get(r.folder_id) if r.folder_id is not None else None

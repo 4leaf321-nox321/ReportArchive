@@ -21,6 +21,7 @@ import {
   Search,
   X,
   MessageSquare,
+  Clock,
 } from 'lucide-react'
 import {
   Dialog,
@@ -45,7 +46,7 @@ import {
   setMountEditPolicy,
   setMountNote,
 } from '@/shared/api/mounts'
-import { requestTakedown } from '@/shared/api/takedowns'
+import { requestTakedown, cancelTakedown } from '@/shared/api/takedowns'
 import { FolderPickerButton } from './FolderPickerButton'
 import { cn } from '@/shared/lib/utils'
 
@@ -353,6 +354,16 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
   async function handleToggle(workspaceSlug) {
     if (pending[workspaceSlug]) return
     const isMounted = mountedSlugs.has(workspaceSlug)
+    // 게시된 게시판을 다시 누르면 게시취소 — 단, 그 게시판을 관리하지 않는
+    // 작성자는 직접 해제할 수 없으므로 게시판별 "내리기 요청" 흐름으로 전환한다
+    // (매니저는 클릭 즉시 해제, 권한 없는 작성자는 클릭 즉시 그 게시판에 요청).
+    if (isMounted) {
+      const mount = mounts.find((m) => m.workspace_slug === workspaceSlug)
+      if (mount && mount.can_unmount === false) {
+        await requestBoardTakedown(workspaceSlug)
+        return
+      }
+    }
     setPending((p) => ({ ...p, [workspaceSlug]: isMounted ? 'unmounting' : 'mounting' }))
     try {
       const ws = eligible.find((w) => w.slug === workspaceSlug)
@@ -391,8 +402,77 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
     }
   }
 
-  // "게시판에서 내리기 요청" — 작성자가 관리하지 않는 게시판은 직접 못 내리므로,
-  // 게시된 board 마다 게시취소 요청을 보낸다(관리하는 board 는 즉시 내려감).
+  // 게시판별 "내리기 요청" — 관리하지 않는 board 하나에만 게시취소 요청을 보낸다
+  // (관리하는 board 면 백엔드가 즉시 내려줌 = auto_removed). 개별 게시판 행의
+  // 버튼과, 좌측 트리에서 게시된 board 재클릭(handleToggle) 이 이 경로를 쓴다.
+  async function requestBoardTakedown(workspaceSlug) {
+    if (pending[workspaceSlug]) return
+    setPending((p) => ({ ...p, [workspaceSlug]: 'requesting' }))
+    try {
+      const ws = eligible.find((w) => w.slug === workspaceSlug)
+      const wsLabel = ws?.name || workspaceSlug
+      const res = await requestTakedown(report.id, workspaceSlug)
+      const requested = res?.requested ?? 0
+      const autoRemoved = res?.auto_removed ?? 0
+      if (autoRemoved) {
+        // 관리하는 게시판이라 즉시 내려감 — 현황에서 제거.
+        setMounts((prev) =>
+          prev.filter((m) => m.workspace_slug !== workspaceSlug),
+        )
+        toast.success(`${wsLabel} 게시판에서 바로 내림`)
+      } else if (requested) {
+        // 매니저 승인 대기 — takedown_pending 반영 위해 현황 재조회.
+        toast.success(`${wsLabel} 게시판에 내리기 요청 보냄 (매니저 승인 대기)`)
+        const rows = await listMounts(report.id)
+        setMounts(rows)
+      } else {
+        toast(`${wsLabel} 게시판은 이미 내리기 요청이 접수되어 있습니다.`)
+      }
+      onChanged?.()
+    } catch (e) {
+      const msg = e?.response?.data?.message || e?.message || '요청 실패'
+      toast.error(msg)
+    } finally {
+      setPending((p) => {
+        const next = { ...p }
+        delete next[workspaceSlug]
+        return next
+      })
+    }
+  }
+
+  // 게시판별 "내리기 요청 취소" — 아직 매니저가 처리하지 않은(pending) 요청을
+  // 철회한다. 개별 board 행의 "요청 취소" 버튼이 이 경로를 쓴다.
+  async function cancelBoardTakedown(workspaceSlug) {
+    if (pending[workspaceSlug]) return
+    setPending((p) => ({ ...p, [workspaceSlug]: 'canceling' }))
+    try {
+      const ws = eligible.find((w) => w.slug === workspaceSlug)
+      const wsLabel = ws?.name || workspaceSlug
+      const res = await cancelTakedown(report.id, workspaceSlug)
+      const canceled = res?.canceled ?? 0
+      if (canceled) {
+        toast.success(`${wsLabel} 게시판 내리기 요청을 취소했습니다.`)
+      } else {
+        toast(`${wsLabel} 게시판에 취소할 요청이 없습니다.`)
+      }
+      const rows = await listMounts(report.id)
+      setMounts(rows)
+      onChanged?.()
+    } catch (e) {
+      const msg = e?.response?.data?.message || e?.message || '요청 취소 실패'
+      toast.error(msg)
+    } finally {
+      setPending((p) => {
+        const next = { ...p }
+        delete next[workspaceSlug]
+        return next
+      })
+    }
+  }
+
+  // "전체 게시판에서 내리기 요청" — 게시된 모든 board 에 한 번에 팬아웃(일괄).
+  // 관리하는 board 는 즉시 내려가고, 나머지는 그 board 매니저의 승인을 기다린다.
   const [requesting, setRequesting] = React.useState(false)
   async function handleRequestTakedown() {
     if (requesting) return
@@ -419,6 +499,36 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
       setRequesting(false)
     }
   }
+
+  // "전체 요청 취소" — 이 보고서의 pending 게시취소 요청을 한 번에 철회.
+  const [canceling, setCanceling] = React.useState(false)
+  async function handleCancelAllTakedown() {
+    if (canceling) return
+    setCanceling(true)
+    try {
+      const res = await cancelTakedown(report.id)
+      const canceled = res?.canceled ?? 0
+      if (canceled) {
+        toast.success(`${canceled}개 게시판 내리기 요청을 취소했습니다.`)
+      } else {
+        toast('취소할 요청이 없습니다.')
+      }
+      const rows = await listMounts(report.id)
+      setMounts(rows)
+      onChanged?.()
+    } catch (e) {
+      const msg = e?.response?.data?.message || e?.message || '요청 취소 실패'
+      toast.error(msg)
+    } finally {
+      setCanceling(false)
+    }
+  }
+
+  // pending 게시취소 요청이 걸린 게시판이 하나라도 있으면 "전체 요청 취소"를 노출.
+  const hasPendingTakedown = React.useMemo(
+    () => mounts.some((m) => m.takedown_pending),
+    [mounts],
+  )
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -581,6 +691,8 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
                       setMounts={setMounts}
                       onChanged={onChanged}
                       onToggle={handleToggle}
+                      onRequestTakedown={requestBoardTakedown}
+                      onCancelTakedown={cancelBoardTakedown}
                       onPolicyChange={handlePolicyChange}
                       autoEditNote={justMountedSlug === slug}
                     />
@@ -593,18 +705,35 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
         </div>
 
         <DialogFooter className="sm:justify-between">
-          {/* 작성자: 게시된 모든 부서 게시판에서 내리기 요청. 관리하는 board 는
-              즉시 내려가고, 나머지는 그 board 매니저의 승인을 기다린다. */}
-          {isOwner && mountedBoards.length > 0 ? (
-            <Button
-              variant="outline"
-              className="text-destructive hover:text-destructive"
-              disabled={requesting}
-              onClick={handleRequestTakedown}
-              title="게시된 부서 게시판에서 내리기 요청 (매니저 승인)"
-            >
-              게시판에서 내리기 요청
-            </Button>
+          {/* 작성자: 게시된 모든 부서 게시판에서 한 번에 내리기 요청. 관리하는
+              board 는 즉시 내려가고, 나머지는 그 board 매니저의 승인을 기다린다.
+              개별 게시판만 내리려면 오른쪽 '현재 게시됨'에서 게시판별 버튼 사용.
+              pending 요청이 있으면 "전체 요청 취소"도 함께 노출한다. */}
+          {isOwner && (mountedBoards.length > 0 || hasPendingTakedown) ? (
+            <div className="flex items-center gap-2">
+              {mountedBoards.length > 0 && (
+                <Button
+                  variant="outline"
+                  className="text-destructive hover:text-destructive"
+                  disabled={requesting}
+                  onClick={handleRequestTakedown}
+                  title="게시된 모든 부서 게시판에서 한 번에 내리기 요청 (매니저 승인)"
+                >
+                  전체 게시판에서 내리기 요청
+                </Button>
+              )}
+              {hasPendingTakedown && (
+                <Button
+                  variant="ghost"
+                  className="text-muted-foreground"
+                  disabled={canceling}
+                  onClick={handleCancelAllTakedown}
+                  title="매니저 승인 대기 중인 게시취소 요청을 모두 취소"
+                >
+                  전체 요청 취소
+                </Button>
+              )}
+            </div>
           ) : (
             <span />
           )}
@@ -760,6 +889,8 @@ function MountedBoardRow({
   setMounts,
   onChanged,
   onToggle,
+  onRequestTakedown,
+  onCancelTakedown,
   onPolicyChange,
   autoEditNote = false,
 }) {
@@ -872,9 +1003,11 @@ function MountedBoardRow({
           ))}
         </select>
       )}
-      {/* 게시 해제 — 이 게시판을 *관리하는* 사람만(매니저/시스템관리자). 작성자라도
-          관리 안 하는 board 는 해제 버튼 대신, 푸터의 "게시판에서 내리기 요청"으로
-          매니저 승인을 받는다(can_unmount 로 게이팅). */}
+      {/* 게시취소 컨트롤 — 3갈래:
+          1) 관리하는 게시판(매니저/시스템관리자): "해제" 버튼(즉시 게시취소).
+          2) pending 요청 있음: "승인 대기" 뱃지(중복 요청 방지).
+          3) 작성자지만 관리 안 하는 게시판: "내리기 요청" 버튼(그 게시판 하나에만
+             요청 → 매니저 승인 대기). 작성자가 아니면 안내 텍스트만. */}
       {mount?.can_unmount ? (
         <Button
           variant="ghost"
@@ -893,10 +1026,54 @@ function MountedBoardRow({
             </>
           )}
         </Button>
+      ) : mount?.takedown_pending ? (
+        <span className="shrink-0 inline-flex items-center gap-1">
+          <span
+            className="text-[11px] text-amber-600 dark:text-amber-500 inline-flex items-center gap-1"
+            title="게시취소 요청됨 — 이 게시판 매니저의 승인을 기다리는 중입니다."
+          >
+            <Clock className="h-3 w-3" />
+            승인 대기
+          </span>
+          {isOwner && onCancelTakedown && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={isPending}
+              onClick={() => onCancelTakedown(slug)}
+              className="h-7 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+              title="이 게시판 내리기 요청을 취소합니다."
+            >
+              {isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                '요청 취소'
+              )}
+            </Button>
+          )}
+        </span>
+      ) : isOwner && onRequestTakedown ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={isPending}
+          onClick={() => onRequestTakedown(slug)}
+          className="h-7 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10 shrink-0"
+          title="이 게시판 매니저에게 게시취소를 요청합니다."
+        >
+          {isPending ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <>
+              <X className="h-3.5 w-3.5 mr-0.5" />
+              내리기 요청
+            </>
+          )}
+        </Button>
       ) : (
         <span
           className="h-7 px-2 text-[11px] text-muted-foreground shrink-0 inline-flex items-center"
-          title="이 게시판은 매니저만 게시취소할 수 있습니다. 아래 '게시판에서 내리기 요청'을 보내세요."
+          title="이 게시판은 매니저만 게시취소할 수 있습니다."
         >
           요청 필요
         </span>

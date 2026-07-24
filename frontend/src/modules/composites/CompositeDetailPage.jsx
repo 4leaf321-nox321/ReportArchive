@@ -104,6 +104,10 @@ export default function CompositeDetailPage() {
   // during the previous render".
   const [draggingIdx, setDraggingIdx] = useState(null)
   const [dropOverIdx, setDropOverIdx] = useState(null)
+  // 그룹(섹션) 드래그 상태 — 안건 드래그(draggingIdx)와 분리해 서로 간섭하지
+  // 않게 한다. 그룹은 헤더의 grip 핸들로만 잡히고, 안건은 행 전체로 잡힌다.
+  const [draggingGroup, setDraggingGroup] = useState(null)
+  const [dropOverGroup, setDropOverGroup] = useState(null)
   // DOCX export progress (same reason as drag state — must run on every
   // render). `null` when not exporting; otherwise the latest progress
   // event from exportCompositeToDocx.
@@ -602,6 +606,34 @@ export default function CompositeDetailPage() {
       const sj = si + dir
       if (sj < 0 || sj >= sections.length) return d
       ;[sections[si], sections[sj]] = [sections[sj], sections[si]]
+      return { ...d, items: sections.flatMap((s) => s.items) }
+    })
+  }
+
+  // 그룹 순서 드래그 변경 — fromGroup 섹션 블록 전체를 toGroup 자리로 옮긴다.
+  // moveGroup(화살표)과 같은 "섹션 = 연속 group_name 블록" 모델이되 인접이 아닌
+  // 임의 위치로 바로 이동한다(안건 reorderItems 와 같은 splice 보정). 둘 다 실제
+  // 안건이 있는 그룹이어야 함(빈 그룹은 items 에 블록이 없어 순서 개념이 없음).
+  function reorderGroups(fromGroup, toGroup) {
+    if (!fromGroup || !toGroup || fromGroup === toGroup) return
+    setDraft((d) => {
+      if (!d) return d
+      const sections = []
+      let cur = null
+      for (const it of d.items) {
+        const gn = it.group_name || null
+        if (!cur || cur.gn !== gn) {
+          cur = { gn, items: [] }
+          sections.push(cur)
+        }
+        cur.items.push(it)
+      }
+      const fi = sections.findIndex((s) => s.gn === fromGroup)
+      const ti = sections.findIndex((s) => s.gn === toGroup)
+      if (fi < 0 || ti < 0) return d
+      const [moved] = sections.splice(fi, 1)
+      const adjusted = fi < ti ? ti - 1 : ti
+      sections.splice(adjusted, 0, moved)
       return { ...d, items: sections.flatMap((s) => s.items) }
     })
   }
@@ -1212,6 +1244,11 @@ export default function CompositeDetailPage() {
               onMoveGroup={moveGroup}
               onRenameGroup={renameGroup}
               onRemoveGroup={removeGroup}
+              draggingGroup={draggingGroup}
+              dropOverGroup={dropOverGroup}
+              onReorderGroups={reorderGroups}
+              setDraggingGroup={setDraggingGroup}
+              setDropOverGroup={setDropOverGroup}
             />
           ) : (
             <ItemsListContainer
@@ -1225,6 +1262,11 @@ export default function CompositeDetailPage() {
               onAssignToGroup={assignDraggedToGroup}
               draggingIdx={draggingIdx}
               onDropToColumn={handleDropToColumn}
+              draggingGroup={draggingGroup}
+              dropOverGroup={dropOverGroup}
+              onReorderGroups={reorderGroups}
+              setDraggingGroup={setDraggingGroup}
+              setDropOverGroup={setDropOverGroup}
             >
               {draft.items.map((it, idx) => (
                 <ItemRow
@@ -1255,6 +1297,7 @@ export default function CompositeDetailPage() {
                   knownGroups={knownGroups}
                   onSetGroup={(g) => setItemGroup(idx, g)}
                   isDragging={draggingIdx === idx}
+                  itemDragActive={draggingIdx !== null}
                   isDropTarget={
                     dropOverIdx === idx &&
                     draggingIdx !== null &&
@@ -1734,7 +1777,41 @@ function ItemsListContainer({
   onAssignToGroup,
   draggingIdx,
   onDropToColumn,
+  draggingGroup,
+  dropOverGroup,
+  onReorderGroups,
+  setDraggingGroup,
+  setDropOverGroup,
 }) {
+  // 그룹 섹션(헤더)에 붙일 드롭 핸들러 — 다른 그룹을 이 그룹 위로 끌어오면
+  // 그 자리로 이동. 안건 드래그(draggingIdx)와 겹치지 않도록 draggingGroup 로만
+  // 활성화한다.
+  const groupDropProps = (gn) =>
+    editing && draggingGroup && draggingGroup !== gn
+      ? {
+          onDragOver: (e) => {
+            e.preventDefault()
+            if (dropOverGroup !== gn) setDropOverGroup?.(gn)
+          },
+          onDrop: (e) => {
+            e.preventDefault()
+            onReorderGroups?.(draggingGroup, gn)
+            setDraggingGroup?.(null)
+            setDropOverGroup?.(null)
+          },
+        }
+      : {}
+  // 그룹 헤더 grip 에 붙일 드래그 핸들 props.
+  const groupDragHandle = (gn) =>
+    editing && onReorderGroups
+      ? {
+          onDragStart: () => setDraggingGroup?.(gn),
+          onDragEnd: () => {
+            setDraggingGroup?.(null)
+            setDropOverGroup?.(null)
+          },
+        }
+      : null
   // 2단 보기에서 열의 빈 영역에 드롭하면 그 열로 옮기는 핸들러. 안건 위에
   // 직접 드롭한 경우는 ItemRow 가 stopPropagation 하므로 여기로 안 온다.
   const colDropProps = (col, groupName = null) =>
@@ -1803,7 +1880,16 @@ function ItemsListContainer({
         s.gn ? (
           <div
             key={`sec-${si}-${s.gn}`}
-            className="overflow-hidden rounded-md border border-primary/25 bg-primary/[0.03]"
+            className={cn(
+              'overflow-hidden rounded-md border border-primary/25 bg-primary/[0.03] transition-colors',
+              editing && draggingGroup === s.gn && 'opacity-40',
+              editing &&
+                draggingGroup &&
+                draggingGroup !== s.gn &&
+                dropOverGroup === s.gn &&
+                'ring-2 ring-primary',
+            )}
+            {...groupDropProps(s.gn)}
           >
             <GroupSectionHeader
               name={s.gn}
@@ -1821,6 +1907,7 @@ function ItemsListContainer({
                   ? () => onMoveGroup(s.gn, +1)
                   : undefined
               }
+              dragHandleProps={groupDragHandle(s.gn)}
             />
             <div className="px-3 py-1">{renderSectionItems(s.idxs, s.gn)}</div>
           </div>
@@ -1863,7 +1950,9 @@ function ItemsListContainer({
   )
 }
 
-/** 그룹 섹션 헤더 — [그룹명] + 건수 + 순서이동(↑↓) + 이름 수정 + 그룹 해제. */
+/** 그룹 섹션 헤더 — [그룹명] + 건수 + 드래그 핸들 + 순서이동(↑↓) + 이름 수정 +
+ *  그룹 해제. dragHandleProps 가 있으면 왼쪽에 grip 핸들을 그려 그 그룹 섹션을
+ *  끌어(HTML5 native) 순서를 바꾼다. ↑↓ 화살표도 함께 유지(정밀·키보드용). */
 function GroupSectionHeader({
   name,
   count,
@@ -1872,6 +1961,7 @@ function GroupSectionHeader({
   onRemove,
   onMoveUp,
   onMoveDown,
+  dragHandleProps,
 }) {
   const [renaming, setRenaming] = useState(false)
   const [value, setValue] = useState(name)
@@ -1903,6 +1993,17 @@ function GroupSectionHeader({
         />
       ) : (
         <>
+          {editing && dragHandleProps && (
+            <span
+              draggable
+              onDragStart={dragHandleProps.onDragStart}
+              onDragEnd={dragHandleProps.onDragEnd}
+              title="끌어서 그룹 순서 변경"
+              className="-ml-1 shrink-0 cursor-grab text-primary/50 hover:text-primary active:cursor-grabbing"
+            >
+              <GripVertical className="h-3.5 w-3.5" />
+            </span>
+          )}
           <span className="text-[11px] font-semibold text-primary">[{name}]</span>
           {count != null && (
             <span className="text-[10px] text-muted-foreground">{count}건</span>
@@ -1988,6 +2089,11 @@ function CompositeListView({
   onMoveGroup,
   onRenameGroup,
   onRemoveGroup,
+  draggingGroup,
+  dropOverGroup,
+  onReorderGroups,
+  setDraggingGroup,
+  setDropOverGroup,
 }) {
   const sections = []
   let cur = null
@@ -1999,6 +2105,33 @@ function CompositeListView({
     }
     cur.idxs.push(i)
   })
+
+  // 그룹 섹션 드래그 순서 변경 — ItemsListContainer 와 동일한 native HTML5 모델.
+  const groupDropProps = (gn) =>
+    editing && draggingGroup && draggingGroup !== gn
+      ? {
+          onDragOver: (e) => {
+            e.preventDefault()
+            if (dropOverGroup !== gn) setDropOverGroup?.(gn)
+          },
+          onDrop: (e) => {
+            e.preventDefault()
+            onReorderGroups?.(draggingGroup, gn)
+            setDraggingGroup?.(null)
+            setDropOverGroup?.(null)
+          },
+        }
+      : {}
+  const groupDragHandle = (gn) =>
+    editing && onReorderGroups
+      ? {
+          onDragStart: () => setDraggingGroup?.(gn),
+          onDragEnd: () => {
+            setDraggingGroup?.(null)
+            setDropOverGroup?.(null)
+          },
+        }
+      : null
 
   const selected = items[selectedIdx] ?? items[0]
   const selMeta = selected ? itemMeta(selected, workspaceName) : null
@@ -2050,7 +2183,16 @@ function CompositeListView({
           s.gn ? (
             <div
               key={`sec-${si}-${s.gn}`}
-              className="overflow-hidden rounded-md border border-primary/25 bg-primary/[0.03]"
+              className={cn(
+                'overflow-hidden rounded-md border border-primary/25 bg-primary/[0.03] transition-colors',
+                editing && draggingGroup === s.gn && 'opacity-40',
+                editing &&
+                  draggingGroup &&
+                  draggingGroup !== s.gn &&
+                  dropOverGroup === s.gn &&
+                  'ring-2 ring-primary',
+              )}
+              {...groupDropProps(s.gn)}
             >
               <GroupSectionHeader
                 name={s.gn}
@@ -2066,6 +2208,7 @@ function CompositeListView({
                     ? () => onMoveGroup(s.gn, +1)
                     : undefined
                 }
+                dragHandleProps={groupDragHandle(s.gn)}
               />
               <div className="space-y-0.5 p-1">
                 {s.idxs.map((i) => (
@@ -2179,6 +2322,10 @@ function ItemRow({
   // draws a primary-colored top border to show where the drop will
   // land (= insert before this row).
   isDragging,
+  // 안건 드래그가 진행 중인지. 그룹 드래그 중(false)엔 행이 드롭을 가로채지
+  // 않아야(preventDefault·stopPropagation 금지) 이벤트가 그룹 섹션 컨테이너로
+  // 버블돼 그룹 드롭이 성립한다.
+  itemDragActive = false,
   isDropTarget,
   onDragStart,
   onDragOver,
@@ -2218,7 +2365,7 @@ function ItemRow({
       draggable={editing}
       onDragStart={editing ? onDragStart : undefined}
       onDragOver={
-        editing
+        editing && itemDragActive
           ? (e) => {
               // preventDefault on dragover enables the drop. Required
               // by HTML5 spec — without it the browser refuses drop.
@@ -2228,7 +2375,7 @@ function ItemRow({
           : undefined
       }
       onDrop={
-        editing
+        editing && itemDragActive
           ? (e) => {
               e.preventDefault()
               // 안건 위에 직접 드롭한 경우 — 부모 컬럼의 drop zone 까지

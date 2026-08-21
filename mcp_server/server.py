@@ -523,12 +523,30 @@ async def list_my_reports(ctx: Context, limit: int = 20, phase: str = "all") -> 
 
 
 @mcp.tool()
-async def get_report(report_id: int, ctx: Context) -> dict:
-    """보고서 1건의 **본문 전체**. 내용을 실제로 읽거나 고칠 근거가 필요할 때만.
+async def get_report(report_id: int, ctx: Context, page: int | None = None) -> dict:
+    """보고서 1건의 **본문**. 내용을 실제로 읽거나 고칠 근거가 필요할 때만.
     → 구조·빈 블록만 보려면 `get_report_outline`(훨씬 가볍다).
-    `mount_workspaces` 에 이 글이 게시된 게시판과
-    그 게시판에서의 폴더 배치가 들어 있다(빈 리스트 = 아직 미게시)."""
-    return await _get(ctx, f"/api/reports/{report_id}")
+
+    긴 보고서는 전체가 수만 토큰이 될 수 있다. **`page`(1-base)를 주면 그 쪽만**
+    돌려준다 — 표 한 줄을 고치려고 전체를 읽지 마라(`get_report_outline` 으로 어느
+    쪽인지 먼저 확인하고 그 쪽만 받는 게 좋다).
+
+    `mount_workspaces` 에 이 글이 게시된 게시판과 그 게시판에서의 폴더 배치가
+    들어 있다(빈 리스트 = 아직 미게시)."""
+    data = await _get(ctx, f"/api/reports/{report_id}")
+    if page is None or not isinstance(data, dict) or data.get("error"):
+        return data
+    pages = data.get("pages") or []
+    if page < 1:
+        return {"error": f"page 는 1 이상이어야 합니다(1-base). 받은 값: {page}"}
+    if page > len(pages):
+        return {"error": f"page {page}: 이 보고서엔 {len(pages)}쪽뿐입니다."}
+    # 요청한 쪽만 남기고 나머지 본문은 덜어낸다 — 모델 입력 토큰이 존재 이유다.
+    slim = {k: v for k, v in data.items() if k not in ("pages", "content")}
+    slim["page"] = page
+    slim["page_count"] = len(pages)
+    slim["pages"] = [pages[page - 1]]
+    return slim
 
 
 @mcp.tool()

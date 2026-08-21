@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
@@ -3119,6 +3120,78 @@ def _broken_file_issues(db: Session, report) -> list[str]:
     return out
 
 
+_MENTION_RE = re.compile(
+    r'<a\b[^>]*data-mention-type="block"[^>]*>', re.I
+)
+_ATTR_RE = re.compile(r'data-mention-(id|page)="([^"]*)"', re.I)
+
+
+def _collect_block_mentions(node, out: list, page: int, block_id: str | None = None) -> None:
+    """본문 html 에서 **블록 상호참조**(그림 N·표 N) 앵커를 모은다 —
+    (참조가 있는 쪽, 그 블록, 가리키는 쪽 1-base, 가리키는 블록id).
+
+    저장 형태는 rich_text 행의 html 안 앵커다:
+      <a data-mention-type="block" data-mention-id="tbl" data-mention-page="0">표 1</a>
+    `data-mention-page` 는 **0-base**(프론트가 배열 인덱스로 만든다). 여기선
+    1-base 로 바꿔 담는다 — 바깥 세상(도구 인자·outline)은 전부 1-base 다."""
+    if isinstance(node, dict):
+        html = node.get("html")
+        if isinstance(html, str) and "data-mention-type" in html:
+            for tag in _MENTION_RE.findall(html):
+                attrs = dict(_ATTR_RE.findall(tag))
+                tgt_id = attrs.get("id")
+                try:
+                    tgt_page = int(attrs.get("page", "")) + 1
+                except (TypeError, ValueError):
+                    tgt_page = None
+                if tgt_id:
+                    out.append((page, block_id, tgt_page, tgt_id))
+        for v in node.values():
+            _collect_block_mentions(v, out, page, block_id)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_block_mentions(item, out, page, block_id)
+
+
+def _broken_reference_issues(report) -> list[str]:
+    """가리키는 블록이 없는 상호참조 — 화면엔 **"(삭제된 항목)"** 으로 뜬다.
+
+    AI 는 완성 화면을 못 보고, `data-mention-page` 가 0-base 라(도구 인자는 1-base)
+    한 칸씩 어긋나기 쉽다. 여기서 안 알려주면 영영 모른다."""
+    pages = [p for p in (report.pages or []) if isinstance(p, dict)]
+    if not pages:
+        pages = [{"content": report.content or {}}]
+    ids_by_page = {
+        i: set((pg.get("content") or {}).keys()) for i, pg in enumerate(pages, 1)
+    }
+    found: list = []
+    for i, pg in enumerate(pages, 1):
+        for bid, block in (pg.get("content") or {}).items():
+            _collect_block_mentions(block, found, i, bid)
+
+    out, seen = [], set()
+    for src_page, src_block, tgt_page, tgt_id in found:
+        if tgt_page in ids_by_page and tgt_id in ids_by_page[tgt_page]:
+            continue
+        key = (src_page, src_block, tgt_page, tgt_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        where = f"{tgt_page}쪽 '{tgt_id}'" if tgt_page else f"'{tgt_id}'"
+        hint = ""
+        # 흔한 실수를 짚어준다 — 한 칸 옆에 있으면 0-base/1-base 를 헷갈린 것이다.
+        for cand in (tgt_page - 1 if tgt_page else None, (tgt_page + 1) if tgt_page else None):
+            if cand in ids_by_page and tgt_id in ids_by_page[cand]:
+                hint = (f" — {cand}쪽에 있습니다. data-mention-page 는 **0부터** 셉니다"
+                        f"({cand}쪽이면 \"{cand - 1}\").")
+                break
+        out.append(
+            f"{src_page}쪽 '{src_block}' 의 상호참조가 {where} 를 가리키는데 "
+            f"그런 블록이 없습니다(화면엔 '(삭제된 항목)' 으로 뜹니다).{hint}"
+        )
+    return out
+
+
 def _block_fill(content_value) -> dict:
     """블록 하나가 **채워졌는지**와 규모를 요약. 본문을 통째로 주지 않고
     (모델 입력 토큰) "비었나/몇 행인가/몇 자인가"만 뽑는다.
@@ -3327,7 +3400,9 @@ def report_outline(
         "phase": report.phase.value,
         "page_count": len(pages_out),
         "pages": pages_out,
-        "issues": issues + _broken_file_issues(db, report),
+        "issues": (
+            issues + _broken_file_issues(db, report) + _broken_reference_issues(report)
+        ),
         "mounted_to": services.mount_placements(db, report.id),
     })
 

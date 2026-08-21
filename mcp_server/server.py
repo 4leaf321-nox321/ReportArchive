@@ -1351,6 +1351,116 @@ async def prepare_upload(ctx: Context, local_path: str | None = None) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- #
+# 빈 화면에서 시작하지 않기 — 사람은 **양식(프리셋)이나 지난 보고서**로 시작한다.
+# 백지에서 매번 구조를 다시 짜면 형식이 흔들리고 토큰도 크게 든다.
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+async def list_presets(
+    ctx: Context, template_id: str | None = None, board: str | None = None
+) -> dict:
+    """**시작 양식(프리셋)** 목록 — 이미 채워진 내용으로 보고서를 시작하는 틀.
+
+    "지난번 형식대로", "우리 팀 양식으로 써줘" 는 **여기서 시작한다.** 빈 템플릿에서
+    구조를 새로 짜지 마라 — 사람이 쓰는 방식과 어긋나고 형식이 매번 흔들린다.
+    고른 뒤 `create_report_from_preset(preset_id)` 로 만들면, 양식에 담긴 내용이
+    들어간 초안이 생긴다. 그다음 `update_report_draft` 로 이번 회차 내용을 채운다.
+
+    `template_id` 로 특정 템플릿의 양식만 볼 수 있다. 기본은 **전체 부서**를 본다
+    (사람의 작성 화면과 같은 범위) — `board` 를 주면 그 게시판 기준으로 좁힌다.
+    각 항목: id·name·description·template_id/version·만든 사람."""
+    params: dict = {"scope": "workspace" if board else "all"}
+    if template_id:
+        params["template_id"] = template_id
+    rows = await _get(ctx, "/api/presets", params, workspace=board)
+    if isinstance(rows, dict):
+        if rows.get("error"):
+            return rows
+        rows = rows.get("items") or []
+    # 백엔드가 리스트를 그대로 준다 — 0건이면 도구 결과가 빈 문자열이라
+    # "없다" 와 "못 불렀다" 가 구분 안 된다.
+    return {
+        "presets": [
+            {
+                "id": r.get("id"), "name": r.get("name"),
+                "description": r.get("description"),
+                "template_id": r.get("template_id"),
+                "template_version": r.get("template_version"),
+                "created_by": r.get("created_by_name"),
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+
+
+@mcp.tool()
+async def create_report_from_preset(
+    preset_id: int, ctx: Context, title: str | None = None
+) -> dict:
+    """**시작 양식으로 보고서를 만든다** — 양식에 담긴 내용이 채워진 초안이 생긴다.
+    preset_id 는 `list_presets` 가 준 값. `title` 을 생략하면 양식 이름을 쓴다.
+
+    만들고 나서 **그대로 두지 마라.** 양식의 내용은 지난 회차 것이라 숫자·날짜·
+    문장이 옛것이다. `get_report` 로 읽고 `update_report_draft`/`patch_cells` 로
+    이번 내용에 맞게 고친 뒤, **무엇을 갱신했고 무엇을 그대로 뒀는지 사용자에게
+    알려라.** 안 그러면 지난주 수치가 그대로 실려 나간다.
+
+    내 개인 공간에 초안으로 생긴다(게시는 별도)."""
+    body: dict = {}
+    if title:
+        body["title"] = title
+    return await _post(ctx, f"/api/presets/{preset_id}/new-report", body)
+
+
+@mcp.tool()
+async def copy_report(
+    report_id: int, title: str, ctx: Context, mode: str = "content"
+) -> dict:
+    """읽을 수 있는 보고서를 **복제**해 내 개인 공간에 새 초안으로 만든다.
+    "지난주 보고서 복사해서 이번 주 것 만들어줘" 가 이걸로 풀린다.
+
+    `mode`:
+      - `content`(기본) — 본문·레이아웃·표시설정만. 깔끔한 사본.
+      - `full` — 위 + 태그·보고서종류·축태그·연결. **지난 회차를 이어쓸 때** 적합.
+      - `summary` — 본문만 복사하고 원본과 '요약' 관계로 연결한다.
+    게시·댓글·수정이력은 어느 모드에서도 따라오지 않는다(사본은 새 개인 초안).
+
+    ※ 복제본은 **원본 내용 그대로**다. 날짜·수치·문장을 이번 것에 맞게 고치고,
+    무엇을 갱신했는지 사용자에게 알려라 — 안 고치면 지난 내용이 그대로 나간다.
+    ※ 남의 보고서도 읽을 수 있으면 복제된다. 그 경우 **출처를 밝혀라.**"""
+    if mode not in ("content", "full", "summary"):
+        return {"error": f"mode 는 content|full|summary 중 하나입니다: {mode}"}
+    return await _post(
+        ctx, f"/api/reports/{report_id}/copy", {"title": title, "mode": mode}
+    )
+
+
+@mcp.tool()
+async def save_report_as_preset(
+    report_id: int, name: str, ctx: Context,
+    description: str = "", board: str | None = None,
+) -> dict:
+    """이 보고서를 **시작 양식(프리셋)으로 저장**한다 — 다음부터 이 형식으로 시작.
+
+    사용자가 "이 형식 저장해줘", "다음에도 이렇게 쓰게 해줘" 라고 할 때만 쓴다.
+    **묻지 않고 만들지 마라.**
+
+    범위: 기본은 **나만 보이는 개인 양식**이다. `board`(게시판 slug)를 주면 그
+    부서 사람들의 작성 화면에도 뜬다 — 공용 목록에 얹는 것이므로 **사용자에게
+    먼저 확인받아라.** 권한이 없으면 서버가 403 으로 거절한다.
+
+    `name` 은 사람이 목록에서 고를 이름이니 구체적으로("CAE 주간보고 v2"),
+    `description` 에 언제 쓰는 양식인지 한 줄. 양식엔 **지금 본문이 그대로** 담기니,
+    다음 사람이 지우고 쓸 자리라면 미리 비우는 게 낫다 — 저장 전에 물어라."""
+    body: dict = {
+        "source_report_id": report_id, "name": name, "description": description,
+    }
+    if board:
+        body["owner_workspace_slugs"] = [board]
+    return await _post(ctx, "/api/presets", body)
+
+
 @mcp.tool()
 async def create_report_draft(
     template_id: str,

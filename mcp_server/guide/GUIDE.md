@@ -6,7 +6,7 @@
 `get_guide(topic)` 이 여기서 읽어 준다. 이 파일만 고치면 모두에게 즉시 반영된다.
 
 주제 구분자: `<!--@ 주제이름 -->`. 순서는 상관없다. -->
-GUIDE_VERSION: 2026-08-22a
+GUIDE_VERSION: 2026-08-22b
 
 <!--@ overview -->
 ## 무엇을 하려는가 → 어떤 도구
@@ -26,6 +26,8 @@ GUIDE_VERSION: 2026-08-22a
 | 답을 통째로 위임 | `ask_ontology` | 느림. 직접 조사 가능하면 안 씀 |
 | 새로 쓰기 | `list_templates`→`describe_template`→`create_report_draft` | — |
 | 있는 걸 고치기 | `update_report_draft` | 표 한 줄이면 ↓ |
+| **지난번 형식대로 쓰기** | `list_presets` → `create_report_from_preset` | 백지에서 짜지 말 것 |
+| **지난 보고서 복사해서 쓰기** | `copy_report(report_id, title)` | 내용 갱신 필수 |
 | 표에 줄 추가/셀 수정/줄 삭제 | `append_rows`/`patch_cells`/`remove_rows` | 통째로면 ↑ |
 | 잘못 만든 초안 치우기 | `trash_report` | 게시된 글은 불가 |
 | 게시된 글 내리기 | `request_unpublish` | 요청만·사람이 승인 |
@@ -57,6 +59,9 @@ GUIDE_VERSION: 2026-08-22a
 - `mcp__reportarchive__list_versions` / `restore_version` — 수정 이력 보기 · 되돌리기
 - `mcp__reportarchive__trash_report` — 내가 쓴 **미게시 초안**을 휴지통으로(복구 가능)
 - `mcp__reportarchive__request_unpublish` — 게시된 글을 **내려달라고 요청**(승인은 사람)
+- `mcp__reportarchive__list_presets` / `create_report_from_preset` — **시작 양식**으로 시작
+- `mcp__reportarchive__copy_report` — 지난 보고서를 복제해서 시작
+- `mcp__reportarchive__save_report_as_preset` — 이 형식을 양식으로 저장(사용자가 요청할 때만)
 - `mcp__reportarchive__list_report_files` — 보고서에 붙은 파일 목록(file_id·위치)
 - `mcp__reportarchive__list_saved_searches` / `run_saved_search` — 내 스마트폴더
 - `mcp__reportarchive__list_alert_rules` / `list_alert_firing` — 경보(**시스템 관리자 전용**)
@@ -94,6 +99,28 @@ GUIDE_VERSION: 2026-08-22a
 - 내용은 간결하고 사실 위주로.
 
 <!--@ write -->
+## 백지에서 시작하지 마라 (먼저 볼 것)
+사람은 보고서를 **빈 템플릿에서** 쓰지 않는다 — 저장해둔 양식으로 시작하거나 지난
+보고서를 복제해서 숫자를 갈아끼운다. AI 만 매번 구조를 새로 짜면 **형식이 회차마다
+흔들리고** 토큰도 크게 든다.
+
+| 사용자 말 | 먼저 할 것 |
+|---|---|
+| "지난번 형식대로", "우리 팀 양식으로" | `list_presets()` → `create_report_from_preset(id)` |
+| "지난주 것 복사해서", "이거 참고해서 이번 것" | `copy_report(report_id, title, mode="full")` |
+| 형식이 정해진 게 없다 | `list_templates` → `describe_template` → `create_report_draft` |
+
+⚠️ **양식·복제로 시작했으면 반드시 내용을 갱신하라.** 담긴 내용은 지난 회차 것이라
+날짜·수치·문장이 옛것이다. 고친 뒤 **무엇을 갱신했고 무엇을 그대로 뒀는지 사용자에게
+알려라** — 안 그러면 지난주 수치가 그대로 실려 나간다. 남의 보고서를 복제했으면
+출처도 밝힌다.
+
+`copy_report` 의 `mode`: `content`(본문만·깔끔) · `full`(태그·종류·축태그까지, **이어쓰기용**) ·
+`summary`(본문만 + 원본과 '요약' 관계 연결). 게시·댓글·이력은 어느 모드도 안 따라온다.
+
+`save_report_as_preset` 은 **사용자가 요청할 때만.** 기본은 나만 보이는 개인 양식이고,
+`board` 를 주면 그 부서 작성 화면에도 뜬다(공용 목록에 얹는 것이라 먼저 확인받아라).
+
 ## 워크플로
 1. 템플릿이 안 정해졌으면 `list_templates` 로 보여주고 고르게 한다.
 2. `describe_template(template_id, template_version)` 로 **각 블록(block_id)** 과 채울 형식을

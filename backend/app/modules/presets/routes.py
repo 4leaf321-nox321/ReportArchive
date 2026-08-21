@@ -7,10 +7,11 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.shared.client_origin import VIA_MCP, via_of
 from app.modules.presets import services
 from app.modules.presets.schemas import (
     PresetCreate,
@@ -63,10 +64,17 @@ def list_presets(
 @router.post("")
 def create_preset(
     payload: PresetCreate,
+    request: Request,
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(require_writer),
 ):
-    """Snapshot a report the caller can read into a reusable starting form."""
+    """Snapshot a report the caller can read into a reusable starting form.
+
+    ※ `owner_workspace_slugs` 를 **생략하면 전사 공개**다(화면에선 사용자가
+    명시적으로 고른다). **AI(MCP)가 생략하면 개인 양식으로 떨어뜨린다** — 양식은
+    남들 작성 화면에도 뜨는 공용 목록이라, 자동화가 기본값으로 전사에 얹으면
+    금방 지저분해진다. 부서·전사에 올리려면 AI 도 slug 를 명시해야 하고, 그때는
+    아래 `assert_can_scope_to` 가 계정 권한으로 다시 판정한다."""
     source = report_services.get_report(db, payload.source_report_id)
     if not source:
         return not_found_response(
@@ -74,6 +82,8 @@ def create_preset(
         )
     if not report_services.can_read_report(db, actor, source):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+    if via_of(request) == VIA_MCP and payload.owner_workspace_slugs is None:
+        payload.owner_workspace_slugs = [f"personal-{actor.user.id}"]
     # 공개 범위(소유 부서)는 계정 권한 기준으로 검증(템플릿과 동일 규칙).
     assert_can_scope_to(db, actor, payload.owner_workspace_slugs, resource="프리셋")
     preset = services.create_from_report(

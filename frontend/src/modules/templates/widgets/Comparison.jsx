@@ -848,7 +848,9 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     if (!r || r.c2 <= r.c1) return
     const root = selection.containerRef.current
     if (!root) return
-    const ths = root.querySelectorAll('thead th')
+    // 열과 1:1 인 측정 행 기준(0=행 라벨, 1..=CASE). 예전엔 thead 의 th 를
+    // 통째로 세어, 헤더가 여러 줄이거나 병합이 있으면 열과 어긋났다.
+    const ths = root.querySelectorAll('tr.rt-colprobe td[data-col-idx]')
     let total = 0
     let count = 0
     for (let c = r.c1; c <= r.c2; c++) {
@@ -1784,15 +1786,22 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           return (
             <th
               key={ci}
-              // CASE 레일 기준은 열과 1:1 인 *맨 아래* 헤더 행의 CASE 열만
-              // (코너=행 라벨 열은 CASE 가 아니고, 윗 행은 병합될 수 있다).
-              ref={isBottom && !isCorner ? rails.colRef(caseIdx) : undefined}
               data-cell-coord={`${hr},${ci}`}
               onMouseDown={(e) => selection.handleMouseDown(e, hr, ci)}
               onMouseEnter={() => {
                 selection.handleMouseEnter(hr, ci)
                 if (isBottom && !isCorner) rails.setHoverCol(caseIdx)
               }}
+              // 이 헤더 칸이 여러 열에 걸쳐 있으면(병합) 어느 CASE 를 가리키는지
+              // 칸만으로는 알 수 없다 — 마우스 x 로 가려낸다.
+              {...(isBottom && !isCorner && (span?.cs ?? 1) > 1
+                ? {
+                    onMouseMove: (e) => {
+                      const c = rails.colAtX(e.clientX)
+                      if (c != null) rails.setHoverCol(c)
+                    },
+                  }
+                : {})}
               onMouseLeave={() => selection.handleMouseLeave(hr, ci)}
               {...(span?.rs > 1 ? { rowSpan: span.rs } : {})}
               {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
@@ -2534,7 +2543,6 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                 {cases.map((c, ci) => (
                   <th
                     key={ci}
-                    ref={rails.colRef(ci)}
                     data-cell-coord={`0,${ci + 1}`}
                     onMouseDown={(e) => selection.handleMouseDown(e, 0, ci + 1)}
                     onMouseEnter={() => {
@@ -2597,6 +2605,22 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
               )}
             </thead>
             <tbody>
+            {/* 열 좌표 측정 전용 행 — 화면엔 안 보인다(.rt-colprobe). 헤더 맨
+                아래 행에 병합이 있으면 <th> 가 열과 1:1 이 아니라 가려진 열의
+                좌표를 잴 수 없어서, 항상 1:1 인 이 행을 기준으로 삼는다.
+                열 좌표계: 0 = 행 라벨, 1.. = cases (레일 키는 CASE 인덱스라
+                colRef 는 0 번 칸에는 달지 않는다). tbody **맨 앞**에 둔다 —
+                끝에 두면 데이터 행의 last:border-b-0 을 가로챈다. */}
+            <tr aria-hidden="true" className="rt-colprobe">
+              <td data-col-idx={0} />
+              {cases.map((c, ci) => (
+                <td
+                  key={c.key ?? ci}
+                  ref={rails.colRef(ci)}
+                  data-col-idx={ci + 1}
+                />
+              ))}
+            </tr>
               {rows.map((row, ri) => {
                 // 편집모드에서도 covered 셀은 skip + anchor 에만 span attr.
                 // 좌표: c=0 → 행 라벨, c=1..M → cases[c-1].

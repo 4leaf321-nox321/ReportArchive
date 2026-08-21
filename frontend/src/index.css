@@ -187,6 +187,21 @@
   border: var(--rt-gw, 1px) solid var(--rt-gc, hsl(var(--border))) !important;
 }
 
+/* 열 좌표 측정 전용 행(.rt-colprobe) — 화면엔 아무것도 그리지 않는다.
+   표 편집기의 "열 레일"은 열마다 위치를 알아야 하는데, 헤더 맨 아래 행에
+   병합이 있으면 <th> 가 열과 1:1 이 아니게 되어 가려진 열의 좌표를 잴 수
+   없다(그 <th> 자체가 렌더되지 않음). 그래서 항상 열과 1:1 인 0높이 행을
+   tbody 맨 앞에 두고 그걸 기준으로 잰다. `.rt-grid td` 가 !important 로 테두리를
+   주므로 더 높은 특이도로 되돌린다. 동적 클래스라 @layer 밖(=purge 제외)에. */
+.rt-colprobe td,
+.rt-grid .rt-colprobe td {
+  border: 0 !important;
+  padding: 0 !important;
+  height: 0 !important;
+  line-height: 0 !important;
+  font-size: 0 !important;
+}
+
 @layer base {
   * {
     @apply border-border;

@@ -2667,6 +2667,22 @@ export function useHoverRails() {
       clearTimer.current = null
     }
   }, [])
+  /** 화면 x 좌표가 어느 열 위인지 — 병합된 헤더 칸(여러 열을 덮음) 안에서
+   *  가리키는 쪽 열을 가려낸다. 측정 기준은 열과 1:1 인 probe 행이라 헤더가
+   *  어떻게 병합돼 있든 정확하다. 못 찾으면 null. */
+  const colAtX = useCallback((clientX) => {
+    let found = null
+    for (const [key, el] of colEls.current) {
+      if (!el || !el.isConnected) continue
+      const r = el.getBoundingClientRect()
+      if (clientX >= r.left && clientX < r.right) {
+        found = key
+        break
+      }
+    }
+    return found
+  }, [])
+
   const clear = useCallback(() => {
     cancelClear()
     clearTimer.current = setTimeout(() => {
@@ -2682,6 +2698,7 @@ export function useHoverRails() {
   return {
     boxRef, rowRef, colRef,
     hoverRow, hoverCol, setHoverRow, setHoverCol,
+    colAtX,
     rowPos, colPos, clear,
   }
 }

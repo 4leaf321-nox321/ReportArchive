@@ -945,8 +945,14 @@ def update_ai_draft_rows(
                     f"ops[{i}]: 한 번에 추가할 행이 너무 많습니다({len(add)}행, 상한 "
                     f"{AI_MAX_ROWS_PER_OP}). 나눠서 호출하세요.", 400
                 )
+            before_n = len(rows)
             rows.extend(add)
-            applied.append({"block_id": bid, "op": "append", "count": len(add)})
+            # count 는 나중에 **정규화를 통과한 실제 증가분**으로 덮어쓴다 —
+            # 여기서 len(add) 로 확정하면, 형식이 틀려 버려진 행까지 "추가됨"으로
+            # 보고돼 모델이 사용자에게 거짓말을 하게 된다.
+            entry = {"block_id": bid, "op": "append", "count": len(add),
+                     "_requested": len(add), "_before": before_n}
+            applied.append(entry)
         elif kind == "patch":
             patches = op.get("patches") or []
             if not isinstance(patches, list) or not patches:
@@ -986,6 +992,18 @@ def update_ai_draft_rows(
         merged, w = _renormalize_block(template, page, bid, {**block, "rows": rows})
         warnings += w
         content[bid] = merged if merged is not None else {**block, "rows": rows}
+        # 정규화가 행을 버렸을 수 있다(객체가 아닌 행 등). 실제 결과로 보정하고,
+        # 요청과 다르면 **반드시 알린다** — 조용한 무동작이 가장 나쁘다.
+        if applied and applied[-1].get("op") == "append":
+            e = applied[-1]
+            actual = len(_rows_of(content.get(bid)) or []) - e.pop("_before", 0)
+            requested = e.pop("_requested", e["count"])
+            e["count"] = max(0, actual)
+            if actual < requested:
+                warnings.append(
+                    f"{bid}: 요청한 {requested}행 중 {max(0, actual)}행만 추가됐습니다 — "
+                    "행은 {\"열키\": \"값\"} 형태의 객체여야 합니다(문자열·숫자는 버려짐)."
+                )
 
     over = _enforce_ai_limits([{"content": content}])
     if over:
@@ -1028,6 +1046,12 @@ def update_ai_draft_rows(
     return success_response(data={
         "report": _read_with_perms(db, actor, report),
         "applied": applied,
+        # dry_run 엔 있는데 실제 적용 응답엔 없었다 — 모델이 "정말 그렇게 됐는지"
+        # 확인할 수단이 없으면 다시 읽는 수밖에 없다(토큰 낭비).
+        "row_counts": {
+            o["block_id"]: len(_rows_of(content.get(o["block_id"])) or [])
+            for o in applied
+        },
         "warnings": warnings,
         "url": f"/w/{report.workspace_slug}/reports/{report.id}",
         "mounted_to": services.mount_placements(db, report.id),

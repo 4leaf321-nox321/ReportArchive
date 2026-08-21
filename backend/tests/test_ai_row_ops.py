@@ -195,3 +195,52 @@ def test_ai_request_size_limits():
         assert ok.status_code == 200, ok.text
     finally:
         _cleanup(rids, tid)
+
+
+def test_append_reports_actual_count_not_requested():
+    """정규화가 버린 행을 "추가됨" 으로 보고하면 안 된다.
+
+    행은 {"열키": 값} 객체여야 하는데, 문자열·숫자를 보내면 정규화가 조용히
+    버린다. 그런데 응답은 `count: 요청한 수` 를 그대로 돌려줘서, AI 가 사용자에게
+    "1행 추가했습니다" 라고 **거짓 보고**했다. 실제 증가분으로 보고하고, 모자라면
+    경고를 남긴다. 확인 수단으로 `row_counts` 도 실제 적용 응답에 싣는다
+    (dry_run 엔 있는데 여기만 없어서 다시 읽는 수밖에 없었다).
+    """
+    c = TestClient(app)
+    tid = _make_template()
+    rids = []
+    try:
+        r = c.post("/api/reports/ai-draft", headers=H, json={
+            "template_id": tid, "template_version": 1, "title": "행 보고 정확성",
+            "blocks": {},
+            "extra_blocks": [{
+                "id": "t", "type": "table",
+                "props": {"columns": [{"key": "item", "label": "항목", "type": "text"}]},
+                "content": [{"item": "가"}],
+            }],
+        })
+        rid = r.json()["data"]["report"]["id"]
+        rids.append(rid)
+
+        def append(rows):
+            res = c.patch(f"/api/reports/{rid}/ai-draft/rows", headers=H, json={
+                "page": 1,
+                "ops": [{"block_id": "t", "op": "append", "rows": rows}],
+            })
+            assert res.status_code == 200, res.text
+            return res.json()["data"]
+
+        # 객체가 아닌 행 → 실제로 안 들어간다. count 는 0 이어야 하고 경고가 있어야.
+        for bad in (["문자열행"], [42], [{}]):
+            d = append(bad)
+            assert d["applied"][0]["count"] == 0, (bad, d["applied"])
+            assert any("행만 추가됐습니다" in w for w in d["warnings"]), (bad, d["warnings"])
+            assert d["row_counts"]["t"] == 1, (bad, d["row_counts"])
+
+        # 정상 행 → 1 증가, 경고 없음.
+        d = append([{"item": "나"}])
+        assert d["applied"][0]["count"] == 1, d["applied"]
+        assert d["warnings"] == [], d["warnings"]
+        assert d["row_counts"]["t"] == 2, d["row_counts"]
+    finally:
+        _cleanup(rids, tid)

@@ -1,13 +1,39 @@
 ---
-name: ReportArchive 보고서 작성
-description: ReportArchive 시스템에 보고서를 초안으로 작성한다. 사용자가 "보고서 써줘", "초안 만들어줘", "주간보고 작성", "리스크 보고 작성" 등 ReportArchive 보고서 생성을 요청할 때 사용. reportarchive MCP 서버 도구로 템플릿을 고르고 내용을 채워 초안을 만든다.
+name: ReportArchive 보고서
+description: ReportArchive(사내 보고서 시스템)로 보고서를 다룰 때 사용. 작성("보고서 써줘"·"주간보고 초안"), 찾기("○○팀 보고서 찾아줘"·"낙하시험 관련 자료"·"몇 건이야"), 수정("표에 한 줄 추가"·"댓글 반영해서 고쳐줘"·"되돌려줘"), 댓글·리뷰 처리, 게시("게시판에 올려줘"), 종합보고 안건 제출, 기준정보(객체·과제·모델) 조회까지 — reportarchive MCP 도구를 쓰는 모든 작업에 적용. 도구가 40개가 넘어 무엇을 쓸지 고르는 규칙이 여기 있다.
 allowed-tools: mcp__reportarchive__*
 ---
 
-# ReportArchive 보고서 작성
+# ReportArchive 보고서
 
-`reportarchive` MCP 서버로 보고서를 **초안(draft)** 으로 만든다.
-**생성물은 항상 초안**이며, 게시·발행은 사람이 시스템 화면에서 한다.
+`reportarchive` MCP 서버로 사내 보고서를 다룬다. **도구가 40개가 넘으므로,
+무엇을 하려는지에 따라 아래 표에서 먼저 고르라.**
+
+## 무엇을 하려는가 → 어떤 도구
+
+| 하려는 일 | 도구 | 헷갈리는 짝 |
+|---|---|---|
+| **본문 내용**으로 찾기 | `search_reports` | 조건 나열은 ↓ |
+| **조건**으로 목록 뽑기(게시판·폴더·작성자·기간) | `list_reports` | 내용 검색은 ↑ |
+| **개수만** 세기 | `aggregate_reports` | 직접 세지 말 것 |
+| 내가 쓴 글 찾기(고치려고) | `list_my_reports` | 남의 글은 `list_reports` |
+| 본문을 **읽어야** 함 | `get_report` | 구조만이면 ↓ |
+| 빈 블록·구조만 확인(자기 점검) | `get_report_outline` | 본문 필요하면 ↑ |
+| 게시판·폴더 **이름을 모름** | `list_boards` → `list_folders` | — |
+| 기준정보(모델·부품·과제) 찾기 | `search_objects` | 보고서는 위쪽 |
+| 답을 통째로 위임 | `ask_ontology` | 느림. 직접 조사 가능하면 안 씀 |
+| 새로 쓰기 | `list_templates`→`describe_template`→`create_report_draft` | — |
+| 있는 걸 고치기 | `update_report_draft` | 표 한 줄이면 ↓ |
+| 표에 줄 추가/셀 수정/줄 삭제 | `append_rows`/`patch_cells`/`remove_rows` | 통째로면 ↑ |
+| 리뷰 의견 처리 | `list_comments`→(수정)→`reply_comment` | — |
+| 잘못 고침 | `list_versions`→`restore_version` | — |
+| 게시판에 올리기 | `preview_publish`→(확인)→`publish_report` | **2단계 필수** |
+| 종합보고에 안건 내기 | `list_submittable_composites`→`request_composite_item` | — |
+
+**기본 습관 셋**
+1. **이름을 모르면 먼저 목록을 부른다** — 게시판·폴더·템플릿·종합보고 모두. 추측하지 않는다.
+2. **되돌리기 어려운 일은 미리보기부터** — 큰 수정은 `dry_run`, 게시는 `preview_publish`.
+3. **본문을 통째로 읽지 않는다** — 구조만 필요하면 `get_report_outline`, 표 한 줄이면 행 단위 도구.
 
 ## 도구
 - `mcp__reportarchive__list_templates` — 템플릿 목록(template_id, version, name)

@@ -229,7 +229,8 @@ async def search_reports(
     unfiled: bool = False,
     author_org: str | None = None,
 ) -> dict:
-    """보고서 검색(내가 볼 수 있는 범위 내) — 기존 내용을 참고할 때.
+    """**본문 내용으로** 보고서를 찾는다(의미+키워드). 근거·참고 자료를 찾을 때.
+    → 조건으로 목록을 뽑을 땐 `list_reports`, 개수만 필요하면 `aggregate_reports`.
 
     **하이브리드 검색**: 정확한 단어(키워드)뿐 아니라 *의미가 비슷한* 보고서도 찾는다
     (임베딩 기반). 예: "브래킷 응력"으로 검색하면 "브라켓 강도 검토"처럼 표현이 달라도
@@ -296,6 +297,7 @@ async def list_boards(ctx: Context) -> dict:
 @mcp.tool()
 async def list_folders(board: str, ctx: Context) -> dict:
     """게시판 안의 **폴더 목록**(id·이름·상위폴더·보고서수) + 미분류 건수.
+    → `board` 는 `list_boards` 의 slug. 폴더로 글을 좁히려면 이걸 먼저 부른다.
 
     게시판은 폴더로 분류돼 있고(예: '진행 중'·'종결'·'Q2 핵심'), 한 보고서가 한
     게시판의 여러 폴더에 동시에 걸릴 수도 있다. 여기서 얻은 폴더 이름/id 를
@@ -343,7 +345,9 @@ async def list_reports(
     tags: list | None = None,
     sort: str = "recent",
 ) -> dict:
-    """조건에 맞는 보고서를 **모아서 나열**한다(열거). "○○팀 게시판 글 보여줘",
+    """**조건으로** 보고서 목록을 뽑는다(게시판·폴더·작성자·기간·종류).
+    → 본문 내용으로 찾는 건 `search_reports`, 개수만 필요하면 `aggregate_reports`.
+    "○○팀 게시판 글 보여줘",
     "'진행 중' 폴더에 뭐 있어?", "최근 한 달 주간보고 목록" 같은 요청용.
 
     `search_reports` 와의 차이 — 저쪽은 *의미 검색으로 근거 발췌*(최대 25건, 본문
@@ -392,7 +396,8 @@ async def list_reports(
 
 @mcp.tool()
 async def list_my_reports(ctx: Context, limit: int = 20, phase: str = "all") -> dict:
-    """**내가 쓴 보고서** 목록(최근 수정 순) — 이어서 수정(update_report_draft)할
+    """**내가 쓴** 보고서 목록 — 고칠 대상을 찾을 때. 남의 글·조건 검색은 `list_reports`.
+    (최근 수정 순) — 이어서 수정(update_report_draft)할
     대상을 찾는 진입점.
 
     기본은 **전체 단계**다. 게시(mount)하면 단계가 자동으로 `reviewing` 으로 올라가서,
@@ -409,14 +414,17 @@ async def list_my_reports(ctx: Context, limit: int = 20, phase: str = "all") -> 
 
 @mcp.tool()
 async def get_report(report_id: int, ctx: Context) -> dict:
-    """보고서 1건 상세(content 포함). `mount_workspaces` 에 이 글이 게시된 게시판과
+    """보고서 1건의 **본문 전체**. 내용을 실제로 읽거나 고칠 근거가 필요할 때만.
+    → 구조·빈 블록만 보려면 `get_report_outline`(훨씬 가볍다).
+    `mount_workspaces` 에 이 글이 게시된 게시판과
     그 게시판에서의 폴더 배치가 들어 있다(빈 리스트 = 아직 미게시)."""
     return await _get(ctx, f"/api/reports/{report_id}")
 
 
 @mcp.tool()
 async def get_report_outline(report_id: int, ctx: Context) -> dict:
-    """보고서의 **구조 요약** — 페이지별로 어떤 블록이 있고 **채워졌는지**.
+    """보고서의 **구조만** — 페이지별 블록과 채워졌는지(본문은 안 옴).
+    → 내용을 읽어야 하면 `get_report`. 작성·수정 후 자기 점검이 주 용도.
 
     너는 완성된 화면을 볼 수 없어서, 만든 보고서에 **빈 표나 데이터 없는 차트**가
     남아도 알아채지 못한다. `get_report` 로 본문을 통째로 읽으면 토큰을 크게 먹으니,
@@ -700,7 +708,9 @@ async def search_objects(
     year: int | None = None,
     limit: int = 15,
 ) -> dict:
-    """타입+속성+관계로 온톨로지 객체를 **결정적으로** 검색한다(추측 금지). "속성이
+    """**기준정보 객체**(모델·부품·과제 등)를 타입+속성+관계로 찾는다. 보고서가 아니다.
+    → 보고서를 찾으려면 `search_reports`/`list_reports`. 어휘를 모르면 먼저 `list_object_types`.
+    "속성이
     조건에 맞는" / "특정 객체와 관계된" 같은 구조적 질문에 쓴다.
       - type: 객체 종류 slug (list_object_types 참고).
       - q: 이름/코드/설명 부분검색.
@@ -741,7 +751,9 @@ async def aggregate_reports(
     phase: str | None = None,
     lifecycle: str | None = None,
 ) -> dict:
-    """**개수를 센다** — "몇 건이야?" 류 질문에 쓴다. 세는 건 SQL 이라 정확하다.
+    """**개수만** 센다 — "몇 건이야?". SQL 로 세므로 정확하다.
+    → 목록이 필요하면 `list_reports`, 본문 검색은 `search_reports`.
+    직접 세지 마라(누락·환각).
     search_reports 결과를 직접 세지 마라(누락·환각). 볼 수 있는 보고서만 집계된다.
       - filters: 조건 값들(태깅) 예 ["낙하시험","실패"]. 서로 다른 축은 AND.
         날짜/작성자 조건만 쓸 거면 빈 배열 [].
@@ -777,7 +789,10 @@ async def get_subgraph(
 
 @mcp.tool()
 async def ask_ontology(query: str, ctx: Context, max_hops: int = 6) -> dict:
-    """자연어 질문을 던지면 **서버가 온톨로지+보고서를 스스로 다단계 조사**해 근거와
+    """**질문을 통째로 위임**한다 — 서버가 온톨로지+보고서를 다단계 조사해 답한다.
+    → 직접 단계별로 파고들 거면 `list_object_types`→`search_objects`→`get_object`.
+    느리고 AI 권한이 필요하니, 스스로 조사할 수 있으면 그쪽이 낫다.
+    근거와
     함께 답한다(위임). 세밀한 제어 없이 완결 답변이 필요할 때 쓴다 — 직접 단계별로
     조사하려면 list_object_types/search_objects/get_object 를 쓰라.
     반환: {answer, citations(보고서), objects(근거 객체), trace(추론과정), no_evidence}.
@@ -880,7 +895,9 @@ async def link_objects(
 
 @mcp.tool()
 async def upload_from_url(ctx: Context, url: str, filename: str | None = None) -> dict:
-    """웹 URL 의 파일을 **ReportArchive 서버가 직접 받아** 저장하고 **file_id** 를 돌려준다
+    """**웹 URL** 의 파일을 서버가 직접 받아 저장한다(권장 경로).
+    → 로컬 파일은 `prepare_upload`, 작은 이미지만 최후수단으로 `upload_file`.
+    **file_id** 를 돌려준다
     (바이트가 모델/클라이언트를 안 거쳐 크기·화질 제약 없음). 공개 http/https URL 만
     되고 사설·내부 주소는 차단된다. 받은 file_id 를 image / attachment / video / cad_3d
     위젯 content 에 넣어 파일 위젯을 만든다.
@@ -1084,7 +1101,9 @@ async def create_report_draft(
     report_type_id: int | None = None,
     entity_ids: list | None = None,
 ) -> dict:
-    """보고서를 **초안(draft)** 으로 생성. `blocks` 는 block_id→내용(describe_template 참고).
+    """보고서를 **새로** 만든다(초안). 이미 있는 보고서 수정은 `update_report_draft`.
+    → 먼저 `list_templates` → `describe_template` 로 채울 블록을 확인하라.
+    `blocks` 는 block_id→내용(describe_template 참고).
     **AI 가 채운 위젯만** 보이고(빈 템플릿 블록은 자동 숨김), 레이아웃은 서버가 자동 배치한다.
 
     `extra_blocks`: 템플릿에 없는 위젯을 **직접 만들어** 추가할 때(특히 **빈 템플릿**으로
@@ -1245,6 +1264,7 @@ async def patch_cells(
     dry_run: bool = False,
 ) -> dict:
     """표 같은 위젯의 **특정 셀만** 고친다. 나머지 행·열은 건드리지 않는다.
+    → 행 번호를 모르면 `get_report` 로 현재 행을 먼저 확인하라(틀리면 엉뚱한 칸이 바뀐다).
 
     `patches` 는 `[{"row": 0, "key": "열키", "value": "새 값"}]` — `row` 는 **0부터**
     세는 행 번호다. 지금 값을 모르면 `get_report` 로 먼저 확인하라(행 번호가 틀리면

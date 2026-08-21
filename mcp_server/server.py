@@ -214,8 +214,27 @@ async def get_guide(ctx: Context, topic: str | None = None) -> dict:
 @mcp.tool()
 async def list_templates(ctx: Context) -> list:
     """사용 가능한 보고서 템플릿 목록(template_id, version, name, description). 어떤
-    템플릿으로 쓸지 고를 때 먼저 호출."""
-    return await _get(ctx, "/api/templates")
+    템플릿으로 쓸지 고를 때 먼저 호출. 고른 뒤 `describe_template` 로 채울 블록을 본다."""
+    rows = await _get(ctx, "/api/templates")
+    if isinstance(rows, dict):
+        if rows.get("error"):
+            return rows
+        rows = rows.get("items") or []
+    # 원본엔 schema(블록 정의 전체)가 들어 있어 84개면 46KB 가 넘는다. 고를 때
+    # 필요한 건 이름·설명뿐이고, 구조는 describe_template 이 준다.
+    return {
+        "templates": [
+            {
+                "template_id": t.get("template_id"),
+                "version": t.get("version"),
+                "name": t.get("name"),
+                "category": t.get("category"),
+                "description": (t.get("description") or "")[:200],
+            }
+            for t in rows
+        ],
+        "count": len(rows),
+    }
 
 
 @mcp.tool()
@@ -247,8 +266,10 @@ async def describe_metadata(ctx: Context) -> dict:
 
     반환:
       - report_types: [{id, name, status}] — 보고서 유형(report_type_id 후보).
-      - entity_axes:  [{type_id, slug, label, values: [{id, value, status}]}]
-                      — 모델/단계/부품 등 '축'과 그 값들(entity_ids 후보)."""
+      - entity_axes:  [{type_id, slug, label, sample_values, value_total, truncated}]
+                      — 모델/단계/부품 등 '축'. 값은 **표본 몇 개**만 온다
+                      (축마다 수백 개일 수 있어서). 원하는 값이 표본에 없으면
+                      `search_objects(type=축slug, q="이름")` 로 찾아 id 를 얻어라."""
     rt = await _get(ctx, "/api/report-types")
     if isinstance(rt, dict) and rt.get("error"):
         return rt
@@ -267,16 +288,30 @@ async def describe_metadata(ctx: Context) -> dict:
         by_type.setdefault(e.get("type_id"), []).append(
             {"id": e.get("id"), "value": e.get("value"), "status": e.get("status")}
         )
-    entity_axes = [
-        {
+    # 축 하나에 값이 수백 개일 수 있다(모델·부품 등). 전부 실어 보내면 58KB 를
+    # 넘겨 대화를 잡아먹는다 — 축마다 앞쪽 일부만 주고, 잘렸으면 알려서 정확한
+    # 값이 필요하면 search_objects 로 찾게 한다.
+    # 축이 수십 개고 축마다 값이 수백 개다 — 전부 실으면 대화를 잡아먹는다.
+    # 여기선 **어떤 축이 있는지** 를 알려주는 게 목적이고, 정확한 값은
+    # search_objects 로 찾는 게 맞다. 그래서 축당 표본만 준다.
+    PER_AXIS = 8
+    entity_axes = []
+    for t in (et.get("items") or []):
+        vals = by_type.get(t.get("id"), [])
+        entity_axes.append({
             "type_id": t.get("id"),
             "slug": t.get("slug"),
             "label": t.get("label"),
-            "values": by_type.get(t.get("id"), []),
-        }
-        for t in (et.get("items") or [])
-    ]
-    return {"report_types": report_types, "entity_axes": entity_axes}
+            "sample_values": vals[:PER_AXIS],
+            "value_total": len(vals),
+            "truncated": len(vals) > PER_AXIS,
+        })
+    return {
+        "report_types": report_types,
+        "entity_axes": entity_axes,
+        "note": "값이 잘린 축(truncated)에서 원하는 값을 못 찾으면 "
+                "search_objects(type=축slug, q=...) 로 찾아 id 를 얻어라.",
+    }
 
 
 @mcp.tool()
@@ -580,12 +615,34 @@ async def list_composites(
     (`list_boards` 의 slug). 생략하면 MCP 등록 시 정해진 부서 것만 나오는데, 개인
     공간으로 등록돼 있으면 **0건**이 나온다 — 그럴 땐 board 를 지정해야 한다.
     상세는 `get_composite`."""
-    rows = await _get(ctx, "/api/composites", {"limit": limit}, workspace=board)
+    rows = await _get(ctx, "/api/composites", None, workspace=board)
     if isinstance(rows, dict):
         if rows.get("error"):
             return rows
         rows = rows.get("items") or []
-    return {"composites": rows, "count": len(rows)}
+    total = len(rows)
+    # 백엔드 목록엔 limit 이 없다(웹은 화면에서 필터). 그대로 흘리면 게시판당
+    # 1,000건 넘게 와서 대화가 통째로 날아간다(dx 기준 약 45만 토큰) — 여기서
+    # 자르고 표시에 필요한 필드만 남긴다.
+    rows = rows[: max(1, min(limit, 100))]
+    return {
+        "composites": [
+            {
+                "id": c.get("id"),
+                "title": c.get("title"),
+                "period_date": c.get("period_date"),
+                "kind": c.get("kind"),
+                "item_count": c.get("item_count"),
+                "owner": c.get("owner_name"),
+                "board": c.get("workspace_slug"),
+                "published_at": c.get("published_at"),
+            }
+            for c in rows
+        ],
+        "count": len(rows),
+        "total": total,
+        "truncated": total > len(rows),
+    }
 
 
 @mcp.tool()
@@ -622,10 +679,37 @@ async def request_composite_item(
 
 
 @mcp.tool()
-async def list_submittable_composites(report_id: int, ctx: Context) -> dict:
+async def list_submittable_composites(
+    report_id: int, ctx: Context, limit: int = 20
+) -> dict:
     """이 보고서를 **안건으로 낼 수 있는 종합보고** 목록. 이미 안건인지·이미 제출
-    대기인지 상태도 함께 온다. `request_composite_item` 전에 확인용."""
-    return await _get(ctx, f"/api/composites/submittable-for/{report_id}")
+    대기인지 상태도 함께 온다. `request_composite_item` 전에 확인용.
+
+    후보가 많으면 앞쪽 `limit` 개만 온다(`total`·`truncated` 로 알려준다) —
+    특정 종합보고를 찾는 거라면 `list_composites(board=...)` 로 좁혀 id 를 확인하라."""
+    rows = await _get(ctx, f"/api/composites/submittable-for/{report_id}")
+    if isinstance(rows, dict):
+        if rows.get("error"):
+            return rows
+        rows = rows.get("items") or []
+    total = len(rows)
+    rows = rows[: max(1, min(limit, 100))]
+    return {
+        "composites": [
+            {
+                "id": c.get("id"),
+                "title": c.get("title"),
+                "period_date": c.get("period_date"),
+                "board": c.get("workspace_slug"),
+                "already_item": c.get("already_item"),
+                "already_requested": c.get("already_requested"),
+            }
+            for c in rows
+        ],
+        "count": len(rows),
+        "total": total,
+        "truncated": total > len(rows),
+    }
 
 
 # --------------------------------------------------------------------------- #

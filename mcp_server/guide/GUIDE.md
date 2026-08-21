@@ -6,7 +6,7 @@
 `get_guide(topic)` 이 여기서 읽어 준다. 이 파일만 고치면 모두에게 즉시 반영된다.
 
 주제 구분자: `<!--@ 주제이름 -->`. 순서는 상관없다. -->
-GUIDE_VERSION: 2026-08-21
+GUIDE_VERSION: 2026-08-21b
 
 <!--@ overview -->
 ## 무엇을 하려는가 → 어떤 도구
@@ -281,6 +281,10 @@ create_report_draft("<빈템플릿id>", 1, "분기 리뷰", {}, extra_blocks=[
 - **무조건 채우지 마라.** 파일 위젯(이미지·첨부·CAD·동영상)처럼 **사람이 채울** 것도 있다.
 
 <!--@ composites -->
+> `list_composites` · `list_submittable_composites` 는 후보가 1,000건을 넘을 수 있어
+> **앞쪽 일부만** 온다(`total`·`truncated` 로 알려준다). 특정 종합보고를 찾는 거라면
+> `board` 로 게시판을 좁히고, 그래도 많으면 사용자에게 어느 것인지 물어라.
+
 ## 종합보고에 안건 내기
 `list_submittable_composites(report_id)` 로 낼 수 있는 곳을 확인하고,
 `request_composite_item(composite_id, report_id, note)` 로 **제출 요청**한다.

@@ -334,6 +334,7 @@ async def list_reports(
     include_descendants: bool = False,
     unfiled: bool = False,
     author: str | None = None,
+    mine: bool = False,
     author_org: str | None = None,
     report_type: str | None = None,
     last_days: int | None = None,
@@ -358,7 +359,9 @@ async def list_reports(
       - board: 게시판(조직) 이름/slug. include_descendants=True 면 하위 부서까지.
       - folder: 그 게시판의 폴더 이름/id. unfiled=True 면 미분류만.
       - query: 제목·본문 부분일치(빈 값이면 조건에 맞는 전체를 최신순으로 브라우즈).
-      - author: 작성자 이름 · author_org: 작성자 **소속 부서**(게시 여부 무관)
+      - **mine=True**: 내가 쓴 글만. 너는 사용자 이름을 모르므로 "내가 지난주 쓴 글",
+        "내가 dx 에 올린 글" 같은 요청은 **author 가 아니라 이걸로** 푼다.
+      - author: 작성자 이름(남의 글) · author_org: 작성자 **소속 부서**(게시 여부 무관)
       - report_type: 종류 이름 · phase: drafting|reviewing|finalized ·
         lifecycle: single_shot|ongoing · tags: 자유 태그 목록
       - 기간: last_days · period(today|this_week|this_month|this_year) · date_from/to
@@ -375,6 +378,8 @@ async def list_reports(
         "offset": max(0, offset),
         "sort": sort if sort in ("recent", "oldest", "relevance") else "recent",
     }
+    if mine:
+        params["mine"] = "true"
     for key, val in (
         ("board", board), ("folder", folder), ("author", author),
         ("author_org", author_org), ("report_type", report_type),
@@ -396,7 +401,8 @@ async def list_reports(
 
 @mcp.tool()
 async def list_my_reports(ctx: Context, limit: int = 20, phase: str = "all") -> dict:
-    """**내가 쓴** 보고서 목록 — 고칠 대상을 찾을 때. 남의 글·조건 검색은 `list_reports`.
+    """**내가 쓴** 보고서 목록 — 고칠 대상을 찾을 때(최근 수정 순, 필터 없음).
+    → 기간·게시판·종류로 좁히려면 `list_reports(mine=True, ...)`. 남의 글도 그쪽.
     (최근 수정 순) — 이어서 수정(update_report_draft)할
     대상을 찾는 진입점.
 
@@ -1312,7 +1318,8 @@ async def _rows_op(ctx, report_id, page, ops, expected_revision, dry_run):
 
 @mcp.tool()
 async def list_versions(report_id: int, ctx: Context, limit: int = 20) -> dict:
-    """보고서의 **수정 이력**(최신순). 잘못 고쳤을 때 되돌릴 지점을 찾는 데 쓴다.
+    """보고서의 **수정 이력**(최신순) — **"누가 언제 고쳤어?"** 에 답하고,
+    잘못 고쳤을 때 되돌릴 지점을 찾는 데 쓴다.
 
     각 항목: version_id·revision·created_at·author·source·크기.
     `source` 는 그 버전이 생긴 경위 — `save`(사람이 저장) · **`mcp`(AI 가 수정)** ·

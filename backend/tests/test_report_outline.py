@@ -99,6 +99,16 @@ def test_outline_flags_empty_visible_blocks():
         assert b2["b"]["rows"] == 2 and b2["b"]["filled"] is True, b2["b"]
         assert o2["issues"] == [], o2["issues"]
 
+        # 블록이 하나도 없는 페이지도 issue — "문제 없나 봐줘" 에 빈 보고서를
+        # 문제 없음으로 답하면 안 된다.
+        empty = c.post("/api/reports", headers=H, json={
+            "template_id": tid, "template_version": 1, "title": "빈 보고서",
+            "content": {}})
+        erid = empty.json()["data"]["id"]
+        rids.append(erid)
+        eo = c.get(f"/api/reports/{erid}/outline", headers=H).json()["data"]
+        assert any("비어" in i or "블록이 하나도" in i for i in eo["issues"]), eo["issues"]
+
         # 보기 권한 없는 사람은 못 본다
         h4 = {"Authorization": f"Bearer {create_access_token(4)}",
               "X-Workspace-Slug": "personal-4"}

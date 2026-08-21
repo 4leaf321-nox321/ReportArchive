@@ -16,7 +16,9 @@ allowed-tools: mcp__reportarchive__*
 | **본문 내용**으로 찾기 | `search_reports` | 조건 나열은 ↓ |
 | **조건**으로 목록 뽑기(게시판·폴더·작성자·기간) | `list_reports` | 내용 검색은 ↑ |
 | **개수만** 세기 | `aggregate_reports` | 직접 세지 말 것 |
-| 내가 쓴 글 찾기(고치려고) | `list_my_reports` | 남의 글은 `list_reports` |
+| 내가 쓴 글 찾기(고치려고) | `list_my_reports` | 기간·게시판 조건이 붙으면 ↓ |
+| **내가** 지난주/특정 게시판에 쓴 글 | `list_reports(mine=True, ...)` | 너는 사용자 이름을 모른다 |
+| 누가 언제 고쳤는지 | `list_versions` | 되돌리기도 여기서 |
 | 본문을 **읽어야** 함 | `get_report` | 구조만이면 ↓ |
 | 빈 블록·구조만 확인(자기 점검) | `get_report_outline` | 본문 필요하면 ↑ |
 | 게시판·폴더 **이름을 모름** | `list_boards` → `list_folders` | — |

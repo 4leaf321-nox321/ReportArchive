@@ -191,3 +191,41 @@ def test_board_folder_axis_reaches_aggregate_and_search():
     for row in hits.get("reports", []):
         assert "boards" in row
         assert BOARD in [b["slug"] for b in row["boards"]], row
+
+
+def test_mine_filter_and_axis_specific_hints():
+    """실사용 말투에서 드러난 구멍 둘.
+
+    ① "내가 지난주 쓴 글" — 외부 AI 는 **자기 사용자 이름을 모른다**. author 로는
+       풀 수 없어 `mine=true` 로 푼다(기간·게시판 등 기존 필터와 조합).
+    ② 이름 해석 실패 안내가 **틀린 축과 무관하게** "게시판/폴더를 확인하라"고 해서
+       엉뚱한 방향을 가리켰다 — 실패한 축에 맞는 안내를 준다.
+    """
+    c = TestClient(app)
+
+    # mine — 내 글만. author 없이도 동작한다.
+    r = c.get("/api/reports/browse?mine=true&limit=5", headers=_h())
+    assert r.status_code == 200, r.text
+    rows = r.json()["data"]["reports"]
+    if rows:
+        # 이 계정(user 1)의 표시 이름과 일치해야 한다
+        names = {x["author"] for x in rows}
+        assert len(names) == 1, names
+
+    # mine + 기존 필터 조합이 그대로 먹는다
+    both = c.get("/api/reports/browse?mine=true&last_days=3650&limit=1", headers=_h())
+    assert both.status_code == 200, both.text
+
+    # 작성자 실패 → 작성자 안내 + mine 힌트 (게시판 얘기 아님)
+    a = c.get("/api/reports/browse?author=존재하지않는사람zz", headers=_h())
+    assert a.status_code == 400
+    msg = a.json()["message"]
+    assert "mine=true" in msg, msg
+    assert "게시판·폴더" not in msg, msg
+
+    # 게시판 실패 → 게시판 안내 (mine 얘기 아님)
+    b = c.get("/api/reports/browse?board=없는게시판zz", headers=_h())
+    assert b.status_code == 400
+    msg2 = b.json()["message"]
+    assert "게시판·폴더" in msg2, msg2
+    assert "mine=true" not in msg2, msg2

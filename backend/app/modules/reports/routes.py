@@ -1042,6 +1042,13 @@ def browse_reports(
     include_descendants: bool = Query(default=False, description="board 의 하위 부서까지"),
     unfiled: bool = Query(default=False, description="board 의 폴더 미분류만"),
     author: str | None = Query(default=None, description="작성자 사람 이름"),
+    mine: bool = Query(
+        default=False,
+        description=(
+            "내가 쓴 글만. 외부 AI 는 자기 사용자 이름을 모르므로 author 로는 "
+            "'내가 지난주 쓴 글' 같은 요청을 풀 수 없다 — 이 플래그로 푼다."
+        ),
+    ),
     author_org: str | None = Query(default=None, description="작성자 소속 부서 이름/slug"),
     report_type: str | None = Query(default=None, description="보고서 종류 이름"),
     phase: str | None = Query(default=None, description="drafting|reviewing|finalized"),
@@ -1094,6 +1101,8 @@ def browse_reports(
         if not folder_ids:
             unresolved.append(f"folder={folder!r}")
     author_ids: list[int] = []
+    if mine:
+        author_ids.append(actor.user.id)
     if author and author.strip():
         uid = structured_qa._resolve_author(db, author)
         if uid is None:
@@ -1121,10 +1130,22 @@ def browse_reports(
             status_code=400,
         )
     if unresolved:
+        # 어느 축이 실패했는지에 맞는 안내 — 예전엔 author 가 틀려도 "게시판/폴더를
+        # 확인하라"고 해서 엉뚱한 방향을 가리켰다.
+        hints = []
+        if any(u.startswith(("board=", "folder=")) for u in unresolved):
+            hints.append("게시판·폴더 이름은 목록 조회로 확인")
+        if any(u.startswith("author=") for u in unresolved):
+            hints.append("작성자는 사람 이름 그대로 — **내가 쓴 글**을 찾는 거라면 "
+                         "author 대신 mine=true")
+        if any(u.startswith("author_org=") for u in unresolved):
+            hints.append("작성자 소속 부서는 게시판 이름/slug 와 같은 값")
+        if any(u.startswith("report_type=") for u in unresolved):
+            hints.append("보고서 종류는 종류 목록에서 확인")
         return error_response(
             "다음 이름을 찾지 못했습니다: " + ", ".join(unresolved)
             + ". 조건을 빼고 전체를 돌려주면 결과를 오해하게 되므로 중단합니다 — "
-            "게시판/폴더는 /api/workspaces·/api/folders 로 정확한 이름을 확인하세요.",
+            + " · ".join(hints),
             status_code=400,
         )
 
@@ -3080,6 +3101,8 @@ def report_outline(
                 issues.append(
                     f"{idx}쪽 '{bid}'({info.get('type') or '?'}) 가 비어 있습니다."
                 )
+        if not blocks:
+            issues.append(f"{idx}쪽에 블록이 하나도 없습니다(빈 페이지).")
         pages_out.append({
             "page": idx,
             "name": pg.get("name"),

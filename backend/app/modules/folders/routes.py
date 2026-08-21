@@ -87,6 +87,14 @@ def list_folders(
         folders = services.list_personal_folders(db, personal_target)
         uncategorized = services.count_uncategorized_personal(db, personal_target)
     elif workspace_slug:
+        # 없는 게시판이면 빈 목록이 아니라 404 — 오타/추측한 이름을 호출자가
+        # 깨닫게 한다(빈 목록은 "폴더가 없는 게시판"과 구분이 안 된다).
+        from app.modules.workspaces.models import Workspace as _Ws
+
+        if db.get(_Ws, workspace_slug) is None:
+            return error_response(
+                f"게시판을 찾을 수 없습니다: {workspace_slug}", status_code=404
+            )
         # 멤버/시스템관리자 = 전체 트리(전체 카운트). 비멤버는 둘로 나뉜다:
         #   - 게시판/폴더를 공유받음 → 전체 폴더 + "총 N개 중 M개 열람"(전체·열람수)
         #   - 공개분만 peek(공유 없음, 공개 컨텐츠만 있음) → 공개 폴더만(기존 동작)

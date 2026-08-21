@@ -119,6 +119,11 @@ def ensure_default_folders_for_user(db: Session, user_id: int) -> None:
 
 
 def ensure_default_folders_for_workspace(db: Session, workspace_slug: str) -> None:
+    # 없는 게시판이면 아무것도 만들지 않는다. 예전엔 그대로 INSERT 해서 FK 위반
+    # 500 이 났다 — 목록 조회(GET /api/folders?workspace_slug=오타)만으로도 터졌고,
+    # 게시판 이름을 추측하는 외부 AI(MCP list_folders)엔 특히 닿기 쉬운 경로다.
+    if db.get(Workspace, workspace_slug) is None:
+        return
     exists = db.execute(
         select(Folder.id)
         .where(Folder.workspace_slug == workspace_slug)

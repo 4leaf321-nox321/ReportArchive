@@ -97,7 +97,7 @@ class ContentGrant(Base):
 
 class FolderGrant(Base):
     """폴더(게시판 내 org 폴더) 통째 공유. 폴더 F 를 부서/전체/개인에 공유하면
-    F 에 게시(mount.folder_id=F)된 보고서가 그 대상에게 보인다. BoardGrant 와
+    F 에 배치(report_mount_folders)된 보고서가 그 대상에게 보인다. BoardGrant 와
     동형이되 게시판보다 좁은 단위(폴더). 종합보고는 폴더가 없어 무관."""
 
     __tablename__ = "folder_grants"

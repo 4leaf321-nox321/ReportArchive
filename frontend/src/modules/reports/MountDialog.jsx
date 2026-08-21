@@ -21,6 +21,7 @@ import {
   Search,
   X,
   MessageSquare,
+  FolderTree,
   Clock,
 } from 'lucide-react'
 import {
@@ -42,7 +43,6 @@ import {
   listGrantBoardSlugs,
   mountReport,
   unmountReport,
-  setMountFolder,
   setMountEditPolicy,
   setMountNote,
 } from '@/shared/api/mounts'
@@ -647,7 +647,7 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
                     )}
                   </div>
 
-                  <div className="border-t pt-3">
+                  <div className="space-y-1.5 border-t pt-3">
                     <p className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
                       <MessageSquare className="mt-0.5 h-3 w-3 shrink-0 opacity-70" />
                       <span>
@@ -655,6 +655,15 @@ export function MountDialog({ open, onOpenChange, report, onChanged }) {
                         <b className="text-foreground">현재 게시됨</b> 목록에서
                         게시판마다 따로 남길 수 있어요. (게시하면 메모 입력이
                         바로 열립니다.)
+                      </span>
+                    </p>
+                    <p className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
+                      <FolderTree className="mt-0.5 h-3 w-3 shrink-0 opacity-70" />
+                      <span>
+                        한 게시판 안에서도{' '}
+                        <b className="text-foreground">여러 폴더</b>에 동시에
+                        걸 수 있어요 — 오른쪽 목록의 폴더 버튼에서 원하는 폴더를
+                        모두 체크하세요.
                       </span>
                     </p>
                   </div>
@@ -969,18 +978,23 @@ function MountedBoardRow({
           )}
         </button>
       )}
-      {/* 폴더 — report 가 null 인 stale 렌더 가드 (BoardRow 와 동일). */}
+      {/* 폴더 — report 가 null 인 stale 렌더 가드 (BoardRow 와 동일).
+          한 게시판 안에서도 여러 폴더에 동시에 걸 수 있어 다중 선택으로 연다. */}
       {report && (
         <FolderPickerButton
           mode="org"
           workspaceSlug={slug}
           reportId={report.id}
-          folderId={mount?.folder_id ?? null}
-          onChanged={(newFolderId) => {
+          folderIds={mount?.folder_ids ?? []}
+          onChanged={(nextFolderIds) => {
             setMounts((prev) =>
               prev.map((m) =>
                 m.workspace_slug === slug
-                  ? { ...m, folder_id: newFolderId }
+                  ? {
+                      ...m,
+                      folder_ids: nextFolderIds,
+                      folder_id: nextFolderIds[0] ?? null,
+                    }
                   : m,
               ),
             )

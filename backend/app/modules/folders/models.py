@@ -8,9 +8,9 @@ Two flavors distinguished by `kind`:
   * `org` — workspace-wide shared (`workspace_slug` set, `user_id` NULL).
     Visible to all members of the workspace. CRUD restricted to
     workspace admin/lead. Used to organize *mounted* reports on the
-    org board (placement is stored on `ReportMount.folder_id`, not on
+    org board (placement is stored in `report_mount_folders`, not on
     the Report itself, so the same report can sit in different folders
-    on different boards).
+    on different boards — and in several folders on one board).
 
 The tree is self-referencing via `parent_id` — the convention is that
 all nodes in a tree share the same `kind`/scope; the service layer

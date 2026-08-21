@@ -5555,11 +5555,17 @@ export default function ReportDetailPage() {
           {...(folderPickMode === 'org'
             ? {
                 workspaceSlug: slug,
-                folderId: currentMount?.folder_id,
-                onChanged: (newFolderId) =>
+                // 게시판 폴더는 다중 배치 — 이 게시판에서 여러 폴더에 동시에
+                // 걸 수 있어 id 배열을 넘긴다(onChanged 도 배열을 받는다).
+                folderIds: currentMount?.folder_ids ?? [],
+                onChanged: (nextFolderIds) =>
                   setMountByWorkspace((m) => ({
                     ...m,
-                    [slug]: { ...m[slug], folder_id: newFolderId },
+                    [slug]: {
+                      ...m[slug],
+                      folder_ids: nextFolderIds,
+                      folder_id: nextFolderIds[0] ?? null,
+                    },
                   })),
               }
             : {
@@ -5610,10 +5616,23 @@ export default function ReportDetailPage() {
                   </p>
                 )
               }
+              // 한 게시판에서도 여러 폴더에 걸릴 수 있어 (게시판 × 폴더)로
+              // 펼친다. 폴더가 없으면 그 게시판의 '미분류' 한 줄.
+              const places = list.flatMap((m) => {
+                const ids = m.folder_ids ?? []
+                if (ids.length === 0) {
+                  return [{ mount: m, folderId: null, folderName: null }]
+                }
+                return ids.map((fid, i) => ({
+                  mount: m,
+                  folderId: fid,
+                  folderName: m.folder_names?.[i] ?? null,
+                }))
+              })
               return (
                 <ul className="divide-y rounded-md border text-sm">
-                  {list.map((m) => (
-                    <li key={m.workspace_slug}>
+                  {places.map(({ mount: m, folderId, folderName }) => (
+                    <li key={`${m.workspace_slug}:${folderId ?? 'none'}`}>
                       <button
                         type="button"
                         title="이 게시판 · 폴더로 이동"
@@ -5622,8 +5641,8 @@ export default function ReportDetailPage() {
                           navigate(`/w/${m.workspace_slug}/reports`, {
                             state: {
                               listFolderId:
-                                m.folder_id != null
-                                  ? m.folder_id
+                                folderId != null
+                                  ? folderId
                                   : FOLDER_FILTER_UNCATEGORIZED,
                             },
                           })
@@ -5636,7 +5655,7 @@ export default function ReportDetailPage() {
                         </span>
                         <span className="shrink-0 text-muted-foreground">/</span>
                         <span className="truncate text-muted-foreground">
-                          {m.folder_name || '미분류'}
+                          {folderName || '미분류'}
                         </span>
                         <ChevronRight className="ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                       </button>

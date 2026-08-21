@@ -13,7 +13,7 @@ from app.modules.entities.models import Entity, ReportEntity
 from app.modules.folders.models import Folder
 from app.modules.grants import services as grant_services
 from app.modules.grants.models import GrantContentType
-from app.modules.mounts.models import ReportMount
+from app.modules.mounts.models import ReportMount, ReportMountFolder
 from app.modules.reports.models import (
     Report,
     ReportEditLock,
@@ -231,9 +231,11 @@ def list_reports_in_workspace(
                 .distinct()
             )
     # Folder filter — branches by scope. Personal: filter on
-    # `Report.folder_id`. Org: filter on `ReportMount.folder_id` for
+    # `Report.folder_id`. Org: filter on the mount's folder links for
     # the current workspace specifically (so the filter only narrows
-    # the just-joined mounts, not other mounts of the same report).
+    # placements on this board, not other boards' placements of the
+    # same report). 한 게시판의 여러 폴더에 걸린 보고서는 각 폴더 필터에
+    # 모두 잡힌다.
     if folder_filter is not None and ws is not None:
         if ws.kind == WorkspaceKind.personal:
             if folder_filter == "uncategorized":
@@ -241,17 +243,19 @@ def list_reports_in_workspace(
             elif isinstance(folder_filter, int):
                 query = query.where(Report.folder_id == folder_filter)
         else:
-            # Re-anchor the filter to the same JOIN already in the
-            # query — ReportMount is bound to this query scope.
+            placed_here = select(ReportMountFolder.report_id).where(
+                ReportMountFolder.workspace_slug == workspace_slug
+            )
             if folder_filter == "uncategorized":
-                query = query.where(
-                    ReportMount.workspace_slug == workspace_slug,
-                    ReportMount.folder_id.is_(None),
-                )
+                # 이 게시판에서 폴더 배치가 하나도 없는 게시분.
+                query = query.where(~Report.id.in_(placed_here))
             elif isinstance(folder_filter, int):
                 query = query.where(
-                    ReportMount.workspace_slug == workspace_slug,
-                    ReportMount.folder_id == folder_filter,
+                    Report.id.in_(
+                        placed_here.where(
+                            ReportMountFolder.folder_id == folder_filter
+                        )
+                    )
                 )
     if entity_ids:
         applied = _apply_entity_filter(db, query, entity_ids, rollup=entity_rollup)
@@ -426,6 +430,30 @@ def restore_report(db: Session, report: Report) -> Report:
     return report
 
 
+def _apply_mount_folder_filter(
+    mount_q, workspace_slug: str, folder_filter: Optional[int | str]
+):
+    """`select(ReportMount.report_id)` 형태의 질의에 폴더 필터를 얹는다.
+
+    폴더 배치는 mount 컬럼이 아니라 자식 테이블(ReportMountFolder)이므로
+    "이 게시판에서 폴더 F 에 놓임" = 배치 행 존재, "미분류" = 배치 행 없음.
+    한 게시판의 여러 폴더에 걸린 보고서는 각 폴더 필터에 모두 잡힌다."""
+    if folder_filter is None:
+        return mount_q
+    placed_here = select(ReportMountFolder.report_id).where(
+        ReportMountFolder.workspace_slug == workspace_slug
+    )
+    if folder_filter == "uncategorized":
+        return mount_q.where(~ReportMount.report_id.in_(placed_here))
+    if isinstance(folder_filter, int):
+        return mount_q.where(
+            ReportMount.report_id.in_(
+                placed_here.where(ReportMountFolder.folder_id == folder_filter)
+            )
+        )
+    return mount_q
+
+
 def list_public_reports_on_board(
     db: Session,
     workspace_slug: str,
@@ -444,10 +472,7 @@ def list_public_reports_on_board(
         ReportMount.workspace_slug == workspace_slug,
         ReportMount.report_id.in_(all_org),
     )
-    if folder_filter == "uncategorized":
-        mount_q = mount_q.where(ReportMount.folder_id.is_(None))
-    elif isinstance(folder_filter, int):
-        mount_q = mount_q.where(ReportMount.folder_id == folder_filter)
+    mount_q = _apply_mount_folder_filter(mount_q, workspace_slug, folder_filter)
     pub_ids = set(db.execute(mount_q).scalars())
     if not pub_ids:
         return []
@@ -486,10 +511,9 @@ def list_visible_reports_on_board(
     )
     if visible is not None:
         mount_q = mount_q.where(ReportMount.report_id.in_(visible))
-    if folder_filter == "uncategorized":
-        mount_q = mount_q.where(ReportMount.folder_id.is_(None))
-    elif isinstance(folder_filter, int):
-        mount_q = mount_q.where(ReportMount.folder_id == folder_filter)
+    mount_q = _apply_mount_folder_filter(
+        mount_q, actor.workspace.slug, folder_filter
+    )
     ids = set(db.execute(mount_q).scalars())
     if not ids:
         return []

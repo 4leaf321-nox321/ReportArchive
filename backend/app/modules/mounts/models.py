@@ -25,6 +25,7 @@ from datetime import datetime
 from sqlalchemy import (
     DateTime,
     Enum,
+    ForeignKeyConstraint,
     ForeignKey,
     Index,
     Integer,
@@ -90,16 +91,16 @@ class ReportMount(Base):
     # ("왜 이 게시판에 올렸나"). Optional.
     note: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
-    # Org-folder placement on this board. NULL = "미분류" on the org
-    # listing. The same Report can sit in different folders on
-    # different boards (folder is a mount attribute, not a report
-    # attribute) — that's the whole reason this lives here and not on
-    # Report itself. FK target's ondelete=SET NULL so deleting an org
-    # folder un-files mounts back to 미분류.
-    folder_id: Mapped[int | None] = mapped_column(
-        ForeignKey("folders.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
+    # Org-folder placement on this board. 0개 = "미분류". 같은 보고서가
+    # 게시판마다 다른 폴더에 놓일 수 있고(폴더는 mount 속성이지 report
+    # 속성이 아니다), **한 게시판 안에서도 여러 폴더에 동시에 놓일 수
+    # 있다**(p89) — 그래서 컬럼이 아니라 자식 테이블이다.
+    folder_links: Mapped[list["ReportMountFolder"]] = relationship(
+        "ReportMountFolder",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ReportMountFolder.folder_id",
     )
 
     # Eager-loaded so the personal-list "게시" cell can render the
@@ -109,6 +110,59 @@ class ReportMount(Base):
     workspace: Mapped["Workspace"] = relationship(  # noqa: F821
         "Workspace",
         lazy="joined",
+    )
+
+    @property
+    def folder_ids(self) -> list[int]:
+        """이 게시판에서 이 보고서가 놓인 폴더 id 들(오름차순). 빈 리스트=미분류."""
+        return sorted(link.folder_id for link in self.folder_links)
+
+    @property
+    def folder_id(self) -> int | None:
+        """대표 폴더 — 다중 폴더 이전(p89) API 를 쓰는 호출부용 호환 뷰.
+        폴더가 여러 개면 첫 번째, 미분류면 None. 쓰기는 folder_links 로만."""
+        ids = self.folder_ids
+        return ids[0] if ids else None
+
+
+class ReportMountFolder(Base):
+    """한 게시(mount)의 폴더 배치 한 건 — (보고서, 게시판, 폴더).
+
+    p89 이전엔 `report_mounts.folder_id` 단일 컬럼이라 "한 게시판에 한 폴더"가
+    스키마로 강제됐다. 실제로는 같은 보고서를 한 부서 게시판의 여러 폴더에
+    (예: '2026년 정기보고' + 'NVH 해석') 걸어두고 싶은 요구가 있어, 배치를
+    자식 테이블로 분리했다.
+
+    - 행이 0개면 그 게시판에서 **미분류**.
+    - (report_id, workspace_slug) 복합 FK → report_mounts CASCADE 라
+      게시취소(unmount) 시 배치도 함께 사라진다.
+    - folder CASCADE — 폴더를 지우면 그 배치만 사라지고, 남은 배치가 없으면
+      자연스럽게 미분류로 떨어진다(옛 SET NULL 과 같은 결과).
+    """
+
+    __tablename__ = "report_mount_folders"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["report_id", "workspace_slug"],
+            ["report_mounts.report_id", "report_mounts.workspace_slug"],
+            ondelete="CASCADE",
+            name="fk_report_mount_folders_mount",
+        ),
+        # 폴더별 카운트/필터가 가장 잦은 질의 — 폴더 선두 인덱스.
+        Index("ix_report_mount_folders_folder", "folder_id"),
+        Index("ix_report_mount_folders_board", "workspace_slug", "folder_id"),
+    )
+
+    report_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_slug: Mapped[str] = mapped_column(String(64), primary_key=True)
+    folder_id: Mapped[int] = mapped_column(
+        ForeignKey("folders.id", ondelete="CASCADE"), primary_key=True
+    )
+
+    # 폴더 이름을 쓰는 곳(목록 칩·MCP 응답)이 id→이름 조회를 따로 하지 않도록.
+    # folder_links 자체가 selectin 이라 여기 joined 를 얹어도 왕복이 늘지 않는다.
+    folder: Mapped["Folder"] = relationship(  # noqa: F821
+        "Folder", lazy="joined"
     )
 
 

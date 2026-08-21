@@ -23,7 +23,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from app.modules.folders.models import Folder, FolderKind
-from app.modules.mounts.models import ReportMount
+from app.modules.mounts.models import ReportMount, ReportMountFolder
 from app.modules.reports.models import Report
 from app.modules.users.models import Role, WorkspaceMember
 from app.modules.workspaces.models import Workspace, WorkspaceKind
@@ -164,12 +164,15 @@ def list_personal_folders(db: Session, user_id: int) -> list[Folder]:
 
 
 def list_org_folders(db: Session, workspace_slug: str) -> list[Folder]:
-    """Org folders, `report_count` annotated via ReportMount (since org
-    placement lives on ReportMount.folder_id, not Report.folder_id)."""
+    """Org folders, `report_count` annotated via ReportMountFolder (since
+    org placement lives on the mount's folder links, not Report.folder_id).
+    한 보고서가 이 게시판의 여러 폴더에 걸려 있으면 각 폴더에서 모두 센다."""
     ensure_default_folders_for_workspace(db, workspace_slug)
     rows = db.execute(
-        select(Folder, func.count(ReportMount.report_id).label("report_count"))
-        .outerjoin(ReportMount, ReportMount.folder_id == Folder.id)
+        select(
+            Folder, func.count(ReportMountFolder.report_id).label("report_count")
+        )
+        .outerjoin(ReportMountFolder, ReportMountFolder.folder_id == Folder.id)
         .where(
             Folder.kind == FolderKind.org,
             Folder.workspace_slug == workspace_slug,
@@ -200,6 +203,15 @@ def count_uncategorized_org(db: Session, workspace_slug: str) -> int:
     return count_uncategorized_org_multi(db, [workspace_slug])
 
 
+def _unfiled_mount_cond(alias=ReportMount):
+    """미분류 조건 — 이 (보고서, 게시판) 게시에 폴더 배치가 하나도 없음.
+    p89 이전의 `ReportMount.folder_id IS NULL` 자리."""
+    return ~select(ReportMountFolder.report_id).where(
+        ReportMountFolder.report_id == alias.report_id,
+        ReportMountFolder.workspace_slug == alias.workspace_slug,
+    ).exists()
+
+
 def count_uncategorized_org_multi(db: Session, workspace_slugs) -> int:
     """폴더 미지정 mount 수 — 여러 부서 게시판을 한 번에 합산(하위부서 포함용).
     빈 입력이면 0."""
@@ -209,7 +221,7 @@ def count_uncategorized_org_multi(db: Session, workspace_slugs) -> int:
     n = db.execute(
         select(func.count(ReportMount.report_id)).where(
             ReportMount.workspace_slug.in_(slugs),
-            ReportMount.folder_id.is_(None),
+            _unfiled_mount_cond(),
         )
     ).scalar()
     return int(n or 0)
@@ -225,8 +237,10 @@ def list_public_org_folders(db: Session, workspace_slug: str) -> list[Folder]:
         return []
     default = bool(ws.external_view_default)
     rows = db.execute(
-        select(Folder, func.count(ReportMount.report_id).label("report_count"))
-        .outerjoin(ReportMount, ReportMount.folder_id == Folder.id)
+        select(
+            Folder, func.count(ReportMountFolder.report_id).label("report_count")
+        )
+        .outerjoin(ReportMountFolder, ReportMountFolder.folder_id == Folder.id)
         .where(
             Folder.kind == FolderKind.org,
             Folder.workspace_slug == workspace_slug,
@@ -263,12 +277,14 @@ def list_org_folders_visible(
     if not visible_ids:
         return []
     rows = db.execute(
-        select(Folder, func.count(ReportMount.report_id).label("report_count"))
+        select(
+            Folder, func.count(ReportMountFolder.report_id).label("report_count")
+        )
         .join(
-            ReportMount,
+            ReportMountFolder,
             and_(
-                ReportMount.folder_id == Folder.id,
-                ReportMount.report_id.in_(visible_ids),
+                ReportMountFolder.folder_id == Folder.id,
+                ReportMountFolder.report_id.in_(visible_ids),
             ),
         )
         .where(
@@ -295,7 +311,7 @@ def count_uncategorized_org_visible(
         db.execute(
             select(func.count(ReportMount.report_id)).where(
                 ReportMount.workspace_slug == workspace_slug,
-                ReportMount.folder_id.is_(None),
+                _unfiled_mount_cond(),
                 ReportMount.report_id.in_(visible_ids),
             )
         ).scalar()
@@ -325,12 +341,12 @@ def list_org_folders_with_counts(
     total_by = {
         fid: int(c or 0)
         for fid, c in db.execute(
-            select(ReportMount.folder_id, func.count(ReportMount.report_id))
-            .where(
-                ReportMount.workspace_slug == workspace_slug,
-                ReportMount.folder_id.is_not(None),
+            select(
+                ReportMountFolder.folder_id,
+                func.count(ReportMountFolder.report_id),
             )
-            .group_by(ReportMount.folder_id)
+            .where(ReportMountFolder.workspace_slug == workspace_slug)
+            .group_by(ReportMountFolder.folder_id)
         ).all()
     }
     view_by: dict[int, int] = {}
@@ -338,13 +354,15 @@ def list_org_folders_with_counts(
         view_by = {
             fid: int(c or 0)
             for fid, c in db.execute(
-                select(ReportMount.folder_id, func.count(ReportMount.report_id))
-                .where(
-                    ReportMount.workspace_slug == workspace_slug,
-                    ReportMount.folder_id.is_not(None),
-                    ReportMount.report_id.in_(visible_ids),
+                select(
+                    ReportMountFolder.folder_id,
+                    func.count(ReportMountFolder.report_id),
                 )
-                .group_by(ReportMount.folder_id)
+                .where(
+                    ReportMountFolder.workspace_slug == workspace_slug,
+                    ReportMountFolder.report_id.in_(visible_ids),
+                )
+                .group_by(ReportMountFolder.folder_id)
             ).all()
         }
     out: list[Folder] = []
@@ -363,8 +381,10 @@ def list_org_folders_readonly(db: Session, workspace_slug: str) -> list[Folder]:
     포함' 트리에서 자손 게시판을 *읽기만* 할 때, 남의 게시판에 기본 폴더를
     만들지 않도록 한다."""
     rows = db.execute(
-        select(Folder, func.count(ReportMount.report_id).label("report_count"))
-        .outerjoin(ReportMount, ReportMount.folder_id == Folder.id)
+        select(
+            Folder, func.count(ReportMountFolder.report_id).label("report_count")
+        )
+        .outerjoin(ReportMountFolder, ReportMountFolder.folder_id == Folder.id)
         .where(
             Folder.kind == FolderKind.org,
             Folder.workspace_slug == workspace_slug,

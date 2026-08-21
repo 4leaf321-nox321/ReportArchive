@@ -23,6 +23,7 @@ from app.modules.mounts.schemas import (
     MountCreate,
     MountEditPolicyUpdate,
     MountFolderUpdate,
+    MountFoldersUpdate,
     MountListResponse,
     MountNoteUpdate,
     MountRead,
@@ -68,7 +69,7 @@ def list_mounts(
             )
         ).all()
     }
-    folder_ids = [r.folder_id for r in rows if r.folder_id is not None]
+    folder_ids = sorted({fid for r in rows for fid in r.folder_ids})
     folder_names = (
         {
             fid: name
@@ -101,9 +102,10 @@ def list_mounts(
         )
         mr.takedown_pending = r.workspace_slug in pending_takedown_slugs
         mr.workspace_name = ws_names.get(r.workspace_slug)
-        mr.folder_name = (
-            folder_names.get(r.folder_id) if r.folder_id is not None else None
-        )
+        mr.folder_names = [
+            folder_names[fid] for fid in r.folder_ids if fid in folder_names
+        ]
+        mr.folder_name = mr.folder_names[0] if mr.folder_names else None
         items.append(mr)
     payload = MountListResponse(items=items)
     return success_response(data=payload.model_dump(mode="json"))
@@ -144,6 +146,7 @@ def create_mount(
             edit_policy=payload.edit_policy,
             note=payload.note,
             folder_id=payload.folder_id,
+            folder_ids=payload.folder_ids,
         )
     except services.MountError as e:
         return _to_http(e)
@@ -162,10 +165,11 @@ def set_mount_folder(
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
-    """Metadata-only move of a mount between org folders. Permission:
-    report owner OR the user who mounted it OR workspace admin/manager."""
+    """Metadata-only move of a mount to a single org folder (기존 배치를
+    전부 대체). Permission: report owner OR the user who mounted it OR
+    workspace admin/manager. 여러 폴더에 걸려면 .../folders 를 쓴다."""
     try:
-        services.set_mount_folder(
+        row = services.set_mount_folder(
             db,
             report_id=report_id,
             workspace_slug=workspace_slug,
@@ -180,6 +184,39 @@ def set_mount_folder(
             "report_id": report_id,
             "workspace_slug": workspace_slug,
             "folder_id": payload.folder_id,
+            "folder_ids": row.folder_ids,
+        }
+    )
+
+
+@router.put("/{report_id}/{workspace_slug}/folders")
+def set_mount_folders(
+    report_id: int,
+    workspace_slug: str,
+    payload: MountFoldersUpdate,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """이 게시판에서의 폴더 배치 집합을 통째로 치환 — 한 게시판의 여러
+    폴더에 동시에 게시할 수 있다. 빈 리스트면 미분류. 권한은 단일 이동과
+    동일(작성자 / 게시자 / 게시판 매니저)."""
+    try:
+        row = services.set_mount_folders(
+            db,
+            report_id=report_id,
+            workspace_slug=workspace_slug,
+            folder_ids=payload.folder_ids,
+            actor_user_id=actor.user.id,
+        )
+    except services.MountError as e:
+        return _to_http(e)
+    db.commit()
+    return success_response(
+        data={
+            "report_id": report_id,
+            "workspace_slug": workspace_slug,
+            "folder_ids": row.folder_ids,
+            "folder_id": row.folder_id,
         }
     )
 

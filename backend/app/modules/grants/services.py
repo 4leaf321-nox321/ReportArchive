@@ -327,22 +327,19 @@ def _boards_view_reachable_slugs(
 def _content_folder_ids(
     db: Session, content_type: GrantContentType, content_id: int
 ) -> list[int]:
-    """이 콘텐츠가 놓인 폴더 id 들. 보고서=mount 의 folder_id(NULL 제외),
-    종합보고=폴더 개념 없음([])."""
+    """이 콘텐츠가 놓인 폴더 id 들. 보고서=게시(mount)의 폴더 배치 전부
+    (한 게시판의 여러 폴더 + 여러 게시판), 종합보고=폴더 개념 없음([])."""
     if content_type != GrantContentType.report:
         return []
-    from app.modules.mounts.models import ReportMount
+    from app.modules.mounts.models import ReportMountFolder
 
-    return [
-        fid
-        for fid in db.execute(
-            select(ReportMount.folder_id).where(
-                ReportMount.report_id == content_id,
-                ReportMount.folder_id.isnot(None),
-            )
+    return list(
+        db.execute(
+            select(ReportMountFolder.folder_id)
+            .where(ReportMountFolder.report_id == content_id)
+            .distinct()
         ).scalars()
-        if fid is not None
-    ]
+    )
 
 
 def folder_has_all_org(db: Session, folder_ids) -> bool:
@@ -451,12 +448,12 @@ def _report_ids_in_folders(db: Session, folder_ids) -> set[int]:
     folder_ids = list(folder_ids)
     if not folder_ids:
         return set()
-    from app.modules.mounts.models import ReportMount
+    from app.modules.mounts.models import ReportMountFolder
 
     return set(
         db.execute(
-            select(ReportMount.report_id).where(
-                ReportMount.folder_id.in_(folder_ids)
+            select(ReportMountFolder.report_id).where(
+                ReportMountFolder.folder_id.in_(folder_ids)
             )
         ).scalars()
     )

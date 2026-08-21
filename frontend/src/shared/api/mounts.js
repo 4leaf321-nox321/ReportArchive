@@ -30,6 +30,7 @@ export async function mountReport({
   editPolicy = 'default',
   note = '',
   folderId = null,
+  folderIds = [],
 }) {
   const res = await apiClient.post(BASE, {
     report_id: reportId,
@@ -37,16 +38,28 @@ export async function mountReport({
     edit_policy: editPolicy,
     note,
     folder_id: folderId,
+    folder_ids: folderIds,
   })
   const data = extractData(res)
   return data?.items ?? []
 }
 
-/** Move an existing mount between org folders (or null = 미분류). */
+/** Move an existing mount to ONE org folder (null = 미분류). 기존 배치를
+ *  전부 대체하는 "이동" 의미 — 목록 드래그·일괄 이동이 쓴다. */
 export async function setMountFolder({ reportId, workspaceSlug, folderId }) {
   const res = await apiClient.put(
     `${BASE}/${reportId}/${workspaceSlug}/folder`,
     { folder_id: folderId },
+  )
+  return extractData(res)
+}
+
+/** 이 게시판에서의 폴더 배치 **집합**을 통째로 치환 — 한 게시판의 여러
+ *  폴더에 동시에 걸 때. 빈 배열 = 미분류. */
+export async function setMountFolders({ reportId, workspaceSlug, folderIds }) {
+  const res = await apiClient.put(
+    `${BASE}/${reportId}/${workspaceSlug}/folders`,
+    { folder_ids: folderIds ?? [] },
   )
   return extractData(res)
 }

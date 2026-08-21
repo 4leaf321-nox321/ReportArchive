@@ -37,6 +37,7 @@ from app.modules.grants.models import (
 from app.modules.mounts.models import (
     MountEditPolicy,
     ReportMount,
+    ReportMountFolder,
     ReportTakedownRequest,
     TakedownStatus,
 )
@@ -248,6 +249,20 @@ def _validate_folder_for_workspace(
         )
 
 
+def _normalize_folder_ids(
+    folder_ids: Optional[Iterable[int]], folder_id: Optional[int]
+) -> list[int]:
+    """`folder_ids`(신규, 다중) 와 `folder_id`(구형, 단일) 입력을 하나로 합쳐
+    중복 없는 오름차순 리스트로. 둘 다 비면 [] = 미분류."""
+    merged: set[int] = set()
+    for fid in folder_ids or []:
+        if fid is not None:
+            merged.add(int(fid))
+    if folder_id is not None:
+        merged.add(int(folder_id))
+    return sorted(merged)
+
+
 def mount_report(
     db: Session,
     *,
@@ -257,6 +272,7 @@ def mount_report(
     edit_policy: MountEditPolicy = MountEditPolicy.default,
     note: str = "",
     folder_id: Optional[int] = None,
+    folder_ids: Optional[Iterable[int]] = None,
 ) -> list[ReportMount]:
     """Promote a report to one or more org boards. Idempotent per-board
     (an existing mount stays and its edit_policy/note are NOT updated
@@ -270,6 +286,8 @@ def mount_report(
     if report is None:
         raise MountTargetInvalidError(f"보고서를 찾을 수 없습니다: {report_id}")
     _ensure_can_mount(db, report, actor_user_id)
+
+    wanted_folders = _normalize_folder_ids(folder_ids, folder_id)
 
     # Pre-load existing mounts so the dedupe is one query, not N.
     existing = {
@@ -285,18 +303,23 @@ def mount_report(
         if slug in existing:
             continue  # idempotent skip
         _ensure_target_is_org_workspace(db, slug, actor_user_id)
-        # Validate folder is in this workspace (skip if no folder picked
-        # — defaults to 미분류). One folder_id is applied to every new
-        # mount; per-board variation requires separate POST calls.
-        if folder_id is not None:
-            _validate_folder_for_workspace(db, folder_id, slug)
+        # Validate every folder belongs to this workspace (empty = 미분류).
+        # The same folder set is applied to every new mount; per-board
+        # variation requires separate POST calls.
+        for fid in wanted_folders:
+            _validate_folder_for_workspace(db, fid, slug)
         row = ReportMount(
             report_id=report_id,
             workspace_slug=slug,
             edit_policy=edit_policy,
             mounted_by_user_id=actor_user_id,
             note=note,
-            folder_id=folder_id,
+            folder_links=[
+                ReportMountFolder(
+                    report_id=report_id, workspace_slug=slug, folder_id=fid
+                )
+                for fid in wanted_folders
+            ],
         )
         db.add(row)
         created.append(row)
@@ -357,18 +380,20 @@ def mount_report(
     return created
 
 
-def set_mount_folder(
+def set_mount_folders(
     db: Session,
     *,
     report_id: int,
     workspace_slug: str,
-    folder_id: Optional[int],
+    folder_ids: Iterable[int],
     actor_user_id: int,
 ) -> ReportMount:
-    """Metadata-only — move an existing mount between org folders (or
-    to 미분류 with folder_id=None). Permission: report owner OR the
-    mounter OR a workspace admin/manager on that board. Workspace
-    members aren't allowed to reorganize someone else's report.
+    """Metadata-only — 이 게시판에서 보고서가 놓일 폴더 **집합**을 통째로
+    바꾼다(주어진 집합으로 치환). 빈 리스트면 미분류. 한 게시판의 여러
+    폴더에 동시에 걸 수 있다(p89).
+
+    권한: 작성자 OR 게시한 사람 OR 그 게시판 매니저. 일반 멤버가 남의
+    보고서를 재배치하는 건 허용하지 않는다.
     """
     row = db.get(ReportMount, (report_id, workspace_slug))
     if row is None:
@@ -396,11 +421,45 @@ def set_mount_folder(
             "이 보고서의 폴더 위치를 변경할 권한이 없습니다."
         )
 
-    if folder_id is not None:
-        _validate_folder_for_workspace(db, folder_id, workspace_slug)
-    row.folder_id = folder_id
+    wanted = _normalize_folder_ids(folder_ids, None)
+    for fid in wanted:
+        _validate_folder_for_workspace(db, fid, workspace_slug)
+
+    current = {link.folder_id: link for link in row.folder_links}
+    for fid, link in current.items():
+        if fid not in wanted:
+            row.folder_links.remove(link)
+    for fid in wanted:
+        if fid not in current:
+            row.folder_links.append(
+                ReportMountFolder(
+                    report_id=report_id,
+                    workspace_slug=workspace_slug,
+                    folder_id=fid,
+                )
+            )
     db.flush()
     return row
+
+
+def set_mount_folder(
+    db: Session,
+    *,
+    report_id: int,
+    workspace_slug: str,
+    folder_id: Optional[int],
+    actor_user_id: int,
+) -> ReportMount:
+    """단일 폴더로 **이동**(기존 배치를 전부 대체). None 이면 미분류.
+    목록에서의 드래그 이동·일괄 이동처럼 '옮긴다' 의미인 호출부용 얇은
+    래퍼 — 여러 폴더에 걸려면 set_mount_folders 를 쓴다."""
+    return set_mount_folders(
+        db,
+        report_id=report_id,
+        workspace_slug=workspace_slug,
+        folder_ids=[] if folder_id is None else [folder_id],
+        actor_user_id=actor_user_id,
+    )
 
 
 def set_mount_edit_policy(

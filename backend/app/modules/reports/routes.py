@@ -940,6 +940,11 @@ def update_ai_draft_rows(
             add = op.get("rows") or []
             if not isinstance(add, list) or not add:
                 return error_response(f"ops[{i}]: append 에는 rows 가 필요합니다.", 400)
+            if len(add) > AI_MAX_ROWS_PER_OP:
+                return error_response(
+                    f"ops[{i}]: 한 번에 추가할 행이 너무 많습니다({len(add)}행, 상한 "
+                    f"{AI_MAX_ROWS_PER_OP}). 나눠서 호출하세요.", 400
+                )
             rows.extend(add)
             applied.append({"block_id": bid, "op": "append", "count": len(add)})
         elif kind == "patch":
@@ -981,6 +986,10 @@ def update_ai_draft_rows(
         merged, w = _renormalize_block(template, page, bid, {**block, "rows": rows})
         warnings += w
         content[bid] = merged if merged is not None else {**block, "rows": rows}
+
+    over = _enforce_ai_limits([{"content": content}])
+    if over:
+        return error_response(over, status_code=400)
 
     if payload.dry_run:
         return success_response(data={
@@ -1245,6 +1254,55 @@ def update_ai_draft(
     return _apply_ai_draft(report_id, payload, db, actor, allow_self_lock=False)
 
 
+# ── AI 작성/수정 요청 크기 상한 ──────────────────────────────────────────────
+# 폭주(무한 생성·잘못된 루프)를 막는 방어선이지 업무 제약이 아니다. 그래서 실사용
+# 최대치를 크게 웃돌게 잡는다 — 운영 데이터 기준 최대 590쪽(문서 가져오기 산출물)·
+# 페이지당 34블록·블록당 33행·본문 1.3MB 였다. 걸리면 조용히 자르지 않고 **400 으로
+# 무엇이 넘쳤는지** 알려, AI 가 쪼개서 다시 시도하게 한다.
+AI_MAX_PAGES = 1000
+AI_MAX_BLOCKS_PER_PAGE = 200
+AI_MAX_ROWS_PER_BLOCK = 5000
+AI_MAX_CONTENT_BYTES = 8 * 1024 * 1024
+AI_MAX_ROWS_PER_OP = 1000
+
+
+def _enforce_ai_limits(pages) -> str | None:
+    """AI 가 만든 페이지 묶음이 상한을 넘는지. 넘으면 사람이 읽을 수 있는 사유,
+    괜찮으면 None. pages 는 ReportPage 목록 또는 dict 목록 둘 다 받는다."""
+    import json as _json
+
+    if len(pages) > AI_MAX_PAGES:
+        return (
+            f"페이지가 너무 많습니다({len(pages)}쪽, 상한 {AI_MAX_PAGES}). "
+            "내용을 나눠 여러 보고서로 만드세요."
+        )
+    total = 0
+    for i, pg in enumerate(pages, 1):
+        content = (pg.get("content") if isinstance(pg, dict) else pg.content) or {}
+        if len(content) > AI_MAX_BLOCKS_PER_PAGE:
+            return (
+                f"{i}쪽의 블록이 너무 많습니다({len(content)}개, 상한 "
+                f"{AI_MAX_BLOCKS_PER_PAGE}). 페이지를 나누세요."
+            )
+        for bid, v in content.items():
+            rows = v.get("rows") if isinstance(v, dict) else None
+            if isinstance(rows, list) and len(rows) > AI_MAX_ROWS_PER_BLOCK:
+                return (
+                    f"{i}쪽 '{bid}' 의 행이 너무 많습니다({len(rows)}행, 상한 "
+                    f"{AI_MAX_ROWS_PER_BLOCK}). 나눠 담으세요."
+                )
+        try:
+            total += len(_json.dumps(content, ensure_ascii=False, default=str).encode())
+        except (TypeError, ValueError):
+            pass
+    if total > AI_MAX_CONTENT_BYTES:
+        return (
+            f"본문이 너무 큽니다({total // 1024}KB, 상한 "
+            f"{AI_MAX_CONTENT_BYTES // 1024}KB). 내용을 줄이거나 나누세요."
+        )
+    return None
+
+
 def _ai_edit_gate(report_id: int, db: Session, actor, *, allow_self_lock: bool = False):
     """AI(MCP) 편집 공통 가드. 반환 (report, 편집판정, 차단응답|None).
 
@@ -1432,6 +1490,10 @@ def _apply_ai_draft(
             warnings += w
             kept[idx0] = merged
             new_pages = kept
+
+    over = _enforce_ai_limits(new_pages)
+    if over:
+        return error_response(over, status_code=400)
 
     upd_kwargs: dict = {"pages": new_pages}
     if payload.title:

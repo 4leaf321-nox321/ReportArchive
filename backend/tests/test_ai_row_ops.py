@@ -149,3 +149,49 @@ def test_row_level_edits():
         assert "mcp" in [v["source"] for v in versions]
     finally:
         _cleanup(rids, tid)
+
+
+def test_ai_request_size_limits():
+    """AI 작성/수정 요청 크기 상한 — 폭주(무한 생성·잘못된 루프) 방어선.
+
+    업무 제약이 아니라서 실사용 최대치를 크게 웃돌게 잡았다(운영 기준 최대 590쪽·
+    페이지당 34블록·블록당 33행·본문 1.3MB). 걸리면 **조용히 자르지 않고 400 으로
+    무엇이 넘쳤는지** 알려 AI 가 쪼개 재시도하게 한다.
+    """
+    from app.modules.reports.routes import (
+        AI_MAX_PAGES, AI_MAX_ROWS_PER_OP,
+    )
+
+    c = TestClient(app)
+    tid = _make_template()
+    rids = []
+    try:
+        r = c.post("/api/reports/ai-draft", headers=H, json={
+            "template_id": tid, "template_version": 1, "title": "상한",
+            "blocks": {"h": "제목"},
+            "extra_blocks": [{"id": "t", "type": "table",
+                              "props": {"columns": [{"key": "a", "label": "A", "type": "text"}]},
+                              "content": [{"a": "1"}]}]})
+        assert r.status_code == 201, r.text
+        rid = r.json()["data"]["report"]["id"]
+        rids.append(rid)
+
+        # 한 번에 너무 많은 행 → 400 + 사유
+        over = c.patch(f"/api/reports/{rid}/ai-draft/rows", headers=H, json={
+            "page": 1, "ops": [{"block_id": "t", "op": "append",
+                                "rows": [{"a": str(i)} for i in range(AI_MAX_ROWS_PER_OP + 1)]}]})
+        assert over.status_code == 400
+        assert "상한" in over.json()["message"]
+
+        # 페이지 수 상한
+        pages = c.patch(f"/api/reports/{rid}/ai-draft", headers=H, json={
+            "pages": [{"blocks": {"h": f"p{i}"}} for i in range(AI_MAX_PAGES + 1)]})
+        assert pages.status_code == 400
+        assert "페이지" in pages.json()["message"]
+
+        # 실사용 규모(운영 최대 590쪽)는 통과해야 한다 — 상한이 업무를 막으면 안 된다
+        ok = c.patch(f"/api/reports/{rid}/ai-draft", headers=H, json={
+            "pages": [{"blocks": {"h": f"p{i}"}} for i in range(590)]})
+        assert ok.status_code == 200, ok.text
+    finally:
+        _cleanup(rids, tid)

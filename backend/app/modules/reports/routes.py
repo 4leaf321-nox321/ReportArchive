@@ -266,6 +266,17 @@ def search_reports(
     q: str = Query(default="", max_length=200, description="검색어(빈 값이면 전체 탐색)"),
     location: str = Query(default="all", description="위치 필터: all|personal|boards"),
     board: str = Query(default="", max_length=200, description="특정 게시판(부서) slug"),
+    include_descendants: bool = Query(
+        default=False,
+        description="board 의 하위 부서 게시판까지 포함(조직 롤업). board 없으면 무시",
+    ),
+    folder_ids: list[int] | None = Query(
+        default=None, description="게시판 폴더 필터(OR) — 그 폴더에 배치된 게시분만"
+    ),
+    unfiled: bool = Query(
+        default=False,
+        description="미분류만 — board 에 게시됐지만 폴더 배치가 0건인 것",
+    ),
     entity_ids: list[int] | None = Query(default=None, alias="entity_ids"),
     entity_rollup: bool = Query(
         default=False,
@@ -315,12 +326,21 @@ def search_reports(
     ),
     limit: int = Query(default=30, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    scope: str = Query(
+        default="workspace",
+        description=(
+            "가시성 기준 — workspace(기본, 활성 부서 컨텍스트) | user(활성 부서 무관, "
+            "멤버십 기반). 외부 AI(MCP)는 등록 시 고정한 헤더를 계속 보내므로 user 를 "
+            "써야 헤더에 따라 결과가 달라지지 않는다(하이브리드 검색과 같은 기준)."
+        ),
+    ),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
     """보고서 전문검색/탐색 — 제목 + 모든 위젯 텍스트(search_text, pg_trgm 부분일치).
     q 가 비면 가시 범위 전체를 최신순으로(브라우즈). location 으로 내공간/부서게시판,
-    board(slug)로 특정 부서 게시판 필터(board 가 location 보다 우선). `entity_ids`(반복)
+    board(slug)로 특정 부서 게시판 필터(board 가 location 보다 우선) — `include_descendants`
+    면 하위 부서까지, `folder_ids`/`unfiled` 로 그 게시판의 폴더 배치까지 좁힌다. `entity_ids`(반복)
     로 엔티티 태그 필터를 결합 — "본문 'X' AND 모델=A1234"(D-2). 가시 범위(소유·공유·
     게시) 안에서만 — 다른 부서도 권한 범위에서. 휴지통 제외, 검색 시 스니펫.
 
@@ -338,10 +358,12 @@ def search_reports(
         sort = "relevance"
     rows, total = services.search_reports(
         db, actor, q, limit=limit, offset=offset, location=location, board=board,
+        include_descendants=include_descendants, folder_ids=folder_ids, unfiled=unfiled,
         entity_ids=entity_ids, entity_rollup=entity_rollup, year=year,
         date_from=d_from, date_to=d_to, date_field=date_field,
         report_type_ids=report_type_ids, author_ids=author_ids, editor_ids=editor_ids,
         phases=phases, lifecycles=lifecycles, tags=tags, sort=sort,
+        user_scope=(scope == "user"),
     )
     needle = q.strip()
     results = [
@@ -822,30 +844,191 @@ def create_ai_draft(
 
 # 정적 path — 동적 `/{report_id}` 보다 *위*에 등록(그래야 "my-drafts" 를 reportId 로
 # 잡으려다 422 가 나지 않는다).
-@router.get("/my-drafts")
-def list_my_drafts(
-    limit: int = Query(default=20, ge=1, le=100),
+@router.get("/browse")
+def browse_reports(
+    q: str = Query(default="", max_length=200, description="제목·본문 부분일치(빈 값=브라우즈)"),
+    board: str | None = Query(default=None, description="게시판(조직) 이름 또는 slug"),
+    folder: str | None = Query(default=None, description="board 안의 폴더 이름 또는 id"),
+    include_descendants: bool = Query(default=False, description="board 의 하위 부서까지"),
+    unfiled: bool = Query(default=False, description="board 의 폴더 미분류만"),
+    author: str | None = Query(default=None, description="작성자 사람 이름"),
+    author_org: str | None = Query(default=None, description="작성자 소속 부서 이름/slug"),
+    report_type: str | None = Query(default=None, description="보고서 종류 이름"),
+    phase: str | None = Query(default=None, description="drafting|reviewing|finalized"),
+    lifecycle: str | None = Query(default=None, description="single_shot|ongoing"),
+    tags: list[str] | None = Query(default=None, description="자유 태그(OR)"),
+    last_days: int | None = Query(default=None, ge=1, le=3650),
+    period: str | None = Query(default=None, description="today|this_week|this_month|this_year"),
+    date_from: str | None = Query(default=None, description="YYYY-MM-DD"),
+    date_to: str | None = Query(default=None, description="YYYY-MM-DD"),
+    sort: str = Query(default="recent", description="recent|oldest|relevance"),
+    limit: int = Query(default=30, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
-    """내가 만든 **작성 중(drafting)** 보고서 목록(최근 수정 순). AI 가 이어서
-    수정(update_report_draft)할 초안을 찾을 때. 휴지통(소프트삭제)은 제외."""
+    """**AI/MCP 전용 열거** — 조건에 맞는 보고서를 모아 나열한다(요약 필드).
+
+    `/search` 와 같은 엔진을 쓰되 두 가지가 다르다:
+      1. **이름을 받는다.** 게시판·폴더·작성자·소속부서·종류를 사람 말(이름)로 받아
+         서버가 id 로 푼다 — 외부 AI 는 id 를 모르고, id 조회 API 중엔 관리자 전용도
+         있어서(`/api/users`) 클라이언트가 풀 수 없다. **못 푼 이름은 조용히 무시하지
+         않고 400** 으로 돌린다(조건이 빠진 전체 결과를 그 조직 것으로 오해하는 사고 방지).
+      2. **활성 워크스페이스와 무관**(user_scope)하게 가시성을 계산한다. MCP 는 등록
+         시 고정한 X-Workspace-Slug 를 계속 보내므로, 그러지 않으면 같은 질의가 등록
+         헤더에 따라 다른 결과를 낸다.
+
+    응답은 목록 렌더가 아니라 **모델이 읽는 요약**이라 필드를 줄이고, 대신 보고서 행엔
+    없는 소속(게시판·폴더)을 붙인다 — 보고서의 workspace_slug 는 작성자 개인공간이라
+    조직 정보가 아니기 때문."""
+    from app.ai import structured_qa
+    from app.modules.workspaces import services as ws_services
+
+    unresolved: list[str] = []
+    board_slugs: list[str] = []
+    if board and board.strip():
+        slug = structured_qa._resolve_board(db, board)
+        if slug is None:
+            unresolved.append(f"board={board!r}")
+        else:
+            board_slugs = (
+                ws_services.get_descendants_inclusive(db, slug)
+                if include_descendants
+                else [slug]
+            )
+    folder_ids: list[int] = []
+    if folder and str(folder).strip():
+        folder_ids = structured_qa._resolve_folder_ids(
+            db, str(folder), board_slugs or None
+        )
+        if not folder_ids:
+            unresolved.append(f"folder={folder!r}")
+    author_ids: list[int] = []
+    if author and author.strip():
+        uid = structured_qa._resolve_author(db, author)
+        if uid is None:
+            unresolved.append(f"author={author!r}")
+        else:
+            author_ids.append(uid)
+    if author_org and author_org.strip():
+        if structured_qa._resolve_board(db, author_org) is None:
+            unresolved.append(f"author_org={author_org!r}")
+        else:
+            # 부서는 있는데 멤버가 없으면 정답이 0건 — 필터를 빼서 전체로 새지 않게
+            # 불가능 조건(-1)을 넣는다.
+            author_ids += structured_qa._resolve_org_author_ids(db, author_org) or [-1]
+    report_type_ids: list[int] = []
+    if report_type and report_type.strip():
+        tid = structured_qa._resolve_report_type(db, report_type)
+        if tid is None:
+            unresolved.append(f"report_type={report_type!r}")
+        else:
+            report_type_ids.append(tid)
+    if unfiled and not board_slugs:
+        return error_response(
+            "unfiled(미분류)는 board 와 함께 써야 합니다 — 미분류는 게시판마다 다르게 "
+            "판정됩니다(A 게시판에서 미분류여도 B 에선 폴더에 있을 수 있음).",
+            status_code=400,
+        )
+    if unresolved:
+        return error_response(
+            "다음 이름을 찾지 못했습니다: " + ", ".join(unresolved)
+            + ". 조건을 빼고 전체를 돌려주면 결과를 오해하게 되므로 중단합니다 — "
+            "게시판/폴더는 /api/workspaces·/api/folders 로 정확한 이름을 확인하세요.",
+            status_code=400,
+        )
+
+    d_from, d_to = services.resolve_date_range(
+        date_from=_parse_iso_date(date_from), date_to=_parse_iso_date(date_to),
+        last_days=last_days, period=period,
+    )
+    rows, total = services.search_reports(
+        db, actor, q, limit=limit, offset=offset,
+        # 이름 해석·자손 롤업은 위에서 끝냈으므로 slug 목록을 그대로 넘긴다.
+        board_slugs=board_slugs,
+        folder_ids=folder_ids or None,
+        unfiled=unfiled,
+        date_from=d_from, date_to=d_to,
+        report_type_ids=report_type_ids or None,
+        author_ids=sorted(set(author_ids)) or None,
+        phases=[phase] if phase else None,
+        lifecycles=[lifecycle] if lifecycle else None,
+        tags=tags,
+        sort=sort if sort in ("recent", "oldest", "relevance") else "recent",
+        user_scope=True,
+    )
+    placements = services.mount_placements_bulk(db, [r.id for r in rows])
+    needle = q.strip()
+    items = [
+        {
+            "report_id": r.id,
+            "title": r.title,
+            "report_date": r.report_date,
+            "author": r.owner.name if r.owner else None,
+            "phase": r.phase.value,
+            "tags": list(r.tags or []),
+            "boards": [
+                {"slug": b["slug"], "name": b["name"],
+                 "folders": [f["name"] for f in b["folders"]]}
+                for b in placements.get(r.id, [])
+            ],
+            "snippet": services.search_snippet(r.search_text, needle) if needle else None,
+            "updated_at": r.updated_at,
+            "url": f"/w/{r.workspace_slug}/reports/{r.id}",
+        }
+        for r in rows
+    ]
+    return success_response(
+        data={
+            "reports": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(items) < total,
+        }
+    )
+
+
+@router.get("/my-drafts")
+def list_my_drafts(
+    limit: int = Query(default=20, ge=1, le=100),
+    phase: str = Query(
+        default="all",
+        description=(
+            "단계 필터 — all(기본·전체) | drafting(작성중만) | reviewing(게시·리뷰중) "
+            "| finalized(발행본). 게시하면 phase 가 reviewing 으로 자동 승격되므로, "
+            "게시한 글을 이어서 수정하려면 all 또는 reviewing 을 쓴다."
+        ),
+    ),
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """내가 만든 보고서 목록(최근 수정 순). AI 가 이어서 수정(update_report_draft)할
+    대상을 찾을 때. 휴지통(소프트삭제)은 제외.
+
+    기본은 **전체 단계**다 — 예전엔 drafting 만 돌려줘서 *게시한 글은 AI 가 찾지도
+    못했다*(운영 기준 보고서의 76%가 게시 후 reviewing). `phase` 로 좁힐 수 있고,
+    각 행의 `editable`(=can_edit AND 미발행) 로 AI 가 손댈 수 있는지 바로 안다."""
     from app.modules.reports.models import Report, ReportPhase
 
+    conds = [
+        Report.owner_user_id == actor.user.id,
+        Report.deleted_at.is_(None),
+    ]
+    if phase in ReportPhase._value2member_map_:
+        conds.append(Report.phase == ReportPhase(phase))
     rows = (
         db.execute(
             select(Report)
-            .where(
-                Report.owner_user_id == actor.user.id,
-                Report.phase == ReportPhase.drafting,
-                Report.deleted_at.is_(None),
-            )
+            .where(*conds)
             .order_by(Report.updated_at.desc())
             .limit(limit)
         )
         .scalars()
         .all()
     )
+    editable = services.editable_report_ids(db, actor, rows)
+    placements = services.mount_placements_bulk(db, [r.id for r in rows])
     drafts = [
         {
             "report_id": r.id,
@@ -853,6 +1036,10 @@ def list_my_drafts(
             "template_id": r.template_id,
             "template_version": r.template_version,
             "page_count": len(r.pages or []) or 1,
+            "phase": r.phase.value,
+            # AI 가 수정 가능한지 — update_report_draft 와 같은 규칙(권한 AND 미발행).
+            "editable": r.id in editable and r.phase != ReportPhase.finalized,
+            "mounted_to": placements.get(r.id, []),
             "updated_at": r.updated_at,
             "url": f"/w/{r.workspace_slug}/reports/{r.id}",
         }
@@ -890,19 +1077,34 @@ def _apply_ai_draft(
     덮어쓰고 나머지는 둔다. 검증 실패 시 블록별 에러를 400 으로 돌린다."""
     from app.modules.reports.models import ReportPhase
 
+    from app.shared.permissions import can_edit
+
     report = services.get_report(db, report_id)
     if not report:
         return not_found_response(f"Report not found: {report_id}")
-    # 안전장치 — 본인이 만든 보고서만, 그리고 작성 중(drafting)일 때만 AI 수정.
-    # (리뷰/발행 단계는 사람이 화면에서. 발행본은 발행취소 후 수정.)
-    if report.owner_user_id != actor.user.id:
+    # 안전장치 — **사람 경로(PATCH /reports/{id})와 같은 규칙**으로 판정한다:
+    # can_edit(소유자 / 편집 grant / 하드락 veto) + 발행본(finalized) 차단.
+    #
+    # 예전엔 "소유자 AND drafting" 이었는데, 게시(mount)하는 순간 phase 가
+    # drafting→reviewing 으로 자동 승격되므로(mounts/services.py) **게시한 글은
+    # MCP 로 영영 못 고치는** 상태였다 — 같은 사용자가 웹에서는 멀쩡히 고칠 수
+    # 있는데도. 두 경로를 정렬해 그 비대칭을 없앤다. 발행본만 사람 경로와 똑같이
+    # 막는다(발행 취소 후 수정).
+    decision = can_edit(db, actor.user, report)
+    if not decision.allowed:
+        if decision.role == "locked":
+            reason = report.author_lock_reason or "사유 미기재"
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"작성자가 수정 잠금 상태입니다 (사유: {reason}). 잠금 해제 후 다시 시도하세요.",
+            )
         raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "본인이 만든 보고서만 AI로 수정할 수 있습니다."
+            status.HTTP_403_FORBIDDEN, "이 보고서를 AI로 수정할 권한이 없습니다."
         )
-    if report.phase != ReportPhase.drafting:
+    if report.phase == ReportPhase.finalized:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
-            f"작성 중(drafting) 보고서만 AI로 수정할 수 있습니다 (현재: {report.phase.value}).",
+            "발행된 보고서는 AI로 수정할 수 없습니다. '발행 취소' 후 다시 시도하세요.",
         )
     # 동시성 — 누군가(본인 다른 탭 포함) 편집 화면을 열어 **편집 락을 잡고 있으면**
     # AI 수정을 막는다. AI 는 비대화형이라 락 없이 저장하므로(require_lock=False),
@@ -1022,11 +1224,35 @@ def _apply_ai_draft(
     except ValueError as exc:
         # 정규화로도 못 맞춘 부분 — 블록별 검증 에러를 그대로 전달(AI 재시도용).
         return error_response(str(exc), status_code=400)
+    # 남의 보고서를 (편집 권한으로) 고쳤으면 작성자에게 알린다 — 사람 경로
+    # (PATCH /reports/{id})와 같은 처리. 가드를 can_edit 으로 넓힌 이상 이 알림도
+    # 같이 와야 소유자가 모르는 사이 문서가 바뀌는 일이 없다.
+    if (
+        report.owner_user_id is not None
+        and report.owner_user_id != actor.user.id
+    ):
+        from app.modules.notifications.models import NotificationType
+        from app.modules.notifications.services import create_notification
+
+        create_notification(
+            db,
+            recipient_user_id=report.owner_user_id,
+            actor_user_id=actor.user.id,
+            type=NotificationType.report_edited_by_other,
+            ref_table="reports",
+            ref_id=report.id,
+            payload={"report_title": report.title, "editor_role": decision.role},
+        )
+        db.commit()
     return success_response(
         data={
             "report": _read_with_perms(db, actor, report),
             "warnings": warnings,
             "url": f"/w/{report.workspace_slug}/reports/{report.id}",
+            # 이 보고서가 걸려 있는 게시판(+폴더) — 비어 있지 않으면 **이미 남들이
+            # 보고 있는 글**을 고친 것이다. AI 가 사용자에게 그 사실을 알리도록
+            # 돌려준다(도구 docstring·SKILL 에 고지 의무 명시).
+            "mounted_to": services.mount_placements(db, report.id),
         }
     )
 

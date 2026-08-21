@@ -100,6 +100,14 @@ def _flatten_user_refs(obj: Any) -> Any:
                 "slug": m.workspace_slug,
                 "name": m.workspace.name if m.workspace else m.workspace_slug,
                 "note": getattr(m, "note", "") or "",
+                "folders": [
+                    {"id": link.folder_id, "name": link.folder.name}
+                    for link in sorted(
+                        getattr(m, "folder_links", []) or [],
+                        key=lambda x: (x.folder.name if x.folder else ""),
+                    )
+                    if link.folder is not None
+                ],
             }
             for m in mounts_rel
         ]
@@ -121,6 +129,13 @@ def _flatten_user_refs(obj: Any) -> Any:
     return base
 
 
+class MountFolderMini(BaseModel):
+    """게시판 폴더 배치 1건 — (id, name)."""
+
+    id: int
+    name: str
+
+
 class MountWorkspaceMini(BaseModel):
     """Slim mount projection — what the personal-list "게시" cell needs to
     render chip strips ("팀1·본부A에 게시됨"). The full ReportMount payload
@@ -130,6 +145,9 @@ class MountWorkspaceMini(BaseModel):
     name: str
     # 게시 메모 — 목록 칩에 💬 아이콘+툴팁으로 노출(옵션 1).
     note: str = ""
+    # 이 게시판에서의 폴더 배치(0개=미분류, p89 이후 여러 개 가능). 외부 AI(MCP)가
+    # "이 글은 dx 게시판의 'Q2 핵심' 폴더에 있다"를 알 수 있게 함께 내려준다.
+    folders: list[MountFolderMini] = []
 
 
 class ReportTypeRef(BaseModel):
@@ -304,6 +322,11 @@ class ReportRead(BaseModel):
     # 워크스페이스 트리를 직접 참조한다. 이름/색은 프런트가 /api/workspaces 로
     # 해석. 쓰기는 ReportUpdate.collab_workspace_slugs 로. 빈 리스트 = 미지정.
     collab_workspace_slugs: list[str] = []
+    # 이 보고서가 게시(mount)된 게시판 + 그 게시판에서의 폴더 배치. 빈 리스트=미게시.
+    # ReportSummary 에만 있던 걸 상세에도 올린다 — 보고서 행 자체엔 조직이 없어서
+    # (workspace_slug=작성자 개인공간) 외부 AI(MCP get_report)가 "이 글이 어느
+    # 조직·폴더에 걸려 있나"를 알 길이 이것뿐이었다.
+    mount_workspaces: list[MountWorkspaceMini] = []
     created_at: UtcDatetime
     updated_at: UtcDatetime
     # Optimistic-concurrency token. Clients echo this back in PATCH bodies

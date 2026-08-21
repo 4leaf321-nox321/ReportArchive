@@ -13,8 +13,12 @@ allowed-tools: mcp__reportarchive__*
 - `mcp__reportarchive__list_templates` — 템플릿 목록(template_id, version, name)
 - `mcp__reportarchive__describe_template` — 템플릿의 블록(채울 항목)과 형식 안내
 - `mcp__reportarchive__describe_widgets` — 위젯 타입별 상세 작성 룰(특히 `extra_blocks` 로 위젯 직접 만들 때)
-- `mcp__reportarchive__search_reports` — 기존 보고서 전문검색(참고용)
-- `mcp__reportarchive__list_my_drafts` — 내가 만든 작성 중 초안 목록(이어서 수정할 때)
+- `mcp__reportarchive__search_reports` — 기존 보고서 **의미+키워드 검색**(근거 발췌, 최대 25건)
+- `mcp__reportarchive__list_reports` — 조건으로 보고서 **모아서 나열**(게시판·폴더·작성자·기간, 최대 100건)
+- `mcp__reportarchive__list_boards` — 게시판(조직) 목록 — 조직 단위로 찾기 전에 먼저
+- `mcp__reportarchive__list_folders` — 게시판 안 폴더 목록(이름·id·건수)
+- `mcp__reportarchive__aggregate_reports` — 개수 세기(직접 세지 말 것)
+- `mcp__reportarchive__list_my_reports` — 내가 쓴 보고서 목록(이어서 수정할 때. 게시된 글 포함)
 - `mcp__reportarchive__get_report` — 보고서 1건 조회(이미지·첨부는 file_id 참조만)
 - `mcp__reportarchive__download_file` — file_id 로 파일 바이트를 base64 로 내려받기(get_report 의 이미지·첨부를 로컬 저장/재사용할 때, ≈1MB 이하)
 - `mcp__reportarchive__create_report_draft` — 초안 생성
@@ -70,8 +74,27 @@ scatter·heatmap·radar·network·sankey·box·density·tree·mind_map·treemap�
 
 이미지·첨부·CAD·동영상 등 **파일 기반** 위젯은 MCP 로 못 채우므로 **비워 둔다**(작성자가 화면에서 채움).
 
+## 조직·폴더로 찾기 (특정 부서 글 모아보기)
+보고서는 작성자 개인공간에 저장되고, **어느 조직 글이냐는 어느 게시판에 게시(mount)됐냐로만**
+정해진다. 그래서 "○○팀 보고서 보여줘" 는 이렇게 푼다:
+
+1. `list_boards()` → 게시판 slug·이름 확인(개인공간은 안 나온다).
+2. 폴더까지 좁힐 거면 `list_folders(board)` → 폴더 이름·id·건수.
+3. `list_reports(board="dx", folder="진행 중", last_days=30)` → 목록.
+   - `include_descendants=True` 면 하위 부서 게시판까지, `unfiled=True` 면 미분류만.
+   - 개수만 필요하면 `aggregate_reports(filters=[], board="dx")`.
+   - 본문 내용으로 찾는 거면 `search_reports(query, board="dx")`.
+
+**board(게시된 곳) vs author_org(작성자 소속)** 은 다른 축이다 — "DX 부문 게시판에 올라온 글"은
+`board`, "DX 부문 사람이 쓴 글(게시 여부 무관)"은 `author_org`. 요청이 모호하면 사용자에게 묻는다.
+
+이름을 못 찾으면 도구가 **에러**를 돌려준다(전체 결과를 그 조직 것으로 오해하지 않게).
+그때는 `list_boards`/`list_folders` 로 정확한 이름을 확인하고 다시 부른다.
+
 ## 원칙
-- **항상 초안.** 게시·발행은 사람이 한다.
+- **생성물은 항상 초안.** 게시·발행은 사람이 한다.
+- **수정은 게시된 글도 가능** — 편집 권한이 있고 발행(finalized) 전이면 된다. 단 게시된 글을
+  고쳤으면(응답 `mounted_to` 가 비어 있지 않으면) **어디에 게시된 글인지 사용자에게 알린다.**
 - 채울 수 없는 블록은 **비운다**(부분 초안 허용). **추측으로 채우지 말 것** — 모르는 값은 사용자에게 묻는다.
 - **누락은 투명하게.** 요청했는데 못 채운 블록(`warnings`/검증 탈락)은 조용히 넘기지 말고 사용자에게 보고한다.
 - 표/선택지는 `describe_template` 의 `key`·`options` 를 정확히 따른다.
@@ -124,11 +147,16 @@ create_report_draft("<빈템플릿id>", 1, "분기 리뷰", {}, extra_blocks=[
   `blocks`/`extra_blocks`/`block_sections` 는 무시되고 페이지별로 채운다. 한 장이면 `pages` 없이
   상단 필드만 쓴다.
 
-## 기존 초안 이어서 수정 (update_report_draft)
-방금/예전에 만든 **내 작성 중(drafting) 초안**을 고칠 때 새로 만들지 말고 `update_report_draft`
-로 이어서 수정한다. **본인이 만든 drafting 상태만** 대상(리뷰/발행 단계·남의 보고서는 거부).
+## 기존 보고서 이어서 수정 (update_report_draft)
+이미 있는 보고서를 고칠 땐 새로 만들지 말고 `update_report_draft` 로 이어서 수정한다.
+**초안뿐 아니라 이미 게시(mount)된 글도 수정된다** — 편집 권한이 있고 **발행(finalized) 전**이면
+된다(웹 편집과 같은 규칙). 발행본은 사람이 '발행 취소' 를 해야 고칠 수 있다.
 
-- `report_id` 를 모르면 먼저 `list_my_drafts` 로 찾는다(최근 수정 순, report_id·title·url 포함).
+- `report_id` 를 모르면 먼저 `list_my_reports` 로 찾는다(최근 수정 순). 각 행의
+  **`editable`** 이 지금 AI 로 고칠 수 있는지, **`mounted_to`** 가 게시된 게시판·폴더다.
+  게시한 글은 단계가 `reviewing` 이라 `phase="drafting"` 으로 좁히면 **안 보인다**(기본 all 유지).
+- **게시된 글을 고쳤으면 사용자에게 알린다** — 응답 `mounted_to` 에 게시판·폴더가 온다.
+  이미 남들이 보고 있는 문서이므로 조용히 바꾸지 않는다.
 - **기본은 병합(merge)** — 준 것만 바꾸고 나머지는 둔다:
   | 인자 | 동작 |
   |---|---|
@@ -146,7 +174,7 @@ create_report_draft("<빈템플릿id>", 1, "분기 리뷰", {}, extra_blocks=[
 
 예: "방금 만든 초안에 리스크 표 한 줄 추가하고 요약 고쳐줘"
 ```
-1. list_my_drafts() → 해당 초안 report_id 확인
+1. list_my_reports() → 해당 보고서 report_id 확인(editable 확인)
 2. update_report_draft(report_id, blocks={"summary":"수정된 요약"},
      extra_blocks=[{"id":"risk","type":"table",
        "props":{"columns":[{"key":"item","label":"항목","type":"text"}]},

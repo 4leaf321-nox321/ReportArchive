@@ -24,6 +24,9 @@ from app.modules.entities import services as ent
 # 결과 크기 상한 — LLM 컨텍스트/환각 방지.
 _SEARCH_LIMIT = 15
 _REPORTS_LIMIT = 8
+# 명시적으로 더 요청했을 때의 상한. 기본은 여전히 8(LLM 컨텍스트 보호)이고, 대량
+# 열거는 요약 필드만 반환하는 list_reports(/api/reports/search) 쪽이 담당한다.
+_REPORTS_MAX = 25
 _RELATIONS_LIMIT = 25
 _SUBGRAPH_MAX_DEPTH = 2      # 에이전트는 넓게 안 봐도 된다(필요하면 seed 바꿔가며).
 _SUBGRAPH_MAX_NODES = 40     # graph.subgraph 는 depth 로만 제한 → 고차수 노드면 폭주.
@@ -384,16 +387,27 @@ def _related_reports(db: Session, actor, entity_id: int):
 # --------------------------------------------------------------------------- #
 # search_reports — 벡터 RAG(hybrid_search)를 도구화
 # --------------------------------------------------------------------------- #
-def _column_filters_from_args(db: Session, args: dict) -> Optional[dict]:
-    """에이전트 도구 args 의 (B) 날짜/종류/작성자/단계 → column_filters dict.
+def _column_filters_from_args(
+    db: Session, args: dict
+) -> tuple[Optional[dict], list[str]]:
+    """에이전트 도구 args 의 (B) 날짜/종류/작성자/단계/게시판/폴더 → column_filters dict.
 
     last_days/period/date_from/date_to(상대·명시 날짜) + report_type(이름)·author(이름)
-    ·phase·lifecycle. structured_qa 의 해석 헬퍼를 재사용(이름→id, 못 풀면 그 필터만
-    생략). 아무것도 없으면 None."""
+    ·phase·lifecycle + **board(게시판 이름/slug)·folder(폴더 이름/id)·author_org(작성자
+    소속 부서)**. structured_qa 의 해석 헬퍼를 재사용(이름→id, 못 풀면 그 필터만
+    생략). 반환은 (column_filters | None, 해석 못 한 이름 목록).
+
+    게시판/폴더 축을 여기 붙이면 search_reports(하이브리드)·aggregate_reports 가
+    동시에 "조직 단위로 좁혀 보기"를 얻는다 — 보고서 행엔 조직이 없고 게시(mount)로만
+    표현되므로, 이 축 없이는 "특정 조직 글 모아보기"가 아예 불가능했다."""
     from app.ai import structured_qa
     from app.modules.reports.services import resolve_date_range
 
     cf: dict = {}
+    # 해석 못 한 이름(게시판/폴더) — 조용히 무시하면 "그 조직 글"을 물었는데 **전체
+    # 코퍼스**가 돌아가 AI 가 남의 조직 글을 그 조직 것으로 보고하게 된다. 호출부가
+    # 에러로 되돌리도록 모아서 넘긴다(날짜/종류/작성자는 기존대로 관대하게 생략).
+    unresolved: list[str] = []
     try:
         last_days = int(args["last_days"]) if args.get("last_days") else None
     except (ValueError, TypeError):
@@ -419,27 +433,93 @@ def _column_filters_from_args(db: Session, args: dict) -> Optional[dict]:
         cf["phases"] = [args["phase"]]
     if args.get("lifecycle") in ("single_shot", "ongoing"):
         cf["lifecycles"] = [args["lifecycle"]]
-    return cf or None
+    # 게시판(조직) — 이름/slug 해석. include_descendants 면 하위 부서 게시판까지.
+    board_slugs: list[str] = []
+    bd = args.get("board")
+    if isinstance(bd, str) and bd.strip():
+        slug = structured_qa._resolve_board(db, bd)
+        if slug:
+            if args.get("include_descendants"):
+                from app.modules.workspaces import services as ws_services
+
+                board_slugs = ws_services.get_descendants_inclusive(db, slug)
+            else:
+                board_slugs = [slug]
+            cf["board_slugs"] = board_slugs
+        else:
+            unresolved.append(f"board={bd!r}")
+    # 폴더 — 이름은 게시판마다 겹치므로 board 로 한정해서 푼다. 못 풀면 0건이
+    # 아니라 그 필터만 생략(전체로 새지 않게 나머지 조건은 유지).
+    fd = args.get("folder")
+    if isinstance(fd, (str, int)) and str(fd).strip():
+        fids = structured_qa._resolve_folder_ids(db, str(fd), board_slugs or None)
+        if fids:
+            cf["folder_ids"] = fids
+        else:
+            unresolved.append(f"folder={fd!r}")
+    if args.get("unfiled") and board_slugs:
+        cf["unfiled_board_slugs"] = board_slugs
+    # 작성자 소속 부서 — "그 조직 *사람이 쓴*" 글(게시 여부 무관). board 와 다른 축.
+    ao = args.get("author_org")
+    if isinstance(ao, str) and ao.strip():
+        if structured_qa._resolve_board(db, ao) is None:
+            unresolved.append(f"author_org={ao!r}")
+        else:
+            uids = structured_qa._resolve_org_author_ids(db, ao)
+            # 부서는 있는데 멤버가 없으면 "그 부서 사람의 글 0건"이 정답 —
+            # 필터를 생략해 전체로 새면 안 되므로 불가능 조건(-1)을 넣는다.
+            cf["author_ids"] = sorted(set(cf.get("author_ids", [])) | set(uids)) or [-1]
+    return (cf or None), unresolved
+
+
+def _unresolved_msg(unresolved: list[str]) -> str:
+    return (
+        "다음 이름을 찾지 못했습니다: " + ", ".join(unresolved) + ". "
+        "조건을 빼고 전체를 돌려주면 남의 조직 결과를 그 조직 것으로 오해하게 되므로 "
+        "중단합니다 — list_boards / list_folders 로 정확한 이름을 확인하고 다시 부르세요."
+    )
 
 
 def _exec_search_reports(db: Session, actor, args: dict) -> ToolResult:
+    from app.modules.reports.services import mount_placements_bulk
+
     query = (args.get("query") or "").strip()
     if not query:
-        return _err("query 가 필요합니다.")
-    limit = min(int(args.get("limit") or _REPORTS_LIMIT), _REPORTS_LIMIT)
-    cf = _column_filters_from_args(db, args)
+        return _err("query 가 필요합니다. 검색어 없이 조건으로 '모아 보려면' "
+                    "list_reports(열거)를 쓰세요.")
+    # 기본 8건(LLM 컨텍스트 보호). 명시 요청은 _REPORTS_MAX 까지만 — 더 큰 열거는
+    # 요약 필드만 주는 list_reports 쪽이 맞다.
+    asked = int(args.get("limit") or _REPORTS_LIMIT)
+    limit = max(1, min(asked, _REPORTS_MAX))
+    cf, unresolved = _column_filters_from_args(db, args)
+    if unresolved:
+        return _err(_unresolved_msg(unresolved))
     hits = ai_search.hybrid_search(
         db, query, actor, limit=limit, snippet_chars=300, column_filters=cf
     )
+    # 글의 소속(게시판·폴더) — 보고서 행엔 조직이 없고 게시(mount)로만 표현되므로,
+    # 이게 없으면 AI 는 결과가 어느 조직 것인지 알 수 없다.
+    places = mount_placements_bulk(db, [h["report_id"] for h in hits])
     rows, prov = [], []
     for h in hits:
+        where = places.get(h["report_id"], [])
         rows.append({"report_id": h["report_id"], "title": h.get("title"),
-                     "snippet": h.get("snippet")})
+                     "snippet": h.get("snippet"),
+                     "boards": [
+                         {"slug": b["slug"], "name": b["name"],
+                          "folders": [f["name"] for f in b["folders"]]}
+                         for b in where
+                     ]})
         prov.append({"report_id": h["report_id"], "title": h.get("title"),
                      "workspace_slug": h.get("workspace_slug"),
                      "block_id": h.get("block_id"), "page_idx": h.get("page_idx"),
                      "snippet": h.get("snippet")})  # 근거 검증(_verify)용 본문 텍스트
-    return _ok({"reports": rows, "count": len(rows)}, reports=prov)
+    out = {"reports": rows, "count": len(rows), "limit": limit}
+    if asked > limit:
+        # 조용히 자르지 않는다 — 몇 건을 왜 못 줬는지 AI 가 알게.
+        out["note"] = (f"limit {asked} 요청을 {limit} 로 줄였습니다(검색 상한). "
+                       "더 많이 모아 보려면 list_reports 를 쓰세요.")
+    return _ok(out, reports=prov)
 
 
 # --------------------------------------------------------------------------- #
@@ -455,7 +535,9 @@ def _exec_aggregate_reports(db: Session, actor, args: dict) -> ToolResult:
     filters = [str(x) for x in (args.get("filters") or []) if str(x).strip()]
     target = (args.get("target") or "report").strip() or "report"
     year = args.get("year")
-    cf = _column_filters_from_args(db, args)
+    cf, unresolved = _column_filters_from_args(db, args)
+    if unresolved:
+        return _err(_unresolved_msg(unresolved))
     agg = structured_qa.aggregate(db, actor, filters, year, target, column_filters=cf)
     if agg is None:
         return _err("조건(필터/타깃)을 온톨로지 객체로 해석하지 못했습니다. "
@@ -502,6 +584,19 @@ _FILTER_PROPS = {
     "phase": {"type": "string",
               "description": "협업 단계 drafting|reviewing|finalized(선택)."},
     "lifecycle": {"type": "string", "description": "진행 상태 single_shot|ongoing(선택)."},
+    "board": {"type": "string",
+              "description": "게시판(조직) 이름 또는 slug 예:'dx'·'선행개발'. "
+                             "그 게시판에 게시된 보고서만(선택)."},
+    "include_descendants": {"type": "boolean",
+                            "description": "board 의 하위 부서 게시판까지 포함(선택)."},
+    "folder": {"type": "string",
+               "description": "board 안의 폴더 이름 또는 id 예:'진행 중'(선택). "
+                              "board 와 함께 쓰면 그 게시판의 폴더로 한정된다."},
+    "unfiled": {"type": "boolean",
+                "description": "board 에 게시됐지만 폴더 미분류인 것만(선택)."},
+    "author_org": {"type": "string",
+                   "description": "작성자의 소속 부서 이름/slug — 그 부서 사람이 쓴 "
+                                  "보고서(게시 여부 무관). board 와 다른 축(선택)."},
 }
 
 

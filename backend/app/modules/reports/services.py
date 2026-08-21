@@ -371,6 +371,61 @@ def report_mount_count(db: Session, report_id: int) -> int:
     )
 
 
+def mount_placements_bulk(
+    db: Session, report_ids: Iterable[int]
+) -> dict[int, list[dict]]:
+    """보고서별 **게시 위치** — {report_id: [{slug, name, folders:[{id,name}]}]}.
+
+    "이 글이 어느 게시판의 어느 폴더에 걸려 있나"를 한 번에 푼다. 보고서 행 자체엔
+    조직이 없고(workspace_slug 는 작성자 개인공간), 조직 소속은 오직 게시(mount)로만
+    표현되므로 — MCP/AI 가 글의 소속을 알려면 이 투영이 필요하다. 폴더는 p89 이후
+    게시당 여러 개일 수 있어 리스트다(빈 리스트 = 그 게시판에서 미분류).
+
+    쿼리 2회(mount+workspace, mount_folder+folder)로 N+1 없이."""
+    ids = [int(r) for r in report_ids]
+    if not ids:
+        return {}
+    # 폴더 배치 — (report, board) → [{id, name}].
+    folders: dict[tuple[int, str], list[dict]] = {}
+    for rid, slug, fid, fname in db.execute(
+        select(
+            ReportMountFolder.report_id,
+            ReportMountFolder.workspace_slug,
+            Folder.id,
+            Folder.name,
+        )
+        .join(Folder, Folder.id == ReportMountFolder.folder_id)
+        .where(ReportMountFolder.report_id.in_(ids))
+        .order_by(Folder.name)
+    ).all():
+        folders.setdefault((rid, slug), []).append({"id": fid, "name": fname})
+
+    out: dict[int, list[dict]] = {}
+    for rid, slug, wname, note in db.execute(
+        select(
+            ReportMount.report_id,
+            ReportMount.workspace_slug,
+            Workspace.name,
+            ReportMount.note,
+        )
+        .join(Workspace, Workspace.slug == ReportMount.workspace_slug)
+        .where(ReportMount.report_id.in_(ids))
+        .order_by(ReportMount.mounted_at)
+    ).all():
+        out.setdefault(rid, []).append({
+            "slug": slug,
+            "name": wname or slug,
+            "note": note or "",
+            "folders": folders.get((rid, slug), []),
+        })
+    return out
+
+
+def mount_placements(db: Session, report_id: int) -> list[dict]:
+    """한 보고서의 게시 위치(mount_placements_bulk 의 1건짜리)."""
+    return mount_placements_bulk(db, [report_id]).get(report_id, [])
+
+
 def composite_ref_count(db: Session, report_id: int) -> int:
     """이 보고서를 안건으로 참조하는 종합보고 항목 수. 영구삭제 시
     CompositeReportItem.ref_report_id 가 CASCADE 라 함께 사라지므로, 삭제 전
@@ -756,13 +811,27 @@ def report_column_conditions(
     phases: Optional[Iterable[str]] = None,
     lifecycles: Optional[Iterable[str]] = None,
     tags: Optional[list[str]] = None,
+    board_slugs: Optional[Iterable[str]] = None,
+    folder_ids: Optional[list[int]] = None,
+    unfiled_board_slugs: Optional[Iterable[str]] = None,
 ) -> list:
     """검색·목록·AI집계가 **공유**하는 Report 컬럼 필터 → SQLAlchemy 조건 리스트.
 
     모든 인자 옵셔널(None/빈 = 무필터). 날짜는 `date_field`(report_date|created_at)
     기준 [date_from, date_to] **포함** 범위(created_at 은 시각이라 to 를 그날 끝까지).
     다중값(종류·작성자·단계·태그)은 IN(=OR), 서로 다른 축은 AND 로 맞물린다. 잘못된
-    phase/lifecycle 값은 조용히 버린다(방어). (B) 날짜/종류/작성자/편집자/단계/태그."""
+    phase/lifecycle 값은 조용히 버린다(방어). (B) 날짜/종류/작성자/편집자/단계/태그.
+
+    **게시판·폴더 축**(board_slugs/folder_ids/unfiled_board_slugs): 보고서 행 자체엔
+    조직이 없으므로(workspace_slug 는 작성자 개인공간) "어느 조직 글이냐"는 게시
+    (mount)로만 표현된다 — 그래서 이 두 축만 서브쿼리 EXISTS 로 얹는다. 여기 두는
+    이유는 filtered_report_ids → _apply_column_scope 를 타고 **하이브리드/시맨틱
+    검색과 AI 집계까지 한 번에** 같은 축을 얻기 때문(year/엔티티 필터와 같은 방식).
+      - board_slugs: 그 게시판들 중 하나라도 게시된 보고서(OR).
+      - folder_ids: 그 폴더들 중 하나에라도 배치된 보고서(OR). p89 이후 한 보고서가
+        한 게시판의 여러 폴더에 걸릴 수 있어 각 폴더 필터에 모두 잡힌다.
+      - unfiled_board_slugs: 그 게시판에 게시됐지만 폴더 배치가 하나도 없는 것(미분류).
+    """
     conds: list = []
     col = Report.created_at if date_field == "created_at" else Report.report_date
     if date_from is not None:
@@ -791,6 +860,40 @@ def report_column_conditions(
             conds.append(Report.lifecycle.in_(valid_life))
     if tags:
         conds.append(Report.tags.overlap(list(tags)))
+    boards = [b for b in (board_slugs or []) if b]
+    if boards:
+        conds.append(
+            Report.id.in_(
+                select(ReportMount.report_id).where(
+                    ReportMount.workspace_slug.in_(boards)
+                )
+            )
+        )
+    if folder_ids:
+        conds.append(
+            Report.id.in_(
+                select(ReportMountFolder.report_id).where(
+                    ReportMountFolder.folder_id.in_([int(f) for f in folder_ids])
+                )
+            )
+        )
+    unfiled = [b for b in (unfiled_board_slugs or []) if b]
+    if unfiled:
+        # 그 게시판에 게시돼 있으면서(첫 조건) 그 게시판 폴더엔 하나도 안 걸린 것.
+        conds.append(
+            Report.id.in_(
+                select(ReportMount.report_id).where(
+                    ReportMount.workspace_slug.in_(unfiled)
+                )
+            )
+        )
+        conds.append(
+            ~Report.id.in_(
+                select(ReportMountFolder.report_id).where(
+                    ReportMountFolder.workspace_slug.in_(unfiled)
+                )
+            )
+        )
     return conds
 
 
@@ -803,6 +906,10 @@ def search_reports(
     offset: int = 0,
     location: str = "all",
     board: str = "",
+    board_slugs: Optional[list[str]] = None,
+    include_descendants: bool = False,
+    folder_ids: Optional[list[int]] = None,
+    unfiled: bool = False,
     entity_ids: Optional[list[int]] = None,
     entity_rollup: bool = False,
     year: Optional[int] = None,
@@ -816,12 +923,23 @@ def search_reports(
     lifecycles: Optional[Iterable[str]] = None,
     tags: Optional[list[str]] = None,
     sort: str = "relevance",
+    user_scope: bool = False,
 ) -> tuple[list[Report], int]:
     """본문(search_text) + 제목 부분일치(pg_trgm ILIKE) 검색. 가시성 스코프 적용.
 
     query 가 비면(공백 포함) 가시 범위 전체를 최신순으로 탐색(브라우즈).
     location: 'personal'=내 소유(내공간) / 'boards'=게시판 공유(부서게시판) /
     'all'=전체. 가시 스코프에 교집합으로 얹는다.
+
+    `board`(게시판 slug) 로 특정 조직 게시판만, `include_descendants` 면 그 하위
+    부서 게시판까지 롤업한다. `folder_ids` 는 그 게시판(들)의 org 폴더 배치 필터,
+    `unfiled=True` 는 미분류(폴더 배치 0건)만. board 가 location 보다 우선한다.
+
+    `user_scope=True` 면 가시성을 **활성 워크스페이스 무관**(all_visible_report_ids)
+    으로 계산한다 — 외부 AI(MCP)용. MCP 는 등록 시 고정한 X-Workspace-Slug 를 계속
+    보내므로, 기본(active-ws) 스코프를 쓰면 *같은 사용자·같은 질의인데 등록 헤더에
+    따라 결과가 달라진다*. 하이브리드 검색(ai/search)이 이미 쓰는 기준과 맞춰 둘이
+    같은 집합을 보게 한다. 웹 목록/검색은 기본(False) 그대로.
 
     `entity_ids`(D-2) 면 엔티티 태그 필터를 결합한다 — 목록 경로와 동일 시맨틱
     (axis 간 AND, axis 내 OR). `entity_rollup` 이면 part_of 자손까지 확장. 이걸로
@@ -845,23 +963,38 @@ def search_reports(
             return [], 0
     elif getattr(actor.workspace, "virtual", False):
         scope_ids = None
+    elif user_scope:
+        scope_ids = all_visible_report_ids(db, actor.user.id)
+        if not scope_ids:
+            return [], 0
     else:
         scope_ids = visible_report_ids(db, actor)
         if scope_ids is not None and not scope_ids:
             return [], 0
 
-    # 위치 필터 — board(특정 게시판 slug)가 있으면 그 게시판에 게시된 보고서로,
-    # 없으면 location(personal=내공간 / boards=내 부서게시판)으로 가시 스코프에
+    # 게시판 필터 — board(+하위부서 롤업)는 아래 report_column_conditions 로 넘겨
+    # 폴더 축과 AND 로 맞물리게 한다(예전엔 여기서 loc_ids 로 직접 풀었는데, 폴더·
+    # 자손 확장이 붙으면서 한 곳에 모으는 게 맞다). board 가 location 보다 우선인
+    # 규약은 그대로 — board 가 있으면 location 은 무시된다.
+    # 호출부가 이미 slug 목록을 풀어 왔으면(이름 해석·롤업을 앞단에서 끝낸 경우)
+    # 그걸 그대로 쓴다. 아니면 board 하나를 (필요하면 자손까지) 확장한다.
+    if board_slugs is None:
+        board_slugs = (
+            (
+                ws_services.get_descendants_inclusive(db, board)
+                if include_descendants
+                else [board]
+            )
+            if board
+            else []
+        )
+
+    # 위치 필터 — location(personal=내공간 / boards=내 부서게시판)으로 가시 스코프에
     # 교집합을 얹는다. 어느 쪽이든 가시 스코프(∩)라 권한 있는 보고서만 — 즉 다른
     # 부서 게시판도 접근 가능한 범위에서 탐색된다.
-    if board:
-        loc_ids: Optional[set[int]] = set(
-            db.execute(
-                select(ReportMount.report_id).where(
-                    ReportMount.workspace_slug == board
-                )
-            ).scalars()
-        )
+    loc_ids: Optional[set[int]]
+    if board_slugs:
+        loc_ids = None
     elif location == "personal":
         loc_ids = _owned_report_ids(db, actor.user.id)
     elif location == "boards":
@@ -892,6 +1025,8 @@ def search_reports(
             date_from=date_from, date_to=date_to, date_field=date_field,
             report_type_ids=report_type_ids, author_ids=author_ids,
             editor_ids=editor_ids, phases=phases, lifecycles=lifecycles, tags=tags,
+            board_slugs=board_slugs, folder_ids=folder_ids,
+            unfiled_board_slugs=board_slugs if unfiled else None,
         )
     )
 

@@ -202,6 +202,11 @@ async def search_reports(
     author: str | None = None,
     phase: str | None = None,
     lifecycle: str | None = None,
+    board: str | None = None,
+    folder: str | None = None,
+    include_descendants: bool = False,
+    unfiled: bool = False,
+    author_org: str | None = None,
 ) -> dict:
     """보고서 검색(내가 볼 수 있는 범위 내) — 기존 내용을 참고할 때.
 
@@ -215,11 +220,25 @@ async def search_reports(
       - phase: drafting|reviewing|finalized · lifecycle: single_shot|ongoing
       - 기간: last_days(최근 N일) · period(today|this_week|this_month|this_year) ·
         date_from/date_to(YYYY-MM-DD)
+      - **board**: 게시판(조직) 이름/slug('dx'·'선행개발') — 그 게시판에 게시된 글만.
+        include_descendants=True 면 하위 부서 게시판까지.
+      - **folder**: board 안의 폴더 이름/id('진행 중'). unfiled=True 면 미분류만.
+      - **author_org**: 작성자 소속 부서 — *그 부서 사람이 쓴* 글(게시 여부 무관).
+        board(게시된 곳)와는 다른 축이니 의도에 맞는 쪽을 고른다.
+    board/folder 이름을 모르면 `list_boards`·`list_folders` 로 먼저 확인하라 —
+    못 찾은 이름은 조용히 무시하지 않고 **에러**로 돌려준다(전체 결과를 그 조직 것으로
+    오해하는 사고 방지).
+
+    ※ 이 도구는 근거 발췌용이라 **최대 25건**(기본 8)이다. 조건에 맞는 글을 **모아
+    나열**하려면 `list_reports` 를 쓴다(요약 필드·최대 100건·페이지네이션).
     예: "낙하시험" + report_type='주간보고' + last_days=30."""
     args = {
         "query": query, "limit": limit, "last_days": last_days, "period": period,
         "date_from": date_from, "date_to": date_to, "report_type": report_type,
         "author": author, "phase": phase, "lifecycle": lifecycle,
+        "board": board, "folder": folder, "author_org": author_org,
+        "include_descendants": include_descendants or None,
+        "unfiled": unfiled or None,
     }
     return await _ontology_tool(
         ctx, "search_reports", {k: v for k, v in args.items() if v is not None}
@@ -227,16 +246,150 @@ async def search_reports(
 
 
 @mcp.tool()
-async def list_my_drafts(ctx: Context, limit: int = 20) -> dict:
-    """내가 만든 **작성 중(drafting)** 보고서 목록(최근 수정 순). 방금/예전에 만든
-    초안을 **이어서 수정**(update_report_draft)하려고 report_id 를 찾을 때 먼저 호출한다.
-    각 항목에 report_id·title·template_id/version·page_count·url 이 있다."""
-    return await _get(ctx, "/api/reports/my-drafts", {"limit": limit})
+async def list_boards(ctx: Context) -> dict:
+    """**게시판(조직) 목록** — 보고서가 게시되는 부서/TF 게시판의 slug·이름·상위부서.
+
+    보고서 자체엔 조직 정보가 없다(작성자 개인공간에 저장된다). "어느 조직 글이냐"는
+    **어느 게시판에 게시(mount)됐냐**로만 정해진다 — 그래서 조직 단위로 찾으려면
+    먼저 여기서 게시판 어휘를 확인하고, 그 slug/이름을 `list_reports(board=...)` ·
+    `search_reports(board=...)` 에 넣는다. 개인공간은 나오지 않는다.
+    반환: {boards:[{slug,name,parent_slug,kind}], count}."""
+    rows = await _get(ctx, "/api/workspaces")
+    if isinstance(rows, dict):
+        if rows.get("error"):
+            return rows
+        rows = rows.get("items") or []
+    boards = [
+        {
+            "slug": w.get("slug"),
+            "name": w.get("name"),
+            "parent_slug": w.get("parent_slug"),
+            "kind": w.get("kind"),
+        }
+        for w in rows
+        if w.get("kind") not in ("personal", "virtual")
+    ]
+    return {"boards": boards, "count": len(boards)}
+
+
+@mcp.tool()
+async def list_folders(board: str, ctx: Context) -> dict:
+    """게시판 안의 **폴더 목록**(id·이름·상위폴더·보고서수) + 미분류 건수.
+
+    게시판은 폴더로 분류돼 있고(예: '진행 중'·'종결'·'Q2 핵심'), 한 보고서가 한
+    게시판의 여러 폴더에 동시에 걸릴 수도 있다. 여기서 얻은 폴더 이름/id 를
+    `list_reports(board=..., folder=...)` 에 넣어 그 폴더 글만 모아 본다.
+    `board` 는 `list_boards` 의 slug(또는 부서 이름).
+    반환: {board, folders:[{id,name,parent_id,report_count}], uncategorized_count}."""
+    data = await _get(ctx, "/api/folders", {"workspace_slug": board})
+    if isinstance(data, dict) and data.get("error"):
+        return data
+    items = (data or {}).get("items") or []
+    return {
+        "board": board,
+        "folders": [
+            {
+                "id": f.get("id"),
+                "name": f.get("name"),
+                "parent_id": f.get("parent_id"),
+                "report_count": f.get("report_count", 0),
+            }
+            for f in items
+        ],
+        "uncategorized_count": (data or {}).get("uncategorized_count", 0),
+    }
+
+
+@mcp.tool()
+async def list_reports(
+    ctx: Context,
+    board: str | None = None,
+    folder: str | None = None,
+    query: str = "",
+    limit: int = 30,
+    offset: int = 0,
+    include_descendants: bool = False,
+    unfiled: bool = False,
+    author: str | None = None,
+    author_org: str | None = None,
+    report_type: str | None = None,
+    last_days: int | None = None,
+    period: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    phase: str | None = None,
+    lifecycle: str | None = None,
+    tags: list | None = None,
+    sort: str = "recent",
+) -> dict:
+    """조건에 맞는 보고서를 **모아서 나열**한다(열거). "○○팀 게시판 글 보여줘",
+    "'진행 중' 폴더에 뭐 있어?", "최근 한 달 주간보고 목록" 같은 요청용.
+
+    `search_reports` 와의 차이 — 저쪽은 *의미 검색으로 근거 발췌*(최대 25건, 본문
+    스니펫), 이쪽은 *조건으로 목록 뽑기*(최대 100건, offset 페이지네이션, 요약 필드).
+    개수만 필요하면 `aggregate_reports` 를 쓴다.
+
+    필터(전부 **이름 그대로** 넣으면 서버가 id 로 푼다):
+      - board: 게시판(조직) 이름/slug. include_descendants=True 면 하위 부서까지.
+      - folder: 그 게시판의 폴더 이름/id. unfiled=True 면 미분류만.
+      - query: 제목·본문 부분일치(빈 값이면 조건에 맞는 전체를 최신순으로 브라우즈).
+      - author: 작성자 이름 · author_org: 작성자 **소속 부서**(게시 여부 무관)
+      - report_type: 종류 이름 · phase: drafting|reviewing|finalized ·
+        lifecycle: single_shot|ongoing · tags: 자유 태그 목록
+      - 기간: last_days · period(today|this_week|this_month|this_year) · date_from/to
+      - sort: recent(기본)|oldest|relevance
+    board/folder 이름을 모르면 `list_boards`·`list_folders` 로 먼저 확인한다. 못 찾은
+    이름은 조용히 무시하지 않고 **에러**로 돌려준다(조건이 빠진 전체 결과를 그 조직
+    것으로 오해하는 사고 방지).
+
+    반환: {reports:[{report_id,title,report_date,author,phase,tags,boards,snippet,url}],
+    total, limit, offset, has_more}. 상세는 report_id 로 `get_report`."""
+    params: dict = {
+        "q": query,
+        "limit": max(1, min(limit, 100)),
+        "offset": max(0, offset),
+        "sort": sort if sort in ("recent", "oldest", "relevance") else "recent",
+    }
+    for key, val in (
+        ("board", board), ("folder", folder), ("author", author),
+        ("author_org", author_org), ("report_type", report_type),
+        ("phase", phase), ("lifecycle", lifecycle), ("period", period),
+        ("date_from", date_from), ("date_to", date_to),
+    ):
+        if val:
+            params[key] = val
+    if last_days is not None:
+        params["last_days"] = last_days
+    if include_descendants:
+        params["include_descendants"] = "true"
+    if unfiled:
+        params["unfiled"] = "true"
+    if tags:
+        params["tags"] = tags
+    return await _get(ctx, "/api/reports/browse", params)
+
+
+@mcp.tool()
+async def list_my_reports(ctx: Context, limit: int = 20, phase: str = "all") -> dict:
+    """**내가 쓴 보고서** 목록(최근 수정 순) — 이어서 수정(update_report_draft)할
+    대상을 찾는 진입점.
+
+    기본은 **전체 단계**다. 게시(mount)하면 단계가 자동으로 `reviewing` 으로 올라가서,
+    예전처럼 `drafting` 만 보면 **이미 게시한 글은 찾지도 못한다**. `phase` 로
+    좁힐 수 있다 — all(기본) | drafting(작성중) | reviewing(게시·리뷰중) | finalized(발행본).
+
+    각 항목: report_id·title·template_id/version·page_count·phase·**editable**(내가
+    AI 로 고칠 수 있는지) ·**mounted_to**(게시된 게시판·폴더) ·url.
+    발행본은 editable=False — 사람이 '발행 취소' 한 뒤에야 고칠 수 있다."""
+    return await _get(
+        ctx, "/api/reports/my-drafts", {"limit": limit, "phase": phase}
+    )
 
 
 @mcp.tool()
 async def get_report(report_id: int, ctx: Context) -> dict:
-    """보고서 1건 상세(content 포함)."""
+    """보고서 1건 상세(content 포함). `mount_workspaces` 에 이 글이 게시된 게시판과
+    그 게시판에서의 폴더 배치가 들어 있다(빈 리스트 = 아직 미게시)."""
     return await _get(ctx, f"/api/reports/{report_id}")
 
 
@@ -719,8 +872,13 @@ async def update_report_draft(
     report_type_id: int | None = None,
     entity_ids: list | None = None,
 ) -> dict:
-    """**기존 초안을 이어서 수정**한다. `report_id` 는 내가 만든 **작성 중(drafting)**
-    보고서여야 한다(아니면 거부). report_id 를 모르면 `list_my_drafts` 로 찾는다.
+    """**기존 보고서를 이어서 수정**한다. 초안뿐 아니라 **이미 게시(mount)된 글도**
+    고칠 수 있다 — 편집 권한이 있고 **발행(finalized) 전**이면 된다(웹 편집과 같은
+    규칙). 발행본은 사람이 '발행 취소' 한 뒤에야 수정된다. report_id 를 모르면
+    `list_my_reports` 로 찾는다(각 행의 `editable` 이 수정 가능 여부).
+
+    ※ **게시된 글은 이미 남들이 보고 있다.** 응답의 `mounted_to`(게시판·폴더)가
+    비어 있지 않으면, 어디에 게시된 글을 고쳤는지 **반드시 사용자에게 알려라**.
 
     기본은 **병합(merge)** — 준 것만 바꾸고 나머지는 그대로 둔다:
       - `blocks`: 덮어쓸 block_id→내용(create 와 같은 느슨한 형식). 안 준 블록은 유지.

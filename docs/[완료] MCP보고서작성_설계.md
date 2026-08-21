@@ -18,8 +18,10 @@
 [사용자] Claude Code/Desktop/claude.ai
    │ ① MCP(claude mcp add, 사용자별 토큰)
    ▼
-[MCP 서버] 도구(8): list_templates / describe_template / describe_widgets / search_reports /
-                     list_my_drafts / get_report / create_report_draft / update_report_draft
+[MCP 서버] 도구: list_templates / describe_template / describe_widgets / describe_metadata /
+                     search_reports / list_reports / list_boards / list_folders /
+                     list_my_reports / get_report / create_report_draft / update_report_draft
+                     (+ 온톨로지 조사·쓰기·파일 도구)
    │ ② 내부 호출(같은 사용자 권한)
    ▼
 [ReportArchive 서비스/REST API]  validate_report_content → create_report
@@ -174,6 +176,44 @@
 
 ⇒ **착수 권장 순서**: ① 보고서 레벨 속성 노출(저비용) → ② 표/차트 행 단위 수정(체감 최대) → ③ 페이지/블록 재배치 → ④ 버전 목록·복원.
 
+### Phase 6 — 조회 축(조직·폴더) + 게시글 수정 ✅
+> 실사용 점검(2026-08-21)으로 도출된 3가지 — ① 특정 조직 글을 모아 조회 불가 ② 게시판 폴더 인식 불가
+> ③ **게시된 글 수정 불가**. 원인이 서로 달라 각각 다르게 고쳤다.
+
+- [x] **게시된 글도 AI 수정 허용** — `_apply_ai_draft` 의 가드가 "소유자 AND drafting" 이었는데,
+      게시(mount)하면 phase 가 drafting→reviewing 으로 **자동 승격**되므로(`mounts/services.py`)
+      게시하는 순간 MCP 로 영영 못 고쳤다. 운영 기준 살아있는 3,811건 중 reviewing 2,916 / drafting 881
+      → **AI 가 손댈 수 있는 게 23% 뿐**이었고, 같은 사용자가 웹에선 멀쩡히 고칠 수 있어 **경로 간 비대칭**이었다.
+      사람 경로(`PATCH /reports/{id}`)와 같은 규칙으로 정렬 — `can_edit()`(소유자/편집 grant/하드락 veto)
+      + **finalized 만 차단**(발행본은 '발행 취소' 후). 편집 락 사전점검은 유지.
+      응답에 `mounted_to`(게시판·폴더)를 실어 **"이미 게시된 글을 고쳤다"를 AI 가 사용자에게 고지**하게 함.
+- [x] **`list_my_drafts` → `list_my_reports(phase)`** — drafting 만 돌려줘 *게시한 글은 찾지도 못했다*.
+      기본을 전체 단계로 바꾸고 행마다 `phase`·`editable`(=can_edit AND 미발행)·`mounted_to` 를 준다.
+      백엔드 경로는 `/api/reports/my-drafts` 유지(+`phase` 쿼리).
+- [x] **게시판·폴더 축을 공통 필터에 추가** — 보고서 행엔 조직이 없다(`workspace_slug` 는 **작성자
+      개인공간**, 운영 3,811건 전부 `personal-*`). "어느 조직 글이냐"는 게시(mount)로만 표현되는데
+      `report_column_conditions` 에 그 축이 없어 검색·집계 어디서도 조직으로 좁힐 수 없었다.
+      `board_slugs`/`folder_ids`/`unfiled_board_slugs` 를 공통 빌더에 추가 → `filtered_report_ids` →
+      `_apply_column_scope` 를 타고 **하이브리드 검색·AI 집계까지 한 번에** 같은 축을 얻는다(year·엔티티와 동일 방식).
+      폴더는 p89 자식 테이블(`report_mount_folders`) 기준이라 한 글이 여러 폴더에 걸려도 각 필터에 모두 잡힌다.
+- [x] **이름 해석 + 못 찾으면 에러** — 외부 AI 는 id 를 모르므로 게시판·폴더·작성자·소속부서·종류를
+      **이름**으로 받아 서버가 푼다(`structured_qa._resolve_board/_resolve_folder_ids/_resolve_org_author_ids`).
+      기존 관례(못 풀면 그 필터만 생략)를 이 축에는 **적용하지 않는다** — 조건이 조용히 빠지면 전체 코퍼스가
+      돌아가 AI 가 **남의 조직 글을 그 조직 것으로 보고**하기 때문. 못 푼 이름은 400/`error`.
+- [x] **열거 엔드포인트 `GET /api/reports/browse`** — `search_reports`(의미검색·근거 발췌·최대 25건)로는
+      "모아 보기"가 안 됐다(query 필수 + `_REPORTS_LIMIT=8` 하드캡). 조건 열거 전용 경로를 분리:
+      이름 필터 + 요약 필드 + offset 페이지네이션(최대 100). `/search` 에도 `folder_ids`·`unfiled`·
+      `include_descendants`·`scope` 를 추가해 웹 검색도 같은 축을 쓴다.
+- [x] **가시성을 활성 워크스페이스와 분리(`scope=user`)** — MCP 는 등록 시 고정한 `X-Workspace-Slug` 를
+      계속 보내므로, active-ws 기준으로 계산하면 같은 사용자·같은 질의가 **등록 헤더에 따라 다른 결과**를 냈다
+      (실측 3,777 / 3,917 / 4,819). `all_visible_report_ids`(사용자 중심)로 통일 — 하이브리드 검색과 같은 기준.
+- [x] **MCP 도구 4개 추가/개편** — `list_boards`(조직 어휘)·`list_folders(board)`·`list_reports`(열거)·
+      `list_my_reports`. `search_reports` 에 board/folder/unfiled/include_descendants/author_org 인자 추가.
+      결과 행과 `get_report`(ReportRead.mount_workspaces)에 **소속(게시판·폴더)** 동봉.
+      **board(게시된 곳) vs author_org(작성자 소속)** 은 다른 축으로 분리해 노출 — 요청이 모호하면 AI 가 묻도록 SKILL 에 명시.
+- [x] 테스트 — `test_ai_draft_published.py`(게시글 수정·발행본 차단·editable/mounted_to),
+      `test_reports_browse.py`(board/folder/unfiled/롤업·이름해석 400·헤더 무관·집계/검색 축 전파).
+
 ### Phase 4 — 남은 항목(공통)
 - [ ] **요청/길이 제한** — ai-draft 에 본문 크기·블록 수·페이지 수 상한 + 초과 시 명확한 400.
 - [ ] **감사 표식/로그** — MCP 경유 생성·수정 식별(예: `created_via='mcp'`).
@@ -196,6 +236,9 @@
 - **Phase 2.5 완료** — 운영 배포 통합(deploy.sh setup_mcp + 오프라인 휠 + systemd). `deploy.sh update` 가 MCP 까지 자동.
 - **Phase 3 완료** — 작성 스킬(SKILL.md) + 사용자 설치/등록 가이드 + 번들 동봉.
 - **E2E 확인됨** — 사용자가 프로필에서 토큰 셀프발급 → Claude Code 등록 → `list_templates`(부서 스코프 적용) 성공.
+- **Phase 6 완료(2026-08-21)** — 조회 축(조직·폴더) + 게시글 수정. 세 문제의 원인이 각각
+  ①공통 필터에 게시판/폴더 축 부재(+열거 경로 없음) ②MCP 에 폴더 도구 0개 ③게시 시 phase 자동
+  승격 vs drafting-only 가드 였다. 위 Phase 6 참조.
 - **Phase 4 일부 완료** — 내 MCP 토큰 발급(p39 + pat.py + auth 분기 + /api/me/mcp-tokens + 카드). 통합테스트 2 통과·라이브 확인.
   토큰 카드는 접근성 위해 프로필 → 공통·AI 설정의 "MCP 토큰" 탭으로 이전(개인 단위 유지).
 - **Phase 4 위젯 확대·few-shot 완료** — 차트/파이/진행률/마일스톤/순서도/수식 정규화 + 템플릿 맞춤 예시 자동생성

@@ -171,6 +171,82 @@ def _resolve_author(db: Session, name: str) -> Optional[int]:
     return row
 
 
+def _resolve_board(db: Session, name: str) -> Optional[str]:
+    """게시판(조직) 이름 또는 slug → workspace slug.
+
+    AI 는 "dx", "선행개발", "HW개발팀" 처럼 사람 말로 준다. slug 정확일치 → 이름
+    정확일치 → 이름 부분일치 1건 순. **개인공간(personal)은 후보에서 제외** — 남의
+    개인공간을 이름으로 찍어 조회하려는 시도를 막고, "조직"의 의미도 게시판이다."""
+    from app.modules.workspaces.models import Workspace, WorkspaceKind
+
+    n = (name or "").strip()
+    if not n:
+        return None
+    base = select(Workspace.slug).where(
+        Workspace.kind != WorkspaceKind.personal
+    )
+    row = db.execute(
+        base.where(func.lower(Workspace.slug) == n.lower())
+    ).scalars().first()
+    if row is None:
+        row = db.execute(
+            base.where(func.lower(Workspace.name) == n.lower())
+        ).scalars().first()
+    if row is None:
+        row = db.execute(
+            base.where(Workspace.name.ilike(f"%{n}%")).limit(1)
+        ).scalars().first()
+    return row
+
+
+def _resolve_folder_ids(
+    db: Session, name: str, board_slugs: Optional[list[str]] = None
+) -> list[int]:
+    """폴더 이름(또는 숫자 id) → folder id 목록. org 폴더만.
+
+    이름은 게시판마다 겹칠 수 있으므로(모든 게시판에 '진행 중'이 있다) board 가
+    주어지면 그 게시판(들)으로 한정한다. board 가 없으면 이름이 같은 폴더를 전부
+    돌려준다 — 필터가 OR 라 "여러 부서의 '진행 중'"이라는 자연스러운 해석이 된다."""
+    from app.modules.folders.models import Folder, FolderKind
+
+    n = (name or "").strip()
+    if not n:
+        return []
+    if n.isdigit():
+        return [int(n)]
+    q = select(Folder.id).where(Folder.kind == FolderKind.org)
+    if board_slugs:
+        q = q.where(Folder.workspace_slug.in_(board_slugs))
+    rows = db.execute(
+        q.where(func.lower(Folder.name) == n.lower())
+    ).scalars().all()
+    if not rows:
+        rows = db.execute(
+            q.where(Folder.name.ilike(f"%{n}%")).limit(20)
+        ).scalars().all()
+    return [int(r) for r in rows]
+
+
+def _resolve_org_author_ids(db: Session, name: str) -> list[int]:
+    """부서 이름/slug → 그 부서(및 하위) 소속 사용자 id 목록.
+
+    "특정 조직의 글"의 두 번째 해석 — *그 조직 사람이 쓴* 글(게시 여부 무관).
+    기본 해석인 board(게시된 곳)와 달리 작성자 축이라 author_ids 로 환원된다."""
+    from app.modules.users.models import WorkspaceMember
+    from app.modules.workspaces import services as ws_services
+
+    slug = _resolve_board(db, name)
+    if not slug:
+        return []
+    scope = ws_services.get_descendants_inclusive(db, slug)
+    rows = db.execute(
+        select(WorkspaceMember.user_id).where(
+            WorkspaceMember.workspace_slug.in_(scope)
+        )
+    ).scalars().all()
+    return sorted({int(r) for r in rows})
+
+
 def _resolve_column_filters(db: Session, spec: dict) -> Optional[dict]:
     """LLM spec 의 (B) 날짜·종류·작성자·단계·진행상태 → report_column_conditions
     인자 dict. 아무 필터도 없으면 None. 종류/작성자는 이름→id 로 해석하고, 못 풀면

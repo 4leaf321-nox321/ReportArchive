@@ -35,6 +35,11 @@ cp -r skill/reportarchive ~/.claude/skills/reportarchive
 
 ## 도구
 - `list_templates` / `describe_template(template_id, version)`
-- `search_reports(q)` / `get_report(report_id)`
+- **찾기**: `search_reports(query, board?, folder?, …)` — 의미+키워드 검색(근거 발췌) /
+  `list_reports(board?, folder?, author?, …)` — 조건으로 모아서 나열(최대 100건) /
+  `aggregate_reports` — 개수
+- **조직 어휘**: `list_boards()` — 게시판(조직) 목록 / `list_folders(board)` — 그 게시판 폴더
+- `get_report(report_id)` — 상세(`mount_workspaces` 에 게시된 게시판·폴더)
+- `list_my_reports(phase?)` — 내가 쓴 보고서(게시된 글 포함, `editable` 플래그)
 - `download_file(file_id)` — 파일 바이트를 base64 로(get_report 의 이미지·첨부 로컬 저장, ≈1MB 이하)
 - `create_report_draft(template_id, version, title, blocks)`  ← 핵심(초안 생성)

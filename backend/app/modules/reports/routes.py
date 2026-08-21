@@ -3166,6 +3166,21 @@ def get_report_version(
 def restore_report_version(
     report_id: int,
     version_id: int,
+    dry_run: bool = Query(
+        default=False,
+        description=(
+            "미리보기 — 되돌리지 않고 **무엇이 달라지는지**만 준다. 되돌리기는 그 "
+            "사이 사람이 고친 내용을 통째로 되감으므로, 특히 AI 경로에선 먼저 확인해야 "
+            "한다(다른 파괴적 조작엔 모두 미리보기가 있는데 여기만 없었다)."
+        ),
+    ),
+    expected_revision: int | None = Query(
+        default=None, ge=1,
+        description=(
+            "읽은 시점의 revision. 그 사이 남이 고쳤으면 409 로 거부한다 — "
+            "미리 본 것과 다른 상태를 되감지 않게."
+        ),
+    ),
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(require_writer),
 ):
@@ -3191,6 +3206,56 @@ def restore_report_version(
     version = services.get_report_version(db, report_id, version_id)
     if not version:
         return not_found_response(f"Version not found: {version_id}")
+
+    # 낙관적 동시성 — 미리 본 뒤 남이 고쳤으면 되감지 않는다.
+    if expected_revision is not None and (report.revision or 1) != expected_revision:
+        return error_response(
+            f"그 사이 보고서가 바뀌었습니다(현재 revision {report.revision}, "
+            f"보낸 값 {expected_revision}). 다시 읽고 확인한 뒤 시도하세요.",
+            status_code=409,
+        )
+
+    if dry_run:
+        # 되돌리면 무엇이 달라지는지 — 본문 전체 대신 **블록 단위 변화**만.
+        target = versioning.decode_body(version)
+        cur_pages = [p for p in (report.pages or []) if isinstance(p, dict)]
+        tgt_pages = [p for p in (target.get("pages") or []) if isinstance(p, dict)]
+        diff = []
+        for i in range(max(len(cur_pages), len(tgt_pages))):
+            cur = (cur_pages[i].get("content") or {}) if i < len(cur_pages) else None
+            tgt = (tgt_pages[i].get("content") or {}) if i < len(tgt_pages) else None
+            # 라벨은 **되돌린 뒤** 기준이다. 현재에 없는 쪽 = 되돌리면 생긴다,
+            # 그 시점에 없던 쪽 = 되돌리면 사라진다(그 쪽 블록이 통째로 날아감).
+            if cur is None:
+                diff.append({"page": i + 1, "status": "added_by_restore",
+                             "blocks": sorted(tgt.keys())})
+            elif tgt is None:
+                diff.append({"page": i + 1, "status": "removed_by_restore",
+                             "blocks_lost": sorted(cur.keys())})
+            else:
+                changed = sorted(k for k in set(cur) | set(tgt) if cur.get(k) != tgt.get(k))
+                diff.append({
+                    "page": i + 1,
+                    "status": "changed" if changed else "unchanged",
+                    **({"blocks_changed": changed} if changed else {}),
+                })
+        return success_response(data={
+            "dry_run": True,
+            "report_id": report.id,
+            "current_revision": report.revision,
+            "restore_to": {
+                "version_id": version.id, "seq": version.seq,
+                "source": version.source, "created_at": version.created_at,
+            },
+            "title_change": (
+                None if (target.get("title") or report.title) == report.title
+                else {"from": report.title, "to": target.get("title")}
+            ),
+            "page_diff": diff,
+            "warning": "되돌리면 그 시점 이후의 본문 변경은 사라집니다. "
+                       "태그·게시 상태 같은 메타데이터는 되돌아가지 않습니다.",
+            "note": "되돌리려면 dry_run 없이 다시 호출하세요.",
+        })
 
     # 다른 사용자가 편집 잠금을 쥐고 있으면 충돌 — 덮어쓰기 방지. 본인/무잠금이면
     # 잠시 점유했다가 되돌리기 후 해제.

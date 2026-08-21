@@ -88,6 +88,26 @@ def _service_update(rid, title):
         db.close()
 
 
+def _pages(rid):
+    db = SessionLocal()
+    try:
+        return [dict(x) for x in (db.get(Report, rid).pages or [])]
+    finally:
+        db.close()
+
+
+def _set_pages(rid, pages):
+    """쪽 구성을 바꿔 저장 — 되돌리기 미리보기가 쪽 증감을 어떻게 말하는지 보려고."""
+    db = SessionLocal()
+    try:
+        rep = db.get(Report, rid)
+        services.update_report(
+            db, rep, ReportUpdate(pages=pages), updated_by_user_id=1, require_lock=False
+        )
+    finally:
+        db.close()
+
+
 def test_seed_history_and_nondestructive_restore():
     client = TestClient(app)
     res = _create(client, "버전테스트 원본")
@@ -154,5 +174,109 @@ def test_versions_require_read_permission():
             f"/api/reports/{rid}/versions", headers=_h(other, "dev-hw")
         )
         assert r.status_code == 403, r.text
+    finally:
+        _purge(rid)
+
+
+def test_restore_dry_run_previews_and_revision_guard_blocks():
+    """되돌리기 미리보기와 낙관적 동시성 가드.
+
+    되돌리기는 그 사이 사람이 고친 내용을 통째로 되감는 유일한 파괴적 조작인데
+    미리보기가 없었다(다른 파괴적 조작엔 모두 있다). AI 경로에서 특히 위험하다.
+    """
+    client = TestClient(app)
+    rid = _create(client, "미리보기 원본")["id"]
+    try:
+        seed_id = _versions(client, rid)[0]["id"]
+        _backdate_latest(rid, minutes=20)
+        _service_update(rid, "미리보기 수정본")
+
+        before = client.get(f"/api/reports/{rid}", headers=_h()).json()["data"]
+        rev = before["revision"]
+
+        # dry_run — 되돌리지 않고 무엇이 달라지는지만.
+        r = client.post(
+            f"/api/reports/{rid}/versions/{seed_id}/restore?dry_run=true", headers=_h()
+        )
+        assert r.status_code == 200, r.text
+        d = r.json()["data"]
+        assert d["dry_run"] is True
+        assert d["title_change"]["to"] == "미리보기 원본"
+        assert d["warning"]
+
+        # page_diff 는 **되돌린 뒤** 기준으로 말해야 한다. 쪽 수가 그대로면
+        # added/removed 가 나오면 안 된다(라벨이 뒤집혀 있었다).
+        pd = d["page_diff"]
+        assert {x["status"] for x in pd} <= {"changed", "unchanged"}, pd
+
+        # 실제로는 안 바뀌어야 한다 — 미리보기니까.
+        still = client.get(f"/api/reports/{rid}", headers=_h()).json()["data"]
+        assert "수정본" in still["title"]
+        assert still["revision"] == rev
+
+        # 낡은 revision → 409. 미리 본 것과 다른 상태를 되감지 않게.
+        stale = client.post(
+            f"/api/reports/{rid}/versions/{seed_id}/restore"
+            f"?expected_revision={rev + 5}",
+            headers=_h(),
+        )
+        assert stale.status_code == 409, stale.text
+        assert "revision" in (stale.json().get("message") or "")
+        assert "수정본" in client.get(
+            f"/api/reports/{rid}", headers=_h()
+        ).json()["data"]["title"]
+
+        # 맞는 revision → 통과.
+        ok = client.post(
+            f"/api/reports/{rid}/versions/{seed_id}/restore?expected_revision={rev}",
+            headers=_h(),
+        )
+        assert ok.status_code == 200, ok.text
+        assert "원본" in client.get(
+            f"/api/reports/{rid}", headers=_h()
+        ).json()["data"]["title"]
+    finally:
+        _purge(rid)
+
+
+def test_restore_dry_run_labels_page_add_and_remove_from_after_view():
+    """쪽 수가 달라질 때 라벨은 **되돌린 뒤** 기준이어야 한다.
+
+    현재에 없는 쪽 = 되돌리면 '생긴다', 그 시점에 없던 쪽 = 되돌리면 '사라진다'.
+    사람이 이걸 보고 승인 여부를 정하므로 뒤집히면 정반대로 읽힌다.
+    """
+    client = TestClient(app)
+    rid = _create(client, "쪽수변화 원본")["id"]
+    try:
+        # 1쪽짜리 시점을 스냅샷으로 남긴다.
+        seed_id = _versions(client, rid)[0]["id"]
+        one_page = _pages(rid)
+        assert len(one_page) == 1
+
+        # 쪽을 하나 늘린다 → 되돌리면 그 쪽은 **사라진다**.
+        _backdate_latest(rid, minutes=20)
+        # 새 쪽도 템플릿을 갖춰야 하므로 1쪽을 그대로 복제한다(블록 id 는 템플릿 것).
+        page2 = {**one_page[0], "name": "2쪽"}
+        _set_pages(rid, one_page + [page2])
+        marker = sorted((page2.get("content") or {}).keys())
+
+        d = client.post(
+            f"/api/reports/{rid}/versions/{seed_id}/restore?dry_run=true", headers=_h()
+        ).json()["data"]
+        by_page = {x["page"]: x for x in d["page_diff"]}
+        assert by_page[2]["status"] == "removed_by_restore", d["page_diff"]
+        assert by_page[2]["blocks_lost"] == marker, by_page[2]
+
+        # 반대 방향 — 2쪽짜리 시점을 남기고 1쪽으로 줄이면, 되돌리면 **생긴다**.
+        two_page_vid = _versions(client, rid)[0]["id"]  # 목록은 최신순
+        _backdate_latest(rid, minutes=20)
+        _set_pages(rid, one_page)
+        d2 = client.post(
+            f"/api/reports/{rid}/versions/{two_page_vid}/restore?dry_run=true",
+            headers=_h(),
+        ).json()["data"]
+        by_page2 = {x["page"]: x for x in d2["page_diff"]}
+        assert by_page2[2]["status"] == "added_by_restore", d2["page_diff"]
+        assert by_page2[2]["blocks"] == marker, by_page2[2]
     finally:
         _purge(rid)

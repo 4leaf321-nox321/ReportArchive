@@ -832,6 +832,10 @@ class AiDraftCreate(BaseModel):
     tags: Optional[list[str]] = None  # 자유 태그.
     report_type_id: Optional[int] = None  # 보고서 유형 id.
     entity_ids: Optional[list[int]] = None  # 모델/단계/부품 등 축 태그 id 목록.
+    # 저장하지 않고 **무엇이 만들어질지만** 본다. update 엔 있었는데 create 에만
+    # 없어서, 형식이 틀려 블록이 버려지는 걸 **만들고 나서야** 알았다(그리고 AI 는
+    # 자기가 만든 잘못된 보고서를 치울 수단이 없었다).
+    dry_run: bool = False
 
 
 class AiDraftUpdate(BaseModel):

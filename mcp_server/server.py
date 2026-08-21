@@ -101,7 +101,13 @@ def _unwrap(r: httpx.Response):
         if extra:
             out["detail"] = extra
         return out
-    return body.get("data", body)
+    data = body.get("data", body)
+    # data 가 null 인 성공 응답(삭제·복구처럼 돌려줄 게 없는 것)이 있다. 그대로
+    # 흘리면 도구 결과가 **빈 문자열**이라, 모델은 성공했는지 알 수 없다 —
+    # 조용한 무동작과 구분이 안 된다. 최소한의 확인 신호를 만들어 준다.
+    if data is None:
+        return {"ok": True, "message": body.get("message") or "완료"}
+    return data
 
 
 def _headers(ctx, workspace: str | None = None) -> dict:
@@ -1293,6 +1299,7 @@ async def create_report_draft(
     tags: list | None = None,
     report_type_id: int | None = None,
     entity_ids: list | None = None,
+    dry_run: bool = False,
 ) -> dict:
     """보고서를 **새로** 만든다(초안). 이미 있는 보고서 수정은 `update_report_draft`.
     → 먼저 `list_templates` → `describe_template` 로 채울 블록을 확인하라.
@@ -1323,7 +1330,12 @@ async def create_report_draft(
     `describe_metadata` 로 먼저 조회해 고른다(이름을 임의로 넣지 말 것).
 
     내용은 느슨하게 줘도 서버가 정규화·검증한다. 검증 실패 시 결과의 `error`/`warnings` 를
-    보고 고쳐 다시 호출하라. 성공하면 `url` 로 사람이 검토."""
+    보고 고쳐 다시 호출하라. 성공하면 `url` 로 사람이 검토.
+
+    ※ **처음 쓰는 템플릿이거나 위젯을 직접 만들 때는 `dry_run=True` 를 먼저.**
+    저장하지 않고 페이지별로 어떤 block_id 가 들어가는지·무엇이 버려지는지
+    (`warnings`)를 알려준다. 형식이 틀리면 블록이 **조용히 버려지는데**, 만들고
+    나서 알면 치우기가 번거롭다(AI 가 지울 수 있는 건 본인 미게시 초안뿐)."""
     body: dict = {
         "template_id": template_id,
         "template_version": template_version,
@@ -1333,6 +1345,8 @@ async def create_report_draft(
         "block_sections": block_sections or {},
         "pages": pages or [],
     }
+    if dry_run:
+        body["dry_run"] = True
     if report_date is not None:
         body["report_date"] = report_date
     if tags is not None:
@@ -1565,6 +1579,21 @@ async def restore_version(
     return await _post(
         ctx, f"/api/reports/{report_id}/versions/{version_id}/restore{q}", {}
     )
+
+
+@mcp.tool()
+async def trash_report(report_id: int, ctx: Context) -> dict:
+    """내가 쓴 **미게시 초안**을 휴지통으로 보낸다(복구 가능한 소프트삭제).
+
+    잘못 만든 초안을 치우는 용도다 — 만들기는 쉬운데 치울 방법이 없으면 쓰레기가
+    쌓인다. **지우기 전에 사용자에게 무엇을 지우는지 확인받아라**(제목·id).
+
+    AI 가 지울 수 있는 건 **본인 소유 · 미게시 · 작성중(drafting)** 셋을 모두
+    만족하는 것뿐이다. 이미 게시된 글이나 리뷰·발행 단계 문서는 거절되고, 사람이
+    웹에서 처리해야 한다(거절 사유에 어떻게 하면 되는지 같이 온다).
+
+    복구는 웹 휴지통에서 한다 — 되살리는 도구는 없다."""
+    return await _post(ctx, f"/api/reports/{report_id}/trash", {})
 
 
 # 아웃오브밴드 업로드 프록시 — CLI 가 curl 로 보낸 바이트를 메모리에서 한 번에

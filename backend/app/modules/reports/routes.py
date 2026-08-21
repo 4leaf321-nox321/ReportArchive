@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.database import get_db
+from app.shared.client_origin import VIA_MCP, via_of
 from app.modules.reports import ai_authoring, services, versioning
 from app.modules.reports.schemas import (
     AiDraftCreate,
@@ -812,6 +813,26 @@ def create_ai_draft(
         warnings += [f"p{idx}: {x}" for x in w] if multi else w
     if not pages:
         return error_response("생성할 페이지가 없습니다.", status_code=400)
+    if payload.dry_run:
+        # 저장하지 않고 **무엇이 만들어질지**만. 정규화가 버린 것은 warnings 에
+        # 담겨 있고, 페이지 검증(_validate_pages)은 실제 생성과 같은 것을 태워
+        # 미리보기와 실제가 갈라지지 않게 한다.
+        try:
+            services._validate_pages(db, pages)
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        return success_response(data={
+            "dry_run": True,
+            "title": payload.title,
+            "page_count": len(pages),
+            "pages": [
+                {"page": i, "blocks": sorted((pg.content or {}).keys())}
+                for i, pg in enumerate(pages, 1)
+            ],
+            "warnings": warnings,
+            "note": "만들지 않았습니다. 그대로 생성하려면 dry_run 없이 다시 호출하세요. "
+                    "warnings 가 있으면 먼저 고치세요 — 만든 뒤엔 되돌리기 번거롭습니다.",
+        })
     report_create = ReportCreate(
         template_id=payload.template_id,
         template_version=payload.template_version,
@@ -3417,15 +3438,55 @@ def delete_report(
     return success_response(data=None, message="Deleted")
 
 
+def _ai_trash_guard(db: Session, report, actor):
+    """AI 는 **자기가 만든 쓰레기만** 치운다. 막히면 error_response, 통과면 None.
+
+    소유자 권한(`can_trash_report`)만으로는 부족하다 — 그건 시스템관리자에게도
+    열려 있어서, 관리자 토큰으로 MCP 를 쓰면 남의 글까지 닿는다. 그리고 휴지통은
+    복구 가능하지만, **이미 게시된 글**은 조직이 보고 있는 문서라 사라지는 것
+    자체가 사건이다. 그래서 AI 경로는 셋을 모두 요구한다:
+      본인 소유 · 미게시 · drafting(작성중)
+
+    막을 때는 **사람이 어떻게 하면 되는지**까지 알려준다 — 모델이 사용자에게
+    그대로 전할 문장이다."""
+    if report.owner_user_id != actor.user.id:
+        return error_response(
+            "AI 는 본인이 쓴 보고서만 휴지통에 넣을 수 있습니다"
+            "(관리자 권한이어도 남의 글은 웹에서 직접 처리하세요).",
+            status_code=403,
+        )
+    placements = services.mount_placements(db, report.id)
+    if placements:
+        where = ", ".join(p.get("name") or p.get("slug") or "?" for p in placements)
+        return error_response(
+            f"이미 게시된 보고서라 AI 가 지울 수 없습니다(게시처: {where}). "
+            "먼저 웹에서 게시취소한 뒤 다시 요청하거나, 웹 휴지통에서 직접 처리하세요.",
+            status_code=409,
+        )
+    phase = getattr(report.phase, "value", report.phase)
+    if phase != "drafting":
+        return error_response(
+            f"작성중(drafting) 초안만 AI 가 지울 수 있습니다(현재 단계: {phase}). "
+            "리뷰·발행 단계 문서는 웹에서 직접 처리하세요.",
+            status_code=409,
+        )
+    return None
+
+
 @router.post("/{report_id}/trash")
 def trash_report(
     report_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(require_writer),
 ):
     """소프트삭제 — 휴지통으로 보낸다(deleted_at set). 개인 목록/검색에서
     숨지만 게시된 부서 게시판에는 그대로 남는다(게시분 보존). 복구 가능.
-    권한: 소유자/시스템관리자(개인 공간 회수)."""
+    권한: 소유자/시스템관리자(개인 공간 회수).
+
+    **AI(MCP) 경로는 더 좁다** — 아래 `_ai_trash_guard` 참고. 만들기는 쉬운데
+    치우기가 불가능한 비대칭을 없애되, 남의 글·이미 조직이 보고 있는 글에는
+    닿지 않게 한다."""
     report = services.get_report(db, report_id)
     if not report:
         return not_found_response(f"Report not found: {report_id}")
@@ -3434,6 +3495,10 @@ def trash_report(
             status.HTTP_403_FORBIDDEN,
             "이 보고서를 삭제할 권한이 없습니다 (소유자만 가능).",
         )
+    if via_of(request) == VIA_MCP:
+        denied = _ai_trash_guard(db, report, actor)
+        if denied is not None:
+            return denied
     services.soft_delete_report(db, report, actor)
     return success_response(data=None, message="Trashed")
 

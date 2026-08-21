@@ -6,7 +6,7 @@
 `get_guide(topic)` 이 여기서 읽어 준다. 이 파일만 고치면 모두에게 즉시 반영된다.
 
 주제 구분자: `<!--@ 주제이름 -->`. 순서는 상관없다. -->
-GUIDE_VERSION: 2026-08-21d
+GUIDE_VERSION: 2026-08-21e
 
 <!--@ overview -->
 ## 무엇을 하려는가 → 어떤 도구
@@ -27,6 +27,7 @@ GUIDE_VERSION: 2026-08-21d
 | 새로 쓰기 | `list_templates`→`describe_template`→`create_report_draft` | — |
 | 있는 걸 고치기 | `update_report_draft` | 표 한 줄이면 ↓ |
 | 표에 줄 추가/셀 수정/줄 삭제 | `append_rows`/`patch_cells`/`remove_rows` | 통째로면 ↑ |
+| 잘못 만든 초안 치우기 | `trash_report` | 게시된 글은 불가 |
 | 리뷰 의견 처리 | `list_comments`→(수정)→`reply_comment` | — |
 | 잘못 고침 | `list_versions`→`restore_version` | — |
 | 게시판에 올리기 | `preview_publish`→(확인)→`publish_report` | **2단계 필수** |
@@ -51,6 +52,7 @@ GUIDE_VERSION: 2026-08-21d
 - `mcp__reportarchive__preview_publish` / `publish_report` — 게시(**2단계 필수**)
 - `mcp__reportarchive__list_composites` / `get_composite` / `list_submittable_composites` / `request_composite_item` — 종합보고
 - `mcp__reportarchive__list_versions` / `restore_version` — 수정 이력 보기 · 되돌리기
+- `mcp__reportarchive__trash_report` — 내가 쓴 **미게시 초안**을 휴지통으로(복구 가능)
 - `mcp__reportarchive__list_comments` / `reply_comment` / `resolve_thread` — 리뷰 의견 읽기·답글·종료
 - `mcp__reportarchive__list_my_notifications` — 내게 온 알림("나 뭐 할 거 있어?")
 - `mcp__reportarchive__get_report` — 보고서 1건 조회(이미지·첨부는 file_id 참조만)
@@ -72,6 +74,11 @@ GUIDE_VERSION: 2026-08-21d
   미리보기가 준 `current_revision` 을 실제 호출에 `expected_revision` 으로 그대로
   넘겨라 — 그 사이 남이 고쳤으면 거부된다(미리 본 것과 다른 상태를 되감지 않게).
   ※ 스냅샷은 **본문만** 담는다(태그·게시 상태는 복원되지 않음).
+- **처음 쓰는 템플릿·직접 만든 위젯은 `create_report_draft(dry_run=True)` 로 먼저.**
+  형식이 틀리면 블록이 **조용히 버려지는데**, 만들고 나서 알면 치우기가 번거롭다
+  (AI 가 지울 수 있는 건 본인 미게시 초안뿐이다).
+- **잘못 만들었으면 `trash_report` 로 치운다.** 지우기 전에 무엇을 지우는지
+  사용자에게 확인받아라. 게시된 글·리뷰 단계 문서는 거절되고 사람이 웹에서 처리한다.
 - **긴 글은 통째로 읽지 마라.** `get_report_outline` 으로 어느 쪽인지 먼저 잡고
   `get_report(report_id, page=N)` 로 그 쪽만 받는다(실측 9쪽짜리에서 절반 이하).
 - 채울 수 없는 블록은 **비운다**(부분 초안 허용). **추측으로 채우지 말 것** — 모르는 값은 사용자에게 묻는다.

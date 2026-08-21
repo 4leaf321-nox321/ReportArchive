@@ -6,7 +6,7 @@
 `get_guide(topic)` 이 여기서 읽어 준다. 이 파일만 고치면 모두에게 즉시 반영된다.
 
 주제 구분자: `<!--@ 주제이름 -->`. 순서는 상관없다. -->
-GUIDE_VERSION: 2026-08-21e
+GUIDE_VERSION: 2026-08-21f
 
 <!--@ overview -->
 ## 무엇을 하려는가 → 어떤 도구
@@ -28,6 +28,7 @@ GUIDE_VERSION: 2026-08-21e
 | 있는 걸 고치기 | `update_report_draft` | 표 한 줄이면 ↓ |
 | 표에 줄 추가/셀 수정/줄 삭제 | `append_rows`/`patch_cells`/`remove_rows` | 통째로면 ↑ |
 | 잘못 만든 초안 치우기 | `trash_report` | 게시된 글은 불가 |
+| 게시된 글 내리기 | `request_unpublish` | 요청만·사람이 승인 |
 | 리뷰 의견 처리 | `list_comments`→(수정)→`reply_comment` | — |
 | 잘못 고침 | `list_versions`→`restore_version` | — |
 | 게시판에 올리기 | `preview_publish`→(확인)→`publish_report` | **2단계 필수** |
@@ -53,6 +54,7 @@ GUIDE_VERSION: 2026-08-21e
 - `mcp__reportarchive__list_composites` / `get_composite` / `list_submittable_composites` / `request_composite_item` — 종합보고
 - `mcp__reportarchive__list_versions` / `restore_version` — 수정 이력 보기 · 되돌리기
 - `mcp__reportarchive__trash_report` — 내가 쓴 **미게시 초안**을 휴지통으로(복구 가능)
+- `mcp__reportarchive__request_unpublish` — 게시된 글을 **내려달라고 요청**(승인은 사람)
 - `mcp__reportarchive__list_comments` / `reply_comment` / `resolve_thread` — 리뷰 의견 읽기·답글·종료
 - `mcp__reportarchive__list_my_notifications` — 내게 온 알림("나 뭐 할 거 있어?")
 - `mcp__reportarchive__get_report` — 보고서 1건 조회(이미지·첨부는 file_id 참조만)
@@ -285,6 +287,9 @@ create_report_draft("<빈템플릿id>", 1, "분기 리뷰", {}, extra_blocks=[
 - 게시판 이름이 헷갈리면 `list_boards` 로 확인한다. **상위 부문 게시판에 잘못 올리면
   훨씬 많은 사람에게 노출된다** — `audience` 숫자를 사용자에게 꼭 보여줘라.
 - 게시 후 **어느 게시판에 올렸는지 알린다.** 게시 이력에 AI 표식이 남는다.
+- **잘못 올렸으면 `request_unpublish`.** 바로 내려가지 않고 게시판 매니저가 승인한다 —
+  사용자가 그 게시판 매니저면(`withheld_auto` 에 뜬다) **웹에서 직접 승인하면 된다고
+  알려라.** 안 그러면 요청이 큐에 박힌 채 잊힌다. 어느 게시판에서 내릴지 먼저 확인받아라.
 
 <!--@ check -->
 ## 다 만들면 자기 점검

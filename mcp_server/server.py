@@ -636,6 +636,37 @@ async def publish_report(
     return await _post(ctx, "/api/mounts", body)
 
 
+@mcp.tool()
+async def request_unpublish(
+    report_id: int, ctx: Context, board: str | None = None
+) -> dict:
+    """게시된 보고서를 게시판에서 **내려달라고 요청**한다. 게시의 반대 방향이다.
+
+    ※ 바로 내려가지 않는다 — **게시판 매니저가 승인**해야 한다(당신이 그 게시판
+    매니저여도 마찬가지다. 사람이 보고 있던 문서가 사라지는 일이라 한 번 보게
+    한다). `withheld_auto` 에 담긴 게시판은 **당신이 웹에서 바로 승인**할 수 있으니
+    사용자에게 그렇게 알려라 — 안 그러면 요청이 큐에 박힌 채 잊힌다.
+
+    `board` 를 주면 그 게시판 하나만, 생략하면 게시된 **모든** 게시판에 요청한다.
+    여기선 게시판 **slug** 여야 한다(이름은 안 통한다 — `get_report` 의
+    `mount_workspaces[].slug` 를 그대로 쓰라).
+    어디에 게시돼 있는지는 `get_report` 의 `mount_workspaces` 나
+    `get_report_outline` 의 `mounted_to` 로 먼저 확인하고, **어느 게시판에서
+    내릴 것인지 사용자에게 확인받아라.**
+
+    반환: {requested(요청 수), auto_removed(항상 0), withheld_auto?[게시판...]}.
+    권한: 작성자 본인(또는 시스템관리자)."""
+    path = f"/api/reports/{report_id}/takedown-requests"
+    if board:
+        # 이 엔드포인트는 mount 의 slug 와 **정확히 일치**해야 한다(이름 해석 없음).
+        # 그래도 인코딩은 한다 — 쿼리에 값을 그대로 끼우는 습관이 prepare_upload
+        # 에서 셸을 깨뜨렸다.
+        from urllib.parse import quote
+
+        path += f"?workspace_slug={quote(board, safe='')}"
+    return await _post(ctx, path, {})
+
+
 # --------------------------------------------------------------------------- #
 # 종합보고 — 여러 보고서를 안건으로 묶는 상위 산출물. AI 는 **제출 요청**까지만
 # 하고 실제 반영은 사람(종합보고 담당자)이 승인한다.

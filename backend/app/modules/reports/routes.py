@@ -3525,6 +3525,7 @@ def restore_report(
 @router.post("/{report_id}/takedown-requests")
 def request_report_takedown(
     report_id: int,
+    request: Request,
     workspace_slug: str | None = None,
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(require_writer),
@@ -3532,7 +3533,11 @@ def request_report_takedown(
     """"게시판에서 내리기 요청" — 게시된 부서 게시판마다 게시취소 요청을
     팬아웃한다. `workspace_slug` 를 주면 그 게시판 하나에만 요청한다(게시판별
     개별 내리기). 요청자가 관리하는 게시판은 즉시 게시취소되고, 나머지는 그
-    board 매니저의 승인을 기다리는 pending 요청이 된다. 권한: 작성자 본인."""
+    board 매니저의 승인을 기다리는 pending 요청이 된다. 권한: 작성자 본인.
+
+    **AI(MCP) 경로는 즉시 내리지 않는다**(request_only) — 매니저 권한이 있어도
+    pending 요청만 만든다. 사람이 보고 있던 문서가 사라지는 일이라 사람이 한 번
+    보게 한다(종합보고 안건 제출과 같은 규약)."""
     from app.modules.mounts import services as mount_services
 
     try:
@@ -3541,6 +3546,7 @@ def request_report_takedown(
             report_id=report_id,
             actor_user_id=actor.user.id,
             workspace_slug=workspace_slug,
+            request_only=(via_of(request) == VIA_MCP),
         )
     except mount_services.MountForbiddenError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc))

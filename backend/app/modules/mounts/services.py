@@ -622,13 +622,20 @@ def request_takedown(
     report_id: int,
     actor_user_id: int,
     workspace_slug: Optional[str] = None,
+    request_only: bool = False,
 ) -> dict:
     """작성자가 "게시판에서 내리기"를 요청 — 게시(mount)된 부서 게시판마다
     팬아웃. `workspace_slug` 를 지정하면 그 게시판 하나에만 요청한다(게시판별
     개별 내리기 — 매니저가 게시판 클릭으로 바로 해제하는 것과 대칭). 요청자가
     *관리하는* 게시판은 즉시 게시취소(자동 승인), 나머지는 pending 요청을
     만들어 그 board 매니저의 승인을 기다린다. 권한: 작성자 본인 또는
-    시스템관리자."""
+    시스템관리자.
+
+    `request_only=True` 면 **관리하는 board 도 즉시 내리지 않고** pending 요청만
+    만든다. AI(MCP) 경로가 이걸 쓴다 — 게시는 조직 전체에 문서를 노출시키는
+    행위이고 내리는 것도 사람이 보고 있던 문서가 사라지는 일이라, 사람이 한 번
+    보게 한다(종합보고 안건 제출과 같은 규약). 반환의 `auto_removed` 가 0 이고
+    `withheld_auto` 가 그 board 수다."""
     report = db.get(Report, report_id)
     if report is None:
         raise MountTargetInvalidError(f"보고서를 찾을 수 없습니다: {report_id}")
@@ -647,9 +654,15 @@ def request_takedown(
         )
     requested = 0
     auto_removed = 0
+    withheld_auto: list[str] = []
     for m in mounts:
         slug = m.workspace_slug
-        if _can_unmount_board(db, actor_user_id, slug):
+        can_auto = _can_unmount_board(db, actor_user_id, slug)
+        if can_auto and request_only:
+            # 매니저라 바로 내릴 수 있지만, 이 경로는 사람이 한 번 보게 한다.
+            # (아래 else 로 떨어져 pending 요청이 만들어진다)
+            withheld_auto.append(slug)
+        if can_auto and not request_only:
             # 관리하는 board — 즉시 게시취소 + 자동 승인 행(감사용).
             unmount_report(
                 db,
@@ -688,7 +701,12 @@ def request_takedown(
                 )
                 requested += 1
     db.commit()
-    return {"requested": requested, "auto_removed": auto_removed}
+    out = {"requested": requested, "auto_removed": auto_removed}
+    if withheld_auto:
+        # 매니저 본인이 웹에서 바로 승인하면 된다 — 그 사실을 알려줘야 요청이
+        # 큐에 박혀 잊히지 않는다.
+        out["withheld_auto"] = withheld_auto
+    return out
 
 
 def cancel_takedown_request(

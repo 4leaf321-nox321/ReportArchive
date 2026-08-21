@@ -1506,17 +1506,30 @@ async def list_versions(report_id: int, ctx: Context, limit: int = 20) -> dict:
 
 
 @mcp.tool()
-async def restore_version(report_id: int, version_id: int, ctx: Context) -> dict:
+async def restore_version(
+    report_id: int,
+    version_id: int,
+    ctx: Context,
+    dry_run: bool = False,
+    expected_revision: int | None = None,
+) -> dict:
     """보고서를 그 시점 버전으로 **되돌린다**. `version_id` 는 `list_versions` 가 준 값.
 
-    되돌리기 자체도 새 버전으로 남으므로(source=`restore`) **되돌리기의 되돌리기**도
-    된다 — 잘못 되돌렸으면 다시 `list_versions` 에서 직전 버전을 고르면 된다.
+    ⚠️ **되돌리기는 그 시점 이후의 본문 변경을 전부 되감는다** — 그 사이 사람이
+    고친 내용도 함께 사라진다. 그래서 **`dry_run=True` 로 먼저 확인하고**, 사용자에게
+    "○○ 시점으로 되돌립니다. 이후 변경은 사라집니다" 라고 알린 뒤 실행하라.
 
-    권한은 편집과 같다(작성자 또는 편집 권한자, 발행본은 발행 취소 후).
-    되돌리기 전에 사용자에게 **어느 시점으로 되돌리는지 확인**받아라 —
-    그 사이 사람이 고친 내용이 있으면 함께 사라진다."""
+    `expected_revision`(get_report 의 revision)을 함께 주면, 미리 본 뒤 남이 고쳤을 때
+    거부된다. 되돌리기 자체도 새 버전으로 남아(source=`restore`) 다시 되돌릴 수 있다.
+    ※ 본문만 되돌아간다 — 태그·게시 상태는 그대로다."""
+    params = []
+    if dry_run:
+        params.append("dry_run=true")
+    if expected_revision is not None:
+        params.append(f"expected_revision={int(expected_revision)}")
+    q = ("?" + "&".join(params)) if params else ""
     return await _post(
-        ctx, f"/api/reports/{report_id}/versions/{version_id}/restore", {}
+        ctx, f"/api/reports/{report_id}/versions/{version_id}/restore{q}", {}
     )
 
 

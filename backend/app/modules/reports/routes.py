@@ -3080,9 +3080,55 @@ def _version_meta_list(db: Session, rows) -> list[ReportVersionMeta]:
     return out
 
 
+# 값 하나가 정상인 위젯 — 여기 없는 타입만 "하나뿐" 경고 대상이다.
+# (이미지 한 장·수식 하나·첨부 하나는 지극히 정상)
+_SINGLE_VALUE_OK = {
+    "image", "attachment", "video", "cad_3d", "equation", "doc_viewer",
+    "html_embed", "heading", "rich_text", "progress_bar", "card",
+}
+
+
+def _broken_file_issues(db: Session, report) -> list[str]:
+    """본문은 참조하는데 **파일이 없는** 곳 — 화면에선 깨져 보이는데 구조만
+    봐선 모른다. AI 는 완성 화면을 못 보므로 여기서 알려주지 않으면 영영 모른다."""
+    found: list = []
+    pages = [p for p in (report.pages or []) if isinstance(p, dict)]
+    if pages:
+        for idx, pg in enumerate(pages, 1):
+            for bid, block in (pg.get("content") or {}).items():
+                _collect_file_ids(block, found, idx, bid)
+    else:
+        for bid, block in (report.content or {}).items():
+            _collect_file_ids(block, found, 1, bid)
+    if not found:
+        return []
+    from app.modules.files.models import File as FileAsset
+
+    ids = {f for f, _p, _b in found}
+    alive = {
+        r for (r,) in db.execute(
+            select(FileAsset.id).where(FileAsset.id.in_(ids))
+        ).all()
+    }
+    out, seen = [], set()
+    for fid, page, bid in found:
+        if fid in alive or (page, bid) in seen:
+            continue
+        seen.add((page, bid))
+        out.append(f"{page}쪽 '{bid}' 의 파일이 없습니다(화면에서 깨져 보입니다).")
+    return out
+
+
 def _block_fill(content_value) -> dict:
     """블록 하나가 **채워졌는지**와 규모를 요약. 본문을 통째로 주지 않고
-    (모델 입력 토큰) "비었나/몇 행인가/몇 자인가"만 뽑는다."""
+    (모델 입력 토큰) "비었나/몇 행인가/몇 자인가"만 뽑는다.
+
+    ⚠️ 예전엔 `rows`/`items`/`text` 만 보고 나머지 dict 는 `bool(dict)` 로 판정했다.
+    그런데 위젯 content 는 모양이 제각각이라(sankey=links, network=edges/nodes,
+    density=groups, quadrant=plot_items, image=files) **빈 위젯이 전부 "채워짐"으로
+    보고**됐다 — AI 는 완성 화면을 못 보므로 이 도구가 유일한 눈인데, 그 눈이
+    빈 이미지·빈 차트를 못 봤다. 그래서 타입을 열거하지 않고 **모양으로** 본다:
+    리스트 값이 하나라도 있으면 그 리스트들로, 없으면 스칼라 값들로 판정한다."""
     if content_value is None:
         return {"filled": False}
     if isinstance(content_value, dict):
@@ -3095,7 +3141,18 @@ def _block_fill(content_value) -> dict:
         text = content_value.get("text")
         if isinstance(text, str):
             return {"filled": bool(text.strip()), "chars": len(text)}
-        return {"filled": bool(content_value)}
+        # 컬렉션 키를 모양으로 찾는다 — 가장 큰 것을 규모로 보고한다.
+        lists = {k: v for k, v in content_value.items() if isinstance(v, list)}
+        if lists:
+            key, biggest = max(lists.items(), key=lambda kv: len(kv[1]))
+            return {"filled": any(lists.values()) and True, key: len(biggest)}
+        # 리스트가 없으면 스칼라라도 뭔가 들어 있는지(빈 문자열만이면 빈 것).
+        return {
+            "filled": any(
+                (v.strip() if isinstance(v, str) else v) not in ("", None, False)
+                for v in content_value.values()
+            )
+        }
     if isinstance(content_value, list):
         return {"filled": len(content_value) > 0, "rows": len(content_value)}
     if isinstance(content_value, str):
@@ -3242,6 +3299,20 @@ def report_outline(
                 issues.append(
                     f"{idx}쪽 '{bid}'({info.get('type') or '?'}) 가 비어 있습니다."
                 )
+            else:
+                # 값이 하나뿐인 표·차트는 대개 만들다 만 것이다. 비어 있진 않아서
+                # 위 검사에 안 걸리는데, 화면에선 "표인데 한 줄" 로 어색하게 보인다.
+                n = next(
+                    (v for k, v in info.items()
+                     if k not in ("block_id", "type", "filled", "chars")
+                     and isinstance(v, int)),
+                    None,
+                )
+                if n == 1 and (info.get("type") or "") not in _SINGLE_VALUE_OK:
+                    issues.append(
+                        f"{idx}쪽 '{bid}'({info.get('type') or '?'}) 에 값이 하나뿐입니다 "
+                        "— 만들다 만 것은 아닌지 확인하세요."
+                    )
         if not blocks:
             issues.append(f"{idx}쪽에 블록이 하나도 없습니다(빈 페이지).")
         pages_out.append({
@@ -3256,7 +3327,7 @@ def report_outline(
         "phase": report.phase.value,
         "page_count": len(pages_out),
         "pages": pages_out,
-        "issues": issues,
+        "issues": issues + _broken_file_issues(db, report),
         "mounted_to": services.mount_placements(db, report.id),
     })
 

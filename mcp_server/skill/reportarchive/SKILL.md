@@ -19,6 +19,7 @@ allowed-tools: mcp__reportarchive__*
 - `mcp__reportarchive__list_folders` — 게시판 안 폴더 목록(이름·id·건수)
 - `mcp__reportarchive__aggregate_reports` — 개수 세기(직접 세지 말 것)
 - `mcp__reportarchive__list_my_reports` — 내가 쓴 보고서 목록(이어서 수정할 때. 게시된 글 포함)
+- `mcp__reportarchive__list_versions` / `restore_version` — 수정 이력 보기 · 되돌리기
 - `mcp__reportarchive__get_report` — 보고서 1건 조회(이미지·첨부는 file_id 참조만)
 - `mcp__reportarchive__download_file` — file_id 로 파일 바이트를 base64 로 내려받기(get_report 의 이미지·첨부를 로컬 저장/재사용할 때, ≈1MB 이하)
 - `mcp__reportarchive__create_report_draft` — 초안 생성
@@ -95,6 +96,13 @@ scatter·heatmap·radar·network·sankey·box·density·tree·mind_map·treemap�
 - **생성물은 항상 초안.** 게시·발행은 사람이 한다.
 - **수정은 게시된 글도 가능** — 편집 권한이 있고 발행(finalized) 전이면 된다. 단 게시된 글을
   고쳤으면(응답 `mounted_to` 가 비어 있지 않으면) **어디에 게시된 글인지 사용자에게 알린다.**
+- **고치기 전에 `dry_run`.** 게시된 글이거나 여러 블록을 한 번에 바꿀 때는
+  `update_report_draft(..., dry_run=True)` 로 **무엇이 바뀔지 먼저 확인**하고 적용한다.
+  (저장하지 않고 페이지별 추가·변경·삭제될 block_id 와 경고만 돌려준다.)
+- **잘못 고쳤으면 되돌린다.** `list_versions` 로 시점을 찾아 `restore_version`.
+  되돌리기도 버전으로 남아 다시 되돌릴 수 있다. 되돌리기 전에 **어느 시점으로 되돌리는지
+  사용자에게 확인**받아라 — 그 사이 사람이 고친 내용도 함께 사라진다.
+  ※ 스냅샷은 **본문만** 담는다(태그·게시 상태는 복원되지 않음).
 - 채울 수 없는 블록은 **비운다**(부분 초안 허용). **추측으로 채우지 말 것** — 모르는 값은 사용자에게 묻는다.
 - **누락은 투명하게.** 요청했는데 못 채운 블록(`warnings`/검증 탈락)은 조용히 넘기지 말고 사용자에게 보고한다.
 - 표/선택지는 `describe_template` 의 `key`·`options` 를 정확히 따른다.

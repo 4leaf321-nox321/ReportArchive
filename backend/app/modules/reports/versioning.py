@@ -101,9 +101,15 @@ def record_version(
     return v
 
 
+# 일상 저장으로 치는 source — 최근 retain 개만 남기고 프루닝된다.
+# 'mcp'(AI 가 고침)는 **누가 고쳤나** 를 나타내는 표식일 뿐 마일스톤이 아니라서
+# 여기 든다. 안 그러면 AI 가 고칠 때마다 스냅샷이 영구히 쌓인다.
+ORDINARY_SOURCES = ("save", "mcp")
+
+
 def prune_versions(db: Session, report_id: int, *, retain: int = RETAIN_N) -> int:
-    """보고서당 일반('save') 버전을 최근 retain 개만 남기고 삭제. 게시/되돌리기
-    마커(source!='save')·핀·라벨 버전은 항상 보존(개수에 안 셈). 삭제 개수 반환."""
+    """보고서당 일상 버전(ORDINARY_SOURCES)을 최근 retain 개만 남기고 삭제.
+    게시/되돌리기 마커·핀·라벨 버전은 항상 보존(개수에 안 셈). 삭제 개수 반환."""
     rows = (
         db.execute(
             select(ReportVersion)
@@ -116,7 +122,7 @@ def prune_versions(db: Session, report_id: int, *, retain: int = RETAIN_N) -> in
     kept = 0
     deleted = 0
     for v in rows:
-        if v.is_pinned or v.source != "save" or v.label:
+        if v.is_pinned or v.source not in ORDINARY_SOURCES or v.label:
             continue  # 항상 보존
         kept += 1
         if kept > retain:

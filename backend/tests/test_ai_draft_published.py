@@ -177,3 +177,59 @@ def test_ai_can_edit_mounted_report():
         )
     finally:
         _cleanup(rids, tid)
+
+
+def test_dry_run_and_version_safety_net():
+    """Phase A 안전망 — dry_run(미적용 미리보기) · source='mcp' 감사 표식 · 되돌리기.
+
+    게시된 글까지 AI 수정을 연 뒤(위 테스트) 짝이 되는 안전망이다: 고치기 전
+    무엇이 바뀔지 보고, 나중에 누가 고쳤는지 알고, 잘못되면 되돌린다.
+    """
+    c = TestClient(app)
+    tid = _make_template()
+    rids: list[int] = []
+    try:
+        r = c.post(
+            "/api/reports/ai-draft", headers=H,
+            json={"template_id": tid, "template_version": 1, "title": "안전망",
+                  "blocks": {"heading": "원본", "body": ["원본 본문"]}},
+        )
+        assert r.status_code == 201, r.text
+        rid = r.json()["data"]["report"]["id"]
+        rids.append(rid)
+
+        # 1) dry_run — 변경 요약만 오고 실제로는 저장되지 않는다
+        d = c.patch(f"/api/reports/{rid}/ai-draft", headers=H,
+                    json={"blocks": {"heading": "바뀔 제목"}, "dry_run": True})
+        assert d.status_code == 200, d.text
+        data = d.json()["data"]
+        assert data["dry_run"] is True
+        page1 = next(p for p in data["page_diff"] if p["page"] == 1)
+        assert page1["blocks_changed"] == ["heading"], page1
+        assert "mounted_to" in data
+        after = c.get(f"/api/reports/{rid}", headers=H).json()["data"]
+        assert after["pages"][0]["content"]["heading"]["text"] == "원본", "저장되면 안 됨"
+
+        # 2) 실제 수정 → 버전 이력에 'mcp' 표식
+        assert c.patch(f"/api/reports/{rid}/ai-draft", headers=H,
+                       json={"blocks": {"heading": "AI 가 고침"}}).status_code == 200
+        versions = c.get(f"/api/reports/{rid}/versions", headers=H).json()["data"]
+        assert "mcp" in [v["source"] for v in versions], versions
+
+        # 3) 되돌리기 — 가장 오래된(원본) 버전으로
+        oldest = versions[-1]
+        rv = c.post(
+            f"/api/reports/{rid}/versions/{oldest['id']}/restore", headers=H
+        )
+        assert rv.status_code == 200, rv.text
+        back = c.get(f"/api/reports/{rid}", headers=H).json()["data"]
+        assert back["pages"][0]["content"]["heading"]["text"] == "원본"
+        # 되돌리기 자체도 버전으로 남아 되돌리기의 되돌리기가 된다
+        again = c.get(f"/api/reports/{rid}/versions", headers=H).json()["data"]
+        assert "restore" in [v["source"] for v in again]
+
+        # 4) 'mcp' 버전은 일상 저장처럼 프루닝된다(영구 보존 아님)
+        from app.modules.reports.versioning import ORDINARY_SOURCES
+        assert "mcp" in ORDINARY_SOURCES
+    finally:
+        _cleanup(rids, tid)

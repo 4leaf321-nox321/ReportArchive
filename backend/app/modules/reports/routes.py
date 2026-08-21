@@ -1064,6 +1064,47 @@ def update_ai_draft(
     return _apply_ai_draft(report_id, payload, db, actor, allow_self_lock=False)
 
 
+def _diff_ai_pages(existing: list, new_pages: list) -> list[dict]:
+    """적용 전/후 페이지를 비교해 **블록 단위 변경 요약**을 만든다(dry_run 용).
+
+    본문 전체를 돌려주면 모델 입력 토큰을 크게 먹으므로, 무엇이 늘고/바뀌고/
+    빠지는지 **block_id 목록**만 준다. 값 비교는 정규화된 content 끼리라
+    "준 것과 같아서 실제로는 안 바뀜"도 걸러진다."""
+    out = []
+    for idx in range(max(len(existing), len(new_pages))):
+        old_page = existing[idx] if idx < len(existing) else None
+        new_page = new_pages[idx] if idx < len(new_pages) else None
+        if new_page is None:
+            out.append({"page": idx + 1, "status": "removed"})
+            continue
+        new_content = new_page.content or {}
+        if old_page is None:
+            out.append({
+                "page": idx + 1,
+                "status": "added",
+                "blocks_added": sorted(new_content.keys()),
+            })
+            continue
+        old_content = old_page.get("content") or {}
+        added = sorted(k for k in new_content if k not in old_content)
+        removed = sorted(k for k in old_content if k not in new_content)
+        changed = sorted(
+            k for k in new_content
+            if k in old_content and old_content[k] != new_content[k]
+        )
+        if not (added or removed or changed):
+            out.append({"page": idx + 1, "status": "unchanged"})
+        else:
+            out.append({
+                "page": idx + 1,
+                "status": "changed",
+                "blocks_added": added,
+                "blocks_changed": changed,
+                "blocks_removed": removed,
+            })
+    return out
+
+
 def _apply_ai_draft(
     report_id: int,
     payload: AiDraftUpdate,
@@ -1213,6 +1254,31 @@ def _apply_ai_draft(
         upd_kwargs["report_type_id"] = payload.report_type_id
     if payload.entity_ids is not None:
         upd_kwargs["entity_ids"] = payload.entity_ids
+    if payload.dry_run:
+        # 저장하지 않고 **무엇이 바뀔지**만 돌려준다. 권한·발행·편집락 가드는
+        # 위에서 이미 통과했으므로, 거부될 수정이면 여기까지 오지도 않는다
+        # (= 미리보기가 실제 적용 가능 여부까지 반영).
+        meta_changes = {
+            k: v for k, v in upd_kwargs.items() if k != "pages"
+        }
+        return success_response(
+            data={
+                "dry_run": True,
+                "report_id": report.id,
+                "title": report.title,
+                "page_diff": _diff_ai_pages(
+                    [p for p in (report.pages or []) if isinstance(p, dict)],
+                    new_pages,
+                ),
+                "metadata_changes": {
+                    k: (str(v) if not isinstance(v, (str, int, float, bool, list)) else v)
+                    for k, v in meta_changes.items()
+                },
+                "warnings": warnings,
+                "mounted_to": services.mount_placements(db, report.id),
+                "note": "적용하지 않았습니다. 그대로 반영하려면 dry_run 없이 다시 호출하세요.",
+            }
+        )
     try:
         report = services.update_report(
             db,
@@ -1220,6 +1286,10 @@ def _apply_ai_draft(
             ReportUpdate(**upd_kwargs),
             updated_by_user_id=actor.user.id,
             require_lock=False,
+            # 감사 표식 — 버전 이력에서 **AI(MCP)가 고친 것**을 사람 저장과
+            # 구분한다. 게시된 글까지 AI 수정을 열었으므로 추적이 필요하다.
+            # 'mcp' 는 ORDINARY_SOURCES 에 들어 있어 일반 저장처럼 프루닝된다.
+            version_source="mcp",
         )
     except ValueError as exc:
         # 정규화로도 못 맞춘 부분 — 블록별 검증 에러를 그대로 전달(AI 재시도용).

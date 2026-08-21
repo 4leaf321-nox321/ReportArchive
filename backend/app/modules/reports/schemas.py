@@ -838,3 +838,7 @@ class AiDraftUpdate(BaseModel):
     report_type_id: Optional[int] = None
     # 빈 리스트([])면 모든 엔티티 태그 제거, None 이면 유지.
     entity_ids: Optional[list[int]] = None
+    # 미리보기 — True 면 **저장하지 않고** 무엇이 바뀔지 요약만 돌려준다.
+    # 게시된 글까지 AI 가 고칠 수 있게 열렸으므로(Phase 6), 되돌리기 어려운
+    # 수정 전에 확인할 수단이 필요하다.
+    dry_run: bool = False

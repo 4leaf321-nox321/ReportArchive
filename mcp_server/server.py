@@ -871,6 +871,7 @@ async def update_report_draft(
     tags: list | None = None,
     report_type_id: int | None = None,
     entity_ids: list | None = None,
+    dry_run: bool = False,
 ) -> dict:
     """**기존 보고서를 이어서 수정**한다. 초안뿐 아니라 **이미 게시(mount)된 글도**
     고칠 수 있다 — 편집 권한이 있고 **발행(finalized) 전**이면 된다(웹 편집과 같은
@@ -879,6 +880,10 @@ async def update_report_draft(
 
     ※ **게시된 글은 이미 남들이 보고 있다.** 응답의 `mounted_to`(게시판·폴더)가
     비어 있지 않으면, 어디에 게시된 글을 고쳤는지 **반드시 사용자에게 알려라**.
+
+    ※ `dry_run=True` 면 **저장하지 않고** 무엇이 바뀔지만 돌려준다(페이지별 추가·
+    변경·삭제될 block_id, 메타 변경, 경고, 게시 위치). 게시된 글이나 큰 수정 전에
+    한 번 확인하고 적용하라. 잘못 고쳤으면 `list_versions` → `restore_version`.
 
     기본은 **병합(merge)** — 준 것만 바꾸고 나머지는 그대로 둔다:
       - `blocks`: 덮어쓸 block_id→내용(create 와 같은 느슨한 형식). 안 준 블록은 유지.
@@ -922,7 +927,59 @@ async def update_report_draft(
         body["report_type_id"] = report_type_id
     if entity_ids is not None:
         body["entity_ids"] = entity_ids
+    if dry_run:
+        body["dry_run"] = True
     return await _patch(ctx, f"/api/reports/{report_id}/ai-draft", body)
+
+
+@mcp.tool()
+async def list_versions(report_id: int, ctx: Context, limit: int = 20) -> dict:
+    """보고서의 **수정 이력**(최신순). 잘못 고쳤을 때 되돌릴 지점을 찾는 데 쓴다.
+
+    각 항목: version_id·revision·created_at·author·source·크기.
+    `source` 는 그 버전이 생긴 경위 — `save`(사람이 저장) · **`mcp`(AI 가 수정)** ·
+    `restore`(되돌리기) · `publish`(발행). 되돌리려면 `restore_version`.
+
+    ※ 스냅샷은 **본문(페이지·내용·레이아웃)만** 담는다. 태그·게시 상태 같은
+    메타데이터는 되돌려도 복원되지 않는다."""
+    rows = await _get(ctx, f"/api/reports/{report_id}/versions", {"limit": limit})
+    if isinstance(rows, dict):
+        if rows.get("error"):
+            return rows
+        rows = rows.get("items") or []
+    # 백엔드는 `id` 로 주지만 restore_version 인자명은 version_id 다. 그대로
+    # 흘리면 모델이 report id 와 헷갈리므로 여기서 이름을 맞춘다(+ 불필요 필드 제거).
+    return {
+        "versions": [
+            {
+                "version_id": r.get("id"),
+                "seq": r.get("seq"),
+                "revision": r.get("revision"),
+                "source": r.get("source"),
+                "author": r.get("author_name"),
+                "created_at": r.get("created_at"),
+                "label": r.get("label"),
+                "pinned": r.get("is_pinned"),
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+
+
+@mcp.tool()
+async def restore_version(report_id: int, version_id: int, ctx: Context) -> dict:
+    """보고서를 그 시점 버전으로 **되돌린다**. `version_id` 는 `list_versions` 가 준 값.
+
+    되돌리기 자체도 새 버전으로 남으므로(source=`restore`) **되돌리기의 되돌리기**도
+    된다 — 잘못 되돌렸으면 다시 `list_versions` 에서 직전 버전을 고르면 된다.
+
+    권한은 편집과 같다(작성자 또는 편집 권한자, 발행본은 발행 취소 후).
+    되돌리기 전에 사용자에게 **어느 시점으로 되돌리는지 확인**받아라 —
+    그 사이 사람이 고친 내용이 있으면 함께 사라진다."""
+    return await _post(
+        ctx, f"/api/reports/{report_id}/versions/{version_id}/restore", {}
+    )
 
 
 # 아웃오브밴드 업로드 프록시 — CLI 가 curl 로 보낸 바이트를 메모리에서 한 번에

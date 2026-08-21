@@ -1,6 +1,6 @@
 # MCP(AI 연결) 보강 로드맵 — 설계
 
-> 상태: **미구현 (설계)** · 2026-08-21 작성
+> 상태: **Phase A 구현 완료 (2026-08-21) · B~D 미구현** · 2026-08-21 작성
 > 관련: `[완료] MCP보고서작성_설계.md`(본체·Phase 1~6), `[완료] MCP온톨로지조사_설계.md`,
 > `[미구현] 헤드리스_내보내기_설계.md`, `[완료] 버전관리_설계.md`, `[완료] 협업개선_설계.md`
 
@@ -63,18 +63,25 @@ Phase 6(2026-08-21)에서 **게시된 글도 AI가 고칠 수 있게** 열었다
 
 > 목표: AI 가 잘못 고쳐도 **AI 스스로 되돌릴 수 있고**, 나중에 **누가 고쳤는지 추적**된다.
 
-- [ ] **`list_versions(report_id, limit)`** — `GET /api/reports/{id}/versions` 노출.
+- [x] **`list_versions(report_id, limit)`** — `GET /api/reports/{id}/versions` 노출.
       반환: `[{version_id, revision, created_at, author, source, size}]`. 백엔드 작업 0.
-- [ ] **`restore_version(report_id, version_id)`** — `POST .../versions/{vid}/restore` 노출.
+- [x] **`restore_version(report_id, version_id)`** — `POST .../versions/{vid}/restore` 노출.
       복원도 새 버전을 남기므로(source='restore') 되돌리기의 되돌리기도 된다.
-- [ ] **감사 표식 `source='mcp'`** — `report_versions.source` 는 `String(16)` 자유값이라
+- [x] **감사 표식 `source='mcp'`** — `report_versions.source` 는 `String(16)` 자유값이라
       **마이그레이션 불필요**. `_apply_ai_draft` 가 스냅샷을 만들 때 `mcp` 로 표시.
       웹 버전 이력 UI 에 "AI 수정" 배지. ※ 사람이 웹에서 고친 것과 구분되는 게 핵심.
-- [ ] **`update_report_draft(dry_run=True)`** — 적용하지 않고 **무엇이 바뀔지 요약**만
+- [x] **`update_report_draft(dry_run=True)`** — 적용하지 않고 **무엇이 바뀔지 요약**만
       반환(블록별 추가/교체/삭제, 검증 경고, 영향 페이지). 게시된 글 수정 시 특히 필요.
-- [ ] 도구 docstring·SKILL 에 "고치기 전 dry_run, 잘못되면 restore_version" 습관 명시.
+- [x] 도구 docstring·SKILL 에 "고치기 전 dry_run, 잘못되면 restore_version" 습관 명시.
 
 **예상 규모**: 백엔드 소, MCP 소. **가장 싸고 가장 급하다.**
+
+> ✅ **구현 완료 (2026-08-21)**. 마이그레이션 없음 — `report_versions.source` 가 자유
+> 문자열이라 `'mcp'` 를 그냥 넣었다. 다만 `prune_versions` 가 `source != 'save'` 를
+> **영구 보존**하고 있어, 그대로 두면 AI 수정분이 계속 쌓인다 → `ORDINARY_SOURCES =
+> ('save','mcp')` 로 넓혀 일상 저장처럼 프루닝되게 했다(`'mcp'` 는 마일스톤이 아니라
+> **누가 고쳤나** 표식이므로). `list_versions` 는 백엔드 `id` 를 `version_id` 로 바꿔
+> 돌려준다 — 그대로 흘리면 모델이 report id 와 헷갈린다.
 
 ---
 

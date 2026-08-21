@@ -2075,6 +2075,36 @@ export function normalizeMerges(merges, rowCount, colCount) {
   return out
 }
 
+/** 선택 사각형을 **닿은 병합 전체를 품도록** 넓힌다(엑셀과 같은 동작).
+ *
+ *  병합된 칸은 anchor 셀 하나만 렌더되고 covered 칸은 DOM 에 없다. 그래서
+ *  병합 B(c2~c3) 위에서 드래그를 끝내도 좌표는 anchor 인 c2 로 잡히고,
+ *  그대로 합치면 사각형이 c0~c2 라 **B 의 꼬리 c3 이 병합 밖으로 떨어진다**
+ *  (화면에는 B 전체가 선택된 것처럼 보이는데 결과가 다름).
+ *
+ *  그래서 합치기 직전에 사각형을 넓힌다. 넓히면서 새로 닿는 병합이 또
+ *  생길 수 있으므로 변화가 없을 때까지 반복한다. 좌표계는 호출부가 맞춰
+ *  넘긴다(헤더=헤더로컬 행, 데이터=headerOffset 뺀 행). */
+export function expandRectOverMerges(rect, merges) {
+  let { r1, r2, c1, c2 } = rect
+  const list = (merges ?? []).filter(Boolean)
+  for (let guard = 0; guard < list.length + 1; guard++) {
+    let changed = false
+    for (const m of list) {
+      const lr = m.r + m.rs - 1
+      const lc = m.c + m.cs - 1
+      // 사각형과 겹치는 병합만 — 겹치면 그 병합 전체를 품는다.
+      if (!(m.r <= r2 && lr >= r1 && m.c <= c2 && lc >= c1)) continue
+      if (m.r < r1) { r1 = m.r; changed = true }
+      if (lr > r2) { r2 = lr; changed = true }
+      if (m.c < c1) { c1 = m.c; changed = true }
+      if (lc > c2) { c2 = lc; changed = true }
+    }
+    if (!changed) break
+  }
+  return { r1, r2, c1, c2 }
+}
+
 /**
  * 행 삽입 / 삭제 시 merges 의 r 축을 재배치.
  *

@@ -46,6 +46,7 @@ import {
   EditorOptionToggle,
   LabelField,
   normalizeMerges,
+  expandRectOverMerges,
   parseHtmlTableMerges,
   NoteInput,
   PreviewLabel,
@@ -1457,21 +1458,31 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
   function mergeSelection() {
     const r = selection.rect
     if (!r) return
-    const rs = r.r2 - r.r1 + 1
-    const cs = r.c2 - r.c1 + 1
-    if (rs === 1 && cs === 1) return
+    if (r.r2 === r.r1 && r.c2 === r.c1) return
+    // 닿은 병합은 **통째로** 품는다 — 병합 칸은 anchor 만 렌더돼서 그 위에서
+    // 드래그를 끝내면 좌표가 anchor 로 잡히고, 그대로 합치면 꼬리 칸이 병합
+    // 밖으로 떨어진다(화면에는 다 선택된 것처럼 보이는데 결과가 다름).
     if (r.r2 < headerOffset) {
       const h = ensureHeader()
+      const e = expandRectOverMerges(r, h.merges)
       const nm = normalizeMerges(
-        [...(h.merges || []), { r: r.r1, c: r.c1, rs, cs }],
+        [...(h.merges || []), {
+          r: e.r1, c: e.c1, rs: e.r2 - e.r1 + 1, cs: e.c2 - e.c1 + 1,
+        }],
         h.row_count,
         totalColCount,
       )
       patchHeader({ ...h, merges: nm })
       selection.clear()
     } else if (r.r1 >= headerOffset) {
+      const e = expandRectOverMerges(
+        { r1: r.r1 - headerOffset, r2: r.r2 - headerOffset, c1: r.c1, c2: r.c2 },
+        merges,
+      )
       const nm = normalizeMerges(
-        [...(merges ?? []), { r: r.r1 - headerOffset, c: r.c1, rs, cs }],
+        [...(merges ?? []), {
+          r: e.r1, c: e.c1, rs: e.r2 - e.r1 + 1, cs: e.c2 - e.c1 + 1,
+        }],
         rows.length,
         totalColCount,
       )

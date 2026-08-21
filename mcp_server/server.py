@@ -1061,6 +1061,88 @@ async def update_report_draft(
 
 
 @mcp.tool()
+async def append_rows(
+    report_id: int,
+    block_id: str,
+    rows: list,
+    ctx: Context,
+    page: int = 1,
+    expected_revision: int | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """표·차트 같은 위젯에 **행을 추가**한다(끝에 붙임).
+
+    `update_report_draft(blocks=...)` 는 그 블록을 **통째로 교체**하므로 한 줄을
+    넣으려 해도 전체를 다시 보내야 한다 — 여기선 **서버가 현재 값에 덧붙인다**.
+    표가 클수록 이득이 크고, 읽고 쓰는 사이 사람이 고친 내용을 덮어쓸 위험도 없다.
+
+    `rows` 는 그 위젯이 받는 행 형식 그대로(예: 표라면 `[{"열키": "값"}]`).
+    형식이 헷갈리면 `get_report` 로 기존 행을 한두 개 보고 흉내내라.
+    `expected_revision` 을 주면 그 사이 남이 고쳤을 때 거부된다(다시 읽고 재시도)."""
+    return await _rows_op(
+        ctx, report_id, page,
+        [{"block_id": block_id, "op": "append", "rows": rows}],
+        expected_revision, dry_run,
+    )
+
+
+@mcp.tool()
+async def patch_cells(
+    report_id: int,
+    block_id: str,
+    patches: list,
+    ctx: Context,
+    page: int = 1,
+    expected_revision: int | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """표 같은 위젯의 **특정 셀만** 고친다. 나머지 행·열은 건드리지 않는다.
+
+    `patches` 는 `[{"row": 0, "key": "열키", "value": "새 값"}]` — `row` 는 **0부터**
+    세는 행 번호다. 지금 값을 모르면 `get_report` 로 먼저 확인하라(행 번호가 틀리면
+    엉뚱한 칸이 바뀐다).
+
+    "3행 상태를 완료로" 처럼 **한두 칸만** 바꿀 때 쓴다. 표를 통째로 다시 쓸 거면
+    `update_report_draft` 가 낫다."""
+    return await _rows_op(
+        ctx, report_id, page,
+        [{"block_id": block_id, "op": "patch", "patches": patches}],
+        expected_revision, dry_run,
+    )
+
+
+@mcp.tool()
+async def remove_rows(
+    report_id: int,
+    block_id: str,
+    indexes: list,
+    ctx: Context,
+    page: int = 1,
+    expected_revision: int | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """표 같은 위젯에서 **행을 지운다**. `indexes` 는 **0부터** 세는 행 번호 목록.
+
+    되돌리기 어려우므로 지우기 전에 `get_report` 로 **어느 행인지 확인**하고,
+    여러 행을 지울 땐 `dry_run=True` 로 몇 개가 남는지 먼저 보라.
+    잘못 지웠으면 `list_versions` → `restore_version`."""
+    return await _rows_op(
+        ctx, report_id, page,
+        [{"block_id": block_id, "op": "remove", "indexes": indexes}],
+        expected_revision, dry_run,
+    )
+
+
+async def _rows_op(ctx, report_id, page, ops, expected_revision, dry_run):
+    body: dict = {"page": page, "ops": ops}
+    if expected_revision is not None:
+        body["expected_revision"] = expected_revision
+    if dry_run:
+        body["dry_run"] = True
+    return await _patch(ctx, f"/api/reports/{report_id}/ai-draft/rows", body)
+
+
+@mcp.tool()
 async def list_versions(report_id: int, ctx: Context, limit: int = 20) -> dict:
     """보고서의 **수정 이력**(최신순). 잘못 고쳤을 때 되돌릴 지점을 찾는 데 쓴다.
 

@@ -783,6 +783,31 @@ class ReportVersionMeta(BaseModel):
     is_pinned: bool
 
 
+class AiRowOps(BaseModel):
+    """AI(MCP)가 위젯 **행 단위**로 고칠 때의 입력.
+
+    `blocks` 로 주는 기존 수정은 그 블록 content 를 **통째로 교체**한다. 그래서
+    "표에 한 줄 추가" 를 하려면 AI 가 표 전체를 읽어 전부 다시 보내야 했다 —
+    토큰 낭비이자, 읽고 쓰는 사이 사람이 고친 내용을 덮어쓰는 위험이다.
+
+    대상은 content 에 `rows`(리스트)를 가진 위젯 — table·chart·pie·box·waffle·
+    packing·treemap·tree·mind_map·raci·comparison 등 대부분이 이 규약을 공유한다.
+
+    ops 각 항목:
+      - `{block_id, op:"append", rows:[{...}]}`      끝에 추가
+      - `{block_id, op:"patch", patches:[{row, key, value}]}`  특정 셀만
+      - `{block_id, op:"remove", indexes:[0,2]}`     행 제거(0-base)
+    같은 호출 안에서 순서대로 적용되고 **한 번만 저장**된다.
+    """
+
+    page: int = Field(default=1, ge=1)
+    ops: list[dict] = Field(..., min_length=1)
+    # 낙관적 동시성 — 읽은 시점의 revision. 그 사이 남이 고쳤으면 409 로 거부하고
+    # AI 가 다시 읽게 한다(자동 병합은 조용한 덮어쓰기를 부른다).
+    expected_revision: Optional[int] = Field(default=None, ge=1)
+    dry_run: bool = False
+
+
 class AiDraftCreate(BaseModel):
     """AI(Claude)가 보고서를 초안으로 만들 때의 입력 — 느슨한 블록(block_id→간이
     콘텐츠)을 ai_authoring.normalize_content 가 widget-v1 로 정규화한다."""

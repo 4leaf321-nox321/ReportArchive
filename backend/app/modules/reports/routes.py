@@ -14,6 +14,7 @@ from app.modules.reports import ai_authoring, services, versioning
 from app.modules.reports.schemas import (
     AiDraftCreate,
     AiDraftUpdate,
+    AiRowOps,
     LinkGraphResponse,
     LockInfo,
     ReportCopy,
@@ -844,6 +845,186 @@ def create_ai_draft(
 
 # 정적 path — 동적 `/{report_id}` 보다 *위*에 등록(그래야 "my-drafts" 를 reportId 로
 # 잡으려다 422 가 나지 않는다).
+def _rows_of(content_block) -> list | None:
+    """위젯 content 에서 행 리스트를 꺼낸다. `rows` 규약을 안 따르면 None."""
+    if isinstance(content_block, dict) and isinstance(content_block.get("rows"), list):
+        return content_block["rows"]
+    return None
+
+
+def _renormalize_block(template, page: dict, block_id: str, new_content):
+    """행을 고친 블록 하나를 **원래 작성 경로와 같은 정규화**에 다시 태운다.
+    (숫자 문자열→숫자, 라벨키→열키 등 — 새로 짜지 않고 ai_authoring 재사용.)
+    템플릿 블록인지 extra 블록인지에 따라 경로가 갈린다. 반환 (content, warnings)."""
+    tmpl_ids = {
+        b["id"] for b in (template.schema.get("blocks") or []) if isinstance(b, dict)
+    }
+    if block_id in tmpl_ids:
+        norm, w = ai_authoring.normalize_content(template.schema, {block_id: new_content})
+        return norm.get(block_id), w
+    for b in page.get("extra_blocks") or []:
+        if b.get("id") == block_id:
+            defs, content, w = ai_authoring.normalize_extra_blocks(
+                [{"id": block_id, "type": b.get("type"), "props": b.get("props"),
+                  "content": new_content}]
+            )
+            return content.get(block_id), w
+    return new_content, [f"블록 정의를 찾지 못해 '{block_id}' 는 정규화 없이 저장합니다."]
+
+
+@router.patch("/{report_id}/ai-draft/rows")
+def update_ai_draft_rows(
+    report_id: int,
+    payload: AiRowOps,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """AI(MCP)가 위젯을 **행 단위로** 고친다 — 표에 한 줄 추가, 특정 셀만 수정, 행 삭제.
+
+    기존 `PATCH /ai-draft` 의 `blocks` 는 블록 content 를 통째로 교체하므로, 한 줄을
+    바꾸려 해도 AI 가 전체를 읽어 전부 다시 보내야 했다(토큰 낭비 + 읽고 쓰는 사이
+    사람이 고친 걸 덮어쓸 위험). 이 경로는 **서버가 현재 값을 읽어 부분만 바꾼다.**
+
+    가드는 `PATCH /ai-draft` 와 동일(_ai_edit_gate). `expected_revision` 을 주면
+    그 사이 남이 고쳤을 때 409 로 거부한다."""
+    report, _decision, blocked = _ai_edit_gate(report_id, db, actor)
+    if blocked is not None:
+        return blocked
+
+    template = template_services.get_template(
+        db, report.template_id, report.template_version
+    )
+    if not template:
+        return not_found_response(
+            f"Template not found: {report.template_id}@{report.template_version}"
+        )
+
+    existing = [p for p in (report.pages or []) if isinstance(p, dict)]
+    if not existing:
+        existing = [{
+            "template_id": report.template_id,
+            "template_version": report.template_version,
+            "content": report.content or {},
+            "layout_overrides": report.layout_overrides,
+            "props_overrides": report.props_overrides,
+        }]
+    idx0 = payload.page - 1
+    if idx0 < 0 or idx0 >= len(existing):
+        return error_response(
+            f"page {payload.page}: 이 보고서엔 {len(existing)}쪽뿐입니다.", status_code=400
+        )
+    page = dict(existing[idx0])
+    content = dict(page.get("content") or {})
+
+    warnings: list[str] = []
+    applied: list[dict] = []
+    for i, op in enumerate(payload.ops, 1):
+        if not isinstance(op, dict):
+            return error_response(f"ops[{i}] 형식 오류(객체가 아님).", status_code=400)
+        bid = op.get("block_id")
+        kind = (op.get("op") or "").lower()
+        block = content.get(bid)
+        rows = _rows_of(block)
+        if rows is None:
+            # 어떤 블록이 행 연산을 받을 수 있는지 알려준다 — 이름만 틀린 경우가 흔하다.
+            candidates = sorted(
+                k for k, v in content.items() if _rows_of(v) is not None
+            )
+            return error_response(
+                f"ops[{i}]: 블록 '{bid}' 는 행(rows)을 가진 위젯이 아닙니다. "
+                f"이 페이지에서 가능한 블록: {candidates or '없음'}",
+                status_code=400,
+            )
+        rows = list(rows)
+        if kind == "append":
+            add = op.get("rows") or []
+            if not isinstance(add, list) or not add:
+                return error_response(f"ops[{i}]: append 에는 rows 가 필요합니다.", 400)
+            rows.extend(add)
+            applied.append({"block_id": bid, "op": "append", "count": len(add)})
+        elif kind == "patch":
+            patches = op.get("patches") or []
+            if not isinstance(patches, list) or not patches:
+                return error_response(f"ops[{i}]: patch 에는 patches 가 필요합니다.", 400)
+            n = 0
+            for pt in patches:
+                if not isinstance(pt, dict):
+                    continue
+                r = pt.get("row")
+                if not isinstance(r, int) or not (0 <= r < len(rows)):
+                    return error_response(
+                        f"ops[{i}]: row {r} 는 범위 밖입니다(0..{len(rows) - 1}).", 400
+                    )
+                if not isinstance(rows[r], dict):
+                    return error_response(
+                        f"ops[{i}]: row {r} 는 객체가 아니라 셀 지정 수정이 안 됩니다.", 400
+                    )
+                rows[r] = {**rows[r], pt.get("key"): pt.get("value")}
+                n += 1
+            applied.append({"block_id": bid, "op": "patch", "count": n})
+        elif kind == "remove":
+            idxs = op.get("indexes") or []
+            if not isinstance(idxs, list) or not idxs:
+                return error_response(f"ops[{i}]: remove 에는 indexes 가 필요합니다.", 400)
+            bad = [x for x in idxs if not isinstance(x, int) or not (0 <= x < len(rows))]
+            if bad:
+                return error_response(
+                    f"ops[{i}]: 범위 밖 인덱스 {bad} (0..{len(rows) - 1}).", 400
+                )
+            keep = [r for k, r in enumerate(rows) if k not in set(idxs)]
+            applied.append({"block_id": bid, "op": "remove", "count": len(rows) - len(keep)})
+            rows = keep
+        else:
+            return error_response(
+                f"ops[{i}]: 알 수 없는 op '{kind}' (append|patch|remove).", 400
+            )
+        merged, w = _renormalize_block(template, page, bid, {**block, "rows": rows})
+        warnings += w
+        content[bid] = merged if merged is not None else {**block, "rows": rows}
+
+    if payload.dry_run:
+        return success_response(data={
+            "dry_run": True,
+            "report_id": report.id,
+            "applied": applied,
+            "row_counts": {
+                o["block_id"]: len(_rows_of(content.get(o["block_id"])) or [])
+                for o in applied
+            },
+            "warnings": warnings,
+            "mounted_to": services.mount_placements(db, report.id),
+            "note": "적용하지 않았습니다. 그대로 반영하려면 dry_run 없이 다시 호출하세요.",
+        })
+
+    page["content"] = content
+    kept = [
+        ReportPage(**{k: v for k, v in pg.items() if k in ReportPage.model_fields})
+        for pg in existing
+    ]
+    kept[idx0] = ReportPage(
+        **{k: v for k, v in page.items() if k in ReportPage.model_fields}
+    )
+    try:
+        report = services.update_report(
+            db, report, ReportUpdate(pages=kept),
+            updated_by_user_id=actor.user.id,
+            expected_revision=payload.expected_revision,
+            require_lock=False,
+            version_source="mcp",
+        )
+    except services.LockError as exc:
+        return _lock_conflict_response(exc)
+    except ValueError as exc:
+        return error_response(str(exc), status_code=400)
+    return success_response(data={
+        "report": _read_with_perms(db, actor, report),
+        "applied": applied,
+        "warnings": warnings,
+        "url": f"/w/{report.workspace_slug}/reports/{report.id}",
+        "mounted_to": services.mount_placements(db, report.id),
+    })
+
+
 @router.get("/browse")
 def browse_reports(
     q: str = Query(default="", max_length=200, description="제목·본문 부분일치(빈 값=브라우즈)"),
@@ -1064,6 +1245,59 @@ def update_ai_draft(
     return _apply_ai_draft(report_id, payload, db, actor, allow_self_lock=False)
 
 
+def _ai_edit_gate(report_id: int, db: Session, actor, *, allow_self_lock: bool = False):
+    """AI(MCP) 편집 공통 가드. 반환 (report, 편집판정, 차단응답|None).
+
+    **사람 경로(PATCH /reports/{id})와 같은 규칙**으로 판정한다:
+    can_edit(소유자 / 편집 grant / 하드락 veto) + 발행본(finalized) 차단.
+
+    예전엔 "소유자 AND drafting" 이었는데, 게시(mount)하는 순간 phase 가
+    drafting→reviewing 으로 자동 승격되므로(mounts/services.py) **게시한 글은
+    MCP 로 영영 못 고치는** 상태였다 — 같은 사용자가 웹에서는 멀쩡히 고칠 수
+    있는데도. 두 경로를 정렬해 그 비대칭을 없앤다.
+
+    동시성 — 누군가(본인 다른 탭 포함) 편집 화면을 열어 **편집 락을 잡고 있으면**
+    AI 수정을 막는다. AI 는 비대화형이라 락 없이 저장하므로(require_lock=False),
+    이 사전 점검이 진행 중인 사람 편집을 덮어쓰는 걸 막는 1차 방어선이다.
+    `allow_self_lock=True` 면 **본인이 잡은** 락은 충돌로 보지 않는다(사내 'Local
+    LLM 작성'은 사용자가 편집 중 호출하고 고지를 받는다)."""
+    from app.shared.permissions import can_edit
+    from app.modules.reports.models import ReportPhase
+
+    report = services.get_report(db, report_id)
+    if not report:
+        return None, None, not_found_response(f"Report not found: {report_id}")
+    decision = can_edit(db, actor.user, report)
+    if not decision.allowed:
+        if decision.role == "locked":
+            reason = report.author_lock_reason or "사유 미기재"
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"작성자가 수정 잠금 상태입니다 (사유: {reason}). 잠금 해제 후 다시 시도하세요.",
+            )
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "이 보고서를 AI로 수정할 권한이 없습니다."
+        )
+    if report.phase == ReportPhase.finalized:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "발행된 보고서는 AI로 수정할 수 없습니다. '발행 취소' 후 다시 시도하세요.",
+        )
+    held = services.get_active_lock(db, report)
+    if held is not None and not (allow_self_lock and held.user_id == actor.user.id):
+        msg = (
+            "다른 사용자가 이 보고서를 편집 중이라 AI 작성을 적용할 수 없습니다. "
+            "상대가 편집을 마친 뒤 다시 시도하세요."
+            if allow_self_lock
+            else "이 보고서를 편집 중인 세션이 있어 AI 수정을 적용할 수 없습니다. "
+            "편집 화면을 닫거나 잠금 해제 후 다시 시도하세요."
+        )
+        return None, None, _lock_conflict_response(
+            services.LockHeldByOtherError(msg, holder=held)
+        )
+    return report, decision, None
+
+
 def _diff_ai_pages(existing: list, new_pages: list) -> list[dict]:
     """적용 전/후 페이지를 비교해 **블록 단위 변경 요약**을 만든다(dry_run 용).
 
@@ -1118,54 +1352,11 @@ def _apply_ai_draft(
     덮어쓰고 나머지는 둔다. 검증 실패 시 블록별 에러를 400 으로 돌린다."""
     from app.modules.reports.models import ReportPhase
 
-    from app.shared.permissions import can_edit
-
-    report = services.get_report(db, report_id)
-    if not report:
-        return not_found_response(f"Report not found: {report_id}")
-    # 안전장치 — **사람 경로(PATCH /reports/{id})와 같은 규칙**으로 판정한다:
-    # can_edit(소유자 / 편집 grant / 하드락 veto) + 발행본(finalized) 차단.
-    #
-    # 예전엔 "소유자 AND drafting" 이었는데, 게시(mount)하는 순간 phase 가
-    # drafting→reviewing 으로 자동 승격되므로(mounts/services.py) **게시한 글은
-    # MCP 로 영영 못 고치는** 상태였다 — 같은 사용자가 웹에서는 멀쩡히 고칠 수
-    # 있는데도. 두 경로를 정렬해 그 비대칭을 없앤다. 발행본만 사람 경로와 똑같이
-    # 막는다(발행 취소 후 수정).
-    decision = can_edit(db, actor.user, report)
-    if not decision.allowed:
-        if decision.role == "locked":
-            reason = report.author_lock_reason or "사유 미기재"
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN,
-                f"작성자가 수정 잠금 상태입니다 (사유: {reason}). 잠금 해제 후 다시 시도하세요.",
-            )
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "이 보고서를 AI로 수정할 권한이 없습니다."
-        )
-    if report.phase == ReportPhase.finalized:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "발행된 보고서는 AI로 수정할 수 없습니다. '발행 취소' 후 다시 시도하세요.",
-        )
-    # 동시성 — 누군가(본인 다른 탭 포함) 편집 화면을 열어 **편집 락을 잡고 있으면**
-    # AI 수정을 막는다. AI 는 비대화형이라 락 없이 저장하므로(require_lock=False),
-    # 이 사전 점검이 진행 중인 사람 편집을 덮어쓰는 걸 막는 1차 방어선이다.
-    # (락 해제/만료 후 재시도하면 됨. revision 증가·버전 이력이 2차 안전망.)
-    held = services.get_active_lock(db, report)
-    # allow_self_lock: 사내 'Local LLM 작성'은 사용자가 편집 중(=본인 락) 호출하고
-    # "저장 안 된 편집분이 사라질 수 있음" 고지를 받으므로 본인 락은 통과시킨다.
-    # 다른 사용자가 잡은 락은 어느 경우든 막는다(남의 편집 보호).
-    if held is not None and not (allow_self_lock and held.user_id == actor.user.id):
-        msg = (
-            "다른 사용자가 이 보고서를 편집 중이라 AI 작성을 적용할 수 없습니다. "
-            "상대가 편집을 마친 뒤 다시 시도하세요."
-            if allow_self_lock
-            else "이 보고서를 편집 중인 세션이 있어 AI 수정을 적용할 수 없습니다. "
-            "편집 화면을 닫거나 잠금 해제 후 다시 시도하세요."
-        )
-        return _lock_conflict_response(
-            services.LockHeldByOtherError(msg, holder=held)
-        )
+    report, decision, blocked = _ai_edit_gate(
+        report_id, db, actor, allow_self_lock=allow_self_lock
+    )
+    if blocked is not None:
+        return blocked
 
     template = template_services.get_template(
         db, report.template_id, report.template_version

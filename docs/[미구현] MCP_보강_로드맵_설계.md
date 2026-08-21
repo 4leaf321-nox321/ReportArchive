@@ -1,6 +1,6 @@
 # MCP(AI 연결) 보강 로드맵 — 설계
 
-> 상태: **Phase A·B 구현 완료 (2026-08-21) · C~D 미구현** · 2026-08-21 작성
+> 상태: **Phase A·B·C 구현 완료 (2026-08-21) · D 미구현** · 2026-08-21 작성
 > 관련: `[완료] MCP보고서작성_설계.md`(본체·Phase 1~6), `[완료] MCP온톨로지조사_설계.md`,
 > `[미구현] 헤드리스_내보내기_설계.md`, `[완료] 버전관리_설계.md`, `[완료] 협업개선_설계.md`
 
@@ -122,16 +122,23 @@ AI:   list_comments → 읽고 → search_reports 로 근거 찾고 → 본문 �
 `get_report` 로 전체를 읽어 **전부 다시 보낸다** — 토큰 낭비이자, 읽고 쓰는 사이 사람이
 고친 내용을 조용히 덮어쓰는 **lost update** 위험이다.
 
-- [ ] **`append_rows(report_id, block_id, rows, page?)`** — 표/차트류에 행 추가.
-- [ ] **`patch_cells(report_id, block_id, patches, page?)`** — `[{row, key, value}]` 로 셀만.
-- [ ] **`remove_rows(report_id, block_id, row_indexes, page?)`**
-- [ ] **낙관적 동시성** — `ReportUpdate.expected_revision` 이 **이미 있다**. 세밀 연산에
+- [x] **`append_rows(report_id, block_id, rows, page?)`** — 표/차트류에 행 추가.
+- [x] **`patch_cells(report_id, block_id, patches, page?)`** — `[{row, key, value}]` 로 셀만.
+- [x] **`remove_rows(report_id, block_id, row_indexes, page?)`**
+- [x] **낙관적 동시성** — `ReportUpdate.expected_revision` 이 **이미 있다**. 세밀 연산에
       `expected_revision` 을 노출해, 그 사이 남이 고쳤으면 409 로 거부하고 AI 가 다시 읽게.
-- [ ] 대상 위젯 범위 결정: table·chart·pie·progress_bar·milestone 등 **행 개념이 있는 것**만.
+- [x] 대상 위젯 범위 결정: table·chart·pie·progress_bar·milestone 등 **행 개념이 있는 것**만.
       rich_text 같은 건 별도(문단 단위 patch 는 후속).
 
-**예상 규모**: 백엔드 중(정규화·검증 재사용), MCP 소. **Phase A 의 dry_run·복원이 먼저
-있어야 안전하다.**
+**예상 규모**: 백엔드 중(정규화·검증 재사용), MCP 소.
+
+> ✅ **구현 완료 (2026-08-21)**. `PATCH /api/reports/{id}/ai-draft/rows`, 마이그레이션 없음.
+> **발견**: 행 개념이 있는 위젯은 대부분 `content.rows`(객체 리스트) 규약을 공유한다
+> (table·chart·pie·box·waffle·packing·treemap·tree·mind_map·raci·comparison·scatter3d…).
+> 그래서 위젯별 분기 없이 **하나의 일반 연산**으로 덮인다. 고친 블록은 원래 작성 경로와
+> 같은 정규화(`ai_authoring`)에 다시 태워 숫자 강제·라벨키 매핑을 그대로 받는다.
+> `ops` 를 리스트로 받아 여러 연산이 **한 번만 저장**된다(버전·revision 도 1회).
+> 없는 block_id 면 **그 페이지에서 가능한 블록 목록**을 알려준다(이름만 틀린 경우가 흔하다).
 
 ---
 
@@ -189,8 +196,8 @@ A·B 는 **묶어서 진행 가능**하다(둘 다 백엔드 부담이 거의 �
 2. **게시(mount)를 AI 에게 열 것인가.** 현재 원칙은 "생성물은 항상 초안, 게시는 사람이".
    Phase 6 이 *수정* 은 열었으므로 경계를 다시 그어야 한다. 최소안은 `request_publish`
    (요청만, 사람이 승인) — 종합보고 요청 큐와 같은 패턴.
-3. **세밀 편집의 충돌 정책.** `expected_revision` 불일치 시 (a) 409 후 AI 재시도 (b) 자동
-   재읽기·재적용. (a) 를 권한다 — 자동 병합은 조용한 덮어쓰기를 부른다.
+3. ~~**세밀 편집의 충돌 정책.**~~ → **(a) 409 후 AI 재시도 채택** (2026-08-21 구현).
+   자동 병합은 조용한 덮어쓰기를 부른다.
 
 ---
 

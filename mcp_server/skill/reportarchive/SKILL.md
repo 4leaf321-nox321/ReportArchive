@@ -19,6 +19,7 @@ allowed-tools: mcp__reportarchive__*
 - `mcp__reportarchive__list_folders` — 게시판 안 폴더 목록(이름·id·건수)
 - `mcp__reportarchive__aggregate_reports` — 개수 세기(직접 세지 말 것)
 - `mcp__reportarchive__list_my_reports` — 내가 쓴 보고서 목록(이어서 수정할 때. 게시된 글 포함)
+- `mcp__reportarchive__append_rows` / `patch_cells` / `remove_rows` — 표·차트를 **행 단위로** 수정
 - `mcp__reportarchive__list_versions` / `restore_version` — 수정 이력 보기 · 되돌리기
 - `mcp__reportarchive__list_comments` / `reply_comment` / `resolve_thread` — 리뷰 의견 읽기·답글·종료
 - `mcp__reportarchive__list_my_notifications` — 내게 온 알림("나 뭐 할 거 있어?")
@@ -93,6 +94,23 @@ scatter·heatmap·radar·network·sankey·box·density·tree·mind_map·treemap�
 
 이름을 못 찾으면 도구가 **에러**를 돌려준다(전체 결과를 그 조직 것으로 오해하지 않게).
 그때는 `list_boards`/`list_folders` 로 정확한 이름을 확인하고 다시 부른다.
+
+## 표에 한 줄만 고치기
+`update_report_draft(blocks=...)` 는 그 블록을 **통째로 교체**한다. 표에 한 줄을 넣으려고
+전체를 다시 보내면 토큰이 낭비되고, 읽고 쓰는 사이 사람이 고친 내용을 덮어쓸 수 있다.
+**행 단위 도구를 쓰라:**
+
+| 하려는 일 | 도구 |
+|---|---|
+| 표에 줄 추가 | `append_rows(report_id, block_id, rows)` |
+| 특정 칸만 수정 | `patch_cells(report_id, block_id, [{row, key, value}])` — row 는 **0부터** |
+| 줄 삭제 | `remove_rows(report_id, block_id, indexes)` — indexes 는 **0부터** |
+
+- 행 번호가 헷갈리면 **먼저 `get_report`** 로 현재 행을 확인한다(번호가 틀리면 엉뚱한 칸이 바뀐다).
+- 여러 행을 지울 땐 `dry_run=True` 로 몇 개가 남는지 먼저 본다.
+- 남이 고칠 수 있는 문서면 `get_report` 의 `revision` 을 `expected_revision` 으로 넘긴다.
+  그 사이 바뀌었으면 거부되니, **다시 읽고 재시도**한다(자동으로 덮어쓰지 않는다).
+- 표를 통째로 새로 쓸 거라면 그땐 `update_report_draft` 가 낫다.
 
 ## 댓글 반영해서 고치기
 "이 보고서 댓글 반영해줘" 는 이렇게 푼다 — 지시를 채팅으로 옮겨 적을 필요가 없다.

@@ -94,7 +94,13 @@ def _unwrap(r: httpx.Response):
     except Exception:
         return {"error": f"HTTP {r.status_code} (non-JSON)", "status": r.status_code}
     if r.status_code >= 400 or not body.get("success", True):
-        return {"error": body.get("message") or f"HTTP {r.status_code}", "detail": body}
+        out = {"error": body.get("message") or f"HTTP {r.status_code}"}
+        # detail 은 envelope 이 message 말고 더 말해줄 때만 — 안 그러면 실패할 때마다
+        # 같은 문장을 두 번 실어 나른다(모델 입력 토큰).
+        extra = {k: v for k, v in body.items() if k not in ("success", "message", "data")}
+        if extra:
+            out["detail"] = extra
+        return out
     return body.get("data", body)
 
 
@@ -206,13 +212,18 @@ async def get_guide(ctx: Context, topic: str | None = None) -> dict:
         "guide_version": version,
         "topic": "overview",
         "content": secs.get("overview", ""),
-        "more_topics": [t for t in _GUIDE_TOPICS if t in secs and t != "overview"],
+        "more_topics": (
+            [t for t in _GUIDE_TOPICS if t in secs and t != "overview"]
+            # 가이드에 새 주제가 늘어도 알려준다 — 튜플은 **표시 순서**일 뿐,
+            # 진실은 GUIDE.md 다(가이드를 서버가 쥐기로 한 이유).
+            + sorted(t for t in secs if t not in _GUIDE_TOPICS and t != "overview")
+        ),
         "note": "세부가 필요하면 get_guide(topic=...) 로 그 주제만 받아라.",
     }
 
 
 @mcp.tool()
-async def list_templates(ctx: Context) -> list:
+async def list_templates(ctx: Context) -> dict:
     """사용 가능한 보고서 템플릿 목록(template_id, version, name, description). 어떤
     템플릿으로 쓸지 고를 때 먼저 호출. 고른 뒤 `describe_template` 로 채울 블록을 본다."""
     rows = await _get(ctx, "/api/templates")
@@ -1242,12 +1253,17 @@ async def prepare_upload(ctx: Context, local_path: str | None = None) -> dict:
     base = _public_base(ctx)
     upload_url = f"{base}{_UPLOAD_ROUTE}"
     if local_path:
+        import shlex
         from pathlib import PurePath
+        from urllib.parse import quote
 
         fn = PurePath(local_path).name or "upload.bin"
+        # 파일명은 **URL 쿼리**로 들어가고 경로는 **셸 인자**로 들어간다 — 각자
+        # 제 방식으로 이스케이프해야 한다. "내 파일 (사본).png" 처럼 공백·괄호가
+        # 있는 이름이 흔한데, 그대로 끼워 넣으면 셸이 `(` 에서 구문 오류를 낸다.
         curl = (
-            f"curl -sS -X POST '{upload_url}?filename={fn}' "
-            f"-H 'X-Upload-Ticket: {ticket}' --data-binary @{local_path}"
+            f"curl -sS -X POST '{upload_url}?filename={quote(fn, safe='')}' "
+            f"-H 'X-Upload-Ticket: {ticket}' --data-binary @{shlex.quote(local_path)}"
         )
     else:
         curl = (

@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.shared.client_origin import via_of
 from app.modules.mounts import models as _models  # noqa: F401
 from app.modules.mounts import confirm as mount_confirm
 from app.modules.mounts import services
@@ -133,13 +134,6 @@ def list_grant_board_slugs(
     return success_response(data={"slugs": slugs})
 
 
-def _via_of(request: Request) -> str:
-    """이 요청이 어디서 왔나 — 'mcp'(AI 가 사용자 권한으로) 또는 'web'(사람).
-    MCP 서버가 자기 요청에 `X-Client: mcp` 를 붙인다. 보안 경계가 아니라
-    **경위 표식**이자 2단계 확인을 강제할 대상을 고르는 기준이다."""
-    return "mcp" if (request.headers.get("x-client") or "").lower() == "mcp" else "web"
-
-
 @router.post("/preview")
 def preview_mount(
     payload: MountPreviewRequest,
@@ -223,7 +217,7 @@ def create_mount(
     AI(MCP) 경로는 `confirm_token` 이 필수다 — `/preview` 로 어디에 얼마나 보이게
     되는지 확인한 뒤에만 게시된다. 사람이 화면에서 하는 게시는 그대로 한 번에.
     """
-    via = _via_of(request)
+    via = via_of(request)
     if via == "mcp":
         bad = mount_confirm.verify(
             payload.confirm_token, actor.user.id, payload.report_id,

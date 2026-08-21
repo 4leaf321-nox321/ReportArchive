@@ -422,6 +422,9 @@ class CompositeItemRequestRead(BaseModel):
     decided_by_user_id: Optional[int] = None
     decided_at: Optional[datetime] = None
     created_at: datetime
+    # 제출 경로 — 'mcp' 면 AI 가 그 사람 권한으로 낸 요청이다(p92).
+    # 승인자가 판단에 쓰라고 그대로 내려준다.
+    via: str = "web"
     # 제출된 보고서의 슬림 정보 — 제목·작성자·소속·기준일을 대기 패널에서
     # 바로 보여주기 위함(ItemRefReport 와 동일 프로젝션).
     report: Optional[ItemRefReport] = None
@@ -434,7 +437,7 @@ class CompositeItemRequestRead(BaseModel):
         out: dict[str, Any] = {
             k: getattr(obj, k)
             for k in (
-                "id", "composite_id", "ref_report_id", "status", "note",
+                "id", "composite_id", "ref_report_id", "status", "note", "via",
                 "requested_by_user_id", "decided_by_user_id", "decided_at",
                 "created_at",
             )

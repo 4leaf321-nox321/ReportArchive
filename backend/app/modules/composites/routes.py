@@ -1,10 +1,11 @@
 """Composite report routes."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.shared.client_origin import via_of
 from app.modules.composites import services
 from app.modules.composites.models import CompositeItemRequestStatus
 from app.modules.composites.schemas import (
@@ -352,6 +353,7 @@ def list_submittable_composites(
 def submit_item_request(
     composite_id: int,
     payload: CompositeItemRequestCreate,
+    request: Request,
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(require_writer),
 ):
@@ -372,6 +374,7 @@ def submit_item_request(
             payload.ref_report_id,
             note=payload.note,
             requested_by_user_id=actor.user.id,
+            via=via_of(request),
         )
     except services.CompositeError as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc

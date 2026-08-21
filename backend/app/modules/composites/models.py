@@ -295,6 +295,13 @@ class CompositeItemRequest(Base):
     ref_report_id: Mapped[int] = mapped_column(
         ForeignKey("reports.id", ondelete="CASCADE"), nullable=False
     )
+
+    # 제출 경로 — 'web'(사람이 화면에서) | 'mcp'(AI 가 사용자 권한으로).
+    # 이 큐는 사람이 승인하므로 승인자가 AI 가 낸 요청인지 알아야 한다.
+    # **서버가 요청 헤더(X-Client)를 보고 채운다** — 클라이언트 값은 안 받는다. (p92)
+    via: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="web"
+    )
     requested_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

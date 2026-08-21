@@ -585,6 +585,7 @@ def submit_item_request(
     *,
     note: str = "",
     requested_by_user_id: int,
+    via: str = "web",
 ) -> CompositeItemRequest:
     """보고서를 종합보고에 안건으로 제출(pending). 종합보고 자체는 건드리지
     않는다 — owner 승인 시에만 append 된다."""
@@ -618,6 +619,7 @@ def submit_item_request(
         requested_by_user_id=requested_by_user_id,
         note=note or "",
         status=CompositeItemRequestStatus.pending,
+        via=via,
     )
     db.add(req)
     db.commit()

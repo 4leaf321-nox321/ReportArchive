@@ -110,6 +110,16 @@ export function PendingRequestsPanel({ compositeId, canDecide, onAfterAccept }) 
                       <span className="text-muted-foreground/55">제출 </span>
                       {r.requested_by_name ?? '—'}
                     </span>
+                    {/* AI(MCP)가 이 사람 권한으로 낸 요청 — 승인 여부를 사람이
+                        판단하는 큐라, 누가 눌렀는지가 판단 근거다. */}
+                    {r.via === 'mcp' && (
+                      <span
+                        className="rounded bg-primary/10 px-1 py-px text-[9px] font-medium text-primary"
+                        title="AI가 이 사용자 권한으로 제출했습니다"
+                      >
+                        AI
+                      </span>
+                    )}
                   </div>
                   {r.note && (
                     <div className="mt-1 text-xs italic text-muted-foreground">

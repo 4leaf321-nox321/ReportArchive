@@ -223,7 +223,7 @@ export function TablePropsPanel({ props, onChange }) {
   )
 }
 
-import { ChevronDown, ChevronUp, Plus, X } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Plus, X } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 
 // 열 폭(px) 허용 범위 — 헤더 드래그·균등 분배에 공통 적용.
@@ -723,6 +723,46 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     })
     patch({ columns: nextCols })
   }
+  function moveColumn(idx, dir) {
+    // 열 좌/우 이동. 행 데이터·셀 색/서식·열 폭·헤더 셀은 모두 **열 key**
+    // 로 저장돼 있어 열 순서가 바뀌어도 그대로 따라온다. 인덱스로 저장되는
+    // 건 병합(merges)뿐이라 그것만 옮기면 된다.
+    const newIdx = idx + dir
+    if (newIdx < 0 || newIdx >= cols.length) return
+    const nextCols = [...cols]
+    const [item] = nextCols.splice(idx, 1)
+    nextCols.splice(newIdx, 0, item)
+    // 병합 이동 규칙 — **한 열짜리 병합만** 따라 옮긴다(cs === 1).
+    // 두 열에 걸친 병합은 두 열이 모두 그 안에 있거나(옮겨도 같은 자리)
+    // 걸쳐 있어도 물리적 사각형은 그대로여야 하므로 건드리지 않는다.
+    // 그냥 anchor 를 옮기면 병합이 옆의 무관한 열까지 먹어버린다.
+    const swapCols = (list) =>
+      (list ?? []).map((m) => {
+        if ((m.cs ?? 1) !== 1) return m
+        if (m.c === idx) return { ...m, c: newIdx }
+        if (m.c === newIdx) return { ...m, c: idx }
+        return m
+      })
+    patch({
+      columns: nextCols,
+      ...(merges.length
+        ? { merges: normalizeMerges(swapCols(merges), rows.length, cols.length) }
+        : {}),
+      ...(header
+        ? {
+            header: {
+              ...header,
+              merges: normalizeMerges(
+                swapCols(headerMerges),
+                headerRowCount,
+                cols.length,
+              ),
+            },
+          }
+        : {}),
+    })
+  }
+
   function removeColumn(idx) {
     const removed = cols[idx]
     const nextCols = cols.filter((_, i) => i !== idx)
@@ -1868,6 +1908,34 @@ export function TableEditor({ props, content, onChange, readOnly }) {
         pos={rails.colPos}
         onKeepOpen={() => rails.setHoverCol(rails.hoverCol)}
       >
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          title="왼쪽으로"
+          disabled={rails.hoverCol === 0}
+          // 레일이 표 바깥이라 마우스가 그 열 위에 없다 — 옮긴 열을 따라가야
+          // 연속으로 눌러 계속 옮길 수 있다(행 레일과 같은 규칙).
+          onClick={() => {
+            moveColumn(rails.hoverCol, -1)
+            rails.setHoverCol(rails.hoverCol - 1)
+          }}
+        >
+          <ChevronLeft className="h-3 w-3" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          title="오른쪽으로"
+          disabled={rails.hoverCol === cols.length - 1}
+          onClick={() => {
+            moveColumn(rails.hoverCol, 1)
+            rails.setHoverCol(rails.hoverCol + 1)
+          }}
+        >
+          <ChevronRight className="h-3 w-3" />
+        </Button>
         <div data-cell-selection-allow>
           <ColumnTypeSelect
             value={cols[rails.hoverCol]?.type}

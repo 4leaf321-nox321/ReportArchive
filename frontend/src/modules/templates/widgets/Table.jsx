@@ -655,16 +655,17 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     })
   }
   function moveRow(rowIdx, dir) {
-    // 행 위/아래로 이동 — 두 행의 r 인덱스만 바뀌므로 merges 도
-    // 따라가야 함. 단순화: anchor 가 두 행 중 하나에 있으면 그 anchor 도
-    // 같이 이동. 영역이 두 행을 동시에 덮는 multi-row merge 면 의미가
-    // 모호하니 그대로 둠 (= 시각상 동일 위치 유지).
+    // 행 위/아래로 이동 — 두 행의 r 인덱스만 바뀌므로 merges 도 따라가야 한다.
+    // 단, **한 행짜리 병합만**(rs === 1) 옮긴다. 여러 행에 걸친 병합의 anchor 를
+    // 그냥 옮기면 병합이 옆의 무관한 행까지 먹어버린다 — 옮겨도 그 병합 블록의
+    // 물리적 자리는 그대로여야 맞다(열 이동 moveColumn 과 같은 규칙).
     const newIdx = rowIdx + dir
     if (newIdx < 0 || newIdx >= rows.length) return
     const next = [...rows]
     const [item] = next.splice(rowIdx, 1)
     next.splice(newIdx, 0, item)
     const swapped = (merges ?? []).map((m) => {
+      if ((m.rs ?? 1) !== 1) return m
       if (m.r === rowIdx) return { ...m, r: newIdx }
       if (m.r === newIdx) return { ...m, r: rowIdx }
       return m

@@ -1009,7 +1009,38 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     const next = [...cases]
     const [item] = next.splice(idx, 1)
     next.splice(newIdx, 0, item)
-    patch({ cases: next })
+    // 값·색·서식·폭은 CASE key 로 저장돼 따라오지만, **병합은 열 인덱스**라
+    // 여기서 같이 옮겨야 한다(예전엔 안 옮겨서 CASE 를 이동하면 병합이 엉뚱한
+    // 열에 남았다). 좌표계: c=0 이 행 라벨, c=1.. 이 cases[0..].
+    // 한 열짜리 병합만 옮긴다 — 여러 열에 걸친 병합은 물리적 자리 유지.
+    const c1 = idx + 1
+    const c2 = newIdx + 1
+    const swapCols = (list) =>
+      (list ?? []).map((m) => {
+        if ((m.cs ?? 1) !== 1) return m
+        if (m.c === c1) return { ...m, c: c2 }
+        if (m.c === c2) return { ...m, c: c1 }
+        return m
+      })
+    const totalCol = next.length + 1
+    patch({
+      cases: next,
+      ...(merges.length
+        ? { merges: normalizeMerges(swapCols(merges), rows.length, totalCol) }
+        : {}),
+      ...(header
+        ? {
+            header: {
+              ...header,
+              merges: normalizeMerges(
+                swapCols(headerMerges),
+                headerRowCount,
+                totalCol,
+              ),
+            },
+          }
+        : {}),
+    })
   }
 
   // ─── Row handlers ────────────────────────────────────────────────────
@@ -1044,10 +1075,12 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
     const next = [...rows]
     const [item] = next.splice(idx, 1)
     next.splice(newIdx, 0, item)
-    // 두 행만 r 좌표 swap. multi-row anchor 가 둘에 걸치면 단순 swap 으로
-    // 의미가 깨질 수 있어 normalizeMerges 가 마지막 검증.
+    // 두 행만 r 좌표 swap — 단, **한 행짜리 병합만**(rs === 1). 여러 행에
+    // 걸친 병합의 anchor 를 그냥 옮기면 옆의 무관한 행까지 먹어버린다
+    // (옮겨도 그 병합 블록의 물리적 자리는 그대로여야 맞다).
     const totalCol = cases.length + 1
     const swapped = (merges ?? []).map((m) => {
+      if ((m.rs ?? 1) !== 1) return m
       if (m.r === idx) return { ...m, r: newIdx }
       if (m.r === newIdx) return { ...m, r: idx }
       return m

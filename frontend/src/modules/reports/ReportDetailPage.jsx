@@ -175,6 +175,7 @@ import {
   clearPresetEditSession,
 } from '@/shared/layout/presetEditSession'
 import { getRenderer } from '@/modules/templates/widgets'
+import { RAIL_GUTTER_PX } from '@/modules/templates/widgets/_shared'
 import { useCaptionSkipPref } from '@/shared/widgets/useCaptionSkipPref'
 import { TableViewContext } from '@/modules/templates/widgets/Table'
 import { WidgetPicker } from '@/modules/templates/WidgetPicker'
@@ -10985,7 +10986,13 @@ function WidgetContentEditDialog({
             <div className="flex-1 min-h-0 overflow-auto">
               <div
                 className="mx-auto"
-                style={{ maxWidth: `${Math.round(renderWidthPx)}px` }}
+                // 표/비교표 편집기는 행·열 조작 버튼을 표 **왼쪽 바깥** 레일로
+                // 빼면서 그만큼(RAIL_GUTTER_PX) 래퍼 padding 을 갖는다. 그 폭을
+                // 더해 줘야 *표 자체*가 화면과 같은 폭(renderWidthPx)이 된다 —
+                // 안 더하면 레일 자리만큼 표가 좁아져 열 비율이 어긋난다.
+                style={{
+                  maxWidth: `${Math.round(renderWidthPx) + RAIL_GUTTER_PX}px`,
+                }}
               >
                 {editorNode}
               </div>

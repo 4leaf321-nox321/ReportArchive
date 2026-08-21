@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   AlignCenter,
   AlignCenterHorizontal,
@@ -21,7 +21,17 @@ import { Label } from '@/shared/components/ui/label'
 import DOMPurify from 'dompurify'
 import { cn } from '@/shared/lib/utils'
 import { copyTextToClipboard, readTableFromClipboard } from '@/shared/lib/clipboard'
-import { ColorSwatchPicker, colorTokenClass } from '@/shared/text-color'
+import {
+  COLOR_TOKENS,
+  ColorSwatchPicker,
+  colorTokenClass,
+  normalizeToken,
+} from '@/shared/text-color'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/shared/components/ui/popover'
 import { useCurrentBlockRef } from '@/shared/reports/CurrentBlockRefContext'
 import { RichTextRowEditor } from './RichTextRowEditor'
 
@@ -2289,6 +2299,15 @@ export function useCellSelection({ rowCount, colCount, onClear } = {}) {
 
   const handleMouseUp = useCallback(() => {
     draggingRef.current = false
+    // 드래그로 promote 되지 않았다 = **그냥 한 셀을 클릭했다**. 그 셀 하나를
+    // 선택 상태로 만든다 — 병합된 셀을 나누거나(셀 분할) 한 칸에만 색·정렬·
+    // 서식을 주려고 굳이 드래그로 훑을 필요가 없게. 액션 바는 이미 1셀 사각형을
+    // 다룰 수 있어서(합치기는 2셀 이상일 때만 뜬다) 여기만 채우면 된다.
+    //
+    // promote 와 달리 input 을 blur 하지 않는다 — 클릭은 "이 칸에 입력하겠다"
+    // 이기도 하므로 커서는 그대로 두고 선택 표시만 얹는다.
+    const pending = pendingAnchorRef.current
+    if (pending) setSel({ anchor: pending, head: pending })
     pendingAnchorRef.current = null
     setCrossCellDragging(false)
   }, [])
@@ -2299,6 +2318,9 @@ export function useCellSelection({ rowCount, colCount, onClear } = {}) {
     if (!draggingRef.current) return
     const onUp = () => {
       draggingRef.current = false
+      // 컨테이너 밖에서 뗀 경우 — 위 handleMouseUp 과 같은 규칙(클릭이면 단일 선택).
+      const pending = pendingAnchorRef.current
+      if (pending) setSel({ anchor: pending, head: pending })
       pendingAnchorRef.current = null
       setCrossCellDragging(false)
     }
@@ -2389,4 +2411,307 @@ export function shiftMergesForCol(merges, action, at, prevRowCount, prevColCount
   }
   const nextColCount = action === 'insert' ? prevColCount + 1 : prevColCount - 1
   return normalizeMerges(shifted, prevRowCount, Math.max(0, nextColCount))
+}
+
+// ──────────────────────────────────────────────────────────────────
+// 호버 액션 레일 — 행/열 조작 버튼을 **표 바깥**에 띄운다.
+//
+// 예전엔 이 버튼들이 셀 안에 있었다(표=마지막 셀 위에 absolute 오버레이,
+// 비교표=행이름/헤더 칸 안에 inline). 둘 다 입력을 방해했다 — 오버레이는
+// 입력칸을 덮었고, inline 은 버튼 3개(≈60px)가 칸 폭을 상시 잡아먹었다.
+// 그래서 셀 안에는 입력칸만 남기고, 버튼은 호버한 행/열에 맞춰 표 바깥
+// (행=왼쪽, 열=위쪽)에 떠 있는 레일로 옮겼다.
+//
+// 왜 CSS 만으로 안 되나: 표는 `overflow-x-auto` 박스 안에 있어서, 행에
+// absolute 로 붙여 바깥으로 내보내면 그 박스에 잘린다. 그래서 레일은
+// overflow 박스 *바깥*(외곽 relative div)에 두고, 호버한 행/열의 위치를
+// 재서 맞춘다.
+// ──────────────────────────────────────────────────────────────────
+
+/** 레일이 놓일 자리 — 표 상자를 감싸는 **바깥 래퍼의 padding** 으로 낸다.
+ *
+ *  margin 으로 내면 안 된다: 레일과 표 사이엔 4px 틈(mr-1)이 있는데, margin
+ *  영역은 래퍼의 border-box **밖**이라 셀에서 레일로 마우스를 옮기는 길에 그
+ *  틈을 지나는 순간 mouseleave 가 터져 레일이 사라진다(=버튼을 누를 수 없다).
+ *  padding 으로 내면 레일도 틈도 래퍼 안이라 mouseleave 가 안 뜬다.
+ *
+ *  편집 모드에서만 붙으므로 보기 모드 폭에는 영향이 없다. 편집 모달은 이
+ *  값만큼 편집 폭을 넓혀(RAIL_GUTTER_PX) 표 자체 폭이 화면과 같게 맞춘다. */
+export const RAIL_GUTTER_CLASS = 'pl-10 pt-9'
+export const RAIL_GUTTER_PX = 40
+
+/** 표/비교표 편집기가 공유하는 호버 레일 상태.
+ *
+ *  반환:
+ *   - boxRef      : 외곽 relative div 에 단다(레일의 좌표 기준).
+ *   - rowRef(key) / colRef(key) : 각 <tr> / 헤더 <th> 에 다는 ref 콜백.
+ *   - hoverRow / hoverCol       : 지금 호버 중인 키(없으면 null).
+ *   - setHoverRow / setHoverCol : 셀의 onMouseEnter 에서 호출.
+ *   - clear()     : 외곽 div 의 onMouseLeave 에서 호출.
+ *   - rowPos / colPos : 레일을 놓을 위치({top,height} / {left,width}). 미측정이면 null.
+ *
+ *  위치는 매 렌더마다 다시 잰다 — 셀에 타이핑하면 행 높이가 자라는데,
+ *  한 번만 재면 레일이 어긋난 채로 남기 때문. 값이 바뀔 때만 setState 해서
+ *  루프를 막는다.
+ */
+export function useHoverRails() {
+  const boxRef = useRef(null)
+  const rowEls = useRef(new Map())
+  const colEls = useRef(new Map())
+  const [hoverRow, _setHoverRow] = useState(null)
+  const [hoverCol, _setHoverCol] = useState(null)
+  // clear 예약 취소 함수 — 아래에서 정의되므로 ref 로 건네 선언 순서에 안 묶이게.
+  const cancelClearRef = useRef(null)
+  // 행 레일과 열 레일은 **동시에 뜨지 않는다** — 헤더를 지나 데이터 행으로
+  // 내려가면 열 레일이 남아 이전 열을 가리키고 있어 헷갈린다. 마지막으로
+  // 가리킨 쪽만 살린다.
+  const setHoverRow = useCallback((k) => {
+    cancelClearRef.current?.()
+    _setHoverRow(k)
+    _setHoverCol(null)
+  }, [])
+  const setHoverCol = useCallback((k) => {
+    cancelClearRef.current?.()
+    _setHoverCol(k)
+    _setHoverRow(null)
+  }, [])
+  const [rowPos, setRowPos] = useState(null)
+  const [colPos, setColPos] = useState(null)
+
+  // ref 콜백은 키마다 **같은 함수 인스턴스**를 재사용한다 — 매 렌더 새 함수를
+  // 만들면 React 가 렌더마다 ref 를 떼었다 붙여(old(null) → new(el)) 불필요하게
+  // 요동친다. 캐시는 행/열 수만큼이라 무시할 크기.
+  const rowFns = useRef(new Map())
+  const colFns = useRef(new Map())
+  const rowRef = useCallback((key) => {
+    let fn = rowFns.current.get(key)
+    if (!fn) {
+      fn = (el) => {
+        if (el) rowEls.current.set(key, el)
+        else rowEls.current.delete(key)
+      }
+      rowFns.current.set(key, fn)
+    }
+    return fn
+  }, [])
+  const colRef = useCallback((key) => {
+    let fn = colFns.current.get(key)
+    if (!fn) {
+      fn = (el) => {
+        if (el) colEls.current.set(key, el)
+        else colEls.current.delete(key)
+      }
+      colFns.current.set(key, fn)
+    }
+    return fn
+  }, [])
+
+  // 의존성 배열 없이 매 렌더 실행 — 타이핑으로 행 높이가 자라도 레일이
+  // 따라오게. 아래 setState 는 값이 실제로 바뀔 때만 새 객체를 넣으므로
+  // (같으면 prev 를 그대로 반환 → React 가 리렌더를 건너뜀) 루프가 없다.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => {
+    const box = boxRef.current
+    const boxRect = box?.getBoundingClientRect()
+    const nextRow = (() => {
+      if (hoverRow == null || !boxRect) return null
+      const el = rowEls.current.get(hoverRow)
+      if (!el || !el.isConnected) return null
+      const r = el.getBoundingClientRect()
+      return { top: r.top - boxRect.top, height: r.height }
+    })()
+    const nextCol = (() => {
+      if (hoverCol == null || !boxRect) return null
+      const el = colEls.current.get(hoverCol)
+      if (!el || !el.isConnected) return null
+      const r = el.getBoundingClientRect()
+      return { left: r.left - boxRect.left, width: r.width }
+    })()
+    setRowPos((prev) => (_samePos(prev, nextRow) ? prev : nextRow))
+    setColPos((prev) => (_samePos(prev, nextCol) ? prev : nextCol))
+  })
+
+  // 레일을 지우는 건 **조금 미룬다**. 표 → 레일 사이엔 테두리·서브픽셀 같은
+  // 얇은 데드존이 남을 수 있는데, 즉시 지우면 그 위를 지나는 순간 버튼이
+  // 사라져 누를 수가 없다. 아래 setHoverRow/setHoverCol/keepOpen 이 예약을
+  // 취소하므로, 실제로 떠난 경우에만 지워진다.
+  const clearTimer = useRef(null)
+  const cancelClear = useCallback(() => {
+    if (clearTimer.current) {
+      clearTimeout(clearTimer.current)
+      clearTimer.current = null
+    }
+  }, [])
+  const clear = useCallback(() => {
+    cancelClear()
+    clearTimer.current = setTimeout(() => {
+      clearTimer.current = null
+      _setHoverRow(null)
+      _setHoverCol(null)
+    }, 200)
+  }, [cancelClear])
+  cancelClearRef.current = cancelClear
+  // 언마운트 시 예약 정리(사라진 컴포넌트에 setState 하지 않게).
+  useEffect(() => cancelClear, [cancelClear])
+
+  return {
+    boxRef, rowRef, colRef,
+    hoverRow, hoverCol, setHoverRow, setHoverCol,
+    rowPos, colPos, clear,
+  }
+}
+
+function _samePos(a, b) {
+  if (a === b) return true
+  if (!a || !b) return false
+  // 소수점 흔들림(레이아웃 서브픽셀)으로 매 렌더 setState 하지 않게 반올림 비교.
+  return (
+    Math.round(a.top ?? a.left) === Math.round(b.top ?? b.left) &&
+    Math.round(a.height ?? a.width) === Math.round(b.height ?? b.width)
+  )
+}
+
+/** 표 **왼쪽 바깥**에 뜨는 행 조작 레일. 호버한 행 높이의 가운데에 맞춘다.
+ *  세로로 좁은 행에서도 버튼이 삐져나오지 않게 행이 낮으면 가로로 눕힌다. */
+export function RowActionRail({ pos, onKeepOpen, children }) {
+  if (!pos) return null
+  // 항상 세로 스택 — 한 번에 한 행의 레일만 뜨므로, 행이 낮아 레일이 위아래
+  // 이웃 행 높이까지 걸쳐도 가릴 대상이 없다(표 바깥 여백이라).
+  return (
+    <div
+      // 레일 위로 마우스가 넘어와도 사라지지 않게(버튼을 눌러야 하므로).
+      onMouseEnter={onKeepOpen}
+      onMouseDown={(e) => e.stopPropagation()}
+      style={{ top: pos.top + pos.height / 2 }}
+      className={cn(
+        'absolute right-full mr-1 z-30 -translate-y-1/2 flex flex-col items-center gap-0.5',
+        'rounded-md border bg-background/95 px-0.5 py-0.5 shadow-sm',
+      )}
+    >
+      {children}
+    </div>
+  )
+}
+
+/** 표 **위쪽 바깥**에 뜨는 열 조작 레일. 호버한 열 가운데에 맞춘다. */
+export function ColActionRail({ pos, onKeepOpen, children }) {
+  if (!pos) return null
+  return (
+    <div
+      onMouseEnter={onKeepOpen}
+      onMouseDown={(e) => e.stopPropagation()}
+      style={{ left: pos.left + pos.width / 2 }}
+      className={cn(
+        'absolute bottom-full mb-1 z-30 -translate-x-1/2 flex items-center gap-0.5',
+        'rounded-md border bg-background/95 px-0.5 py-0.5 shadow-sm whitespace-nowrap',
+      )}
+    >
+      {children}
+    </div>
+  )
+}
+
+
+// ──────────────────────────────────────────────────────────────────
+// 툴바 흔들림 방지 — 표 위 도구 칸이 커졌다 작아졌다 하면 표가 통째로
+// 위아래로 밀려서, 방금 보고 있던 셀을 클릭하면 엉뚱한 셀이 눌린다.
+// (VOC: "색상 선택 ui가 뜨면서 표 위치가 변경되어 셀 선택이 잘 안 된다")
+//
+// 원인은 두 가지였다:
+//  ① 격자 테두리 색 팔레트가 **툴바 안에 인라인**으로 펼쳐졌다. 팔레트는
+//     flex-wrap 이고 flex-shrink 가 기본값이라, 화면이 좁으면 maxWidth
+//     (10칸=180px)보다 더 눌려 20색이 4줄·7줄로 접힌다 — 저해상도에서
+//     "세로로 쭉" 늘어나 표를 크게 밀어냈다. → ColorPopoverButton 으로
+//     팝오버(portal, position:absolute)에 넣어 툴바 높이 기여를 버튼
+//     하나로 고정했다.
+//  ② 셀을 선택하면 색·정렬·서식·합치기 컨트롤 4개가 한꺼번에 툴바에
+//     들어와 줄 수가 바뀐다. → useStickyMinHeight 로 한 번 커진 높이를
+//     유지해, 컨트롤이 사라져도 표가 도로 올라오지 않게 했다.
+// ──────────────────────────────────────────────────────────────────
+
+/** 한 번 커진 높이를 **줄이지 않는** 컨테이너용 ref+style.
+ *
+ *  내용이 늘었다 줄었다 해도 바깥 높이는 최고점을 유지하므로, 그 아래
+ *  콘텐츠(표)가 위아래로 흔들리지 않는다. "항상 최대 높이로 예약"과 달리
+ *  실제로 커지기 전까지는 공간을 낭비하지 않는다 — 세로가 아쉬운 저해상도를
+ *  배려한 절충. 대신 처음 한 번은 늘어난다.
+ *
+ *  사용: `const bar = useStickyMinHeight(); <div ref={bar.ref} style={bar.style}>`
+ */
+export function useStickyMinHeight() {
+  const ref = useRef(null)
+  const [minHeight, setMinHeight] = useState(undefined)
+  // 폭이 바뀌면(창 크기 조절 등) 줄바꿈 수가 달라지므로 최고점을 다시 잡는다.
+  // 안 그러면 창을 좁혔다 넓힌 뒤 빈 공간이 계속 남는다.
+  const lastWidth = useRef(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      // scrollHeight 가 아니라 offsetHeight — 지금 실제로 차지한 높이의
+      // 최고점만 기억한다(내용이 넘쳐 잘린 경우까지 예약하지 않게).
+      const h = el.offsetHeight
+      const w = el.offsetWidth
+      const widthChanged =
+        lastWidth.current != null && Math.abs(w - lastWidth.current) > 1
+      lastWidth.current = w
+      setMinHeight((prev) => {
+        if (widthChanged) return h
+        return prev == null || h > prev ? h : prev
+      })
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  return { ref, style: minHeight ? { minHeight } : undefined }
+}
+
+/** 색 하나를 고르는 작은 버튼 + 팝오버 팔레트.
+ *
+ *  인라인 팔레트를 대체한다 — 팝오버는 portal 로 body 에 그려지고
+ *  position:absolute 라 **레이아웃을 밀지 않는다**. 툴바에서 차지하는 건
+ *  이 버튼 하나뿐이라 높이가 변하지 않는다. 팝오버 안에서는 넓으니 한 줄에
+ *  가깝게 펼친다(columns 기본 20). */
+export function ColorPopoverButton({
+  value,
+  onChange,
+  label = '색',
+  title,
+  columns = 20,
+  swatchSize = 16,
+}) {
+  const token = normalizeToken(value)
+  const swatch = COLOR_TOKENS.find((c) => c.token === token)?.swatch ?? null
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          title={title ?? `${label} 고르기`}
+          className="flex items-center gap-1 rounded px-1 py-0.5 text-muted-foreground hover:text-foreground"
+        >
+          <span
+            aria-hidden
+            className="block h-3 w-3 rounded-[2px] border border-border"
+            style={{
+              backgroundColor: swatch ?? 'transparent',
+              // 기본(토큰 없음)은 대각선 빗금으로 "지정 안 함"을 표시.
+              backgroundImage: swatch
+                ? undefined
+                : 'linear-gradient(135deg, transparent 45%, #ef4444 45%, #ef4444 55%, transparent 55%)',
+            }}
+          />
+          {label}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-auto p-2" data-cell-selection-allow>
+        <ColorSwatchPicker
+          value={value}
+          onChange={onChange}
+          size={swatchSize}
+          columns={columns}
+        />
+      </PopoverContent>
+    </Popover>
+  )
 }

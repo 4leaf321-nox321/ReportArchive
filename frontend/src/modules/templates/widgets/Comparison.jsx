@@ -65,6 +65,12 @@ import {
   _richIsEmpty,
   _richSeed,
   sanitizeCaptionHtml,
+  useHoverRails,
+  RowActionRail,
+  ColActionRail,
+  RAIL_GUTTER_CLASS,
+  ColorPopoverButton,
+  useStickyMinHeight,
 } from './_shared'
 import { RichTextRowEditor, RichTextFormatToolbarBody } from './RichTextRowEditor'
 
@@ -615,6 +621,12 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
   const tableBoxStyle = effTableWidthPx
     ? { width: `${effTableWidthPx}px`, maxWidth: '100%' }
     : undefined
+  // 행/CASE 조작 버튼을 표 **바깥** 레일로 뺀다 — 칸 안에 있으면 입력칸 폭을
+  // 상시 잡아먹어(버튼 3개 ≈ 60px) 좁은 열에서 값을 넣기 어려웠다.
+  const rails = useHoverRails()
+  // 도구 칸·레이아웃 옵션 바 높이 잠금 — 아래 표가 위아래로 흔들리지 않게.
+  const toolbarHeight = useStickyMinHeight()
+  const optionBarHeight = useStickyMinHeight()
   // 셀간 화살표 네비게이션. 컬럼 좌표: 0 = 행 라벨, 1..M = case 셀.
   // 행 좌표: 0..N-1 = 데이터 행 (헤더는 Tab 으로만 이동).
   const grid = useGridNavigation()
@@ -1718,9 +1730,15 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           return (
             <th
               key={ci}
+              // CASE 레일 기준은 열과 1:1 인 *맨 아래* 헤더 행의 CASE 열만
+              // (코너=행 라벨 열은 CASE 가 아니고, 윗 행은 병합될 수 있다).
+              ref={isBottom && !isCorner ? rails.colRef(caseIdx) : undefined}
               data-cell-coord={`${hr},${ci}`}
               onMouseDown={(e) => selection.handleMouseDown(e, hr, ci)}
-              onMouseEnter={() => selection.handleMouseEnter(hr, ci)}
+              onMouseEnter={() => {
+                selection.handleMouseEnter(hr, ci)
+                if (isBottom && !isCorner) rails.setHoverCol(caseIdx)
+              }}
               onMouseLeave={() => selection.handleMouseLeave(hr, ci)}
               {...(span?.rs > 1 ? { rowSpan: span.rs } : {})}
               {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
@@ -1767,38 +1785,8 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
               )}
               {isBottom && !isCorner && (
                 <>
-                  <div className="absolute left-0.5 top-0.5 flex gap-0.5 rounded border bg-background/90 opacity-0 shadow-sm group-hover:opacity-100">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-5 w-5"
-                      disabled={caseIdx === 0}
-                      onClick={() => moveCase(caseIdx, -1)}
-                      title="왼쪽으로"
-                    >
-                      <ChevronLeft className="h-3 w-3" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-5 w-5"
-                      disabled={caseIdx === cases.length - 1}
-                      onClick={() => moveCase(caseIdx, 1)}
-                      title="오른쪽으로"
-                    >
-                      <ChevronRight className="h-3 w-3" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-5 w-5 text-destructive"
-                      disabled={cases.length <= 1}
-                      onClick={() => removeCase(caseIdx)}
-                      title="CASE 삭제"
-                    >
-                      <X className="h-3 w-3" />
-                    </Button>
-                  </div>
+                  {/* CASE 이동·삭제 버튼은 표 위쪽 레일로 옮겼다(칸 안에 있으면
+                      헤더 입력을 가림). 여기 남는 건 폭 핸들뿐. */}
                   {ci < totalColCount - 1 && (
                     <div
                       role="separator"
@@ -2015,6 +2003,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           {...captionSkipProps({ content, patch })}
         />
       )}
+      <div ref={optionBarHeight.ref} style={optionBarHeight.style}>
       <EditorOptionBar title="레이아웃">
         <EditorOptionToggle
           label="가로 스크롤"
@@ -2058,10 +2047,14 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                 {opt.label}
               </button>
             ))}
-            <ColorSwatchPicker
+            {/* 색 — 팝오버 팔레트. 인라인으로 펼치면 좁은 화면에서 20색이
+                여러 줄로 접혀 옵션 바가 세로로 커지고, 그만큼 표가 아래로
+                밀려 셀을 잘못 누르게 된다(팝오버는 portal 이라 안 민다). */}
+            <ColorPopoverButton
               value={borderColorTok}
               onChange={(t) => patch({ border_color: t || undefined })}
-              size={16}
+              label="색"
+              title="격자 테두리 색"
             />
           </div>
         )}
@@ -2088,6 +2081,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           hint="표 전체 절대 폭. 비우면 전체 폭을 차지. 좌측 정렬이라 절반 폭 등으로 만들 수 있습니다."
         />
       </EditorOptionBar>
+      </div>
       {cases.length === 0 ? (
         <div className="rounded-md border border-dashed bg-muted/20 px-3 py-4 text-center text-xs text-muted-foreground">
           비교할 CASE 열이 없습니다.
@@ -2102,8 +2096,14 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
         </div>
       ) : (
         <>
+        {/* 도구 칸 — 셀을 선택하면 색·정렬·서식·합치기 컨트롤이 한꺼번에
+            들어와 줄바꿈이 생긴다(이 바는 flex-wrap). 그대로 두면 그때마다
+            아래 표가 밀려 방금 보던 셀을 잘못 누르게 되므로(VOC), 한 번 커진
+            높이를 유지해 표를 고정한다. 표와의 간격(mb-3)도 함께 벌려 둔다. */}
         <div
-          className="flex justify-end items-center gap-2 flex-wrap"
+          ref={toolbarHeight.ref}
+          style={toolbarHeight.style}
+          className="flex justify-end items-center gap-2 flex-wrap mb-3"
           // outside-click 핸들러가 액션 바 클릭으로 selection 을 지우지
           // 못하게 면역 영역으로 표시.
           data-cell-selection-allow
@@ -2129,10 +2129,11 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
             onClear={() => patch({ rows: [] })}
           />
           {/* 헤더(제목) 행 수 — + 로 맨 위에 그룹 헤더 행을 얹고, 헤더 셀을
-              드래그 선택해 '셀 합치기'·'셀 색'으로 병합·색 지정. */}
+              드래그 선택해 '셀 합치기'로 병합, 한 칸 클릭이면 그 칸의
+              '셀 색'·정렬·서식·'셀 분할'. */}
           <div
             className="flex items-center gap-0.5 rounded-md border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"
-            title="헤더(제목) 행 수. + 로 위에 그룹 헤더 행을 추가하고, 셀을 드래그 선택해 '셀 합치기'로 병합·색을 줄 수 있습니다."
+            title="헤더(제목) 행 수. + 로 위에 그룹 헤더 행을 추가하고, 셀을 드래그 선택해 '셀 합치기'로 병합할 수 있습니다. 한 칸만 클릭하면 그 칸에 색·정렬·서식을 주거나 병합을 해제(셀 분할)할 수 있습니다."
             data-cell-selection-allow
           >
             헤더 행
@@ -2300,8 +2301,103 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
         </div>
         {/* 표 폭 핸들이 항상 보이도록, 폭(tableBoxStyle)은 relative 외곽 div
             가 갖고, 핸들은 overflow 박스 *바깥*(외곽 div)에 둔다 — 안에 두면
-            overflow-hidden 에 잘려 사라졌다. */}
-        <div className="relative" style={tableBoxStyle}>
+            overflow-hidden 에 잘려 사라졌다. 행/CASE 레일도 같은 이유로 여기.
+            RAIL_GUTTER_CLASS 가 그 자리(왼쪽·위)를 낸다. */}
+        {/* 레일 자리는 **래퍼의 padding** — 레일과 그 사이 틈까지 이 래퍼 안이라
+            셀→레일로 마우스를 옮겨도 mouseleave 가 뜨지 않는다(레일이 안 사라짐). */}
+        <div className={RAIL_GUTTER_CLASS} onMouseLeave={rails.clear}>
+        <div ref={rails.boxRef} className="relative" style={tableBoxStyle}>
+        {/* 행 레일 — 표 왼쪽 바깥. 호버한 행에 맞춰 뜬다. */}
+        <RowActionRail
+          pos={rails.rowPos}
+          onKeepOpen={() => rails.setHoverRow(rails.hoverRow)}
+        >
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            title="위로"
+            disabled={rails.hoverRow === 0}
+            // 레일이 표 바깥이라 마우스가 행 위에 없다 — 옮긴 행을 따라가야
+            // 연속으로 눌러 계속 올릴 수 있다.
+            onClick={() => {
+              moveRow(rails.hoverRow, -1)
+              rails.setHoverRow(rails.hoverRow - 1)
+            }}
+          >
+            <ChevronUp className="h-3 w-3" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            title="아래로"
+            disabled={rails.hoverRow === rows.length - 1}
+            onClick={() => {
+              moveRow(rails.hoverRow, 1)
+              rails.setHoverRow(rails.hoverRow + 1)
+            }}
+          >
+            <ChevronDown className="h-3 w-3" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-destructive"
+            title="행 삭제"
+            onClick={() => {
+              removeRow(rails.hoverRow)
+              rails.clear()
+            }}
+          >
+            <X className="h-3 w-3" />
+          </Button>
+        </RowActionRail>
+        {/* CASE 레일 — 표 위쪽 바깥. 호버한 CASE 열에 맞춰 뜬다. */}
+        <ColActionRail
+          pos={rails.colPos}
+          onKeepOpen={() => rails.setHoverCol(rails.hoverCol)}
+        >
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            title="왼쪽으로"
+            disabled={rails.hoverCol === 0}
+            onClick={() => {
+              moveCase(rails.hoverCol, -1)
+              rails.setHoverCol(rails.hoverCol - 1)
+            }}
+          >
+            <ChevronLeft className="h-3 w-3" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            title="오른쪽으로"
+            disabled={rails.hoverCol === cases.length - 1}
+            onClick={() => {
+              moveCase(rails.hoverCol, 1)
+              rails.setHoverCol(rails.hoverCol + 1)
+            }}
+          >
+            <ChevronRight className="h-3 w-3" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-destructive"
+            title="CASE 삭제"
+            disabled={cases.length <= 1}
+            onClick={() => {
+              removeCase(rails.hoverCol)
+              rails.clear()
+            }}
+          >
+            <X className="h-3 w-3" />
+          </Button>
+        </ColActionRail>
         <div
           ref={(el) => {
             grid.gridRef.current = el
@@ -2371,9 +2467,13 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                 {cases.map((c, ci) => (
                   <th
                     key={ci}
+                    ref={rails.colRef(ci)}
                     data-cell-coord={`0,${ci + 1}`}
                     onMouseDown={(e) => selection.handleMouseDown(e, 0, ci + 1)}
-                    onMouseEnter={() => selection.handleMouseEnter(0, ci + 1)}
+                    onMouseEnter={() => {
+                      selection.handleMouseEnter(0, ci + 1)
+                      rails.setHoverCol(ci)
+                    }}
                     onMouseLeave={() => selection.handleMouseLeave(0, ci + 1)}
                     className={cn(
                       'px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b group relative',
@@ -2382,16 +2482,6 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                     )}
                   >
                     <div className="flex items-start gap-0.5">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-5 w-5 shrink-0 opacity-0 group-hover:opacity-100"
-                        disabled={ci === 0}
-                        onClick={() => moveCase(ci, -1)}
-                        title="왼쪽으로"
-                      >
-                        <ChevronLeft className="h-3 w-3" />
-                      </Button>
                       <AutoGrowTextarea
                         value={c.label || ''}
                         onChange={(v) => updateCase(ci, { label: v })}
@@ -2406,26 +2496,6 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                         style={{ fontSize: bodyFontPx }}
                         className="bg-transparent border-0 outline-none focus:ring-1 focus:ring-ring rounded px-1 py-0.5 text-center flex-1 min-w-0 font-semibold resize-none whitespace-pre-wrap break-words"
                       />
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-5 w-5 shrink-0 opacity-0 group-hover:opacity-100"
-                        disabled={ci === cases.length - 1}
-                        onClick={() => moveCase(ci, 1)}
-                        title="오른쪽으로"
-                      >
-                        <ChevronRight className="h-3 w-3" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-5 w-5 shrink-0 opacity-0 group-hover:opacity-100 text-destructive"
-                        onClick={() => removeCase(ci)}
-                        disabled={cases.length <= 1}
-                        title="CASE 삭제"
-                      >
-                        <X className="h-3 w-3" />
-                      </Button>
                     </div>
                     {/* 우측 가장자리 드래그 핸들 — 개별 CASE 컬럼 폭 조절.
                         마지막 CASE 는 표 우측 경계 핸들(아래 외곽 div)이 그
@@ -2468,7 +2538,12 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                 const labelSpan = mergeMap.anchors.get(labelKey)
                 const lstyle = cellStyles[`${row.key}::${ROW_LABEL_KEY}`]
                 return (
-                  <tr key={row.key ?? ri} className="border-b last:border-b-0 group">
+                  <tr
+                    key={row.key ?? ri}
+                    ref={rails.rowRef(ri)}
+                    onMouseEnter={() => rails.setHoverRow(ri)}
+                    className="border-b last:border-b-0 group"
+                  >
                     {!labelCovered && (
                       <td
                         data-cell-coord={`${headerOffset + ri},0`}
@@ -2532,35 +2607,6 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                             }}
                             className="flex-1 min-w-0 resize-none rounded-md border border-input bg-background px-2 py-0.5 leading-snug focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring whitespace-pre-wrap break-words"
                           />
-                          <div className="flex flex-col">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-5 w-5 opacity-0 group-hover:opacity-100"
-                              disabled={ri === 0}
-                              onClick={() => moveRow(ri, -1)}
-                            >
-                              <ChevronUp className="h-3 w-3" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-5 w-5 opacity-0 group-hover:opacity-100"
-                              disabled={ri === rows.length - 1}
-                              onClick={() => moveRow(ri, 1)}
-                            >
-                              <ChevronDown className="h-3 w-3" />
-                            </Button>
-                          </div>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-5 w-5 opacity-0 group-hover:opacity-100 text-destructive"
-                            onClick={() => removeRow(ri)}
-                            title="행 삭제"
-                          >
-                            <X className="h-3 w-3" />
-                          </Button>
                         </div>
                       </td>
                     )}
@@ -2667,6 +2713,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           className="absolute right-0 top-0 h-full w-2.5 cursor-col-resize flex items-center justify-center group/twh z-30"
         >
           <span className="block w-1 h-1/4 rounded bg-primary/40 group-hover/twh:bg-primary transition-colors" />
+        </div>
         </div>
         </div>
         </>

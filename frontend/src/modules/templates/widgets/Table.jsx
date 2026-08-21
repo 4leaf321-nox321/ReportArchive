@@ -7,7 +7,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/shared/components/ui/popover'
-import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, NoteInput, PreviewLabel, TextStyleField, captionSkipProps, captionPositionOf, CellAlignControl, computeMergeMap, hAlignClass, normalizeMerges, parseHtmlTableMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation, vAlignClass, _richIsEmpty, _richSeed, sanitizeCaptionHtml } from './_shared'
+import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, NoteInput, PreviewLabel, TextStyleField, captionSkipProps, captionPositionOf, CellAlignControl, computeMergeMap, hAlignClass, normalizeMerges, parseHtmlTableMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation, vAlignClass, _richIsEmpty, _richSeed, sanitizeCaptionHtml, useHoverRails, RowActionRail, ColActionRail, RAIL_GUTTER_CLASS, ColorPopoverButton, useStickyMinHeight } from './_shared'
 import { RichTextRowEditor, RichTextFormatToolbarBody, MIXED_FONT_SIZE } from './RichTextRowEditor'
 import { ColorSwatchPicker, bgTokenClass, colorTokenClass, normalizeToken } from '@/shared/text-color'
 
@@ -359,6 +359,10 @@ export function TableEditor({ props, content, onChange, readOnly }) {
   const tableBoxStyle = effTableWidthPx
     ? { width: `${effTableWidthPx}px`, maxWidth: '100%' }
     : undefined
+  // 행/열 조작 버튼을 표 **바깥** 레일로 뺀다 — 셀 안에 있으면 입력을 가린다.
+  const rails = useHoverRails()
+  // 도구 칸 높이 잠금 — 아래 표가 위아래로 흔들리지 않게.
+  const toolbarHeight = useStickyMinHeight()
 
   function patch(next) {
     const merged = {
@@ -1482,8 +1486,14 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           {...captionSkipProps({ content, patch })}
         />
       )}
+      {/* 도구 칸 — 셀을 선택하면 색·정렬·서식·합치기 컨트롤이 한꺼번에
+          들어와 줄 수가 바뀐다. 그대로 두면 그때마다 아래 표가 위아래로
+          밀려 방금 보던 셀을 잘못 누르게 되므로(VOC), 한 번 커진 높이를
+          유지해 표를 고정한다. 표와의 간격(mb-3)도 함께 벌려 둔다. */}
       <div
-        className="flex justify-end items-center gap-2"
+        ref={toolbarHeight.ref}
+        style={toolbarHeight.style}
+        className="flex justify-end items-center gap-2 mb-3"
         // outside-click 핸들러가 액션 바 클릭으로 selection 을 지우지
         // 못하게 면역 영역으로 표시.
         data-cell-selection-allow
@@ -1628,10 +1638,11 @@ export function TableEditor({ props, content, onChange, readOnly }) {
             절반만" 같은 부분 폭도 가능하고, 편집·뷰 폭이 일치한다. 빈 칸에서
             벗어날 때(blur)·Enter 에 commit 해 입력 중 clamp 점프를 막는다. */}
         {/* 헤더(제목) 행 수 — + 로 맨 위에 그룹 헤더 행을 얹고, 헤더 셀을
-            드래그 선택해 위 액션바의 '셀 합치기'·'셀 색'으로 병합·색 지정. */}
+            드래그 선택해 위 액션바의 '셀 합치기'로 병합, 한 칸 클릭이면
+            그 칸의 '셀 색'·정렬·서식·'셀 분할'. */}
         <div
           className="flex items-center gap-0.5 rounded-md border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"
-          title="헤더(제목) 행 수. + 로 위에 그룹 헤더 행을 추가하고, 셀을 드래그 선택해 '셀 합치기'로 병합·색을 줄 수 있습니다."
+          title="헤더(제목) 행 수. + 로 위에 그룹 헤더 행을 추가하고, 셀을 드래그 선택해 '셀 합치기'로 병합할 수 있습니다. 한 칸만 클릭하면 그 칸에 색·정렬·서식을 주거나 병합을 해제(셀 분할)할 수 있습니다."
           data-cell-selection-allow
         >
           헤더 행
@@ -1718,11 +1729,14 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                   {opt.label}
                 </button>
               ))}
-              {/* 색 — 토큰 팔레트(기본=테마색) */}
-              <ColorSwatchPicker
+              {/* 색 — 팝오버 팔레트. 인라인으로 펼치면 좁은 화면에서 20색이
+                  여러 줄로 접혀 툴바가 세로로 커지고, 그만큼 표가 아래로
+                  밀려 셀을 잘못 누르게 된다(팝오버는 portal 이라 안 민다). */}
+              <ColorPopoverButton
                 value={borderColorTok}
                 onChange={(t) => patch({ border_color: t || undefined })}
-                size={16}
+                label="색"
+                title="격자 테두리 색"
               />
             </>
           )}
@@ -1781,8 +1795,85 @@ export function TableEditor({ props, content, onChange, readOnly }) {
         />
       </div>
       {/* 표 폭 핸들이 항상 보이도록, 폭(tableBoxStyle)은 relative 외곽 div 가
-          갖고, 핸들은 overflow 박스 *바깥*에 둔다(안에 두면 잘려 사라짐). */}
-      <div className="relative" style={tableBoxStyle}>
+          갖고, 핸들은 overflow 박스 *바깥*에 둔다(안에 두면 잘려 사라짐).
+          행/열 조작 레일도 같은 이유로 여기 붙는다 — overflow 박스 안에 두면
+          표 바깥으로 내보낸 순간 잘린다. RAIL_GUTTER_CLASS 가 그 자리(왼쪽·위). */}
+      {/* 레일 자리는 **래퍼의 padding** — 레일과 그 사이 틈까지 이 래퍼 안이라
+          셀→레일로 마우스를 옮겨도 mouseleave 가 뜨지 않는다(레일이 안 사라짐). */}
+      <div className={RAIL_GUTTER_CLASS} onMouseLeave={rails.clear}>
+      <div ref={rails.boxRef} className="relative" style={tableBoxStyle}>
+      {/* 행 레일 — 표 왼쪽 바깥. 호버한 행에 맞춰 뜬다. */}
+      <RowActionRail
+        pos={rails.rowPos}
+        onKeepOpen={() => rails.setHoverRow(rails.hoverRow)}
+      >
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          title="위로"
+          disabled={rails.hoverRow === 0}
+          // 레일이 표 바깥이라 마우스가 행 위에 없다 — 옮긴 행을 따라가야
+          // 연속으로 눌러 계속 올릴 수 있다(셀 안 버튼일 땐 마우스가 기준이었음).
+          onClick={() => {
+            moveRow(rails.hoverRow, -1)
+            rails.setHoverRow(rails.hoverRow - 1)
+          }}
+        >
+          <ChevronUp className="h-3 w-3" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          title="아래로"
+          disabled={rails.hoverRow === rows.length - 1}
+          onClick={() => {
+            moveRow(rails.hoverRow, 1)
+            rails.setHoverRow(rails.hoverRow + 1)
+          }}
+        >
+          <ChevronDown className="h-3 w-3" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 text-destructive"
+          title="행 삭제"
+          onClick={() => {
+            removeRow(rails.hoverRow)
+            rails.clear()
+          }}
+        >
+          <X className="h-3 w-3" />
+        </Button>
+      </RowActionRail>
+      {/* 열 레일 — 표 위쪽 바깥. 호버한 열에 맞춰 뜬다. */}
+      <ColActionRail
+        pos={rails.colPos}
+        onKeepOpen={() => rails.setHoverCol(rails.hoverCol)}
+      >
+        <div data-cell-selection-allow>
+          <ColumnTypeSelect
+            value={cols[rails.hoverCol]?.type}
+            onChange={(t) => setColumnType(rails.hoverCol, t)}
+            options={cols[rails.hoverCol]?.options}
+            onOptionsChange={(o) => setColumnOptions(rails.hoverCol, o)}
+          />
+        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 text-destructive"
+          title="열 삭제"
+          onClick={() => {
+            removeColumn(rails.hoverCol)
+            rails.clear()
+          }}
+        >
+          <X className="h-3 w-3" />
+        </Button>
+      </ColActionRail>
       <div
         ref={(el) => {
           // 두 훅 모두 같은 wrapper 를 root 로 씀 — grid 키보드 nav 는
@@ -1796,11 +1887,10 @@ export function TableEditor({ props, content, onChange, readOnly }) {
         style={bodyTextStyle}
         onMouseUp={selection.handleMouseUp}
       >
-        {/* Edit mode: same column structure as the read-only render. Row
-            action buttons (move/delete) and per-column delete render as
-            hover overlays inside the existing cells, so neither view nor
-            edit mode reserves space for them — both modes have identical
-            data column widths. */}
+        {/* Edit mode: same column structure as the read-only render. 행/열
+            조작 버튼은 셀 안이 아니라 표 바깥 레일(위 RowActionRail /
+            ColActionRail)에 있으므로, 셀 안에는 입력칸만 있고 데이터 열 폭은
+            보기 모드와 그대로 같다. */}
         <table className={`w-full text-sm table-fixed ${gridClass}`} style={gridVars}>
           <colgroup>
             {cols.map((c, i) => (
@@ -1823,10 +1913,16 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                       return (
                         <th
                           key={ci}
+                          // 열 레일 기준은 열과 1:1 인 *맨 아래* 헤더 행만
+                          // (위 행은 병합돼 여러 열에 걸칠 수 있어 기준이 안 된다).
+                          ref={isBottom ? rails.colRef(ci) : undefined}
                           {...(isBottom ? { 'data-col-idx': ci } : {})}
                           data-cell-coord={`${hr},${ci}`}
                           onMouseDown={(e) => selection.handleMouseDown(e, hr, ci)}
-                          onMouseEnter={() => selection.handleMouseEnter(hr, ci)}
+                          onMouseEnter={() => {
+                            selection.handleMouseEnter(hr, ci)
+                            if (isBottom) rails.setHoverCol(ci)
+                          }}
                           onMouseLeave={() => selection.handleMouseLeave(hr, ci)}
                           {...(span?.rs > 1 ? { rowSpan: span.rs } : {})}
                           {...(span?.cs > 1 ? { colSpan: span.cs } : {})}
@@ -1849,32 +1945,6 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                               className="w-full min-h-[1.5rem] rounded px-1 py-0.5 text-xs whitespace-pre-wrap break-words"
                             />
                           </div>
-                          {/* 열 입력 형식(텍스트/숫자) — 맨 아래 헤더 행(열과
-                              1:1)에만, 호버 시 좌상단에. */}
-                          {isBottom && (
-                            <div
-                              className="absolute left-0.5 top-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-20"
-                              data-cell-selection-allow
-                            >
-                              <ColumnTypeSelect
-                                value={c.type}
-                                onChange={(t) => setColumnType(ci, t)}
-                                options={c.options}
-                                onOptionsChange={(o) => setColumnOptions(ci, o)}
-                              />
-                            </div>
-                          )}
-                          {isBottom && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="absolute right-0.5 top-1/2 -translate-y-1/2 h-5 w-5 opacity-0 group-hover:opacity-100 text-destructive bg-background/90 border shadow-sm"
-                              onClick={() => removeColumn(ci)}
-                              title="열 삭제"
-                            >
-                              <X className="h-3 w-3" />
-                            </Button>
-                          )}
                           {isBottom && ci < cols.length - 1 && (
                             <div
                               role="separator"
@@ -1909,10 +1979,14 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                     return (
                     <th
                       key={i}
+                      ref={rails.colRef(i)}
                       data-col-idx={i}
                       data-cell-coord={`0,${i}`}
                       onMouseDown={(e) => selection.handleMouseDown(e, 0, i)}
-                      onMouseEnter={() => selection.handleMouseEnter(0, i)}
+                      onMouseEnter={() => {
+                        selection.handleMouseEnter(0, i)
+                        rails.setHoverCol(i)
+                      }}
                       onMouseLeave={() => selection.handleMouseLeave(0, i)}
                       className={`px-1 py-1 text-center font-medium text-xs text-muted-foreground border-b group relative ${selH ? 'bg-primary/10 ring-1 ring-primary/40' : ''}`}
                     >
@@ -1932,27 +2006,6 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                         />
                         {c.required && <span className="text-destructive">*</span>}
                       </div>
-                      {/* 열 입력 형식(텍스트/숫자) — 호버 시 좌상단. */}
-                      <div
-                        className="absolute left-0.5 top-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-20"
-                        data-cell-selection-allow
-                      >
-                        <ColumnTypeSelect
-                          value={c.type}
-                          onChange={(t) => setColumnType(i, t)}
-                          options={c.options}
-                          onOptionsChange={(o) => setColumnOptions(i, o)}
-                        />
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="absolute right-0.5 top-1/2 -translate-y-1/2 h-5 w-5 opacity-0 group-hover:opacity-100 text-destructive bg-background/90 border shadow-sm"
-                        onClick={() => removeColumn(i)}
-                        title="열 삭제"
-                      >
-                        <X className="h-3 w-3" />
-                      </Button>
                       {i < cols.length - 1 && (
                         <div
                           role="separator"
@@ -1980,11 +2033,15 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           </thead>
           <tbody>
             {rows.map((row, rowIdx) => (
-              <tr key={rowIdx} className="border-b last:border-b-0 group">
+              <tr
+                key={rowIdx}
+                ref={rails.rowRef(rowIdx)}
+                onMouseEnter={() => rails.setHoverRow(rowIdx)}
+                className="border-b last:border-b-0 group"
+              >
                 {cols.map((c, ci) => {
                   // 편집모드에서도 covered 셀은 출력하지 않음 — 옆 anchor 의
-                  // rowSpan/colSpan 이 자리를 덮음. 단 행 끝 action overlay
-                  // 가 사라지지 않게 isLast 판정은 *원래* 마지막 컬럼 기준.
+                  // rowSpan/colSpan 이 자리를 덮음.
                   if (mergeMap.covered.has(`${rowIdx},${ci}`)) return null
                   const span = mergeMap.anchors.get(`${rowIdx},${ci}`)
                   const isLast = ci === cols.length - 1
@@ -2028,41 +2085,6 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                         defaultSizePx={cellDefaultSizePx}
                         cellSize={cellSizePx(rowIdx, c.key)}
                       />
-                      {/* Row action overlay — only on the last cell of a row.
-                          Hidden until the row is hovered, then floats over
-                          the right side of the cell on a small pop-out card
-                          with a backdrop so it stays readable. No layout
-                          impact at idle, so widths match view mode. */}
-                      {isLast && (
-                        <div className="absolute right-0.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 bg-background/95 rounded border shadow-sm px-0.5">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-6 w-6"
-                            disabled={rowIdx === 0}
-                            onClick={() => moveRow(rowIdx, -1)}
-                          >
-                            <ChevronUp className="h-3 w-3" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-6 w-6"
-                            disabled={rowIdx === rows.length - 1}
-                            onClick={() => moveRow(rowIdx, 1)}
-                          >
-                            <ChevronDown className="h-3 w-3" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-6 w-6 text-destructive"
-                            onClick={() => removeRow(rowIdx)}
-                          >
-                            <X className="h-3 w-3" />
-                          </Button>
-                        </div>
-                      )}
                     </td>
                   )
                 })}
@@ -2100,6 +2122,7 @@ export function TableEditor({ props, content, onChange, readOnly }) {
         className="absolute right-0 top-0 h-full w-2.5 cursor-col-resize flex items-center justify-center group/twh z-30"
       >
         <span className="block w-1 h-1/4 rounded bg-primary/40 group-hover/twh:bg-primary transition-colors" />
+      </div>
       </div>
       </div>
       <div className="flex items-center gap-2 flex-wrap">

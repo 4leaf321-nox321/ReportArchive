@@ -18,7 +18,15 @@ import {
 } from '@/modules/reports/api'
 import { useReportTabs } from '@/shared/reports/ReportTabsContext'
 
-const SOURCE_LABEL = { save: '저장', restore: '되돌림', publish: '게시' }
+// 'mcp'(AI 수정)·'baseline'(버전 기능 이전 보고서의 최초 스냅샷, p93)이
+// 빠져 있어 원문 그대로 노출됐다. baseline 은 가지치기에서 제외돼 영구 보존된다.
+const SOURCE_LABEL = {
+  save: '저장',
+  restore: '되돌림',
+  publish: '게시',
+  mcp: 'AI 수정',
+  baseline: '최초',
+}
 
 function human(n) {
   let f = Number(n) || 0

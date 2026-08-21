@@ -66,6 +66,34 @@ def _column_filters_from_saved(filters: dict) -> dict:
     return cf
 
 
+def matching_report_ids(db: Session, owner_id: int, saved: SavedSearch) -> Optional[set[int]]:
+    """저장검색에 걸리는 보고서 id 집합(가시성 ∩ 필터). None = 제한 없음.
+
+    `matching_new_reports` 가 쓰던 ①~④ 를 그대로 떼어냈다 — **같은 필터 경로**를
+    써야 "구독 알림에 걸린 것" 과 "지금 실행한 결과" 가 갈라지지 않는다.
+    (저쪽은 여기에 watermark·검색어를 더한다.)"""
+    f = saved.filters or {}
+    scope = all_visible_report_ids(db, owner_id)
+    base: Optional[set[int]] = set(scope) if scope is not None else None
+
+    cf = filtered_report_ids(db, **_column_filters_from_saved(f))
+    if cf is not None:
+        base = cf if base is None else (base & cf)
+
+    ent_ids = [int(x) for x in (f.get("entityIds") or [])]
+    if ent_ids:
+        ef = entity_filter_report_ids(db, ent_ids, rollup=bool(f.get("entityRollup")))
+        base = ef if base is None else (base & ef)
+
+    if f.get("year") is not None:
+        try:
+            yf = report_ids_in_year(db, int(f["year"]))
+            base = yf if base is None else (base & yf)
+        except (ValueError, TypeError):
+            pass
+    return base
+
+
 def matching_new_reports(
     db: Session, owner_id: int, saved: SavedSearch
 ) -> list[tuple[int, str]]:
@@ -74,30 +102,9 @@ def matching_new_reports(
     빈 목록(구독 켤 때 watermark 를 now 로 세팅하는 계약)."""
     if saved.seen_watermark is None:
         return []
-    f = saved.filters or {}
 
-    # ① 가시성 스코프(소유자 기준).
-    scope = all_visible_report_ids(db, owner_id)
-    base: Optional[set[int]] = set(scope) if scope is not None else None
-
-    # ② 컬럼 필터(날짜/종류/작성자/단계/진행/태그).
-    cf = filtered_report_ids(db, **_column_filters_from_saved(f))
-    if cf is not None:
-        base = cf if base is None else (base & cf)
-
-    # ③ 엔티티 태그 필터.
-    ent_ids = [int(x) for x in (f.get("entityIds") or [])]
-    if ent_ids:
-        ef = entity_filter_report_ids(db, ent_ids, rollup=bool(f.get("entityRollup")))
-        base = ef if base is None else (base & ef)
-
-    # ④ 자료연도.
-    if f.get("year") is not None:
-        try:
-            yf = report_ids_in_year(db, int(f["year"]))
-            base = yf if base is None else (base & yf)
-        except (ValueError, TypeError):
-            pass
+    # ①~④ 가시성·컬럼·엔티티·연도 — 실행(run)과 **같은 경로**를 쓴다.
+    base = matching_report_ids(db, owner_id, saved)
 
     if base is not None and not base:
         return []

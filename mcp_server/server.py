@@ -754,6 +754,90 @@ async def list_submittable_composites(
     }
 
 
+@mcp.tool()
+async def list_report_files(report_id: int, ctx: Context) -> dict:
+    """이 보고서가 쓰는 **파일 목록**(이미지·첨부·영상 등) — file_id·파일명·크기·위치.
+
+    `get_report` 본문에는 파일이 **file_id 참조로만** 들어 있어서, 어떤 파일이 붙어
+    있는지 보려면 본문을 통째로 읽어야 했다. 이걸로 목록만 가볍게 본다.
+    실제 내용이 필요하면 그 file_id 를 `download_file` 에 넘긴다.
+
+    `used_at` 이 그 파일이 쓰인 위치([{page, block_id}]) — 같은 파일이 여러 곳에
+    쓰이면 여러 개다. `missing: true` 면 본문은 참조하는데 파일이 지워진 것이니
+    **사용자에게 알려라**(화면에서 깨져 보인다)."""
+    return await _get(ctx, f"/api/reports/{report_id}/files")
+
+
+@mcp.tool()
+async def list_alert_rules(ctx: Context) -> dict:
+    """**[시스템 관리자 전용]** 온톨로지 경보 규칙 목록 — 무엇을 감시하고 있는지.
+
+    "지금 무슨 경보가 걸려 있어?" 를 풀 때 여기서 rule id 를 찾고
+    `list_alert_firing(rule_id)` 로 실제 걸린 대상을 본다.
+    관리자 토큰이 아니면 403 이 온다 — 그땐 사용자에게 그렇게 알려라(일반 사용자는
+    자기에게 온 것만 `list_my_notifications` 로 본다)."""
+    return await _get(ctx, "/api/alerts/rules")
+
+
+@mcp.tool()
+async def list_alert_firing(
+    rule_id: int, ctx: Context, limit: int = 50, offset: int = 0
+) -> dict:
+    """**[시스템 관리자 전용]** 그 경보 규칙에 **지금 걸려 있는 대상** 목록.
+    rule_id 는 `list_alert_rules` 가 준 값.
+
+    각 항목: target_type·target_id·context(왜 걸렸는지)·first_fired_at(처음 걸린
+    시각)·last_seen_at. 오래 걸려 있는 것(first_fired_at 이 옛날)이 방치된 것이니
+    보고할 때 그 점을 짚어라."""
+    return await _get(
+        ctx, f"/api/alerts/rules/{rule_id}/firing",
+        {"limit": limit, "offset": offset},
+    )
+
+
+@mcp.tool()
+async def list_saved_searches(ctx: Context) -> dict:
+    """내 **저장된 검색(스마트 폴더)** 목록 — 이름·검색어·구독 여부.
+
+    사용자가 "내 스마트폴더", "저장해둔 검색" 을 말하면 여기서 id 를 찾고
+    `run_saved_search(id)` 로 실행한다. 저장된 필터를 네가 손으로 옮겨
+    `list_reports` 에 넣으려 하지 마라 — 필터가 내부 id 형식이라 **조용히 어긋난다.**"""
+    rows = await _get(ctx, "/api/saved-searches")
+    if isinstance(rows, dict):
+        if rows.get("error"):
+            return rows
+        rows = rows.get("items") or []
+    # 백엔드는 리스트를 그대로 준다. 0건이면 도구 결과가 **빈 문자열**이라 모델이
+    # "못 불렀다" 와 "없다" 를 구분 못 한다 — 다른 목록 도구처럼 감싸서 준다.
+    return {
+        "saved_searches": [
+            {
+                "id": r.get("id"), "name": r.get("name"),
+                "query": r.get("query"), "mode": r.get("mode"),
+                "subscribed": r.get("subscribed"),
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+
+
+@mcp.tool()
+async def run_saved_search(
+    saved_search_id: int, ctx: Context, limit: int = 30, offset: int = 0
+) -> dict:
+    """저장된 검색을 **지금 실행**해 걸리는 보고서 목록을 받는다.
+    id 는 `list_saved_searches` 가 준 값.
+
+    구독 알림이 쓰는 것과 **같은 필터**를 서버가 태운다 — 그래서 "알림 온 그 조건"
+    과 결과가 어긋나지 않는다(알림은 새 것만, 이건 전부).
+    반환은 `list_reports` 와 같은 모양 + `saved_search`(이름·검색어·구독 여부)."""
+    return await _get(
+        ctx, f"/api/saved-searches/{saved_search_id}/results",
+        {"limit": limit, "offset": offset},
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 협업 — 사람과 문서 안에서 주고받는다. 지시를 채팅으로 옮겨 적을 필요 없이
 # "댓글 반영해줘" 가 되게 하는 축. 전부 사용자 권한 그대로 동작한다.

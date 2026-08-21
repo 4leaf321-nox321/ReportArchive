@@ -6,7 +6,7 @@
 `get_guide(topic)` 이 여기서 읽어 준다. 이 파일만 고치면 모두에게 즉시 반영된다.
 
 주제 구분자: `<!--@ 주제이름 -->`. 순서는 상관없다. -->
-GUIDE_VERSION: 2026-08-21h
+GUIDE_VERSION: 2026-08-22a
 
 <!--@ overview -->
 ## 무엇을 하려는가 → 어떤 도구
@@ -29,6 +29,8 @@ GUIDE_VERSION: 2026-08-21h
 | 표에 줄 추가/셀 수정/줄 삭제 | `append_rows`/`patch_cells`/`remove_rows` | 통째로면 ↑ |
 | 잘못 만든 초안 치우기 | `trash_report` | 게시된 글은 불가 |
 | 게시된 글 내리기 | `request_unpublish` | 요청만·사람이 승인 |
+| 보고서에 붙은 파일 보기 | `list_report_files` | 내용은 `download_file` |
+| 내 스마트폴더 | `list_saved_searches` → `run_saved_search` | 필터를 손으로 옮기지 말 것 |
 | 리뷰 의견 처리 | `list_comments`→(수정)→`reply_comment` | — |
 | 잘못 고침 | `list_versions`→`restore_version` | — |
 | 게시판에 올리기 | `preview_publish`→(확인)→`publish_report` | **2단계 필수** |
@@ -55,6 +57,9 @@ GUIDE_VERSION: 2026-08-21h
 - `mcp__reportarchive__list_versions` / `restore_version` — 수정 이력 보기 · 되돌리기
 - `mcp__reportarchive__trash_report` — 내가 쓴 **미게시 초안**을 휴지통으로(복구 가능)
 - `mcp__reportarchive__request_unpublish` — 게시된 글을 **내려달라고 요청**(승인은 사람)
+- `mcp__reportarchive__list_report_files` — 보고서에 붙은 파일 목록(file_id·위치)
+- `mcp__reportarchive__list_saved_searches` / `run_saved_search` — 내 스마트폴더
+- `mcp__reportarchive__list_alert_rules` / `list_alert_firing` — 경보(**시스템 관리자 전용**)
 - `mcp__reportarchive__list_comments` / `reply_comment` / `resolve_thread` — 리뷰 의견 읽기·답글·종료
 - `mcp__reportarchive__list_my_notifications` — 내게 온 알림("나 뭐 할 거 있어?")
 - `mcp__reportarchive__get_report` — 보고서 1건 조회(이미지·첨부는 file_id 참조만)
@@ -254,6 +259,14 @@ create_report_draft("<빈템플릿id>", 1, "분기 리뷰", {}, extra_blocks=[
 | `period` | `today`\|`this_week`\|`this_month`\|`this_year` | |
 | `date_from` / `date_to` | `YYYY-MM-DD` | |
 | `sort` | `recent`(기본)\|`oldest`\|`relevance` | list_reports 전용 |
+
+### 저장된 검색(스마트 폴더)
+사용자가 "내 스마트폴더", "저장해둔 검색" 을 말하면 `list_saved_searches()` 로 id 를 찾고
+`run_saved_search(id)` 로 실행한다.
+
+**저장된 필터를 손으로 옮겨 `list_reports` 에 넣지 마라** — 저장 필터는 내부 id·camelCase 라
+도구 인자와 어휘가 다르고, 옮기다 어긋나면 **에러 없이 다른 결과**가 나온다. 서버가 구독
+알림과 같은 필터 경로로 실행해 준다(알림은 새 것만, 실행은 전부).
 
 ### 셋 중 무엇을 쓰나
 - `search_reports(query, ...)` — **본문 내용**으로. 하이브리드(키워드+의미)라 표현이 달라도

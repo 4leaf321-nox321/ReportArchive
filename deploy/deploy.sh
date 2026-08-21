@@ -174,6 +174,13 @@ setup_mcp() {
     # 1) 소스 배치
     as_op mkdir -p "$md"
     install -o "$OPERATOR" -g "$OPERATOR" -m 644 "$HERE/mcp_server/server.py" "$md/server.py"
+    # 사용 가이드 — get_guide 가 읽는 본문. server.py 옆 guide/ 에 있어야 한다.
+    # 이게 빠지면 get_guide 가 "가이드를 읽을 수 없습니다" 를 돌려주고, AI 는
+    # 도구 설명만으로 일하게 된다(치명적이진 않지만 품질이 떨어진다).
+    if [[ -d "$HERE/mcp_server/guide" ]]; then
+        as_op mkdir -p "$md/guide"
+        as_op cp -r "$HERE/mcp_server/guide/." "$md/guide/"
+    fi
     install -o "$OPERATOR" -g "$OPERATOR" -m 644 "$HERE/mcp_server/requirements.txt" "$md/requirements.txt"
     [[ -f "$HERE/mcp_server/README.md" ]] \
         && install -o "$OPERATOR" -g "$OPERATOR" -m 644 "$HERE/mcp_server/README.md" "$md/README.md" || true

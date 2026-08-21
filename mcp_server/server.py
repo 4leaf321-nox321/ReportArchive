@@ -18,6 +18,7 @@ Claude Code 등록(사용자별 토큰):
 import base64
 import binascii
 import os
+import re
 
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
@@ -140,6 +141,74 @@ async def _post_multipart(ctx, path, *, filename, content, mime_type):
                 headers=_forward_headers(ctx),
             )
         )
+
+
+# --------------------------------------------------------------------------- #
+# 사용 가이드 — **서버가 쥔다.** 로컬 스킬에 본문을 두면 사람마다 복사 시점이
+# 달라 낡는다(v0.147.0 에서 안내가 162줄 바뀌었는데 복사 안 한 사람에겐 전달되지
+# 않았다). 로컬엔 짧은 스텁만 두고 본문은 여기서 읽어 준다.
+# --------------------------------------------------------------------------- #
+_GUIDE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "guide", "GUIDE.md")
+_GUIDE_TOPICS = (
+    "overview", "write", "find", "edit", "comments", "publish", "check", "composites",
+)
+
+
+def _guide_sections() -> tuple[str, dict]:
+    """GUIDE.md 를 `<!--@ 주제 -->` 로 갈라 {주제: 본문}. 매 호출마다 읽는다 —
+    파일 하나라 비용이 무시할 만하고, 서버 재시작 없이 가이드를 고칠 수 있다."""
+    try:
+        raw = open(_GUIDE_PATH, encoding="utf-8").read()
+    except OSError:
+        return "?", {}
+    version = "?"
+    for line in raw.split("\n")[:20]:
+        if line.startswith("GUIDE_VERSION:"):
+            version = line.split(":", 1)[1].strip()
+            break
+    out, cur = {}, None
+    for line in raw.split("\n"):
+        m = re.match(r"<!--@\s*(\w+)\s*-->", line.strip())
+        if m:
+            cur = m.group(1)
+            out[cur] = []
+        elif cur:
+            out[cur].append(line)
+    return version, {k: "\n".join(v).strip() for k, v in out.items()}
+
+
+@mcp.tool()
+async def get_guide(ctx: Context, topic: str | None = None) -> dict:
+    """**ReportArchive 작업을 시작하기 전에 먼저 부른다.** 도구가 40개가 넘어서,
+    무엇을 어떤 순서로 쓸지 이 가이드가 정한다(서버가 최신본을 쥔다).
+
+    `topic` 없이 부르면 **overview** — "하려는 일 → 어떤 도구" 표와 기본 습관.
+    대개 이것만으로 충분하고, 세부가 필요하면 그때 주제를 지정한다:
+      - `write` 보고서 새로 쓰기(블록 형식·위젯 직접 만들기·여러 페이지)
+      - `find` 조직·폴더로 찾기   · `edit` 고치기(표 한 줄·되돌리기)
+      - `comments` 댓글 반영      · `publish` 게시(2단계)
+      - `check` 자기 점검         · `composites` 종합보고 안건
+
+    한 번에 다 받지 마라 — 필요한 주제만 받는 게 싸다."""
+    version, secs = _guide_sections()
+    if not secs:
+        return {"error": "가이드를 읽을 수 없습니다(서버 설치 문제). "
+                         "도구 설명만으로 진행하되 사용자에게 알리세요."}
+    if topic:
+        key = topic.strip().lower()
+        if key not in secs:
+            return {
+                "error": f"그런 주제가 없습니다: {topic}",
+                "topics": sorted(secs.keys()),
+            }
+        return {"guide_version": version, "topic": key, "content": secs[key]}
+    return {
+        "guide_version": version,
+        "topic": "overview",
+        "content": secs.get("overview", ""),
+        "more_topics": [t for t in _GUIDE_TOPICS if t in secs and t != "overview"],
+        "note": "세부가 필요하면 get_guide(topic=...) 로 그 주제만 받아라.",
+    }
 
 
 @mcp.tool()

@@ -68,6 +68,9 @@ cp mcp_server/requirements.txt "$STAGE/mcp_server/"
 [[ -f mcp_server/README.md ]] && cp mcp_server/README.md "$STAGE/mcp_server/" || true
 # 작성 스킬(사용자가 ~/.claude/skills 로 설치) — 번들에 동봉
 [[ -d mcp_server/skill ]] && cp -r mcp_server/skill "$STAGE/mcp_server/skill" || true
+# 사용 가이드(get_guide 가 읽는 본문) — **서버가 쥔다.** 빠지면 get_guide 가
+# 빈 응답을 주고 AI 는 도구 설명만으로 헤맨다.
+[[ -d mcp_server/guide ]] && cp -r mcp_server/guide "$STAGE/mcp_server/guide" || true
 # 빌드 머신(인터넷 O)에서 휠을 받아 둔다. 운영 호스트가 airgap 이어도 설치되게.
 # 빌드/운영 아키텍처가 같다고 가정(둘 다 linux x86_64). 다르면 --platform 지정 필요.
 if python3 -m pip download --only-binary=:all: \

@@ -23,17 +23,24 @@ claude mcp add --transport http reportarchive http://<host>:3002/mcp \
 > **토큰 얻는 법**: 웹에 로그인한 뒤 개발자도구 → Application/Storage 의 JWT, 또는 관리자가 발급.
 > (Phase 4 에서 "MCP용 개인 토큰 발급" 화면을 붙이면 더 편함.)
 
-## 작성 스킬 설치 (선택, 품질↑)
-`skill/reportarchive/` 는 Claude 가 보고서를 **잘** 작성하게 돕는 Agent Skill 이다(블록 형식·
-워크플로·에러 재시도 노하우). 각자 Claude Code 에 설치:
+## 스킬 설치 (한 번만 — 이후 갱신 불필요)
+`skill/reportarchive/` 는 **짧은 스텁**이다. 실제 사용 안내(도구 선택 표·각 절차·블록
+형식)는 **서버가 쥐고**(`guide/GUIDE.md`) `get_guide()` 로 내려준다.
+
 ```bash
 mkdir -p ~/.claude/skills
 cp -r skill/reportarchive ~/.claude/skills/reportarchive
 ```
-설치하면 "보고서 써줘" 류 요청에 자동 활성화되고, `/reportarchive` 로 직접 호출도 된다.
-(스킬 없이도 MCP 도구만으로 동작은 하지만, 스킬이 있으면 형식 실수·재시도가 줄어든다.)
+
+**한 번만 복사하면 된다.** 예전엔 안내 본문이 이 파일에 있어서 릴리스마다 각자 다시
+복사해야 했고(안 하면 개선이 전달되지 않았다), 실제로 도구가 27→43개로 늘고 안내가
+162줄 바뀐 릴리스에서 그 문제가 드러났다. 그래서 본문을 서버로 옮겼다.
+
+> 안내를 고칠 땐 저장소의 `mcp_server/guide/GUIDE.md` 를 고친다 — 배포하면 모두에게
+> 즉시 반영된다. 스텁(SKILL.md)은 거의 바뀔 일이 없다.
 
 ## 도구
+- **`get_guide(topic?)`** — 사용 안내(서버 최신본). 작업 시작 전에 먼저 부른다
 - `list_templates` / `describe_template(template_id, version)`
 - **찾기**: `search_reports(query, board?, folder?, …)` — 의미+키워드 검색(근거 발췌) /
   `list_reports(board?, folder?, author?, …)` — 조건으로 모아서 나열(최대 100건) /

@@ -75,7 +75,7 @@ def test_comment_via_marks_ai_authored():
             "template_id": tid, "template_version": 1, "title": "via",
             "blocks": {"h": "제목"}})
         assert r.status_code == 201, r.text
-        rid = r.json()["data"]["report"]["id"]
+        rid = r.json()["data"]["report_id"]
         rids.append(rid)
 
         # 사람이 웹에서 스레드를 연다 → via='web'

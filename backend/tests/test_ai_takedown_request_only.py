@@ -66,7 +66,7 @@ def _mounted_report(c, tid, title):
     rid = c.post("/api/reports/ai-draft", headers=H, json={
         "template_id": tid, "template_version": 1, "title": title,
         "blocks": {"h": {"text": "제목"}},
-    }).json()["data"]["report"]["id"]
+    }).json()["data"]["report_id"]
     m = c.post("/api/mounts", headers=H,
                json={"report_id": rid, "workspace_slugs": ["dx"]})
     assert m.status_code in (200, 201), m.text

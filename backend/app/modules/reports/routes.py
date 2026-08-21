@@ -857,7 +857,13 @@ def create_ai_draft(
         return error_response(str(exc), status_code=400)
     return created_response(
         data={
-            "report": _read_with_perms(db, actor, report),
+            # 다른 도구는 전부 `report_id` 인데 여기만 report.id(중첩)였다 — 모델이
+            # 헷갈리는 자리다. 전체 report 객체는 만든 직후엔 쓸모가 적고
+            # owner_email·잠금 필드까지 실려 나가므로 필요한 것만 남긴다.
+            "report_id": report.id,
+            "title": report.title,
+            "page_count": len(report.pages or []) or 1,
+            "phase": report.phase.value,
             "warnings": warnings,
             "url": f"/w/{report.workspace_slug}/reports/{report.id}",
         }
@@ -1079,6 +1085,33 @@ def update_ai_draft_rows(
     })
 
 
+def browse_projection(db: Session, rows, needle: str = "") -> list[dict]:
+    """보고서 행 → 목록용 슬림 프로젝션(게시 배치 포함).
+
+    저장검색 실행처럼 **다른 경로도 같은 모양**을 돌려줘야 소비자(특히 AI)가
+    형태를 두 벌 배우지 않는다. 게시 배치는 bulk 로 한 번에 뽑는다(N+1 방지)."""
+    placements = services.mount_placements_bulk(db, [r.id for r in rows])
+    return [
+        {
+            "report_id": r.id,
+            "title": r.title,
+            "report_date": r.report_date,
+            "author": r.owner.name if r.owner else None,
+            "phase": r.phase.value,
+            "tags": list(r.tags or []),
+            "boards": [
+                {"slug": b["slug"], "name": b["name"],
+                 "folders": [f["name"] for f in b["folders"]]}
+                for b in placements.get(r.id, [])
+            ],
+            "snippet": services.search_snippet(r.search_text, needle) if needle else None,
+            "updated_at": r.updated_at,
+            "url": f"/w/{r.workspace_slug}/reports/{r.id}",
+        }
+        for r in rows
+    ]
+
+
 @router.get("/browse")
 def browse_reports(
     q: str = Query(default="", max_length=200, description="제목·본문 부분일치(빈 값=브라우즈)"),
@@ -1213,27 +1246,7 @@ def browse_reports(
         sort=sort if sort in ("recent", "oldest", "relevance") else "recent",
         user_scope=True,
     )
-    placements = services.mount_placements_bulk(db, [r.id for r in rows])
-    needle = q.strip()
-    items = [
-        {
-            "report_id": r.id,
-            "title": r.title,
-            "report_date": r.report_date,
-            "author": r.owner.name if r.owner else None,
-            "phase": r.phase.value,
-            "tags": list(r.tags or []),
-            "boards": [
-                {"slug": b["slug"], "name": b["name"],
-                 "folders": [f["name"] for f in b["folders"]]}
-                for b in placements.get(r.id, [])
-            ],
-            "snippet": services.search_snippet(r.search_text, needle) if needle else None,
-            "updated_at": r.updated_at,
-            "url": f"/w/{r.workspace_slug}/reports/{r.id}",
-        }
-        for r in rows
-    ]
+    items = browse_projection(db, rows, q.strip())
     return success_response(
         data={
             "reports": items,
@@ -2280,7 +2293,7 @@ async def create_report_from_answer(
             continue
         code = getattr(result, "status_code", 200)
         if code < 400:
-            return result  # 성공 — {report, warnings, url}
+            return result  # 성공 — {report_id, title, page_count, phase, warnings, url}
         if code in (403, 404, 409):
             return result
         db.rollback()
@@ -3088,6 +3101,89 @@ def _block_fill(content_value) -> dict:
     if isinstance(content_value, str):
         return {"filled": bool(content_value.strip()), "chars": len(content_value)}
     return {"filled": content_value is not None}
+
+
+def _collect_file_ids(node, out: list, page: int, block_id: str | None = None) -> None:
+    """content 를 재귀로 훑어 `file_id` 를 전부 모은다 — (file_id, page, block_id).
+
+    위젯 타입을 열거하지 않는 이유: file_id 를 담는 위젯이 이미 7종이고 모양도
+    제각각이다(비교표는 셀 안에 들어 있다). 타입을 나열하면 **새 위젯이 생길 때마다
+    조용히 빠진다** — 첨부를 나열하는 도구가 일부만 보여주는 건 없느니만 못하다.
+    그래서 키 이름으로 훑는다."""
+    if isinstance(node, dict):
+        fid = node.get("file_id")
+        if isinstance(fid, str) and fid:
+            out.append((fid, page, block_id))
+        for k, v in node.items():
+            if k != "file_id":
+                _collect_file_ids(v, out, page, block_id)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_file_ids(item, out, page, block_id)
+
+
+@router.get("/{report_id}/files")
+def list_report_files(
+    report_id: int,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """이 보고서가 쓰는 **파일(이미지·첨부·영상 등) 목록**. 읽기 권한 필요.
+
+    `files` 테이블엔 report 연결이 없다 — 파일은 본문 content 안에 `file_id` 참조로만
+    들어 있다. 그래서 본문을 훑어 모은 뒤 메타를 붙인다. 같은 파일이 여러 곳에 쓰이면
+    `used_at` 에 위치가 쌓인다."""
+    report = services.get_report(db, report_id)
+    if not report:
+        return not_found_response(f"Report not found: {report_id}")
+    if not services.can_read_report(db, actor, report):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "이 보고서를 볼 권한이 없습니다.")
+
+    found: list = []
+    pages = [p for p in (report.pages or []) if isinstance(p, dict)]
+    if pages:
+        for idx, pg in enumerate(pages, 1):
+            for bid, block in (pg.get("content") or {}).items():
+                _collect_file_ids(block, found, idx, bid)
+    else:
+        for bid, block in (report.content or {}).items():
+            _collect_file_ids(block, found, 1, bid)
+
+    order: list[str] = []
+    used_at: dict[str, list] = {}
+    for fid, page, bid in found:
+        if fid not in used_at:
+            used_at[fid] = []
+            order.append(fid)
+        used_at[fid].append({"page": page, "block_id": bid})
+
+    metas = {}
+    if order:
+        from app.modules.files.models import File as FileAsset
+
+        for f in db.execute(
+            select(FileAsset).where(FileAsset.id.in_(order))
+        ).scalars():
+            metas[f.id] = f
+
+    items = []
+    for fid in order:
+        f = metas.get(fid)
+        items.append({
+            "file_id": fid,
+            "filename": getattr(f, "filename", None),
+            "mime_type": getattr(f, "mime_type", None),
+            "size": getattr(f, "size", None),
+            # 본문은 참조하는데 파일이 지워졌을 수 있다 — 조용히 빼지 말고 알린다.
+            "missing": f is None,
+            "used_at": used_at[fid],
+        })
+    return success_response(data={
+        "report_id": report.id,
+        "title": report.title,
+        "files": items,
+        "count": len(items),
+    })
 
 
 @router.get("/{report_id}/outline")

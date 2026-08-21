@@ -81,7 +81,7 @@ def test_mcp_publish_requires_preview_but_web_does_not():
         r = c.post("/api/reports/ai-draft", headers=H, json={
             "template_id": tid, "template_version": 1, "title": "게시 확인",
             "blocks": {"h": "제목"}})
-        rid = r.json()["data"]["report"]["id"]
+        rid = r.json()["data"]["report_id"]
         rids.append(rid)
 
         # MCP 는 토큰 없이 게시 불가

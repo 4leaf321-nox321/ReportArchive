@@ -110,7 +110,7 @@ def test_browse_by_board_and_folder():
                       "blocks": {"heading": title}},
             )
             assert r.status_code == 201, r.text
-            rids.append(r.json()["data"]["report"]["id"])
+            rids.append(r.json()["data"]["report_id"])
         in_folder, unfiled_rid = rids
         assert c.post("/api/mounts", headers=_h(), json={
             "report_id": in_folder, "workspace_slugs": [BOARD], "folder_ids": [fid],

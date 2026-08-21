@@ -74,7 +74,7 @@ def test_row_level_edits():
             }],
         })
         assert r.status_code == 201, r.text
-        rid = r.json()["data"]["report"]["id"]
+        rid = r.json()["data"]["report_id"]
         rids.append(rid)
 
         def rows():
@@ -173,7 +173,7 @@ def test_ai_request_size_limits():
                               "props": {"columns": [{"key": "a", "label": "A", "type": "text"}]},
                               "content": [{"a": "1"}]}]})
         assert r.status_code == 201, r.text
-        rid = r.json()["data"]["report"]["id"]
+        rid = r.json()["data"]["report_id"]
         rids.append(rid)
 
         # 한 번에 너무 많은 행 → 400 + 사유
@@ -219,7 +219,7 @@ def test_append_reports_actual_count_not_requested():
                 "content": [{"item": "가"}],
             }],
         })
-        rid = r.json()["data"]["report"]["id"]
+        rid = r.json()["data"]["report_id"]
         rids.append(rid)
 
         def append(rows):

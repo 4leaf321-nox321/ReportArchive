@@ -81,7 +81,7 @@ def test_from_answer_creates_draft_with_chart(monkeypatch):
     assert r.status_code == 201, r.text
     data = r.json()["data"]
     assert data.get("url"), data
-    rid = data["report"]["id"]
+    rid = data["report_id"]
     try:
         db = SessionLocal()
         try:

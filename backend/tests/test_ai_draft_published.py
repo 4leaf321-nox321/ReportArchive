@@ -103,7 +103,7 @@ def test_ai_can_edit_mounted_report():
             },
         )
         assert r.status_code == 201, r.text
-        rid = r.json()["data"]["report"]["id"]
+        rid = r.json()["data"]["report_id"]
         rids.append(rid)
         assert _phase(rid) == "drafting"
 
@@ -195,7 +195,7 @@ def test_dry_run_and_version_safety_net():
                   "blocks": {"heading": "원본", "body": ["원본 본문"]}},
         )
         assert r.status_code == 201, r.text
-        rid = r.json()["data"]["report"]["id"]
+        rid = r.json()["data"]["report_id"]
         rids.append(rid)
 
         # 1) dry_run — 변경 요약만 오고 실제로는 저장되지 않는다

@@ -93,7 +93,7 @@ def test_ai_can_trash_its_own_unmounted_draft():
     tid = _make_template()
     rids = []
     try:
-        rid = _create(c, tid).json()["data"]["report"]["id"]
+        rid = _create(c, tid).json()["data"]["report_id"]
         rids.append(rid)
         r = c.post(f"/api/reports/{rid}/trash", headers=H_MCP)
         assert r.status_code == 200, r.text
@@ -113,7 +113,7 @@ def test_ai_cannot_trash_a_mounted_report():
     tid = _make_template()
     rids = []
     try:
-        rid = _create(c, tid, "게시된 글").json()["data"]["report"]["id"]
+        rid = _create(c, tid, "게시된 글").json()["data"]["report_id"]
         rids.append(rid)
         m = c.post("/api/mounts", headers=H,
                    json={"report_id": rid, "workspace_slugs": ["dx"]})
@@ -142,7 +142,7 @@ def test_ai_cannot_trash_someone_elses_report_even_as_admin():
     tid = _make_template()
     rids = []
     try:
-        rid = _create(c, tid, "남의 글").json()["data"]["report"]["id"]
+        rid = _create(c, tid, "남의 글").json()["data"]["report_id"]
         rids.append(rid)
         db = SessionLocal()
         try:

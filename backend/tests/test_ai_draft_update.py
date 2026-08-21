@@ -90,9 +90,13 @@ def test_update_draft_merge_list_and_guards():
             },
         )
         assert r.status_code == 201, r.text
-        rid = r.json()["data"]["report"]["id"]
+        rid = r.json()["data"]["report_id"]
         rids.append(rid)
-        lay0 = r.json()["data"]["report"]["pages"][0].get("layout_overrides")
+        # 생성 응답은 report_id·요약만 준다(모델 토큰 절약) — 본문은 GET 으로.
+        lay0 = (
+            c.get(f"/api/reports/{rid}", headers=H).json()["data"]["pages"][0]
+            .get("layout_overrides")
+        )
 
         # 2) 내 초안 목록에 보임
         r = c.get("/api/reports/my-drafts", headers=H)

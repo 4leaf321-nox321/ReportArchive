@@ -1587,7 +1587,11 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           </Popover>
         )}
         {/* 선택 영역 액션 — 사각형이 2셀 이상이거나 선택 영역에 기존
-            merge 가 걸쳐 있으면 합치기 / 분할 버튼이 나옴. */}
+            merge 가 걸쳐 있으면 합치기 / 분할 버튼이 나옴.
+            **이미 병합된 셀을 더 넓게 다시 합치는 것**도 된다 — 예전엔
+            선택에 merge 가 걸리면 '합치기'를 숨겨서, 헤더처럼 병합을 자주
+            쓰는 곳에서 "분할했다가 다시 합치기"를 반복해야 했다.
+            겹치는 기존 merge 는 normalizeMerges 가 last-wins 로 흡수한다. */}
         {(selectionSpansMultiple || selectionHasMerge) && (
           <div className="flex items-center gap-1 rounded-md border bg-muted/40 px-1.5 py-0.5">
             {selectionHasMerge && (
@@ -1601,13 +1605,13 @@ export function TableEditor({ props, content, onChange, readOnly }) {
                 셀 분할
               </Button>
             )}
-            {!selectionHasMerge && selectionSpansMultiple && (
+            {selectionSpansMultiple && (
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={mergeSelection}
                 className="h-6 px-2 text-[11px]"
-                title="선택한 사각형을 한 셀로 합치기"
+                title="선택한 사각형을 한 셀로 합치기. 이미 병합된 셀이 포함돼 있으면 그 병합은 새 병합에 흡수됩니다(먼저 분할할 필요 없음)."
               >
                 셀 합치기
               </Button>

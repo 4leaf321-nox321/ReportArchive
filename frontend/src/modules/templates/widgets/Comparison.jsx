@@ -2246,7 +2246,10 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
           )}
           {/* 셀 병합 / 분할 액션 바 — 선택이 1셀 이상이고 의미있는
               범위일 때만 표시. cross-zone (행 라벨 ↔ case) 선택은
-              비활성. */}
+              비활성. **이미 병합된 셀을 더 넓게 다시 합치는 것**도 된다
+              (예전엔 선택에 merge 가 걸리면 '합치기'를 숨겨서 헤더에서
+              분할 → 재병합을 반복해야 했다). 겹치는 merge 는
+              normalizeMerges 가 last-wins 로 흡수한다. */}
           {(selectionSpansMultiple || selectionHasMerge) && (
             <div className="flex items-center gap-1 rounded-md border bg-muted/40 px-1.5 py-0.5">
               {selectionHasMerge && (
@@ -2260,7 +2263,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                   셀 분할
                 </Button>
               )}
-              {!selectionHasMerge && selectionSpansMultiple && (
+              {selectionSpansMultiple && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -2270,7 +2273,7 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
                   title={
                     selectionCrossesZone
                       ? '행 라벨 컬럼과 CASE 컬럼은 같이 합칠 수 없습니다.'
-                      : '선택한 사각형을 한 셀로 합치기'
+                      : '선택한 사각형을 한 셀로 합치기. 이미 병합된 셀이 포함돼 있으면 그 병합은 새 병합에 흡수됩니다(먼저 분할할 필요 없음).'
                   }
                 >
                   셀 합치기

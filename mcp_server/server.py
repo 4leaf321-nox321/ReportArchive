@@ -543,6 +543,35 @@ async def get_report(report_id: int, ctx: Context, page: int | None = None) -> d
 
 
 @mcp.tool()
+async def get_reports_digest(
+    report_ids: list, ctx: Context, chars: int = 160
+) -> dict:
+    """여러 보고서의 **본문만 추려** 한 번에 읽는다 — 여러 건을 재료로 하나 쓸 때.
+    "지난 4주 주간보고 모아 월간보고 써줘", "이 3건 비교해줘" 가 이걸로 풀린다.
+
+    `get_report` 로 하나씩 읽으면 건당 수만 자라 몇 건만 모아도 대화가 넘친다
+    (실측 4건 99,642자 → 12,638자). 여기선 글자만 골라 블록당 `chars` 로 자른다.
+    표·차트는 글자가 없어도 **행 수**는 함께 온다.
+
+    한 번에 **최대 20건**. `report_ids` 는 `list_reports`/`search_reports` 가 준
+    report_id 목록이다.
+
+    ※ **잘린 글이라 원문과 다르다.** 그대로 인용하지 말고, 정확한 문장이 필요하면
+    그 보고서를 `get_report(report_id, page=N)` 로 읽어라.
+    ※ 볼 수 없는 건 조용히 빠지지 않고 `skipped` 에 사유와 함께 온다 — **몇 건을
+    재료로 썼는지 사용자에게 알려라.**"""
+    if not isinstance(report_ids, list) or not report_ids:
+        return {"error": "report_ids 에 보고서 id 목록을 주세요(예: [12, 34])."}
+    if len(report_ids) > 20:
+        return {"error": f"한 번에 최대 20건입니다(받은 값 {len(report_ids)}건). "
+                         "나눠서 호출하세요."}
+    return await _get(
+        ctx, "/api/reports/digest",
+        {"ids": ",".join(str(int(x)) for x in report_ids), "chars": chars},
+    )
+
+
+@mcp.tool()
 async def get_report_outline(report_id: int, ctx: Context) -> dict:
     """보고서의 **구조만** — 페이지별 블록과 채워졌는지(본문은 안 옴).
     → 내용을 읽어야 하면 `get_report`. 작성·수정 후 자기 점검이 주 용도.

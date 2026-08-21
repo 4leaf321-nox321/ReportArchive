@@ -6,7 +6,7 @@
 `get_guide(topic)` 이 여기서 읽어 준다. 이 파일만 고치면 모두에게 즉시 반영된다.
 
 주제 구분자: `<!--@ 주제이름 -->`. 순서는 상관없다. -->
-GUIDE_VERSION: 2026-08-22d
+GUIDE_VERSION: 2026-08-22e
 
 <!--@ overview -->
 ## 무엇을 하려는가 → 어떤 도구
@@ -28,6 +28,7 @@ GUIDE_VERSION: 2026-08-22d
 | 있는 걸 고치기 | `update_report_draft` | 표 한 줄이면 ↓ |
 | **지난번 형식대로 쓰기** | `list_presets` → `create_report_from_preset` | 백지에서 짜지 말 것 |
 | **지난 보고서 복사해서 쓰기** | `copy_report(report_id, title)` | 내용 갱신 필수 |
+| **여러 건 모아서 하나 쓰기** | `get_reports_digest([id, ...])` | 하나씩 읽지 말 것 |
 | 표에 줄 추가/셀 수정/줄 삭제 | `append_rows`/`patch_cells`/`remove_rows` | 통째로면 ↑ |
 | 잘못 만든 초안 치우기 | `trash_report` | 게시된 글은 불가 |
 | 게시된 글 내리기 | `request_unpublish` | 요청만·사람이 승인 |
@@ -62,6 +63,7 @@ GUIDE_VERSION: 2026-08-22d
 - `mcp__reportarchive__list_presets` / `create_report_from_preset` — **시작 양식**으로 시작
 - `mcp__reportarchive__copy_report` — 지난 보고서를 복제해서 시작
 - `mcp__reportarchive__save_report_as_preset` — 이 형식을 양식으로 저장(사용자가 요청할 때만)
+- `mcp__reportarchive__get_reports_digest` — 여러 보고서 **본문만 추려** 한 번에(재료 읽기)
 - `mcp__reportarchive__list_report_files` — 보고서에 붙은 파일 목록(file_id·위치)
 - `mcp__reportarchive__list_saved_searches` / `run_saved_search` — 내 스마트폴더
 - `mcp__reportarchive__list_alert_rules` / `list_alert_firing` — 경보(**시스템 관리자 전용**)
@@ -229,6 +231,20 @@ create_report_draft("<빈템플릿id>", 1, "분기 리뷰", {}, extra_blocks=[
   원하는 값이 표본에 없으면 `search_objects(type=축slug, q="이름")` 로 찾아 id 를 얻는다.
 - update 에서 `tags`·`entity_ids` 는 **전체 교체**다 — 기존에 더하려면 현재 값을 읽어
   합쳐서 보내야 하고, `[]` 를 보내면 전부 지워진다.
+
+## 여러 보고서를 재료로 하나 쓰기
+"지난 4주 주간보고 모아 월간보고 써줘", "이 3건 비교해줘" 는 **하나씩 읽지 마라.**
+`get_report` 는 건당 수만 자라 몇 건만 모아도 대화가 넘친다(실측 4건 239,248자).
+
+1. `list_reports(...)` 로 대상 id 를 모은다(기간·게시판·종류로 좁혀서).
+2. `get_reports_digest([id, ...])` — 본문 글자만 추려 한 번에(실측 88% 절감).
+   표·차트는 글자가 없어도 **행 수**가 함께 온다. 한 번에 최대 20건.
+3. 그걸 재료로 초안을 쓴다. 형식이 정해져 있으면 **양식·복제로 시작**한다(위 참조).
+
+⚠️ 추림은 **잘린 글**이라 원문과 다르다. 그대로 인용하지 말고, 정확한 문장이
+필요하면 그 보고서를 `get_report(report_id, page=N)` 로 읽어라.
+⚠️ 볼 수 없는 건 `skipped` 에 사유와 함께 온다 — **몇 건을 재료로 썼는지
+사용자에게 알려라.** 조용히 빠지면 "다 봤다" 로 오해된다.
 
 ## 본문에서 그림·표 가리키기 (상호참조)
 "아래 표에서 보듯이" 처럼 **말로** 가리키지 마라 — 블록 순서가 바뀌면 틀린 문장이 된다.

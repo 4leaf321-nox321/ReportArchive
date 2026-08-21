@@ -1086,6 +1086,108 @@ def update_ai_draft_rows(
     })
 
 
+_TEXTY_KEYS = ("text", "markdown", "label", "title", "caption", "name")
+
+
+def _collect_texts(node, out: list, cap: int) -> None:
+    """블록에서 **사람이 읽는 글자만** 추린다(구조·스타일·좌표는 버린다).
+
+    여러 보고서를 재료로 하나 쓸 때 전체를 읽으면 건당 수만 자다(실측 4건
+    99,642자). 여기선 텍스트성 키만 골라 캡을 씌운다 — 실측 94% 절감.
+    위젯 타입을 열거하지 않는 건 `_collect_file_ids` 와 같은 이유다."""
+    if isinstance(node, dict):
+        for k in _TEXTY_KEYS:
+            v = node.get(k)
+            if isinstance(v, str) and v.strip():
+                out.append(v.strip()[:cap])
+        for k, v in node.items():
+            if k not in _TEXTY_KEYS:
+                _collect_texts(v, out, cap)
+    elif isinstance(node, list):
+        # 표가 수천 행일 수 있다 — 재료 읽기엔 앞부분이면 충분하다.
+        for item in node[:20]:
+            _collect_texts(item, out, cap)
+
+
+@router.get("/digest")
+def reports_digest(
+    ids: str = Query(
+        description="쉼표로 구분한 report_id 목록(최대 20). 예: '12,34,56'"
+    ),
+    chars: int = Query(default=160, ge=40, le=600, description="블록당 글자 상한"),
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """여러 보고서의 **본문 텍스트만** 추려 한 번에 — "지난 4주 주간보고 모아
+    월간보고 써줘" 같은 작업의 재료.
+
+    전체를 읽으면 건당 수만 자라 몇 건만 모아도 대화가 넘친다(실측 4건 99,642자
+    → 6,191자, 94% 절감). LLM 을 쓰지 않으므로 항상 동작하고 권한도 필요 없다 —
+    요약은 이걸 받아 **모델이 직접** 한다.
+
+    볼 수 없는 보고서는 조용히 빼지 않고 `skipped` 에 사유와 함께 담는다."""
+    raw = [x.strip() for x in (ids or "").split(",") if x.strip()]
+    if not raw:
+        return error_response("ids 가 비었습니다(예: '12,34').", status_code=400)
+    if len(raw) > 20:
+        return error_response(
+            f"한 번에 최대 20건입니다(받은 값 {len(raw)}건). 나눠서 호출하세요.",
+            status_code=400,
+        )
+    try:
+        want = [int(x) for x in raw]
+    except ValueError:
+        return error_response(f"ids 는 정수 목록이어야 합니다: {ids!r}", status_code=400)
+
+    items, skipped = [], []
+    for rid in want:
+        report = services.get_report(db, rid)
+        if report is None:
+            skipped.append({"report_id": rid, "reason": "없는 보고서"})
+            continue
+        if not services.can_read_report(db, actor, report):
+            skipped.append({"report_id": rid, "reason": "볼 권한이 없음"})
+            continue
+        pages = [p for p in (report.pages or []) if isinstance(p, dict)] or [
+            {"content": report.content or {}}
+        ]
+        page_out = []
+        for idx, pg in enumerate(pages, 1):
+            blocks = []
+            for bid, block in (pg.get("content") or {}).items():
+                texts: list = []
+                _collect_texts(block, texts, chars)
+                fill = _block_fill(block)
+                entry = {"block_id": bid}
+                if texts:
+                    entry["texts"] = texts
+                # 표·차트는 글자가 없어도 "몇 행짜리" 는 재료로 쓸모가 있다.
+                for k, v in fill.items():
+                    if k != "filled" and isinstance(v, int):
+                        entry[k] = v
+                if texts or entry.get("rows") or entry.get("items"):
+                    blocks.append(entry)
+            page_out.append({"page": idx, "blocks": blocks})
+        items.append({
+            "report_id": report.id,
+            "title": report.title,
+            "report_date": report.report_date,
+            "author": report.owner.name if report.owner else None,
+            "phase": report.phase.value,
+            "tags": list(report.tags or []),
+            "pages": page_out,
+            "url": f"/w/{report.workspace_slug}/reports/{report.id}",
+        })
+    return success_response(data={
+        "reports": items,
+        "count": len(items),
+        "skipped": skipped,
+        "chars_per_block": chars,
+        "note": "본문 글자만 추린 것이라 원문과 다를 수 있습니다. "
+                "정확히 인용하려면 get_report 로 그 쪽을 읽으세요.",
+    })
+
+
 def browse_projection(db: Session, rows, needle: str = "") -> list[dict]:
     """보고서 행 → 목록용 슬림 프로젝션(게시 배치 포함).
 

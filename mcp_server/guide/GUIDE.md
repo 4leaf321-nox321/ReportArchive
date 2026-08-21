@@ -6,7 +6,7 @@
 `get_guide(topic)` 이 여기서 읽어 준다. 이 파일만 고치면 모두에게 즉시 반영된다.
 
 주제 구분자: `<!--@ 주제이름 -->`. 순서는 상관없다. -->
-GUIDE_VERSION: 2026-08-21f
+GUIDE_VERSION: 2026-08-21h
 
 <!--@ overview -->
 ## 무엇을 하려는가 → 어떤 도구
@@ -182,6 +182,40 @@ create_report_draft("<빈템플릿id>", 1, "분기 리뷰", {}, extra_blocks=[
    ```
 4. 응답의 `url` 을 안내: "초안을 만들었습니다 → <url> 에서 검토·게시하세요."
 
+## 메타데이터 채우기 (보고 일자·태그·유형·축)
+`create_report_draft` / `update_report_draft` 가 함께 받는다. 안 주면 안 바뀐다.
+
+| 인자 | 값 | 조회 |
+|---|---|---|
+| `report_date` | `YYYY-MM-DD` (생략 시 오늘) | 조회 불필요 |
+| `tags` | 자유 문자열 목록 | 조회 불필요 |
+| `report_type_id` | 보고서 유형 **id** | `describe_metadata` → `report_types[].id` |
+| `entity_ids` | 모델·단계·부품 등 축 태그 **id 목록** | `describe_metadata` → `entity_axes` |
+
+- **id 를 지어내지 마라.** 반드시 `describe_metadata` 로 조회한 실제 값을 쓴다.
+- `describe_metadata` 는 축마다 **표본 몇 개만** 준다(축당 수백 개일 수 있어서).
+  원하는 값이 표본에 없으면 `search_objects(type=축slug, q="이름")` 로 찾아 id 를 얻는다.
+- update 에서 `tags`·`entity_ids` 는 **전체 교체**다 — 기존에 더하려면 현재 값을 읽어
+  합쳐서 보내야 하고, `[]` 를 보내면 전부 지워진다.
+
+## 파일 올리기 — 어느 경로를 쓰나
+바이트가 **모델을 거치면 토큰을 그대로 먹는다**(1MB ≈ 수십만 토큰). 그래서 경로가 셋이다.
+
+| 상황 | 도구 | 왜 |
+|---|---|---|
+| 웹 URL 의 파일 | `upload_from_url(url)` | 서버가 직접 받는다 — 크기·화질 제약 없음 |
+| **PC 의 로컬 파일** (셸을 쓸 수 있을 때) | `prepare_upload(local_path)` → 받은 `curl` 실행 | 바이트가 모델을 안 거친다. **로컬 파일의 기본 경로** |
+| 셸이 없고 **작은 이미지 바이트**를 이미 손에 쥠 | `upload_file(filename, data_base64)` | 최후수단. **≈256KB 상한** |
+
+- 셋 다 **file_id** 를 돌려준다. 그걸 위젯 content 에 넣는다:
+  `{"id":"img","type":"image","props":{"max_count":1},"content":{"files":[{"file_id":"…"}]}}`
+- **.pptx 안의 그림들**은 pptx 를 먼저 올린 뒤 `extract_pptx_images(file_id)` 로 분해한다
+  (서버가 zip 으로 풀어 처리 — 바이트가 모델을 안 거친다).
+- `prepare_upload` 의 티켓은 약 5분 만료. 만료되면 다시 부른다.
+- 보고서 안의 이미지·첨부를 **읽어야** 하면 `download_file(file_id)`(≈1MB 초과는 막힌다 —
+  큰 파일은 사용자가 웹 UI 에서 내려받아야 한다).
+- 사용자 PC 파일인데 셸도 못 쓰는 환경이면, 사용자에게 **웹 UI 에서 직접 추가**하라고 안내한다.
+
 <!--@ find -->
 ## 조직·폴더로 찾기 (특정 부서 글 모아보기)
 보고서는 작성자 개인공간에 저장되고, **어느 조직 글이냐는 어느 게시판에 게시(mount)됐냐로만**
@@ -199,6 +233,36 @@ create_report_draft("<빈템플릿id>", 1, "분기 리뷰", {}, extra_blocks=[
 
 이름을 못 찾으면 도구가 **에러**를 돌려준다(전체 결과를 그 조직 것으로 오해하지 않게).
 그때는 `list_boards`/`list_folders` 로 정확한 이름을 확인하고 다시 부른다.
+
+### 필터 전체 목록
+`list_reports` 와 `search_reports` 가 **같은 필터**를 받는다(이름은 그대로 넣으면 서버가 id 로 푼다).
+
+| 필터 | 값 | 비고 |
+|---|---|---|
+| `board` | 게시판 이름/slug (`'dx'`·`'선행개발'`) | 그 게시판에 **게시된** 글 |
+| `include_descendants` | true | 하위 부서 게시판까지 |
+| `folder` | 폴더 이름/id (`'진행 중'`) | board 안에서 |
+| `unfiled` | true | 그 board 의 미분류만 |
+| `mine` | true | **내가 쓴 글**(list_reports 전용) |
+| `author` | 작성자 이름 (`'홍길동'`) | 남의 글 |
+| `author_org` | 부서 이름/slug | 그 부서 **사람이 쓴** 글(게시 무관) |
+| `report_type` | 종류 이름 (`'주간보고'`) | |
+| `phase` | `drafting`\|`reviewing`\|`finalized` | |
+| `lifecycle` | `single_shot`\|`ongoing` | |
+| `tags` | 문자열 목록 | list_reports 전용 |
+| `last_days` | 정수 | 최근 N일 |
+| `period` | `today`\|`this_week`\|`this_month`\|`this_year` | |
+| `date_from` / `date_to` | `YYYY-MM-DD` | |
+| `sort` | `recent`(기본)\|`oldest`\|`relevance` | list_reports 전용 |
+
+### 셋 중 무엇을 쓰나
+- `search_reports(query, ...)` — **본문 내용**으로. 하이브리드(키워드+의미)라 표현이 달라도
+  뜻이 가까우면 잡힌다("브래킷 응력" → "브라켓 강도 검토"). 근거 발췌용이라 **최대 25건**
+  (기본 8), 결과에 `snippet` 이 온다.
+- `list_reports(...)` — **조건으로 나열**. 최대 100건 + `offset` 페이지네이션.
+  반환: `{reports:[{report_id,title,report_date,author,phase,tags,boards,snippet,url}],
+  total, limit, offset, has_more}`. `query` 는 제목·본문 부분일치(빈 값이면 전체 브라우즈).
+- `aggregate_reports(filters=[], ...)` — **개수만**. SQL 로 세므로 정확하다. 직접 세지 마라.
 
 <!--@ edit -->
 ## 기존 보고서 이어서 수정 (update_report_draft)
@@ -255,6 +319,28 @@ create_report_draft("<빈템플릿id>", 1, "분기 리뷰", {}, extra_blocks=[
   **실제로 반영된 수**이고, `row_counts` 는 반영 후 행 수다. 행은 `{"열키": 값}`
   객체여야 하며(문자열·숫자는 버려진다) 모자라면 `warnings` 에 이유가 온다 —
   그대로 사용자에게 전하라. "추가했습니다" 라고만 말하지 마라.
+
+### `update_report_draft` 인자 의미
+기본은 **병합** — 준 것만 바뀌고 나머지는 그대로다.
+
+| 인자 | 동작 |
+|---|---|
+| `blocks` | 덮어쓸 `{block_id: 내용}`. 안 준 블록은 유지 |
+| `extra_blocks` | 같은 id 면 교체, 새 id 면 추가 (`[{id,type,props?,content}]`) |
+| `remove_blocks` | 제거할 block_id 목록 |
+| `block_sections` | 단락 갱신 `{block_id: section_code}`. 빈/null 이면 해제 |
+| `title` | 주면 제목 변경 |
+| `page` | 병합 대상 페이지(1-base, 기본 1) |
+| `pages` | **전체 교체** — 위 병합 필드는 무시된다 |
+| `report_date` | `YYYY-MM-DD` |
+| `tags` · `entity_ids` | **전체 교체**(`[]` 면 전부 제거) |
+| `report_type_id` | `describe_metadata` 의 id |
+
+- **새 페이지를 추가**하려면 `page` = 마지막쪽+1. 기존 페이지·레이아웃은 그대로 두고
+  `blocks`/`extra_blocks` 로 채운 새 쪽이 뒤에 붙는다.
+- 안 건드린 블록과 사람이 화면에서 맞춘 레이아웃은 유지된다(블록 구성이 바뀐
+  경우에만 자동 재배치).
+- 내용 없이 메타데이터만 줘도 메타만 수정된다.
 
 <!--@ comments -->
 ## 댓글 반영해서 고치기

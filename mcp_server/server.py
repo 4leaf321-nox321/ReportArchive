@@ -350,31 +350,20 @@ async def search_reports(
     unfiled: bool = False,
     author_org: str | None = None,
 ) -> dict:
-    """**본문 내용으로** 보고서를 찾는다(의미+키워드). 근거·참고 자료를 찾을 때.
-    → 조건으로 목록을 뽑을 땐 `list_reports`, 개수만 필요하면 `aggregate_reports`.
+    """**본문 내용으로** 보고서를 찾는다(키워드+의미 하이브리드). 근거·참고 자료용.
+    → 조건으로 나열은 `list_reports`, 개수만은 `aggregate_reports`.
 
-    **하이브리드 검색**: 정확한 단어(키워드)뿐 아니라 *의미가 비슷한* 보고서도 찾는다
-    (임베딩 기반). 예: "브래킷 응력"으로 검색하면 "브라켓 강도 검토"처럼 표현이 달라도
-    뜻이 가까운 보고서가 함께 잡힌다. 각 결과에 report_id·title·snippet 이 있으니,
-    필요하면 report_id 로 get_report 를 호출해 상세를 본다.
+    근거 발췌용이라 **최대 25건**(기본 8)이고 결과에 `snippet` 이 온다. 조건에 맞는
+    글을 **모아 나열**할 거면 `list_reports`(최대 100건·페이지네이션)를 쓰라.
 
-    필터로 좁힐 수 있다(이름은 그대로 넣으면 서버가 id 로 해석한다):
-      - report_type: 종류 이름('주간보고') · author: 작성자 이름('홍길동')
-      - phase: drafting|reviewing|finalized · lifecycle: single_shot|ongoing
-      - 기간: last_days(최근 N일) · period(today|this_week|this_month|this_year) ·
-        date_from/date_to(YYYY-MM-DD)
-      - **board**: 게시판(조직) 이름/slug('dx'·'선행개발') — 그 게시판에 게시된 글만.
-        include_descendants=True 면 하위 부서 게시판까지.
-      - **folder**: board 안의 폴더 이름/id('진행 중'). unfiled=True 면 미분류만.
-      - **author_org**: 작성자 소속 부서 — *그 부서 사람이 쓴* 글(게시 여부 무관).
-        board(게시된 곳)와는 다른 축이니 의도에 맞는 쪽을 고른다.
-    board/folder 이름을 모르면 `list_boards`·`list_folders` 로 먼저 확인하라 —
-    못 찾은 이름은 조용히 무시하지 않고 **에러**로 돌려준다(전체 결과를 그 조직 것으로
-    오해하는 사고 방지).
+    필터: board·folder·author·author_org·report_type·phase·lifecycle·기간
+    (`last_days`/`period`/`date_from`/`date_to`)·include_descendants·unfiled.
+    **값 형식과 전체 목록은 `get_guide(topic="find")`.**
 
-    ※ 이 도구는 근거 발췌용이라 **최대 25건**(기본 8)이다. 조건에 맞는 글을 **모아
-    나열**하려면 `list_reports` 를 쓴다(요약 필드·최대 100건·페이지네이션).
-    예: "낙하시험" + report_type='주간보고' + last_days=30."""
+    ※ **`board` 와 `author_org` 는 다른 축이다** — board 는 *그 게시판에 게시된* 글,
+    author_org 는 *그 부서 사람이 쓴* 글(게시 무관). 잘못 고르면 에러 없이 **엉뚱한
+    답**이 나오니, 요청이 모호하면 사용자에게 물어라.
+    board/folder 이름을 모르면 `list_boards`·`list_folders` 로 먼저 확인하라."""
     args = {
         "query": query, "limit": limit, "last_days": last_days, "period": period,
         "date_from": date_from, "date_to": date_to, "report_type": report_type,
@@ -467,32 +456,19 @@ async def list_reports(
     tags: list | None = None,
     sort: str = "recent",
 ) -> dict:
-    """**조건으로** 보고서 목록을 뽑는다(게시판·폴더·작성자·기간·종류).
-    → 본문 내용으로 찾는 건 `search_reports`, 개수만 필요하면 `aggregate_reports`.
-    "○○팀 게시판 글 보여줘",
-    "'진행 중' 폴더에 뭐 있어?", "최근 한 달 주간보고 목록" 같은 요청용.
+    """**조건으로** 보고서 목록을 뽑는다(게시판·폴더·작성자·기간·종류). 최대 100건 +
+    offset 페이지네이션. "○○팀 게시판 글 보여줘", "'진행 중' 폴더에 뭐 있어?" 같은 요청용.
+    → 본문 내용으로 찾는 건 `search_reports`, 개수만은 `aggregate_reports`.
 
-    `search_reports` 와의 차이 — 저쪽은 *의미 검색으로 근거 발췌*(최대 25건, 본문
-    스니펫), 이쪽은 *조건으로 목록 뽑기*(최대 100건, offset 페이지네이션, 요약 필드).
-    개수만 필요하면 `aggregate_reports` 를 쓴다.
+    ※ **"내가 쓴 글" 은 `mine=True` 로 푼다.** 너는 사용자의 이름을 모르므로
+    `author` 에 넣을 값이 없다 — 짐작해 넣으면 **에러 없이 엉뚱한 사람 글**이 온다.
+    ※ **`board`(게시된 곳) 와 `author_org`(작성자 소속)** 는 다른 축이다. 잘못 고르면
+    역시 조용히 틀린다 — 모호하면 사용자에게 물어라.
 
-    필터(전부 **이름 그대로** 넣으면 서버가 id 로 푼다):
-      - board: 게시판(조직) 이름/slug. include_descendants=True 면 하위 부서까지.
-      - folder: 그 게시판의 폴더 이름/id. unfiled=True 면 미분류만.
-      - query: 제목·본문 부분일치(빈 값이면 조건에 맞는 전체를 최신순으로 브라우즈).
-      - **mine=True**: 내가 쓴 글만. 너는 사용자 이름을 모르므로 "내가 지난주 쓴 글",
-        "내가 dx 에 올린 글" 같은 요청은 **author 가 아니라 이걸로** 푼다.
-      - author: 작성자 이름(남의 글) · author_org: 작성자 **소속 부서**(게시 여부 무관)
-      - report_type: 종류 이름 · phase: drafting|reviewing|finalized ·
-        lifecycle: single_shot|ongoing · tags: 자유 태그 목록
-      - 기간: last_days · period(today|this_week|this_month|this_year) · date_from/to
-      - sort: recent(기본)|oldest|relevance
-    board/folder 이름을 모르면 `list_boards`·`list_folders` 로 먼저 확인한다. 못 찾은
-    이름은 조용히 무시하지 않고 **에러**로 돌려준다(조건이 빠진 전체 결과를 그 조직
-    것으로 오해하는 사고 방지).
-
-    반환: {reports:[{report_id,title,report_date,author,phase,tags,boards,snippet,url}],
-    total, limit, offset, has_more}. 상세는 report_id 로 `get_report`."""
+    필터: board·folder·query·mine·author·author_org·report_type·phase·lifecycle·
+    tags·기간·sort·include_descendants·unfiled.
+    **값 형식·반환 형태·전체 목록은 `get_guide(topic="find")`.**
+    board/folder 이름을 모르면 `list_boards`·`list_folders` 로 먼저 확인한다."""
     params: dict = {
         "q": query,
         "limit": max(1, min(limit, 100)),
@@ -1120,21 +1096,12 @@ async def link_objects(
 
 @mcp.tool()
 async def upload_from_url(ctx: Context, url: str, filename: str | None = None) -> dict:
-    """**웹 URL** 의 파일을 서버가 직접 받아 저장한다(권장 경로).
-    → 로컬 파일은 `prepare_upload`, 작은 이미지만 최후수단으로 `upload_file`.
-    **file_id** 를 돌려준다
-    (바이트가 모델/클라이언트를 안 거쳐 크기·화질 제약 없음). 공개 http/https URL 만
-    되고 사설·내부 주소는 차단된다. 받은 file_id 를 image / attachment / video / cad_3d
-    위젯 content 에 넣어 파일 위젯을 만든다.
+    """**웹 URL** 의 파일을 서버가 직접 받아 저장하고 **file_id** 를 돌려준다.
+    바이트가 모델을 안 거치므로 크기·화질 제약이 없다 — 웹 URL 이면 이게 정답.
 
-    반환: `{ id(=file_id), filename, mime_type, size, ... }`. 실패 시 `{error}`.
-    예) 이미지 위젯: extra_blocks=[{"id":"img","type":"image","props":{"max_count":1},
-        "content":{"files":[{"file_id":"<반환된 id>"}]}}]
-
-    ※ **웹 URL 전용**입니다. 사용자 PC 의 로컬 파일은 이 도구로 못 올립니다 — 셸을
-    쓸 수 있는 CLI(Claude Code 등)면 `prepare_upload` 로 직접 올리고, PPT 속 그림은
-    올린 뒤 `extract_pptx_images` 로 분해하세요. 둘 다 안 되는 환경이면 사용자가 웹
-    UI 에서 직접 추가."""
+    공개 http/https 만 되고 사설·내부 주소는 차단된다.
+    ※ **사용자 PC 의 로컬 파일은 이걸로 못 올린다** — `prepare_upload` 를 쓰라.
+    경로 선택과 file_id 사용법은 `get_guide(topic="write")`."""
     body: dict = {"url": url}
     if filename:
         body["filename"] = filename
@@ -1145,21 +1112,13 @@ async def upload_from_url(ctx: Context, url: str, filename: str | None = None) -
 async def upload_file(
     ctx: Context, filename: str, data_base64: str, mime_type: str | None = None
 ) -> dict:
-    """⚠️ **최후수단** — 로컬 **작은 이미지**를 base64 로 받아 저장하고 **file_id** 를
-    돌려준다. base64 바이트가 **모델 출력 토큰을 그대로 소모**하고 ≈256KB 상한이 걸려
-    있으므로, 로컬 파일이면 대부분 아래를 **먼저** 써라:
-      - **셸(Bash)을 쓸 수 있으면(Claude Code 등) → `prepare_upload`** — 바이트가 모델을
-        안 거쳐 토큰 소모·크기 제약이 없다. **로컬 파일 업로드의 기본 경로.**
-      - 웹 URL 이면 → `upload_from_url`(서버가 직접 다운로드).
-      - PPT 안의 그림들은 PPT 를 먼저 올린 뒤 → `extract_pptx_images`.
-    이 도구는 **셸을 못 쓰는 클라이언트가 이미 소용량 이미지 바이트를 손에 쥔** 좁은
-    경우에만 쓴다(예: filesystem MCP 로 읽은 작은 png). 그 외엔 위 경로가 항상 낫다.
-    받은 file_id 는 image/attachment 위젯 content 에 넣는다.
+    """⚠️ **최후수단** — 작은 이미지 바이트를 base64 로 받아 저장하고 file_id 를 준다.
+    base64 가 **모델 출력 토큰을 그대로 먹고** ≈256KB 상한이 걸려 있다.
 
-    인자: filename(확장자 포함), data_base64(파일 바이트의 base64), mime_type(선택,
-    미지정 시 서버가 확장자로 추정). 반환: `{ id(=file_id), filename, mime_type, size, ... }`.
-    예) 이미지 위젯: extra_blocks=[{"id":"img","type":"image","props":{"max_count":1},
-        "content":{"files":[{"file_id":"<반환된 id>"}]}}]"""
+    로컬 파일이면 셸을 쓸 수 있는 환경에서 **`prepare_upload` 가 항상 낫고**,
+    웹 URL 이면 `upload_from_url`, PPT 속 그림은 `extract_pptx_images` 다.
+    이건 **셸을 못 쓰는 클라이언트가 이미 소용량 이미지 바이트를 쥔** 좁은 경우용.
+    경로 선택은 `get_guide(topic="write")`."""
     try:
         raw = base64.b64decode(data_base64, validate=True)
     except (binascii.Error, ValueError):
@@ -1269,20 +1228,12 @@ async def extract_pptx_images(ctx: Context, file_id: str) -> dict:
 @mcp.tool()
 async def prepare_upload(ctx: Context, local_path: str | None = None) -> dict:
     """**로컬 파일을 셸에서 직접 업로드**할 준비물(업로드 URL + 단기 티켓)을 발급한다.
-    Claude Code 처럼 셸(Bash)을 쓰는 CLI 에서 **PC 의 큰 파일·PPT** 를 올릴 때 쓴다 —
-    base64 와 달리 **바이트가 모델을 안 거치므로** 크기 제약이 사실상 없다.
+    바이트가 모델을 안 거치므로 크기 제약이 사실상 없다 — **PC 파일의 기본 경로**.
 
-    흐름:
-      1) 이 도구를 호출 → `{upload_url, ticket, curl, ...}` 를 받는다.
-      2) 반환된 `curl` 명령(또는 아래 형식)을 **셸에서 실행**해 파일을 올린다:
-         `curl -X POST '<upload_url>?filename=<파일명>' -H 'X-Upload-Ticket:<ticket>' --data-binary @<로컬경로>`
-         → 성공 시 `{ id(=file_id), ... }` 가 출력된다.
-      3) 그 file_id 를 image/attachment 위젯에 넣거나, .pptx 면 `extract_pptx_images`
-         로 슬라이드 그림들을 분해한다.
-
-    `local_path` 를 주면 그 경로를 채운 **바로 실행 가능한** curl 을 만들어 준다.
-    티켓은 약 5분 후 만료된다(만료되면 다시 호출). 작은 이미지 한 장이면 이 절차
-    없이 `upload_file`(base64)로 더 간단히 올릴 수도 있다."""
+    `local_path` 를 주면 **바로 실행 가능한 `curl`** 을 만들어 준다. 그걸 셸에서
+    실행하면 `{id(=file_id), ...}` 가 출력되고, 그 id 를 위젯에 넣거나 .pptx 면
+    `extract_pptx_images` 에 넘긴다. 티켓은 약 5분 뒤 만료(만료되면 다시 호출).
+    전체 흐름은 `get_guide(topic="write")`."""
     res = await _post(ctx, "/api/files/upload-ticket", {})
     if isinstance(res, dict) and res.get("error"):
         return res
@@ -1333,40 +1284,21 @@ async def create_report_draft(
     dry_run: bool = False,
 ) -> dict:
     """보고서를 **새로** 만든다(초안). 이미 있는 보고서 수정은 `update_report_draft`.
-    → 먼저 `list_templates` → `describe_template` 로 채울 블록을 확인하라.
-    `blocks` 는 block_id→내용(describe_template 참고).
-    **AI 가 채운 위젯만** 보이고(빈 템플릿 블록은 자동 숨김), 레이아웃은 서버가 자동 배치한다.
 
-    `extra_blocks`: 템플릿에 없는 위젯을 **직접 만들어** 추가할 때(특히 **빈 템플릿**으로
-    처음부터 짤 때). 각 항목은 `{"id","type","props"?,"content"}`:
-      - type: heading/rich_text/bulleted_list/key_value/table/chart/pie/progress_bar/
-              milestone/flowchart/equation 등(content 형식은 describe_template/스킬 참고).
-      - props: 표·차트처럼 열 정의가 필요한 위젯만(예 table: {"columns":[{key,label,type}]}).
-      - content: 느슨하게 줘도 정규화됨.
-    예: [{"id":"h","type":"heading","content":{"text":"제목"}},
-         {"id":"t","type":"table","props":{"columns":[{"key":"a","label":"A","type":"text"}]},
-          "content":[{"a":"값"}]}]
-
-    `block_sections`: 단락 구분 — `{block_id: section_code}`. code 는 describe_template 의
-    `section_taxonomy` 에 있는 값만 쓴다(라벨/한글 금지, 적절한 게 없으면 생략). 보고서에서
-    블록마다 단락 색상 칩으로 표시된다.
-
-    `pages`: 여러 페이지로 만들 때. 각 항목 `{"name"?, "blocks"?, "extra_blocks"?, "block_sections"?}`
-    — 모두 같은 template 을 쓴다. `pages` 를 주면 위 `blocks`/`extra_blocks`/`block_sections` 는
-    무시되고 페이지별로 채운다. 한 장이면 `pages` 없이 위 필드만 쓴다.
-
-    메타데이터(선택): `report_date`(YYYY-MM-DD, 보고 일자 — 생략 시 오늘),
-    `tags`(자유 문자열 태그 목록), `report_type_id`(보고서 유형 id), `entity_ids`(모델/
-    단계/부품 등 축 태그 id 목록). 유효한 report_type_id / entity_ids 는
-    `describe_metadata` 로 먼저 조회해 고른다(이름을 임의로 넣지 말 것).
-
-    내용은 느슨하게 줘도 서버가 정규화·검증한다. 검증 실패 시 결과의 `error`/`warnings` 를
-    보고 고쳐 다시 호출하라. 성공하면 `url` 로 사람이 검토.
+    순서: `list_templates` → **`describe_template`**(채울 block_id 와 각 블록이 받는
+    형식을 알려준다) → 여기. `blocks` 는 block_id→내용. 템플릿에 없는 위젯을 직접
+    만들려면 `extra_blocks`(형식은 `describe_widgets`). 여러 쪽이면 `pages`.
+    **AI 가 채운 위젯만** 보이고 레이아웃은 서버가 자동 배치한다.
 
     ※ **처음 쓰는 템플릿이거나 위젯을 직접 만들 때는 `dry_run=True` 를 먼저.**
-    저장하지 않고 페이지별로 어떤 block_id 가 들어가는지·무엇이 버려지는지
-    (`warnings`)를 알려준다. 형식이 틀리면 블록이 **조용히 버려지는데**, 만들고
-    나서 알면 치우기가 번거롭다(AI 가 지울 수 있는 건 본인 미게시 초안뿐)."""
+    형식이 틀리면 블록이 **조용히 버려지는데**(경고는 오지만 만들어지긴 한다),
+    만들고 나서 알면 치우기가 번거롭다 — AI 가 지울 수 있는 건 본인 미게시 초안뿐이다.
+    ※ `report_type_id`·`entity_ids` 는 **`describe_metadata` 로 조회한 실제 id** 만.
+    이름을 지어 넣지 마라.
+
+    `extra_blocks`/`block_sections`/`pages` 의 형식과 예제, 메타데이터 채우는 법은
+    `get_guide(topic="write")`. 내용은 느슨하게 줘도 서버가 정규화·검증하니, 실패하면
+    `error`/`warnings` 를 보고 고쳐 다시 호출하라. 성공하면 `url` 로 사람이 검토."""
     body: dict = {
         "template_id": template_id,
         "template_version": template_version,
@@ -1406,42 +1338,24 @@ async def update_report_draft(
     entity_ids: list | None = None,
     dry_run: bool = False,
 ) -> dict:
-    """**기존 보고서를 이어서 수정**한다. 초안뿐 아니라 **이미 게시(mount)된 글도**
-    고칠 수 있다 — 편집 권한이 있고 **발행(finalized) 전**이면 된다(웹 편집과 같은
-    규칙). 발행본은 사람이 '발행 취소' 한 뒤에야 수정된다. report_id 를 모르면
-    `list_my_reports` 로 찾는다(각 행의 `editable` 이 수정 가능 여부).
+    """**기존 보고서를 이어서 수정**한다(준 것만 바꾸는 **병합**). 게시된 글도 고칠 수
+    있다 — 편집 권한이 있고 **발행(finalized) 전**이면 된다. report_id 를 모르면
+    `list_my_reports`(각 행의 `editable`).
 
-    ※ **게시된 글은 이미 남들이 보고 있다.** 응답의 `mounted_to`(게시판·폴더)가
-    비어 있지 않으면, 어디에 게시된 글을 고쳤는지 **반드시 사용자에게 알려라**.
+    ⚠️ **덮어쓰기 주의** — 아래 셋은 병합이 아니라 **통째로 교체**한다:
+      - `pages` 를 주면 보고서 전체가 그 페이지 목록으로 교체된다(병합 필드는 무시).
+      - `tags` · `entity_ids` 는 전체 교체다(`[]` 면 전부 제거).
+    한 블록만 고칠 거면 `blocks`/`extra_blocks` 를, 표 한 줄이면 `patch_cells` 를 쓰라.
 
-    ※ `dry_run=True` 면 **저장하지 않고** 무엇이 바뀔지만 돌려준다(페이지별 추가·
-    변경·삭제될 block_id, 메타 변경, 경고, 게시 위치). 게시된 글이나 큰 수정 전에
-    한 번 확인하고 적용하라. 잘못 고쳤으면 `list_versions` → `restore_version`.
+    ※ **게시된 글은 이미 남들이 보고 있다.** 응답의 `mounted_to` 가 비어 있지 않으면
+    어디에 게시된 글을 고쳤는지 **반드시 사용자에게 알려라**.
+    ※ 게시된 글이거나 큰 수정이면 **`dry_run=True` 로 먼저** 무엇이 바뀔지 확인하라.
+    잘못 고쳤으면 `list_versions` → `restore_version(dry_run=True)`.
+    ※ 누가 그 보고서를 **편집 화면에 열어 두면**(본인 다른 탭 포함) 거부된다 —
+    사용자에게 편집 화면을 닫고 다시 요청하라고 안내하라.
 
-    기본은 **병합(merge)** — 준 것만 바꾸고 나머지는 그대로 둔다:
-      - `blocks`: 덮어쓸 block_id→내용(create 와 같은 느슨한 형식). 안 준 블록은 유지.
-      - `extra_blocks`: 같은 id 면 교체, 새 id 면 추가([{id,type,props?,content}]).
-      - `remove_blocks`: 제거할 block_id 목록.
-      - `block_sections`: 단락 갱신({block_id: section_code}); 빈/null 이면 단락 해제.
-      - `title`: 주면 제목 변경.
-      - `page`: 멀티페이지에서 병합 대상 페이지(1-base, 기본 1).
-        **`page`=마지막+1 이면 새 페이지를 추가**한다(기존 페이지·레이아웃은 그대로 두고
-        `blocks`/`extra_blocks` 로 채운 새 쪽을 뒤에 붙임).
-    안 건드린 블록과 사람이 화면에서 맞춘 레이아웃은 유지된다(블록 구성이 바뀐 경우에만
-    자동 재배치).
-
-    `pages` 를 주면 **전체 교체** — 보고서를 그 페이지 목록으로 통째 다시 만든다
-    (create 의 pages 와 같은 형식). 이땐 위 병합 필드는 무시된다.
-
-    내용은 느슨하게 줘도 서버가 정규화·검증한다. 실패 시 `error`/`warnings` 를 보고 고쳐
-    다시 호출하라. 성공하면 `url` 로 사람이 검토한다.
-
-    ※ 누군가(본인 다른 탭 포함) 그 보고서를 **편집 화면에서 열어 두면**(편집 락) 수정이
-    거부된다(에러에 현재 편집자 표시) — 사용자에게 편집 화면을 닫고 다시 요청하라고 안내하라.
-
-    메타데이터(선택, 준 것만 변경): `report_date`(YYYY-MM-DD), `tags`(전체 교체),
-    `report_type_id`, `entity_ids`(전체 교체 — `[]` 면 모든 축 태그 제거). 유효한 id 는
-    `describe_metadata` 로 조회. 내용 없이 메타만 줘도 메타만 수정된다."""
+    인자 의미(`blocks`·`extra_blocks`·`remove_blocks`·`block_sections`·`page`·
+    메타데이터)와 **새 페이지 추가 방법**은 `get_guide(topic="edit")`."""
     body: dict = {"page": page}
     if title is not None:
         body["title"] = title

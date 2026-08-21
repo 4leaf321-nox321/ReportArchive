@@ -21,6 +21,15 @@ import sys
 
 import pytest
 
+# ⚠️ **app 을 import 하기 전에** 정해야 한다 — settings 는 import 시점에 굳는다.
+#
+# dev 의 .env 는 LLM_BACKEND=openai + LLM_BASE_URL=<Windows 호스트>:8080 을 가리킨다.
+# 그 llama-server 가 안 떠 있으면 LLM 을 타는 테스트가 **connect 에서 매달려**
+# 스위트가 통째로 멈춘다(실제로 15분을 넘겼고, 그 전엔 산발적 실패로 나타났다).
+# 테스트는 LLM 응답의 내용이 아니라 배선을 검증하므로 mock 이 맞다. 진짜 LLM 을
+# 태우려면 실행할 때 LLM_BACKEND 를 명시적으로 준다(환경변수가 .env 를 이긴다).
+os.environ.setdefault("LLM_BACKEND", "mock")
+
 from app.database import SessionLocal
 from app.modules.auth.services import hash_password
 from app.modules.users.models import Role, User, WorkspaceMember

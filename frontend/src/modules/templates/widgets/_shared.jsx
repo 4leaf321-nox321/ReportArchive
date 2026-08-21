@@ -2105,6 +2105,101 @@ export function expandRectOverMerges(rect, merges) {
   return { r1, r2, c1, c2 }
 }
 
+/** 병합 블록 단위 이동 계획.
+ *
+ *  병합된 칸은 화면상 **한 덩어리**다. 그런데 그 안의 행/열을 하나씩 움직이면
+ *  덩어리는 제자리에 있고 다른 열의 칸들만 서로 뒤바뀌어, 누른 사람 눈엔
+ *  "이상하게 섞였다"가 된다. 그래서 병합에 걸린 행/열은 **블록으로 묶어** 통째로
+ *  자리를 맞바꾼다.
+ *
+ *  블록 = 그 인덱스에 걸친 병합들의 **추이적 확장**(병합이 사슬로 이어지면 계속
+ *  넓어진다). 이 정의 덕에 **어떤 병합도 두 블록에 걸칠 수 없어서**, 인덱스 갱신이
+ *  "블록 안의 병합은 통째로 같은 만큼 이동"으로 단순해진다.
+ *
+ *  axis: 'row' 면 m.r/m.rs, 'col' 이면 m.c/m.cs 를 본다.
+ *  반환: 이동할 수 없으면 null(맨 끝 블록). 가능하면
+ *    - order: 새 순서로 나열한 **옛 인덱스** 배열(배열 재정렬용)
+ *    - posOf: 옛 인덱스 → 새 인덱스(병합 anchor·인덱스 키 맵 갱신용)
+ *  posOf 는 블록 밖 인덱스에 대해 항등이라, 모든 병합에 `m.r = posOf[m.r]` 를
+ *  일괄 적용하면 된다(블록이 통째로 움직여 span 은 그대로 연속). */
+export function planBlockMove(count, idx, dir, merges, axis = 'row') {
+  if (!Number.isInteger(idx) || idx < 0 || idx >= count) return null
+  const list = (merges ?? []).filter(Boolean)
+  const span = (m) =>
+    axis === 'row'
+      ? [m.r, m.r + (m.rs ?? 1) - 1]
+      : [m.c, m.c + (m.cs ?? 1) - 1]
+  const blockOf = (i) => {
+    let lo = i
+    let hi = i
+    for (let guard = 0; guard <= list.length; guard++) {
+      let changed = false
+      for (const m of list) {
+        const [a, b] = span(m)
+        if (!(a <= hi && b >= lo)) continue
+        if (a < lo) { lo = a; changed = true }
+        if (b > hi) { hi = b; changed = true }
+      }
+      if (!changed) break
+    }
+    return [lo, hi]
+  }
+
+  const [lo, hi] = blockOf(idx)
+  if (dir < 0) {
+    if (lo === 0) return null // 위/왼쪽에 바꿀 블록이 없다
+    const [plo, phi] = blockOf(lo - 1)
+    // 순서: …앞부분… + 나 + 이웃 + …뒷부분…
+    const head = []
+    for (let i = 0; i < plo; i++) head.push(i)
+    const order = [
+      ...head,
+      ...range(lo, hi),
+      ...range(plo, phi),
+      ...range(hi + 1, count - 1),
+    ]
+    return finish(order, count)
+  }
+  if (hi === count - 1) return null // 아래/오른쪽에 바꿀 블록이 없다
+  const [nlo, nhi] = blockOf(hi + 1)
+  const head = []
+  for (let i = 0; i < lo; i++) head.push(i)
+  const order = [
+    ...head,
+    ...range(nlo, nhi),
+    ...range(lo, hi),
+    ...range(nhi + 1, count - 1),
+  ]
+  return finish(order, count)
+}
+
+function range(a, b) {
+  const out = []
+  for (let i = a; i <= b; i++) out.push(i)
+  return out
+}
+
+function finish(order, count) {
+  // 방어 — 순열이 온전한지(중복·누락 없음) 확인. 깨졌으면 이동을 포기해
+  // 표를 망가뜨리지 않는다.
+  if (order.length !== count || new Set(order).size !== count) return null
+  const posOf = new Array(count)
+  order.forEach((oldIdx, newIdx) => {
+    posOf[oldIdx] = newIdx
+  })
+  return { order, posOf }
+}
+
+/** posOf 로 병합 anchor 를 옮긴다. 블록이 통째로 움직였으므로 span(rs/cs)은 그대로. */
+export function remapMerges(merges, posOf, axis = 'row') {
+  return (merges ?? []).filter(Boolean).map((m) => {
+    const cur = axis === 'row' ? m.r : m.c
+    const next = posOf[cur]
+    if (next == null || next === cur) return m
+    return axis === 'row' ? { ...m, r: next } : { ...m, c: next }
+  })
+}
+
 /**
  * 행 삽입 / 삭제 시 merges 의 r 축을 재배치.
  *

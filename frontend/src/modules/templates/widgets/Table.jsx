@@ -7,7 +7,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/shared/components/ui/popover'
-import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, NoteInput, PreviewLabel, TextStyleField, captionSkipProps, captionPositionOf, CellAlignControl, computeMergeMap, hAlignClass, normalizeMerges, expandRectOverMerges, parseHtmlTableMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation, vAlignClass, _richIsEmpty, _richSeed, sanitizeCaptionHtml, useHoverRails, RowActionRail, ColActionRail, RAIL_GUTTER_CLASS, ColorPopoverButton, useStickyMinHeight } from './_shared'
+import { AutoGrowTextarea, CaptionInput, DataTableActions, DEFAULT_BODY_FONT_PX, FieldItemListEditor, LabelField, NoteInput, PreviewLabel, TextStyleField, captionSkipProps, captionPositionOf, CellAlignControl, computeMergeMap, hAlignClass, normalizeMerges, expandRectOverMerges, planBlockMove, remapMerges, parseHtmlTableMerges, shiftMergesForCol, shiftMergesForRow, textStyleToClassName, textStyleToInlineStyle, toTsv, useCellSelection, useGridNavigation, vAlignClass, _richIsEmpty, _richSeed, sanitizeCaptionHtml, useHoverRails, RowActionRail, ColActionRail, RAIL_GUTTER_CLASS, ColorPopoverButton, useStickyMinHeight } from './_shared'
 import { RichTextRowEditor, RichTextFormatToolbarBody, MIXED_FONT_SIZE } from './RichTextRowEditor'
 import { ColorSwatchPicker, bgTokenClass, colorTokenClass, normalizeToken } from '@/shared/text-color'
 
@@ -26,12 +26,14 @@ function _shiftCellStylesRowRemove(styles, removedIdx) {
   return out
 }
 
-function _shiftCellStylesRowSwap(styles, a, b) {
+/** 행 인덱스 키(`{row}::{colKey}`) 맵을 새 행 순서로 재매핑.
+ *  블록 이동은 두 칸 swap 이 아니라 **임의 순열**이라 posOf 로 통째 옮긴다. */
+function _remapCellStylesRows(styles, posOf) {
   const out = {}
   for (const [k, v] of Object.entries(styles)) {
     const [rStr, colKey] = k.split('::')
     const r = Number(rStr)
-    const nr = r === a ? b : r === b ? a : r
+    const nr = posOf[r] ?? r
     out[`${nr}::${colKey}`] = v
   }
   return out
@@ -654,29 +656,28 @@ export function TableEditor({ props, content, onChange, readOnly }) {
       cell_html: _shiftCellStylesRowRemove(cellHtml, rowIdx),
     })
   }
+  /** 이 행이 속한 **블록**을 위/아래로. 병합에 걸린 행들은 화면상 한 덩어리라
+   *  통째로 옮긴다(planBlockMove). 이동 불가면 null → 버튼 비활성. */
+  function rowMovePlan(rowIdx, dir) {
+    return planBlockMove(rows.length, rowIdx, dir, merges, 'row')
+  }
   function moveRow(rowIdx, dir) {
-    // 행 위/아래로 이동 — 두 행의 r 인덱스만 바뀌므로 merges 도 따라가야 한다.
-    // 단, **한 행짜리 병합만**(rs === 1) 옮긴다. 여러 행에 걸친 병합의 anchor 를
-    // 그냥 옮기면 병합이 옆의 무관한 행까지 먹어버린다 — 옮겨도 그 병합 블록의
-    // 물리적 자리는 그대로여야 맞다(열 이동 moveColumn 과 같은 규칙).
-    const newIdx = rowIdx + dir
-    if (newIdx < 0 || newIdx >= rows.length) return
-    const next = [...rows]
-    const [item] = next.splice(rowIdx, 1)
-    next.splice(newIdx, 0, item)
-    const swapped = (merges ?? []).map((m) => {
-      if ((m.rs ?? 1) !== 1) return m
-      if (m.r === rowIdx) return { ...m, r: newIdx }
-      if (m.r === newIdx) return { ...m, r: rowIdx }
-      return m
-    })
+    const plan = rowMovePlan(rowIdx, dir)
+    if (!plan) return
     patch({
-      rows: next,
-      ...(merges.length || swapped.length
-        ? { merges: normalizeMerges(swapped, rows.length, cols.length) }
+      rows: plan.order.map((i) => rows[i]),
+      ...(merges.length
+        ? {
+            merges: normalizeMerges(
+              remapMerges(merges, plan.posOf, 'row'),
+              rows.length,
+              cols.length,
+            ),
+          }
         : {}),
-      cell_styles: _shiftCellStylesRowSwap(cellStyles, rowIdx, newIdx),
-      cell_html: _shiftCellStylesRowSwap(cellHtml, rowIdx, newIdx),
+      // 셀 색·서식은 행 **인덱스** 키라 새 순서로 재매핑해야 한다.
+      cell_styles: _remapCellStylesRows(cellStyles, plan.posOf),
+      cell_html: _remapCellStylesRows(cellHtml, plan.posOf),
     })
   }
 
@@ -724,37 +725,40 @@ export function TableEditor({ props, content, onChange, readOnly }) {
     })
     patch({ columns: nextCols })
   }
+  /** 이 열이 속한 **블록**을 좌/우로. 행 데이터·셀 색/서식·열 폭·헤더 셀은
+   *  모두 열 key 로 저장돼 순서만 바꾸면 따라온다. 인덱스로 저장되는 건
+   *  병합뿐이라 posOf 로 옮긴다. */
+  function colMovePlan(idx, dir) {
+    // 헤더 병합과 본문 병합 **둘 다** 블록 경계에 영향을 준다 — 헤더에서
+    // 두 열이 묶여 있으면 본문만 보고 따로 움직이면 헤더가 어긋난다.
+    return planBlockMove(
+      cols.length,
+      idx,
+      dir,
+      [...(merges ?? []), ...(headerMerges ?? [])],
+      'col',
+    )
+  }
   function moveColumn(idx, dir) {
-    // 열 좌/우 이동. 행 데이터·셀 색/서식·열 폭·헤더 셀은 모두 **열 key**
-    // 로 저장돼 있어 열 순서가 바뀌어도 그대로 따라온다. 인덱스로 저장되는
-    // 건 병합(merges)뿐이라 그것만 옮기면 된다.
-    const newIdx = idx + dir
-    if (newIdx < 0 || newIdx >= cols.length) return
-    const nextCols = [...cols]
-    const [item] = nextCols.splice(idx, 1)
-    nextCols.splice(newIdx, 0, item)
-    // 병합 이동 규칙 — **한 열짜리 병합만** 따라 옮긴다(cs === 1).
-    // 두 열에 걸친 병합은 두 열이 모두 그 안에 있거나(옮겨도 같은 자리)
-    // 걸쳐 있어도 물리적 사각형은 그대로여야 하므로 건드리지 않는다.
-    // 그냥 anchor 를 옮기면 병합이 옆의 무관한 열까지 먹어버린다.
-    const swapCols = (list) =>
-      (list ?? []).map((m) => {
-        if ((m.cs ?? 1) !== 1) return m
-        if (m.c === idx) return { ...m, c: newIdx }
-        if (m.c === newIdx) return { ...m, c: idx }
-        return m
-      })
+    const plan = colMovePlan(idx, dir)
+    if (!plan) return
     patch({
-      columns: nextCols,
+      columns: plan.order.map((i) => cols[i]),
       ...(merges.length
-        ? { merges: normalizeMerges(swapCols(merges), rows.length, cols.length) }
+        ? {
+            merges: normalizeMerges(
+              remapMerges(merges, plan.posOf, 'col'),
+              rows.length,
+              cols.length,
+            ),
+          }
         : {}),
       ...(header
         ? {
             header: {
               ...header,
               merges: normalizeMerges(
-                swapCols(headerMerges),
+                remapMerges(headerMerges, plan.posOf, 'col'),
                 headerRowCount,
                 cols.length,
               ),
@@ -1868,12 +1872,15 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           size="icon"
           className="h-6 w-6"
           title="위로"
-          disabled={rails.hoverRow === 0}
+          // 맨 위 블록이면 옮길 자리가 없다(계획이 null).
+          disabled={!rowMovePlan(rails.hoverRow, -1)}
           // 레일이 표 바깥이라 마우스가 행 위에 없다 — 옮긴 행을 따라가야
-          // 연속으로 눌러 계속 올릴 수 있다(셀 안 버튼일 땐 마우스가 기준이었음).
+          // 연속으로 눌러 계속 올릴 수 있다. 블록 이동이라 새 위치는 posOf.
           onClick={() => {
+            const plan = rowMovePlan(rails.hoverRow, -1)
+            if (!plan) return
             moveRow(rails.hoverRow, -1)
-            rails.setHoverRow(rails.hoverRow - 1)
+            rails.setHoverRow(plan.posOf[rails.hoverRow])
           }}
         >
           <ChevronUp className="h-3 w-3" />
@@ -1883,10 +1890,12 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           size="icon"
           className="h-6 w-6"
           title="아래로"
-          disabled={rails.hoverRow === rows.length - 1}
+          disabled={!rowMovePlan(rails.hoverRow, 1)}
           onClick={() => {
+            const plan = rowMovePlan(rails.hoverRow, 1)
+            if (!plan) return
             moveRow(rails.hoverRow, 1)
-            rails.setHoverRow(rails.hoverRow + 1)
+            rails.setHoverRow(plan.posOf[rails.hoverRow])
           }}
         >
           <ChevronDown className="h-3 w-3" />
@@ -1914,12 +1923,14 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           size="icon"
           className="h-6 w-6"
           title="왼쪽으로"
-          disabled={rails.hoverCol === 0}
+          disabled={!colMovePlan(rails.hoverCol, -1)}
           // 레일이 표 바깥이라 마우스가 그 열 위에 없다 — 옮긴 열을 따라가야
           // 연속으로 눌러 계속 옮길 수 있다(행 레일과 같은 규칙).
           onClick={() => {
+            const plan = colMovePlan(rails.hoverCol, -1)
+            if (!plan) return
             moveColumn(rails.hoverCol, -1)
-            rails.setHoverCol(rails.hoverCol - 1)
+            rails.setHoverCol(plan.posOf[rails.hoverCol])
           }}
         >
           <ChevronLeft className="h-3 w-3" />
@@ -1929,10 +1940,12 @@ export function TableEditor({ props, content, onChange, readOnly }) {
           size="icon"
           className="h-6 w-6"
           title="오른쪽으로"
-          disabled={rails.hoverCol === cols.length - 1}
+          disabled={!colMovePlan(rails.hoverCol, 1)}
           onClick={() => {
+            const plan = colMovePlan(rails.hoverCol, 1)
+            if (!plan) return
             moveColumn(rails.hoverCol, 1)
-            rails.setHoverCol(rails.hoverCol + 1)
+            rails.setHoverCol(plan.posOf[rails.hoverCol])
           }}
         >
           <ChevronRight className="h-3 w-3" />

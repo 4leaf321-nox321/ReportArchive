@@ -47,6 +47,8 @@ import {
   LabelField,
   normalizeMerges,
   expandRectOverMerges,
+  planBlockMove,
+  remapMerges,
   parseHtmlTableMerges,
   NoteInput,
   PreviewLabel,
@@ -1003,37 +1005,45 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
         : {}),
     })
   }
+  /** 이 CASE 가 속한 **블록**을 좌/우로. 값·색·서식·폭은 CASE key 로 저장돼
+   *  따라오지만 병합은 열 인덱스라 posOf 로 옮긴다.
+   *  좌표계: c=0 이 행 라벨 열, c=1.. 이 cases[0..]. 그래서 열 축 계획은
+   *  전체 열 공간(행 라벨 포함)으로 세우고, 행 라벨 열이 자리를 뜨는 계획은
+   *  버린다(행 라벨은 항상 맨 왼쪽). */
+  function caseMovePlan(idx, dir) {
+    const plan = planBlockMove(
+      cases.length + 1,
+      idx + 1,
+      dir,
+      [...(merges ?? []), ...(headerMerges ?? [])],
+      'col',
+    )
+    if (!plan || plan.order[0] !== 0) return null
+    return plan
+  }
   function moveCase(idx, dir) {
-    const newIdx = idx + dir
-    if (newIdx < 0 || newIdx >= cases.length) return
-    const next = [...cases]
-    const [item] = next.splice(idx, 1)
-    next.splice(newIdx, 0, item)
-    // 값·색·서식·폭은 CASE key 로 저장돼 따라오지만, **병합은 열 인덱스**라
-    // 여기서 같이 옮겨야 한다(예전엔 안 옮겨서 CASE 를 이동하면 병합이 엉뚱한
-    // 열에 남았다). 좌표계: c=0 이 행 라벨, c=1.. 이 cases[0..].
-    // 한 열짜리 병합만 옮긴다 — 여러 열에 걸친 병합은 물리적 자리 유지.
-    const c1 = idx + 1
-    const c2 = newIdx + 1
-    const swapCols = (list) =>
-      (list ?? []).map((m) => {
-        if ((m.cs ?? 1) !== 1) return m
-        if (m.c === c1) return { ...m, c: c2 }
-        if (m.c === c2) return { ...m, c: c1 }
-        return m
-      })
-    const totalCol = next.length + 1
+    const plan = caseMovePlan(idx, dir)
+    if (!plan) return
+    // order 는 열 인덱스라 앞의 행 라벨(0)을 떼고 CASE 배열로 되돌린다.
+    const nextCases = plan.order.slice(1).map((c) => cases[c - 1])
+    const totalCol = nextCases.length + 1
     patch({
-      cases: next,
+      cases: nextCases,
       ...(merges.length
-        ? { merges: normalizeMerges(swapCols(merges), rows.length, totalCol) }
+        ? {
+            merges: normalizeMerges(
+              remapMerges(merges, plan.posOf, 'col'),
+              rows.length,
+              totalCol,
+            ),
+          }
         : {}),
       ...(header
         ? {
             header: {
               ...header,
               merges: normalizeMerges(
-                swapCols(headerMerges),
+                remapMerges(headerMerges, plan.posOf, 'col'),
                 headerRowCount,
                 totalCol,
               ),
@@ -1069,26 +1079,26 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
       ...(merges.length || nextMerges.length ? { merges: nextMerges } : {}),
     })
   }
+  /** 이 행이 속한 **블록**을 위/아래로. 병합에 걸린 행들은 화면상 한 덩어리라
+   *  통째로 옮긴다. 이동 불가면 null → 버튼 비활성. 비교표는 행 데이터·색·
+   *  서식이 row.key 기반이라 순서만 바꾸면 따라온다. */
+  function rowMovePlan(idx, dir) {
+    return planBlockMove(rows.length, idx, dir, merges, 'row')
+  }
   function moveRow(idx, dir) {
-    const newIdx = idx + dir
-    if (newIdx < 0 || newIdx >= rows.length) return
-    const next = [...rows]
-    const [item] = next.splice(idx, 1)
-    next.splice(newIdx, 0, item)
-    // 두 행만 r 좌표 swap — 단, **한 행짜리 병합만**(rs === 1). 여러 행에
-    // 걸친 병합의 anchor 를 그냥 옮기면 옆의 무관한 행까지 먹어버린다
-    // (옮겨도 그 병합 블록의 물리적 자리는 그대로여야 맞다).
+    const plan = rowMovePlan(idx, dir)
+    if (!plan) return
     const totalCol = cases.length + 1
-    const swapped = (merges ?? []).map((m) => {
-      if ((m.rs ?? 1) !== 1) return m
-      if (m.r === idx) return { ...m, r: newIdx }
-      if (m.r === newIdx) return { ...m, r: idx }
-      return m
-    })
     patch({
-      rows: next,
-      ...(merges.length || swapped.length
-        ? { merges: normalizeMerges(swapped, rows.length, totalCol) }
+      rows: plan.order.map((i) => rows[i]),
+      ...(merges.length
+        ? {
+            merges: normalizeMerges(
+              remapMerges(merges, plan.posOf, 'row'),
+              rows.length,
+              totalCol,
+            ),
+          }
         : {}),
     })
   }
@@ -2364,12 +2374,15 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
             size="icon"
             className="h-6 w-6"
             title="위로"
-            disabled={rails.hoverRow === 0}
+            // 맨 위 블록이면 옮길 자리가 없다(계획이 null).
+            disabled={!rowMovePlan(rails.hoverRow, -1)}
             // 레일이 표 바깥이라 마우스가 행 위에 없다 — 옮긴 행을 따라가야
-            // 연속으로 눌러 계속 올릴 수 있다.
+            // 연속으로 눌러 계속 올릴 수 있다. 블록 이동이라 새 위치는 posOf.
             onClick={() => {
+              const plan = rowMovePlan(rails.hoverRow, -1)
+              if (!plan) return
               moveRow(rails.hoverRow, -1)
-              rails.setHoverRow(rails.hoverRow - 1)
+              rails.setHoverRow(plan.posOf[rails.hoverRow])
             }}
           >
             <ChevronUp className="h-3 w-3" />
@@ -2379,10 +2392,12 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
             size="icon"
             className="h-6 w-6"
             title="아래로"
-            disabled={rails.hoverRow === rows.length - 1}
+            disabled={!rowMovePlan(rails.hoverRow, 1)}
             onClick={() => {
+              const plan = rowMovePlan(rails.hoverRow, 1)
+              if (!plan) return
               moveRow(rails.hoverRow, 1)
-              rails.setHoverRow(rails.hoverRow + 1)
+              rails.setHoverRow(plan.posOf[rails.hoverRow])
             }}
           >
             <ChevronDown className="h-3 w-3" />
@@ -2410,10 +2425,13 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
             size="icon"
             className="h-6 w-6"
             title="왼쪽으로"
-            disabled={rails.hoverCol === 0}
+            disabled={!caseMovePlan(rails.hoverCol, -1)}
             onClick={() => {
+              const plan = caseMovePlan(rails.hoverCol, -1)
+              if (!plan) return
               moveCase(rails.hoverCol, -1)
-              rails.setHoverCol(rails.hoverCol - 1)
+              // posOf 는 열 좌표(0=행 라벨) → CASE 인덱스로 되돌린다.
+              rails.setHoverCol(plan.posOf[rails.hoverCol + 1] - 1)
             }}
           >
             <ChevronLeft className="h-3 w-3" />
@@ -2423,10 +2441,12 @@ export function ComparisonEditor({ props, content, onChange, readOnly }) {
             size="icon"
             className="h-6 w-6"
             title="오른쪽으로"
-            disabled={rails.hoverCol === cases.length - 1}
+            disabled={!caseMovePlan(rails.hoverCol, 1)}
             onClick={() => {
+              const plan = caseMovePlan(rails.hoverCol, 1)
+              if (!plan) return
               moveCase(rails.hoverCol, 1)
-              rails.setHoverCol(rails.hoverCol + 1)
+              rails.setHoverCol(plan.posOf[rails.hoverCol + 1] - 1)
             }}
           >
             <ChevronRight className="h-3 w-3" />

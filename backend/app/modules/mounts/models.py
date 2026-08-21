@@ -91,6 +91,13 @@ class ReportMount(Base):
     # ("왜 이 게시판에 올렸나"). Optional.
     note: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
+    # 게시 경로 — 'web'(사람이 화면에서) | 'mcp'(AI 가 사용자 권한으로). 게시는
+    # 되돌리기 어려운 바깥 방향 행위라(내리려면 매니저 승인) 경위를 남긴다.
+    # **서버가 요청 헤더(X-Client)를 보고 채운다** — 클라이언트 값은 안 받는다. (p91)
+    via: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="web"
+    )
+
     # Org-folder placement on this board. 0개 = "미분류". 같은 보고서가
     # 게시판마다 다른 폴더에 놓일 수 있고(폴더는 mount 속성이지 report
     # 속성이 아니다), **한 게시판 안에서도 여러 폴더에 동시에 놓일 수

@@ -21,6 +21,7 @@ allowed-tools: mcp__reportarchive__*
 - `mcp__reportarchive__list_my_reports` — 내가 쓴 보고서 목록(이어서 수정할 때. 게시된 글 포함)
 - `mcp__reportarchive__append_rows` / `patch_cells` / `remove_rows` — 표·차트를 **행 단위로** 수정
 - `mcp__reportarchive__get_report_outline` — 내가 만든 보고서 **자기 점검**(빈 블록 찾기)
+- `mcp__reportarchive__preview_publish` / `publish_report` — 게시(**2단계 필수**)
 - `mcp__reportarchive__list_composites` / `get_composite` / `list_submittable_composites` / `request_composite_item` — 종합보고
 - `mcp__reportarchive__list_versions` / `restore_version` — 수정 이력 보기 · 되돌리기
 - `mcp__reportarchive__list_comments` / `reply_comment` / `resolve_thread` — 리뷰 의견 읽기·답글·종료
@@ -97,6 +98,21 @@ scatter·heatmap·radar·network·sankey·box·density·tree·mind_map·treemap�
 이름을 못 찾으면 도구가 **에러**를 돌려준다(전체 결과를 그 조직 것으로 오해하지 않게).
 그때는 `list_boards`/`list_folders` 로 정확한 이름을 확인하고 다시 부른다.
 
+## 게시하기 — 반드시 2단계
+게시(부서 게시판에 올리기)는 **되돌리기 어려운 바깥 방향 행위**다. 문서가 조직에
+보이고, 내리려면 게시판 매니저 승인이 필요할 수 있다. 그래서 **한 번에 올리지 못하게**
+막혀 있다.
+
+1. `preview_publish(report_id, boards)` — 어디에 얼마나 보이게 되는지 확인.
+   반환의 `audience` 는 **그 게시판과 하위에 소속된 사람 수**다.
+2. 사용자에게 **"○○ 게시판(N명)에 게시합니다. 진행할까요?"** 라고 확인받는다.
+3. `publish_report(report_id, boards, confirm_token)` — 1번이 준 토큰으로 실행.
+
+- 토큰은 **(보고서, 게시판 집합)** 에 묶여 있다. 대상을 바꾸려면 **미리보기를 다시** 받아라.
+- 게시판 이름이 헷갈리면 `list_boards` 로 확인한다. **상위 부문 게시판에 잘못 올리면
+  훨씬 많은 사람에게 노출된다** — `audience` 숫자를 사용자에게 꼭 보여줘라.
+- 게시 후 **어느 게시판에 올렸는지 알린다.** 게시 이력에 AI 표식이 남는다.
+
 ## 다 만들면 자기 점검
 너는 완성된 화면을 볼 수 없다. 그래서 **빈 표나 데이터 없는 차트가 남아도 모른다.**
 작성·수정을 마치면 `get_report_outline(report_id)` 로 확인하라 — 본문 대신
@@ -147,7 +163,9 @@ scatter·heatmap·radar·network·sankey·box·density·tree·mind_map·treemap�
 내 답글은 화면에서 **AI 배지**로 표시되므로 사람이 쓴 것처럼 위장할 필요도 없다.
 
 ## 원칙
-- **생성물은 항상 초안.** 게시·발행은 사람이 한다.
+- **생성물은 항상 초안.** 발행(finalize)은 사람이 한다.
+- **게시는 확인받고 2단계로.** 사용자가 요청하면 게시할 수 있지만, `preview_publish`
+  로 대상과 노출 범위를 보여주고 **확인받은 뒤에만** 실행한다.
 - **수정은 게시된 글도 가능** — 편집 권한이 있고 발행(finalized) 전이면 된다. 단 게시된 글을
   고쳤으면(응답 `mounted_to` 가 비어 있지 않으면) **어디에 게시된 글인지 사용자에게 알린다.**
 - **고치기 전에 `dry_run`.** 게시된 글이거나 여러 블록을 한 번에 바꿀 때는

@@ -12,15 +12,17 @@ Phase 1 endpoints:
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.modules.mounts import models as _models  # noqa: F401
+from app.modules.mounts import confirm as mount_confirm
 from app.modules.mounts import services
 from app.modules.mounts.schemas import (
     MountCreate,
+    MountPreviewRequest,
     MountEditPolicyUpdate,
     MountFolderUpdate,
     MountFoldersUpdate,
@@ -31,7 +33,12 @@ from app.modules.mounts.schemas import (
     UnmountResponse,
 )
 from app.shared.auth import CurrentUser, get_current_user
-from app.shared.responses import error_response, success_response
+from app.modules.reports import services as report_services
+from app.shared.responses import (
+    error_response,
+    not_found_response,
+    success_response,
+)
 
 
 router = APIRouter()
@@ -126,9 +133,85 @@ def list_grant_board_slugs(
     return success_response(data={"slugs": slugs})
 
 
+def _via_of(request: Request) -> str:
+    """이 요청이 어디서 왔나 — 'mcp'(AI 가 사용자 권한으로) 또는 'web'(사람).
+    MCP 서버가 자기 요청에 `X-Client: mcp` 를 붙인다. 보안 경계가 아니라
+    **경위 표식**이자 2단계 확인을 강제할 대상을 고르는 기준이다."""
+    return "mcp" if (request.headers.get("x-client") or "").lower() == "mcp" else "web"
+
+
+@router.post("/preview")
+def preview_mount(
+    payload: MountPreviewRequest,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """게시하면 **무슨 일이 생기는지** 미리 본다(실행 안 함) + 확인 토큰 발급.
+
+    게시는 되돌리기 어려운 바깥 방향 행위다 — 문서가 조직에 보이고, 내리려면
+    게시판 매니저 승인이 필요하다. 웹에서는 사람이 대상 게시판을 눈으로 고르지만
+    AI 는 이름을 잘못 해석해 엉뚱한(특히 상위 부문) 게시판에 올릴 수 있다.
+    그래서 AI 경로는 이 미리보기의 `confirm_token` 이 있어야 게시된다.
+
+    권한 검사도 여기서 미리 돌려, 못 올릴 게시판이면 **게시 전에** 알려준다."""
+    from app.modules.users.models import WorkspaceMember
+    from app.modules.workspaces import services as ws_services
+    from app.modules.workspaces.models import Workspace
+
+    report = report_services.get_report(db, payload.report_id)
+    if not report:
+        return not_found_response(f"보고서를 찾을 수 없습니다: {payload.report_id}")
+
+    already = {m.workspace_slug for m in services.list_mounts_for_report(db, report.id)}
+    targets = []
+    for slug in payload.workspace_slugs:
+        ws = db.get(Workspace, slug)
+        if ws is None:
+            targets.append({"slug": slug, "error": "게시판을 찾을 수 없습니다."})
+            continue
+        # 실제 게시와 같은 검사를 미리 — 못 올릴 곳이면 지금 알려준다.
+        blocked = None
+        try:
+            services._ensure_can_mount(db, report, actor.user.id)
+            services._ensure_target_is_org_workspace(db, slug, actor.user.id)
+        except services.MountError as e:
+            blocked = str(e)
+        scope = ws_services.get_descendants_inclusive(db, slug)
+        seen = db.execute(
+            select(func.count(func.distinct(WorkspaceMember.user_id))).where(
+                WorkspaceMember.workspace_slug.in_(scope)
+            )
+        ).scalar_one()
+        targets.append({
+            "slug": slug,
+            "name": ws.name,
+            "parent_slug": ws.parent_slug,
+            # 이 게시판(과 하위)에 소속된 사람 수 — "얼마나 널리 보이게 되나".
+            "audience": int(seen or 0),
+            "descendant_boards": max(0, len(scope) - 1),
+            "already_mounted": slug in already,
+            "blocked": blocked,
+        })
+    ok_targets = [t for t in targets if not t.get("blocked") and not t.get("error")]
+    token = (
+        mount_confirm.issue(actor.user.id, report.id, payload.workspace_slugs)
+        if ok_targets
+        else None
+    )
+    return success_response(data={
+        "report_id": report.id,
+        "title": report.title,
+        "targets": targets,
+        "confirm_token": token,
+        "note": "실제로 게시되지 않았습니다. 사용자에게 대상 게시판을 확인받은 뒤 "
+                "confirm_token 과 함께 게시하세요.",
+    })
+
+
 @router.post("")
 def create_mount(
     payload: MountCreate,
+    request: Request,
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
@@ -136,7 +219,18 @@ def create_mount(
 
     Idempotent per-board: already-mounted targets are silently skipped.
     Response carries only newly-created mounts.
+
+    AI(MCP) 경로는 `confirm_token` 이 필수다 — `/preview` 로 어디에 얼마나 보이게
+    되는지 확인한 뒤에만 게시된다. 사람이 화면에서 하는 게시는 그대로 한 번에.
     """
+    via = _via_of(request)
+    if via == "mcp":
+        bad = mount_confirm.verify(
+            payload.confirm_token, actor.user.id, payload.report_id,
+            payload.workspace_slugs,
+        )
+        if bad:
+            return error_response(bad, status_code=400)
     try:
         created = services.mount_report(
             db,
@@ -147,6 +241,7 @@ def create_mount(
             note=payload.note,
             folder_id=payload.folder_id,
             folder_ids=payload.folder_ids,
+            via=via,
         )
     except services.MountError as e:
         return _to_http(e)

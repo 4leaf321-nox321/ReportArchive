@@ -954,7 +954,19 @@ function MountedBoardRow({
       />
       <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <span className="flex-1 min-w-0">
-        <span className="block truncate">{ws?.name || slug}</span>
+        <span className="block truncate">
+          {ws?.name || slug}
+          {/* AI(MCP)가 이 사용자 권한으로 올린 게시 — 게시는 되돌리기 어려운
+              바깥 방향 행위라 경위를 보이게 둔다(댓글 AI 배지와 같은 규칙). */}
+          {mount?.via === 'mcp' && (
+            <span
+              className="ml-1 rounded bg-primary/10 px-1 py-px align-middle text-[9px] font-medium text-primary"
+              title="AI가 이 사용자 권한으로 게시했습니다"
+            >
+              AI
+            </span>
+          )}
+        </span>
         {pathLabel && (
           <span className="block text-[10px] text-muted-foreground truncate">
             {pathLabel}

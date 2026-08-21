@@ -18,6 +18,8 @@ class MountRead(BaseModel):
     workspace_slug: str
     edit_policy: MountEditPolicy
     mounted_by_user_id: Optional[int] = None
+    # 게시 경로 — 'web'(사람) | 'mcp'(AI 가 사용자 권한으로).
+    via: str = "web"
     mounted_at: datetime
     note: str
     # 이 게시판에서 *현재 사용자가 직접* 게시취소할 수 있는지(그 board 매니저/
@@ -87,6 +89,17 @@ class MountCreate(BaseModel):
     note: str = ""
     folder_id: Optional[int] = None
     folder_ids: list[int] = Field(default_factory=list)
+    # AI(MCP) 경로에서만 필수 — `POST /api/mounts/preview` 가 준 값. 게시는 되돌리기
+    # 어려운 바깥 방향 행위라, 미리 본 대상 그대로만 실행되게 묶는다. 웹은 사람이
+    # 화면에서 게시판을 눈으로 고르므로 요구하지 않는다.
+    confirm_token: Optional[str] = None
+
+
+class MountPreviewRequest(BaseModel):
+    """게시하면 무슨 일이 생기는지 미리 보기(실행 안 함)."""
+
+    report_id: int
+    workspace_slugs: list[str] = Field(..., min_length=1)
 
 
 class MountFolderUpdate(BaseModel):

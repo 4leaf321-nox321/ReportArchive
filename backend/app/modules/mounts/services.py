@@ -273,6 +273,7 @@ def mount_report(
     note: str = "",
     folder_id: Optional[int] = None,
     folder_ids: Optional[Iterable[int]] = None,
+    via: str = "web",
 ) -> list[ReportMount]:
     """Promote a report to one or more org boards. Idempotent per-board
     (an existing mount stays and its edit_policy/note are NOT updated
@@ -314,6 +315,7 @@ def mount_report(
             edit_policy=edit_policy,
             mounted_by_user_id=actor_user_id,
             note=note,
+            via=via,
             folder_links=[
                 ReportMountFolder(
                     report_id=report_id, workspace_slug=slug, folder_id=fid

@@ -432,6 +432,58 @@ async def get_report_outline(report_id: int, ctx: Context) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# 게시(mount) — 되돌리기 어려운 **바깥 방향** 행위라 2단계다.
+# preview 로 어디에 얼마나 보이게 되는지 확인 → 사용자에게 확인받고 → publish.
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+async def preview_publish(report_id: int, boards: list, ctx: Context) -> dict:
+    """게시하면 **무슨 일이 생기는지** 미리 본다(실제로 게시하지 않는다).
+
+    `boards` 는 게시판 slug 목록(`list_boards` 참고). 반환의 각 대상에는
+    이름·**audience(그 게시판과 하위에 소속된 사람 수)**·하위 게시판 수·이미
+    게시됐는지·못 올리는 사유가 들어 있다.
+
+    **반드시 이걸 먼저 부르고, 사용자에게 "○○ 게시판(N명)에 게시합니다" 라고
+    확인받아라.** 그다음 여기서 받은 `confirm_token` 으로 `publish_report` 를 부른다.
+    토큰 없이는 게시되지 않는다 — 게시는 조직 전체에 문서를 노출시키고, 내리려면
+    게시판 매니저 승인이 필요해서 되돌리기가 쉽지 않기 때문이다."""
+    return await _post(
+        ctx, "/api/mounts/preview",
+        {"report_id": report_id, "workspace_slugs": boards},
+    )
+
+
+@mcp.tool()
+async def publish_report(
+    report_id: int,
+    boards: list,
+    confirm_token: str,
+    ctx: Context,
+    note: str = "",
+    folder_ids: list | None = None,
+) -> dict:
+    """보고서를 부서 게시판에 **게시**한다. `confirm_token` 은 `preview_publish` 가 준 값.
+
+    토큰은 **(보고서, 게시판 집합)** 에 묶여 있어, 미리 본 것과 다른 대상으로는
+    게시되지 않는다(대상을 바꾸려면 미리보기를 다시 받아라). 10분 지나면 만료된다.
+
+    권한은 사용자 것 그대로다 — 본인이 쓴 보고서이거나, 이미 게시된 게시판의
+    매니저여야 한다. 게시 이력에 **AI가 올렸다는 표식**이 남는다.
+
+    게시 후 **어느 게시판에 올렸는지 사용자에게 알려라.** 잘못 올렸으면 작성자가
+    웹에서 게시취소할 수 있지만, 매니저 승인이 필요한 경우도 있다."""
+    body: dict = {
+        "report_id": report_id,
+        "workspace_slugs": boards,
+        "confirm_token": confirm_token,
+        "note": note,
+    }
+    if folder_ids:
+        body["folder_ids"] = folder_ids
+    return await _post(ctx, "/api/mounts", body)
+
+
+# --------------------------------------------------------------------------- #
 # 종합보고 — 여러 보고서를 안건으로 묶는 상위 산출물. AI 는 **제출 요청**까지만
 # 하고 실제 반영은 사람(종합보고 담당자)이 승인한다.
 # --------------------------------------------------------------------------- #

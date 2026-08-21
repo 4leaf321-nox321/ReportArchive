@@ -2939,6 +2939,102 @@ def _version_meta_list(db: Session, rows) -> list[ReportVersionMeta]:
     return out
 
 
+def _block_fill(content_value) -> dict:
+    """블록 하나가 **채워졌는지**와 규모를 요약. 본문을 통째로 주지 않고
+    (모델 입력 토큰) "비었나/몇 행인가/몇 자인가"만 뽑는다."""
+    if content_value is None:
+        return {"filled": False}
+    if isinstance(content_value, dict):
+        rows = content_value.get("rows")
+        if isinstance(rows, list):
+            return {"filled": len(rows) > 0, "rows": len(rows)}
+        items = content_value.get("items")
+        if isinstance(items, list):
+            return {"filled": len(items) > 0, "items": len(items)}
+        text = content_value.get("text")
+        if isinstance(text, str):
+            return {"filled": bool(text.strip()), "chars": len(text)}
+        return {"filled": bool(content_value)}
+    if isinstance(content_value, list):
+        return {"filled": len(content_value) > 0, "rows": len(content_value)}
+    if isinstance(content_value, str):
+        return {"filled": bool(content_value.strip()), "chars": len(content_value)}
+    return {"filled": content_value is not None}
+
+
+@router.get("/{report_id}/outline")
+def report_outline(
+    report_id: int,
+    db: Session = Depends(get_db),
+    actor: CurrentUser = Depends(get_current_user),
+):
+    """보고서의 **구조 요약** — 페이지별로 어떤 블록이 있고 **채워졌는지**.
+
+    AI(MCP)는 완성된 화면을 볼 수 없어서, 자기가 만든 보고서에 빈 표나 데이터
+    없는 차트가 남아도 알아채지 못한다. 본문을 통째로 읽으면(get_report) 토큰을
+    크게 먹으므로, **"무엇이 있고 무엇이 비었나"만** 돌려준다.
+
+    `issues` 는 바로 손봐야 할 것 — 보이는데 빈 블록, 행 0개인 표/차트 등."""
+    report = services.get_report(db, report_id)
+    if not report:
+        return not_found_response(f"Report not found: {report_id}")
+    if not services.can_read_report(db, actor, report):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of workspace scope")
+
+    pages_out = []
+    issues: list[str] = []
+    raw_pages = [p for p in (report.pages or []) if isinstance(p, dict)] or [
+        {"template_id": report.template_id,
+         "template_version": report.template_version,
+         "content": report.content or {}}
+    ]
+    for idx, pg in enumerate(raw_pages, 1):
+        template = template_services.get_template(
+            db, pg.get("template_id") or report.template_id,
+            pg.get("template_version") or report.template_version,
+        )
+        types_by_id = {}
+        if template:
+            for b in template.schema.get("blocks") or []:
+                if isinstance(b, dict) and b.get("id"):
+                    types_by_id[b["id"]] = b.get("type")
+        for b in pg.get("extra_blocks") or []:
+            if isinstance(b, dict) and b.get("id"):
+                types_by_id[b["id"]] = b.get("type")
+        content = pg.get("content") or {}
+        order = pg.get("blocks_order")
+        # blocks_order 가 있으면 그게 **화면에 실제로 나오는** 블록·순서다
+        # (AI 초안은 빈 템플릿 블록을 숨긴다). 없으면 템플릿 순서 + extra.
+        visible = list(order) if order else (
+            [b["id"] for b in (template.schema.get("blocks") or []) if isinstance(b, dict) and b.get("id")]
+            if template else []
+        ) + [b["id"] for b in (pg.get("extra_blocks") or []) if isinstance(b, dict) and b.get("id")]
+        blocks = []
+        for bid in visible:
+            info = {"block_id": bid, "type": types_by_id.get(bid)}
+            info.update(_block_fill(content.get(bid)))
+            blocks.append(info)
+            if not info.get("filled"):
+                issues.append(
+                    f"{idx}쪽 '{bid}'({info.get('type') or '?'}) 가 비어 있습니다."
+                )
+        pages_out.append({
+            "page": idx,
+            "name": pg.get("name"),
+            "block_count": len(blocks),
+            "blocks": blocks,
+        })
+    return success_response(data={
+        "report_id": report.id,
+        "title": report.title,
+        "phase": report.phase.value,
+        "page_count": len(pages_out),
+        "pages": pages_out,
+        "issues": issues,
+        "mounted_to": services.mount_placements(db, report.id),
+    })
+
+
 @router.get("/{report_id}/versions")
 def list_report_versions(
     report_id: int,

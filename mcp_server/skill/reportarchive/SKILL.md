@@ -20,6 +20,8 @@ allowed-tools: mcp__reportarchive__*
 - `mcp__reportarchive__aggregate_reports` — 개수 세기(직접 세지 말 것)
 - `mcp__reportarchive__list_my_reports` — 내가 쓴 보고서 목록(이어서 수정할 때. 게시된 글 포함)
 - `mcp__reportarchive__append_rows` / `patch_cells` / `remove_rows` — 표·차트를 **행 단위로** 수정
+- `mcp__reportarchive__get_report_outline` — 내가 만든 보고서 **자기 점검**(빈 블록 찾기)
+- `mcp__reportarchive__list_composites` / `get_composite` / `list_submittable_composites` / `request_composite_item` — 종합보고
 - `mcp__reportarchive__list_versions` / `restore_version` — 수정 이력 보기 · 되돌리기
 - `mcp__reportarchive__list_comments` / `reply_comment` / `resolve_thread` — 리뷰 의견 읽기·답글·종료
 - `mcp__reportarchive__list_my_notifications` — 내게 온 알림("나 뭐 할 거 있어?")
@@ -94,6 +96,23 @@ scatter·heatmap·radar·network·sankey·box·density·tree·mind_map·treemap�
 
 이름을 못 찾으면 도구가 **에러**를 돌려준다(전체 결과를 그 조직 것으로 오해하지 않게).
 그때는 `list_boards`/`list_folders` 로 정확한 이름을 확인하고 다시 부른다.
+
+## 다 만들면 자기 점검
+너는 완성된 화면을 볼 수 없다. 그래서 **빈 표나 데이터 없는 차트가 남아도 모른다.**
+작성·수정을 마치면 `get_report_outline(report_id)` 로 확인하라 — 본문 대신
+"무엇이 있고 무엇이 비었나"만 오므로 토큰 부담이 작다.
+
+- `issues` 에 뜬 건 **사용자에게 알린다**("3쪽 표가 비어 있습니다").
+- **무조건 채우지 마라.** 파일 위젯(이미지·첨부·CAD·동영상)처럼 **사람이 채울** 것도 있다.
+
+## 종합보고에 안건 내기
+`list_submittable_composites(report_id)` 로 낼 수 있는 곳을 확인하고,
+`request_composite_item(composite_id, report_id, note)` 로 **제출 요청**한다.
+바로 반영되지 않고 **담당자가 승인**해야 안건이 된다(의도된 설계 — AI 가 상위
+문서를 직접 바꾸지 않는다).
+
+※ 종합보고는 **게시판(부서)에 속한다.** `list_composites` 는 `board` 를 지정해야
+그 게시판 것이 보인다(생략하면 MCP 등록 부서 기준이라 개인공간이면 0건).
 
 ## 표에 한 줄만 고치기
 `update_report_draft(blocks=...)` 는 그 블록을 **통째로 교체**한다. 표에 한 줄을 넣으려고

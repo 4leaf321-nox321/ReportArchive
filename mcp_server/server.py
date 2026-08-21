@@ -97,14 +97,31 @@ def _unwrap(r: httpx.Response):
     return body.get("data", body)
 
 
-async def _get(ctx, path, params=None):
+def _headers(ctx, workspace: str | None = None) -> dict:
+    """전달 헤더 + (선택) **이 호출만** 다른 게시판 컨텍스트로.
+
+    일부 자원(종합보고 등)은 **활성 워크스페이스 트리**로 스코프된다. MCP 는 등록
+    시 고정한 X-Workspace-Slug 를 계속 보내므로, 그대로면 그 한 게시판 것만 보인다
+    (개인공간으로 등록했다면 0건). 그래서 호출별로 게시판을 지정할 수 있게 한다 —
+    권한은 서버가 그대로 확인하므로 아무 게시판이나 본다는 뜻이 아니다."""
+    h = _forward_headers(ctx)
+    if workspace:
+        h["X-Workspace-Slug"] = workspace
+    return h
+
+
+async def _get(ctx, path, params=None, workspace: str | None = None):
     async with httpx.AsyncClient(base_url=API_BASE, timeout=60) as client:
-        return _unwrap(await client.get(path, params=params, headers=_forward_headers(ctx)))
+        return _unwrap(
+            await client.get(path, params=params, headers=_headers(ctx, workspace))
+        )
 
 
-async def _post(ctx, path, json_body):
+async def _post(ctx, path, json_body, workspace: str | None = None):
     async with httpx.AsyncClient(base_url=API_BASE, timeout=120) as client:
-        return _unwrap(await client.post(path, json=json_body, headers=_forward_headers(ctx)))
+        return _unwrap(
+            await client.post(path, json=json_body, headers=_headers(ctx, workspace))
+        )
 
 
 async def _patch(ctx, path, json_body):
@@ -395,6 +412,85 @@ async def get_report(report_id: int, ctx: Context) -> dict:
     """보고서 1건 상세(content 포함). `mount_workspaces` 에 이 글이 게시된 게시판과
     그 게시판에서의 폴더 배치가 들어 있다(빈 리스트 = 아직 미게시)."""
     return await _get(ctx, f"/api/reports/{report_id}")
+
+
+@mcp.tool()
+async def get_report_outline(report_id: int, ctx: Context) -> dict:
+    """보고서의 **구조 요약** — 페이지별로 어떤 블록이 있고 **채워졌는지**.
+
+    너는 완성된 화면을 볼 수 없어서, 만든 보고서에 **빈 표나 데이터 없는 차트**가
+    남아도 알아채지 못한다. `get_report` 로 본문을 통째로 읽으면 토큰을 크게 먹으니,
+    작성·수정을 마친 뒤 **이 도구로 자기 점검**을 하라.
+
+    `issues` 가 바로 손봐야 할 것이다(보이는데 빈 블록 등). 비어 있는 게 의도된
+    경우도 있으니(파일 위젯 등 사람이 채울 것) 무조건 채우지 말고, **사용자에게
+    "○쪽 △△가 비어 있습니다" 라고 알려라.**
+
+    반환: {title, phase, page_count, pages:[{page, blocks:[{block_id, type, filled,
+    rows?/items?/chars?}]}], issues, mounted_to}."""
+    return await _get(ctx, f"/api/reports/{report_id}/outline")
+
+
+# --------------------------------------------------------------------------- #
+# 종합보고 — 여러 보고서를 안건으로 묶는 상위 산출물. AI 는 **제출 요청**까지만
+# 하고 실제 반영은 사람(종합보고 담당자)이 승인한다.
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+async def list_composites(
+    ctx: Context, board: str | None = None, limit: int = 20
+) -> dict:
+    """**종합보고** 목록(주간보고·월간보고처럼 여러 보고서를 안건으로 묶은 상위 문서).
+
+    종합보고는 **게시판(부서)에 속한다.** `board` 로 어느 게시판 것을 볼지 지정하라
+    (`list_boards` 의 slug). 생략하면 MCP 등록 시 정해진 부서 것만 나오는데, 개인
+    공간으로 등록돼 있으면 **0건**이 나온다 — 그럴 땐 board 를 지정해야 한다.
+    상세는 `get_composite`."""
+    rows = await _get(ctx, "/api/composites", {"limit": limit}, workspace=board)
+    if isinstance(rows, dict):
+        if rows.get("error"):
+            return rows
+        rows = rows.get("items") or []
+    return {"composites": rows, "count": len(rows)}
+
+
+@mcp.tool()
+async def get_composite(
+    composite_id: int, ctx: Context, board: str | None = None
+) -> dict:
+    """종합보고 1건 상세 — 요약·안건 목록·그룹 구성.
+    `board` 는 `list_composites` 에서 쓴 것과 같은 게시판(스코프가 다르면 안 보인다)."""
+    return await _get(ctx, f"/api/composites/{composite_id}", workspace=board)
+
+
+@mcp.tool()
+async def request_composite_item(
+    composite_id: int,
+    report_id: int,
+    ctx: Context,
+    note: str = "",
+    board: str | None = None,
+) -> dict:
+    """보고서를 종합보고에 **안건으로 제출 요청**한다.
+
+    ※ 바로 반영되지 않는다 — **대기 목록에 쌓이고 담당자가 승인**해야 안건이 된다.
+    그게 설계상 의도다(AI 가 상위 문서를 직접 바꾸지 않는다).
+
+    어느 종합보고에 낼 수 있는지 모르면 `list_submittable_composites(report_id)` 로
+    먼저 확인하라 — 이미 안건이거나 이미 제출 대기인지도 알려준다.
+    `note` 에 왜 내는지 한 줄 적어두면 담당자가 판단하기 쉽다."""
+    return await _post(
+        ctx,
+        f"/api/composites/{composite_id}/requests",
+        {"ref_report_id": report_id, "note": note},
+        workspace=board,
+    )
+
+
+@mcp.tool()
+async def list_submittable_composites(report_id: int, ctx: Context) -> dict:
+    """이 보고서를 **안건으로 낼 수 있는 종합보고** 목록. 이미 안건인지·이미 제출
+    대기인지 상태도 함께 온다. `request_composite_item` 전에 확인용."""
+    return await _get(ctx, f"/api/composites/submittable-for/{report_id}")
 
 
 # --------------------------------------------------------------------------- #

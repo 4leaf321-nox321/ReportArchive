@@ -274,6 +274,16 @@ function ThreadCard({
                   <span className="font-medium text-foreground/90">
                     {c.author?.name ?? '?'}
                   </span>
+                  {/* AI(MCP)가 이 사람 권한으로 단 답글 — 표식이 없으면 본인이
+                      직접 쓴 것으로 오해된다(MCP 는 사용자 토큰으로 동작). */}
+                  {c.via === 'mcp' && (
+                    <span
+                      className="rounded bg-primary/10 px-1 py-px text-[9px] font-medium text-primary"
+                      title="AI가 이 사용자 권한으로 작성했습니다"
+                    >
+                      AI
+                    </span>
+                  )}
                   <span>{formatRelative(c.created_at)}</span>
                   {c.updated_at !== c.created_at && (
                     <span className="italic">(수정됨)</span>

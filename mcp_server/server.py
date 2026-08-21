@@ -54,8 +54,12 @@ mcp = FastMCP("reportarchive", json_response=_JSON_RESPONSE)
 
 
 def _forward_headers(ctx: Context) -> dict:
-    """들어온 MCP HTTP 요청의 인증/워크스페이스 헤더를 백엔드로 전달."""
-    headers: dict[str, str] = {}
+    """들어온 MCP HTTP 요청의 인증/워크스페이스 헤더를 백엔드로 전달.
+
+    `X-Client: mcp` 를 함께 붙인다 — MCP 는 **사용자의 토큰으로** 동작해서 인증
+    정보만으론 사람이 한 건지 AI 가 한 건지 구분할 수 없다. 백엔드가 이 헤더로
+    댓글의 `via` 같은 **표시용 감사 표식**을 정한다(보안 경계 아님)."""
+    headers: dict[str, str] = {"X-Client": "mcp"}
     req = getattr(getattr(ctx, "request_context", None), "request", None)
     if req is not None:
         for h in ("authorization", "x-workspace-slug"):
@@ -391,6 +395,130 @@ async def get_report(report_id: int, ctx: Context) -> dict:
     """보고서 1건 상세(content 포함). `mount_workspaces` 에 이 글이 게시된 게시판과
     그 게시판에서의 폴더 배치가 들어 있다(빈 리스트 = 아직 미게시)."""
     return await _get(ctx, f"/api/reports/{report_id}")
+
+
+# --------------------------------------------------------------------------- #
+# 협업 — 사람과 문서 안에서 주고받는다. 지시를 채팅으로 옮겨 적을 필요 없이
+# "댓글 반영해줘" 가 되게 하는 축. 전부 사용자 권한 그대로 동작한다.
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+async def list_comments(
+    report_id: int, ctx: Context, status: str | None = None
+) -> dict:
+    """보고서의 **댓글(리뷰 의견)** 을 읽는다. "댓글 반영해서 고쳐줘" 의 출발점.
+
+    스레드 단위로 묶여 있고, 각 스레드는 보고서의 특정 **블록**에 달려 있다
+    (`block_id`·`page` — 어느 부분에 대한 의견인지). `status` 로 'open'(미해결)만
+    골라 볼 수 있다.
+
+    각 댓글의 **`via`** 는 누가 썼는지 구분한다 — 'web'(사람이 직접) ·
+    'mcp'(AI 가 이 사용자 권한으로). 내가 이전에 단 답글을 사람 의견으로
+    착각하지 마라.
+
+    반환: {threads:[{thread_id, status, page, block_id, comments:[
+    {comment_id, author, via, text, created_at}]}], count}.
+    고친 뒤에는 `reply_comment` 로 무엇을 했는지 남기고, 끝났으면 `resolve_thread`."""
+    rows = await _get(ctx, f"/api/reports/{report_id}/threads")
+    if isinstance(rows, dict):
+        if rows.get("error"):
+            return rows
+        rows = rows.get("items") or []
+    out = []
+    for t in rows:
+        if status and (t.get("status") or "") != status:
+            continue
+        out.append({
+            "thread_id": t.get("id"),
+            "status": t.get("status"),
+            "page": t.get("page_index"),
+            "block_id": t.get("block_id"),
+            "comments": [
+                {
+                    "comment_id": c.get("id"),
+                    "author": (c.get("author") or {}).get("name"),
+                    "via": c.get("via", "web"),
+                    "text": _doc_to_text(c.get("body")),
+                    "created_at": c.get("created_at"),
+                }
+                for c in (t.get("comments") or [])
+            ],
+        })
+    return {"threads": out, "count": len(out)}
+
+
+@mcp.tool()
+async def reply_comment(thread_id: int, text: str, ctx: Context) -> dict:
+    """댓글 스레드에 **답글**을 단다. 보통 "고쳤습니다 + 무엇을 어떻게" 를 남긴다.
+
+    ※ 이 답글은 **당신(사용자) 계정으로** 달리지만 `via='mcp'` 표식이 붙어,
+    화면에서 'AI' 로 표시된다. 사람이 쓴 것처럼 위장하지 말고, 무엇을 했는지
+    구체적으로 적어라(어느 블록을 어떻게 고쳤는지)."""
+    return await _post(
+        ctx,
+        f"/api/threads/{thread_id}/comments",
+        {"body": _text_to_doc(text)},
+    )
+
+
+@mcp.tool()
+async def resolve_thread(thread_id: int, ctx: Context, reopen: bool = False) -> dict:
+    """댓글 스레드를 **해결됨**으로 닫는다(`reopen=True` 면 다시 연다).
+
+    스스로 닫지 마라 — 요청을 처리했더라도 **사람이 확인한 뒤** 닫는 게 원칙이다.
+    사용자가 "닫아줘" 라고 할 때만 쓴다."""
+    return await _patch(
+        ctx,
+        f"/api/threads/{thread_id}",
+        {"status": "open" if reopen else "resolved"},
+    )
+
+
+@mcp.tool()
+async def list_my_notifications(
+    ctx: Context, unread_only: bool = True, limit: int = 20
+) -> dict:
+    """내게 온 **알림**. "나 뭐 할 거 있어?" 에 답할 때 쓴다.
+
+    댓글·게시취소 요청·리뷰 요청·경보 등이 여기로 온다. 각 항목의 `ref` 로
+    대상(보고서 등)을 알 수 있으니, 필요하면 `get_report` 로 이어서 본다."""
+    params: dict = {"limit": max(1, min(limit, 100))}
+    if unread_only:
+        params["unread_only"] = "true"
+    return await _get(ctx, "/api/notifications", params)
+
+
+def _doc_to_text(doc) -> str:
+    """tiptap 문서(JSON) → 평문. 댓글 본문은 리치 문서라 그대로 주면 모델이
+    읽기 어렵고 토큰만 먹는다. 문단별로 텍스트만 뽑아 줄바꿈으로 잇는다."""
+    if not isinstance(doc, dict):
+        return str(doc or "")
+    out: list[str] = []
+
+    def walk(node, depth=0):
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "text":
+            out.append(node.get("text") or "")
+            return
+        for child in node.get("content") or []:
+            walk(child, depth + 1)
+        if node.get("type") in ("paragraph", "heading", "listItem"):
+            out.append("\n")
+
+    walk(doc)
+    return "".join(out).strip()
+
+
+def _text_to_doc(text: str) -> dict:
+    """평문 → tiptap 문서(JSON). 댓글 API 가 받는 형식. 빈 줄로 문단을 나눈다."""
+    paras = [p for p in (text or "").split("\n") if p.strip()] or [""]
+    return {
+        "type": "doc",
+        "content": [
+            {"type": "paragraph", "content": ([{"type": "text", "text": p}] if p else [])}
+            for p in paras
+        ],
+    }
 
 
 # --------------------------------------------------------------------------- #

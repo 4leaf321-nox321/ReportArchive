@@ -26,6 +26,8 @@ class CommentRead(BaseModel):
     thread_id: int
     author: Optional[CommentAuthor] = None
     body: dict  # tiptap doc JSON
+    # 작성 경로 — 'web'(사람) | 'mcp'(AI 가 사용자 권한으로). 프런트가 배지로 구분.
+    via: str = "web"
     created_at: UtcDatetime
     updated_at: UtcDatetime
 

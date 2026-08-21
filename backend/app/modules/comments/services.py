@@ -341,6 +341,7 @@ def create_thread(
     body: dict,
     actor_user_id: int,
     origin_workspace_slug: Optional[str],
+    via: str = "web",
 ) -> CommentThread:
     report = db.get(Report, report_id)
     if report is None:
@@ -367,6 +368,7 @@ def create_thread(
         thread_id=thread.id,
         author_user_id=actor_user_id,
         body=body,
+        via=via,
     )
     db.add(head)
     db.flush()
@@ -443,6 +445,7 @@ def add_comment(
     thread_id: int,
     body: dict,
     actor_user_id: int,
+    via: str = "web",
 ) -> Comment:
     thread = db.get(CommentThread, thread_id)
     if thread is None:
@@ -455,6 +458,7 @@ def add_comment(
         thread_id=thread_id,
         author_user_id=actor_user_id,
         body=body,
+        via=via,
     )
     db.add(comment)
     db.flush()

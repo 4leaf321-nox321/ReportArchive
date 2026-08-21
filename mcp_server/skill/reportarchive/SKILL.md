@@ -20,6 +20,8 @@ allowed-tools: mcp__reportarchive__*
 - `mcp__reportarchive__aggregate_reports` — 개수 세기(직접 세지 말 것)
 - `mcp__reportarchive__list_my_reports` — 내가 쓴 보고서 목록(이어서 수정할 때. 게시된 글 포함)
 - `mcp__reportarchive__list_versions` / `restore_version` — 수정 이력 보기 · 되돌리기
+- `mcp__reportarchive__list_comments` / `reply_comment` / `resolve_thread` — 리뷰 의견 읽기·답글·종료
+- `mcp__reportarchive__list_my_notifications` — 내게 온 알림("나 뭐 할 거 있어?")
 - `mcp__reportarchive__get_report` — 보고서 1건 조회(이미지·첨부는 file_id 참조만)
 - `mcp__reportarchive__download_file` — file_id 로 파일 바이트를 base64 로 내려받기(get_report 의 이미지·첨부를 로컬 저장/재사용할 때, ≈1MB 이하)
 - `mcp__reportarchive__create_report_draft` — 초안 생성
@@ -91,6 +93,21 @@ scatter·heatmap·radar·network·sankey·box·density·tree·mind_map·treemap�
 
 이름을 못 찾으면 도구가 **에러**를 돌려준다(전체 결과를 그 조직 것으로 오해하지 않게).
 그때는 `list_boards`/`list_folders` 로 정확한 이름을 확인하고 다시 부른다.
+
+## 댓글 반영해서 고치기
+"이 보고서 댓글 반영해줘" 는 이렇게 푼다 — 지시를 채팅으로 옮겨 적을 필요가 없다.
+
+1. `list_comments(report_id, status="open")` — 미해결 의견만 읽는다. 각 스레드의
+   `block_id`·`page` 가 **어느 부분에 대한 의견인지** 알려준다.
+2. 필요하면 `search_reports` 등으로 근거를 찾는다.
+3. `update_report_draft(..., dry_run=True)` 로 확인 후 적용한다.
+4. `reply_comment(thread_id, "...")` — **무엇을 어떻게 고쳤는지** 구체적으로 남긴다.
+5. **스레드는 스스로 닫지 않는다.** 사람이 확인한 뒤 닫는 게 원칙이라, 사용자가
+   "닫아줘" 라고 할 때만 `resolve_thread`.
+
+각 댓글의 **`via`** 가 작성 경로다 — `web`(사람이 직접) · `mcp`(AI 가 이 사용자
+권한으로). **내가 이전에 단 답글을 사람 의견으로 착각하지 마라.**
+내 답글은 화면에서 **AI 배지**로 표시되므로 사람이 쓴 것처럼 위장할 필요도 없다.
 
 ## 원칙
 - **생성물은 항상 초안.** 게시·발행은 사람이 한다.

@@ -15,7 +15,7 @@ matrix.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -97,9 +97,19 @@ def _comment_payload(db: Session, c: Comment) -> dict:
         thread_id=c.thread_id,
         author=_author_mini(db, c.author_user_id),
         body=c.body,
+        via=getattr(c, "via", "web") or "web",
         created_at=c.created_at,
         updated_at=c.updated_at,
     ).model_dump(mode="json")
+
+
+def _via_of(request: Request) -> str:
+    """이 요청이 어디서 왔나 — 'mcp'(AI 가 사용자 권한으로) 또는 'web'(사람).
+
+    MCP 는 사용자의 토큰을 그대로 쓰므로 인증 정보만으론 구분할 수 없다. MCP
+    서버가 자기 요청에 `X-Client: mcp` 를 붙이고, 여기서 그것만 인정한다.
+    (보안 경계가 아니라 **표시용 표식**이다 — 위조해도 얻을 권한이 없다.)"""
+    return "mcp" if (request.headers.get("x-client") or "").lower() == "mcp" else "web"
 
 
 def _author_mini(db: Session, user_id: int | None):
@@ -203,6 +213,7 @@ def list_threads(
 @router.post("/reports/{report_id}/threads")
 def create_thread(
     report_id: int,
+    request: Request,
     payload: CommentThreadCreate,
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
@@ -226,6 +237,7 @@ def create_thread(
             body=payload.body,
             actor_user_id=actor.user.id,
             origin_workspace_slug=actor.workspace.slug,
+            via=_via_of(request),
         )
     except services.CommentError as e:
         return _to_http(e)
@@ -243,6 +255,7 @@ def create_thread(
 def reply_to_thread(
     thread_id: int,
     payload: CommentCreate,
+    request: Request,
     db: Session = Depends(get_db),
     actor: CurrentUser = Depends(get_current_user),
 ):
@@ -264,6 +277,7 @@ def reply_to_thread(
             thread_id=thread_id,
             body=payload.body,
             actor_user_id=actor.user.id,
+            via=_via_of(request),
         )
     except services.CommentError as e:
         return _to_http(e)

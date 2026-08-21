@@ -149,6 +149,14 @@ class Comment(Base):
     # tiptap doc JSON. See module docstring for shape.
     body: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
+    # 작성 경로 — 'web'(사람이 화면에서) | 'mcp'(AI 가 사용자 권한으로).
+    # MCP 는 사용자의 토큰으로 동작하므로 표식이 없으면 AI 답글이 그 사람이
+    # 직접 쓴 것처럼 보인다. **서버가 요청 헤더(X-Client)를 보고 채운다** —
+    # 클라이언트가 보낸 값은 신뢰하지 않는다. (p90)
+    via: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="web"
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )

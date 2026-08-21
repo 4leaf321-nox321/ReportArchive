@@ -1,6 +1,6 @@
 # MCP(AI 연결) 보강 로드맵 — 설계
 
-> 상태: **Phase A 구현 완료 (2026-08-21) · B~D 미구현** · 2026-08-21 작성
+> 상태: **Phase A·B 구현 완료 (2026-08-21) · C~D 미구현** · 2026-08-21 작성
 > 관련: `[완료] MCP보고서작성_설계.md`(본체·Phase 1~6), `[완료] MCP온톨로지조사_설계.md`,
 > `[미구현] 헤드리스_내보내기_설계.md`, `[완료] 버전관리_설계.md`, `[완료] 협업개선_설계.md`
 
@@ -95,16 +95,22 @@ AI:   list_comments → 읽고 → search_reports 로 근거 찾고 → 본문 �
 사람: 확인 후 스레드 종료
 ```
 
-- [ ] **`list_comments(report_id, status?)`** — `GET /api/comments/reports/{id}/threads`.
+- [x] **`list_comments(report_id, status?)`** — `GET /api/comments/reports/{id}/threads`.
       스레드+댓글을 AI 가 읽기 좋은 평평한 형태로(작성자·시각·본문·연결된 블록·상태).
-- [ ] **`reply_comment(thread_id, text)`** — `POST /api/comments/threads/{tid}/comments`.
-- [ ] **`resolve_thread(thread_id)`** — `PATCH /api/comments/threads/{tid}` (status).
-- [ ] **`list_my_notifications(unread_only?, limit)`** — `GET /api/notifications`.
+- [x] **`reply_comment(thread_id, text)`** — `POST /api/comments/threads/{tid}/comments`.
+- [x] **`resolve_thread(thread_id)`** — `PATCH /api/comments/threads/{tid}` (status).
+- [x] **`list_my_notifications(unread_only?, limit)`** — `GET /api/notifications`.
       "나 뭐 할 거 있어?" 에 답하게 한다. 게시취소 요청·리뷰·경보가 여기로 온다.
-- [ ] **AI 발화 표식(미결정 — §6)** — MCP 는 사용자 권한으로 동작하므로 AI 가 단 댓글이
-      **그 사람이 쓴 것처럼** 보인다. 표식이 없으면 협업 신뢰가 깨진다.
+- [x] **AI 발화 표식** — §6-1 의 (a) 채택: `comments.via` 컬럼(p90) + UI 배지.
+      **서버가 요청 헤더 `X-Client: mcp` 를 보고 채운다**(클라이언트 입력 불신).
 
 **예상 규모**: 백엔드 0(전부 존재), MCP 중. **투입 대비 효과가 가장 크다.**
+
+> ✅ **구현 완료 (2026-08-21)**. 마이그레이션 **p90**(`comments.via`). 실제 경로는
+> `/api/reports/{id}/threads` · `/api/threads/{tid}/comments` 였다(`/api/comments/...`
+> 아님 — comments 라우터가 `/api` 에 마운트된다). 댓글 본문이 tiptap 문서 JSON 이라
+> MCP 가 평문↔문서로 변환한다(`_doc_to_text`/`_text_to_doc`) — 리치 JSON 을 그대로
+> 주면 모델이 읽기 어렵고 토큰만 먹는다.
 
 ---
 
